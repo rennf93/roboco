@@ -341,7 +341,7 @@ def test_task_list_to_response_returns_list() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _stub_response():
+def _stub_response() -> Any:
     """Build a TaskResponse-like object that supports model_dump."""
     fake_inspector = MagicMock()
     fake_inspector.unloaded = {"project"}

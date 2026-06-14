@@ -1030,6 +1030,7 @@ async def test_pm_give_me_work_returns_first_assigned() -> None:
     env = await c.pm_give_me_work(pm_id)
     assert env.error is None
     assert env.task_id == str(t.id)
+    assert env.next is not None
     assert "i_will_plan" in env.next
 
 
@@ -1057,6 +1058,7 @@ async def test_pm_give_me_work_paused_hint_mentions_subtasks() -> None:
     c = Choreographer(deps)
 
     env = await c.pm_give_me_work(pm_id)
+    assert env.next is not None
     assert "subtasks" in env.next or "complete" in env.next
 
 

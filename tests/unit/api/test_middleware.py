@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from http import HTTPStatus
+from typing import Any
 
 # UUID annotates a Pydantic model field below, so it must stay a runtime import
 # (Pydantic resolves the annotation when building the model) despite `from
@@ -79,36 +80,36 @@ def _make_app() -> FastAPI:
     app = FastAPI()
 
     @app.get("/ok")
-    async def _ok():
+    async def _ok() -> Any:
         return {"status": "ok"}
 
     @app.get("/raise")
-    async def _raise():
+    async def _raise() -> Any:
         raise RuntimeError("boom")
 
     @app.get("/notfound")
-    async def _nf():
+    async def _nf() -> Any:
         raise NotFoundError("Resource", "abc")
 
     @app.get("/http-error")
-    async def _he():
+    async def _he() -> Any:
         raise HTTPException(status_code=403, detail="nope")
 
     # service-layer errors (parallel hierarchy from roboco.services.base)
     @app.get("/svc-notfound")
-    async def _svc_nf():
+    async def _svc_nf() -> Any:
         raise ServiceNotFoundError("Channel", "main-pm")
 
     @app.get("/svc-validation")
-    async def _svc_v():
+    async def _svc_v() -> Any:
         raise ServiceValidationError("invalid input", field="title")
 
     @app.get("/svc-conflict")
-    async def _svc_c():
+    async def _svc_c() -> Any:
         raise ServiceConflictError("duplicate", resource_type="task")
 
     @app.get("/svc-unauth")
-    async def _svc_u():
+    async def _svc_u() -> Any:
         raise ServiceUnauthorizedError("merge_pr", reason="not your PR")
 
     setup_middleware(app)
@@ -265,7 +266,7 @@ def test_request_validation_handler_returns_422_with_details() -> None:
     setup_middleware(app)
 
     @app.post("/validate")
-    async def _v(_data: _Body):
+    async def _v(_data: _Body) -> Any:
         return {"ok": True}
 
     client = TestClient(app, raise_server_exceptions=False)

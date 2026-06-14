@@ -208,7 +208,10 @@ def test_check_permission_match_with_string_permission() -> None:
 def test_path_allowed_for_agent_read_all_role() -> None:
     """Line 297-298: READ_ALL_ROLES gets read access automatically."""
     role = next(iter(READ_ALL_ROLES))
-    rule = {"read": [], "write": []}  # empty perms — but read-all role bypasses
+    rule: dict[str, list[str]] = {
+        "read": [],
+        "write": [],
+    }  # empty perms — but read-all role bypasses
     assert _path_allowed_for_agent(rule, "x", role, None, "read") is True
 
 

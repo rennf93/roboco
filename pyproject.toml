@@ -188,6 +188,10 @@ select = [
 "roboco/foundation/_validate_lifecycle.py" = ["PLC0415"]
 # Test fixtures that reload modules to test env-var-at-import-time behavior
 "tests/unit/mcp_servers/*.py" = ["PLC0415"]
+# Abstract-method stubs in test helpers: parameters must match the superclass
+# signature for keyword-argument compatibility (mypy override check), but the
+# stub bodies are empty — ARG002 would require renaming them, which breaks mypy.
+"tests/unit/services/test_optimal_grounding.py" = ["ARG002"]
 
 # =============================================================================
 # MyPy Configuration

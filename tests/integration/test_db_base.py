@@ -8,6 +8,7 @@ and drop/close.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -25,9 +26,14 @@ from roboco.db.base import (
     run_migrations,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Generator
+
+    from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+
 
 @pytest.fixture(autouse=True)
-def _reset_holder():
+def _reset_holder() -> Generator[None]:
     """Snapshot/restore the singleton so tests don't poison the live engine."""
     saved_engine = _DbHolder.engine
     saved_factory = _DbHolder.session_factory
@@ -465,8 +471,12 @@ async def test_close_db_disposes_and_clears_singletons() -> None:
     await close_db()
 
     fake_engine.dispose.assert_awaited_once()
-    assert _DbHolder.engine is None
-    assert _DbHolder.session_factory is None
+    engine_after = cast("AsyncEngine | None", _DbHolder.engine)
+    factory_after = cast(
+        "async_sessionmaker[AsyncSession] | None", _DbHolder.session_factory
+    )
+    assert engine_after is None
+    assert factory_after is None
 
 
 @pytest.mark.asyncio

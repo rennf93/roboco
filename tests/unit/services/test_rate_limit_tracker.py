@@ -60,7 +60,7 @@ def _make_tracker(
     """Build a tracker with an injected mock Redis client."""
     tracker = RateLimitStateTracker(provider=provider, redis_url="redis://unused")
     if redis_mock is not None:
-        tracker._redis = redis_mock  # type: ignore[assignment]
+        tracker._redis = redis_mock
     return tracker
 
 
@@ -178,7 +178,7 @@ class TestStatePersistsAcrossReconnection:
         tracker_b = RateLimitStateTracker(
             provider="anthropic", redis_url="redis://unused"
         )
-        tracker_b._redis = mock_b  # type: ignore[assignment]
+        tracker_b._redis = mock_b
 
         assert await tracker_b.is_rate_limited() is True
 
@@ -194,7 +194,7 @@ class TestStatePersistsAcrossReconnection:
         tracker_b = RateLimitStateTracker(
             provider="anthropic", redis_url="redis://unused"
         )
-        tracker_b._redis = mock_b  # type: ignore[assignment]
+        tracker_b._redis = mock_b
 
         state = await tracker_b.get_state()
         assert state["rate_limited"] is True
@@ -213,7 +213,7 @@ class TestStatePersistsAcrossReconnection:
         tracker_b = RateLimitStateTracker(
             provider="anthropic", redis_url="redis://unused"
         )
-        tracker_b._redis = mock_b  # type: ignore[assignment]
+        tracker_b._redis = mock_b
 
         # Write clear via tracker_a
         await tracker_a.clear()

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import Any, ClassVar
 from uuid import uuid4
 
 import anthropic as anthropic_mod
@@ -194,7 +194,7 @@ async def test_pipeline_invokes_callback() -> None:
     pipeline = ExtractionPipeline()
     received: list = []
 
-    async def on_message(msg) -> None:
+    async def on_message(msg: Any) -> None:
         received.append(msg)
 
     pipeline.on_message(on_message)
@@ -210,7 +210,7 @@ async def test_pipeline_swallows_callback_errors() -> None:
     """Callback failure should not abort the pipeline."""
     pipeline = ExtractionPipeline()
 
-    async def bad_callback(_msg) -> None:
+    async def bad_callback(_msg: Any) -> None:
         raise RuntimeError("boom")
 
     pipeline.on_message(bad_callback)

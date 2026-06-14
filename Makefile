@@ -156,7 +156,7 @@ restart: stop start-example
 lint:
 	@echo 'Formatting w/ Ruff...' ; echo '' ; uv run ruff format .
 	@echo '' ; echo '' ; echo 'Linting w/ Ruff...' ; echo '' ; uv run ruff check .
-	@echo '' ; echo '' ; echo 'Type checking w/ Mypy...' ; echo '' ; uv run mypy .
+	@echo '' ; echo '' ; echo 'Type checking w/ Mypy...' ; echo '' ; uv run mypy roboco/
 	@echo '' ; echo '' ; echo 'Finding dead code w/ Vulture...' ; echo '' ; uv run vulture vulture_whitelist.py
 
 # Fix code
@@ -241,7 +241,7 @@ quality:
 	@echo "==> ruff check"
 	@uv run ruff check .
 	@echo "==> mypy"
-	@uv run mypy roboco/
+	@uv run mypy roboco/ tests/
 	@echo "==> pytest with coverage"
 	@uv run pytest -q --cov=roboco --cov-report=term-missing --cov-fail-under=80
 	@echo "==> xenon (cyclomatic complexity)"
@@ -274,7 +274,7 @@ quality:
 quality-fast:
 	@uv run ruff format --check .
 	@uv run ruff check .
-	@uv run mypy roboco/
+	@uv run mypy roboco/ tests/
 	@uv run pytest -q -x --no-cov
 
 # Fast pre-submit gate: format-check + lint + types + complexity, NO tests.

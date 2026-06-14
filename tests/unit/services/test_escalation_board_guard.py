@@ -581,7 +581,7 @@ async def test_unblock_dependents_rehomes_board_owned_cell_task() -> None:
         active_claimant_id=board_owner,
         dev_notes="prior",
     )
-    svc.session.execute = _blocked_dependent(task)
+    object.__setattr__(svc.session, "execute", _blocked_dependent(task))
     _bind(svc, "_is_board_advisory_agent", AsyncMock(return_value=True))
 
     await svc._unblock_dependents(completed_id)
@@ -608,7 +608,7 @@ async def test_unblock_dependents_rehomes_ownerless_cell_task() -> None:
         active_claimant_id=None,
         dev_notes="",
     )
-    svc.session.execute = _blocked_dependent(task)
+    object.__setattr__(svc.session, "execute", _blocked_dependent(task))
     board_check = AsyncMock(return_value=False)
     _bind(svc, "_is_board_advisory_agent", board_check)
 
@@ -634,7 +634,7 @@ async def test_unblock_dependents_resumes_dev_owned_cell_task() -> None:
         assigned_to=dev_owner,
         claimed_by=dev_owner,
     )
-    svc.session.execute = _blocked_dependent(task)
+    object.__setattr__(svc.session, "execute", _blocked_dependent(task))
     _bind(svc, "_is_board_advisory_agent", AsyncMock(return_value=False))
     validate_mock = MagicMock()
     _bind(svc, "_validate_and_set_status", validate_mock)
@@ -663,7 +663,7 @@ async def test_unblock_dependents_resumes_board_owned_root_task() -> None:
         assigned_to=uuid4(),
         claimed_by=uuid4(),
     )
-    svc.session.execute = _blocked_dependent(task)
+    object.__setattr__(svc.session, "execute", _blocked_dependent(task))
     _bind(svc, "_is_board_advisory_agent", AsyncMock(return_value=True))
     validate_mock = MagicMock()
     _bind(svc, "_validate_and_set_status", validate_mock)

@@ -25,7 +25,7 @@ async def kanban_client(
     app = FastAPI()
     app.include_router(kanban_router, prefix="/api/kanban")
 
-    async def _override_db():
+    async def _override_db() -> AsyncIterator[AsyncSession]:
         yield db_session
 
     app.dependency_overrides[get_db] = _override_db

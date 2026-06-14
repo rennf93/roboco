@@ -9,12 +9,16 @@ extraction, optimal-service).
 from __future__ import annotations
 
 from contextlib import ExitStack, asynccontextmanager
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import FastAPI
 from roboco.api.app import app as default_app
 from roboco.api.app import create_app, lifespan
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 
 def test_default_app_is_a_fastapi_instance() -> None:
@@ -74,7 +78,7 @@ def test_create_app_includes_v1_flow_routes() -> None:
 
 def test_create_app_attaches_cors_middleware() -> None:
     app = create_app()
-    middleware_classes = [m.cls.__name__ for m in app.user_middleware]
+    middleware_classes = [getattr(m.cls, "__name__", "") for m in app.user_middleware]
     assert "CORSMiddleware" in middleware_classes
 
 
@@ -84,7 +88,7 @@ def test_create_app_attaches_cors_middleware() -> None:
 
 
 @asynccontextmanager
-async def _stub_get_optimal():
+async def _stub_get_optimal() -> AsyncIterator[MagicMock]:
     """Stand-in for the optimal-service factory."""
     yield MagicMock()
 
