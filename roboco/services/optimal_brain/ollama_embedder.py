@@ -2,7 +2,6 @@
 Ollama Embedder
 
 Provides embedding generation using Ollama's native API.
-Drop-in replacement for piragi's EmbeddingGenerator when using Ollama models.
 
 Features:
 - Parallel batch processing for faster embedding
@@ -18,7 +17,6 @@ from collections.abc import Callable
 from typing import Any
 
 import httpx
-from piragi.types import Chunk
 
 from roboco.config import settings
 from roboco.logging import get_logger
@@ -27,6 +25,7 @@ from roboco.services.exceptions import (
     RateLimitError,
     parse_retry_after_header,
 )
+from roboco.services.optimal_brain.text_chunker import Chunk
 
 logger = get_logger(__name__)
 
@@ -39,7 +38,7 @@ RATE_LIMIT_MAX_RETRIES = 5
 
 # Parallel processing configuration
 MAX_CONCURRENT_BATCHES = 4  # Number of batches to process in parallel
-DEFAULT_BATCH_SIZE = 32  # piragi's default batch size
+DEFAULT_BATCH_SIZE = 32  # default batch size for Ollama embedding requests
 
 # Keep the embedding model resident in Ollama. It runs on CPU and Ollama's
 # default 5-min idle unload means a `say` after an idle window pays a cold 2.4 GB

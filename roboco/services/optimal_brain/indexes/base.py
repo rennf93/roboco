@@ -9,11 +9,9 @@ and implements specialized chunking, metadata handling, and search strategies.
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any
 
 import structlog
-from piragi import AsyncRagi
-from piragi.types import Citation, Document
 
 from roboco.config import settings
 from roboco.models.optimal import IndexType, SearchOutcome, SearchResult
@@ -23,12 +21,13 @@ from roboco.services.exceptions import (
     RateLimitError,
     parse_retry_after_header,
 )
-
-# Apply piragi runtime patches (chunker tokenizer) BEFORE importing piragi
-# itself anywhere in the plugin stack. Importing for side effects only.
-from roboco.services.optimal_brain import (
-    piragi_patches as _piragi_patches,  # noqa: F401
+from roboco.services.optimal_brain.text_chunker import (
+    Chunk,
+    Citation,
+    Document,
+    TextChunker,
 )
+from roboco.services.optimal_brain.vector_store import VectorStore
 
 logger = structlog.get_logger()
 
@@ -57,17 +56,6 @@ def _filter_quality_chunks(raw_chunks: list[Any]) -> list[Any]:
             continue
         kept.append(chunk)
     return kept
-
-
-def _reset_store_connection(store: Any) -> None:
-    """Force-reset the piragi store connection after an aborted transaction."""
-    if not (hasattr(store, "_conn") and store._conn):
-        return
-    try:
-        store._conn.close()
-        store._init_schema()
-    except Exception as reset_err:
-        logger.warning("Failed to reset connection", error=str(reset_err))
 
 
 @dataclass
@@ -152,7 +140,9 @@ class BaseIndexPlugin(ABC):
     def __init__(self, config: IndexConfig | None = None) -> None:
         """Initialize the plugin with optional config override."""
         self._config = config
-        self._ragi: AsyncRagi | None = None
+        self._store: VectorStore | None = None
+        self._chunker: TextChunker | None = None
+        self._embedder: Any = None
         self._initialized = False
 
     @property
@@ -212,43 +202,6 @@ class BaseIndexPlugin(ABC):
 
         return text.strip()
 
-    def _build_piragi_config(self) -> dict[str, Any]:
-        """Build piragi configuration dict."""
-        return {
-            "llm": {
-                "model": self.config.llm_model,
-                "base_url": self.config.llm_base_url,
-            },
-            "embedding": {
-                "model": self.config.embedding_model,
-            },
-            "chunk": {
-                "strategy": self.config.chunk_strategy,
-                "size": self.config.chunk_size,
-                "overlap": self.config.chunk_overlap,
-            },
-            "retrieval": {
-                "use_hyde": self.config.use_hyde,
-                "use_hybrid_search": self.config.use_hybrid_search,
-                "use_cross_encoder": self.config.use_cross_encoder,
-            },
-        }
-
-    def _build_piragi_config_no_embed(self) -> dict[str, Any]:
-        """
-        Build piragi config with dummy embedding URL.
-
-        This prevents piragi from loading its own SentenceTransformer model
-        during initialization. We'll replace the embedder with our shared
-        instance immediately after creation.
-        """
-        config = self._build_piragi_config()
-        # Set a dummy base_url to prevent local model loading
-        # EmbeddingGenerator checks: if base_url is not None, skip SentenceTransformer
-        config["embedding"]["base_url"] = "http://dummy-prevents-model-load"
-        config["embedding"]["api_key"] = "not-needed"
-        return config
-
     async def _validate_embedding_dimensions(self, embedder: Any) -> None:
         """
         Validate that embedder produces expected dimensions.
@@ -257,8 +210,6 @@ class BaseIndexPlugin(ABC):
         instead of failing silently during vector search.
         """
         import asyncio
-
-        from roboco.config import settings
 
         expected_dim = settings.embedding_dimensions
 
@@ -296,7 +247,7 @@ class BaseIndexPlugin(ABC):
             )
 
     async def initialize(self) -> None:
-        """Initialize the index backend."""
+        """Initialize the index backend (store, chunker, embedder)."""
         if self._initialized:
             return
 
@@ -313,78 +264,67 @@ class BaseIndexPlugin(ABC):
         )
 
         # Validate embedding dimensions match configuration
-        # This catches mismatches early instead of failing silently during search
         await self._validate_embedding_dimensions(shared_embedder)
 
-        # Create store with correct vector dimension for embedding model
-        store = self._create_store_with_dimension()
+        self._embedder = shared_embedder
 
-        # Use config with dummy embedding URL to prevent model loading
-        # Piragi's EmbeddingGenerator skips SentenceTransformer if base_url is set
-        self._ragi = AsyncRagi(
-            [],
-            persist_dir=self.config.persist_dir,
-            config=self._build_piragi_config_no_embed(),
-            store=store,
+        # Create the character-based chunker (no external tokenizers)
+        self._chunker = TextChunker(
+            chunk_size=self.config.chunk_size,
+            chunk_overlap=self.config.chunk_overlap,
         )
 
-        # Replace AsyncRagi's dummy embedder with shared instance
-        # This is the key optimization: one model load for all 9 plugins
-        self._ragi._sync.embedder = shared_embedder
+        # Create and initialise the vector store
+        if not self.config.store_url:
+            raise RuntimeError(
+                f"store_url is required for {self.index_type.value} VectorStore. "
+                "Set ROBOCO_DATABASE_* environment variables."
+            )
+
+        self._store = VectorStore(
+            dsn=self.config.store_url,
+            table_name=f"chunks_{self.index_type.value}",
+            vector_dimension=settings.embedding_dimensions,
+        )
+        await self._store.initialize()
 
         self._initialized = True
         logger.info(f"{self.index_type.value} index plugin initialized")
 
-    def _create_store_with_dimension(self) -> Any:
-        """
-        Create vector store with correct dimension for embedding model.
-
-        Piragi's factory defaults to 768 for PostgresStore, but doesn't
-        infer dimension from the embedding model. This method fixes that
-        by creating PostgresStore with the correct dimension.
-        """
-        from roboco.config import settings
-
-        store_url = self.config.store_url
-        if not store_url:
-            # Use default LanceStore (handles dimension correctly)
-            return None
-
-        # For PostgreSQL, create store with correct dimension
-        if store_url.startswith("postgres://") or store_url.startswith("postgresql://"):
-            from piragi.stores.postgres import PostgresStore
-
-            # Get dimension from settings
-            vector_dimension = settings.embedding_dimensions
-
-            logger.debug(
-                "Creating PostgresStore with correct dimension",
-                vector_dimension=vector_dimension,
-                embedding_model=self.config.embedding_model,
-            )
-
-            return PostgresStore(
-                connection_string=store_url,
-                table_name=f"chunks_{self.index_type.value}",
-                vector_dimension=vector_dimension,
-            )
-
-        # For other stores, let piragi handle it
-        return store_url
-
     async def close(self) -> None:
         """Cleanup resources."""
-        self._ragi = None
+        if self._store is not None:
+            await self._store.close()
+        self._store = None
+        self._chunker = None
+        self._embedder = None
         self._initialized = False
         logger.info(f"{self.index_type.value} index plugin closed")
 
+    # ------------------------------------------------------------------
+    # Internal accessors (raise if not initialised)
+    # ------------------------------------------------------------------
+
     @property
-    def ragi(self) -> AsyncRagi:
-        """Get the underlying AsyncRagi instance."""
-        if not self._initialized or self._ragi is None:
+    def _require_store(self) -> VectorStore:
+        if not self._initialized or self._store is None:
             msg = f"{self.index_type.value} index not initialized."
             raise RuntimeError(msg)
-        return self._ragi
+        return self._store
+
+    @property
+    def _require_chunker(self) -> TextChunker:
+        if not self._initialized or self._chunker is None:
+            msg = f"{self.index_type.value} index not initialized."
+            raise RuntimeError(msg)
+        return self._chunker
+
+    @property
+    def _require_embedder(self) -> Any:
+        if not self._initialized or self._embedder is None:
+            msg = f"{self.index_type.value} index not initialized."
+            raise RuntimeError(msg)
+        return self._embedder
 
     def validate_content(
         self,
@@ -424,8 +364,6 @@ class BaseIndexPlugin(ABC):
         Returns:
             IngestResult with ingestion details
         """
-        import asyncio
-
         # Validate content
         is_valid, error = self.validate_content(content, **kwargs)
         if not is_valid:
@@ -461,9 +399,7 @@ class BaseIndexPlugin(ABC):
         )
 
         try:
-            chunk_count = await asyncio.to_thread(
-                self._chunk_filter_embed_store, doc, metadata
-            )
+            chunk_count = await self._chunk_filter_embed_store(doc, metadata)
             logger.debug(
                 "Ingested document",
                 index_type=self.index_type.value,
@@ -489,14 +425,15 @@ class BaseIndexPlugin(ABC):
                 error=str(e),
             )
 
-    def _chunk_filter_embed_store(self, doc: Document, metadata: dict[str, Any]) -> int:
-        """Chunk → filter → embed → store. Returns count of stored chunks.
+    async def _chunk_filter_embed_store(
+        self, doc: Document, metadata: dict[str, Any]
+    ) -> int:
+        """Chunk → filter → embed → store. Returns count of stored chunks."""
+        chunker = self._require_chunker
+        store = self._require_store
+        embedder = self._require_embedder
 
-        Runs synchronously inside ``asyncio.to_thread``; piragi's _sync
-        internals are blocking.
-        """
-        ragi_sync = self.ragi._sync
-        raw_chunks = ragi_sync.chunker.chunk_document(doc)
+        raw_chunks: list[Chunk] = chunker.chunk_document(doc)
         chunks = _filter_quality_chunks(raw_chunks)
         if not chunks:
             logger.warning(
@@ -505,38 +442,29 @@ class BaseIndexPlugin(ABC):
                 raw_count=len(raw_chunks),
             )
             return 0
+
         for chunk in chunks:
             chunk.metadata = {**chunk.metadata, **metadata}
+
         logger.debug(
             "Chunks after quality filter",
             raw=len(raw_chunks),
             kept=len(chunks),
             filtered=len(raw_chunks) - len(chunks),
         )
-        chunks_with_embeddings = ragi_sync.embedder.embed_chunks(chunks)
-        return self._store_with_transaction_retry(
-            ragi_sync.store, chunks_with_embeddings, len(chunks)
-        )
 
-    def _store_with_transaction_retry(
-        self, store: Any, chunks_with_embeddings: list[Any], chunk_count: int
-    ) -> int:
-        """Add chunks to store; retry once on aborted-transaction errors."""
-        max_retries = 2
-        for attempt in range(max_retries):
-            try:
-                store.add_chunks(chunks_with_embeddings)
-                return chunk_count
-            except Exception as e:
-                if "transaction is aborted" not in str(e) or attempt >= max_retries - 1:
-                    raise
-                logger.warning(
-                    "Retrying store after transaction error",
-                    index_type=self.index_type.value,
-                    attempt=attempt + 1,
-                )
-                _reset_store_connection(store)
-        return chunk_count
+        # Embed (async)
+        if hasattr(embedder, "aembed_chunks"):
+            chunks_with_embeddings: list[Chunk] = await embedder.aembed_chunks(chunks)
+        else:
+            import asyncio
+
+            chunks_with_embeddings = await asyncio.to_thread(
+                embedder.embed_chunks, chunks
+            )
+
+        await store.add_chunks(chunks_with_embeddings)
+        return len(chunks)
 
     def _prepare_docs_for_batch(
         self,
@@ -600,18 +528,21 @@ class BaseIndexPlugin(ABC):
             good_chunks.append(chunk)
         return good_chunks
 
-    def _run_batch_process(
+    async def _run_batch_process(
         self,
         docs_to_process: list[tuple[Document, str | None, dict[str, Any]]],
         chunk_counts: dict[int, int],
     ) -> None:
-        """Chunk, embed, and store all documents in a single transaction."""
-        ragi_sync = self.ragi._sync
-        all_chunks: list[Any] = []
+        """Chunk, embed, and store all documents in a single batch."""
+        chunker = self._require_chunker
+        store = self._require_store
+        embedder = self._require_embedder
+
+        all_chunks: list[Chunk] = []
         total_filtered = 0
 
         for idx, (doc, _, _) in enumerate(docs_to_process):
-            raw_chunks = ragi_sync.chunker.chunk_document(doc)
+            raw_chunks = chunker.chunk_document(doc)
             good_chunks = self._filter_good_chunks(raw_chunks, doc)
             all_chunks.extend(good_chunks)
             chunk_counts[idx] = len(good_chunks)
@@ -623,8 +554,17 @@ class BaseIndexPlugin(ABC):
         )
 
         if all_chunks:
-            chunks_with_embeddings = ragi_sync.embedder.embed_chunks(all_chunks)
-            ragi_sync.store.add_chunks(chunks_with_embeddings)
+            if hasattr(embedder, "aembed_chunks"):
+                chunks_with_embeddings: list[Chunk] = await embedder.aembed_chunks(
+                    all_chunks
+                )
+            else:
+                import asyncio
+
+                chunks_with_embeddings = await asyncio.to_thread(
+                    embedder.embed_chunks, all_chunks
+                )
+            await store.add_chunks(chunks_with_embeddings)
 
     @staticmethod
     def _mark_batch_failed(
@@ -663,8 +603,6 @@ class BaseIndexPlugin(ABC):
         Returns:
             List of IngestResult for each document
         """
-        import asyncio
-
         if not documents:
             return []
 
@@ -676,9 +614,7 @@ class BaseIndexPlugin(ABC):
         chunk_counts: dict[int, int] = {}
 
         try:
-            await asyncio.to_thread(
-                self._run_batch_process, docs_to_process, chunk_counts
-            )
+            await self._run_batch_process(docs_to_process, chunk_counts)
 
             for idx, (doc, doc_id, _) in enumerate(docs_to_process):
                 results.append(
@@ -776,12 +712,74 @@ class BaseIndexPlugin(ABC):
 
         return preprocessed
 
+    async def _generate_hyde_passage(self, query: str) -> str:
+        """Generate a hypothetical passage for HyDE query expansion.
+
+        Calls the configured Ollama LLM to produce a short passage that would
+        plausibly answer *query*.  Returns an empty string on any failure so
+        the caller can fall back to raw query embedding.
+
+        Args:
+            query: The (preprocessed) search query.
+
+        Returns:
+            A short hypothetical passage, or ``""`` on LLM error.
+        """
+        import httpx
+
+        prompt = (
+            "Write a concise technical passage (2-4 sentences) that directly "
+            "answers the following question. Include specific technical details "
+            "and terminology. Do not use <think> tags.\n\n"
+            f"Question: {query}\n\n"
+            "Answer:"
+        )
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(
+                    f"{self.config.llm_base_url}/chat/completions",
+                    json={
+                        "model": self.config.llm_model,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "max_tokens": 200,
+                    },
+                )
+            if resp.is_success:
+                data = resp.json()
+                passage = self._extract_from_think_tags(
+                    data["choices"][0]["message"]["content"]
+                )
+                logger.debug(
+                    "HyDE passage generated",
+                    index_type=self.index_type.value,
+                    passage_len=len(passage),
+                )
+                return passage
+            logger.debug(
+                "HyDE LLM call returned non-success status",
+                status=resp.status_code,
+                index_type=self.index_type.value,
+            )
+        except Exception as e:
+            logger.debug(
+                "HyDE LLM call failed, will use raw query embedding",
+                index_type=self.index_type.value,
+                error=str(e),
+            )
+        return ""
+
     async def _compute_query_embedding(self, query: str) -> list[float]:
-        """Preprocess the query and embed it using the configured embedder."""
+        """Preprocess the query and embed it using the configured embedder.
+
+        When ``config.use_hyde`` is ``True``, first calls the Ollama LLM to
+        generate a hypothetical answer passage (HyDE) and embeds that instead
+        of the raw query.  Falls back to raw query embedding if the LLM call
+        fails or returns an empty passage.
+        """
         import asyncio
 
-        ragi_sync = self.ragi._sync
-        embedder = ragi_sync.embedder
+        embedder = self._require_embedder
 
         processed_query = self._preprocess_query(query)
         if processed_query != query:
@@ -792,10 +790,17 @@ class BaseIndexPlugin(ABC):
                 index_type=self.index_type.value,
             )
 
+        # HyDE: try to embed a hypothetical passage instead of the raw query
+        text_to_embed = processed_query
+        if self.config.use_hyde:
+            passage = await self._generate_hyde_passage(processed_query)
+            if passage:
+                text_to_embed = passage
+
         if hasattr(embedder, "aembed_query"):
-            result: list[float] = await embedder.aembed_query(processed_query)
+            result: list[float] = await embedder.aembed_query(text_to_embed)
             return result
-        return await asyncio.to_thread(embedder.embed_query, processed_query)
+        return await asyncio.to_thread(embedder.embed_query, text_to_embed)
 
     async def _fetch_citations(
         self,
@@ -803,21 +808,14 @@ class BaseIndexPlugin(ABC):
         top_k: int,
         has_filters: bool,
     ) -> list[Citation]:
-        """Fetch citations from the vector store in a worker thread."""
-        import asyncio
-
-        ragi_sync = self.ragi._sync
+        """Fetch citations from the vector store."""
+        store = self._require_store
         fetch_k = top_k * 3 if has_filters else top_k
-
-        def _do_search() -> list[Citation]:
-            results: list[Citation] = ragi_sync.store.search(
-                query_embedding,
-                top_k=fetch_k,
-                min_chunk_length=100,
-            )
-            return results
-
-        return await asyncio.to_thread(_do_search)
+        return await store.search(
+            query_embedding,
+            top_k=fetch_k,
+            min_chunk_length=100,
+        )
 
     def _citations_to_results(
         self,
@@ -1067,15 +1065,15 @@ class BaseIndexPlugin(ABC):
         raise RateLimitError(provider="ollama", retry_after=last_rl_retry_after)
 
     async def count(self) -> int:
-        """Get the number of documents in the index."""
+        """Get the number of chunks in the index."""
         try:
-            return cast("int", await self.ragi.count())
+            return await self._require_store.count()
         except Exception:
             return 0
 
     async def clear(self) -> None:
         """Clear all documents from the index."""
-        await self.ragi.clear()
+        await self._require_store.clear()
         logger.info(f"Cleared {self.index_type.value} index")
 
     async def list_documents(
@@ -1087,20 +1085,7 @@ class BaseIndexPlugin(ABC):
         Returns list of documents with id, source, indexed_at, and metadata.
         """
         try:
-            # Use piragi's list method if available
-            if hasattr(self.ragi, "list"):
-                docs = await self.ragi.list(limit=limit, offset=offset)
-                return [
-                    {
-                        "id": str(doc.get("id", "")),
-                        "source": doc.get("source", ""),
-                        "indexed_at": doc.get("indexed_at", ""),
-                        "metadata": doc.get("metadata", {}),
-                    }
-                    for doc in docs
-                ]
-            # Fallback: return empty list
-            return []
+            return await self._require_store.list_docs(limit=limit, offset=offset)
         except Exception as e:
             logger.warning(f"Failed to list documents in {self.index_type.value}: {e}")
             return []
@@ -1117,72 +1102,89 @@ class BaseIndexPlugin(ABC):
         Returns:
             Number of documents indexed
         """
-        import hashlib
+        await self._ingest_source_files(sources)
+        await self._track_source_files_in_db(sources)
+        return await self.count()
+
+    @staticmethod
+    def _expand_source_paths(source: str) -> "list[Any]":
+        """Expand a source string into a list of Path objects."""
         from pathlib import Path
 
+        source_path = Path(source)
+        if "*" in source:
+            return list(Path().glob(source))
+        if source_path.is_dir():
+            return list(source_path.rglob("*"))
+        return [source_path] if source_path.exists() else []
+
+    async def _ingest_source_files(self, sources: list[str]) -> None:
+        """Ingest each file found under sources into the vector store."""
+        for source in sources:
+            for file_path in self._expand_source_paths(source):
+                if not file_path.is_file():
+                    continue
+                try:
+                    content = file_path.read_text(errors="ignore")
+                    await self.ingest(
+                        content=content,
+                        doc_id=str(file_path.absolute()),
+                        file_path=str(file_path),
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Failed to index source file",
+                        file=str(file_path),
+                        error=str(e),
+                    )
+
+    async def _track_source_files_in_db(self, sources: list[str]) -> None:
+        """Record each indexed file in the database for tracking."""
         from roboco.db import get_db_context
-        from roboco.db.tables import IndexedDocumentTable
 
-        await self.ragi.add(sources)
-
-        # Track indexed documents in database
         async with get_db_context() as db:
             for source in sources:
-                source_path = Path(source)
-
-                # Handle glob patterns and directories
-                if "*" in source or source_path.is_dir():
-                    if source_path.is_dir():
-                        files = list(source_path.rglob("*"))
-                    else:
-                        files = list(Path().glob(source))
-                else:
-                    files = [source_path] if source_path.exists() else []
-
-                for file_path in files:
+                for file_path in self._expand_source_paths(source):
                     if not file_path.is_file():
                         continue
-
-                    # Generate hash for dedup
-                    source_str = str(file_path.absolute())
-                    source_hash = hashlib.sha256(source_str.encode()).hexdigest()
-
-                    # Extract title from filename or first line
-                    title = file_path.stem.replace("-", " ").replace("_", " ").title()
-
-                    # Get preview (first 500 chars)
-                    preview = None
-                    try:
-                        content = file_path.read_text(errors="ignore")[:500]
-                        preview = content.strip()
-                    except Exception:
-                        pass
-
-                    # Upsert document record
-                    from sqlalchemy import select
-
-                    existing = await db.execute(
-                        select(IndexedDocumentTable).where(
-                            IndexedDocumentTable.index_type == self.index_type.value,
-                            IndexedDocumentTable.source_hash == source_hash,
-                        )
-                    )
-                    doc = existing.scalar_one_or_none()
-
-                    if doc:
-                        doc.title = title
-                        doc.preview = preview
-                    else:
-                        doc = IndexedDocumentTable(
-                            index_type=self.index_type.value,
-                            source=source_str,
-                            source_hash=source_hash,
-                            title=title,
-                            preview=preview,
-                            chunk_count=0,  # Could be calculated later
-                        )
-                        db.add(doc)
-
+                    await self._upsert_doc_record(db, file_path)
             await db.commit()
 
-        return await self.count()
+    async def _upsert_doc_record(self, db: Any, file_path: Any) -> None:
+        """Upsert one file record into the indexed-documents table."""
+        import contextlib
+        import hashlib
+
+        from sqlalchemy import select
+
+        from roboco.db.tables import IndexedDocumentTable
+
+        source_str = str(file_path.absolute())
+        source_hash = hashlib.sha256(source_str.encode()).hexdigest()
+        title = file_path.stem.replace("-", " ").replace("_", " ").title()
+
+        preview = None
+        with contextlib.suppress(Exception):
+            preview = file_path.read_text(errors="ignore")[:500].strip()
+
+        existing = await db.execute(
+            select(IndexedDocumentTable).where(
+                IndexedDocumentTable.index_type == self.index_type.value,
+                IndexedDocumentTable.source_hash == source_hash,
+            )
+        )
+        doc = existing.scalar_one_or_none()
+        if doc:
+            doc.title = title
+            doc.preview = preview
+        else:
+            db.add(
+                IndexedDocumentTable(
+                    index_type=self.index_type.value,
+                    source=source_str,
+                    source_hash=source_hash,
+                    title=title,
+                    preview=preview,
+                    chunk_count=0,
+                )
+            )

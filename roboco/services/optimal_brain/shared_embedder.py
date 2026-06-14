@@ -1,22 +1,18 @@
 """
 Shared Embedder Singleton
 
-Provides a single embedder instance shared across all index plugins.
-Supports both Ollama models (qwen3-embedding, ...) and SentenceTransformers (BGE, ...).
+Provides a single OllamaEmbedder instance shared across all index plugins.
 """
 
 import asyncio
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Protocol, Union
 
-from piragi.types import Chunk
-
 from roboco.config import settings
 from roboco.logging import get_logger
+from roboco.services.optimal_brain.text_chunker import Chunk
 
 if TYPE_CHECKING:
-    from piragi.embeddings import EmbeddingGenerator
-
     from roboco.services.optimal_brain.ollama_embedder import OllamaEmbedder
 
 logger = get_logger(__name__)
@@ -63,7 +59,7 @@ def _is_ollama_model(model: str) -> bool:
 class _SharedEmbedderHolder:
     """Holder class for shared embedder state (avoids global statement)."""
 
-    instance: Union["EmbeddingGenerator", "OllamaEmbedder", None] = None
+    instance: Union["OllamaEmbedder", None] = None
     lock: asyncio.Lock | None = None
 
     @classmethod
@@ -79,23 +75,27 @@ async def get_shared_embedder(
     device: str | None = None,
     timeout: float = 60.0,
 ) -> Embedder:
-    """Get or create the shared embedder instance.
+    """Get or create the shared OllamaEmbedder instance.
 
-    Thread-safe singleton that loads the model only once.
-    Automatically selects Ollama or SentenceTransformers based on model name.
+    Thread-safe singleton that loads the model only once.  All embedding is
+    performed via Ollama over HTTP; no local model weights are loaded.
 
     Args:
-        model: Embedding model name (default: from settings)
-        device: Device to use for SentenceTransformers (None = auto-detect)
-        timeout: Max seconds to wait for model loading (default: 60)
+        model: Embedding model name (default: from settings).
+        device: Ignored — kept for API compatibility.
+        timeout: Ignored — Ollama embedder connects lazily; kept for
+                 API compatibility.
 
     Returns:
-        Shared embedder instance (OllamaEmbedder or EmbeddingGenerator)
+        Shared :class:`~roboco.services.optimal_brain.ollama_embedder.OllamaEmbedder`
+        instance.
 
     Raises:
-        TimeoutError: If model loading takes too long
-        RuntimeError: If model loading fails
+        RuntimeError: If the embedder instance could not be constructed.
     """
+    _ = device
+    _ = timeout
+
     if _SharedEmbedderHolder.instance is not None:
         return _SharedEmbedderHolder.instance
 
@@ -104,58 +104,18 @@ async def get_shared_embedder(
         if _SharedEmbedderHolder.instance is None:
             model = model or settings.default_embedding_model
 
-            # Use Ollama for Ollama models, SentenceTransformers otherwise
-            if _is_ollama_model(model):
-                logger.info(
-                    "Creating shared Ollama embedder",
-                    model=model,
-                    base_url=settings.ollama_base_url,
-                )
+            logger.info(
+                "Creating shared Ollama embedder",
+                model=model,
+                base_url=settings.ollama_base_url,
+            )
 
-                from roboco.services.optimal_brain.ollama_embedder import OllamaEmbedder
+            from roboco.services.optimal_brain.ollama_embedder import OllamaEmbedder
 
-                _SharedEmbedderHolder.instance = OllamaEmbedder(
-                    model=model,
-                    base_url=settings.ollama_base_url,
-                )
-            else:
-                logger.info(
-                    "Creating shared SentenceTransformers embedder",
-                    model=model,
-                    device=device or "auto",
-                )
-
-                # Import here to avoid circular imports and defer heavy import
-                from piragi.embeddings import EmbeddingGenerator
-
-                # Run model loading in thread to not block event loop
-                def _create_embedder() -> "EmbeddingGenerator":
-                    return EmbeddingGenerator(
-                        model=model,
-                        device=device,
-                        batch_size=32,
-                    )
-
-                try:
-                    async with asyncio.timeout(timeout):
-                        _SharedEmbedderHolder.instance = await asyncio.to_thread(
-                            _create_embedder
-                        )
-                except TimeoutError:
-                    logger.error(
-                        "Embedder initialization timed out",
-                        model=model,
-                        timeout=timeout,
-                    )
-                    raise TimeoutError(
-                        f"Embedding model loading timed out after {timeout}s. "
-                        "This may indicate network issues or corrupted model cache."
-                    ) from None
-                except Exception as e:
-                    logger.error(
-                        "Embedder initialization failed", model=model, error=str(e)
-                    )
-                    raise RuntimeError(f"Failed to load embedding model: {e}") from e
+            _SharedEmbedderHolder.instance = OllamaEmbedder(
+                model=model,
+                base_url=settings.ollama_base_url,
+            )
 
             # Validate embedder implements required protocol methods.
             # Using explicit check (not assert) so this survives `python -O`.

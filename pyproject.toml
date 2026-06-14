@@ -194,8 +194,6 @@ plugins = ["pydantic.mypy"]
 module = [
     "redis.*",
     "anthropic.*",
-    "tiktoken.*",
-    "piragi.*",  # removed from deps; optimal_brain/ still references it (Wave 1B will finish the migration)
     "toon.*",
     "sse_starlette.*",
     "asyncpg.*",
