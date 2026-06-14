@@ -988,7 +988,7 @@ class TaskService(BaseService):
             return None
 
         for key, value in updates.items():
-            if hasattr(task, key):
+            if hasattr(task, key) and value is not None:
                 setattr(task, key, value)
 
         await self.session.flush()

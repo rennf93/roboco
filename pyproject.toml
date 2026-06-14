@@ -206,7 +206,7 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 warn_no_return = true
 warn_unreachable = true
-exclude = ["vulture_whitelist.py", ".venv", "alembic"]
+exclude = ["vulture_whitelist.py", ".venv", "alembic", "tests"]
 
 plugins = ["pydantic.mypy"]
 
