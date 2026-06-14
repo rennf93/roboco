@@ -8,6 +8,7 @@ session boundary and checks the method's contract.
 from __future__ import annotations
 
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -730,3 +731,25 @@ def test_resolve_doc_abspath_leaves_external_absolute_path() -> None:
     """An absolute path outside the docs root is left as-is for the indexer to skip."""
     external = "/data/workspaces/panel/frontend/fe-dev-1/src/page.tsx"
     assert TaskService._resolve_doc_abspath(external) == external
+
+
+@pytest.mark.asyncio
+async def test_update_skips_none_to_protect_partial_callers() -> None:
+    """update() must skip None values, not write them.
+
+    Callers pass field=dict.get('x'), which is None when the key is absent —
+    e.g. the board-redraft update_live_draft path passes title/acceptance_criteria
+    that way. Without the None-skip guard those None values would null-wipe
+    existing data. Explicit clearing is the update ROUTE's job (a field
+    whitelist), never this shared service method. Locks that contract so the
+    guard can't be silently removed again.
+    """
+    task = SimpleNamespace(title="original", acceptance_criteria=["keep me"])
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    svc.get = AsyncMock(return_value=task)
+
+    result = await svc.update(uuid4(), title="updated", acceptance_criteria=None)
+
+    assert result is task
+    assert task.title == "updated"  # explicit, non-None value is applied
+    assert task.acceptance_criteria == ["keep me"]  # None skipped, not wiped

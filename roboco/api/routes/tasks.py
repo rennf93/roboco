@@ -676,7 +676,9 @@ async def get_valid_transitions_for_task(
             status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
         )
     valid_statuses = get_valid_transitions(task.status)
-    return ValidTransitionsResponse(valid_statuses=[TaskStatus(s) for s in valid_statuses])
+    return ValidTransitionsResponse(
+        valid_statuses=[TaskStatus(s) for s in valid_statuses]
+    )
 
 
 @router.get("/{task_id}", response_model=TaskResponse)
