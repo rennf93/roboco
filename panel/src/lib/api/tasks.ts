@@ -600,6 +600,14 @@ export const tasksApi = {
     return data;
   },
 
+  // CEO gate #2: approve the completed work and merge the PR.
+  // No request body — the backend endpoint accepts no notes parameter.
+  // May throw HTTP 400 with detail starting 'NO_PR' or 'Merge failed'.
+  approveAndMerge: async (taskId: string): Promise<Task> => {
+    const { data } = await api.post<Task>("/tasks/" + taskId + "/approve-and-merge");
+    return data;
+  },
+
   // CEO rejects a task (sends back for revision)
   ceoReject: async (taskId: string, notes: string): Promise<Task> => {
     if (isMockMode()) {
