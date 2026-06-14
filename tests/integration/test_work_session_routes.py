@@ -82,7 +82,7 @@ async def ws_client(
 
     async def _override_agent() -> AgentContext:
         return AgentContext(
-            agent_id=cast(UUID, agent.id), role=AgentRole.DEVELOPER, team=Team.BACKEND
+            agent_id=cast("UUID", agent.id), role=AgentRole.DEVELOPER, team=Team.BACKEND
         )
 
     app.dependency_overrides[get_db] = _override_db
@@ -661,7 +661,9 @@ async def test_merge_pr_pm_succeeds(db_session: AsyncSession) -> None:
         yield db_session
 
     async def _override_agent() -> AgentContext:
-        return AgentContext(agent_id=cast(UUID, pm.id), role=AgentRole.MAIN_PM, team=None)
+        return AgentContext(
+            agent_id=cast("UUID", pm.id), role=AgentRole.MAIN_PM, team=None
+        )
 
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_agent_context] = _override_agent
@@ -703,7 +705,9 @@ async def test_merge_pr_unknown_session_pm(db_session: AsyncSession) -> None:
         yield db_session
 
     async def _override_agent() -> AgentContext:
-        return AgentContext(agent_id=cast(UUID, pm.id), role=AgentRole.MAIN_PM, team=None)
+        return AgentContext(
+            agent_id=cast("UUID", pm.id), role=AgentRole.MAIN_PM, team=None
+        )
 
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_agent_context] = _override_agent
@@ -772,7 +776,9 @@ async def test_create_session_non_developer_forbidden(
         yield db_session
 
     async def _override_agent() -> AgentContext:
-        return AgentContext(agent_id=cast(UUID, qa.id), role=AgentRole.QA, team=Team.BACKEND)
+        return AgentContext(
+            agent_id=cast("UUID", qa.id), role=AgentRole.QA, team=Team.BACKEND
+        )
 
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_agent_context] = _override_agent

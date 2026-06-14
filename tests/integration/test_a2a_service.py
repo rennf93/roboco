@@ -905,7 +905,7 @@ def test_extract_message_text_no_text_attr() -> None:
     """text_part missing `text` attr → returns defaults."""
     fake_part = SimpleNamespace(type="text")
     fake_msg = SimpleNamespace(parts=[fake_part])
-    title, desc, full = A2AService.extract_message_text(cast(A2AMessage, fake_msg))
+    title, desc, full = A2AService.extract_message_text(cast("A2AMessage", fake_msg))
     assert title == "A2A Task"
     assert desc == ""
     assert full == ""
@@ -921,7 +921,9 @@ def test_update_task_with_message_no_text_attr() -> None:
     fake_part = SimpleNamespace(type="text")
     fake_msg = SimpleNamespace(parts=[fake_part])
     fake_task = SimpleNamespace(dev_notes="orig")
-    A2AService.update_task_with_message(cast(TaskTable, fake_task), cast(A2AMessage, fake_msg))
+    A2AService.update_task_with_message(
+        cast("TaskTable", fake_task), cast("A2AMessage", fake_msg)
+    )
     assert fake_task.dev_notes == "orig"
 
 
@@ -1137,7 +1139,7 @@ async def test_publish_a2a_response_event_no_bus() -> None:
     mock_bus = type("B", (), {"is_connected": lambda _self: False})()
     with patch("roboco.services.a2a.get_event_bus", return_value=mock_bus):
         await A2AService._publish_a2a_response_event(
-            cast(TaskTable, fake_task), "creator", "requester", "responder"
+            cast("TaskTable", fake_task), "creator", "requester", "responder"
         )
 
 
@@ -1150,7 +1152,7 @@ async def test_publish_a2a_response_event_bus_exception_swallowed() -> None:
     ):
         # Exception swallowed.
         await A2AService._publish_a2a_response_event(
-            cast(TaskTable, fake_task), "creator", "requester", "responder"
+            cast("TaskTable", fake_task), "creator", "requester", "responder"
         )
 
 

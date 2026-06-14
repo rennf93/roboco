@@ -45,7 +45,6 @@ from sqlalchemy import select
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
-    from uuid import UUID
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1423,7 +1422,7 @@ async def test_resolve_group_for_session_returns_inherited_group(
     await svc.link_session_to_task(parent_sess.id, parent.id, aid, is_primary=True)
 
     req = SessionForTasksCreate(
-        task_ids=[cast(uuid.UUID, child.id)],
+        task_ids=[cast("uuid.UUID", child.id)],
         channel_slug=channel.slug,
         scope=SessionScope.TASK,
     )
@@ -2127,7 +2126,7 @@ async def test_send_message_with_mentions_triggers_delivery(
                 agent_id=aid,
                 session_id=sess.id,
                 content="hi @other",
-                mentions=[cast(uuid.UUID, other.id)],
+                mentions=[cast("uuid.UUID", other.id)],
             )
         )
     mock_delivery.deliver.assert_awaited()
@@ -2576,16 +2575,16 @@ async def test_post_to_channel_threads_messages_under_one_task_group(
     await svc.create_channel(_real_channel_req("backend-cell"))
 
     first = await svc.post_to_channel(
-        agent_id=cast(uuid.UUID, agent.id),
+        agent_id=cast("uuid.UUID", agent.id),
         channel_slug="backend-cell",
         content="first update",
-        task_id=cast(uuid.UUID, task.id),
+        task_id=cast("uuid.UUID", task.id),
     )
     second = await svc.post_to_channel(
-        agent_id=cast(uuid.UUID, agent.id),
+        agent_id=cast("uuid.UUID", agent.id),
         channel_slug="backend-cell",
         content="second update",
-        task_id=cast(uuid.UUID, task.id),
+        task_id=cast("uuid.UUID", task.id),
     )
 
     assert first.group_id == second.group_id
@@ -2605,15 +2604,15 @@ async def test_post_to_channel_task_group_is_distinct_from_default(
     await svc.create_channel(_real_channel_req("backend-cell"))
 
     untasked = await svc.post_to_channel(
-        agent_id=cast(uuid.UUID, agent.id),
+        agent_id=cast("uuid.UUID", agent.id),
         channel_slug="backend-cell",
         content="no task here",
     )
     tasked = await svc.post_to_channel(
-        agent_id=cast(uuid.UUID, agent.id),
+        agent_id=cast("uuid.UUID", agent.id),
         channel_slug="backend-cell",
         content="task scoped",
-        task_id=cast(uuid.UUID, task.id),
+        task_id=cast("uuid.UUID", task.id),
     )
 
     assert tasked.group_id != untasked.group_id
@@ -2631,16 +2630,16 @@ async def test_post_to_channel_separate_tasks_get_separate_groups(
     await svc.create_channel(_real_channel_req("backend-cell"))
 
     msg_a = await svc.post_to_channel(
-        agent_id=cast(uuid.UUID, agent.id),
+        agent_id=cast("uuid.UUID", agent.id),
         channel_slug="backend-cell",
         content="task a",
-        task_id=cast(uuid.UUID, task_a.id),
+        task_id=cast("uuid.UUID", task_a.id),
     )
     msg_b = await svc.post_to_channel(
-        agent_id=cast(uuid.UUID, agent.id),
+        agent_id=cast("uuid.UUID", agent.id),
         channel_slug="backend-cell",
         content="task b",
-        task_id=cast(uuid.UUID, task_b.id),
+        task_id=cast("uuid.UUID", task_b.id),
     )
 
     assert msg_a.group_id != msg_b.group_id
@@ -2659,10 +2658,10 @@ async def test_post_to_channel_rejects_agent_without_channel_access(
 
     with pytest.raises(ChannelAccessDeniedError):
         await svc.post_to_channel(
-            agent_id=cast(uuid.UUID, agent.id),
+            agent_id=cast("uuid.UUID", agent.id),
             channel_slug="announcements",
             content="should be blocked",
-            task_id=cast(uuid.UUID, task.id),
+            task_id=cast("uuid.UUID", task.id),
         )
 
 
@@ -2679,13 +2678,13 @@ async def test_post_to_channel_access_denied_creates_no_task_group(
 
     with pytest.raises(ChannelAccessDeniedError):
         await svc.post_to_channel(
-            agent_id=cast(uuid.UUID, agent.id),
+            agent_id=cast("uuid.UUID", agent.id),
             channel_slug="announcements",
             content="should be blocked",
-            task_id=cast(uuid.UUID, task.id),
+            task_id=cast("uuid.UUID", task.id),
         )
 
-    groups = await svc.list_groups_in_channel(cast(uuid.UUID, ch.id))
+    groups = await svc.list_groups_in_channel(cast("uuid.UUID", ch.id))
     assert groups == []
 
 
@@ -2700,10 +2699,10 @@ async def test_post_to_channel_permitted_agent_succeeds(
     await svc.create_channel(_real_channel_req("backend-cell"))
 
     msg = await svc.post_to_channel(
-        agent_id=cast(uuid.UUID, agent.id),
+        agent_id=cast("uuid.UUID", agent.id),
         channel_slug="backend-cell",
         content="hello cell",
-        task_id=cast(uuid.UUID, task.id),
+        task_id=cast("uuid.UUID", task.id),
     )
     assert msg.content == "hello cell"
     assert msg.task_id == task.id

@@ -22,7 +22,6 @@ These tests pin that contract on both layers:
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
@@ -38,7 +37,7 @@ from roboco.services.a2a import A2AService
 from roboco.services.notification import NotificationService
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncGenerator, AsyncIterator
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -94,7 +93,7 @@ class _FakeDb:
 
 
 @asynccontextmanager
-async def _fake_ctx(db: _FakeDb) -> AsyncGenerator[_FakeDb, None]:
+async def _fake_ctx(db: _FakeDb) -> AsyncGenerator[_FakeDb]:
     yield db
 
 

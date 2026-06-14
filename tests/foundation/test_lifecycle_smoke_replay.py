@@ -66,7 +66,7 @@ _EXPECTED_BUG_COUNT = 11
 
 
 def _load_fixture() -> dict[str, Any]:
-    return cast(dict[str, Any], json.loads(_FIXTURE.read_text()))
+    return cast("dict[str, Any]", json.loads(_FIXTURE.read_text()))
 
 
 def _bug_records() -> list[dict[str, Any]]:

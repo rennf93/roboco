@@ -6,7 +6,6 @@ the same SQLAlchemy paths the production code does.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
@@ -24,6 +23,7 @@ from roboco.utils.crypto import EncryptionError
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+    from pathlib import Path
 
     from sqlalchemy.ext.asyncio import AsyncSession
 

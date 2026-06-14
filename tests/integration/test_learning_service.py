@@ -104,7 +104,7 @@ async def test_team_scope_role_uppercase_via_agent_role_enum(
     await svc.initialize(_StubOptimal())
     learning = await svc.record_learning(
         RecordLearningParams(
-            agent_id=cast(uuid.UUID, author.id),
+            agent_id=cast("uuid.UUID", author.id),
             agent_role="developer",
             content="A useful pattern for batch updates",
             learning_type=LearningType.PATTERN,
@@ -134,7 +134,7 @@ async def test_team_scope_invalid_role_skips_filter(
     await svc.initialize(_StubOptimal())
     await svc.record_learning(
         RecordLearningParams(
-            agent_id=cast(uuid.UUID, a1.id),
+            agent_id=cast("uuid.UUID", a1.id),
             agent_role="not_a_real_role",
             content="content",
             learning_type=LearningType.SOLUTION,
@@ -159,7 +159,7 @@ async def test_cell_scope_runs_without_role_filter(
     await svc.initialize(_StubOptimal())
     await svc.record_learning(
         RecordLearningParams(
-            agent_id=cast(uuid.UUID, a1.id),
+            agent_id=cast("uuid.UUID", a1.id),
             agent_role="developer",
             content="cell-scope lesson",
             learning_type=LearningType.INSIGHT,
@@ -185,7 +185,7 @@ async def test_org_scope_notifies_all_other_agents(
     await svc.initialize(_StubOptimal())
     await svc.record_learning(
         RecordLearningParams(
-            agent_id=cast(uuid.UUID, author.id),
+            agent_id=cast("uuid.UUID", author.id),
             agent_role="developer",
             content="x" * 250,  # >200 chars to exercise the truncation branch
             learning_type=LearningType.SOLUTION,
@@ -219,7 +219,7 @@ async def test_no_other_agents_logs_and_returns(
     await svc.initialize(_StubOptimal())
     learning = await svc.record_learning(
         RecordLearningParams(
-            agent_id=cast(uuid.UUID, author.id),
+            agent_id=cast("uuid.UUID", author.id),
             agent_role="developer",
             content="solo agent learning",
             learning_type=LearningType.SOLUTION,
@@ -250,7 +250,7 @@ async def test_no_recipients_after_role_filter_hits_empty_branch(
     real_role = AgentRole
 
     class _PermissiveRole:
-        def __new__(cls, value: str) -> "_PermissiveRole":
+        def __new__(cls, value: str) -> _PermissiveRole:
             return cast("_PermissiveRole", real_role(value.lower()))
 
     monkeypatch.setattr("roboco.models.base.AgentRole", _PermissiveRole)
@@ -270,7 +270,7 @@ async def test_no_recipients_after_role_filter_hits_empty_branch(
     await svc.initialize(_StubOptimal())
     learning = await svc.record_learning(
         RecordLearningParams(
-            agent_id=cast(uuid.UUID, author.id),
+            agent_id=cast("uuid.UUID", author.id),
             agent_role="developer",
             content="alone with the role filter",
             learning_type=LearningType.SOLUTION,
@@ -300,7 +300,7 @@ async def test_team_scope_with_patched_agent_role_hits_filter(
     class _PermissiveRole:
         """Stand-in: maps both lower and upper case strings to the real enum."""
 
-        def __new__(cls, value: str) -> "_PermissiveRole":
+        def __new__(cls, value: str) -> _PermissiveRole:
             return cast("_PermissiveRole", real_role(value.lower()))
 
     # AgentRole is imported inside the function body (`from roboco.models.base
@@ -318,7 +318,7 @@ async def test_team_scope_with_patched_agent_role_hits_filter(
     await svc.initialize(_StubOptimal())
     await svc.record_learning(
         RecordLearningParams(
-            agent_id=cast(uuid.UUID, author.id),
+            agent_id=cast("uuid.UUID", author.id),
             agent_role="developer",
             content="role-filter learning",
             learning_type=LearningType.PATTERN,

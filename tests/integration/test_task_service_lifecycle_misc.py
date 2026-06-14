@@ -229,7 +229,7 @@ async def test_inject_proactive_context_skips_when_claim_rolled_back(
     db = task_setup["db"]
 
     class _SessionFactory:
-        def __call__(self) -> "_Ctx":
+        def __call__(self) -> _Ctx:
             return _Ctx(db)
 
     class _Ctx:
@@ -292,7 +292,7 @@ async def test_inject_proactive_context_writes_when_context_nonempty(
         def __init__(self, session: Any) -> None:
             self._session = session
 
-        def __call__(self) -> "_Ctx":
+        def __call__(self) -> _Ctx:
             return _Ctx(self._session)
 
     factory = _Factory(db_session)
@@ -893,7 +893,7 @@ async def test_docs_complete_for_task_invokes_notification(
     task.pr_created = True
     await db_session.flush()
     agent_ctx = AgentContext(
-        agent_id=cast(uuid.UUID, doc.id),
+        agent_id=cast("uuid.UUID", doc.id),
         role=AgentRole.DOCUMENTER,
         team=Team.BACKEND,
         slug=doc.slug,
@@ -952,7 +952,7 @@ async def test_escalate_to_ceo_for_agent_invokes_notification(
     task.docs_complete = True
     await db_session.flush()
     agent_ctx = AgentContext(
-        agent_id=cast(uuid.UUID, pm.id),
+        agent_id=cast("uuid.UUID", pm.id),
         role=AgentRole.MAIN_PM,
         team=Team.MAIN_PM,
         slug=pm.slug,
@@ -1049,7 +1049,7 @@ async def test_complete_task_for_agent_commits(
     task.assigned_to = pm.id
     await db_session.flush()
     agent_ctx = AgentContext(
-        agent_id=cast(uuid.UUID, pm.id),
+        agent_id=cast("uuid.UUID", pm.id),
         role=AgentRole.CELL_PM,
         team=Team.BACKEND,
         slug=pm.slug,

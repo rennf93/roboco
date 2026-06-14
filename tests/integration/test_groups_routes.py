@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import AsyncGenerator
 from http import HTTPStatus
 from typing import TYPE_CHECKING, cast
 from unittest.mock import patch
@@ -21,7 +20,7 @@ from roboco.models.base import ChannelType
 from roboco.models.permissions import AgentContext
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncGenerator, AsyncIterator
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -58,11 +57,13 @@ async def groups_client(
     app = FastAPI()
     app.include_router(groups_router, prefix="/api/groups")
 
-    async def _override_db() -> AsyncGenerator[AsyncSession, None]:
+    async def _override_db() -> AsyncGenerator[AsyncSession]:
         yield db_session
 
     async def _override_agent() -> AgentContext:
-        return AgentContext(agent_id=cast(uuid.UUID, pm.id), role=AgentRole.MAIN_PM, team=None)
+        return AgentContext(
+            agent_id=cast("uuid.UUID", pm.id), role=AgentRole.MAIN_PM, team=None
+        )
 
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_agent_context] = _override_agent
@@ -175,12 +176,14 @@ async def test_create_group_developer_forbidden(
     app = FastAPI()
     app.include_router(groups_router, prefix="/api/groups")
 
-    async def _override_db() -> AsyncGenerator[AsyncSession, None]:
+    async def _override_db() -> AsyncGenerator[AsyncSession]:
         yield db_session
 
     async def _override_agent() -> AgentContext:
         return AgentContext(
-            agent_id=cast(uuid.UUID, dev.id), role=AgentRole.DEVELOPER, team=Team.BACKEND
+            agent_id=cast("uuid.UUID", dev.id),
+            role=AgentRole.DEVELOPER,
+            team=Team.BACKEND,
         )
 
     app.dependency_overrides[get_db] = _override_db

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import AsyncGenerator
 from http import HTTPStatus
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, patch
@@ -22,7 +21,7 @@ from roboco.models.task import DocRef
 from roboco.services.base import NotFoundError, UnauthorizedError, ValidationError
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncGenerator, AsyncIterator
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -50,12 +49,14 @@ async def docs_client(
     app = FastAPI()
     app.include_router(docs_router, prefix="/api/docs")
 
-    async def _override_db() -> AsyncGenerator[AsyncSession, None]:
+    async def _override_db() -> AsyncGenerator[AsyncSession]:
         yield db_session
 
     async def _override_agent() -> AgentContext:
         return AgentContext(
-            agent_id=cast(uuid.UUID, agent.id), role=AgentRole.DOCUMENTER, team=Team.BACKEND
+            agent_id=cast("uuid.UUID", agent.id),
+            role=AgentRole.DOCUMENTER,
+            team=Team.BACKEND,
         )
 
     app.dependency_overrides[get_db] = _override_db

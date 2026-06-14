@@ -41,7 +41,7 @@ async def test_has_privileged_access_ceo_true(db_session: AsyncSession) -> None:
     agent = _make_agent(AgentRole.CEO)
     db_session.add(agent)
     await db_session.flush()
-    assert await has_privileged_access(db_session, cast(uuid.UUID, agent.id)) is True
+    assert await has_privileged_access(db_session, cast("uuid.UUID", agent.id)) is True
 
 
 @pytest.mark.asyncio
@@ -51,7 +51,7 @@ async def test_has_privileged_access_developer_false(
     agent = _make_agent(AgentRole.DEVELOPER, Team.BACKEND)
     db_session.add(agent)
     await db_session.flush()
-    assert await has_privileged_access(db_session, cast(uuid.UUID, agent.id)) is False
+    assert await has_privileged_access(db_session, cast("uuid.UUID", agent.id)) is False
 
 
 @pytest.mark.asyncio
@@ -72,7 +72,7 @@ async def test_is_pm_role_main_pm_true(db_session: AsyncSession) -> None:
     agent = _make_agent(AgentRole.MAIN_PM)
     db_session.add(agent)
     await db_session.flush()
-    assert await is_pm_role(db_session, cast(uuid.UUID, agent.id)) is True
+    assert await is_pm_role(db_session, cast("uuid.UUID", agent.id)) is True
 
 
 @pytest.mark.asyncio
@@ -80,7 +80,7 @@ async def test_is_pm_role_developer_false(db_session: AsyncSession) -> None:
     agent = _make_agent(AgentRole.DEVELOPER, Team.BACKEND)
     db_session.add(agent)
     await db_session.flush()
-    assert await is_pm_role(db_session, cast(uuid.UUID, agent.id)) is False
+    assert await is_pm_role(db_session, cast("uuid.UUID", agent.id)) is False
 
 
 @pytest.mark.asyncio
@@ -88,7 +88,7 @@ async def test_is_pm_role_ceo_true(db_session: AsyncSession) -> None:
     agent = _make_agent(AgentRole.CEO)
     db_session.add(agent)
     await db_session.flush()
-    assert await is_pm_role(db_session, cast(uuid.UUID, agent.id)) is True
+    assert await is_pm_role(db_session, cast("uuid.UUID", agent.id)) is True
 
 
 @pytest.mark.asyncio

@@ -70,7 +70,7 @@ async def test_resolve_parent_branch_falls_back_to_master(
     task = SimpleNamespace(id=uuid4(), parent_task_id=None)
     project = SimpleNamespace(default_branch="")
 
-    branch = await svc._resolve_parent_branch(cast(TaskTable, task), project)
+    branch = await svc._resolve_parent_branch(cast("TaskTable", task), project)
 
     assert branch == "master"
 

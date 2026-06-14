@@ -1336,7 +1336,8 @@ async def test_complete_with_force_with_cancelled_succeeds(
     """
     svc = task_setup["svc"]
     await db_session.execute(
-        cast(Table, AgentTable.__table__).update()
+        cast("Table", AgentTable.__table__)
+        .update()
         .where(AgentTable.role == AgentRole.MAIN_PM)
         .values(role=AgentRole.SYSTEM)
     )
@@ -1378,7 +1379,8 @@ async def test_complete_without_force_with_cancelled_blocks(
     """Without force_with_cancelled, cancelled descendants block completion."""
     svc = task_setup["svc"]
     await db_session.execute(
-        cast(Table, AgentTable.__table__).update()
+        cast("Table", AgentTable.__table__)
+        .update()
         .where(AgentTable.role == AgentRole.MAIN_PM)
         .values(role=AgentRole.SYSTEM)
     )
@@ -1627,7 +1629,8 @@ async def test_escalate_up_to_role_returns_none_when_no_target_role(
     """
     svc = task_setup["svc"]
     await db_session.execute(
-        cast(Table, AgentTable.__table__).update()
+        cast("Table", AgentTable.__table__)
+        .update()
         .where(AgentTable.role == AgentRole.MAIN_PM)
         .values(role=AgentRole.SYSTEM)
     )

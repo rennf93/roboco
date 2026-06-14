@@ -7,8 +7,6 @@ mapping) is exercised end-to-end.
 
 from __future__ import annotations
 
-import uuid
-from collections.abc import AsyncGenerator
 from http import HTTPStatus
 from typing import TYPE_CHECKING, cast
 from unittest.mock import patch
@@ -32,7 +30,7 @@ from roboco.models.base import JournalEntryType, TaskNature, TaskStatus, TaskTyp
 from roboco.models.permissions import AgentContext
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncGenerator, AsyncIterator
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -60,12 +58,12 @@ async def journal_client(
     app = FastAPI()
     app.include_router(journals_router, prefix="/api/journals")
 
-    async def _override_db() -> AsyncGenerator[AsyncSession, None]:
+    async def _override_db() -> AsyncGenerator[AsyncSession]:
         yield db_session
 
     async def _override_agent() -> AgentContext:
         return AgentContext(
-            agent_id=cast(UUID, agent.id),
+            agent_id=cast("UUID", agent.id),
             role=AgentRole.DEVELOPER,
             team=Team.BACKEND,
             slug=agent.slug,
@@ -266,12 +264,12 @@ async def journal_setup_with_task(
     app = FastAPI()
     app.include_router(journals_router, prefix="/api/journals")
 
-    async def _override_db() -> AsyncGenerator[AsyncSession, None]:
+    async def _override_db() -> AsyncGenerator[AsyncSession]:
         yield db_session
 
     async def _override_agent() -> AgentContext:
         return AgentContext(
-            agent_id=cast(UUID, agent.id),
+            agent_id=cast("UUID", agent.id),
             role=AgentRole.DEVELOPER,
             team=Team.BACKEND,
             slug=agent.slug,
@@ -282,7 +280,7 @@ async def journal_setup_with_task(
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        yield client, agent, cast(UUID, task.id)
+        yield client, agent, cast("UUID", task.id)
     app.dependency_overrides.clear()
 
 
@@ -688,12 +686,12 @@ async def test_get_entry_full_success_with_slug(db_session: AsyncSession) -> Non
     app = FastAPI()
     app.include_router(journals_router, prefix="/api/journals")
 
-    async def _override_db() -> AsyncGenerator[AsyncSession, None]:
+    async def _override_db() -> AsyncGenerator[AsyncSession]:
         yield db_session
 
     async def _override_agent() -> AgentContext:
         return AgentContext(
-            agent_id=cast(UUID, agent.id),
+            agent_id=cast("UUID", agent.id),
             role=AgentRole.DEVELOPER,
             team=Team.BACKEND,
             slug=agent.slug,
@@ -764,12 +762,12 @@ async def test_delete_entry_other_agent_forbidden(
     app = FastAPI()
     app.include_router(journals_router, prefix="/api/journals")
 
-    async def _override_db() -> AsyncGenerator[AsyncSession, None]:
+    async def _override_db() -> AsyncGenerator[AsyncSession]:
         yield db_session
 
     async def _override_agent_owner() -> AgentContext:
         return AgentContext(
-            agent_id=cast(UUID, owner.id),
+            agent_id=cast("UUID", owner.id),
             role=AgentRole.DEVELOPER,
             team=Team.BACKEND,
             slug=owner.slug,
@@ -795,7 +793,7 @@ async def test_delete_entry_other_agent_forbidden(
         # Switch to the intruder.
         async def _override_agent_intruder() -> AgentContext:
             return AgentContext(
-                agent_id=cast(UUID, intruder.id),
+                agent_id=cast("UUID", intruder.id),
                 role=AgentRole.DEVELOPER,
                 team=Team.BACKEND,
                 slug=intruder.slug,
@@ -917,12 +915,12 @@ async def _make_cross_agent_app(
     app = FastAPI()
     app.include_router(journals_router, prefix="/api/journals")
 
-    async def _override_db() -> AsyncGenerator[AsyncSession, None]:
+    async def _override_db() -> AsyncGenerator[AsyncSession]:
         yield db_session
 
     async def _override_agent() -> AgentContext:
         return AgentContext(
-            agent_id=cast(UUID, reader.id),
+            agent_id=cast("UUID", reader.id),
             role=reader.role,
             team=reader.team,
             slug=reader.slug,

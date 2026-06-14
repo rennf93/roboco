@@ -41,7 +41,7 @@ async def test_get_or_404_finds_existing(db_session: AsyncSession) -> None:
     db_session.add(agent)
     await db_session.flush()
 
-    fetched = await get_or_404(db_session, AgentTable, cast(uuid.UUID, agent.id))
+    fetched = await get_or_404(db_session, AgentTable, cast("uuid.UUID", agent.id))
     assert fetched.id == agent.id
 
 

@@ -48,11 +48,10 @@ from roboco.services.task import (
 )
 from roboco.templates.git.constants import MAX_TASK_DEPTH
 
-from sqlalchemy import Table
-
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    from sqlalchemy import Table
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -902,7 +901,8 @@ async def test_complete_returns_none_when_pr_not_merged(
     """
     svc = task_setup["svc"]
     await db_session.execute(
-        cast(Table, AgentTable.__table__).update()
+        cast("Table", AgentTable.__table__)
+        .update()
         .where(AgentTable.role == AgentRole.MAIN_PM)
         .values(role=AgentRole.SYSTEM)
     )

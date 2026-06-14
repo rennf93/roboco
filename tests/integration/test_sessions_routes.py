@@ -112,7 +112,7 @@ async def session_client(
         yield db_session
 
     async def _override_agent_id() -> UUID:
-        return cast(UUID, pm.id)
+        return cast("UUID", pm.id)
 
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_current_agent_id] = _override_agent_id

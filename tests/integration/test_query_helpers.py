@@ -222,7 +222,7 @@ async def test_get_agent_slug_known(db_session: AsyncSession) -> None:
     )
     db_session.add(agent)
     await db_session.flush()
-    slug = await get_agent_slug(db_session, cast(uuid.UUID, agent.id))
+    slug = await get_agent_slug(db_session, cast("uuid.UUID", agent.id))
     assert slug == agent.slug
 
 

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
 from types import SimpleNamespace
+from typing import Any
 
 from roboco.foundation.policy import task_completeness as tc
 

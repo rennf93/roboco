@@ -157,7 +157,7 @@ async def test_coordination_task_claims_plans_and_starts_without_branch(
             created_by=svc_setup["creator"],
             project_id=None,
             product_id=svc_setup["product_id"],
-            assigned_to=cast(UUID, pm.id),
+            assigned_to=cast("UUID", pm.id),
             task_type=TaskType.CODE,
             nature=TaskNature.NON_TECHNICAL,
             estimated_complexity=Complexity.HIGH,
@@ -166,10 +166,10 @@ async def test_coordination_task_claims_plans_and_starts_without_branch(
     assert task.project_id is None
     assert task.product_id == svc_setup["product_id"]
 
-    claimed = await svc.claim(cast(UUID, task.id), cast(UUID, pm.id))
+    claimed = await svc.claim(cast("UUID", task.id), cast("UUID", pm.id))
     assert claimed is not None, "coordination task could not be claimed"
     await svc.set_plan(
-        cast(UUID, task.id),
+        cast("UUID", task.id),
         {
             "approach": "delegate to the three cells",
             "sub_tasks": [{"title": "backend"}],
@@ -178,12 +178,14 @@ async def test_coordination_task_claims_plans_and_starts_without_branch(
 
     # The fix: claimed->in_progress no longer requires a branch for a coordination
     # task, so start() succeeds instead of raising GitRequirementError.
-    started = await svc.start(cast(UUID, task.id), cast(UUID, pm.id), agent_role=None)
+    started = await svc.start(
+        cast("UUID", task.id), cast("UUID", pm.id), agent_role=None
+    )
     assert started is not None, (
         "start() returned None — coordination task failed to reach in_progress"
     )
 
-    refreshed = await svc.get(cast(UUID, task.id))
+    refreshed = await svc.get(cast("UUID", task.id))
     assert refreshed is not None
     assert refreshed.status == TaskStatus.IN_PROGRESS
     assert not refreshed.branch_name  # coordination task does no git, has no branch

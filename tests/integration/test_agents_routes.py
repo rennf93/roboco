@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
 from http import HTTPStatus
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -17,7 +16,7 @@ from roboco.db.tables import AgentTable
 from roboco.models import AgentRole, AgentStatus, Team
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncGenerator, AsyncIterator
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,7 +44,7 @@ async def agents_client(
     app = FastAPI()
     app.include_router(agents_router, prefix="/api/agents")
 
-    async def _override_db() -> AsyncGenerator[AsyncSession, None]:
+    async def _override_db() -> AsyncGenerator[AsyncSession]:
         yield db_session
 
     app.dependency_overrides[get_db] = _override_db

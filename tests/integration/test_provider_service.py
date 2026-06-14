@@ -81,7 +81,7 @@ async def test_get_provider_returns_row(provider_svc: ProviderService) -> None:
     row = await provider_svc.create_provider(
         ProviderCreate(name=f"g-{uuid4().hex[:6]}", type=ModelProvider.OPENAI)
     )
-    fetched = await provider_svc.get_provider(cast(uuid.UUID, row.id))
+    fetched = await provider_svc.get_provider(cast("uuid.UUID", row.id))
     assert fetched is not None
     assert fetched.id == row.id
 
@@ -147,7 +147,9 @@ async def test_update_provider_changes_name(provider_svc: ProviderService) -> No
         ProviderCreate(name=f"old-{uuid4().hex[:6]}", type=ModelProvider.OPENAI)
     )
     new_name = f"new-{uuid4().hex[:6]}"
-    updated = await provider_svc.update_provider(cast(uuid.UUID, row.id), ProviderUpdate(name=new_name))
+    updated = await provider_svc.update_provider(
+        cast("uuid.UUID", row.id), ProviderUpdate(name=new_name)
+    )
     assert updated is not None
     assert updated.name == new_name
 
@@ -163,7 +165,9 @@ async def test_update_provider_duplicate_name_raises(
         ProviderCreate(name=f"b-{uuid4().hex[:6]}", type=ModelProvider.OPENAI)
     )
     with pytest.raises(ConflictError):
-        await provider_svc.update_provider(cast(uuid.UUID, b.id), ProviderUpdate(name=a.name))
+        await provider_svc.update_provider(
+            cast("uuid.UUID", b.id), ProviderUpdate(name=a.name)
+        )
 
 
 @pytest.mark.asyncio
@@ -177,7 +181,9 @@ async def test_update_provider_clears_base_url_with_empty_string(
             base_url="https://example.com",
         )
     )
-    updated = await provider_svc.update_provider(cast(uuid.UUID, row.id), ProviderUpdate(base_url=""))
+    updated = await provider_svc.update_provider(
+        cast("uuid.UUID", row.id), ProviderUpdate(base_url="")
+    )
     assert updated is not None
     assert updated.base_url is None
 
@@ -194,7 +200,7 @@ async def test_update_provider_token_tristate_clear(
         )
     )
     updated = await provider_svc.update_provider(
-        cast(uuid.UUID, row.id), ProviderUpdate(clear_auth_token=True)
+        cast("uuid.UUID", row.id), ProviderUpdate(clear_auth_token=True)
     )
     assert updated is not None
     assert updated.auth_token_encrypted is None
@@ -208,7 +214,7 @@ async def test_update_provider_token_tristate_set(
         ProviderCreate(name=f"s-{uuid4().hex[:6]}", type=ModelProvider.ANTHROPIC)
     )
     updated = await provider_svc.update_provider(
-        cast(uuid.UUID, row.id), ProviderUpdate(auth_token="new-secret")
+        cast("uuid.UUID", row.id), ProviderUpdate(auth_token="new-secret")
     )
     assert updated is not None
     assert updated.auth_token_encrypted is not None
@@ -227,7 +233,7 @@ async def test_update_provider_token_tristate_unchanged(
     )
     original_token = row.auth_token_encrypted
     updated = await provider_svc.update_provider(
-        cast(uuid.UUID, row.id),
+        cast("uuid.UUID", row.id),
         ProviderUpdate(enabled=False),  # no auth_token field
     )
     assert updated is not None
@@ -250,8 +256,8 @@ async def test_delete_provider(provider_svc: ProviderService) -> None:
     row = await provider_svc.create_provider(
         ProviderCreate(name=f"d-{uuid4().hex[:6]}", type=ModelProvider.OPENAI)
     )
-    await provider_svc.delete_provider(cast(uuid.UUID, row.id))
-    assert await provider_svc.get_provider(cast(uuid.UUID, row.id)) is None
+    await provider_svc.delete_provider(cast("uuid.UUID", row.id))
+    assert await provider_svc.get_provider(cast("uuid.UUID", row.id)) is None
 
 
 @pytest.mark.asyncio
@@ -273,7 +279,7 @@ async def test_delete_provider_raises_when_referenced(
     await db_session.flush()
 
     with pytest.raises(ConflictError):
-        await provider_svc.delete_provider(cast(uuid.UUID, row.id))
+        await provider_svc.delete_provider(cast("uuid.UUID", row.id))
 
 
 @pytest.mark.asyncio
@@ -286,7 +292,7 @@ async def test_get_decrypted_token_round_trip(provider_svc: ProviderService) -> 
             auth_token=plaintext,
         )
     )
-    decrypted = await provider_svc.get_decrypted_token(cast(uuid.UUID, row.id))
+    decrypted = await provider_svc.get_decrypted_token(cast("uuid.UUID", row.id))
     assert decrypted == plaintext
 
 
@@ -297,7 +303,7 @@ async def test_get_decrypted_token_returns_none_when_unset(
     row = await provider_svc.create_provider(
         ProviderCreate(name=f"nt-{uuid4().hex[:6]}", type=ModelProvider.LOCAL)
     )
-    assert await provider_svc.get_decrypted_token(cast(uuid.UUID, row.id)) is None
+    assert await provider_svc.get_decrypted_token(cast("uuid.UUID", row.id)) is None
 
 
 @pytest.mark.asyncio
@@ -350,7 +356,7 @@ async def test_update_provider_encrypt_failure_propagates(
     monkeypatch.setattr(provider_module, "encrypt_token", _boom)
     with pytest.raises(EncryptionError):
         await provider_svc.update_provider(
-            cast(uuid.UUID, row.id), ProviderUpdate(auth_token="new-secret")
+            cast("uuid.UUID", row.id), ProviderUpdate(auth_token="new-secret")
         )
 
 
@@ -379,7 +385,7 @@ async def test_get_decrypted_token_decrypt_failure_propagates(
 
     monkeypatch.setattr(provider_module, "decrypt_token", _boom)
     with pytest.raises(EncryptionError):
-        await provider_svc.get_decrypted_token(cast(uuid.UUID, row.id))
+        await provider_svc.get_decrypted_token(cast("uuid.UUID", row.id))
 
 
 # ---------------------------------------------------------------------------
@@ -396,7 +402,9 @@ async def test_update_provider_same_name_is_noop(
     row = await provider_svc.create_provider(
         ProviderCreate(name=name, type=ModelProvider.ANTHROPIC)
     )
-    updated = await provider_svc.update_provider(cast(uuid.UUID, row.id), ProviderUpdate(name=name))
+    updated = await provider_svc.update_provider(
+        cast("uuid.UUID", row.id), ProviderUpdate(name=name)
+    )
     assert updated is not None
     assert updated.name == name
 

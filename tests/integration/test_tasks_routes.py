@@ -88,7 +88,9 @@ async def task_client(
         yield db_session
 
     async def _override_agent() -> AgentContext:
-        return AgentContext(agent_id=cast(UUID, main_pm.id), role=AgentRole.MAIN_PM, team=None)
+        return AgentContext(
+            agent_id=cast("UUID", main_pm.id), role=AgentRole.MAIN_PM, team=None
+        )
 
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_agent_context] = _override_agent
@@ -2005,7 +2007,9 @@ async def qa_client(db_session: AsyncSession) -> AsyncIterator[dict]:
         yield db_session
 
     async def _override_agent() -> AgentContext:
-        return AgentContext(agent_id=cast(UUID, qa.id), role=AgentRole.QA, team=Team.BACKEND)
+        return AgentContext(
+            agent_id=cast("UUID", qa.id), role=AgentRole.QA, team=Team.BACKEND
+        )
 
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_agent_context] = _override_agent
@@ -2369,7 +2373,9 @@ async def ceo_client(db_session: AsyncSession) -> AsyncIterator[dict]:
         yield db_session
 
     async def _override_agent() -> AgentContext:
-        return AgentContext(agent_id=cast(UUID, ceo.id), role=AgentRole.CEO, team=None)
+        return AgentContext(
+            agent_id=cast("UUID", ceo.id), role=AgentRole.CEO, team=None
+        )
 
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_agent_context] = _override_agent
