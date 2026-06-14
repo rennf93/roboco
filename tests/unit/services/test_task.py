@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -746,9 +747,10 @@ async def test_update_skips_none_to_protect_partial_callers() -> None:
     """
     task = SimpleNamespace(title="original", acceptance_criteria=["keep me"])
     svc = TaskService(MagicMock(flush=AsyncMock()))
-    svc.get = AsyncMock(return_value=task)
-
-    result = await svc.update(uuid4(), title="updated", acceptance_criteria=None)
+    with patch.object(svc, "get", AsyncMock(return_value=task)):
+        result: Any = await svc.update(
+            uuid4(), title="updated", acceptance_criteria=None
+        )
 
     assert result is task
     assert task.title == "updated"  # explicit, non-None value is applied

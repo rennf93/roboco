@@ -48,6 +48,7 @@ def test_from_decision_self_review_maps_to_not_authorized_with_hint() -> None:
     )
     env = Envelope.from_decision(d, briefing={})
     assert env.error == "not_authorized"
+    assert env.message is not None
     assert "self-review" in env.message.lower()
 
 

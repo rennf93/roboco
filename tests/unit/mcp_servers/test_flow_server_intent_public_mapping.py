@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import importlib
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -100,7 +100,7 @@ def test_post_to_correct_orchestrator_path(
     flow_module_qa: types.ModuleType,
 ) -> None:
     """Calling the registered 'pass' tool POSTs to /api/v1/flow/qa/pass."""
-    captured: list[tuple[str, dict]] = []
+    captured: list[tuple[str, Any]] = []
 
     def _client_factory(*_a: object, **_kw: object) -> MagicMock:
         client = MagicMock()

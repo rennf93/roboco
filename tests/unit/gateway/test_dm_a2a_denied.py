@@ -75,5 +75,6 @@ async def test_dm_a2a_denied_returns_envelope_not_authorized() -> None:
         "If it escapes to FastAPI middleware, RobocoError.to_dict() renders the "
         "error as a dict and the do_server circuit breaker crashes."
     )
+    assert env.message is not None
     assert "be-qa" in env.message
     assert env.remediate is not None

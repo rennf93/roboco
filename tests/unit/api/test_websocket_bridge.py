@@ -101,6 +101,7 @@ async def test_handle_notification_sent_broadcasts_when_connected() -> None:
         mgr.notification_connections = {rid: {"socket-1"}}  # Has a connection.
         await _handle_notification_sent(event)
     bcast.assert_awaited_once()
+    assert bcast.await_args is not None
     call_kwargs = bcast.await_args.kwargs
     assert call_kwargs["notification_id"] == nid
     assert call_kwargs["agent_ids"] == [rid]
@@ -125,6 +126,7 @@ async def test_handle_notification_acked_broadcasts_using_agent_id() -> None:
         mgr.notification_connections = {aid: {"socket-1"}}
         await _handle_notification_sent(event)
     bcast.assert_awaited_once()
+    assert bcast.await_args is not None
     call_kwargs = bcast.await_args.kwargs
     assert call_kwargs["notification_id"] == nid
     assert call_kwargs["agent_ids"] == [aid]

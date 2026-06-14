@@ -156,7 +156,7 @@ restart: stop start-example
 lint:
 	@echo 'Formatting w/ Ruff...' ; echo '' ; uv run ruff format .
 	@echo '' ; echo '' ; echo 'Linting w/ Ruff...' ; echo '' ; uv run ruff check .
-	@echo '' ; echo '' ; echo 'Type checking w/ Mypy...' ; echo '' ; uv run mypy .
+	@echo '' ; echo '' ; echo 'Type checking w/ Mypy...' ; echo '' ; uv run mypy roboco/
 	@echo '' ; echo '' ; echo 'Finding dead code w/ Vulture...' ; echo '' ; uv run vulture vulture_whitelist.py
 
 # Fix code

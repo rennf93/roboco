@@ -48,8 +48,13 @@ _GOOD_RISKS = [
 
 
 def _wire_dev_task_svc(
-    task_id, *, status: str, assigned_to=None, plan=None, parent_task_id=None
-):
+    task_id: Any,
+    *,
+    status: str,
+    assigned_to: Any = None,
+    plan: Any = None,
+    parent_task_id: Any = None,
+) -> AsyncMock:
     """Build a TaskService AsyncMock pre-wired with claim-guard side effects.
 
     Defaults `agent_for` → developer/backend and the three list-* methods to

@@ -5,7 +5,11 @@ i_am_done, blocking a red submit before it reaches QA. Full tests stay on CI.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
+
+if TYPE_CHECKING:
+    import pathlib
 from uuid import uuid4
 
 import pytest
@@ -18,14 +22,14 @@ from roboco.services.git import GitService
 
 
 @pytest.mark.asyncio
-async def test_no_commands_is_a_skipped_pass(tmp_path) -> None:
+async def test_no_commands_is_a_skipped_pass(tmp_path: pathlib.Path) -> None:
     result = await run_quality_commands(tmp_path, [])
     assert result.passed is True
     assert result.skipped is True
 
 
 @pytest.mark.asyncio
-async def test_all_commands_pass(tmp_path) -> None:
+async def test_all_commands_pass(tmp_path: pathlib.Path) -> None:
     result = await run_quality_commands(
         tmp_path, [("lint", "echo lint-ok"), ("typecheck", "true")]
     )
@@ -34,7 +38,7 @@ async def test_all_commands_pass(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_failing_command_blocks_and_is_named(tmp_path) -> None:
+async def test_a_failing_command_blocks_and_is_named(tmp_path: pathlib.Path) -> None:
     result = await run_quality_commands(
         tmp_path, [("lint", "echo problem-here; exit 1"), ("typecheck", "true")]
     )
@@ -44,7 +48,7 @@ async def test_a_failing_command_blocks_and_is_named(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_every_command_runs_even_after_a_failure(tmp_path) -> None:
+async def test_every_command_runs_even_after_a_failure(tmp_path: pathlib.Path) -> None:
     result = await run_quality_commands(
         tmp_path, [("lint", "echo AAA; exit 1"), ("typecheck", "echo BBB; exit 2")]
     )

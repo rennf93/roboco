@@ -85,7 +85,7 @@ def flow_module(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> types.Module
 
 def _make_client(
     orchestrator_response: dict[str, Any], sdk_response: dict[str, Any] | None
-):
+) -> Any:
     """Build an httpx.Client mock that dispatches by destination URL.
 
     Calls hitting ``test-orchestrator`` return ``orchestrator_response``;
@@ -239,7 +239,7 @@ def test_other_error_kinds_do_not_touch_sdk(flow_module: types.ModuleType) -> No
 
 def test_breaker_open_substitutes_envelope(flow_module: types.ModuleType) -> None:
     """When SDK reports open=true, the agent gets the circuit_open envelope."""
-    circuit_env = {
+    circuit_env: dict[str, Any] = {
         "error": "circuit_open",
         "message": ("verb 'i_am_done' rejected 3 times in last 60s — breaker open"),
         "remediate": "call i_am_blocked or i_am_idle",
@@ -281,7 +281,7 @@ def test_fourth_rejection_returns_circuit_open(flow_module: types.ModuleType) ->
     trips the breaker is also the call that sees the substitution.
     """
     # On the trip call the SDK reports open=true with the envelope.
-    circuit_env = {
+    circuit_env: dict[str, Any] = {
         "error": "circuit_open",
         "message": ("verb 'i_am_done' rejected 3 times in last 60s — breaker open"),
         "remediate": "call i_am_blocked(reason='...') or i_am_idle()",

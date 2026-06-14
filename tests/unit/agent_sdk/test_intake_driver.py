@@ -20,7 +20,7 @@ from roboco.agent_sdk.intake_driver import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
 # ---------------------------------------------------------------------------
 # Fakes mirroring the claude-agent-sdk message/block shapes
@@ -209,7 +209,7 @@ class _RaisingSession:
         raise RuntimeError("boom")
 
 
-def _source(messages: list[str | None]):
+def _source(messages: list[str | None]) -> Callable[[], Awaitable[str | None]]:
     queue = list(messages)
 
     async def _next() -> str | None:
@@ -231,7 +231,7 @@ async def test_driver_streams_turns_until_shutdown() -> None:
     )
 
     @asynccontextmanager
-    async def factory():
+    async def factory() -> AsyncIterator[_FakeSession]:
         yield session
 
     collected: list[StreamChunk] = []
@@ -250,7 +250,7 @@ async def test_driver_streams_turns_until_shutdown() -> None:
 @pytest.mark.asyncio
 async def test_driver_turn_failure_emits_error_and_continues() -> None:
     @asynccontextmanager
-    async def factory():
+    async def factory() -> AsyncIterator[_RaisingSession]:
         yield _RaisingSession()
 
     collected: list[StreamChunk] = []

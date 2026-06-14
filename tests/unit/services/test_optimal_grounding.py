@@ -15,6 +15,7 @@ Covers three failure modes that surfaced at runtime:
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 import pytest
 from roboco.mcp.optimal_server import normalize_index_types
@@ -25,6 +26,7 @@ from roboco.services.optimal import (
     close_optimal_service,
     get_optimal_service,
 )
+from roboco.services.optimal_brain.indexes.base import BaseIndexPlugin
 
 # ---------------------------------------------------------------------------
 # Sub-issue 2: kb_search must not forward the invalid 'docs' alias
@@ -39,7 +41,9 @@ def test_normalize_index_types_maps_docs_alias_to_documentation() -> None:
     """
     assert normalize_index_types(["docs"]) == ["documentation"]
     # Every normalized value must be a constructible IndexType.
-    for value in normalize_index_types(["docs"]):
+    normalized = normalize_index_types(["docs"])
+    assert normalized is not None
+    for value in normalized:
         IndexType(value)
 
 
@@ -93,7 +97,7 @@ async def test_get_optimal_service_never_returns_uninitialized(
     monkeypatch.setattr(optimal_module, "OptimalService", _SlowInitService)
 
     try:
-        results: list[OptimalService] = await asyncio.gather(
+        results: Any = await asyncio.gather(
             get_optimal_service(),
             get_optimal_service(),
             get_optimal_service(),
@@ -130,8 +134,18 @@ async def test_indexing_entrypoint_does_not_raise_not_initialized(
         await close_optimal_service()
 
 
-class _FakePlugin:
+class _FakePlugin(BaseIndexPlugin):
     """Minimal stand-in so _get_plugin returns without a real plugin."""
+
+    @property
+    def index_type(self) -> IndexType:
+        return IndexType.DOCUMENTATION
+
+    def prepare_metadata(self, content: str, **kwargs: Any) -> dict[str, Any]:
+        return {}
+
+    def build_source_uri(self, doc_id: str | None = None, **kwargs: Any) -> str | None:
+        return None
 
     async def close(self) -> None:  # pragma: no cover - never awaited here
         return None
