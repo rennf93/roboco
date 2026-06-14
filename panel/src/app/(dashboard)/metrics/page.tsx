@@ -210,7 +210,7 @@ export default function MetricsPage() {
           {/* Velocity Metrics */}
           <div>
             <h2 className="text-lg font-semibold mb-3">Velocity</h2>
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-4 2xl:grid-cols-4">
               <MetricCard
                 title="Completed Today"
                 value={completedToday}
@@ -241,7 +241,7 @@ export default function MetricsPage() {
           {/* Task Status */}
           <div>
             <h2 className="text-lg font-semibold mb-3">Task Status</h2>
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5 xl:grid-cols-5 2xl:grid-cols-5">
               <MetricCard
                 title="Pending"
                 value={pending}
@@ -273,7 +273,7 @@ export default function MetricsPage() {
           {/* Agent Status */}
           <div>
             <h2 className="text-lg font-semibold mb-3">Agent Status</h2>
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-4 2xl:grid-cols-4">
               <MetricCard
                 title="Running"
                 value={runningAgents}
@@ -304,7 +304,7 @@ export default function MetricsPage() {
           {/* Team Health */}
           <div>
             <h2 className="text-lg font-semibold mb-3">Team Health</h2>
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5 xl:grid-cols-5 2xl:grid-cols-6">
               {teamMetrics.map((tm) => (
                 <TeamHealthCard
                   key={tm.team}
@@ -346,7 +346,7 @@ function TokenUsageCostsSection() {
       <h2 className="text-lg font-semibold">Token Usage &amp; Costs</h2>
 
       {/* Row 1 — Summary cards */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 2xl:grid-cols-6">
         <SummaryCard
           title="Tokens Input"
           value={summary ? fmtTokens(summary.tokens_input) : undefined}
@@ -392,7 +392,7 @@ function TokenUsageCostsSection() {
       </div>
 
       {/* Row 2 — Time series + model donut */}
-      <div className="grid gap-4 lg:grid-cols-3">
+      <div className="grid gap-4 lg:grid-cols-3 xl:grid-cols-3 2xl:grid-cols-3">
         <div className="lg:col-span-2">
           <UsageTimeSeriesChart data={timeSeries} isLoading={loadingTS} />
         </div>
@@ -400,13 +400,13 @@ function TokenUsageCostsSection() {
       </div>
 
       {/* Row 3 — Agent bar + team bar */}
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-2 2xl:grid-cols-2">
         <AgentUsageChart data={agentUsage} isLoading={loadingAgents} />
         <TeamUsageChart data={teamUsage} isLoading={loadingTeams} />
       </div>
 
       {/* Row 4 — Projection + cache efficiency */}
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-2 2xl:grid-cols-2">
         <ProjectionCard projection={projection} isLoading={loadingProj} />
         <CacheEfficiencyCard cacheStats={cacheStats} isLoading={loadingCache} />
       </div>
