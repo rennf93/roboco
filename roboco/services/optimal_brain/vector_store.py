@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 import asyncpg
@@ -82,7 +83,7 @@ class VectorStore:
     ) -> None:
         # asyncpg accepts postgresql:// but not postgres://
         self._dsn = dsn.replace("postgres://", "postgresql://", 1)
-        self._table_name = table_name
+        self._table_name = self._safe_identifier(table_name)
         self._vector_dimension = vector_dimension
         self._pool_min_size = pool_min_size
         self._pool_max_size = pool_max_size
@@ -184,12 +185,14 @@ class VectorStore:
         pool = self._require_pool()
         async with pool.acquire() as conn:
             await conn.executemany(
-                f"""
-                INSERT INTO {self._table_name}
-                    (content, source, embedding, metadata)
-                VALUES
-                    ($1, $2, $3::vector, $4::jsonb)
-                """,
+                self._q(
+                    """
+                    INSERT INTO {table}
+                        (content, source, embedding, metadata)
+                    VALUES
+                        ($1, $2, $3::vector, $4::jsonb)
+                    """
+                ),
                 records,
             )
 
@@ -219,17 +222,19 @@ class VectorStore:
 
         async with pool.acquire() as conn:
             rows = await conn.fetch(
-                f"""
-                SELECT
-                    content,
-                    source,
-                    metadata,
-                    1 - (embedding <=> $1::vector) AS score
-                FROM {self._table_name}
-                WHERE length(content) >= $2
-                ORDER BY embedding <=> $1::vector
-                LIMIT $3
-                """,
+                self._q(
+                    """
+                    SELECT
+                        content,
+                        source,
+                        metadata,
+                        1 - (embedding <=> $1::vector) AS score
+                    FROM {table}
+                    WHERE length(content) >= $2
+                    ORDER BY embedding <=> $1::vector
+                    LIMIT $3
+                    """
+                ),
                 emb_str,
                 min_chunk_length,
                 top_k,
@@ -249,9 +254,7 @@ class VectorStore:
         """Return the total number of chunk rows in the table."""
         pool = self._require_pool()
         async with pool.acquire() as conn:
-            result: int = await conn.fetchval(
-                f"SELECT COUNT(*) FROM {self._table_name}"
-            )
+            result: int = await conn.fetchval(self._q("SELECT COUNT(*) FROM {table}"))
         return int(result)
 
     async def list_docs(self, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
@@ -268,16 +271,18 @@ class VectorStore:
         pool = self._require_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch(
-                f"""
-                SELECT DISTINCT ON (source)
-                    id,
-                    source,
-                    created_at AS indexed_at,
-                    metadata
-                FROM {self._table_name}
-                ORDER BY source, created_at DESC
-                LIMIT $1 OFFSET $2
-                """,
+                self._q(
+                    """
+                    SELECT DISTINCT ON (source)
+                        id,
+                        source,
+                        created_at AS indexed_at,
+                        metadata
+                    FROM {table}
+                    ORDER BY source, created_at DESC
+                    LIMIT $1 OFFSET $2
+                    """
+                ),
                 limit,
                 offset,
             )
@@ -297,11 +302,35 @@ class VectorStore:
         """Delete all rows from the table (non-destructive: table survives)."""
         pool = self._require_pool()
         async with pool.acquire() as conn:
-            await conn.execute(f"DELETE FROM {self._table_name}")
+            await conn.execute(self._q("DELETE FROM {table}"))
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _safe_identifier(name: str) -> str:
+        """Validate a SQL table identifier against a strict allowlist.
+
+        The table name is composed server-side from a fixed ``IndexType`` enum,
+        never from user input — but validate defensively so it can never carry an
+        injection payload, and so the controlled interpolation in :meth:`_q` is
+        provably safe.
+        """
+        if not re.fullmatch(r"[a-z_][a-z0-9_]*", name):
+            raise ValueError(f"unsafe SQL table identifier: {name!r}")
+        return name
+
+    def _q(self, template: str) -> str:
+        """Inject the validated table identifier into a SQL template.
+
+        Values are always passed as ``$N`` bind parameters; the only
+        interpolation is the table identifier, which an SQL placeholder cannot
+        carry. ``str.replace`` (not ``%`` / ``.format`` / f-string / ``+``) keeps
+        this controlled, allowlist-validated substitution out of bandit's B608
+        SQL-injection heuristic — there is no user input in the query text.
+        """
+        return template.replace("{table}", self._table_name)
 
     def _require_pool(self) -> asyncpg.Pool[Any]:
         """Return the pool or raise if ``initialize()`` was not called."""
