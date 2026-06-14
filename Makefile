@@ -277,6 +277,17 @@ quality-fast:
 	@uv run mypy roboco/
 	@uv run pytest -q -x --no-cov
 
+# Fast pre-submit gate: format-check + lint + types + complexity, NO tests.
+# This is the command a project points `quality_command` at, so the agent
+# pre-submit gate (run at i_am_done) executes it in the dev's workspace and
+# catches lint/type/complexity at the desk. The test suite stays on CI.
+.PHONY: gate
+gate:
+	@uv run ruff format --check .
+	@uv run ruff check .
+	@uv run mypy roboco/
+	@uv run xenon --max-absolute B --max-modules A --max-average A roboco/
+
 # Run all analysis tools
 .PHONY: analysis
 analysis: deptry

@@ -1108,6 +1108,7 @@ export interface Project {
   format_command: string | null;
   typecheck_command: string | null;
   build_command: string | null;
+  quality_command: string | null;
   // Runtime state
   workspace_path: string | null;
   last_synced_at: string | null;
@@ -1132,6 +1133,7 @@ export interface ProjectCreate {
   format_command?: string;
   typecheck_command?: string;
   build_command?: string;
+  quality_command?: string;
 }
 
 export interface ProjectUpdate {
@@ -1148,6 +1150,7 @@ export interface ProjectUpdate {
   format_command?: string;
   typecheck_command?: string;
   build_command?: string;
+  quality_command?: string;
 }
 
 export interface ProjectSummary {

@@ -448,6 +448,10 @@ class ProjectTable(Base):
     format_command: Mapped[str | None] = mapped_column(String(500), nullable=True)
     typecheck_command: Mapped[str | None] = mapped_column(String(500), nullable=True)
     build_command: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Fast pre-submit gate command (lint+types+complexity, no tests). When set,
+    # the agent i_am_done gate runs this in the dev's workspace instead of the
+    # lint/typecheck pair — e.g. "make gate".
+    quality_command: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     # Access Control
     assigned_cell: Mapped[Team] = mapped_column(_str_enum(Team), nullable=False)

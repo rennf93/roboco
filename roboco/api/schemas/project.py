@@ -42,6 +42,7 @@ class ProjectResponse(BaseModel):
     format_command: str | None = None
     typecheck_command: str | None = None
     build_command: str | None = None
+    quality_command: str | None = None
 
     # Runtime state
     workspace_path: str | None = None
@@ -103,6 +104,7 @@ class ProjectCreateRequest(BaseModel):
     format_command: str | None = None
     typecheck_command: str | None = None
     build_command: str | None = None
+    quality_command: str | None = None
 
 
 class ProjectUpdateRequest(BaseModel):
@@ -126,6 +128,7 @@ class ProjectUpdateRequest(BaseModel):
     format_command: str | None = None
     typecheck_command: str | None = None
     build_command: str | None = None
+    quality_command: str | None = None
 
     # State
     is_active: bool | None = None
@@ -165,6 +168,7 @@ def project_to_response(project: "ProjectTable") -> ProjectResponse:
         format_command=project.format_command,
         typecheck_command=project.typecheck_command,
         build_command=project.build_command,
+        quality_command=project.quality_command,
         workspace_path=project.workspace_path,
         last_synced_at=project.last_synced_at,
         head_commit=project.head_commit,

@@ -1983,11 +1983,17 @@ class GitService(BaseService):
 
     @staticmethod
     def _fast_gate_commands(project: Any) -> list[tuple[str, str]]:
-        """The project's non-mutating fast-gate commands (lint + typecheck).
+        """The project's non-mutating fast-gate commands.
 
-        Format and the test suite are intentionally excluded: format mutates
-        files, and the slow test run stays on CI.
+        A configured ``quality_command`` is the project's complete fast gate
+        (lint + types + complexity, no tests; e.g. ``make gate``) and takes
+        precedence — it runs alone. Otherwise fall back to the lint + typecheck
+        pair. Format and the test suite are intentionally excluded: format
+        mutates files, and the slow test run stays on CI.
         """
+        quality = getattr(project, "quality_command", None)
+        if quality:
+            return [("quality", quality)]
         candidates = (
             ("lint", getattr(project, "lint_command", None)),
             ("typecheck", getattr(project, "typecheck_command", None)),

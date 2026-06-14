@@ -70,6 +70,14 @@ class Project(TimestampMixin):
     build_command: str | None = Field(
         default=None, description="Command to build (e.g., 'pnpm build')"
     )
+    quality_command: str | None = Field(
+        default=None,
+        description=(
+            "Fast pre-submit gate command run in the dev's workspace at "
+            "i_am_done (lint+types+complexity, no tests; e.g. 'make gate'). "
+            "When set it replaces the lint/typecheck pair in the gate."
+        ),
+    )
 
     # Access Control
     assigned_cell: Team = Field(..., description="Which cell owns this project")
@@ -120,6 +128,7 @@ class ProjectCreate(RobocoBase):
     format_command: str | None = None
     typecheck_command: str | None = None
     build_command: str | None = None
+    quality_command: str | None = None
 
 
 class ProjectUpdate(RobocoBase):
@@ -141,6 +150,7 @@ class ProjectUpdate(RobocoBase):
     format_command: str | None = None
     typecheck_command: str | None = None
     build_command: str | None = None
+    quality_command: str | None = None
     assigned_cell: Team | None = None
     allowed_agents: list[UUID] | None = None
     is_active: bool | None = None

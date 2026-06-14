@@ -68,6 +68,7 @@ def test_gate_result_summary_and_excerpt() -> None:
 
 def test_fast_gate_commands_picks_lint_and_typecheck() -> None:
     project = SimpleNamespace(
+        quality_command=None,  # not set → fall back to lint + typecheck
         lint_command="uv run ruff check .",
         typecheck_command="uv run mypy roboco/",
         format_command="uv run ruff format .",  # excluded (mutating)
@@ -80,8 +81,21 @@ def test_fast_gate_commands_picks_lint_and_typecheck() -> None:
     ]
 
 
+def test_quality_command_takes_precedence_and_runs_alone() -> None:
+    """A configured quality_command is the complete fast gate (e.g. it also runs
+    complexity/xenon) — it runs alone, not alongside lint/typecheck."""
+    project = SimpleNamespace(
+        quality_command="make gate",
+        lint_command="uv run ruff check .",
+        typecheck_command="uv run mypy roboco/",
+    )
+    assert GitService._fast_gate_commands(project) == [("quality", "make gate")]
+
+
 def test_fast_gate_commands_empty_when_unconfigured() -> None:
-    project = SimpleNamespace(lint_command=None, typecheck_command=None)
+    project = SimpleNamespace(
+        quality_command=None, lint_command=None, typecheck_command=None
+    )
     assert GitService._fast_gate_commands(project) == []
 
 

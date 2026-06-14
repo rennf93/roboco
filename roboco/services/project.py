@@ -103,6 +103,7 @@ class ProjectService(BaseService):
             format_command=data.format_command,
             typecheck_command=data.typecheck_command,
             build_command=data.build_command,
+            quality_command=data.quality_command,
             created_by=created_by,
         )
 

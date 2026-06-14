@@ -83,6 +83,7 @@ export const projectsApi = {
         format_command: project.format_command ?? null,
         typecheck_command: project.typecheck_command ?? null,
         build_command: project.build_command ?? null,
+        quality_command: project.quality_command ?? null,
         workspace_path: null,
         last_synced_at: null,
         head_commit: null,

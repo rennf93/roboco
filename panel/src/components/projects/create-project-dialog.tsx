@@ -82,6 +82,7 @@ export function CreateProjectDialog() {
         format_command: formData.format_command || undefined,
         typecheck_command: formData.typecheck_command || undefined,
         build_command: formData.build_command || undefined,
+        quality_command: formData.quality_command || undefined,
       });
       toast.success("Project created successfully");
       setOpen(false);
@@ -270,6 +271,22 @@ export function CreateProjectDialog() {
                     onChange={(e) => setFormData({ ...formData, build_command: e.target.value })}
                     placeholder="pnpm build"
                   />
+                </div>
+
+                <div className="grid gap-2">
+                  <Label htmlFor="quality_command">Quality Gate Command</Label>
+                  <Input
+                    id="quality_command"
+                    value={formData.quality_command || ""}
+                    onChange={(e) =>
+                      setFormData({ ...formData, quality_command: e.target.value })
+                    }
+                    placeholder="make gate"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Fast pre-submit gate (lint + types + complexity, no tests) run
+                    in the dev&apos;s workspace at hand-off to QA.
+                  </p>
                 </div>
               </>
             )}

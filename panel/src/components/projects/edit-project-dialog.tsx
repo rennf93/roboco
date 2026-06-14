@@ -61,6 +61,7 @@ function EditProjectForm({
   const [formatCommand, setFormatCommand] = useState(project.format_command || "");
   const [typecheckCommand, setTypecheckCommand] = useState(project.typecheck_command || "");
   const [buildCommand, setBuildCommand] = useState(project.build_command || "");
+  const [qualityCommand, setQualityCommand] = useState(project.quality_command || "");
 
   // Token handling
   const [newToken, setNewToken] = useState("");
@@ -88,6 +89,7 @@ function EditProjectForm({
       format_command: formatCommand || undefined,
       typecheck_command: typecheckCommand || undefined,
       build_command: buildCommand || undefined,
+      quality_command: qualityCommand || undefined,
     };
 
     // Handle token update
@@ -295,6 +297,20 @@ function EditProjectForm({
                 onChange={(e) => setBuildCommand(e.target.value)}
                 placeholder="pnpm build"
               />
+            </div>
+
+            <div className="grid gap-2">
+              <Label htmlFor="quality_command">Quality Gate Command</Label>
+              <Input
+                id="quality_command"
+                value={qualityCommand}
+                onChange={(e) => setQualityCommand(e.target.value)}
+                placeholder="make gate"
+              />
+              <p className="text-xs text-muted-foreground">
+                Fast pre-submit gate (lint + types + complexity, no tests) run in
+                the dev&apos;s workspace at hand-off to QA.
+              </p>
             </div>
           </>
         )}
