@@ -453,6 +453,17 @@ def _scrub_git_secrets(text: str) -> str:
     return text
 
 
+class MergeConflictError(GitError):
+    """A PR could not be merged because its branch conflicts with the base.
+
+    Raised when the GitHub merge API refuses the merge (e.g. HTTP 405 "not
+    mergeable") after the in-band retry. Distinct from a generic ``GitError``
+    so the completion path can route to conflict resolution (rebase / close
+    superseded / escalate) instead of failing and looping. A subclass of
+    ``GitError`` so existing ``except GitError`` handlers stay correct.
+    """
+
+
 class GitCommandError(GitError):
     """Git command execution failed."""
 

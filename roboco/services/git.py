@@ -39,7 +39,12 @@ if TYPE_CHECKING:
     )
     from roboco.db.tables import TaskTable
 from roboco.config import settings
-from roboco.exceptions import GitCommandError, GitError, GitTimeoutError
+from roboco.exceptions import (
+    GitCommandError,
+    GitError,
+    GitTimeoutError,
+    MergeConflictError,
+)
 from roboco.models.base import AgentRole, TaskStatus
 from roboco.services.base import (
     BaseService,
@@ -2277,7 +2282,11 @@ class GitService(BaseService):
                 ctx.owner, ctx.repo, ctx.pr_number, ctx.git_token, "squash"
             )
         if not resp.is_success:
-            raise GitError(
+            # A merge refusal (typically 405 "not mergeable") means the branch
+            # conflicts with the base — a sibling landed overlapping work first.
+            # Raise the specific subclass so the completion path can rebase /
+            # close-superseded / escalate instead of failing into a respawn loop.
+            raise MergeConflictError(
                 f"GitHub API refused PR merge ({resp.status_code}): {resp.text[:200]}",
                 {"owner": ctx.owner, "repo": ctx.repo, "pr": ctx.pr_number},
             )

@@ -19,6 +19,7 @@ from uuid import UUID
 
 import structlog
 
+from roboco.exceptions import MergeConflictError
 from roboco.foundation.policy import lifecycle as spec_module
 from roboco.services.gateway.choreographer._verb_runner import VerbRunner
 from roboco.services.gateway.claim_guards import (
@@ -4631,16 +4632,37 @@ class Choreographer:
         # change); for a cell task it is the root branch (feature/main_pm/…),
         # which parent_branch_for would have mis-derived as feature/<cellteam>/…
         target = await resolve_parent_branch(t, self.task)
-        merge_result = await self.git.pr_merge(
-            t.pr_number, target=target, actor_agent_id=pm_agent_id
+        try:
+            merge_result = await self.git.pr_merge(
+                t.pr_number, target=target, actor_agent_id=pm_agent_id
+            )
+        except MergeConflictError as exc:
+            # A sibling landed overlapping work first, so this PR can't merge.
+            # Resolve it (rebase / close-superseded / escalate) instead of
+            # letting the failure re-block the task and respawn the PM forever.
+            return await self._resolve_merge_conflict_on_complete(
+                pm_agent_id, task_id, t, target, notes, exc
+            )
+        return await self._finalize_cell_complete(
+            pm_agent_id, task_id, t, notes, merge_result.get("merge_commit_sha")
         )
+
+    async def _finalize_cell_complete(
+        self,
+        pm_agent_id: UUID,
+        task_id: UUID,
+        t: Any,
+        notes: str,
+        merge_commit: str | None,
+    ) -> Envelope:
+        """Mark the leaf completed and propagate the completion to its parent."""
         leaf_parent_id = t.parent_task_id
         leaf_team = t.team
         t = await self.task.cell_pm_complete(
             pm_agent_id,
             task_id,
             notes,
-            merge_commit=merge_result.get("merge_commit_sha"),
+            merge_commit=merge_commit,
         )
         # Now that the leaf is completed, propagate the completion up to the
         # parent task: if the parent's subtasks are all terminal, hand the
@@ -4654,6 +4676,116 @@ class Choreographer:
             next=spec_module._INTENT_VERBS["complete"].next_hint(t),
             context_briefing=await self._briefing_for(pm_agent_id, task_id),
         ).with_introspection(task=t, role="cell_pm")
+
+    async def _resolve_merge_conflict_on_complete(
+        self,
+        pm_agent_id: UUID,
+        task_id: UUID,
+        t: Any,
+        target: str,
+        notes: str,
+        exc: MergeConflictError,
+    ) -> Envelope:
+        """Resolve a leaf PR that couldn't merge because a sibling landed first.
+
+        Rebase the branch onto the current base and act on the outcome rather
+        than failing (which re-blocks the task and respawns the PM forever):
+
+        - ``rebased``     — the branch now integrates cleanly; retry the merge.
+        - ``superseded``  — every change is already in the base via the sibling;
+          close the dead PR and complete the task without a redundant merge.
+        - ``conflicts`` / ``unknown`` — a human must resolve; escalate to the
+          CEO (``awaiting_ceo_approval``) so the task leaves the agent loop.
+        """
+        rebase = await self.git.rebase_pr_for_task(
+            t.pr_number, actor_agent_id=pm_agent_id
+        )
+        status = rebase.get("status")
+        if status == "rebased":
+            merge_result = await self.git.pr_merge(
+                t.pr_number, target=target, actor_agent_id=pm_agent_id
+            )
+            return await self._finalize_cell_complete(
+                pm_agent_id, task_id, t, notes, merge_result.get("merge_commit_sha")
+            )
+        if status == "superseded":
+            await self.git.close_pull_request(
+                t.pr_number,
+                comment=(
+                    "Closed as superseded: every change on this branch is "
+                    "already present in the base via a sibling PR that merged "
+                    "first. Completing the task without a redundant merge."
+                ),
+                actor_agent_id=pm_agent_id,
+            )
+            return await self._finalize_cell_complete(
+                pm_agent_id, task_id, t, notes, None
+            )
+        return await self._escalate_merge_conflict_to_ceo(
+            pm_agent_id, task_id, t, rebase, exc
+        )
+
+    async def _escalate_merge_conflict_to_ceo(
+        self,
+        pm_agent_id: UUID,
+        task_id: UUID,
+        t: Any,
+        rebase: dict[str, Any],
+        exc: MergeConflictError,
+    ) -> Envelope:
+        """Route an unresolvable PR conflict to the CEO; never loop on it.
+
+        Moves the task to ``awaiting_ceo_approval`` (admin override — the leaf
+        has no in-band edge there) so it leaves agent dispatch, and best-effort
+        alerts the CEO with the conflicting files.
+        """
+        from roboco.models.base import TaskStatus
+
+        files = rebase.get("files") or []
+        logger.info(
+            "merge conflict escalated to CEO",
+            task_id=str(task_id),
+            conflicting_files=len(files),
+            rebase_status=rebase.get("status"),
+            merge_error=str(exc),
+        )
+        await self.task.admin_set_status(
+            task_id,
+            TaskStatus.AWAITING_CEO_APPROVAL,
+            actor_id=pm_agent_id,
+            actor_role="cell_pm",
+        )
+        await self._notify_ceo_merge_conflict(task_id, files)
+        t = await self.task.get(task_id)
+        detail = f" ({len(files)} conflicting file(s))" if files else ""
+        return Envelope.ok(
+            status=str(t.status),
+            task_id=str(task_id),
+            next=(
+                "the PR has merge conflicts that could not be resolved "
+                f"automatically{detail}; escalated to the CEO. A developer can "
+                "rebase the branch, or the CEO can close the PR if superseded."
+            ),
+            context_briefing=await self._briefing_for(pm_agent_id, task_id),
+        ).with_introspection(task=t, role="cell_pm")
+
+    async def _notify_ceo_merge_conflict(self, task_id: UUID, files: list[str]) -> None:
+        """Best-effort CEO alert for a wedged merge conflict; never raises."""
+        from roboco.services.notification import NotificationService
+
+        try:
+            await NotificationService().send_stuck_agent_notification(
+                task_id=str(task_id),
+                agent_slug="cell_pm",
+                task_status="awaiting_ceo_approval",
+                to_agent="ceo",
+            )
+        except Exception:
+            logger.warning(
+                "failed to send CEO merge-conflict notification",
+                task_id=str(task_id),
+                conflicting_files=len(files),
+            )
 
     async def _maybe_advance_parent_to_pm_review(
         self, parent_task_id: UUID, leaf_team: Any
