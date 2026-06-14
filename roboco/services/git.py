@@ -393,7 +393,13 @@ class GitService(BaseService):
         current_branch = branch_result.stdout.strip()
 
         status_result = await self._run_git(workspace, ["status", "--porcelain"])
-        lines = status_result.stdout.strip().split("\n") if status_result.stdout else []
+        # Use splitlines(), NOT stdout.strip().split("\n"): porcelain encodes the
+        # index column in position 0, which is a SPACE for a worktree-only change
+        # (e.g. " D file" = unstaged deletion). strip() eats that leading space on
+        # the first line, turning " D file" into "D file" — which then parses as a
+        # STAGED deletion. That false "staged" caused 6 wasted QA cycles when a
+        # dev deleted a file but hadn't staged it. splitlines() preserves columns.
+        lines = status_result.stdout.splitlines() if status_result.stdout else []
 
         staged_files, unstaged_files, untracked_files = self._classify_porcelain(lines)
         ahead, behind = await self._ahead_behind(workspace, current_branch)
