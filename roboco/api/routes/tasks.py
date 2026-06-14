@@ -446,6 +446,23 @@ async def get_awaiting_ceo_approval_tasks(
     return task_list_to_response(tasks)
 
 
+@router.get("/lifecycle-transitions", response_model=dict[str, list[str]])
+async def get_lifecycle_transitions() -> dict[str, list[str]]:
+    """Return the task lifecycle state graph as a JSON-serialisable dict.
+
+    Each key is a status name (string); each value is a list of valid next
+    status names (strings).  The data is drawn directly from the canonical
+    ``STATUS_GRAPH`` constant so it is always in sync with the enforcement
+    layer.
+    """
+    from roboco.foundation.policy.lifecycle import STATUS_GRAPH
+
+    return {
+        src.value: sorted(tgt.value for tgt in targets)
+        for src, targets in STATUS_GRAPH.items()
+    }
+
+
 @router.get("/{task_id}", response_model=TaskResponse)
 async def get_task(
     task_id: UUID,
@@ -541,7 +558,7 @@ async def update_task(
             agent_row = await get_agent_by_slug(db, data.assigned_to)
             if agent_row is None:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail={
                         "error": {
                             "code": "ASSIGNEE_NOT_FOUND",
@@ -1279,6 +1296,63 @@ async def complete_task(
             ),
         )
     service = get_task_service(db)
+
+    # For tasks in awaiting_pm_review that still have an open PR, the PM
+    # merge step is included here so that the PR lands on the target branch
+    # before the task is marked completed. This mirrors the CEO
+    # approve-and-merge path and keeps the git state consistent.
+    pre_task = await service.get(task_id)
+    if (
+        pre_task is not None
+        and pre_task.pr_number is not None
+        and getattr(pre_task, "status", None) is not None
+        and (
+            pre_task.status == TaskStatus.AWAITING_PM_REVIEW
+            or getattr(pre_task.status, "value", None) == "awaiting_pm_review"
+        )
+    ):
+        from roboco.api.schemas.git import GitMergePRRequest
+        from roboco.services.git import get_git_service
+        from roboco.services.project import get_project_service
+
+        _project_service = get_project_service(db)
+        _git_service = get_git_service(db)
+
+        # Resolve the project: coordination-root tasks may have project_id=None
+        # but product_id set; non-root tasks carry project_id directly.
+        _project = None
+        if pre_task.project_id is not None:
+            _project = await _project_service.get(UUID(str(pre_task.project_id)))
+        elif pre_task.product_id is not None:
+            from roboco.services.product import get_product_service
+
+            _product_service = get_product_service(db)
+            _pids = await _product_service.distinct_project_ids(
+                UUID(str(pre_task.product_id))
+            )
+            if _pids:
+                _project = await _project_service.get(_pids[0])
+
+        if _project is not None:
+            try:
+                await _git_service.merge_pr_for_task(
+                    agent.agent_id,
+                    agent.role,
+                    GitMergePRRequest(
+                        project_slug=_project.slug,
+                        pr_number=pre_task.pr_number,
+                        task_id=task_id,
+                        merge_method="squash",
+                        agent_id=str(agent.agent_id),
+                    ),
+                )
+            except (ServiceError, GitError) as e:
+                msg = getattr(e, "message", str(e))
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"PR merge failed before completion: {msg}",
+                ) from e
+
     try:
         task = await service.complete_task_for_agent(
             task_id,
@@ -1487,26 +1561,47 @@ async def approve_and_merge_task(
 
     # Resolve the project slug from the task's project_id so the git
     # service can locate the workspace and call the GitHub API.
-    if task.project_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "NO_PROJECT: Task has no project_id; cannot resolve "
-                "workspace for merge. Set project_id on the task first."
-            ),
-        )
-
+    # Coordination-root tasks may have project_id=None but product_id set;
+    # in that case resolve the project via the product's cell->project map.
     from roboco.api.schemas.git import GitMergePRRequest
     from roboco.services.git import get_git_service
     from roboco.services.project import get_project_service
 
     project_service = get_project_service(db)
-    project = await project_service.get(UUID(str(task.project_id)))
+
+    if task.project_id is not None:
+        resolved_project_id = UUID(str(task.project_id))
+    elif task.product_id is not None:
+        from roboco.services.product import get_product_service
+
+        product_service = get_product_service(db)
+        project_ids = await product_service.distinct_project_ids(
+            UUID(str(task.product_id))
+        )
+        if not project_ids:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"NO_PROJECT: Product {task.product_id} has no cell->project "
+                    "mapping; cannot resolve workspace for merge."
+                ),
+            )
+        resolved_project_id = project_ids[0]
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "NO_PROJECT: Task has neither project_id nor product_id; "
+                "cannot resolve workspace for merge. Set project_id on the task first."
+            ),
+        )
+
+    project = await project_service.get(resolved_project_id)
     if not project:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                f"NO_PROJECT: Project {task.project_id} not found; "
+                f"NO_PROJECT: Project {resolved_project_id} not found; "
                 "cannot resolve workspace for merge."
             ),
         )
