@@ -22,10 +22,10 @@ export function AgentGrid({
   columns = 4,
 }: AgentGridProps) {
   const gridCols = {
-    3: "md:grid-cols-3",
-    4: "md:grid-cols-3 lg:grid-cols-4",
-    5: "md:grid-cols-3 lg:grid-cols-5",
-  }[columns] || "md:grid-cols-3 lg:grid-cols-4";
+    3: "md:grid-cols-3 xl:grid-cols-3 2xl:grid-cols-4",
+    4: "md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 2xl:grid-cols-5",
+    5: "md:grid-cols-3 lg:grid-cols-5 xl:grid-cols-5 2xl:grid-cols-6",
+  }[columns] || "md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 2xl:grid-cols-5";
 
   return (
     <div>
