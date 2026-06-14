@@ -4943,13 +4943,7 @@ class TaskService(BaseService):
         # review status. Reached only for an ownerless review task; normal flow
         # keeps the owner and never re-claims here.
         if task.status == TaskStatus.AWAITING_PM_REVIEW:
-            claimed = await self._qa_or_doc_claim(
-                claim_agent_id, task_id, TaskStatus.AWAITING_PM_REVIEW
-            )
-            if not claimed:
-                raise ValidationError("Cannot claim task - not in awaiting_pm_review")
-            await self.session.commit()
-            return claimed
+            return await self._claim_review_state(task_id, claim_agent_id)
 
         claimed = await self.claim(
             task_id, claim_agent_id, allow_reassign=allow_reassign
@@ -4957,6 +4951,18 @@ class TaskService(BaseService):
         if not claimed:
             status_msg = "not pending or claimed" if allow_reassign else "not pending"
             raise ValidationError(f"Cannot claim task - {status_msg}")
+        await self.session.commit()
+        return claimed
+
+    async def _claim_review_state(
+        self, task_id: UUID, claim_agent_id: UUID
+    ) -> TaskTable:
+        """No-transition review-claim for awaiting_pm_review (see caller)."""
+        claimed = await self._qa_or_doc_claim(
+            claim_agent_id, task_id, TaskStatus.AWAITING_PM_REVIEW
+        )
+        if not claimed:
+            raise ValidationError("Cannot claim task - not in awaiting_pm_review")
         await self.session.commit()
         return claimed
 
