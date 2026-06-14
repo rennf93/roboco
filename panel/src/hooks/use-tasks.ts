@@ -291,6 +291,13 @@ export function useTaskLifecycle() {
     },
   });
 
+  // CEO gate #2: approve completed work and merge the PR.
+  // Calls POST /tasks/{id}/approve-and-merge with no request body.
+  const approveAndMerge = useMutation({
+    mutationFn: (taskId: string) => tasksApi.approveAndMerge(taskId),
+    onSuccess: invalidateTask,
+  });
+
   return {
     // Lifecycle
     claim,
@@ -320,6 +327,7 @@ export function useTaskLifecycle() {
     ceoApprove,
     ceoReject,
     escalateToCeo,
+    approveAndMerge,
   };
 }
 

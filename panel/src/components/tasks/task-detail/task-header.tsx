@@ -279,7 +279,7 @@ export function TaskHeader({ task, onAction }: TaskHeaderProps) {
         actions.push({ label: "Request Changes", action: "request-changes", icon: <ThumbsDown className="h-4 w-4 mr-2" /> });
         break;
       case TaskStatus.AWAITING_CEO_APPROVAL:
-        actions.push({ label: "Approve & Merge", action: "ceo-approve", icon: <ThumbsUp className="h-4 w-4 mr-2" /> });
+        actions.push({ label: "Approve & Merge", action: "approve-and-merge", icon: <ThumbsUp className="h-4 w-4 mr-2" /> });
         actions.push({ label: "Request Changes", action: "ceo-reject", icon: <ThumbsDown className="h-4 w-4 mr-2" /> });
         break;
       case TaskStatus.CANCELLED:

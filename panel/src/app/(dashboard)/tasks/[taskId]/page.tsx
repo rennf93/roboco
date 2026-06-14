@@ -1,6 +1,7 @@
 "use client";
 
 import { use, useState } from "react";
+import axios from "axios";
 import { useTask, useTaskLifecycle } from "@/hooks/use-tasks";
 import { useProject } from "@/hooks/use-projects";
 import { useCreateBranch, useCreatePR, useMergePR } from "@/hooks/use-git";
@@ -9,6 +10,7 @@ import { TaskHeader, TaskMetadata, TaskTabs } from "@/components/tasks/task-deta
 import { ApproveAndStartButton } from "@/components/tasks/approve-and-start-button";
 import {
   EscalateToCeoDialog,
+  ApproveAndMergeDialog,
   CeoApproveDialog,
   CeoRejectDialog,
   CreateBranchDialog,
@@ -39,6 +41,7 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
 
   // Dialog states
   const [escalateDialogOpen, setEscalateDialogOpen] = useState(false);
+  const [approveAndMergeDialogOpen, setApproveAndMergeDialogOpen] = useState(false);
   const [approveDialogOpen, setApproveDialogOpen] = useState(false);
   const [rejectDialogOpen, setRejectDialogOpen] = useState(false);
   const [branchDialogOpen, setBranchDialogOpen] = useState(false);
@@ -110,6 +113,9 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
         case "submit-pm-review":
           setSubmitPmReviewDialogOpen(true);
           return; // Don't refetch yet — dialog collects the required note
+        case "approve-and-merge":
+          setApproveAndMergeDialogOpen(true);
+          return; // Don't refetch yet — dialog handles confirmation
         case "ceo-approve":
           setApproveDialogOpen(true);
           return; // Don't refetch yet — dialog collects the required note
@@ -187,6 +193,30 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
       refetch();
     } catch (err) {
       toast.error("Failed to request changes");
+      console.error(err);
+    }
+  };
+
+  const handleApproveAndMerge = async () => {
+    if (!task) return;
+    try {
+      await lifecycle.approveAndMerge.mutateAsync(task.id);
+      toast.success("Task approved and PR merged");
+      setApproveAndMergeDialogOpen(false);
+      refetch();
+    } catch (err) {
+      if (axios.isAxiosError(err)) {
+        const detail = (err.response?.data as { detail?: string } | undefined)?.detail ?? "";
+        if (typeof detail === "string" && detail.startsWith("NO_PR")) {
+          toast.error("No PR found for this task. Create a pull request before merging.");
+        } else if (typeof detail === "string" && detail.startsWith("Merge failed")) {
+          toast.error("Merge failed: " + (detail.slice("Merge failed".length).replace(/^[: ]+/, "") || "the merge could not be completed"));
+        } else {
+          toast.error("Failed to approve and merge task");
+        }
+      } else {
+        toast.error("Failed to approve and merge task");
+      }
       console.error(err);
     }
   };
@@ -422,6 +452,13 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
         onOpenChange={setEscalateDialogOpen}
         onConfirm={handleEscalateToCeo}
         isPending={lifecycle.escalateToCeo.isPending}
+      />
+
+      <ApproveAndMergeDialog
+        open={approveAndMergeDialogOpen}
+        onOpenChange={setApproveAndMergeDialogOpen}
+        onConfirm={handleApproveAndMerge}
+        isPending={lifecycle.approveAndMerge.isPending}
       />
 
       <CeoApproveDialog

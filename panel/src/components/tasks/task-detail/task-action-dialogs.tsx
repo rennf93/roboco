@@ -149,6 +149,44 @@ export function CeoRejectDialog({
   );
 }
 
+// Approve & Merge Dialog — simple confirmation for POST /tasks/{id}/approve-and-merge.
+// The backend endpoint accepts NO notes parameter, so no text input is needed here.
+interface ApproveAndMergeDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: () => void;
+  isPending?: boolean;
+}
+
+export function ApproveAndMergeDialog({
+  open,
+  onOpenChange,
+  onConfirm,
+  isPending,
+}: ApproveAndMergeDialogProps) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Approve &amp; Merge</DialogTitle>
+          <DialogDescription>
+            This will approve the completed work and merge the pull request into the
+            target branch. This action cannot be undone.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isPending}>
+            Cancel
+          </Button>
+          <Button onClick={onConfirm} disabled={isPending}>
+            {isPending ? "Merging..." : "Approve & Merge"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // CEO Approve Dialog — the sign-off note is the audit record for merging to
 // production, so it is REQUIRED and must be substantive (>= 20 chars), matching
 // the server's CEO_NOTES_REQUIRED gate.
