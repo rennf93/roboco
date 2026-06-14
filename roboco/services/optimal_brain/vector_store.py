@@ -137,9 +137,22 @@ class VectorStore:
         )
 
     async def close(self) -> None:
-        """Release the connection pool."""
+        """Release the connection pool.
+
+        Tolerates a closed event loop. The optimal-service singleton can
+        outlive the loop that created its pool (e.g. cross-loop teardown
+        between tests, where ``close_optimal_service`` runs on a new loop);
+        ``asyncpg.Pool.close()`` then raises ``RuntimeError: Event loop is
+        closed``. The connections died with the loop, so there is nothing left
+        to release — drop the reference and move on. Any other RuntimeError
+        still propagates.
+        """
         if self._pool is not None:
-            await self._pool.close()
+            try:
+                await self._pool.close()
+            except RuntimeError as exc:
+                if "Event loop is closed" not in str(exc):
+                    raise
             self._pool = None
 
     # ------------------------------------------------------------------
