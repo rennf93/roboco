@@ -519,6 +519,12 @@ class TaskCountResponse(BaseModel):
     counts: dict[str, int]
 
 
+class ValidTransitionsResponse(BaseModel):
+    """Valid next statuses for a task given its current state."""
+
+    valid_statuses: list[TaskStatus]
+
+
 class ListTasksQuery(BaseModel):
     """Query params for listing tasks."""
 

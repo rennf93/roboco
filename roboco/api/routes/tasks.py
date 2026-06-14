@@ -38,11 +38,13 @@ from roboco.api.schemas.tasks import (
     TaskSessionLinkResponse,
     TaskUpdate,
     TeamTasksQuery,
+    ValidTransitionsResponse,
     enrich_task_with_context,
     task_list_to_response,
     task_to_response,
     transform_update_data,
 )
+from roboco.enforcement import get_valid_transitions
 from roboco.exceptions import GitError, TaskLifecycleError
 from roboco.foundation.policy import task_completeness as tc
 from roboco.models.base import AgentRole, TaskStatus, Team
@@ -461,6 +463,26 @@ async def get_lifecycle_transitions() -> dict[str, list[str]]:
         src.value: sorted(tgt.value for tgt in targets)
         for src, targets in STATUS_GRAPH.items()
     }
+
+
+@router.get("/{task_id}/valid-transitions", response_model=ValidTransitionsResponse)
+async def get_valid_transitions_for_task(
+    task_id: UUID,
+    db: DbSession,
+) -> ValidTransitionsResponse:
+    """Return valid next statuses for a task given its current state.
+
+    Uses the canonical lifecycle enforcement layer so the response is always
+    in sync with what the backend will actually allow.
+    """
+    service = get_task_service(db)
+    task = await service.get(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
+    valid_statuses = get_valid_transitions(task.status)
+    return ValidTransitionsResponse(valid_statuses=[TaskStatus(s) for s in valid_statuses])
 
 
 @router.get("/{task_id}", response_model=TaskResponse)

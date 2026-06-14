@@ -406,8 +406,13 @@ export const tasksApi = {
 
   // Returns the valid next statuses for a task from GET /tasks/{id}/valid-transitions
   getValidTransitions: async (taskId: string): Promise<TaskStatus[]> => {
-    const { data } = await api.get<TaskStatus[]>("/tasks/" + taskId + "/valid-transitions");
-    return data;
+    if (isMockMode()) {
+      return [];
+    }
+    const { data } = await api.get<{ valid_statuses: TaskStatus[] }>(
+      "/tasks/" + taskId + "/valid-transitions"
+    );
+    return data.valid_statuses;
   },
 
   // =========================================================================
