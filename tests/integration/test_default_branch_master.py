@@ -7,11 +7,11 @@ is exercised by the same SQLAlchemy flush path production uses.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 import pytest
-from roboco.db.tables import AgentTable, ProjectTable
+from roboco.db.tables import AgentTable, ProjectTable, TaskTable
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.services.git import GitService
 from roboco.services.task import TaskService
@@ -70,7 +70,7 @@ async def test_resolve_parent_branch_falls_back_to_master(
     task = SimpleNamespace(id=uuid4(), parent_task_id=None)
     project = SimpleNamespace(default_branch="")
 
-    branch = await svc._resolve_parent_branch(task, project)
+    branch = await svc._resolve_parent_branch(cast(TaskTable, task), project)
 
     assert branch == "master"
 

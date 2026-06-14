@@ -7,7 +7,7 @@ reassignment, ceo_approve/ceo_reject, escalation chains).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
@@ -33,7 +33,7 @@ from roboco.models.task import TaskCreateRequest
 from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.base import NotFoundError
 from roboco.services.task import SoftBlockInfo, TaskService
-from sqlalchemy import select
+from sqlalchemy import Table, select
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -78,7 +78,7 @@ async def task_setup(
     }
 
 
-def _req(setup: dict, **overrides) -> TaskCreateRequest:
+def _req(setup: dict, **overrides: Any) -> TaskCreateRequest:
     return TaskCreateRequest(
         title=overrides.pop("title", "t"),
         description=overrides.pop("description", "d"),
@@ -1336,7 +1336,7 @@ async def test_complete_with_force_with_cancelled_succeeds(
     """
     svc = task_setup["svc"]
     await db_session.execute(
-        AgentTable.__table__.update()
+        cast(Table, AgentTable.__table__).update()
         .where(AgentTable.role == AgentRole.MAIN_PM)
         .values(role=AgentRole.SYSTEM)
     )
@@ -1378,7 +1378,7 @@ async def test_complete_without_force_with_cancelled_blocks(
     """Without force_with_cancelled, cancelled descendants block completion."""
     svc = task_setup["svc"]
     await db_session.execute(
-        AgentTable.__table__.update()
+        cast(Table, AgentTable.__table__).update()
         .where(AgentTable.role == AgentRole.MAIN_PM)
         .values(role=AgentRole.SYSTEM)
     )
@@ -1627,7 +1627,7 @@ async def test_escalate_up_to_role_returns_none_when_no_target_role(
     """
     svc = task_setup["svc"]
     await db_session.execute(
-        AgentTable.__table__.update()
+        cast(Table, AgentTable.__table__).update()
         .where(AgentTable.role == AgentRole.MAIN_PM)
         .values(role=AgentRole.SYSTEM)
     )
@@ -2159,7 +2159,7 @@ async def test_emit_task_event_publishes_when_connected(
         def is_connected(self) -> bool:
             return True
 
-        async def publish(self, event) -> None:
+        async def publish(self, event: Any) -> None:
             await publish_mock(event)
 
     def _bus_factory() -> _Bus:

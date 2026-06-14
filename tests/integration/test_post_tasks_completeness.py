@@ -10,8 +10,8 @@ completeness checker.
 from __future__ import annotations
 
 from http import HTTPStatus
-from typing import TYPE_CHECKING
-from uuid import uuid4
+from typing import TYPE_CHECKING, cast
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -62,11 +62,13 @@ async def post_tasks_client(
     app = FastAPI()
     app.include_router(tasks_router, prefix="/api/tasks")
 
-    async def _override_db():
+    async def _override_db() -> AsyncIterator[AsyncSession]:
         yield db_session
 
     async def _override_agent() -> AgentContext:
-        return AgentContext(agent_id=main_pm.id, role=AgentRole.MAIN_PM, team=None)
+        return AgentContext(
+            agent_id=cast("UUID", main_pm.id), role=AgentRole.MAIN_PM, team=None
+        )
 
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_agent_context] = _override_agent

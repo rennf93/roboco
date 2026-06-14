@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import uuid
+from collections.abc import AsyncGenerator
 from http import HTTPStatus
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
@@ -48,12 +50,12 @@ async def docs_client(
     app = FastAPI()
     app.include_router(docs_router, prefix="/api/docs")
 
-    async def _override_db():
+    async def _override_db() -> AsyncGenerator[AsyncSession, None]:
         yield db_session
 
     async def _override_agent() -> AgentContext:
         return AgentContext(
-            agent_id=agent.id, role=AgentRole.DOCUMENTER, team=Team.BACKEND
+            agent_id=cast(uuid.UUID, agent.id), role=AgentRole.DOCUMENTER, team=Team.BACKEND
         )
 
     app.dependency_overrides[get_db] = _override_db

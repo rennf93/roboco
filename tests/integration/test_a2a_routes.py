@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from http import HTTPStatus
 from types import SimpleNamespace
@@ -85,7 +86,7 @@ async def a2a_route_client(
     app.include_router(a2a_router, prefix="/api/a2a")
     app.include_router(wellknown_router)
 
-    async def _override_db():
+    async def _override_db() -> AsyncGenerator[AsyncSession, None]:
         yield db_session
 
     async def _override_agent_slug() -> str:

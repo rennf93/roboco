@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from itertools import product
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -21,7 +22,7 @@ from roboco.services.gateway.choreographer import (
 from roboco.services.gateway.choreographer._impl import DelegateInputs
 
 
-def _make_deps(task_svc=None) -> ChoreographerDeps:
+def _make_deps(task_svc: Any = None) -> ChoreographerDeps:
     base = {
         "task": task_svc or AsyncMock(),
         "work_session": AsyncMock(),

@@ -10,7 +10,7 @@ either.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import pytest
@@ -65,7 +65,7 @@ async def task_setup(
     }
 
 
-def _request(setup: dict, **overrides: object) -> TaskCreateRequest:
+def _request(setup: dict, **overrides: Any) -> TaskCreateRequest:
     """Build a TaskCreateRequest with sensible defaults; overrides win.
 
     `TaskCreateRequest` is a plain dataclass — no Pydantic validation —
@@ -88,7 +88,7 @@ def _request(setup: dict, **overrides: object) -> TaskCreateRequest:
         task_type=overrides.pop("task_type", TaskType.CODE),
         nature=overrides.pop("nature", TaskNature.TECHNICAL),
         estimated_complexity=overrides.pop("estimated_complexity", Complexity.MEDIUM),
-        **overrides,  # type: ignore[arg-type]
+        **overrides,
     )
 
 

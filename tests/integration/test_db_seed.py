@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import contextlib
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
@@ -130,7 +131,7 @@ async def test_bootstrap_database_invokes_full_pipeline() -> None:
     fake_session.commit = AsyncMock()
 
     @asynccontextmanager
-    async def _ctx():
+    async def _ctx() -> AsyncGenerator[Any, None]:
         yield fake_session
 
     with (

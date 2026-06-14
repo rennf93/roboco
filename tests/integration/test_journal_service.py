@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import uuid
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock as _AsyncMock
 from unittest.mock import MagicMock as _MagicMock
 from uuid import uuid4
@@ -268,7 +269,7 @@ async def test_get_agent_slug_returns_none_for_unknown(
     assert await svc.get_agent_slug(uuid4()) is None
 
 
-def _reflection(tid) -> TaskReflectionParams:
+def _reflection(tid: uuid.UUID) -> TaskReflectionParams:
     return TaskReflectionParams(
         task_id=tid,
         title="r",
@@ -279,7 +280,7 @@ def _reflection(tid) -> TaskReflectionParams:
     )
 
 
-def _decision(tid) -> DecisionLogParams:
+def _decision(tid: uuid.UUID) -> DecisionLogParams:
     return DecisionLogParams(
         title="d",
         context="ctx",
@@ -291,11 +292,11 @@ def _decision(tid) -> DecisionLogParams:
     )
 
 
-def _learning(tid) -> LearningEntryParams:
+def _learning(tid: uuid.UUID) -> LearningEntryParams:
     return LearningEntryParams(title="l", what_learned="x", task_id=tid)
 
 
-def _struggle(tid) -> StruggleEntryParams:
+def _struggle(tid: uuid.UUID) -> StruggleEntryParams:
     return StruggleEntryParams(
         title="s",
         what_struggled="x",
@@ -453,7 +454,7 @@ async def test_create_entry_integrity_error_returns_none(
     err = _IE("insert", {}, Exception("FK violation"))
     original_commit = svc.session.commit
 
-    async def _raise_once(*_args, **_kwargs):
+    async def _raise_once(*_args: Any, **_kwargs: Any) -> None:
         # Restore for cleanup paths.
         svc.session.commit = original_commit
         raise err

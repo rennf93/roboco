@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, patch
 from unittest.mock import MagicMock as _MM
 from uuid import UUID, uuid4
@@ -809,7 +809,7 @@ async def test_cancel_task_status_no_value_attr(a2a_setup: dict) -> None:
 
     class _FakeStatus:
         # No .value attribute
-        def __str__(self):
+        def __str__(self) -> str:
             return "pending"
 
     fake_task = type(
@@ -824,7 +824,7 @@ async def test_cancel_task_status_no_value_attr(a2a_setup: dict) -> None:
 
     seen = {"hit": False}
 
-    async def _intercepting_execute(stmt, *args, **kwargs):
+    async def _intercepting_execute(stmt: Any, *args: Any, **kwargs: Any) -> Any:
         if not seen["hit"]:
             seen["hit"] = True
             stub = _MM()
@@ -905,7 +905,7 @@ def test_extract_message_text_no_text_attr() -> None:
     """text_part missing `text` attr → returns defaults."""
     fake_part = SimpleNamespace(type="text")
     fake_msg = SimpleNamespace(parts=[fake_part])
-    title, desc, full = A2AService.extract_message_text(fake_msg)
+    title, desc, full = A2AService.extract_message_text(cast(A2AMessage, fake_msg))
     assert title == "A2A Task"
     assert desc == ""
     assert full == ""
@@ -921,7 +921,7 @@ def test_update_task_with_message_no_text_attr() -> None:
     fake_part = SimpleNamespace(type="text")
     fake_msg = SimpleNamespace(parts=[fake_part])
     fake_task = SimpleNamespace(dev_notes="orig")
-    A2AService.update_task_with_message(fake_task, fake_msg)
+    A2AService.update_task_with_message(cast(TaskTable, fake_task), cast(A2AMessage, fake_msg))
     assert fake_task.dev_notes == "orig"
 
 
@@ -1137,7 +1137,7 @@ async def test_publish_a2a_response_event_no_bus() -> None:
     mock_bus = type("B", (), {"is_connected": lambda _self: False})()
     with patch("roboco.services.a2a.get_event_bus", return_value=mock_bus):
         await A2AService._publish_a2a_response_event(
-            fake_task, "creator", "requester", "responder"
+            cast(TaskTable, fake_task), "creator", "requester", "responder"
         )
 
 
@@ -1150,7 +1150,7 @@ async def test_publish_a2a_response_event_bus_exception_swallowed() -> None:
     ):
         # Exception swallowed.
         await A2AService._publish_a2a_response_event(
-            fake_task, "creator", "requester", "responder"
+            cast(TaskTable, fake_task), "creator", "requester", "responder"
         )
 
 

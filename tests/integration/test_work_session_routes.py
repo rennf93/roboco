@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from http import HTTPStatus
-from typing import TYPE_CHECKING
-from uuid import uuid4
+from typing import TYPE_CHECKING, Any, cast
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -77,12 +77,12 @@ async def ws_client(
     app = FastAPI()
     app.include_router(ws_router, prefix="/api/work-sessions")
 
-    async def _override_db():
+    async def _override_db() -> AsyncIterator[AsyncSession]:
         yield db_session
 
     async def _override_agent() -> AgentContext:
         return AgentContext(
-            agent_id=agent.id, role=AgentRole.DEVELOPER, team=Team.BACKEND
+            agent_id=cast(UUID, agent.id), role=AgentRole.DEVELOPER, team=Team.BACKEND
         )
 
     app.dependency_overrides[get_db] = _override_db
@@ -423,7 +423,7 @@ async def test_abandon_session_not_found(ws_client: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _seed_ws(setup: dict, **kwargs) -> WorkSessionTable:
+def _seed_ws(setup: dict, **kwargs: Any) -> WorkSessionTable:
     """Insert a WorkSessionTable row directly via the session fixture."""
     return WorkSessionTable(
         id=uuid4(),
@@ -657,11 +657,11 @@ async def test_merge_pr_pm_succeeds(db_session: AsyncSession) -> None:
     app = FastAPI()
     app.include_router(ws_router, prefix="/api/work-sessions")
 
-    async def _override_db():
+    async def _override_db() -> AsyncIterator[AsyncSession]:
         yield db_session
 
     async def _override_agent() -> AgentContext:
-        return AgentContext(agent_id=pm.id, role=AgentRole.MAIN_PM, team=None)
+        return AgentContext(agent_id=cast(UUID, pm.id), role=AgentRole.MAIN_PM, team=None)
 
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_agent_context] = _override_agent
@@ -699,11 +699,11 @@ async def test_merge_pr_unknown_session_pm(db_session: AsyncSession) -> None:
     app = FastAPI()
     app.include_router(ws_router, prefix="/api/work-sessions")
 
-    async def _override_db():
+    async def _override_db() -> AsyncIterator[AsyncSession]:
         yield db_session
 
     async def _override_agent() -> AgentContext:
-        return AgentContext(agent_id=pm.id, role=AgentRole.MAIN_PM, team=None)
+        return AgentContext(agent_id=cast(UUID, pm.id), role=AgentRole.MAIN_PM, team=None)
 
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_agent_context] = _override_agent
@@ -768,11 +768,11 @@ async def test_create_session_non_developer_forbidden(
     app = FastAPI()
     app.include_router(ws_router, prefix="/api/work-sessions")
 
-    async def _override_db():
+    async def _override_db() -> AsyncIterator[AsyncSession]:
         yield db_session
 
     async def _override_agent() -> AgentContext:
-        return AgentContext(agent_id=qa.id, role=AgentRole.QA, team=Team.BACKEND)
+        return AgentContext(agent_id=cast(UUID, qa.id), role=AgentRole.QA, team=Team.BACKEND)
 
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_agent_context] = _override_agent

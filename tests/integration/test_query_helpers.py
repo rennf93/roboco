@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 import pytest
@@ -221,7 +222,7 @@ async def test_get_agent_slug_known(db_session: AsyncSession) -> None:
     )
     db_session.add(agent)
     await db_session.flush()
-    slug = await get_agent_slug(db_session, agent.id)
+    slug = await get_agent_slug(db_session, cast(uuid.UUID, agent.id))
     assert slug == agent.slug
 
 

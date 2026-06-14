@@ -12,7 +12,7 @@ from roboco.api import deps as api_deps
 from roboco.api.routes.v1 import _role_dep as v1_role_dep
 
 
-def test_lifecycle_module_lives_in_foundation():
+def test_lifecycle_module_lives_in_foundation() -> None:
     """Canonical import path is foundation.policy.lifecycle."""
     lifecycle = importlib.import_module("roboco.foundation.policy.lifecycle")
     assert hasattr(lifecycle, "Role")
@@ -20,18 +20,18 @@ def test_lifecycle_module_lives_in_foundation():
     assert hasattr(lifecycle, "_INTENT_VERBS")
 
 
-def test_legacy_lifecycle_package_removed():
+def test_legacy_lifecycle_package_removed() -> None:
     """Legacy roboco.lifecycle package is gone."""
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module("roboco.lifecycle")
 
 
-def test_legacy_lifecycle_spec_module_removed():
+def test_legacy_lifecycle_spec_module_removed() -> None:
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module("roboco.lifecycle.spec")
 
 
-def test_foundation_policy_complete():
+def test_foundation_policy_complete() -> None:
     """All 6 policy domains exist in foundation."""
     for mod in (
         "lifecycle",
@@ -44,7 +44,7 @@ def test_foundation_policy_complete():
         importlib.import_module(f"roboco.foundation.policy.{mod}")
 
 
-def test_no_lifecycle_imports_in_production():
+def test_no_lifecycle_imports_in_production() -> None:
     """Production code (roboco/) imports from foundation directly, no legacy paths."""
     proc = subprocess.run(
         [
@@ -68,7 +68,7 @@ def test_no_lifecycle_imports_in_production():
     assert suspicious == [], f"legacy lifecycle imports remain: {suspicious}"
 
 
-def test_route_guard_role_sets_derive_from_foundation():
+def test_route_guard_role_sets_derive_from_foundation() -> None:
     """api/deps.py + v1/_role_dep.py use foundation Role-set composition."""
     deps_src = inspect.getsource(api_deps)
     role_dep_src = inspect.getsource(v1_role_dep)
@@ -79,7 +79,7 @@ def test_route_guard_role_sets_derive_from_foundation():
     assert "Role." in role_dep_src  # uses Role enum members, not raw strings
 
 
-def test_make_foundation_check_target_exists():
+def test_make_foundation_check_target_exists() -> None:
     """Drift gate target is present in Makefile."""
     makefile = Path("Makefile").read_text(encoding="utf-8")
     assert "foundation-check:" in makefile

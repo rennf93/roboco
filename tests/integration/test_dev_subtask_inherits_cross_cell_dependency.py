@@ -10,8 +10,8 @@ must become dispatchable once the UX task reaches a terminal state.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-from uuid import uuid4
+from typing import TYPE_CHECKING, cast
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -146,7 +146,7 @@ async def _build_product_fanout(setup: dict) -> dict:
             created_by=setup["creator"],
             project_id=setup["ux_project_id"],
             product_id=setup["product_id"],
-            parent_task_id=root.id,
+            parent_task_id=cast(UUID, root.id),
             task_type=TaskType.DESIGN,
             nature=TaskNature.TECHNICAL,
             estimated_complexity=Complexity.MEDIUM,
@@ -161,7 +161,7 @@ async def _build_product_fanout(setup: dict) -> dict:
             created_by=setup["creator"],
             project_id=setup["fe_project_id"],
             product_id=setup["product_id"],
-            parent_task_id=root.id,
+            parent_task_id=cast(UUID, root.id),
             task_type=TaskType.CODE,
             nature=TaskNature.TECHNICAL,
             estimated_complexity=Complexity.MEDIUM,
@@ -171,7 +171,7 @@ async def _build_product_fanout(setup: dict) -> dict:
     # exactly as the product fan-out does on delegate.
     await choreo._wire_ux_frontend_dependency(fe_cell, root)
     await svc.session.flush()
-    refreshed_fe = await svc.get(fe_cell.id)
+    refreshed_fe = await svc.get(cast(UUID, fe_cell.id))
     assert refreshed_fe is not None
     assert ux_cell.id in refreshed_fe.dependency_ids, (
         "precondition: frontend cell task must depend on the UX cell task"
@@ -199,7 +199,7 @@ async def test_dev_subtask_held_until_ux_dependency_resolves(
             created_by=fanout_setup["creator"],
             project_id=fanout_setup["fe_project_id"],
             product_id=fanout_setup["product_id"],
-            parent_task_id=fe_cell.id,
+            parent_task_id=cast(UUID, fe_cell.id),
             assigned_to=fanout_setup["fe_dev_id"],
             task_type=TaskType.CODE,
             nature=TaskNature.TECHNICAL,
@@ -282,8 +282,8 @@ async def test_backend_cell_also_depends_on_ux(fanout_setup: dict) -> None:
     await choreo._wire_ux_frontend_dependency(be_cell, root)
     await svc.session.flush()
 
-    be_row = await svc.get(be_cell.id)
-    ux_row = await svc.get(ux_cell.id)
+    be_row = await svc.get(cast(UUID, be_cell.id))
+    ux_row = await svc.get(cast(UUID, ux_cell.id))
     assert be_row is not None and ux_row is not None
     assert ux_cell.id in be_row.dependency_ids, (
         "backend cell task must depend on the UX cell task"
@@ -326,7 +326,7 @@ async def test_pending_impl_cells_retrowired_when_ux_arrives_later(
             created_by=fanout_setup["creator"],
             project_id=fanout_setup["fe_project_id"],
             product_id=fanout_setup["product_id"],
-            parent_task_id=root.id,
+            parent_task_id=cast(UUID, root.id),
             task_type=TaskType.CODE,
             nature=TaskNature.TECHNICAL,
             estimated_complexity=Complexity.MEDIUM,
@@ -341,7 +341,7 @@ async def test_pending_impl_cells_retrowired_when_ux_arrives_later(
             created_by=fanout_setup["creator"],
             project_id=fanout_setup["be_project_id"],
             product_id=fanout_setup["product_id"],
-            parent_task_id=root.id,
+            parent_task_id=cast(UUID, root.id),
             task_type=TaskType.CODE,
             nature=TaskNature.TECHNICAL,
             estimated_complexity=Complexity.MEDIUM,
@@ -357,7 +357,7 @@ async def test_pending_impl_cells_retrowired_when_ux_arrives_later(
             created_by=fanout_setup["creator"],
             project_id=fanout_setup["ux_project_id"],
             product_id=fanout_setup["product_id"],
-            parent_task_id=root.id,
+            parent_task_id=cast(UUID, root.id),
             task_type=TaskType.DESIGN,
             nature=TaskNature.TECHNICAL,
             estimated_complexity=Complexity.MEDIUM,
@@ -366,9 +366,9 @@ async def test_pending_impl_cells_retrowired_when_ux_arrives_later(
     await choreo._wire_ux_frontend_dependency(ux_cell, root)
     await svc.session.flush()
 
-    fe_row = await svc.get(fe_cell.id)
-    be_row = await svc.get(be_cell.id)
-    ux_row = await svc.get(ux_cell.id)
+    fe_row = await svc.get(cast(UUID, fe_cell.id))
+    be_row = await svc.get(cast(UUID, be_cell.id))
+    ux_row = await svc.get(cast(UUID, ux_cell.id))
     assert fe_row is not None and be_row is not None and ux_row is not None
     assert ux_cell.id in fe_row.dependency_ids, "frontend must retro-wire onto UX"
     assert ux_cell.id in be_row.dependency_ids, "backend must retro-wire onto UX"

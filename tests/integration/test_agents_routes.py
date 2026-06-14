@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from http import HTTPStatus
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -44,7 +45,7 @@ async def agents_client(
     app = FastAPI()
     app.include_router(agents_router, prefix="/api/agents")
 
-    async def _override_db():
+    async def _override_db() -> AsyncGenerator[AsyncSession, None]:
         yield db_session
 
     app.dependency_overrides[get_db] = _override_db

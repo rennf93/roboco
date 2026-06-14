@@ -53,7 +53,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
@@ -66,7 +66,7 @@ _EXPECTED_BUG_COUNT = 11
 
 
 def _load_fixture() -> dict[str, Any]:
-    return json.loads(_FIXTURE.read_text())
+    return cast(dict[str, Any], json.loads(_FIXTURE.read_text()))
 
 
 def _bug_records() -> list[dict[str, Any]]:

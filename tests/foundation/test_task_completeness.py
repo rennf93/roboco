@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from types import SimpleNamespace
 
 from roboco.foundation.policy import task_completeness as tc
@@ -11,7 +12,7 @@ PARENT_PRIORITY_HIGH = 4  # parent task priority used for inheritance assertions
 DEFAULT_PRIORITY_MEDIUM = 2  # fill_priority_from_parent default when no parent
 
 
-def _task(**fields):
+def _task(**fields: Any) -> SimpleNamespace:
     """Build a SimpleNamespace mimicking a Task with the given fields."""
     defaults = {
         "title": "ok",
@@ -119,7 +120,7 @@ def test_fill_team_from_assignee_unknown_slug_returns_unchanged() -> None:
 
 
 def test_fill_priority_from_parent_inherits() -> None:
-    payload = {}
+    payload: dict[str, Any] = {}
     parent = SimpleNamespace(priority=PARENT_PRIORITY_HIGH)
     result = tc.fill_priority_from_parent(payload, parent)
     assert result["priority"] == PARENT_PRIORITY_HIGH
@@ -135,14 +136,14 @@ def test_fill_priority_from_parent_does_not_overwrite_explicit() -> None:
 
 
 def test_fill_priority_from_parent_no_parent_uses_medium_default() -> None:
-    payload = {}
+    payload: dict[str, Any] = {}
     result = tc.fill_priority_from_parent(payload, None)
     assert result["priority"] == DEFAULT_PRIORITY_MEDIUM
     assert result["__priority_inherited"] is True
 
 
 def test_fill_parent_from_active_task_sets_id() -> None:
-    payload = {}
+    payload: dict[str, Any] = {}
     result = tc.fill_parent_from_active_task(payload, "task-id-123")
     assert result["parent_task_id"] == "task-id-123"
 
