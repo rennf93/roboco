@@ -27,7 +27,7 @@ def _enclosing_function(tree: ast.AST, lineno: int) -> str | None:
     return candidate
 
 
-def test_no_inline_has_decision_for_task_remains_in_choreographer():
+def test_no_inline_has_decision_for_task_remains_in_choreographer() -> None:
     """All journal:decision checks must use tracing.check_requirements via the
     unified helpers (_check_pm_decision_required, _check_complete_gates,
     _check_submit_up_gates, _check_tracing_gates, _check_claim_journal_at_claim,
@@ -63,12 +63,12 @@ def test_no_inline_has_decision_for_task_remains_in_choreographer():
     assert suspicious == [], f"inline has_decision_for_task remains: {suspicious}"
 
 
-def test_tracing_gate_module_removed():
+def test_tracing_gate_module_removed() -> None:
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module("roboco.services.gateway.tracing_gate")
 
 
-def test_every_intent_verb_has_tracing_decision():
+def test_every_intent_verb_has_tracing_decision() -> None:
     """Mirror of the foundation parity test, as a smoke-gate."""
     intent_verbs = set(spec._INTENT_VERBS.keys())
     in_table = set(tracing.VERB_REQUIREMENTS)
@@ -79,9 +79,9 @@ def test_every_intent_verb_has_tracing_decision():
     )
 
 
-def test_no_dangling_requirements():
+def test_no_dangling_requirements() -> None:
     """Every Requirement value is referenced by at least one verb."""
-    used = set()
+    used: set[tracing.Requirement] = set()
     for reqs in tracing.VERB_REQUIREMENTS.values():
         used.update(reqs)
     assert set(tracing.Requirement) - used == set()

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import uuid
 from http import HTTPStatus
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -27,7 +28,7 @@ from roboco.services.base import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncGenerator, AsyncIterator
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -65,12 +66,14 @@ async def git_client(
     app = FastAPI()
     app.include_router(git_router, prefix="/api/git")
 
-    async def _override_db():
+    async def _override_db() -> AsyncGenerator[AsyncSession]:
         yield db_session
 
     async def _override_agent() -> AgentContext:
         return AgentContext(
-            agent_id=agent.id, role=AgentRole.DEVELOPER, team=Team.BACKEND
+            agent_id=cast("uuid.UUID", agent.id),
+            role=AgentRole.DEVELOPER,
+            team=Team.BACKEND,
         )
 
     app.dependency_overrides[get_db] = _override_db

@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from http import HTTPStatus
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -46,11 +46,13 @@ async def project_client(
     app = FastAPI()
     app.include_router(project_router, prefix="/api/projects")
 
-    async def _override_db():
+    async def _override_db() -> AsyncIterator[AsyncSession]:
         yield db_session
 
     async def _override_agent() -> AgentContext:
-        return AgentContext(agent_id=agent.id, role=AgentRole.MAIN_PM, team=None)
+        return AgentContext(
+            agent_id=cast("UUID", agent.id), role=AgentRole.MAIN_PM, team=None
+        )
 
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_agent_context] = _override_agent
@@ -337,7 +339,7 @@ async def test_remove_agent_access_via_slug_not_found(
 
 @pytest.mark.asyncio
 async def test_create_project_developer_forbidden(
-    db_session,
+    db_session: AsyncSession,
 ) -> None:
     """Developers cannot create projects."""
     dev = AgentTable(
@@ -359,12 +361,12 @@ async def test_create_project_developer_forbidden(
     app = FastAPI()
     app.include_router(project_router, prefix="/api/projects")
 
-    async def _override_db():
+    async def _override_db() -> AsyncIterator[AsyncSession]:
         yield db_session
 
     async def _override_agent() -> AgentContext:
         return AgentContext(
-            agent_id=dev.id, role=AgentRole.DEVELOPER, team=Team.BACKEND
+            agent_id=cast("UUID", dev.id), role=AgentRole.DEVELOPER, team=Team.BACKEND
         )
 
     app.dependency_overrides[get_db] = _override_db

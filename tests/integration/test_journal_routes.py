@@ -8,7 +8,7 @@ mapping) is exercised end-to-end.
 from __future__ import annotations
 
 from http import HTTPStatus
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import patch
 from uuid import UUID, uuid4
 
@@ -30,7 +30,7 @@ from roboco.models.base import JournalEntryType, TaskNature, TaskStatus, TaskTyp
 from roboco.models.permissions import AgentContext
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncGenerator, AsyncIterator
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -58,12 +58,12 @@ async def journal_client(
     app = FastAPI()
     app.include_router(journals_router, prefix="/api/journals")
 
-    async def _override_db():
+    async def _override_db() -> AsyncGenerator[AsyncSession]:
         yield db_session
 
     async def _override_agent() -> AgentContext:
         return AgentContext(
-            agent_id=agent.id,
+            agent_id=cast("UUID", agent.id),
             role=AgentRole.DEVELOPER,
             team=Team.BACKEND,
             slug=agent.slug,
@@ -264,12 +264,12 @@ async def journal_setup_with_task(
     app = FastAPI()
     app.include_router(journals_router, prefix="/api/journals")
 
-    async def _override_db():
+    async def _override_db() -> AsyncGenerator[AsyncSession]:
         yield db_session
 
     async def _override_agent() -> AgentContext:
         return AgentContext(
-            agent_id=agent.id,
+            agent_id=cast("UUID", agent.id),
             role=AgentRole.DEVELOPER,
             team=Team.BACKEND,
             slug=agent.slug,
@@ -280,12 +280,14 @@ async def journal_setup_with_task(
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        yield client, agent, task.id
+        yield client, agent, cast("UUID", task.id)
     app.dependency_overrides.clear()
 
 
 @pytest.mark.asyncio
-async def test_add_task_reflection(journal_setup_with_task) -> None:
+async def test_add_task_reflection(
+    journal_setup_with_task: tuple[AsyncClient, AgentTable, UUID],
+) -> None:
     client, _, task_id = journal_setup_with_task
     response = await client.post(
         "/api/journals/me/reflections",
@@ -303,7 +305,9 @@ async def test_add_task_reflection(journal_setup_with_task) -> None:
 
 
 @pytest.mark.asyncio
-async def test_add_decision_log(journal_setup_with_task) -> None:
+async def test_add_decision_log(
+    journal_setup_with_task: tuple[AsyncClient, AgentTable, UUID],
+) -> None:
     client, _, task_id = journal_setup_with_task
     response = await client.post(
         "/api/journals/me/decisions",
@@ -325,7 +329,9 @@ async def test_add_decision_log(journal_setup_with_task) -> None:
 
 
 @pytest.mark.asyncio
-async def test_add_learning(journal_setup_with_task) -> None:
+async def test_add_learning(
+    journal_setup_with_task: tuple[AsyncClient, AgentTable, UUID],
+) -> None:
     client, _, task_id = journal_setup_with_task
     response = await client.post(
         "/api/journals/me/learnings",
@@ -340,7 +346,9 @@ async def test_add_learning(journal_setup_with_task) -> None:
 
 
 @pytest.mark.asyncio
-async def test_add_struggle(journal_setup_with_task) -> None:
+async def test_add_struggle(
+    journal_setup_with_task: tuple[AsyncClient, AgentTable, UUID],
+) -> None:
     client, _, task_id = journal_setup_with_task
     response = await client.post(
         "/api/journals/me/struggles",
@@ -418,7 +426,7 @@ async def test_list_agent_entries_for_self(
 
 @pytest.mark.asyncio
 async def test_search_my_entries_returns_list(
-    journal_setup_with_task,
+    journal_setup_with_task: tuple[AsyncClient, AgentTable, UUID],
 ) -> None:
     """Search route — may 200 with empty list or 500 if RAG isn't configured."""
     client, _, _ = journal_setup_with_task
@@ -438,7 +446,7 @@ async def test_search_my_entries_returns_list(
 
 @pytest.mark.asyncio
 async def test_add_general_entry(
-    journal_setup_with_task,
+    journal_setup_with_task: tuple[AsyncClient, AgentTable, UUID],
 ) -> None:
     client, _, task_id = journal_setup_with_task
     response = await client.post(
@@ -678,12 +686,12 @@ async def test_get_entry_full_success_with_slug(db_session: AsyncSession) -> Non
     app = FastAPI()
     app.include_router(journals_router, prefix="/api/journals")
 
-    async def _override_db():
+    async def _override_db() -> AsyncGenerator[AsyncSession]:
         yield db_session
 
     async def _override_agent() -> AgentContext:
         return AgentContext(
-            agent_id=agent.id,
+            agent_id=cast("UUID", agent.id),
             role=AgentRole.DEVELOPER,
             team=Team.BACKEND,
             slug=agent.slug,
@@ -754,12 +762,12 @@ async def test_delete_entry_other_agent_forbidden(
     app = FastAPI()
     app.include_router(journals_router, prefix="/api/journals")
 
-    async def _override_db():
+    async def _override_db() -> AsyncGenerator[AsyncSession]:
         yield db_session
 
     async def _override_agent_owner() -> AgentContext:
         return AgentContext(
-            agent_id=owner.id,
+            agent_id=cast("UUID", owner.id),
             role=AgentRole.DEVELOPER,
             team=Team.BACKEND,
             slug=owner.slug,
@@ -785,7 +793,7 @@ async def test_delete_entry_other_agent_forbidden(
         # Switch to the intruder.
         async def _override_agent_intruder() -> AgentContext:
             return AgentContext(
-                agent_id=intruder.id,
+                agent_id=cast("UUID", intruder.id),
                 role=AgentRole.DEVELOPER,
                 team=Team.BACKEND,
                 slug=intruder.slug,
@@ -907,12 +915,12 @@ async def _make_cross_agent_app(
     app = FastAPI()
     app.include_router(journals_router, prefix="/api/journals")
 
-    async def _override_db():
+    async def _override_db() -> AsyncGenerator[AsyncSession]:
         yield db_session
 
     async def _override_agent() -> AgentContext:
         return AgentContext(
-            agent_id=reader.id,
+            agent_id=cast("UUID", reader.id),
             role=reader.role,
             team=reader.team,
             slug=reader.slug,

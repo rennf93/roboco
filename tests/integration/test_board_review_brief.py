@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from http import HTTPStatus
-from typing import TYPE_CHECKING
-from uuid import uuid4
+from typing import TYPE_CHECKING, cast
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -95,7 +95,7 @@ async def brief_setup(db_session: AsyncSession) -> AsyncIterator[dict]:
         agent: AgentTable,
         *,
         entry_type: JournalEntryType,
-        task_id,
+        task_id: UUID,
         title: str,
         when: datetime,
     ) -> None:
@@ -116,14 +116,14 @@ async def brief_setup(db_session: AsyncSession) -> AsyncIterator[dict]:
     _entry(
         po,
         entry_type=JournalEntryType.DECISION_LOG,
-        task_id=task.id,
+        task_id=cast("UUID", task.id),
         title="PO review",
         when=datetime(2026, 1, 1, tzinfo=UTC),
     )
     _entry(
         hom,
         entry_type=JournalEntryType.DECISION_LOG,
-        task_id=task.id,
+        task_id=cast("UUID", task.id),
         title="HoM review",
         when=datetime(2026, 1, 2, tzinfo=UTC),
     )
@@ -131,21 +131,21 @@ async def brief_setup(db_session: AsyncSession) -> AsyncIterator[dict]:
     _entry(  # non-board author, decision log
         dev,
         entry_type=JournalEntryType.DECISION_LOG,
-        task_id=task.id,
+        task_id=cast("UUID", task.id),
         title="Dev decision",
         when=datetime(2026, 1, 3, tzinfo=UTC),
     )
     _entry(  # board author, but not a decision log
         po,
         entry_type=JournalEntryType.TASK_REFLECTION,
-        task_id=task.id,
+        task_id=cast("UUID", task.id),
         title="PO reflection",
         when=datetime(2026, 1, 4, tzinfo=UTC),
     )
     _entry(  # board decision log, but on a different task
         po,
         entry_type=JournalEntryType.DECISION_LOG,
-        task_id=other.id,
+        task_id=cast("UUID", other.id),
         title="PO review of other task",
         when=datetime(2026, 1, 5, tzinfo=UTC),
     )
@@ -191,7 +191,7 @@ def _board_review_app(db_session: AsyncSession) -> FastAPI:
     app = FastAPI()
     app.include_router(tasks_router, prefix="/api/tasks")
 
-    async def _db():
+    async def _db() -> AsyncIterator[AsyncSession]:
         yield db_session
 
     async def _agent() -> AgentContext:

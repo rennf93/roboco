@@ -93,7 +93,9 @@ async def test_upsert_batch_truncates_long_preview(
     rows = await repo.get_by_index_type("code")
     matching = [r for r in rows if r.source == "long.md"]
     assert matching
-    assert len(matching[0].preview) <= _PREVIEW_MAX
+    preview = matching[0].preview
+    assert preview is not None
+    assert len(preview) <= _PREVIEW_MAX
 
 
 @pytest.mark.asyncio

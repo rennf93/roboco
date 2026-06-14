@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from http import HTTPStatus
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -591,7 +591,7 @@ async def test_create_prompt_template(optimal_client: AsyncClient) -> None:
         )
 
         # get_optimal_service is async — wrap in async return
-        async def _ret():
+        async def _ret() -> Any:
             return mock_service
 
         mock_get.side_effect = _ret
@@ -609,7 +609,7 @@ async def test_list_prompt_templates(optimal_client: AsyncClient) -> None:
         mock_service = MagicMock()
         mock_service.list_prompt_templates = MagicMock(return_value=[])
 
-        async def _ret():
+        async def _ret() -> Any:
             return mock_service
 
         mock_get.side_effect = _ret

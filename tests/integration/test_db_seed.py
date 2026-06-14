@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import contextlib
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
@@ -18,6 +18,8 @@ from roboco.db.seed import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -130,7 +132,7 @@ async def test_bootstrap_database_invokes_full_pipeline() -> None:
     fake_session.commit = AsyncMock()
 
     @asynccontextmanager
-    async def _ctx():
+    async def _ctx() -> AsyncGenerator[Any]:
         yield fake_session
 
     with (

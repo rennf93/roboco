@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import uuid
 from http import HTTPStatus
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 import pytest
@@ -19,7 +20,7 @@ from roboco.models.permissions import AgentContext
 from roboco.services.dashboard import reset_storage
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncGenerator, AsyncIterator
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -48,11 +49,13 @@ async def dashboard_client(
     app = FastAPI()
     app.include_router(dashboard_router, prefix="/api/dashboard")
 
-    async def _override_db():
+    async def _override_db() -> AsyncGenerator[AsyncSession]:
         yield db_session
 
     async def _override_agent() -> AgentContext:
-        return AgentContext(agent_id=agent.id, role=AgentRole.CEO, team=None)
+        return AgentContext(
+            agent_id=cast("uuid.UUID", agent.id), role=AgentRole.CEO, team=None
+        )
 
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_agent_context] = _override_agent

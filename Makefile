@@ -241,7 +241,7 @@ quality:
 	@echo "==> ruff check"
 	@uv run ruff check .
 	@echo "==> mypy"
-	@uv run mypy roboco/
+	@uv run mypy roboco/ tests/
 	@echo "==> pytest with coverage"
 	@uv run pytest -q --cov=roboco --cov-report=term-missing --cov-fail-under=80
 	@echo "==> xenon (cyclomatic complexity)"
@@ -274,7 +274,7 @@ quality:
 quality-fast:
 	@uv run ruff format --check .
 	@uv run ruff check .
-	@uv run mypy roboco/
+	@uv run mypy roboco/ tests/
 	@uv run pytest -q -x --no-cov
 
 # Fast pre-submit gate: format-check + lint + types + complexity, NO tests.

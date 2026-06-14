@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from http import HTTPStatus
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import patch
 from uuid import UUID, uuid4
 
@@ -108,11 +108,11 @@ async def session_client(
     app = FastAPI()
     app.include_router(sessions_router, prefix="/api/sessions")
 
-    async def _override_db():
+    async def _override_db() -> AsyncIterator[AsyncSession]:
         yield db_session
 
     async def _override_agent_id() -> UUID:
-        return pm.id
+        return cast("UUID", pm.id)
 
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_current_agent_id] = _override_agent_id
@@ -282,15 +282,17 @@ async def test_get_tasks_for_unknown_session(session_client: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _make_dev_sessions_app(db_session, dev_agent: AgentTable):
+async def _make_dev_sessions_app(
+    db_session: AsyncSession, dev_agent: AgentTable
+) -> FastAPI:
     """Build a FastAPI app for sessions where the agent is a developer."""
     app = FastAPI()
     app.include_router(sessions_router, prefix="/api/sessions")
 
-    async def _override_db():
+    async def _override_db() -> AsyncIterator[AsyncSession]:
         yield db_session
 
-    async def _override_agent_id():
+    async def _override_agent_id() -> Any:
         return dev_agent.id
 
     app.dependency_overrides[get_db] = _override_db
@@ -300,7 +302,7 @@ async def _make_dev_sessions_app(db_session, dev_agent: AgentTable):
 
 @pytest.mark.asyncio
 async def test_link_task_developer_forbidden(
-    db_session,
+    db_session: AsyncSession,
 ) -> None:
     dev = AgentTable(
         id=uuid4(),
@@ -335,7 +337,7 @@ async def test_link_task_developer_forbidden(
 
 @pytest.mark.asyncio
 async def test_link_task_to_session_developer_forbidden(
-    db_session,
+    db_session: AsyncSession,
 ) -> None:
     """Developer cannot link tasks to sessions via /sessions/{id}/tasks."""
     dev = AgentTable(
@@ -531,10 +533,10 @@ async def _make_outsider_sessions_app(
     app = FastAPI()
     app.include_router(sessions_router, prefix="/api/sessions")
 
-    async def _override_db():
+    async def _override_db() -> AsyncIterator[AsyncSession]:
         yield db_session
 
-    async def _override_agent_id():
+    async def _override_agent_id() -> Any:
         return outsider.id
 
     app.dependency_overrides[get_db] = _override_db

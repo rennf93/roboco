@@ -5,9 +5,9 @@ from __future__ import annotations
 from http import HTTPStatus
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -84,11 +84,13 @@ async def task_client(
     app = FastAPI()
     app.include_router(tasks_router, prefix="/api/tasks")
 
-    async def _override_db():
+    async def _override_db() -> AsyncIterator[AsyncSession]:
         yield db_session
 
     async def _override_agent() -> AgentContext:
-        return AgentContext(agent_id=main_pm.id, role=AgentRole.MAIN_PM, team=None)
+        return AgentContext(
+            agent_id=cast("UUID", main_pm.id), role=AgentRole.MAIN_PM, team=None
+        )
 
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_agent_context] = _override_agent
@@ -108,7 +110,7 @@ _HDR = {"X-Agent-ID": str(uuid4()), "X-Agent-Role": "main_pm"}
 
 
 def _seed_task(
-    setup: dict, *, status: TaskStatus = TaskStatus.PENDING, **kw
+    setup: dict, *, status: TaskStatus = TaskStatus.PENDING, **kw: Any
 ) -> TaskTable:
     task = TaskTable(
         id=uuid4(),
@@ -2001,11 +2003,13 @@ async def qa_client(db_session: AsyncSession) -> AsyncIterator[dict]:
     app = FastAPI()
     app.include_router(tasks_router, prefix="/api/tasks")
 
-    async def _override_db():
+    async def _override_db() -> AsyncIterator[AsyncSession]:
         yield db_session
 
     async def _override_agent() -> AgentContext:
-        return AgentContext(agent_id=qa.id, role=AgentRole.QA, team=Team.BACKEND)
+        return AgentContext(
+            agent_id=cast("UUID", qa.id), role=AgentRole.QA, team=Team.BACKEND
+        )
 
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_agent_context] = _override_agent
@@ -2021,7 +2025,7 @@ async def qa_client(db_session: AsyncSession) -> AsyncIterator[dict]:
     app.dependency_overrides.clear()
 
 
-def _seed_task_qa(setup: dict, **kw) -> TaskTable:
+def _seed_task_qa(setup: dict, **kw: Any) -> TaskTable:
     task = TaskTable(
         id=uuid4(),
         title="t",
@@ -2365,11 +2369,13 @@ async def ceo_client(db_session: AsyncSession) -> AsyncIterator[dict]:
     app = FastAPI()
     app.include_router(tasks_router, prefix="/api/tasks")
 
-    async def _override_db():
+    async def _override_db() -> AsyncIterator[AsyncSession]:
         yield db_session
 
     async def _override_agent() -> AgentContext:
-        return AgentContext(agent_id=ceo.id, role=AgentRole.CEO, team=None)
+        return AgentContext(
+            agent_id=cast("UUID", ceo.id), role=AgentRole.CEO, team=None
+        )
 
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_agent_context] = _override_agent
@@ -2385,7 +2391,7 @@ async def ceo_client(db_session: AsyncSession) -> AsyncIterator[dict]:
     app.dependency_overrides.clear()
 
 
-def _seed_task_ceo(setup: dict, **kw) -> TaskTable:
+def _seed_task_ceo(setup: dict, **kw: Any) -> TaskTable:
     task = TaskTable(
         id=uuid4(),
         title="t",

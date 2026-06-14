@@ -20,9 +20,9 @@ unassigned claim pool, not the pre-assigned dev.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import PropertyMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -185,7 +185,7 @@ async def _seed_dev_subtask_with_unmet_dep(setup: dict) -> dict:
             created_by=setup["creator"],
             project_id=setup["ux_project_id"],
             product_id=setup["product_id"],
-            parent_task_id=root.id,
+            parent_task_id=cast("UUID", root.id),
             task_type=TaskType.DESIGN,
             nature=TaskNature.TECHNICAL,
             estimated_complexity=Complexity.MEDIUM,
@@ -200,7 +200,7 @@ async def _seed_dev_subtask_with_unmet_dep(setup: dict) -> dict:
             created_by=setup["creator"],
             project_id=setup["fe_project_id"],
             product_id=setup["product_id"],
-            parent_task_id=root.id,
+            parent_task_id=cast("UUID", root.id),
             task_type=TaskType.CODE,
             nature=TaskNature.TECHNICAL,
             estimated_complexity=Complexity.MEDIUM,
@@ -221,7 +221,7 @@ async def _seed_dev_subtask_with_unmet_dep(setup: dict) -> dict:
             created_by=setup["creator"],
             project_id=setup["fe_project_id"],
             product_id=setup["product_id"],
-            parent_task_id=fe_cell.id,
+            parent_task_id=cast("UUID", fe_cell.id),
             assigned_to=setup["fe_dev_db_id"],
             task_type=TaskType.CODE,
             nature=TaskNature.TECHNICAL,
@@ -230,9 +230,9 @@ async def _seed_dev_subtask_with_unmet_dep(setup: dict) -> dict:
     )
     assert dev_subtask.status == TaskStatus.PENDING
     # The dev subtask depends on the UX cell task (cross-cell sequencing).
-    await svc.add_dependency(dev_subtask.id, ux_cell.id)
+    await svc.add_dependency(cast("UUID", dev_subtask.id), cast("UUID", ux_cell.id))
     await svc.session.flush()
-    refreshed = await svc.get(dev_subtask.id)
+    refreshed = await svc.get(cast("UUID", dev_subtask.id))
     assert refreshed is not None
     assert ux_cell.id in refreshed.dependency_ids, (
         "precondition: dev subtask must depend on the UX cell task"
@@ -350,7 +350,8 @@ async def test_claimed_dependency_blocked_task_is_released_to_pending(
     dev_subtask.branch_name = "feature/frontend/DEVLEAF01"
     await svc.session.flush()
 
-    held = await svc.get(dev_subtask.id)
+    held = await svc.get(cast("UUID", dev_subtask.id))
+    assert held is not None
     owner = held.assigned_to  # capture before the guard releases the claim
     assert owner is not None
     guard = await choreo._run_claim_guards(agent_id=fe_dev_db_id, task=held)

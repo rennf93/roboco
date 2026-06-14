@@ -25,11 +25,15 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
-def _make_app(db_session, role: AgentRole = AgentRole.MAIN_PM, team=None) -> FastAPI:
+def _make_app(
+    db_session: AsyncSession,
+    role: AgentRole = AgentRole.MAIN_PM,
+    team: Team | None = None,
+) -> FastAPI:
     app = FastAPI()
     app.include_router(provider_router, prefix="/api/providers")
 
-    async def _override_db():
+    async def _override_db() -> AsyncIterator[AsyncSession]:
         yield db_session
 
     async def _override_agent() -> AgentContext:

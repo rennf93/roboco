@@ -6,7 +6,7 @@ the same SQLAlchemy paths the production code does.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -23,6 +23,7 @@ from roboco.utils.crypto import EncryptionError
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+    from pathlib import Path
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -381,7 +382,7 @@ async def test_delete_project_with_active_work_session(
 
     real_execute = svc.session.execute
 
-    async def _intercepting_execute(stmt, *args, **kwargs):
+    async def _intercepting_execute(stmt: Any, *args: Any, **kwargs: Any) -> Any:
         # When the active-sessions select runs, return a stub with our fake ws.
         # Identify by substring in the SQL — the only WorkSession query in
         # delete() filters by project_id and status.
@@ -408,7 +409,7 @@ async def test_delete_project_with_active_work_session(
 
 @pytest.mark.asyncio
 async def test_delete_project_with_workspace_cleanup(
-    project_setup: dict, tmp_path
+    project_setup: dict, tmp_path: Path
 ) -> None:
     """delete_workspaces=True triggers filesystem cleanup branch."""
 
