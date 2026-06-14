@@ -18,6 +18,7 @@ triggers only its own recovery helper.
 
 from __future__ import annotations
 
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -58,9 +59,11 @@ async def test_paused_parent_is_resumed_before_spawn() -> None:
 
     await orch._maybe_spawn_pm_closure(client, task)
 
-    orch._auto_resume_paused_parent.assert_awaited_once_with(client, "parent-1")
-    orch._auto_recover_blocked_parent.assert_not_awaited()
-    orch.spawn_agent.assert_awaited_once()
+    cast(AsyncMock, orch._auto_resume_paused_parent).assert_awaited_once_with(
+        client, "parent-1"
+    )
+    cast(AsyncMock, orch._auto_recover_blocked_parent).assert_not_awaited()
+    cast(AsyncMock, orch.spawn_agent).assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -72,9 +75,11 @@ async def test_blocked_parent_is_recovered_before_spawn() -> None:
 
     await orch._maybe_spawn_pm_closure(client, task)
 
-    orch._auto_recover_blocked_parent.assert_awaited_once_with(client, "parent-2")
-    orch._auto_resume_paused_parent.assert_not_awaited()
-    orch.spawn_agent.assert_awaited_once()
+    cast(AsyncMock, orch._auto_recover_blocked_parent).assert_awaited_once_with(
+        client, "parent-2"
+    )
+    cast(AsyncMock, orch._auto_resume_paused_parent).assert_not_awaited()
+    cast(AsyncMock, orch.spawn_agent).assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -88,9 +93,9 @@ async def test_non_paused_parent_is_not_resumed() -> None:
 
         await orch._maybe_spawn_pm_closure(client, task)
 
-        orch._auto_resume_paused_parent.assert_not_awaited()
-        orch._auto_recover_blocked_parent.assert_not_awaited()
-        orch.spawn_agent.assert_awaited_once()
+        cast(AsyncMock, orch._auto_resume_paused_parent).assert_not_awaited()
+        cast(AsyncMock, orch._auto_recover_blocked_parent).assert_not_awaited()
+        cast(AsyncMock, orch.spawn_agent).assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -104,8 +109,8 @@ async def test_resume_skipped_when_closure_gate_blocks_spawn() -> None:
         client, {"id": "p", "status": "paused", "team": "backend"}
     )
 
-    orch._auto_resume_paused_parent.assert_not_awaited()
-    orch.spawn_agent.assert_not_awaited()
+    cast(AsyncMock, orch._auto_resume_paused_parent).assert_not_awaited()
+    cast(AsyncMock, orch.spawn_agent).assert_not_awaited()
 
 
 @pytest.mark.asyncio

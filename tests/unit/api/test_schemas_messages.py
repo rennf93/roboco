@@ -4,14 +4,20 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 from roboco.api.schemas.messages import message_to_response
 
+if TYPE_CHECKING:
+    from roboco.db.tables import MessageTable
 
-def _stub_message(*, edit_history: list | None = None, edited_at=None):
+
+def _stub_message(
+    *, edit_history: list[Any] | None = None, edited_at: datetime | None = None
+) -> MessageTable:
     """Build a MessageTable-shaped object."""
-    return SimpleNamespace(
+    obj = SimpleNamespace(
         id=uuid4(),
         agent_id=uuid4(),
         channel_id=uuid4(),
@@ -29,6 +35,7 @@ def _stub_message(*, edit_history: list | None = None, edited_at=None):
         edited_at=edited_at,
         edit_history=edit_history,
     )
+    return cast("MessageTable", obj)
 
 
 def test_message_to_response_was_edited_true_when_history_present() -> None:

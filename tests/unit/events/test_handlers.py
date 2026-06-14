@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -24,7 +26,7 @@ from roboco.events.handlers import (
 )
 
 
-def _make_event(event_type: EventType, **data) -> Event:
+def _make_event(event_type: EventType, **data: Any) -> Event:
     return Event(
         type=event_type,
         data=data,
@@ -33,7 +35,7 @@ def _make_event(event_type: EventType, **data) -> Event:
 
 
 @pytest.fixture(autouse=True)
-def reset_context():
+def reset_context() -> Iterator[None]:
     """Reset event context after each test.
 
     set_event_context only updates attrs when truthy, so we need to

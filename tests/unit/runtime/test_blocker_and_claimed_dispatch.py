@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from roboco.models.runtime import AgentInstance
@@ -300,17 +300,23 @@ async def test_handle_dev_existing_owner_skips_blocked() -> None:
     """A blocked task's owner is not respawned — it has no legal move from
     blocked, so respawning it only churns; it waits for unblock or release."""
     orch = _orch()
-    orch._respawn_dev_if_inactive = AsyncMock()
-    orch._is_agent_active = MagicMock(return_value=False)
-    await orch._handle_dev_existing_owner({"id": "t1"}, "blocked", "be-dev-1")
-    orch._respawn_dev_if_inactive.assert_not_called()
+    respawn_mock = AsyncMock()
+    with (
+        patch.object(orch, "_respawn_dev_if_inactive", new=respawn_mock),
+        patch.object(orch, "_is_agent_active", new=MagicMock(return_value=False)),
+    ):
+        await orch._handle_dev_existing_owner({"id": "t1"}, "blocked", "be-dev-1")
+    respawn_mock.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_handle_dev_existing_owner_respawns_in_progress() -> None:
     """An in_progress task whose owner is inactive is still respawned."""
     orch = _orch()
-    orch._respawn_dev_if_inactive = AsyncMock()
-    orch._is_agent_active = MagicMock(return_value=False)
-    await orch._handle_dev_existing_owner({"id": "t1"}, "in_progress", "be-dev-1")
-    orch._respawn_dev_if_inactive.assert_awaited_once()
+    respawn_mock = AsyncMock()
+    with (
+        patch.object(orch, "_respawn_dev_if_inactive", new=respawn_mock),
+        patch.object(orch, "_is_agent_active", new=MagicMock(return_value=False)),
+    ):
+        await orch._handle_dev_existing_owner({"id": "t1"}, "in_progress", "be-dev-1")
+    respawn_mock.assert_awaited_once()

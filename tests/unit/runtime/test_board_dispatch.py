@@ -12,11 +12,13 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
+import httpx
 import pytest
 from roboco.runtime.orchestrator import AgentOrchestrator
 
@@ -40,7 +42,7 @@ def _board_task(assigned_to: str) -> dict[str, Any]:
     }
 
 
-def _patch_handoff_db(task_svc: AsyncMock):
+def _patch_handoff_db(task_svc: AsyncMock) -> tuple[Any, Any]:
     """Patch the DB context + TaskService the handoff opens to flag the task.
 
     Returns a tuple of context managers for the caller's ``with`` block so the
@@ -48,7 +50,7 @@ def _patch_handoff_db(task_svc: AsyncMock):
     """
 
     @asynccontextmanager
-    async def _fake_ctx():
+    async def _fake_ctx() -> AsyncIterator[AsyncMock]:
         yield AsyncMock()
 
     return (
@@ -156,7 +158,7 @@ async def test_unassigned_board_task_dispatches_both_via_board_handler() -> None
         "description": "A board-level task to review and shape.",
         "assigned_to": None,
     }
-    client = object()
+    client = cast(httpx.AsyncClient, object())
     with (
         patch.object(orch, "_is_agent_active", return_value=False),
         patch.object(orch, "_task_git_context", return_value=None),

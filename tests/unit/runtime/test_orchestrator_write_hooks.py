@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
@@ -621,7 +621,9 @@ async def test_resolve_active_tokens_falls_back_to_transcript() -> None:
 
     client = _FakeHTTPClient(_handler)
     with patch.object(orch, "_usage_from_transcript", return_value=(6, 514, 100, 50)):
-        tokens = await orch._resolve_active_tokens(client, _AGENT_ID)
+        tokens = await orch._resolve_active_tokens(
+            cast(httpx.AsyncClient, client), _AGENT_ID
+        )
 
     assert tokens == (6, 514, 100, 50)
 
@@ -645,7 +647,9 @@ async def test_resolve_active_tokens_prefers_sdk() -> None:
     with patch.object(
         orch, "_usage_from_transcript", return_value=(999, 999, 999, 999)
     ) as mock_tx:
-        tokens = await orch._resolve_active_tokens(client, _AGENT_ID)
+        tokens = await orch._resolve_active_tokens(
+            cast(httpx.AsyncClient, client), _AGENT_ID
+        )
 
     assert tokens == (10, 20, 0, 0)
     mock_tx.assert_not_called()

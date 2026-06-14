@@ -8,7 +8,7 @@ through the DB. Integration coverage (real DB, real linking) lives in
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -45,13 +45,12 @@ async def test_propagate_links_every_parent_session_to_subtask() -> None:
         link.task_id = kwargs["task_id"]
         return link
 
-    svc.link_session_to_task = fake_link  # type: ignore[method-assign]
-
     parent_id = uuid4()
     subtask_id = uuid4()
     added_by = uuid4()
+    with patch.object(svc, "link_session_to_task", new=fake_link):
+        out = await svc.propagate_sessions_to_subtask(parent_id, subtask_id, added_by)
     expected_sessions = {parent_session, review_session}
-    out = await svc.propagate_sessions_to_subtask(parent_id, subtask_id, added_by)
     assert len(out) == len(expected_sessions)
     assert {c["session_id"] for c in calls} == expected_sessions
     # Every propagated link must be non-primary — primary is the subtask's
@@ -91,8 +90,7 @@ async def test_propagate_unknown_relationship_type_defaults_to_discussion() -> N
         calls.append(kwargs)
         return MagicMock()
 
-    svc.link_session_to_task = fake_link  # type: ignore[method-assign]
-
-    await svc.propagate_sessions_to_subtask(uuid4(), uuid4(), uuid4())
+    with patch.object(svc, "link_session_to_task", new=fake_link):
+        await svc.propagate_sessions_to_subtask(uuid4(), uuid4(), uuid4())
     assert len(calls) == 1
     assert calls[0]["relationship_type"] == SessionTaskRelationshipType.DISCUSSION

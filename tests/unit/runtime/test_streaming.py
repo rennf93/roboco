@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from typing import Any
+
 import pytest
 from roboco.runtime.streaming import (
     get_reasoning_stream_callback,
@@ -11,7 +14,7 @@ from roboco.runtime.streaming import (
 
 
 @pytest.fixture(autouse=True)
-def reset_callback():
+def reset_callback() -> Iterator[None]:
     """Reset the global callback after each test."""
     yield
     set_reasoning_stream_callback(None)
@@ -23,7 +26,7 @@ def test_get_callback_returns_none_initially() -> None:
 
 
 def test_set_and_get_callback() -> None:
-    async def cb(agent_id, chunk, metadata):
+    async def cb(agent_id: str, chunk: str, metadata: dict[str, Any]) -> None:
         pass
 
     set_reasoning_stream_callback(cb)

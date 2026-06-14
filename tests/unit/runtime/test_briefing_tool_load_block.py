@@ -22,7 +22,7 @@ from roboco.runtime.orchestrator import AgentOrchestrator
 def _orch() -> AgentOrchestrator:
     with patch.object(AgentOrchestrator, "__init__", return_value=None):
         orch = AgentOrchestrator.__new__(AgentOrchestrator)
-    orch._TOOL_LOAD_CACHE = {}
+    object.__setattr__(orch, "_TOOL_LOAD_CACHE", {})
     return orch
 
 

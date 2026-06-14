@@ -75,4 +75,5 @@ def test_banned_word_long_enough_to_pass_min_chars() -> None:
     # Use min_chars=2 so 'wip' (3 chars) passes length but hits banned-word.
     r = validate_commit_message("wip", min_chars=2)
     assert r.ok is False
+    assert r.reason is not None
     assert "banned single-word" in r.reason

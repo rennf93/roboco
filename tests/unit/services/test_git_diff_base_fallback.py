@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from roboco.services.git import GitService
@@ -69,8 +69,8 @@ async def test_default_branch_ref_prefers_origin_head() -> None:
             )()
         return type("R", (), {"returncode": 1, "stdout": ""})()
 
-    svc._run_git = fake_run  # type: ignore[method-assign]
-    ref = await svc._default_branch_ref(Path("/tmp/ws"))
+    with patch.object(svc, "_run_git", new=fake_run):
+        ref = await svc._default_branch_ref(Path("/tmp/ws"))
     assert ref == "origin/main"
 
 
@@ -84,9 +84,9 @@ async def test_default_branch_ref_fallback_when_no_head() -> None:
         # symbolic-ref fails; fetches succeed but ref never verifies.
         return type("R", (), {"returncode": 1, "stdout": ""})()
 
-    svc._run_git = fake_run  # type: ignore[method-assign]
     svc._ref_exists = AsyncMock(return_value=False)  # type: ignore[method-assign]
-    ref = await svc._default_branch_ref(Path("/tmp/ws"))
+    with patch.object(svc, "_run_git", new=fake_run):
+        ref = await svc._default_branch_ref(Path("/tmp/ws"))
     assert ref == "origin/master"
 
 
@@ -125,8 +125,8 @@ async def test_resolve_head_ref_falls_back_to_origin_in_foreign_clone() -> None:
         # local branch absent; only the remote-tracking ref resolves.
         return ref == f"origin/{_BR}"
 
-    svc._ref_exists = ref_exists  # type: ignore[method-assign]
-    head = await svc._resolve_head_ref(Path("/tmp/ws"), _BR)
+    with patch.object(svc, "_ref_exists", new=ref_exists):
+        head = await svc._resolve_head_ref(Path("/tmp/ws"), _BR)
     assert head == f"origin/{_BR}"
 
 
@@ -141,9 +141,9 @@ async def test_resolve_head_ref_fetches_branch_before_resolving() -> None:
         calls.append(args)
         return type("R", (), {"returncode": 0, "stdout": ""})()
 
-    svc._run_git = fake_run  # type: ignore[method-assign]
     svc._ref_exists = AsyncMock(return_value=True)  # type: ignore[method-assign]
-    await svc._resolve_head_ref(Path("/tmp/ws"), _BR)
+    with patch.object(svc, "_run_git", new=fake_run):
+        await svc._resolve_head_ref(Path("/tmp/ws"), _BR)
     assert ["fetch", "origin", _BR] in calls
 
 
@@ -171,9 +171,8 @@ async def test_diff_targets_origin_head_in_foreign_clone() -> None:
         captured.append(args)
         return type("R", (), {"returncode": 0, "stdout": "diff body"})()
 
-    svc._run_git = fake_run  # type: ignore[method-assign]
-
-    out = await svc.diff(branch_name=_BR)
+    with patch.object(svc, "_run_git", new=fake_run):
+        out = await svc.diff(branch_name=_BR)
     assert out == "diff body"
     assert captured == [["diff", f"origin/master...origin/{_BR}"]]
     # #168: the resolved project token is threaded into ref resolution so
@@ -206,9 +205,8 @@ async def test_list_changed_files_targets_origin_head_in_foreign_clone() -> None
         captured.append(args)
         return type("R", (), {"returncode": 0, "stdout": "README.md\nsrc/app.py\n"})()
 
-    svc._run_git = fake_run  # type: ignore[method-assign]
-
-    files = await svc.list_changed_files(branch_name=_BR)
+    with patch.object(svc, "_run_git", new=fake_run):
+        files = await svc.list_changed_files(branch_name=_BR)
     assert files == ["README.md", "src/app.py"]
     assert captured == [["diff", "--name-only", f"origin/master...origin/{_BR}"]]
     svc._resolve_diff_base.assert_awaited_once_with(
@@ -239,8 +237,8 @@ async def test_diff_honours_explicit_base_with_resolved_head() -> None:
         captured.append(args)
         return type("R", (), {"returncode": 0, "stdout": ""})()
 
-    svc._run_git = fake_run  # type: ignore[method-assign]
-    await svc.diff(branch_name=_BR, base="HEAD~1")
+    with patch.object(svc, "_run_git", new=fake_run):
+        await svc.diff(branch_name=_BR, base="HEAD~1")
     assert captured == [["diff", f"HEAD~1...{_BR}"]]
     svc._resolve_diff_base.assert_not_awaited()
 
@@ -267,14 +265,14 @@ async def test_resolve_diff_base_refetches_default_branch_with_token() -> None:
         calls.append((args, kw.get("token")))
         return type("R", (), {"returncode": 0, "stdout": ""})()
 
-    svc._run_git = fake_run  # type: ignore[method-assign]
     # parent ref never exists → fall back to default branch.
     svc._ref_exists = AsyncMock(return_value=False)  # type: ignore[method-assign]
     svc._default_branch_ref = AsyncMock(  # type: ignore[method-assign]
         return_value="origin/master"
     )
 
-    base = await svc._resolve_diff_base(Path("/tmp/ws"), _BR, token="tok")
+    with patch.object(svc, "_run_git", new=fake_run):
+        base = await svc._resolve_diff_base(Path("/tmp/ws"), _BR, token="tok")
     assert base == "origin/master"
     # The resolved default branch ('master') was fetched, authenticated.
     assert (["fetch", "origin", "master"], "tok") in calls
@@ -293,9 +291,9 @@ async def test_resolve_head_ref_fetch_is_authenticated() -> None:
         seen.append((args, kw.get("token")))
         return type("R", (), {"returncode": 0, "stdout": ""})()
 
-    svc._run_git = fake_run  # type: ignore[method-assign]
     svc._ref_exists = AsyncMock(return_value=True)  # type: ignore[method-assign]
-    await svc._resolve_head_ref(Path("/tmp/ws"), _BR, token="tok")
+    with patch.object(svc, "_run_git", new=fake_run):
+        await svc._resolve_head_ref(Path("/tmp/ws"), _BR, token="tok")
     assert (["fetch", "origin", _BR], "tok") in seen
 
 

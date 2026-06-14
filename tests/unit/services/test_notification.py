@@ -8,7 +8,9 @@ without spinning up a Postgres + Redis stack.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
@@ -29,7 +31,7 @@ class _FakeDb:
         self.committed = False
         self._agent_uuid = agent_uuid
 
-    def add(self, obj) -> None:
+    def add(self, obj: Any) -> None:
         self.added.append(obj)
         # The notification row needs an `id` for delivery_service.deliver().
         obj.id = uuid4()
@@ -40,7 +42,7 @@ class _FakeDb:
     async def commit(self) -> None:
         self.committed = True
 
-    async def execute(self, *_args, **_kwargs):
+    async def execute(self, *_args: Any, **_kwargs: Any) -> Any:
         # Two paths use this: agent slug→UUID resolution and the
         # notification_delivery service's own DB queries. We return a
         # MagicMock that supports `scalar_one_or_none()` returning either
@@ -56,14 +58,14 @@ class _FakeDb:
         result.scalars.return_value.all.return_value = []
         return result
 
-    async def scalar(self, *_args, **_kwargs):
+    async def scalar(self, *_args: Any, **_kwargs: Any) -> Any:
         # _create_notification's purpose-dedup lookup runs db.scalar(); model
         # "no existing duplicate" so creation proceeds.
         return None
 
 
 @asynccontextmanager
-async def _fake_ctx(db: _FakeDb):
+async def _fake_ctx(db: _FakeDb) -> AsyncIterator[_FakeDb]:
     yield db
 
 
@@ -75,36 +77,36 @@ def svc() -> NotificationService:
 @pytest.mark.asyncio
 async def test_resolve_agent_uuid_returns_none_for_blank() -> None:
     db = _FakeDb()
-    assert await _resolve_agent_uuid(db, None) is None
-    assert await _resolve_agent_uuid(db, "") is None
+    assert await _resolve_agent_uuid(cast(Any, db), None) is None
+    assert await _resolve_agent_uuid(cast(Any, db), "") is None
 
 
 @pytest.mark.asyncio
 async def test_resolve_agent_uuid_passes_through_uuid() -> None:
     aid = uuid4()
     db = _FakeDb()
-    assert await _resolve_agent_uuid(db, aid) == aid
+    assert await _resolve_agent_uuid(cast(Any, db), aid) == aid
 
 
 @pytest.mark.asyncio
 async def test_resolve_agent_uuid_parses_uuid_string() -> None:
     aid = uuid4()
     db = _FakeDb()
-    assert await _resolve_agent_uuid(db, str(aid)) == aid
+    assert await _resolve_agent_uuid(cast(Any, db), str(aid)) == aid
 
 
 @pytest.mark.asyncio
 async def test_resolve_agent_uuid_resolves_slug() -> None:
     expected = uuid4()
     db = _FakeDb(agent_uuid=expected)
-    resolved = await _resolve_agent_uuid(db, "be-dev-1")
+    resolved = await _resolve_agent_uuid(cast(Any, db), "be-dev-1")
     assert resolved == expected
 
 
 @pytest.mark.asyncio
 async def test_resolve_agent_uuid_returns_none_for_unknown_slug() -> None:
     db = _FakeDb(agent_uuid=None)
-    assert await _resolve_agent_uuid(db, "ghost") is None
+    assert await _resolve_agent_uuid(cast(Any, db), "ghost") is None
 
 
 class _PatchDbContext:
@@ -114,7 +116,7 @@ class _PatchDbContext:
         self.db = db
         delivery_mock = MagicMock()
         delivery_mock.deliver = AsyncMock(return_value=None)
-        self._patches = [
+        self._patches: list[Any] = [
             patch(
                 "roboco.services.notification.get_db_context",
                 lambda: _fake_ctx(db),
@@ -129,7 +131,7 @@ class _PatchDbContext:
         for p in self._patches:
             p.start()
 
-    def __exit__(self, *_args) -> None:
+    def __exit__(self, *_args: Any) -> None:
         for p in self._patches:
             p.stop()
 
@@ -291,7 +293,7 @@ async def test_create_notification_skips_when_no_resolvable_recipients(
             super().__init__(agent_uuid=aid)
             self._calls = 0
 
-        async def execute(self, *_args, **_kwargs):
+        async def execute(self, *_args: Any, **_kwargs: Any) -> Any:
             self._calls += 1
             result = MagicMock()
             if self._calls == 1:
