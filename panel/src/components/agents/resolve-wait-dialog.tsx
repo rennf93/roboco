@@ -41,8 +41,13 @@ export function ResolveWaitDialog({ agentId }: ResolveWaitDialogProps) {
     }
   };
 
+  const handleOpenChange = (newOpen: boolean) => {
+    if (!newOpen) setResolution("");
+    setOpen(newOpen);
+  };
+
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
         <Button>
           <Send className="h-4 w-4 mr-2" />

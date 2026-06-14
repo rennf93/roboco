@@ -4,6 +4,7 @@ import { Message } from "@/types";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Markdown } from "@/components/ui/markdown";
+import { CopyButton } from "@/components/ui/copy-button";
 import { MessageTypeBadge } from "./message-type-badge";
 import { Clock, Link2 } from "lucide-react";
 import Link from "next/link";
@@ -23,7 +24,7 @@ function formatTime(timestamp: string): string {
 
 export function MessageItem({ message }: MessageItemProps) {
   return (
-    <div className="flex gap-3 py-3 hover:bg-muted/30 px-2 rounded-lg">
+    <div className="group relative flex gap-3 py-3 hover:bg-muted/30 px-2 rounded-lg">
       <Avatar className="h-8 w-8 shrink-0">
         <AvatarFallback className="bg-primary/10 text-primary text-xs">
           {getAgentInitials(message.agent_id)}
@@ -61,6 +62,11 @@ export function MessageItem({ message }: MessageItemProps) {
           </Link>
         )}
       </div>
+      {/* Copy button — visible on hover */}
+      <CopyButton
+        value={message.content}
+        className="absolute right-2 top-3 opacity-0 transition-opacity group-hover:opacity-100"
+      />
     </div>
   );
 }

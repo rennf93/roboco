@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { Task, TaskStatus, Team } from "@/types";
-import { useDeleteTask, useUpdateTask } from "@/hooks/use-tasks";
+import { useDeleteTask, useUpdateTask, useTaskValidTransitions } from "@/hooks/use-tasks";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -40,6 +40,7 @@ import {
   AlertTriangle,
   Trash2,
   GitBranch,
+  GitMerge,
   GitPullRequest,
   FileCheck,
   Send,
@@ -94,6 +95,10 @@ export function TaskHeader({ task, onAction }: TaskHeaderProps) {
   const router = useRouter();
   const deleteTask = useDeleteTask();
   const updateTask = useUpdateTask();
+  // Fetch valid next statuses from GET /tasks/{id}/valid-transitions.
+  // Falls back to [] while loading or on error — the Select is disabled during loading.
+  const { data: validTransitionsData, isLoading: isTransitionsLoading } = useTaskValidTransitions(task.id);
+  const nextStatuses: TaskStatus[] = validTransitionsData ?? [];
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   // Inline editing states
@@ -256,7 +261,7 @@ export function TaskHeader({ task, onAction }: TaskHeaderProps) {
         actions.push({ label: "Request Changes", action: "request-changes", icon: <ThumbsDown className="h-4 w-4 mr-2" /> });
         break;
       case TaskStatus.AWAITING_CEO_APPROVAL:
-        actions.push({ label: "Approve & Merge", action: "ceo-approve", icon: <ThumbsUp className="h-4 w-4 mr-2" /> });
+        actions.push({ label: "Approve & Merge", action: "approve-and-merge", icon: <ThumbsUp className="h-4 w-4 mr-2" /> });
         actions.push({ label: "Request Changes", action: "ceo-reject", icon: <ThumbsDown className="h-4 w-4 mr-2" /> });
         break;
       case TaskStatus.CANCELLED:
@@ -267,6 +272,11 @@ export function TaskHeader({ task, onAction }: TaskHeaderProps) {
     // Cancel is always available for non-terminal states
     if (task.status !== TaskStatus.COMPLETED && task.status !== TaskStatus.CANCELLED) {
       actions.push({ label: "Cancel Task", action: "cancel", icon: <XCircle className="h-4 w-4 mr-2" /> });
+    }
+
+    // Merge PR is available whenever task.pr_number is set and the task is not in a terminal state
+    if (task.pr_number && task.status !== TaskStatus.COMPLETED && task.status !== TaskStatus.CANCELLED) {
+      actions.push({ label: "Merge PR", action: "merge-pr", icon: <GitMerge className="h-4 w-4 mr-2" /> });
     }
 
     return actions;
@@ -307,13 +317,24 @@ export function TaskHeader({ task, onAction }: TaskHeaderProps) {
               </h1>
             )}
 
-            {/* Status Dropdown */}
+            {/* Status Dropdown — only current status + valid next statuses from backend */}
             <Select value={task.status} onValueChange={(v) => handleStatusChange(v as TaskStatus)}>
-              <SelectTrigger className={`w-auto h-7 text-xs font-medium border-0 ${statusColors[task.status]}`}>
+              <SelectTrigger
+                className={`w-auto h-7 text-xs font-medium border-0 ${statusColors[task.status]}`}
+                disabled={isTransitionsLoading}
+              >
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {Object.values(TaskStatus).map((status) => (
+                {/* Always render the current status first so the trigger value is always present */}
+                <SelectItem key={task.status} value={task.status}>
+                  <span className={`px-2 py-0.5 rounded ${statusColors[task.status]}`}>
+                    {statusLabels[task.status]}
+                  </span>
+                </SelectItem>
+                {/* nextStatuses sourced exclusively from useTaskValidTransitions
+                    (GET /tasks/{id}/valid-transitions) — no local fallback array */}
+                {nextStatuses.map((status) => (
                   <SelectItem key={status} value={status}>
                     <span className={`px-2 py-0.5 rounded ${statusColors[status]}`}>
                       {statusLabels[status]}

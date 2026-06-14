@@ -8,6 +8,7 @@ from typing import Annotated, Any, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Body, HTTPException, Query, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.api.deps import (
     CurrentAgentContext,
@@ -38,13 +39,16 @@ from roboco.api.schemas.tasks import (
     TaskSessionLinkResponse,
     TaskUpdate,
     TeamTasksQuery,
+    ValidTransitionsResponse,
     enrich_task_with_context,
     task_list_to_response,
     task_to_response,
     transform_update_data,
 )
-from roboco.exceptions import TaskLifecycleError
+from roboco.enforcement import get_valid_transitions
+from roboco.exceptions import GitError, TaskLifecycleError
 from roboco.foundation.policy import task_completeness as tc
+from roboco.logging import get_logger
 from roboco.models.base import AgentRole, TaskStatus, Team
 from roboco.models.task import TaskCreate
 from roboco.services.audit import get_audit_service
@@ -70,11 +74,19 @@ from roboco.services.task import (
 from roboco.utils.converters import require_uuid
 
 router = APIRouter()
+_logger = get_logger(__name__)
 
 # Minimum character count for notes fields that must be substantive
 # (QA pass notes, doc-complete notes, escalation notes). Below this the
 # note is useless for the next reader, so the transition is refused.
 _MIN_NOTES_CHARS = 20
+
+# Nullable task fields that may be explicitly cleared via PATCH.
+# After TaskService.update() gains its not-None guard, null-clears for these
+# fields are handled at the route layer by direct setattr on the ORM object.
+_NULLABLE_TASK_FIELDS: frozenset[str] = frozenset(
+    {"assigned_to", "parent_task_id", "project_id"}
+)
 
 
 def _translate_error(e: ServiceError) -> HTTPException:
@@ -88,6 +100,190 @@ def _translate_error(e: ServiceError) -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=e.message
     )
+
+
+# ---------------------------------------------------------------------------
+# Route-layer helpers — extracted to keep the three complex routes ≤ rank B.
+# ---------------------------------------------------------------------------
+
+
+def _task_is_awaiting_pm_review(task: Any) -> bool:
+    """Return True if the task is in the awaiting_pm_review state."""
+    from roboco.models.base import TaskStatus as _TS
+
+    return (
+        task.status == _TS.AWAITING_PM_REVIEW
+        or getattr(task.status, "value", None) == "awaiting_pm_review"
+    )
+
+
+def _pop_null_clears(updates: dict[str, Any]) -> dict[str, None]:
+    """Remove and return explicitly-set-to-None nullable fields from *updates*.
+
+    TaskService.update() skips None values (not-None guard), so null-clearing
+    a field must be done at the route layer.  This helper splits the intent:
+    it pops the null-clears from *updates* (modifying it in-place) and returns
+    them so the caller can apply them directly on the ORM object.
+    """
+    clears: dict[str, None] = {}
+    for field in _NULLABLE_TASK_FIELDS:
+        if field in updates and updates[field] is None:
+            clears[field] = updates.pop(field)
+    return clears
+
+
+def _apply_null_clears(task: Any, null_clears: dict[str, None]) -> None:
+    """Set *null_clears* fields to None on the ORM task object."""
+    for field in null_clears:
+        setattr(task, field, None)
+
+
+async def _resolve_assigned_to_slug(
+    data: "TaskUpdate", db: AsyncSession
+) -> "TaskUpdate":
+    """Resolve an assigned_to slug to a UUID string; returns (possibly modified) data.
+
+    If assigned_to was not set or is already a valid UUID or null, returns
+    *data* unchanged.  If it is an agent slug, looks up the agent and replaces
+    the slug with the UUID string so downstream transform helpers parse it
+    correctly.  Raises HTTPException 422 when the slug cannot be found.
+    """
+    if "assigned_to" not in data.model_fields_set or data.assigned_to is None:
+        return data
+    try:
+        UUID(data.assigned_to)
+        return data  # already a valid UUID — no resolution needed
+    except ValueError:
+        pass
+    from roboco.services.repositories.query_helpers import get_agent_by_slug
+
+    agent_row = await get_agent_by_slug(db, data.assigned_to)
+    if agent_row is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "error": {
+                    "code": "ASSIGNEE_NOT_FOUND",
+                    "message": f"No agent with slug or UUID '{data.assigned_to}'",
+                    "hint": "Use an agent slug (e.g. 'be-dev-1') or UUID",
+                }
+            },
+        ) from None
+    return data.model_copy(update={"assigned_to": str(agent_row.id)})
+
+
+async def _project_for_complete(task: Any, db: AsyncSession) -> Any:
+    """Resolve the project for complete_task's pre-merge step.
+
+    Returns the project or None if unresolvable (no exception raised — the
+    caller simply skips the merge when no project can be found).
+    """
+    from roboco.services.project import get_project_service
+
+    project_service = get_project_service(db)
+    if task.project_id is not None:
+        return await project_service.get(UUID(str(task.project_id)))
+    if task.product_id is not None:
+        from roboco.services.product import get_product_service
+
+        product_service = get_product_service(db)
+        pids = await product_service.distinct_project_ids(UUID(str(task.product_id)))
+        if pids:
+            return await project_service.get(pids[0])
+    return None
+
+
+async def _merge_pr_if_awaiting_pm_review(
+    task_id: UUID,
+    pre_task: Any,
+    agent: Any,
+    db: AsyncSession,
+) -> None:
+    """Merge the task's PR when it is in awaiting_pm_review.
+
+    Does nothing when pre_task is None, has no PR, or is not in the right
+    state.  Raises HTTPException 400 when the merge itself fails.
+    After this returns successfully, *_auto_complete_on_merge* inside the
+    git service will have already transitioned the task to *completed*.
+    """
+    if pre_task is None or pre_task.pr_number is None:
+        return
+    if not _task_is_awaiting_pm_review(pre_task):
+        return
+
+    project = await _project_for_complete(pre_task, db)
+    if project is None:
+        return
+
+    from roboco.api.schemas.git import GitMergePRRequest
+    from roboco.services.git import get_git_service
+
+    git_service = get_git_service(db)
+    try:
+        await git_service.merge_pr_for_task(
+            agent.agent_id,
+            agent.role,
+            GitMergePRRequest(
+                project_slug=project.slug,
+                pr_number=pre_task.pr_number,
+                task_id=task_id,
+                merge_method="squash",
+                agent_id=str(agent.agent_id),
+            ),
+        )
+    except (ServiceError, GitError) as e:
+        msg = getattr(e, "message", str(e))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"PR merge failed before completion: {msg}",
+        ) from e
+
+
+async def _resolve_project_for_merge(task: Any, db: AsyncSession) -> Any:
+    """Resolve and return the Project required for a merge operation.
+
+    Handles both direct project_id and product_id→project resolution.
+    Raises HTTPException 400 if no project can be resolved or found.
+    """
+    from roboco.services.project import get_project_service
+
+    project_service = get_project_service(db)
+    if task.project_id is not None:
+        resolved_id = UUID(str(task.project_id))
+    elif task.product_id is not None:
+        from roboco.services.product import get_product_service
+
+        product_service = get_product_service(db)
+        project_ids = await product_service.distinct_project_ids(
+            UUID(str(task.product_id))
+        )
+        if not project_ids:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"NO_PROJECT: Product {task.product_id} has no cell->project "
+                    "mapping; cannot resolve workspace for merge."
+                ),
+            )
+        resolved_id = project_ids[0]
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "NO_PROJECT: Task has neither project_id nor product_id; "
+                "cannot resolve workspace for merge. Set project_id on the task first."
+            ),
+        )
+    project = await project_service.get(resolved_id)
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"NO_PROJECT: Project {resolved_id} not found; "
+                "cannot resolve workspace for merge."
+            ),
+        )
+    return project
 
 
 # =============================================================================
@@ -446,6 +642,45 @@ async def get_awaiting_ceo_approval_tasks(
     return task_list_to_response(tasks)
 
 
+@router.get("/lifecycle-transitions", response_model=dict[str, list[str]])
+async def get_lifecycle_transitions() -> dict[str, list[str]]:
+    """Return the task lifecycle state graph as a JSON-serialisable dict.
+
+    Each key is a status name (string); each value is a list of valid next
+    status names (strings).  The data is drawn directly from the canonical
+    ``STATUS_GRAPH`` constant so it is always in sync with the enforcement
+    layer.
+    """
+    from roboco.foundation.policy.lifecycle import STATUS_GRAPH
+
+    return {
+        src.value: sorted(tgt.value for tgt in targets)
+        for src, targets in STATUS_GRAPH.items()
+    }
+
+
+@router.get("/{task_id}/valid-transitions", response_model=ValidTransitionsResponse)
+async def get_valid_transitions_for_task(
+    task_id: UUID,
+    db: DbSession,
+) -> ValidTransitionsResponse:
+    """Return valid next statuses for a task given its current state.
+
+    Uses the canonical lifecycle enforcement layer so the response is always
+    in sync with what the backend will actually allow.
+    """
+    service = get_task_service(db)
+    task = await service.get(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
+    valid_statuses = get_valid_transitions(task.status)
+    return ValidTransitionsResponse(
+        valid_statuses=[TaskStatus(s) for s in valid_statuses]
+    )
+
+
 @router.get("/{task_id}", response_model=TaskResponse)
 async def get_task(
     task_id: UUID,
@@ -526,7 +761,10 @@ async def update_task(
             detail="Not authorized to update this task",
         )
 
-    # Transform input data for database storage
+    # Resolve assigned_to slug → UUID (null is left for the null-clear path).
+    data = await _resolve_assigned_to_slug(data, db)
+
+    # Transform input data for database storage.
     updates = transform_update_data(data)
 
     # `status` is not a free-form field — it is an audited admin override so a
@@ -535,12 +773,18 @@ async def update_task(
     # through the audited path, gated on elevated permissions.
     new_status = updates.pop("status", None)
 
+    # Pop explicitly-set-to-None nullable fields. TaskService.update() skips
+    # None values (not-None guard), so null-clear intent is re-applied directly
+    # on the ORM object after the update returns.
+    null_clears = _pop_null_clears(updates)
+
     task = await service.update(task_id, **updates)
     if not task:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Task update failed unexpectedly",
         )
+    _apply_null_clears(task, null_clears)
     if new_status is not None and new_status != task.status:
         if not has_higher_perms:
             raise HTTPException(
@@ -1249,6 +1493,20 @@ async def complete_task(
             ),
         )
     service = get_task_service(db)
+
+    # For tasks in awaiting_pm_review that still have an open PR, merge the PR
+    # first so the branch lands before the task is marked completed.
+    # _auto_complete_on_merge inside the git service will transition the task
+    # to completed automatically; re-fetch and detect that to avoid a
+    # double-completion error.
+    pre_task = await service.get(task_id)
+    await _merge_pr_if_awaiting_pm_review(task_id, pre_task, agent, db)
+
+    # Re-fetch: if the merge auto-completed the task, return without a second call.
+    merged_task = await service.get(task_id)
+    if merged_task and merged_task.status == TaskStatus.COMPLETED:
+        return task_to_response(merged_task)
+
     try:
         task = await service.complete_task_for_agent(
             task_id,
@@ -1378,6 +1636,128 @@ async def ceo_approve_task(
 
     await db.commit()
     return task_to_response(task)
+
+
+@router.get("/{task_id}/ceo-approve", response_model=TaskResponse)
+async def ceo_approve_eligibility_check(
+    task_id: UUID,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> TaskResponse:
+    """Pre-flight check: can this task be CEO-approved?
+
+    Returns the task if it is eligible (has a PR attached).
+    Returns HTTP 400 with 'NO_PR' if the task has no pull request.
+    Useful for panel gates and automated pre-checks before POSTing to
+    ceo-approve or approve-and-merge.
+    """
+    if agent.role != AgentRole.CEO:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only CEO can check CEO-approval eligibility",
+        )
+
+    service = get_task_service(db)
+    task = await service.get(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
+
+    if task.pr_number is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "NO_PR: Task has no pull request attached. A PR must be "
+                "opened and approved by QA before CEO approval. Use the "
+                "developer's open_pr flow to create the PR."
+            ),
+        )
+
+    return task_to_response(task)
+
+
+@router.post("/{task_id}/approve-and-merge", response_model=TaskResponse)
+async def approve_and_merge_task(
+    task_id: UUID,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> TaskResponse:
+    """CEO merge + complete in one step.
+
+    Merges the task's PR, updates the work session, and marks the task
+    completed. Only CEO can perform this action. The PR must already exist
+    on the task (pr_number set). Merge failures are returned as structured
+    HTTP errors rather than unhandled exceptions.
+    """
+    if agent.role != AgentRole.CEO:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only CEO can approve-and-merge tasks",
+        )
+
+    service = get_task_service(db)
+    task = await service.get(task_id)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
+
+    if task.pr_number is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "NO_PR: Cannot approve-and-merge — task has no PR. "
+                "The developer must open a PR (open_pr gateway verb or "
+                "POST /api/git/create-pr) before CEO can merge."
+            ),
+        )
+
+    # Resolve the project from the task's project_id / product_id.
+    project = await _resolve_project_for_merge(task, db)
+
+    from roboco.api.schemas.git import GitMergePRRequest
+    from roboco.services.git import get_git_service
+
+    git_service = get_git_service(db)
+    try:
+        await git_service.merge_pr_for_task(
+            agent.agent_id,
+            agent.role,
+            GitMergePRRequest(
+                project_slug=project.slug,
+                pr_number=task.pr_number,
+                task_id=task_id,
+                merge_method="squash",
+                agent_id=str(agent.agent_id),
+            ),
+        )
+    except (ServiceError, GitError) as e:
+        msg = getattr(e, "message", str(e))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Merge failed: {msg}",
+        ) from e
+    except Exception as e:
+        _logger.exception(
+            "Unexpected error in approve-and-merge",
+            task_id=str(task_id),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Merge failed due to an unexpected error",
+        ) from e
+
+    # merge_pr_for_task commits the session internally; re-fetch the
+    # updated task to return the merged state.
+    updated_task = await service.get(task_id)
+    if not updated_task:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Task disappeared after merge",
+        )
+
+    return task_to_response(updated_task)
 
 
 @router.post("/{task_id}/approve-and-start", response_model=TaskResponse)

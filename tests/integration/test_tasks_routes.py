@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from http import HTTPStatus
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
@@ -22,7 +23,9 @@ from roboco.api.routes.tasks import (
     router as tasks_router,
 )
 from roboco.db.tables import AgentTable, ProjectTable, TaskTable
-from roboco.exceptions import TaskLifecycleError
+from roboco.exceptions import GitError, TaskLifecycleError
+from roboco.foundation.policy.lifecycle import STATUS_GRAPH
+from roboco.foundation.policy.lifecycle import Status as LifecycleStatus
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import (
     TaskNature,
@@ -36,8 +39,11 @@ from roboco.services.base import (
     UnauthorizedError,
     ValidationError,
 )
+from roboco.services.base import ServiceError as SvcError
+from roboco.services.git import GitService
 from roboco.services.notification_delivery import EscalationError
 from roboco.services.permissions import PermissionService
+from roboco.services.task import TaskService
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -111,9 +117,9 @@ def _seed_task(
         acceptance_criteria=["ac"],
         status=status,
         priority=kw.pop("priority", 2),
-        task_type=TaskType.CODE,
-        nature=TaskNature.TECHNICAL,
-        project_id=setup["project"].id,
+        task_type=kw.pop("task_type", TaskType.CODE),
+        nature=kw.pop("nature", TaskNature.TECHNICAL),
+        project_id=kw.pop("project_id", setup["project"].id),
         created_by=kw.pop("created_by", setup["agent"].id),
         team=kw.pop("team", Team.BACKEND),
         **kw,
@@ -348,6 +354,35 @@ async def test_get_task_stats_by_team(task_client: dict) -> None:
     client = task_client["client"]
     response = await client.get("/api/tasks/stats/by-team", headers=_HDR)
     assert response.status_code == HTTPStatus.OK
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_transitions_parity(task_client: dict) -> None:
+    """GET /lifecycle-transitions returns the exact STATUS_GRAPH as strings.
+
+    Parity check: response keys and values must match
+    roboco.foundation.policy.lifecycle.STATUS_GRAPH.
+    """
+    client = task_client["client"]
+    response = await client.get("/api/tasks/lifecycle-transitions", headers=_HDR)
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+
+    # Keys must be exactly the set of status string values
+    expected_keys = {s.value for s in STATUS_GRAPH}
+    assert set(body.keys()) == expected_keys, (
+        f"Key mismatch: extra={set(body.keys()) - expected_keys}, "
+        f"missing={expected_keys - set(body.keys())}"
+    )
+
+    # Values must match STATUS_GRAPH (as sorted lists of strings)
+    for status_str, next_statuses in body.items():
+        src = LifecycleStatus(status_str)
+        expected_targets = sorted(t.value for t in STATUS_GRAPH[src])
+        assert sorted(next_statuses) == expected_targets, (
+            f"Targets for {status_str!r} mismatch: "
+            f"got {sorted(next_statuses)!r}, want {expected_targets!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -2925,3 +2960,492 @@ async def test_get_sessions_for_task_not_found(task_client: dict) -> None:
         f"/api/tasks/{uuid4()}/sessions", headers=_HDR
     )
     assert response.status_code == HTTPStatus.NOT_FOUND
+
+
+# ---------------------------------------------------------------------------
+# TaskUpdate schema: nature / task_type / project_id (AC: schema fix)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_patch_nature_persists(task_client: dict) -> None:
+    """PATCH with nature=non_technical persists; GET returns updated value."""
+    task = _seed_task(task_client, nature=TaskNature.TECHNICAL)
+    await task_client["db"].flush()
+    response = await task_client["client"].patch(
+        f"/api/tasks/{task.id}",
+        json={"nature": "non_technical"},
+        headers=_HDR,
+    )
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["nature"] == "non_technical"
+
+
+@pytest.mark.asyncio
+async def test_patch_task_type_persists(task_client: dict) -> None:
+    """PATCH with task_type=research persists; GET returns updated value."""
+    task = _seed_task(task_client, task_type=TaskType.CODE)
+    await task_client["db"].flush()
+    response = await task_client["client"].patch(
+        f"/api/tasks/{task.id}",
+        json={"task_type": "research"},
+        headers=_HDR,
+    )
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["task_type"] == "research"
+
+
+@pytest.mark.asyncio
+async def test_patch_project_id_persists(task_client: dict) -> None:
+    """PATCH with project_id=<valid-uuid> persists; GET returns updated value."""
+    task = _seed_task(task_client)
+    # Create a second project to switch to
+    second_project = ProjectTable(
+        id=uuid4(),
+        name="Proj2",
+        slug=f"proj2-{uuid4().hex[:6]}",
+        git_url="https://example.com/proj2.git",
+        assigned_cell=Team.BACKEND,
+        created_by=task_client["agent"].id,
+    )
+    task_client["db"].add(second_project)
+    await task_client["db"].flush()
+
+    response = await task_client["client"].patch(
+        f"/api/tasks/{task.id}",
+        json={"project_id": str(second_project.id)},
+        headers=_HDR,
+    )
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["project_id"] == str(second_project.id)
+
+
+@pytest.mark.asyncio
+async def test_patch_title_only_changes_title(task_client: dict) -> None:
+    """PATCH with only title does not mutate nature/task_type/status/team."""
+    task = _seed_task(
+        task_client,
+        title="original title",
+        nature=TaskNature.TECHNICAL,
+        task_type=TaskType.CODE,
+        team=Team.BACKEND,
+    )
+    await task_client["db"].flush()
+
+    response = await task_client["client"].patch(
+        f"/api/tasks/{task.id}",
+        json={"title": "updated title"},
+        headers=_HDR,
+    )
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["title"] == "updated title"
+    # Other fields unchanged
+    assert body["nature"] == "technical"
+    assert body["task_type"] == "code"
+    assert body["team"] == "backend"
+
+
+# ---------------------------------------------------------------------------
+# assigned_to: slug resolution and null guard (AC: slug-resolution fix)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_patch_assigned_to_slug_resolves_to_uuid(task_client: dict) -> None:
+    """PATCH assigned_to with agent slug resolves to agent UUID."""
+    dev = await _seed_agent(task_client)
+    task = _seed_task(task_client)
+    await task_client["db"].flush()
+
+    response = await task_client["client"].patch(
+        f"/api/tasks/{task.id}",
+        json={"assigned_to": dev.slug},
+        headers=_HDR,
+    )
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["assigned_to"] == str(dev.id)
+
+
+@pytest.mark.asyncio
+async def test_patch_assigned_to_null_unassigns(task_client: dict) -> None:
+    """PATCH assigned_to: null sets assigned_to to null (unassign)."""
+    dev = await _seed_agent(task_client)
+    task = _seed_task(task_client, assigned_to=dev.id)
+    await task_client["db"].flush()
+
+    response = await task_client["client"].patch(
+        f"/api/tasks/{task.id}",
+        json={"assigned_to": None},
+        headers=_HDR,
+    )
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["assigned_to"] is None
+
+
+@pytest.mark.asyncio
+async def test_patch_assigned_to_unknown_slug_returns_422(task_client: dict) -> None:
+    """PATCH assigned_to with unknown slug returns 422 ASSIGNEE_NOT_FOUND."""
+    task = _seed_task(task_client)
+    await task_client["db"].flush()
+
+    response = await task_client["client"].patch(
+        f"/api/tasks/{task.id}",
+        json={"assigned_to": "totally-nonexistent-slug"},
+        headers=_HDR,
+    )
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+    detail = response.json()["detail"]
+    assert isinstance(detail, dict)
+    assert detail["error"]["code"] == "ASSIGNEE_NOT_FOUND"
+
+
+# ---------------------------------------------------------------------------
+# GET /tasks/{id}/ceo-approve — eligibility check (AC: ceo-approve fix)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ceo_approve_get_no_pr_returns_400(ceo_client: dict) -> None:
+    """GET /ceo-approve with no pr_number on the task → 400 NO_PR."""
+    task = _seed_task_ceo(ceo_client, pr_number=None)
+    await ceo_client["db"].flush()
+    response = await ceo_client["client"].get(
+        f"/api/tasks/{task.id}/ceo-approve",
+        headers=_HDR,
+    )
+    assert response.status_code == HTTPStatus.BAD_REQUEST
+    assert "NO_PR" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_ceo_approve_get_with_pr_returns_200(ceo_client: dict) -> None:
+    """GET /ceo-approve with pr_number set → 200 with task."""
+    task = _seed_task_ceo(ceo_client, pr_number=42)
+    await ceo_client["db"].flush()
+    response = await ceo_client["client"].get(
+        f"/api/tasks/{task.id}/ceo-approve",
+        headers=_HDR,
+    )
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    _expected_pr = 42
+    assert body["pr_number"] == _expected_pr
+
+
+@pytest.mark.asyncio
+async def test_ceo_approve_get_not_ceo_returns_403(task_client: dict) -> None:
+    """GET /ceo-approve by non-CEO → 403 Forbidden."""
+    response = await task_client["client"].get(
+        f"/api/tasks/{uuid4()}/ceo-approve",
+        headers=_HDR,
+    )
+    assert response.status_code == HTTPStatus.FORBIDDEN
+
+
+@pytest.mark.asyncio
+async def test_ceo_approve_get_task_not_found(ceo_client: dict) -> None:
+    """GET /ceo-approve for unknown task → 404."""
+    response = await ceo_client["client"].get(
+        f"/api/tasks/{uuid4()}/ceo-approve",
+        headers=_HDR,
+    )
+    assert response.status_code == HTTPStatus.NOT_FOUND
+
+
+# ---------------------------------------------------------------------------
+# POST /tasks/{id}/approve-and-merge (AC: approve-and-merge fix)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_approve_and_merge_no_pr_returns_400(ceo_client: dict) -> None:
+    """POST /approve-and-merge with no pr_number → 400 NO_PR."""
+    task = _seed_task_ceo(ceo_client, pr_number=None)
+    await ceo_client["db"].flush()
+    response = await ceo_client["client"].post(
+        f"/api/tasks/{task.id}/approve-and-merge",
+        headers=_HDR,
+    )
+    assert response.status_code == HTTPStatus.BAD_REQUEST
+    assert "NO_PR" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_approve_and_merge_not_ceo_returns_403(task_client: dict) -> None:
+    """POST /approve-and-merge by non-CEO → 403 Forbidden."""
+    response = await task_client["client"].post(
+        f"/api/tasks/{uuid4()}/approve-and-merge",
+        headers=_HDR,
+    )
+    assert response.status_code == HTTPStatus.FORBIDDEN
+
+
+@pytest.mark.asyncio
+async def test_approve_and_merge_task_not_found(ceo_client: dict) -> None:
+    """POST /approve-and-merge for unknown task → 404."""
+    with patch("roboco.api.routes.tasks.get_task_service") as mock_factory:
+        instance = AsyncMock()
+        instance.get = AsyncMock(return_value=None)
+        mock_factory.return_value = instance
+        response = await ceo_client["client"].post(
+            f"/api/tasks/{uuid4()}/approve-and-merge",
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_approve_and_merge_success(ceo_client: dict) -> None:
+    """POST /approve-and-merge with PR + fully mocked services → 200 task."""
+    task = _seed_task_ceo(ceo_client, pr_number=99)
+    await ceo_client["db"].flush()
+
+    # The handler does lazy imports of get_project_service and get_git_service.
+    # Patch them at their source modules so the lazy import picks up the mock.
+    with (
+        patch("roboco.api.routes.tasks.get_task_service") as mock_task_factory,
+        patch("roboco.services.project.get_project_service") as mock_proj_factory,
+        patch("roboco.services.git.get_git_service") as mock_git_factory,
+    ):
+        task_instance = AsyncMock()
+        # service.get is called twice: once for the initial check, once to re-fetch.
+        task_instance.get = AsyncMock(side_effect=[task, task])
+        mock_task_factory.return_value = task_instance
+
+        proj_instance = AsyncMock()
+        proj_instance.get = AsyncMock(return_value=ceo_client["project"])
+        mock_proj_factory.return_value = proj_instance
+
+        git_instance = AsyncMock()
+        git_instance.merge_pr_for_task = AsyncMock(return_value=("main", "abc1234"))
+        mock_git_factory.return_value = git_instance
+
+        response = await ceo_client["client"].post(
+            f"/api/tasks/{task.id}/approve-and-merge",
+            headers=_HDR,
+        )
+
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    _expected_pr = 99
+    assert body["pr_number"] == _expected_pr
+
+
+@pytest.mark.asyncio
+async def test_approve_and_merge_merge_failure_returns_structured_error(
+    ceo_client: dict,
+) -> None:
+    """POST /approve-and-merge where git merge fails → 400 with descriptive message.
+
+    The error must NOT be an unhandled exception (500 with traceback); it must
+    be a structured HTTP error (400 or 500) with a human-readable message.
+    """
+    task = _seed_task_ceo(ceo_client, pr_number=55)
+    await ceo_client["db"].flush()
+
+    with (
+        patch("roboco.api.routes.tasks.get_task_service") as mock_task_factory,
+        patch("roboco.services.project.get_project_service") as mock_proj_factory,
+        patch("roboco.services.git.get_git_service") as mock_git_factory,
+    ):
+        task_instance = AsyncMock()
+        task_instance.get = AsyncMock(return_value=task)
+        mock_task_factory.return_value = task_instance
+
+        proj_instance = AsyncMock()
+        proj_instance.get = AsyncMock(return_value=ceo_client["project"])
+        mock_proj_factory.return_value = proj_instance
+
+        git_instance = AsyncMock()
+        git_instance.merge_pr_for_task = AsyncMock(
+            side_effect=SvcError("GitHub refused the merge: 409 Conflict")
+        )
+        mock_git_factory.return_value = git_instance
+
+        response = await ceo_client["client"].post(
+            f"/api/tasks/{task.id}/approve-and-merge",
+            headers=_HDR,
+        )
+
+    # Must be a structured error, not an unhandled 500
+    _ok_statuses = (HTTPStatus.BAD_REQUEST, HTTPStatus.INTERNAL_SERVER_ERROR)
+    assert response.status_code in _ok_statuses
+    body = response.json()
+    # The detail must be a string (not a raw traceback or empty)
+    assert isinstance(body.get("detail"), str)
+    assert len(body["detail"]) > 0
+
+
+@pytest.mark.asyncio
+async def test_approve_and_merge_git_error_returns_structured_error(
+    ceo_client: dict,
+) -> None:
+    """POST /approve-and-merge: GitError → 400 with descriptive message."""
+    task = _seed_task_ceo(ceo_client, pr_number=66)
+    await ceo_client["db"].flush()
+
+    with (
+        patch("roboco.api.routes.tasks.get_task_service") as mock_task_factory,
+        patch("roboco.services.project.get_project_service") as mock_proj_factory,
+        patch("roboco.services.git.get_git_service") as mock_git_factory,
+    ):
+        task_instance = AsyncMock()
+        task_instance.get = AsyncMock(return_value=task)
+        mock_task_factory.return_value = task_instance
+
+        proj_instance = AsyncMock()
+        proj_instance.get = AsyncMock(return_value=ceo_client["project"])
+        mock_proj_factory.return_value = proj_instance
+
+        git_instance = AsyncMock()
+        git_instance.merge_pr_for_task = AsyncMock(
+            side_effect=GitError(
+                "GitHub API refused PR merge (422): branch protected",
+                {"pr": 66},
+            )
+        )
+        mock_git_factory.return_value = git_instance
+
+        response = await ceo_client["client"].post(
+            f"/api/tasks/{task.id}/approve-and-merge",
+            headers=_HDR,
+        )
+
+    # Must be a structured error — NOT an unhandled traceback
+    _ok_statuses = (HTTPStatus.BAD_REQUEST, HTTPStatus.INTERNAL_SERVER_ERROR)
+    assert response.status_code in _ok_statuses
+    body = response.json()
+    assert isinstance(body.get("detail"), str)
+    assert len(body["detail"]) > 0
+
+
+# ---------------------------------------------------------------------------
+# POST /tasks/{id}/complete — PM merge path (AC: pm-merge-path fix)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cell_pm_complete_merges_then_completes(task_client: dict) -> None:
+    """POST /complete on an awaiting_pm_review task with a pr_number triggers
+    merge_pr_for_task before the task is marked completed.
+
+    The git service and project service are mocked so no real GitHub call is
+    made; the test verifies the call ordering and the final 200 response.
+    """
+    task = _seed_task(task_client, status=TaskStatus.AWAITING_PM_REVIEW, pr_number=77)
+    await task_client["db"].flush()
+
+    with (
+        patch("roboco.api.routes.tasks.get_task_service") as mock_task_factory,
+        patch("roboco.services.project.get_project_service") as mock_proj_factory,
+        patch("roboco.services.git.get_git_service") as mock_git_factory,
+    ):
+        # Task service: get() returns the seeded task; complete_task_for_agent
+        # simulates the service marking it completed and returning it.
+        task_instance = AsyncMock()
+        task_instance.get = AsyncMock(return_value=task)
+        completed_task = task  # same object; status already set on the mock
+        task_instance.complete_task_for_agent = AsyncMock(return_value=completed_task)
+        mock_task_factory.return_value = task_instance
+
+        proj_instance = AsyncMock()
+        proj_instance.get = AsyncMock(return_value=task_client["project"])
+        mock_proj_factory.return_value = proj_instance
+
+        git_instance = AsyncMock()
+        git_instance.merge_pr_for_task = AsyncMock(return_value=("main", "abc1234"))
+        mock_git_factory.return_value = git_instance
+
+        response = await task_client["client"].post(
+            f"/api/tasks/{task.id}/complete",
+            json={"justification": "All criteria met; QA and docs signed off."},
+            headers=_HDR,
+        )
+
+    assert response.status_code == HTTPStatus.OK
+    # merge_pr_for_task must have been called exactly once
+    git_instance.merge_pr_for_task.assert_called_once()
+    call_args = git_instance.merge_pr_for_task.call_args
+    # The GitMergePRRequest passed to merge_pr_for_task must carry the right pr_number
+    merge_request = call_args.args[2]  # positional: agent_id, agent_role, request
+    _expected_pr = 77
+    assert merge_request.pr_number == _expected_pr
+
+
+# ---------------------------------------------------------------------------
+# POST /tasks/{id}/complete — PM merge path end-to-end (AC: double-completion fix)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pm_merge_auto_completes_without_double_completion(
+    task_client: dict,
+) -> None:
+    """POST /complete on awaiting_pm_review calls real merge_pr_for_task and
+    real complete_task_for_agent is NOT called — the task is auto-completed
+    by _auto_complete_on_merge inside the git service, and the route detects
+    the completed state from the re-fetch and returns 200 directly.
+
+    Only the git-workspace / GitHub-API layer is mocked (GitService.get_workspace
+    and GitService.merge_pull_request).  merge_pr_for_task and complete_task_for_agent
+    run for real so this exercises the fix for the double-completion 500.
+    """
+    # Seed a task in awaiting_pm_review with a PR.  No work_session_id so that
+    # _assert_pr_merged_for_complete returns True without querying WorkSession.
+    task = _seed_task(
+        task_client,
+        status=TaskStatus.AWAITING_PM_REVIEW,
+        pr_number=99,
+        # work_session_id intentionally omitted (defaults to None)
+    )
+    await task_client["db"].flush()
+
+    # Spy: we want to assert complete_task_for_agent is never reached.
+    # If it were called on an already-completed task it would raise ValidationError
+    # and the route would return a non-200 — but we assert explicitly to be clear.
+    complete_for_agent_spy = AsyncMock(
+        wraps=TaskService.complete_task_for_agent,
+        name="complete_task_for_agent_spy",
+    )
+
+    _mock_workspace = Path("/tmp/mock_workspace")
+
+    with (
+        patch.object(
+            GitService,
+            "get_workspace",
+            new=AsyncMock(return_value=_mock_workspace),
+        ),
+        patch.object(
+            GitService,
+            "merge_pull_request",
+            new=AsyncMock(return_value=("main", "dead1234")),
+        ),
+        patch.object(
+            TaskService,
+            "complete_task_for_agent",
+            new=complete_for_agent_spy,
+        ),
+    ):
+        response = await task_client["client"].post(
+            f"/api/tasks/{task.id}/complete",
+            json={"justification": "All criteria met and QA signed off."},
+            headers=_HDR,
+        )
+
+    # The route must return 200; if the double-completion bug were present the
+    # second call to complete() would fail (task already completed) → 422/400.
+    assert response.status_code == HTTPStatus.OK, response.text
+
+    body = response.json()
+    assert body["status"] == "completed", f"expected completed, got {body['status']}"
+
+    # complete_task_for_agent must NOT have been called: the task was already
+    # auto-completed by _auto_complete_on_merge inside merge_pr_for_task.
+    complete_for_agent_spy.assert_not_called()

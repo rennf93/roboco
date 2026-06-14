@@ -399,8 +399,20 @@ export const tasksApi = {
     if (isMockMode()) {
       return mockTasks.filter((t) => t.parent_task_id === taskId);
     }
+    // Hits GET /tasks/{id}/subtasks
     const { data } = await api.get<Task[]>("/tasks/" + taskId + "/subtasks");
     return data;
+  },
+
+  // Returns the valid next statuses for a task from GET /tasks/{id}/valid-transitions
+  getValidTransitions: async (taskId: string): Promise<TaskStatus[]> => {
+    if (isMockMode()) {
+      return [];
+    }
+    const { data } = await api.get<{ valid_statuses: TaskStatus[] }>(
+      "/tasks/" + taskId + "/valid-transitions"
+    );
+    return data.valid_statuses;
   },
 
   // =========================================================================
@@ -590,6 +602,14 @@ export const tasksApi = {
       "/tasks/" + taskId + "/approve-and-start",
       { notes },
     );
+    return data;
+  },
+
+  // CEO gate #2: approve the completed work and merge the PR.
+  // No request body — the backend endpoint accepts no notes parameter.
+  // May throw HTTP 400 with detail starting 'NO_PR' or 'Merge failed'.
+  approveAndMerge: async (taskId: string): Promise<Task> => {
+    const { data } = await api.post<Task>("/tasks/" + taskId + "/approve-and-merge");
     return data;
   },
 

@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { tasksApi, type TaskFilters } from "@/lib/api/tasks";
 import {
   Team,
+  TaskStatus,
   type Task,
   type TaskCreate,
   type ProgressRequest,
@@ -64,15 +65,26 @@ export function useBoardReview(taskId: string, enabled = true) {
 }
 
 export function useSubtasks(parentTaskId: string) {
-  const { data: allTasks = [] } = useTasks();
-
   return useQuery({
     queryKey: taskKeys.subtasks(parentTaskId),
-    queryFn: async (): Promise<Task[]> => {
-      // Filter tasks where parent_task_id matches
-      return allTasks.filter((task) => task.parent_task_id === parentTaskId);
-    },
-    enabled: !!parentTaskId && allTasks.length > 0,
+    // Calls tasksApi.getSubtasks which hits GET /tasks/{id}/subtasks
+    queryFn: () => tasksApi.getSubtasks(parentTaskId),
+    enabled: !!parentTaskId,
+  });
+}
+
+/**
+ * Fetches valid next statuses for a task from GET /tasks/{id}/valid-transitions.
+ * Returns undefined while loading; on error (including 404) gracefully returns
+ * undefined so callers can fall back to a hardcoded map.
+ */
+export function useTaskValidTransitions(taskId: string) {
+  return useQuery<TaskStatus[]>({
+    queryKey: ["tasks", "valid-transitions", taskId] as const,
+    queryFn: () => tasksApi.getValidTransitions(taskId),
+    enabled: !!taskId,
+    staleTime: 30000, // 30 seconds
+    retry: false, // don't retry on 404 or other errors — caller falls back to hardcoded map
   });
 }
 
@@ -279,6 +291,13 @@ export function useTaskLifecycle() {
     },
   });
 
+  // CEO gate #2: approve completed work and merge the PR.
+  // Calls POST /tasks/{id}/approve-and-merge with no request body.
+  const approveAndMerge = useMutation({
+    mutationFn: (taskId: string) => tasksApi.approveAndMerge(taskId),
+    onSuccess: invalidateTask,
+  });
+
   return {
     // Lifecycle
     claim,
@@ -308,6 +327,7 @@ export function useTaskLifecycle() {
     ceoApprove,
     ceoReject,
     escalateToCeo,
+    approveAndMerge,
   };
 }
 

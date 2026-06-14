@@ -44,8 +44,13 @@ export function EscalateToCeoDialog({
     }
   };
 
+  const handleOpenChange = (newOpen: boolean) => {
+    if (!newOpen) setReason("");
+    onOpenChange(newOpen);
+  };
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Escalate to CEO</DialogTitle>
@@ -101,8 +106,13 @@ export function CeoRejectDialog({
     }
   };
 
+  const handleOpenChange = (newOpen: boolean) => {
+    if (!newOpen) setNotes("");
+    onOpenChange(newOpen);
+  };
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Request Changes</DialogTitle>
@@ -139,6 +149,44 @@ export function CeoRejectDialog({
   );
 }
 
+// Approve & Merge Dialog — simple confirmation for POST /tasks/{id}/approve-and-merge.
+// The backend endpoint accepts NO notes parameter, so no text input is needed here.
+interface ApproveAndMergeDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: () => void;
+  isPending?: boolean;
+}
+
+export function ApproveAndMergeDialog({
+  open,
+  onOpenChange,
+  onConfirm,
+  isPending,
+}: ApproveAndMergeDialogProps) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Approve &amp; Merge</DialogTitle>
+          <DialogDescription>
+            This will approve the completed work and merge the pull request into the
+            target branch. This action cannot be undone.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isPending}>
+            Cancel
+          </Button>
+          <Button onClick={onConfirm} disabled={isPending}>
+            {isPending ? "Merging..." : "Approve & Merge"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // CEO Approve Dialog — the sign-off note is the audit record for merging to
 // production, so it is REQUIRED and must be substantive (>= 20 chars), matching
 // the server's CEO_NOTES_REQUIRED gate.
@@ -167,8 +215,13 @@ export function CeoApproveDialog({
     }
   };
 
+  const handleOpenChange = (newOpen: boolean) => {
+    if (!newOpen) setNotes("");
+    onOpenChange(newOpen);
+  };
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Approve &amp; Merge</DialogTitle>
@@ -244,8 +297,13 @@ export function RequiredNotesDialog({
     }
   };
 
+  const handleOpenChange = (newOpen: boolean) => {
+    if (!newOpen) setText("");
+    onOpenChange(newOpen);
+  };
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
@@ -304,8 +362,14 @@ export function CreateBranchDialog({
     onConfirm(branchType);
   };
 
+  // Reset branchType to 'feature' when dialog is dismissed without confirming
+  const handleOpenChange = (newOpen: boolean) => {
+    if (!newOpen) setBranchType("feature");
+    onOpenChange(newOpen);
+  };
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Create Branch</DialogTitle>
@@ -373,10 +437,14 @@ export function CreatePRDialog({
     }
   };
 
-  // Reset title when dialog opens with new default
+  // On open: seed title from defaultTitle. On close without confirming: reset both fields to empty.
   const handleOpenChange = (newOpen: boolean) => {
-    if (newOpen && defaultTitle) {
-      setTitle(defaultTitle);
+    if (newOpen) {
+      if (defaultTitle) setTitle(defaultTitle);
+    } else {
+      // Reset both fields when dismissed without confirming
+      setTitle("");
+      setBody("");
     }
     onOpenChange(newOpen);
   };

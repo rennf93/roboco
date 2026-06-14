@@ -207,6 +207,11 @@ class TaskUpdate(BaseModel):
     target_date: datetime | None = None
     estimated_complexity: Complexity | None = None
 
+    # Classification
+    nature: TaskNature | None = None
+    task_type: TaskType | None = None
+    project_id: str | None = None  # UUID string
+
     # Ownership & assignment
     team: Team | None = None
     assigned_to: str | None = None  # UUID string or null to unassign
@@ -514,6 +519,12 @@ class TaskCountResponse(BaseModel):
     counts: dict[str, int]
 
 
+class ValidTransitionsResponse(BaseModel):
+    """Valid next statuses for a task given its current state."""
+
+    valid_statuses: list[TaskStatus]
+
+
 class ListTasksQuery(BaseModel):
     """Query params for listing tasks."""
 
@@ -775,7 +786,7 @@ def _parse_uuid_list(id_strings: list[str] | None) -> list[UUID]:
     return [UUID(id_str) for id_str in id_strings if id_str]
 
 
-_SINGLE_UUID_FIELDS = ("assigned_to", "parent_task_id")
+_SINGLE_UUID_FIELDS = ("assigned_to", "parent_task_id", "project_id")
 _UUID_LIST_FIELDS = ("dependency_ids", "blocker_ids")
 
 
