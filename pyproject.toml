@@ -24,8 +24,6 @@ dependencies = [
     # Cache/Queue
     "redis",
     "hiredis",  # Redis performance
-    # RAG (piragi with PostgreSQL/pgvector backend)
-    "piragi[postgres]",
     # AI/LLM
     "anthropic",
     "openai",  # For embeddings
@@ -44,12 +42,6 @@ dependencies = [
     "sse-starlette",  # Server-Sent Events for A2A streaming
     # Direct imports (promoted from transitive)
     "cryptography",  # utils/crypto.py — Fernet-encrypted project git tokens
-    # Build-time pin (not imported). Verified empirically: removing this
-    # entry causes uv to ignore the [tool.uv.sources.torch] CPU-only
-    # redirect and pull ~2.5GB of unused CUDA wheels. The entry has to
-    # appear in direct deps for the source override to bind. deptry's
-    # DEP002 ignore for `torch` below documents the same reality.
-    "torch",
     "claude-agent-sdk>=0.2.94",
 ]
 
@@ -108,22 +100,6 @@ packages = ["roboco"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
-
-# =============================================================================
-# uv: pin torch to the CPU-only wheel index
-# =============================================================================
-# `piragi` transitively depends on torch. Our stack uses Ollama over HTTP for
-# all embeddings/LLM, so torch is never actually loaded at runtime — but uv
-# would otherwise resolve torch from PyPI, which bundles the full NVIDIA CUDA
-# stack (~2.5GB across nvidia-cublas, cudnn, cufft, cusolver, nccl, etc.).
-# The CPU-only index provides a ~200MB torch wheel and drops every CUDA dep.
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true
-
-[tool.uv.sources]
-torch = [{ index = "pytorch-cpu" }]
 
 # =============================================================================
 # uv: raise the floor on vulnerable transitive dependencies
@@ -219,7 +195,7 @@ module = [
     "redis.*",
     "anthropic.*",
     "tiktoken.*",
-    "piragi.*",
+    "piragi.*",  # removed from deps; optimal_brain/ still references it (Wave 1B will finish the migration)
     "toon.*",
     "sse_starlette.*",
     "asyncpg.*",
@@ -387,10 +363,6 @@ DEP002 = [
     "tiktoken",
     # Retry logic (used in production services)
     "tenacity",
-    # Build-time pin, not imported — see the comment next to the torch
-    # entry in [project.dependencies] for the full rationale. Removing
-    # it from deps caused uv to pull the full CUDA stack.
-    "torch",
     # Dev tools (CLI, not imported)
     "pytest",
     "pytest-asyncio",
