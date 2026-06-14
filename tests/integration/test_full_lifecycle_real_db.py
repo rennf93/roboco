@@ -494,7 +494,12 @@ async def test_full_chain_through_doc_handoff(
         "Reviewed the diff; route returns 200 OK with timestamp. Tests cover "
         "both acceptance criteria. Approving."
     )
-    env = await c.pass_review(qa_agent.id, task.id, notes=qa_notes)
+    env = await c.pass_review(
+        qa_agent.id,
+        task.id,
+        notes=qa_notes,
+        ac_verdicts=[f"verified: {crit}" for crit in task.acceptance_criteria],
+    )
     assert env.error is None, f"pass_review failed: {env.message}"
     assert env.status == "awaiting_documentation"
 

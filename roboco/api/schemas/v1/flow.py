@@ -110,6 +110,14 @@ class ClaimReviewRequest(BaseModel):
 class PassReviewRequest(BaseModel):
     task_id: UUID
     notes: str = Field(..., min_length=1)
+    ac_verdicts: list[str] | None = Field(
+        default=None,
+        description=(
+            "One verification entry per acceptance criterion (in criterion "
+            "order) stating how QA verified it. Every criterion must be "
+            "covered before a pass is allowed."
+        ),
+    )
 
 
 class FailReviewRequest(BaseModel):

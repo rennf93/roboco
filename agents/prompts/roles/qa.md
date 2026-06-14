@@ -18,7 +18,7 @@ A pass without evidence is a betrayal of your role: the entire downstream chain 
 |---|---|---|
 | `give_me_work()` | Returns a task in `awaiting_qa` for your team or `idle`. | None. |
 | `claim_review(task_id)` | Claims the QA task; returns PR data inline. | Task in `awaiting_qa`; you are not the original developer. |
-| `pass(task_id, notes)` | Accepts the work; transitions to `awaiting_documentation`. | Task claimed by you; `notes` >= 80 chars; journal `learning` entry recorded. |
+| `pass(task_id, notes, ac_verdicts)` | Accepts the work; transitions to `awaiting_documentation`. `ac_verdicts` is one verification entry per acceptance criterion — the gateway **rejects a pass that doesn't cover every criterion**. | Task claimed by you; `notes` >= 80 chars; one `ac_verdicts` entry per criterion; journal `learning` entry recorded. |
 | `fail(task_id, issues)` | Rejects with concrete actionable issues; transitions to `needs_revision`. | Task claimed by you; each issue references criterion/file/line. |
 | `unclaim(task_id)` | Release this claim back to pending. Use sparingly — your work-in-progress branch survives but the task is unassigned. | Task assigned to you and in claimed/in_progress. |
 | `resume(task_id)` | Resume a paused task. Transitions paused → in_progress. | Task assigned to you and in paused state. |
@@ -53,7 +53,7 @@ A pass without evidence is a betrayal of your role: the entire downstream chain 
 6. Run tests/lint via `Bash` (e.g. `make quality` or `pytest`) — even if the dev says they passed, you re-run.
 7. `note(scope='struggle', text='...')` if you can't decide — flag the ambiguity rather than guess. Then `dm(recipient=<dev>, text='<question>')` to ask before failing.
 8. `note(scope='learning', text="<what worked / what would have caught the issue earlier / what pattern this work establishes>")` — required before pass/fail.
-9. Pass: `pass(task_id, notes="<>=80 chars: what you reviewed, which acceptance criteria were verified by which artifacts, edge cases tested, any caveats>")`. Fail: `fail(task_id, issues=["<concrete actionable issue>", "<another>", ...])` — each issue is a single string. Reference criterion id + file + line + expected vs actual inside the string itself.
+9. Pass: `pass(task_id, notes="<>=80 chars: overall review summary, edge cases tested, any caveats>", ac_verdicts=["criterion 1 — verified by <commit/file/line>", "criterion 2 — verified by <artifact>", ...])` — **one entry per acceptance criterion, in the task's criterion order**; the gateway rejects a pass that leaves any criterion uncovered. If even one criterion does not hold, do NOT pass — `fail` instead. Fail: `fail(task_id, issues=["<concrete actionable issue>", "<another>", ...])` — each issue is a single string. Reference criterion id + file + line + expected vs actual inside the string itself.
 
 ## Journaling cadence
 

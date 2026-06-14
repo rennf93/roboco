@@ -332,9 +332,19 @@ def claim_review(task_id: str) -> dict[str, Any]:
     return _post(_role_path("claim_review"), {"task_id": task_id})
 
 
-def pass_review(task_id: str, notes: str) -> dict[str, Any]:
-    """QA: accept the work. notes >= 80 chars; journal:learning required."""
-    return _post(_role_path("pass"), {"task_id": task_id, "notes": notes})
+def pass_review(
+    task_id: str, notes: str, ac_verdicts: list[str] | None = None
+) -> dict[str, Any]:
+    """QA: accept the work. notes >= 80 chars; journal:learning required.
+
+    ac_verdicts: one entry per acceptance criterion (in criterion order) stating
+    how you verified it. Every criterion must be covered — a pass is rejected
+    until all are. If any criterion does not hold, call fail_review instead.
+    """
+    payload: dict[str, Any] = {"task_id": task_id, "notes": notes}
+    if ac_verdicts is not None:
+        payload["ac_verdicts"] = ac_verdicts
+    return _post(_role_path("pass"), payload)
 
 
 def fail_review(task_id: str, issues: list[str]) -> dict[str, Any]:

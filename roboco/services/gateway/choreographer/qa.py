@@ -332,8 +332,66 @@ class QAMixin(_Base):
             )
         return None, agent, role_str
 
+    @staticmethod
+    def _nonblank_verdicts(ac_verdicts: list[str] | None) -> list[str]:
+        """Non-empty verdict strings (defensive against blanks / non-strings)."""
+        return [
+            v.strip() for v in (ac_verdicts or []) if isinstance(v, str) and v.strip()
+        ]
+
+    @classmethod
+    def _qa_ac_coverage_check(
+        cls, task: Any, ac_verdicts: list[str] | None
+    ) -> Envelope | None:
+        """Per-acceptance-criterion verification gate for pass_review.
+
+        QA may not pass a task until it has recorded a verification for EVERY
+        acceptance criterion. A single gestalt "looks good" approval is how a
+        silently-unbuilt criterion slips through; requiring one verdict per
+        criterion forces QA to check each individually. If a criterion does not
+        hold, the QA fails the review instead of passing a partial.
+        """
+        criteria = list(getattr(task, "acceptance_criteria", None) or [])
+        if not criteria:
+            return None
+        verdicts = cls._nonblank_verdicts(ac_verdicts)
+        if len(verdicts) >= len(criteria):
+            return None
+        return Envelope.invalid_state(
+            message=(
+                f"pass_review needs a verification for each of the "
+                f"{len(criteria)} acceptance criteria; got {len(verdicts)}."
+            ),
+            remediate=(
+                "Re-call pass_review with ac_verdicts=[...] — one entry per "
+                "acceptance criterion (in the task's criterion order) stating "
+                "how you verified it. If any criterion does NOT hold, call "
+                "fail_review with the specific gaps instead of passing a partial."
+            ),
+            context_briefing={},
+        )
+
+    @classmethod
+    def _merge_ac_verdicts_into_notes(
+        cls, notes: str, ac_verdicts: list[str] | None
+    ) -> str:
+        """Fold the per-criterion verdicts into the persisted QA notes.
+
+        Keeps the per-criterion verification in the audit trail (qa_notes), so
+        PM/CEO can see exactly which criteria QA checked and how.
+        """
+        lines = cls._nonblank_verdicts(ac_verdicts)
+        if not lines:
+            return notes
+        body = "\n".join(f"- {line}" for line in lines)
+        return f"{notes}\n\nPer-criterion verification:\n{body}"
+
     async def pass_review(
-        self, qa_agent_id: UUID, task_id: UUID, notes: str
+        self,
+        qa_agent_id: UUID,
+        task_id: UUID,
+        notes: str,
+        ac_verdicts: list[str] | None = None,
     ) -> Envelope:
         """QA passes the task; transitions awaiting_qa → awaiting_documentation.
 
@@ -368,13 +426,21 @@ class QAMixin(_Base):
         )
         if gate_rejection is not None:
             return gate_rejection
+        ac_rejection = self._qa_ac_coverage_check(t, ac_verdicts)
+        if ac_rejection is not None:
+            return await self._emit_rejection(
+                ac_rejection.with_introspection(task=t, role=role_str),
+                agent_id=qa_agent_id,
+                task_id=task_id,
+                verb="pass_review",
+            )
 
         briefing = await self._briefing_for(qa_agent_id, task_id)
         spec_ctx = spec_module.Context(
             actor_id=qa_agent_id,
             actor_slug=getattr(agent, "slug", None) if agent is not None else None,
             original_developer_slug=_extract_original_developer(t),
-            notes=notes,
+            notes=self._merge_ac_verdicts_into_notes(notes, ac_verdicts),
         )
         runner = self._verb_runner()
         try:

@@ -495,7 +495,12 @@ async def test_qa_pass_path(
     assert str(after_claim.status) == Status.AWAITING_QA.value
     assert after_claim.assigned_to == qa_agent.id
 
-    env = await c.pass_review(qa_agent.id, task.id, notes=_QA_PASS_NOTES)
+    env = await c.pass_review(
+        qa_agent.id,
+        task.id,
+        notes=_QA_PASS_NOTES,
+        ac_verdicts=[f"verified: {crit}" for crit in task.acceptance_criteria],
+    )
     assert env.error is None, f"pass_review failed: {env.message}"
     assert env.status == Status.AWAITING_DOCUMENTATION.value
 
