@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { Task, TaskStatus, Team } from "@/types";
-import { useDeleteTask, useUpdateTask } from "@/hooks/use-tasks";
+import { useDeleteTask, useUpdateTask, useTaskValidTransitions } from "@/hooks/use-tasks";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -40,6 +40,7 @@ import {
   AlertTriangle,
   Trash2,
   GitBranch,
+  GitMerge,
   GitPullRequest,
   FileCheck,
   Send,
@@ -112,6 +113,10 @@ export function TaskHeader({ task, onAction }: TaskHeaderProps) {
   const router = useRouter();
   const deleteTask = useDeleteTask();
   const updateTask = useUpdateTask();
+  // Fetch valid next statuses from GET /tasks/{id}/valid-transitions; falls back
+  // to the hardcoded validNextStatuses map if the endpoint errors or returns 404.
+  const { data: validTransitionsData } = useTaskValidTransitions(task.id);
+  const nextStatuses: TaskStatus[] = validTransitionsData ?? validNextStatuses[task.status];
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   // Inline editing states
@@ -287,6 +292,11 @@ export function TaskHeader({ task, onAction }: TaskHeaderProps) {
       actions.push({ label: "Cancel Task", action: "cancel", icon: <XCircle className="h-4 w-4 mr-2" /> });
     }
 
+    // Merge PR is available whenever task.pr_number is set and the task is not in a terminal state
+    if (task.pr_number && task.status !== TaskStatus.COMPLETED && task.status !== TaskStatus.CANCELLED) {
+      actions.push({ label: "Merge PR", action: "merge-pr", icon: <GitMerge className="h-4 w-4 mr-2" /> });
+    }
+
     return actions;
   };
 
@@ -337,7 +347,9 @@ export function TaskHeader({ task, onAction }: TaskHeaderProps) {
                     {statusLabels[task.status]}
                   </span>
                 </SelectItem>
-                {validNextStatuses[task.status].map((status) => (
+                {/* nextStatuses sourced from useTaskValidTransitions (GET /tasks/{id}/valid-transitions)
+                    with graceful fallback to the hardcoded validNextStatuses map */}
+                {nextStatuses.map((status) => (
                   <SelectItem key={status} value={status}>
                     <span className={`px-2 py-0.5 rounded ${statusColors[status]}`}>
                       {statusLabels[status]}

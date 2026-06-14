@@ -3,7 +3,7 @@
 import { use, useState } from "react";
 import { useTask, useTaskLifecycle } from "@/hooks/use-tasks";
 import { useProject } from "@/hooks/use-projects";
-import { useCreateBranch, useCreatePR } from "@/hooks/use-git";
+import { useCreateBranch, useCreatePR, useMergePR } from "@/hooks/use-git";
 import { Team, TaskStatus } from "@/types";
 import { TaskHeader, TaskMetadata, TaskTabs } from "@/components/tasks/task-detail";
 import { ApproveAndStartButton } from "@/components/tasks/approve-and-start-button";
@@ -35,6 +35,7 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
   const lifecycle = useTaskLifecycle();
   const createBranch = useCreateBranch();
   const createPR = useCreatePR();
+  const mergePR = useMergePR();
 
   // Dialog states
   const [escalateDialogOpen, setEscalateDialogOpen] = useState(false);
@@ -136,6 +137,23 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
           }
           setPrDialogOpen(true);
           return; // Don't refetch yet, dialog will handle it
+        case "merge-pr":
+          if (!project) {
+            toast.error("Project not found - cannot merge PR");
+            return;
+          }
+          if (!task.pr_number) {
+            toast.error("No PR number found on this task");
+            return;
+          }
+          await mergePR.mutateAsync({
+            project_slug: project.slug,
+            pr_number: task.pr_number,
+            task_id: task.id,
+            agent_id: "ceo", // CEO is merging the PR from the panel
+          });
+          toast.success(`PR #${task.pr_number} merged successfully`);
+          break;
         default:
           console.warn("Unknown action:", action);
       }
