@@ -324,8 +324,14 @@ export function CreateBranchDialog({
     onConfirm(branchType);
   };
 
+  // Reset branchType to 'feature' when dialog is dismissed without confirming
+  const handleOpenChange = (newOpen: boolean) => {
+    if (!newOpen) setBranchType("feature");
+    onOpenChange(newOpen);
+  };
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Create Branch</DialogTitle>
@@ -393,10 +399,14 @@ export function CreatePRDialog({
     }
   };
 
-  // Reset title when dialog opens with new default
+  // On open: seed title from defaultTitle. On close without confirming: reset both fields to empty.
   const handleOpenChange = (newOpen: boolean) => {
-    if (newOpen && defaultTitle) {
-      setTitle(defaultTitle);
+    if (newOpen) {
+      if (defaultTitle) setTitle(defaultTitle);
+    } else {
+      // Reset both fields when dismissed without confirming
+      setTitle("");
+      setBody("");
     }
     onOpenChange(newOpen);
   };

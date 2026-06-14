@@ -399,7 +399,14 @@ export const tasksApi = {
     if (isMockMode()) {
       return mockTasks.filter((t) => t.parent_task_id === taskId);
     }
+    // Hits GET /tasks/{id}/subtasks
     const { data } = await api.get<Task[]>("/tasks/" + taskId + "/subtasks");
+    return data;
+  },
+
+  // Returns the valid next statuses for a task from GET /tasks/{id}/valid-transitions
+  getValidTransitions: async (taskId: string): Promise<TaskStatus[]> => {
+    const { data } = await api.get<TaskStatus[]>("/tasks/" + taskId + "/valid-transitions");
     return data;
   },
 

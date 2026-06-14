@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { tasksApi, type TaskFilters } from "@/lib/api/tasks";
 import {
   Team,
+  TaskStatus,
   type Task,
   type TaskCreate,
   type ProgressRequest,
@@ -66,8 +67,24 @@ export function useBoardReview(taskId: string, enabled = true) {
 export function useSubtasks(parentTaskId: string) {
   return useQuery({
     queryKey: taskKeys.subtasks(parentTaskId),
+    // Calls tasksApi.getSubtasks which hits GET /tasks/{id}/subtasks
     queryFn: () => tasksApi.getSubtasks(parentTaskId),
     enabled: !!parentTaskId,
+  });
+}
+
+/**
+ * Fetches valid next statuses for a task from GET /tasks/{id}/valid-transitions.
+ * Returns undefined while loading; on error (including 404) gracefully returns
+ * undefined so callers can fall back to a hardcoded map.
+ */
+export function useTaskValidTransitions(taskId: string) {
+  return useQuery<TaskStatus[]>({
+    queryKey: ["tasks", "valid-transitions", taskId] as const,
+    queryFn: () => tasksApi.getValidTransitions(taskId),
+    enabled: !!taskId,
+    staleTime: 30000, // 30 seconds
+    retry: false, // don't retry on 404 or other errors — caller falls back to hardcoded map
   });
 }
 
