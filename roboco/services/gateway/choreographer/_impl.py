@@ -4103,6 +4103,14 @@ class Choreographer:
             estimated_complexity=complexity_enum,
         )
         new_task = await self.task.create_subtask(req)
+        # Assign a distinct ordinal within the parent's siblings so the merge
+        # order is deterministic. Within-cell siblings were all left at the
+        # default sequence 0 — which is why two leaf PRs raced into the same
+        # cell branch and the second wedged. Each new sibling takes the next
+        # ordinal (the count of pre-existing siblings).
+        siblings = await self.task.get_subtasks(parent_task_id)
+        next_seq = len([s for s in siblings if s.id != new_task.id])
+        await self.task.set_sequence(new_task.id, next_seq)
         # Thread the parent's existing session links onto the
         # new subtask so the assigned agent (dev/qa/doc) lands in the
         # group chat the PM has already been talking in. Pre-gateway

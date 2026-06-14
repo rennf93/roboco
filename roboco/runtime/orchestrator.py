@@ -6708,6 +6708,57 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             )
         return True
 
+    async def _blocked_by_earlier_sibling(self, task: dict[str, Any]) -> bool:
+        """True if a lower-sequence, same-team sibling is not yet terminal.
+
+        Sequence-ordered merge: leaf siblings share one cell branch, so merging
+        a later sibling before an earlier one diverges the branch and wedges the
+        loser. Hold a higher-sequence sibling's review/merge dispatch until the
+        earlier ones land (or are cancelled). Loop-free: the task simply isn't
+        dispatched this tick — no reject, no respawn churn.
+
+        Only same-team siblings block (they target the same branch). Terminal
+        siblings (completed/cancelled) never block, so a cancelled sibling can't
+        deadlock the rest. Best-effort: any lookup failure falls through to
+        dispatch — the ordering check must never wedge the dispatcher.
+        """
+        parent_id = task.get("parent_task_id")
+        seq = task.get("sequence")
+        team = task.get("team")
+        if not parent_id or seq is None:
+            return False
+        from uuid import UUID
+
+        from roboco.db.base import get_session_factory
+        from roboco.models.base import TaskStatus
+        from roboco.services.task import get_task_service
+
+        terminal = {TaskStatus.COMPLETED, TaskStatus.CANCELLED}
+        try:
+            session_factory = get_session_factory()
+            async with session_factory() as db:
+                task_svc = get_task_service(db)
+                siblings = await task_svc.get_subtasks(UUID(str(parent_id)))
+        except Exception as exc:
+            logger.debug(
+                "sibling-order check failed; dispatching anyway",
+                task_id=task.get("id"),
+                error=str(exc),
+            )
+            return False
+        for sib in siblings:
+            sib_seq = getattr(sib, "sequence", 0) or 0
+            sib_team = getattr(sib, "team", None)
+            sib_status = getattr(sib, "status", None)
+            sib_team_val = getattr(sib_team, "value", sib_team)
+            if (
+                str(sib_team_val) == str(team)
+                and sib_seq < seq
+                and sib_status not in terminal
+            ):
+                return True
+        return False
+
     async def _dispatch_pm_review_work(self, client: httpx.AsyncClient) -> None:
         """
         Dispatch PM review work to cell PMs or Main PM.
@@ -6720,6 +6771,12 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         for task in tasks:
             team = task.get("team")
             assigned_to = task.get("assigned_to")
+
+            # Sequence-ordered merge: don't review/merge a leaf until its
+            # earlier same-team siblings have landed, so they merge into the
+            # shared cell branch in order instead of racing and wedging.
+            if await self._blocked_by_earlier_sibling(task):
+                continue
 
             # If already assigned, check if that agent is running
             if assigned_to:
