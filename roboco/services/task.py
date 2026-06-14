@@ -4935,6 +4935,22 @@ class TaskService(BaseService):
             claim_agent_id = await self.resolve_agent_id(claim_target_slug)
             allow_reassign = True
 
+        # awaiting_pm_review is a REVIEW state, not a dev state. Claiming it must
+        # NOT transition it to `claimed` — the assigned PM's complete() requires
+        # awaiting_pm_review, so a transitioning claim wedges it (the dispatcher
+        # claims an ownerless review task before spawning the PM, who then can't
+        # complete). Mirror the QA/Doc review-claim: assign the owner, keep the
+        # review status. Reached only for an ownerless review task; normal flow
+        # keeps the owner and never re-claims here.
+        if task.status == TaskStatus.AWAITING_PM_REVIEW:
+            claimed = await self._qa_or_doc_claim(
+                claim_agent_id, task_id, TaskStatus.AWAITING_PM_REVIEW
+            )
+            if not claimed:
+                raise ValidationError("Cannot claim task - not in awaiting_pm_review")
+            await self.session.commit()
+            return claimed
+
         claimed = await self.claim(
             task_id, claim_agent_id, allow_reassign=allow_reassign
         )
