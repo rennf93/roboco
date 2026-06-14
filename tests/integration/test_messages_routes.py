@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from http import HTTPStatus
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -49,11 +49,11 @@ async def messages_client(
     app = FastAPI()
     app.include_router(messages_router, prefix="/api/messages")
 
-    async def _override_db():
+    async def _override_db() -> AsyncIterator[AsyncSession]:
         yield db_session
 
-    async def _override_agent_id():
-        return agent.id
+    async def _override_agent_id() -> UUID:
+        return cast("UUID", agent.id)
 
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_current_agent_id] = _override_agent_id

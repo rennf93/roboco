@@ -77,7 +77,7 @@ def do_module(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> types.ModuleTy
 
 def _make_client(
     orchestrator_response: dict[str, Any], sdk_response: dict[str, Any] | None
-):
+) -> Any:
     """Build an httpx.Client mock that dispatches by destination URL."""
     captured: list[tuple[str, dict[str, Any] | None]] = []
 

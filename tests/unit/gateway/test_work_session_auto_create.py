@@ -14,7 +14,7 @@ its id on the task.
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
@@ -47,7 +47,7 @@ _GOOD_RISKS = [
 ]
 
 
-def _make_task_svc(agent_id, task_id, *, status: str):
+def _make_task_svc(agent_id: UUID, task_id: UUID, *, status: str) -> AsyncMock:
     """Build a TaskService AsyncMock that completes the (claim, set_plan, start)
     sequence and returns a task with branch_name set (as the real service does
     after auto-creating the branch during claim side-effects).
@@ -109,7 +109,7 @@ def _make_task_svc(agent_id, task_id, *, status: str):
     return task_svc
 
 
-def _make_deps(task_svc) -> ChoreographerDeps:
+def _make_deps(task_svc: AsyncMock) -> ChoreographerDeps:
     evidence_repo = AsyncMock()
     for method in (
         "list_unread_a2a",

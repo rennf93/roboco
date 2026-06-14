@@ -41,7 +41,7 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
     return ChoreographerDeps(**base)
 
 
-def _parent(pm_id, product_id=None, project_id=None):
+def _parent(pm_id: Any, product_id: Any = None, project_id: Any = None) -> MagicMock:
     return MagicMock(
         id=uuid4(),
         project_id=project_id or uuid4(),
@@ -65,7 +65,7 @@ def _inputs(**kw: Any) -> DelegateInputs:
     return DelegateInputs(**base)
 
 
-async def _run(parent, inputs, product=None):
+async def _run(parent: Any, inputs: DelegateInputs, product: Any = None) -> Any:
     pm_id = parent.assigned_to
     task_svc = AsyncMock()
     task_svc.get.return_value = parent

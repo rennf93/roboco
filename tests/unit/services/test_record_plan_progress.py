@@ -69,6 +69,7 @@ async def test_marking_step_by_one_based_order() -> None:
     )
     svc = _svc_with_task(task)
     res = await svc.record_plan_progress(task.id, uuid4(), "did B", plan_step="2")
+    assert res is not None
     assert res["step_resolved"] is True
     assert res["percentage"] == _PCT_FULL  # both now complete
     assert task.plan["sub_tasks"][1]["completed"] is True
@@ -79,6 +80,7 @@ async def test_unknown_step_is_not_resolved_and_lists_valid() -> None:
     task = _task_with_plan([{"id": "s1", "title": "A", "completed": False}])
     svc = _svc_with_task(task)
     res = await svc.record_plan_progress(task.id, uuid4(), "?", plan_step="nope")
+    assert res is not None
     assert res["step_resolved"] is False
     assert res["valid_steps"] == ["s1"]
     # Nothing marked; % still derived from (unchanged) checklist = 0.
@@ -96,6 +98,7 @@ async def test_narrative_entry_carries_current_derived_pct() -> None:
     )
     svc = _svc_with_task(task)
     res = await svc.record_plan_progress(task.id, uuid4(), "midway note")
+    assert res is not None
     assert res["step_resolved"] is None  # no plan_step requested
     assert res["percentage"] == _PCT_HALF  # current checklist state
     assert task.progress_updates[-1]["message"] == "midway note"
@@ -108,6 +111,7 @@ async def test_no_checklist_falls_back_to_supplied_percentage() -> None:
     res = await svc.record_plan_progress(
         task.id, uuid4(), "legacy", fallback_percentage=_PCT_FALLBACK
     )
+    assert res is not None
     assert res["percentage"] == _PCT_FALLBACK
     assert res["valid_steps"] == []
     assert task.progress_updates[-1]["percentage"] == _PCT_FALLBACK

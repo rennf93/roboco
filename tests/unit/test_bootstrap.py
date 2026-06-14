@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import runpy
 from http import HTTPStatus
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -98,7 +99,7 @@ async def test_wait_for_api_ready_keeps_polling_on_non_200() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _make_main_patches(*, raise_on_spawn: bool = False):
+def _make_main_patches(*, raise_on_spawn: bool = False) -> tuple[Any, Any, Any]:
     """Bundle the heavy IO mocks main() needs.
 
     Returns a context manager and the orchestrator mock so the test can

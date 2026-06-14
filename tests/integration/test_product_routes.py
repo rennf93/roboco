@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from http import HTTPStatus
-from uuid import uuid4
+from typing import TYPE_CHECKING, cast
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -14,11 +15,16 @@ from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import TaskNature, TaskStatus, TaskType
 from roboco.models.permissions import AgentContext
 
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
 _HDR = {"X-Agent-ID": str(uuid4()), "X-Agent-Role": "main_pm"}
 
 
 @pytest_asyncio.fixture
-async def product_client(db_session):  # -> AsyncIterator[dict]
+async def product_client(db_session: AsyncSession) -> AsyncIterator[dict]:
     pm = AgentTable(
         id=uuid4(),
         name="PM",
@@ -48,11 +54,13 @@ async def product_client(db_session):  # -> AsyncIterator[dict]
     app = FastAPI()
     app.include_router(product_router, prefix="/api/products")
 
-    async def _override_db():
+    async def _override_db() -> AsyncIterator[AsyncSession]:
         yield db_session
 
     async def _override_agent() -> AgentContext:
-        return AgentContext(agent_id=pm.id, role=AgentRole.MAIN_PM, team=None)
+        return AgentContext(
+            agent_id=cast("UUID", pm.id), role=AgentRole.MAIN_PM, team=None
+        )
 
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_agent_context] = _override_agent

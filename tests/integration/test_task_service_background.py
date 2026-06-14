@@ -79,7 +79,7 @@ async def task_setup(
     }
 
 
-def _req(setup: dict, **overrides) -> TaskCreateRequest:
+def _req(setup: dict[str, Any], **overrides: Any) -> TaskCreateRequest:
     return TaskCreateRequest(
         title=overrides.pop("title", "t"),
         description=overrides.pop("description", "d"),
@@ -808,7 +808,7 @@ async def test_delete_task_branch_no_project_returns(
 
     real_execute = db_session.execute
 
-    async def _execute_stub(stmt, *args, **kwargs):
+    async def _execute_stub(stmt: Any, *args: Any, **kwargs: Any) -> Any:
         # Return None-result for ProjectTable.slug lookup (the SELECT in
         # _delete_task_branch_best_effort), forward everything else.
         compiled = str(stmt)

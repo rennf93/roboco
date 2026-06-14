@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 import pytest
@@ -55,7 +55,7 @@ def test_compose_redraft_message_includes_draft_and_brief() -> None:
     entries = [
         {"author_role": "product_owner", "author": "po", "title": "PO", "content": "z"}
     ]
-    msg = compose_redraft_message(task, entries)
+    msg = compose_redraft_message(cast("TaskTable", task), entries)
     assert "My Task" in msg
     assert "The current description." in msg
     assert "- does X" in msg

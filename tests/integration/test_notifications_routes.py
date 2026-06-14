@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from http import HTTPStatus
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -49,16 +49,16 @@ async def notif_client(
     app = FastAPI()
     app.include_router(notifications_router, prefix="/api/notifications")
 
-    async def _override_db():
+    async def _override_db() -> AsyncIterator[AsyncSession]:
         yield db_session
 
     async def _override_agent() -> AgentContext:
         return AgentContext(
-            agent_id=agent.id, role=AgentRole.DEVELOPER, team=Team.BACKEND
+            agent_id=cast("UUID", agent.id), role=AgentRole.DEVELOPER, team=Team.BACKEND
         )
 
-    async def _override_agent_id():
-        return agent.id
+    async def _override_agent_id() -> UUID:
+        return cast("UUID", agent.id)
 
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_agent_context] = _override_agent
@@ -119,7 +119,7 @@ async def test_list_with_filters(notif_client: dict) -> None:
 
 
 @pytest.mark.asyncio
-async def test_list_notifications_system_role(db_session) -> None:
+async def test_list_notifications_system_role(db_session: AsyncSession) -> None:
     """System role triggers list_system_notifications branch."""
     sys_agent = AgentTable(
         id=uuid4(),
@@ -140,14 +140,16 @@ async def test_list_notifications_system_role(db_session) -> None:
     app = FastAPI()
     app.include_router(notifications_router, prefix="/api/notifications")
 
-    async def _override_db():
+    async def _override_db() -> AsyncIterator[AsyncSession]:
         yield db_session
 
     async def _override_agent() -> AgentContext:
-        return AgentContext(agent_id=sys_agent.id, role=AgentRole.SYSTEM, team=None)
+        return AgentContext(
+            agent_id=cast("UUID", sys_agent.id), role=AgentRole.SYSTEM, team=None
+        )
 
-    async def _override_agent_id():
-        return sys_agent.id
+    async def _override_agent_id() -> UUID:
+        return cast("UUID", sys_agent.id)
 
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_agent_context] = _override_agent

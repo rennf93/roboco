@@ -5,7 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -59,7 +59,7 @@ async def branch_setup(
     db_session.add(project)
     await db_session.flush()
 
-    def _make_task(parent_id=None) -> TaskTable:
+    def _make_task(parent_id: UUID | None = None) -> TaskTable:
         task = TaskTable(
             id=uuid4(),
             title="t",

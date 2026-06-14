@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -486,7 +487,7 @@ def test_delegate_composes_create_subtask() -> None:
     assert iv.allowed_roles == frozenset({spec.Role.CELL_PM, spec.Role.MAIN_PM})
 
 
-_STUB_TASK_DEFAULTS = {
+_STUB_TASK_DEFAULTS: dict[str, Any] = {
     "status": "pending",
     "task_type": "code",
     "commits": [],
@@ -496,7 +497,7 @@ _STUB_TASK_DEFAULTS = {
 }
 
 
-def _stub_task(**overrides):
+def _stub_task(**overrides: Any) -> SimpleNamespace:
     fields = {**_STUB_TASK_DEFAULTS, **overrides}
     fields["commits"] = fields["commits"] or []
     return SimpleNamespace(**fields)

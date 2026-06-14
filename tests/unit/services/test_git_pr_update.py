@@ -90,7 +90,7 @@ async def _stub_task_get(svc: GitService, task: object | None) -> None:
     _bind(svc, "_task_service_for_pr_update", task_service)
 
 
-def _wire_service(svc: GitService, task: MagicMock) -> None:
+def _wire_service(svc: GitService, task: MagicMock) -> MagicMock:
     """Apply common bindings: workspace, remote parse, token resolution."""
     _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
     _bind(svc, "_parse_github_remote", MagicMock(return_value=("acme", "repo")))
@@ -100,7 +100,7 @@ def _wire_service(svc: GitService, task: MagicMock) -> None:
     # at the module level.
     fake_task_service = MagicMock()
     fake_task_service.get = AsyncMock(return_value=task)
-    return fake_task_service  # type: ignore[return-value]
+    return fake_task_service
 
 
 @pytest.mark.asyncio

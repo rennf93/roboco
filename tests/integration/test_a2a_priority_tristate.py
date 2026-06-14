@@ -22,7 +22,7 @@ These tests pin that contract on both layers:
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
@@ -37,7 +37,7 @@ from roboco.services.a2a import A2AService
 from roboco.services.notification import NotificationService
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncGenerator, AsyncIterator
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -68,7 +68,7 @@ class _FakeDb:
         self.added: list = []
         self._agent_uuid = agent_uuid
 
-    def add(self, obj) -> None:
+    def add(self, obj: Any) -> None:
         self.added.append(obj)
         obj.id = uuid4()
 
@@ -78,7 +78,7 @@ class _FakeDb:
     async def commit(self) -> None:
         return None
 
-    async def execute(self, *_args, **_kwargs):
+    async def execute(self, *_args: Any, **_kwargs: Any) -> Any:
         result = MagicMock()
         agent = MagicMock()
         agent.id = self._agent_uuid
@@ -87,13 +87,13 @@ class _FakeDb:
         result.scalars.return_value.all.return_value = []
         return result
 
-    async def scalar(self, *_args, **_kwargs):
+    async def scalar(self, *_args: Any, **_kwargs: Any) -> None:
         # _create_notification's purpose-dedup lookup — no existing duplicate.
         return None
 
 
 @asynccontextmanager
-async def _fake_ctx(db: _FakeDb):
+async def _fake_ctx(db: _FakeDb) -> AsyncGenerator[_FakeDb]:
     yield db
 
 
@@ -101,7 +101,7 @@ class _PatchDbContext:
     def __init__(self, db: _FakeDb) -> None:
         delivery_mock = MagicMock()
         delivery_mock.deliver = AsyncMock(return_value=None)
-        self._patches = [
+        self._patches: list[Any] = [
             patch(
                 "roboco.services.notification.get_db_context",
                 lambda: _fake_ctx(db),
@@ -117,7 +117,7 @@ class _PatchDbContext:
         for p in self._patches:
             p.start()
 
-    def __exit__(self, *_args) -> None:
+    def __exit__(self, *_args: Any) -> None:
         for p in self._patches:
             p.stop()
 

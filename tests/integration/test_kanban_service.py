@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import pytest
@@ -59,7 +59,7 @@ async def kanban_setup(
     }
 
 
-def _seed(setup: dict, *, status: TaskStatus, **kw) -> TaskTable:
+def _seed(setup: dict, *, status: TaskStatus, **kw: Any) -> TaskTable:
     return TaskTable(
         id=uuid4(),
         title=kw.pop("title", "t"),

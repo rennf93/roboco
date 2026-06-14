@@ -13,7 +13,7 @@ import fnmatch
 import json
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 from httpx import ASGITransport, AsyncClient
@@ -77,9 +77,9 @@ def _make_orchestrator() -> AgentOrchestrator:
     """Build a minimal orchestrator via __new__ (no __init__ side-effects)."""
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
     orch._running = True
-    orch._waiting_records: dict[str, WaitingRecord] = {}
-    orch._instances: dict[str, Any] = {}
-    orch._rate_limit_ceo_notified: set[str] = set()
+    orch._waiting_records = {}
+    orch._instances = {}
+    orch._rate_limit_ceo_notified = set()
     return orch
 
 
@@ -139,15 +139,13 @@ class TestProbeSuccessPath:
         state = _make_active_state(provider, retry_after=None)
 
         tracker_mock = _make_tracker_mock()
-        orch._make_tracker = MagicMock(return_value=tracker_mock)  # type: ignore[method-assign]
-        orch.resolve_wait = AsyncMock(return_value=None)
 
-        async def fake_do_probe(_p: str) -> bool:
-            return True
-
-        orch._do_probe = fake_do_probe  # type: ignore[method-assign]
-
-        with patch("roboco.events.get_event_bus") as mock_bus_fn:
+        with (
+            patch.object(orch, "_make_tracker", return_value=tracker_mock),
+            patch.object(orch, "resolve_wait", new=AsyncMock(return_value=None)),
+            patch.object(orch, "_do_probe", new=AsyncMock(return_value=True)),
+            patch("roboco.events.get_event_bus") as mock_bus_fn,
+        ):
             bus_mock = AsyncMock()
             bus_mock.publish = AsyncMock()
             mock_bus_fn.return_value = bus_mock
@@ -172,17 +170,15 @@ class TestProbeSuccessPath:
             ),  # different provider
         }
 
-        orch.resolve_wait = AsyncMock(return_value=None)
-
+        resolve_mock = AsyncMock(return_value=None)
         tracker_mock = _make_tracker_mock()
-        orch._make_tracker = MagicMock(return_value=tracker_mock)  # type: ignore[method-assign]
 
-        async def fake_do_probe(_p: str) -> bool:
-            return True
-
-        orch._do_probe = fake_do_probe  # type: ignore[method-assign]
-
-        with patch("roboco.events.get_event_bus") as mock_bus_fn:
+        with (
+            patch.object(orch, "resolve_wait", new=resolve_mock),
+            patch.object(orch, "_make_tracker", return_value=tracker_mock),
+            patch.object(orch, "_do_probe", new=AsyncMock(return_value=True)),
+            patch("roboco.events.get_event_bus") as mock_bus_fn,
+        ):
             bus_mock = AsyncMock()
             bus_mock.publish = AsyncMock()
             mock_bus_fn.return_value = bus_mock
@@ -190,8 +186,8 @@ class TestProbeSuccessPath:
             await orch._probe_one_provider(provider, state)
 
         # Only the two anthropic-parked agents should be resolved
-        assert orch.resolve_wait.await_count == 2  # noqa: PLR2004
-        resolved_ids = {call.args[0] for call in orch.resolve_wait.call_args_list}
+        assert resolve_mock.await_count == 2  # noqa: PLR2004
+        resolved_ids = {call.args[0] for call in resolve_mock.call_args_list}
         assert agent1 in resolved_ids
         assert agent2 in resolved_ids
         assert "be-qa-1" not in resolved_ids
@@ -202,19 +198,15 @@ class TestProbeSuccessPath:
         provider = "anthropic"
         state = _make_active_state(provider, retry_after=None)
 
-        orch.resolve_wait = AsyncMock(return_value=None)
-
         tracker_mock = _make_tracker_mock()
-        orch._make_tracker = MagicMock(return_value=tracker_mock)  # type: ignore[method-assign]
-
         published_events: list[Any] = []
 
-        async def fake_do_probe(_p: str) -> bool:
-            return True
-
-        orch._do_probe = fake_do_probe  # type: ignore[method-assign]
-
-        with patch("roboco.events.get_event_bus") as mock_bus_fn:
+        with (
+            patch.object(orch, "resolve_wait", new=AsyncMock(return_value=None)),
+            patch.object(orch, "_make_tracker", return_value=tracker_mock),
+            patch.object(orch, "_do_probe", new=AsyncMock(return_value=True)),
+            patch("roboco.events.get_event_bus") as mock_bus_fn,
+        ):
             bus_mock = AsyncMock()
             bus_mock.publish = AsyncMock(side_effect=published_events.append)
             mock_bus_fn.return_value = bus_mock
@@ -233,17 +225,14 @@ class TestProbeSuccessPath:
         orch._rate_limit_ceo_notified.add(provider)  # simulates prior episode
         state = _make_active_state(provider, retry_after=None)
 
-        orch.resolve_wait = AsyncMock(return_value=None)
-
         tracker_mock = _make_tracker_mock()
-        orch._make_tracker = MagicMock(return_value=tracker_mock)  # type: ignore[method-assign]
 
-        async def fake_do_probe(_p: str) -> bool:
-            return True
-
-        orch._do_probe = fake_do_probe  # type: ignore[method-assign]
-
-        with patch("roboco.events.get_event_bus") as mock_bus_fn:
+        with (
+            patch.object(orch, "resolve_wait", new=AsyncMock(return_value=None)),
+            patch.object(orch, "_make_tracker", return_value=tracker_mock),
+            patch.object(orch, "_do_probe", new=AsyncMock(return_value=True)),
+            patch("roboco.events.get_event_bus") as mock_bus_fn,
+        ):
             bus_mock = AsyncMock()
             bus_mock.publish = AsyncMock()
             mock_bus_fn.return_value = bus_mock
@@ -263,15 +252,14 @@ class TestProbeSuccessPath:
             activated_at=datetime.now(UTC),
         )
 
-        probe_called = []
+        probe_called: list[str] = []
 
         async def fake_do_probe(_p: str) -> bool:
             probe_called.append(_p)
             return True
 
-        orch._do_probe = fake_do_probe  # type: ignore[method-assign]
-
-        await orch._probe_one_provider(provider, state)
+        with patch.object(orch, "_do_probe", new=fake_do_probe):
+            await orch._probe_one_provider(provider, state)
 
         assert probe_called == []  # probe was gated by time
 
@@ -291,15 +279,13 @@ class TestProbeFailurePath:
         state = _make_active_state(provider, retry_after=None)
 
         tracker_mock = _make_tracker_mock(failure_return=1)
-        orch._make_tracker = MagicMock(return_value=tracker_mock)  # type: ignore[method-assign]
 
-        async def fake_do_probe(_p: str) -> bool:
-            return False
-
-        orch._do_probe = fake_do_probe  # type: ignore[method-assign]
-        orch._notify_rate_limit_ceo = AsyncMock()
-
-        await orch._probe_one_provider(provider, state)
+        with (
+            patch.object(orch, "_make_tracker", return_value=tracker_mock),
+            patch.object(orch, "_do_probe", new=AsyncMock(return_value=False)),
+            patch.object(orch, "_notify_rate_limit_ceo", new=AsyncMock()),
+        ):
+            await orch._probe_one_provider(provider, state)
 
         tracker_mock.increment_probe_failures.assert_awaited_once()
 
@@ -310,15 +296,13 @@ class TestProbeFailurePath:
         state = _make_active_state(provider, retry_after=None)
 
         tracker_mock = _make_tracker_mock(failure_return=1)
-        orch._make_tracker = MagicMock(return_value=tracker_mock)  # type: ignore[method-assign]
 
-        async def fake_do_probe(_p: str) -> bool:
-            return False
-
-        orch._do_probe = fake_do_probe  # type: ignore[method-assign]
-        orch._notify_rate_limit_ceo = AsyncMock()
-
-        await orch._probe_one_provider(provider, state)
+        with (
+            patch.object(orch, "_make_tracker", return_value=tracker_mock),
+            patch.object(orch, "_do_probe", new=AsyncMock(return_value=False)),
+            patch.object(orch, "_notify_rate_limit_ceo", new=AsyncMock()),
+        ):
+            await orch._probe_one_provider(provider, state)
 
         tracker_mock.clear.assert_not_awaited()
 
@@ -339,17 +323,16 @@ class TestCEONotificationThreshold:
 
         # simulate already at 9 failures; next increment returns 10
         tracker_mock = _make_tracker_mock(failure_return=10)
-        orch._make_tracker = MagicMock(return_value=tracker_mock)  # type: ignore[method-assign]
-        orch._notify_rate_limit_ceo = AsyncMock()
+        notify_mock = AsyncMock()
 
-        async def fake_do_probe(_p: str) -> bool:
-            return False
+        with (
+            patch.object(orch, "_make_tracker", return_value=tracker_mock),
+            patch.object(orch, "_notify_rate_limit_ceo", new=notify_mock),
+            patch.object(orch, "_do_probe", new=AsyncMock(return_value=False)),
+        ):
+            await orch._probe_one_provider(provider, state)
 
-        orch._do_probe = fake_do_probe  # type: ignore[method-assign]
-
-        await orch._probe_one_provider(provider, state)
-
-        orch._notify_rate_limit_ceo.assert_awaited_once()
+        notify_mock.assert_awaited_once()
 
     async def test_notification_not_fired_before_threshold(self) -> None:
         """No CEO notification below threshold 10."""
@@ -358,17 +341,16 @@ class TestCEONotificationThreshold:
         state = _make_active_state(provider, retry_after=None)
 
         tracker_mock = _make_tracker_mock(failure_return=9)
-        orch._make_tracker = MagicMock(return_value=tracker_mock)  # type: ignore[method-assign]
-        orch._notify_rate_limit_ceo = AsyncMock()
+        notify_mock = AsyncMock()
 
-        async def fake_do_probe(_p: str) -> bool:
-            return False
+        with (
+            patch.object(orch, "_make_tracker", return_value=tracker_mock),
+            patch.object(orch, "_notify_rate_limit_ceo", new=notify_mock),
+            patch.object(orch, "_do_probe", new=AsyncMock(return_value=False)),
+        ):
+            await orch._probe_one_provider(provider, state)
 
-        orch._do_probe = fake_do_probe  # type: ignore[method-assign]
-
-        await orch._probe_one_provider(provider, state)
-
-        orch._notify_rate_limit_ceo.assert_not_awaited()
+        notify_mock.assert_not_awaited()
 
     async def test_notification_sent_only_once_per_episode(self) -> None:
         """Even if failures keep accumulating, the CEO is notified only once."""
@@ -380,17 +362,16 @@ class TestCEONotificationThreshold:
         orch._rate_limit_ceo_notified.add(provider)
 
         tracker_mock = _make_tracker_mock(failure_return=15)
-        orch._make_tracker = MagicMock(return_value=tracker_mock)  # type: ignore[method-assign]
-        orch._notify_rate_limit_ceo = AsyncMock()
+        notify_mock = AsyncMock()
 
-        async def fake_do_probe(_p: str) -> bool:
-            return False
+        with (
+            patch.object(orch, "_make_tracker", return_value=tracker_mock),
+            patch.object(orch, "_notify_rate_limit_ceo", new=notify_mock),
+            patch.object(orch, "_do_probe", new=AsyncMock(return_value=False)),
+        ):
+            await orch._probe_one_provider(provider, state)
 
-        orch._do_probe = fake_do_probe  # type: ignore[method-assign]
-
-        await orch._probe_one_provider(provider, state)
-
-        orch._notify_rate_limit_ceo.assert_not_awaited()
+        notify_mock.assert_not_awaited()
 
     async def test_new_episode_allows_new_notification(self) -> None:
         """After a rate-limit clears (success) a new episode starts fresh."""
@@ -400,19 +381,16 @@ class TestCEONotificationThreshold:
         orch._rate_limit_ceo_notified.add(provider)
 
         success_state = _make_active_state(provider, retry_after=None)
-        orch.resolve_wait = AsyncMock(return_value=None)
-
         tracker_mock = _make_tracker_mock(failure_return=10)
-        orch._make_tracker = MagicMock(return_value=tracker_mock)  # type: ignore[method-assign]
         notify_mock = AsyncMock()
-        orch._notify_rate_limit_ceo = notify_mock
 
-        async def fake_do_probe_success(_p: str) -> bool:
-            return True
-
-        orch._do_probe = fake_do_probe_success  # type: ignore[method-assign]
-
-        with patch("roboco.events.get_event_bus") as mock_bus_fn:
+        with (
+            patch.object(orch, "resolve_wait", new=AsyncMock(return_value=None)),
+            patch.object(orch, "_make_tracker", return_value=tracker_mock),
+            patch.object(orch, "_notify_rate_limit_ceo", new=notify_mock),
+            patch.object(orch, "_do_probe", new=AsyncMock(return_value=True)),
+            patch("roboco.events.get_event_bus") as mock_bus_fn,
+        ):
             bus_mock = AsyncMock()
             bus_mock.publish = AsyncMock()
             mock_bus_fn.return_value = bus_mock
@@ -423,13 +401,14 @@ class TestCEONotificationThreshold:
         assert provider not in orch._rate_limit_ceo_notified
 
         # Episode 2: simulate a new failure reaching threshold 10
-        async def fake_do_probe_fail(_p: str) -> bool:
-            return False
-
-        orch._do_probe = fake_do_probe_fail  # type: ignore[method-assign]
-
         failure_state = _make_active_state(provider, retry_after=None)
-        await orch._probe_one_provider(provider, failure_state)
+
+        with (
+            patch.object(orch, "_make_tracker", return_value=tracker_mock),
+            patch.object(orch, "_notify_rate_limit_ceo", new=notify_mock),
+            patch.object(orch, "_do_probe", new=AsyncMock(return_value=False)),
+        ):
+            await orch._probe_one_provider(provider, failure_state)
 
         # Notification SHOULD fire for the new episode
         notify_mock.assert_awaited_once()

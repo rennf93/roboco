@@ -104,7 +104,7 @@ class _StubGit:
         sha = uuid4().hex[:40]
         commits = list(self._task.commits or [])
         commits.append({"sha": sha, "message": message, "task_id": str(task_id)})
-        self._task.commits = commits  # type: ignore[assignment]
+        self._task.commits = commits
         await self._session.flush()
         return {
             "sha": sha,

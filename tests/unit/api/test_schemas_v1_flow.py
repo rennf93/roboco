@@ -19,16 +19,18 @@ def test_delegate_request_requires_task_type() -> None:
     HTTP boundary with a clear 422.
     """
     with pytest.raises(ValidationError) as exc:
-        DelegateRequest(
-            parent_task_id=uuid4(),
-            title="t",
-            description="add the new endpoint plus tests",
-            assigned_to="be-dev-1",
-            team="backend",
-            nature="technical",
-            estimated_complexity="medium",
-            acceptance_criteria=["returns 200"],
-            # task_type intentionally omitted
+        DelegateRequest.model_validate(
+            {
+                "parent_task_id": uuid4(),
+                "title": "t",
+                "description": "add the new endpoint plus tests",
+                "assigned_to": "be-dev-1",
+                "team": "backend",
+                "nature": "technical",
+                "estimated_complexity": "medium",
+                "acceptance_criteria": ["returns 200"],
+                # task_type intentionally omitted
+            }
         )
     assert "task_type" in str(exc.value)
 

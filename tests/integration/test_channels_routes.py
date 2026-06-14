@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import uuid
 from http import HTTPStatus
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import patch
 from uuid import uuid4
 from uuid import uuid4 as _uuid4
@@ -24,7 +25,7 @@ from roboco.models.permissions import AgentContext
 from roboco.services.messaging import get_messaging_service
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncGenerator, AsyncIterator
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -61,11 +62,13 @@ async def channels_client(
     app = FastAPI()
     app.include_router(channels_router, prefix="/api/channels")
 
-    async def _override_db():
+    async def _override_db() -> AsyncGenerator[AsyncSession]:
         yield db_session
 
     async def _override_agent() -> AgentContext:
-        return AgentContext(agent_id=main_pm.id, role=AgentRole.MAIN_PM, team=None)
+        return AgentContext(
+            agent_id=cast("uuid.UUID", main_pm.id), role=AgentRole.MAIN_PM, team=None
+        )
 
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_agent_context] = _override_agent
@@ -145,12 +148,14 @@ async def test_create_channel_dev_forbidden(db_session: AsyncSession) -> None:
     app = FastAPI()
     app.include_router(channels_router, prefix="/api/channels")
 
-    async def _override_db():
+    async def _override_db() -> AsyncGenerator[AsyncSession]:
         yield db_session
 
     async def _override_agent() -> AgentContext:
         return AgentContext(
-            agent_id=dev.id, role=AgentRole.DEVELOPER, team=Team.BACKEND
+            agent_id=cast("uuid.UUID", dev.id),
+            role=AgentRole.DEVELOPER,
+            team=Team.BACKEND,
         )
 
     app.dependency_overrides[get_db] = _override_db
@@ -301,11 +306,13 @@ async def test_list_channels_filter_by_accessible_slug(
     app = FastAPI()
     app.include_router(channels_router, prefix="/api/channels")
 
-    async def _override_db():
+    async def _override_db() -> AsyncGenerator[AsyncSession]:
         yield db_session
 
     async def _override_agent() -> AgentContext:
-        return AgentContext(agent_id=main_pm.id, role=AgentRole.MAIN_PM, team=None)
+        return AgentContext(
+            agent_id=cast("uuid.UUID", main_pm.id), role=AgentRole.MAIN_PM, team=None
+        )
 
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_agent_context] = _override_agent
@@ -351,12 +358,14 @@ async def test_get_channel_forbidden_for_unprivileged(
     app = FastAPI()
     app.include_router(channels_router, prefix="/api/channels")
 
-    async def _override_db():
+    async def _override_db() -> AsyncGenerator[AsyncSession]:
         yield db_session
 
     async def _override_agent() -> AgentContext:
         return AgentContext(
-            agent_id=dev.id, role=AgentRole.DEVELOPER, team=Team.FRONTEND
+            agent_id=cast("uuid.UUID", dev.id),
+            role=AgentRole.DEVELOPER,
+            team=Team.FRONTEND,
         )
 
     app.dependency_overrides[get_db] = _override_db
@@ -405,12 +414,14 @@ async def test_get_channel_groups_forbidden_for_unprivileged(
     app = FastAPI()
     app.include_router(channels_router, prefix="/api/channels")
 
-    async def _override_db():
+    async def _override_db() -> AsyncGenerator[AsyncSession]:
         yield db_session
 
     async def _override_agent() -> AgentContext:
         return AgentContext(
-            agent_id=dev.id, role=AgentRole.DEVELOPER, team=Team.FRONTEND
+            agent_id=cast("uuid.UUID", dev.id),
+            role=AgentRole.DEVELOPER,
+            team=Team.FRONTEND,
         )
 
     app.dependency_overrides[get_db] = _override_db

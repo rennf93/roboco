@@ -10,9 +10,9 @@ service primitives + permission checks + notification delivery.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -96,7 +96,7 @@ async def task_setup(
     }
 
 
-def _req(setup: dict, **overrides) -> TaskCreateRequest:
+def _req(setup: dict, **overrides: Any) -> TaskCreateRequest:
     return TaskCreateRequest(
         title=overrides.pop("title", "t"),
         description=overrides.pop("description", "d"),
@@ -111,7 +111,7 @@ def _req(setup: dict, **overrides) -> TaskCreateRequest:
     )
 
 
-def _ctx(agent_id, role: AgentRole, team: Team = Team.BACKEND) -> AgentContext:
+def _ctx(agent_id: UUID, role: AgentRole, team: Team = Team.BACKEND) -> AgentContext:
     return AgentContext(
         agent_id=agent_id,
         role=role,
@@ -134,7 +134,7 @@ class _Permissions:
         self,
         agent: AgentContext,
         action: str,
-        team=None,  # noqa: ARG002
+        team: Team | None = None,  # noqa: ARG002
     ) -> bool:
         del agent
         if action == "claim":
@@ -355,7 +355,7 @@ async def test_soft_block_task_for_agent_pm_blocks_other_task(
     task.assigned_to = task_setup["agent_id"]
     task.status = TaskStatus.IN_PROGRESS
     await db_session.flush()
-    agent_ctx = _ctx(pm.id, AgentRole.CELL_PM)
+    agent_ctx = _ctx(cast("UUID", pm.id), AgentRole.CELL_PM)
 
     monkeypatch.setattr(
         "roboco.services.notification_delivery.get_notification_delivery_service",
@@ -429,7 +429,7 @@ async def test_docs_complete_for_task_self_documentation_blocked(
     audit_mock = AsyncMock()
 
     class _Audit:
-        async def log_task_action_denial(self, **_kwargs) -> None:
+        async def log_task_action_denial(self, **_kwargs: Any) -> None:
             await audit_mock(_kwargs)
 
     audit_instance = _Audit()
@@ -507,7 +507,7 @@ async def test_docs_complete_for_task_succeeds(
     task.pr_url = "u"
     task.pr_created = True
     await db_session.flush()
-    agent_ctx = _ctx(doc.id, AgentRole.DOCUMENTER)
+    agent_ctx = _ctx(cast("UUID", doc.id), AgentRole.DOCUMENTER)
     fake_delivery = AsyncMock()
     fake_delivery.notify_pm_of_docs_complete = AsyncMock()
     monkeypatch.setattr(
@@ -617,7 +617,7 @@ async def test_complete_task_for_agent_validation_when_not_completable(
     await db_session.flush()
     task = await svc.create(_req(task_setup))  # PENDING — cannot complete
     await db_session.flush()
-    agent_ctx = _ctx(pm.id, AgentRole.CELL_PM)
+    agent_ctx = _ctx(cast("UUID", pm.id), AgentRole.CELL_PM)
     perms = _Permissions(can_close=True)
     with pytest.raises(ValidationError):
         await svc.complete_task_for_agent(task.id, agent_ctx, perms)
@@ -647,7 +647,7 @@ async def test_complete_task_for_agent_succeeds_for_pm(
     task.status = TaskStatus.IN_PROGRESS
     task.assigned_to = pm.id
     await db_session.flush()
-    agent_ctx = _ctx(pm.id, AgentRole.CELL_PM)
+    agent_ctx = _ctx(cast("UUID", pm.id), AgentRole.CELL_PM)
     perms = _Permissions(can_close=True)
     out = await svc.complete_task_for_agent(task.id, agent_ctx, perms)
     assert out.status == TaskStatus.COMPLETED
@@ -764,7 +764,7 @@ async def test_escalate_to_ceo_for_agent_succeeds(
     task.pr_created = True
     task.docs_complete = True
     await db_session.flush()
-    agent_ctx = _ctx(pm.id, AgentRole.MAIN_PM, Team.MAIN_PM)
+    agent_ctx = _ctx(cast("UUID", pm.id), AgentRole.MAIN_PM, Team.MAIN_PM)
     perms = _Permissions(can_close=True)
     fake_delivery = AsyncMock()
     fake_delivery.notify_ceo_of_escalation = AsyncMock()
@@ -896,11 +896,11 @@ async def test_substitute_task_for_agent_qa_task_complete_routes_to_pm_review(
     task = await svc.create(_req(task_setup))
     task.assigned_to = qa.id
     await db_session.flush()
-    agent_ctx = _ctx(qa.id, AgentRole.QA)
+    agent_ctx = _ctx(cast("UUID", qa.id), AgentRole.QA)
     monkeypatch.setattr("roboco.agents_config.get_pm_for_agent", lambda _slug: pm.slug)
 
     # Patch notify_pm_for_substitute so we don't hit the notification stack
-    async def _fake_notify(*_args, **_kwargs) -> None:
+    async def _fake_notify(*_args: Any, **_kwargs: Any) -> None:
         return None
 
     monkeypatch.setattr("roboco.services.task.notify_pm_for_substitute", _fake_notify)

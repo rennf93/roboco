@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from typing import TYPE_CHECKING, Any
+import uuid
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -88,7 +89,7 @@ async def task_setup(
     }
 
 
-def _req(setup: dict, **overrides) -> TaskCreateRequest:
+def _req(setup: dict, **overrides: Any) -> TaskCreateRequest:
     return TaskCreateRequest(
         title=overrides.pop("title", "t"),
         description=overrides.pop("description", "d"),
@@ -221,14 +222,14 @@ async def test_inject_proactive_context_skips_when_claim_rolled_back(
     assert task.assigned_to is None
 
     @asynccontextmanager_async  # Helper below
-    async def _factory():
-        return None  # type: ignore[no-any-return]
+    async def _factory() -> None:
+        return None
 
     # Build a fake session_factory whose context returns the test session
     db = task_setup["db"]
 
     class _SessionFactory:
-        def __call__(self):
+        def __call__(self) -> _Ctx:
             return _Ctx(db)
 
     class _Ctx:
@@ -238,7 +239,7 @@ async def test_inject_proactive_context_skips_when_claim_rolled_back(
         async def __aenter__(self) -> Any:
             return self._session
 
-        async def __aexit__(self, exc_type, exc, _tb) -> None:
+        async def __aexit__(self, exc_type: Any, exc: Any, _tb: Any) -> None:
             return None
 
     factory_instance = _SessionFactory()
@@ -284,14 +285,14 @@ async def test_inject_proactive_context_writes_when_context_nonempty(
         async def __aenter__(self) -> Any:
             return self._session
 
-        async def __aexit__(self, exc_type, exc, _tb) -> None:
+        async def __aexit__(self, exc_type: Any, exc: Any, _tb: Any) -> None:
             return None
 
     class _Factory:
         def __init__(self, session: Any) -> None:
             self._session = session
 
-        def __call__(self):
+        def __call__(self) -> _Ctx:
             return _Ctx(self._session)
 
     factory = _Factory(db_session)
@@ -434,7 +435,7 @@ async def test_create_work_session_no_project_returns_none(
 
     real_execute = db_session.execute
 
-    async def _exec_stub(stmt, *a, **kw):
+    async def _exec_stub(stmt: Any, *a: Any, **kw: Any) -> Any:
         compiled = str(stmt)
         if "FROM projects" in compiled:
             return fake_result
@@ -806,7 +807,7 @@ async def test_cancel_descendants_cascades_for_authorized_pm(
 # ---------------------------------------------------------------------------
 
 
-def asynccontextmanager_async(func):
+def asynccontextmanager_async(func: Any) -> Any:
     """Stub decorator — actual implementation lives in std lib."""
     return contextlib.asynccontextmanager(func)
 
@@ -892,7 +893,7 @@ async def test_docs_complete_for_task_invokes_notification(
     task.pr_created = True
     await db_session.flush()
     agent_ctx = AgentContext(
-        agent_id=doc.id,
+        agent_id=cast("uuid.UUID", doc.id),
         role=AgentRole.DOCUMENTER,
         team=Team.BACKEND,
         slug=doc.slug,
@@ -951,14 +952,14 @@ async def test_escalate_to_ceo_for_agent_invokes_notification(
     task.docs_complete = True
     await db_session.flush()
     agent_ctx = AgentContext(
-        agent_id=pm.id,
+        agent_id=cast("uuid.UUID", pm.id),
         role=AgentRole.MAIN_PM,
         team=Team.MAIN_PM,
         slug=pm.slug,
     )
 
     class _P:
-        def can_perform_task_action(self, *a, **kw) -> bool:
+        def can_perform_task_action(self, *a: Any, **kw: Any) -> bool:
             del a, kw
             return True
 
@@ -1005,7 +1006,7 @@ async def test_claim_task_for_agent_commits_and_returns(
     )
 
     class _P:
-        def can_perform_task_action(self, *a, **kw) -> bool:
+        def can_perform_task_action(self, *a: Any, **kw: Any) -> bool:
             del a, kw
             return True
 
@@ -1048,14 +1049,14 @@ async def test_complete_task_for_agent_commits(
     task.assigned_to = pm.id
     await db_session.flush()
     agent_ctx = AgentContext(
-        agent_id=pm.id,
+        agent_id=cast("uuid.UUID", pm.id),
         role=AgentRole.CELL_PM,
         team=Team.BACKEND,
         slug=pm.slug,
     )
 
     class _P:
-        def can_perform_task_action(self, *a, **kw) -> bool:
+        def can_perform_task_action(self, *a: Any, **kw: Any) -> bool:
             del a, kw
             return True
 

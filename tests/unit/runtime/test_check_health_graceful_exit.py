@@ -52,9 +52,11 @@ async def test_graceful_exit_does_not_respawn() -> None:
     proc = MagicMock()
     proc.communicate = AsyncMock(return_value=(b"false 0\n", b""))
     spawn = AsyncMock()
-    orch.spawn_agent = spawn
 
-    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+    with (
+        patch.object(orch, "spawn_agent", new=spawn),
+        patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)),
+    ):
         await orch._check_health()
 
     spawn.assert_not_awaited()
@@ -77,12 +79,15 @@ async def test_crash_exit_triggers_restart() -> None:
     proc = MagicMock()
     proc.communicate = AsyncMock(return_value=(b"false 137\n", b""))
     spawn = AsyncMock()
-    orch.spawn_agent = spawn
 
-    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+    with (
+        patch.object(orch, "spawn_agent", new=spawn),
+        patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)),
+    ):
         await orch._check_health()
 
     spawn.assert_awaited_once()
+    assert spawn.await_args is not None
     args = spawn.await_args.kwargs
     assert args["agent_id"] == "be-dev-1"
     assert args["task_id"] == task_id
@@ -99,9 +104,11 @@ async def test_still_running_no_action() -> None:
     proc = MagicMock()
     proc.communicate = AsyncMock(return_value=(b"true 0\n", b""))
     spawn = AsyncMock()
-    orch.spawn_agent = spawn
 
-    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+    with (
+        patch.object(orch, "spawn_agent", new=spawn),
+        patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)),
+    ):
         await orch._check_health()
 
     spawn.assert_not_awaited()
@@ -122,10 +129,13 @@ async def test_crash_max_retries_does_not_restart() -> None:
     proc = MagicMock()
     proc.communicate = AsyncMock(return_value=(b"false 1\n", b""))
     spawn = AsyncMock()
-    orch.spawn_agent = spawn
-    orch._notify_agent_stranded = AsyncMock()
+    notify_stranded = AsyncMock()
 
-    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+    with (
+        patch.object(orch, "spawn_agent", new=spawn),
+        patch.object(orch, "_notify_agent_stranded", new=notify_stranded),
+        patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)),
+    ):
         await orch._check_health()
 
     spawn.assert_not_awaited()
@@ -143,9 +153,11 @@ async def test_malformed_inspect_treated_as_crash() -> None:
     # No exit code field at all.
     proc.communicate = AsyncMock(return_value=(b"false\n", b""))
     spawn = AsyncMock()
-    orch.spawn_agent = spawn
 
-    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+    with (
+        patch.object(orch, "spawn_agent", new=spawn),
+        patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)),
+    ):
         await orch._check_health()
 
     # exit_code is None → not graceful → counts as crash.

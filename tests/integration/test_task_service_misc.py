@@ -25,7 +25,7 @@ Targets:
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
@@ -51,6 +51,7 @@ from roboco.templates.git.constants import MAX_TASK_DEPTH
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    from sqlalchemy import Table
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -93,7 +94,7 @@ async def task_setup(
     }
 
 
-def _req(setup: dict, **overrides) -> TaskCreateRequest:
+def _req(setup: dict, **overrides: Any) -> TaskCreateRequest:
     return TaskCreateRequest(
         title=overrides.pop("title", "t"),
         description=overrides.pop("description", "d"),
@@ -239,7 +240,7 @@ async def test_activate_without_project_or_product_raises(
     fake_task.project_id = None
     fake_task.product_id = None
 
-    async def _stub_get(tid):
+    async def _stub_get(tid: Any) -> Any:
         del tid
         return fake_task
 
@@ -253,7 +254,7 @@ async def test_activate_without_project_or_product_raises(
     db = task_setup["db"]
     real_execute = db.execute
 
-    async def _exec_stub(stmt, *a, **kw):
+    async def _exec_stub(stmt: Any, *a: Any, **kw: Any) -> Any:
         compiled = str(stmt)
         if "session_tasks" in compiled.lower():
             return fake_result
@@ -600,7 +601,7 @@ async def test_unclaim_for_reaper_lifecycle_error_returns(
     task.assigned_to = task_setup["agent_id"]
     await db_session.flush()
 
-    def _raise(*_args, **_kwargs) -> None:
+    def _raise(*_args: Any, **_kwargs: Any) -> None:
         raise TaskLifecycleError(
             current_status="claimed",
             target_status="pending",
@@ -624,7 +625,7 @@ async def test_unclaim_for_agent_lifecycle_error_returns_none(
     task.assigned_to = task_setup["agent_id"]
     await db_session.flush()
 
-    def _raise(*_args, **_kwargs) -> None:
+    def _raise(*_args: Any, **_kwargs: Any) -> None:
         raise TaskLifecycleError(
             current_status="claimed",
             target_status="pending",
@@ -648,7 +649,7 @@ async def test_resume_for_agent_lifecycle_error_returns_none(
     task.assigned_to = task_setup["agent_id"]
     await db_session.flush()
 
-    async def _bad_resume(*_a, **_kw) -> None:
+    async def _bad_resume(*_a: Any, **_kw: Any) -> None:
         raise TaskLifecycleError(
             current_status="paused",
             target_status="in_progress",
@@ -900,7 +901,8 @@ async def test_complete_returns_none_when_pr_not_merged(
     """
     svc = task_setup["svc"]
     await db_session.execute(
-        AgentTable.__table__.update()
+        cast("Table", AgentTable.__table__)
+        .update()
         .where(AgentTable.role == AgentRole.MAIN_PM)
         .values(role=AgentRole.SYSTEM)
     )
@@ -989,7 +991,7 @@ async def test_escalate_to_ceo_for_agent_inner_returns_none(
     )
 
     class _P:
-        def can_perform_task_action(self, *a, **kw) -> bool:
+        def can_perform_task_action(self, *a: Any, **kw: Any) -> bool:
             del a, kw
             return True
 
@@ -1105,7 +1107,7 @@ async def test_ensure_branch_calls_auto_create(
     task = await svc.create(_req(task_setup))
     # No branch_name set → falls through to auto-create
 
-    async def _stub(_t, _a) -> str:
+    async def _stub(_t: Any, _a: Any) -> str:
         return "feature/backend/MOCK"
 
     monkeypatch.setattr(svc, "_auto_create_branch", _stub)
@@ -1125,7 +1127,7 @@ async def test_find_ancestor_branch_break_when_parent_missing(
 
     real_get = svc.get
 
-    async def _stub_get(tid):
+    async def _stub_get(tid: Any) -> Any:
         # Return None when looking up the parent
         if tid == parent.id:
             return None
@@ -1179,7 +1181,7 @@ async def test_finalize_claim_refreshes_after_branch_creation(
     task = await svc.create(_req(task_setup))
     await db_session.flush()
 
-    async def _ensure_branch(_t, _a) -> str:
+    async def _ensure_branch(_t: Any, _a: Any) -> str:
         _t.branch_name = "feature/backend/X"
         return "feature/backend/X"
 
@@ -1205,7 +1207,7 @@ async def test_resolve_pm_for_review_returns_none_when_chain_broken(
 
     real_get = svc.get
 
-    async def _stub_get(tid):
+    async def _stub_get(tid: Any) -> Any:
         # Return None when looking up the parent
         if tid == parent.id:
             return None
