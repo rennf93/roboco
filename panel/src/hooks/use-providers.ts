@@ -13,6 +13,8 @@ export const providerKeys = {
   selfHostedConfig: () => [...providerKeys.all, "self-hosted-config"] as const,
   selfHostedModels: () => [...providerKeys.all, "self-hosted-models"] as const,
   selfHostedTest: () => [...providerKeys.all, "self-hosted-test"] as const,
+  providerKeys: () => [...providerKeys.all, "keys"] as const,
+  providerKey: (type: string) => [...providerKeys.all, "key", type] as const,
 };
 
 export function useCatalog() {
@@ -113,6 +115,50 @@ export function useRefreshSelfHostedModels() {
   return useMutation({
     mutationFn: async () => {
       await qc.invalidateQueries({ queryKey: providerKeys.selfHostedModels() });
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Provider API Key hooks
+// ---------------------------------------------------------------------------
+
+/** Query: fetch key status for all providers. */
+export function useAllProviderKeys() {
+  return useQuery({
+    queryKey: providerKeys.providerKeys(),
+    queryFn: () => providersApi.getAllProviderKeys(),
+    staleTime: 30_000,
+  });
+}
+
+/** Query: fetch key status for a single provider. */
+export function useProviderKey(providerType: string) {
+  return useQuery({
+    queryKey: providerKeys.providerKey(providerType),
+    queryFn: () => providersApi.getProviderKey(providerType),
+    staleTime: 30_000,
+    enabled: !!providerType,
+  });
+}
+
+/** Mutation: set or clear a provider's API key. */
+export function useSetProviderKey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      providerType,
+      apiKey,
+    }: {
+      providerType: string;
+      apiKey: string;
+    }) => providersApi.setProviderKey(providerType, { api_key: apiKey }),
+    onSuccess: (_data, variables) => {
+      // Invalidate the combined keys list and the specific key.
+      qc.invalidateQueries({ queryKey: providerKeys.providerKeys() });
+      qc.invalidateQueries({
+        queryKey: providerKeys.providerKey(variables.providerType),
+      });
     },
   });
 }

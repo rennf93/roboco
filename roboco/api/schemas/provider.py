@@ -59,6 +59,33 @@ class SetOllamaKeyRequest(BaseModel):
 
 
 # =============================================================================
+# GENERIC PROVIDER KEY STATUS
+# =============================================================================
+
+
+class ProviderKeyStatus(BaseModel):
+    """Status of one provider's API key.
+
+    Returned by the combined ``GET /providers/keys`` endpoint so the
+    frontend can show a single key-management view for all providers.
+    """
+
+    provider_type: str
+    display_name: str
+    has_key: bool
+    enabled: bool
+
+
+class SetProviderKeyRequest(BaseModel):
+    """Set or clear a provider's API key.
+
+    Empty string → clears.  Non-empty → Fernet-encrypts and enables.
+    """
+
+    api_key: str = Field(default="")
+
+
+# =============================================================================
 # SELF-HOSTED (LOCAL) OLLAMA SERVER
 # =============================================================================
 

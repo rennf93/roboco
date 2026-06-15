@@ -17,11 +17,13 @@ from roboco.api.schemas.provider import (
     CatalogEntryResponse,
     ModeResponse,
     OllamaKeyStatus,
+    ProviderKeyStatus,
     SelfHostedConfigRequest,
     SelfHostedConfigResponse,
     SelfHostedModelEntry,
     SelfHostedTestResponse,
     SetOllamaKeyRequest,
+    SetProviderKeyRequest,
     assignment_to_response,
 )
 from roboco.models.base import ModelProvider
@@ -108,6 +110,121 @@ async def set_ollama_key(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
     await db.commit()
     return OllamaKeyStatus(
+        has_key=bool(provider.auth_token_encrypted),
+        enabled=provider.enabled,
+    )
+
+
+# =============================================================================
+# ANTHROPIC API KEY
+# =============================================================================
+
+
+_PROVIDER_META: dict[ModelProvider, str] = {
+    ModelProvider.ANTHROPIC: "Anthropic",
+    ModelProvider.OLLAMA_CLOUD: "Ollama Cloud",
+    ModelProvider.OPENAI: "OpenAI",
+    ModelProvider.LOCAL: "Self-Hosted",
+}
+
+
+@router.get("/keys", response_model=list[ProviderKeyStatus])
+async def get_all_provider_keys(
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> list[ProviderKeyStatus]:
+    """Return key status for every seeded provider.
+
+    Returns ``[{provider_type, display_name, has_key, enabled}]`` so the
+    Settings UI can render a single key-management card without calling
+    four separate endpoints.
+    """
+    require_pm_or_above(agent.role, "view provider key status")
+    provider_svc = get_provider_service(db)
+    providers = await provider_svc.list_providers(include_disabled=True)
+    return [
+        ProviderKeyStatus(
+            provider_type=p.type.value,
+            display_name=_PROVIDER_META.get(p.type, p.name),
+            has_key=bool(p.auth_token_encrypted),
+            enabled=p.enabled,
+        )
+        for p in providers
+        if p.type in _PROVIDER_META
+    ]
+
+
+@router.get("/{provider_type}/key", response_model=ProviderKeyStatus)
+async def get_provider_key_status(
+    provider_type: str,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> ProviderKeyStatus:
+    """Return key status for a specific provider by type name."""
+    require_pm_or_above(agent.role, "view provider key status")
+    try:
+        pt = ModelProvider(provider_type)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown provider type: {provider_type!r}",
+        )
+    provider_svc = get_provider_service(db)
+    providers = await provider_svc.list_providers(include_disabled=True)
+    match = next((p for p in providers if p.type == pt), None)
+    if match is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Provider {provider_type!r} not seeded.",
+        )
+    return ProviderKeyStatus(
+        provider_type=match.type.value,
+        display_name=_PROVIDER_META.get(match.type, match.name),
+        has_key=bool(match.auth_token_encrypted),
+        enabled=match.enabled,
+    )
+
+
+@router.put("/{provider_type}/key", response_model=ProviderKeyStatus)
+async def set_provider_key(
+    provider_type: str,
+    data: SetProviderKeyRequest,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> ProviderKeyStatus:
+    """Set or clear a provider's API key by type name.
+
+    Supports ``anthropic``, ``ollama_cloud``, ``openai``, and ``local``.
+    Empty string clears the key; any other value Fernet-encrypts it.
+    """
+    require_pm_or_above(agent.role, "set provider API key")
+    try:
+        pt = ModelProvider(provider_type)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown provider type: {provider_type!r}",
+        )
+
+    routing = get_model_routing_service(db)
+    try:
+        if pt == ModelProvider.ANTHROPIC:
+            provider = await routing.set_anthropic_api_key(data.api_key)
+        elif pt == ModelProvider.OLLAMA_CLOUD:
+            provider = await routing.set_ollama_api_key(data.api_key)
+        elif pt == ModelProvider.OPENAI:
+            provider = await routing.set_openai_api_key(data.api_key)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"API key management not supported for provider: {provider_type!r}",
+            )
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    await db.commit()
+    return ProviderKeyStatus(
+        provider_type=provider.type.value,
+        display_name=_PROVIDER_META.get(provider.type, provider.name),
         has_key=bool(provider.auth_token_encrypted),
         enabled=provider.enabled,
     )

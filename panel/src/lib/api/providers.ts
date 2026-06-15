@@ -39,6 +39,21 @@ export interface ApplyModePayload {
 }
 
 // ---------------------------------------------------------------------------
+// Provider API Keys (Anthropic, OpenAI, etc.)
+// ---------------------------------------------------------------------------
+
+export interface ProviderKeyStatus {
+  provider_type: string;
+  display_name: string;
+  has_key: boolean;
+  enabled: boolean;
+}
+
+export interface SetProviderKeyPayload {
+  api_key: string;
+}
+
+// ---------------------------------------------------------------------------
 // Self-hosted LLM types
 // ---------------------------------------------------------------------------
 
@@ -83,6 +98,36 @@ export const providersApi = {
     const { data } = await api.put<OllamaKeyStatus>("/providers/ollama-key", {
       api_key: apiKey,
     });
+    return data;
+  },
+
+  // -------------------------------------------------------------------------
+  // Provider API Keys (generic)
+  // -------------------------------------------------------------------------
+
+  /** Fetch key status for all seeded providers. */
+  getAllProviderKeys: async (): Promise<ProviderKeyStatus[]> => {
+    const { data } = await api.get<ProviderKeyStatus[]>("/providers/keys");
+    return data;
+  },
+
+  /** Fetch key status for a single provider by type (e.g. "anthropic"). */
+  getProviderKey: async (providerType: string): Promise<ProviderKeyStatus> => {
+    const { data } = await api.get<ProviderKeyStatus>(
+      `/providers/${providerType}/key`,
+    );
+    return data;
+  },
+
+  /** Set or clear a provider's API key. Empty string clears. */
+  setProviderKey: async (
+    providerType: string,
+    payload: SetProviderKeyPayload,
+  ): Promise<ProviderKeyStatus> => {
+    const { data } = await api.put<ProviderKeyStatus>(
+      `/providers/${providerType}/key`,
+      payload,
+    );
     return data;
   },
 

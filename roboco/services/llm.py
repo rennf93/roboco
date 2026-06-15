@@ -340,7 +340,31 @@ class ModelRoutingService(BaseService):
         Operates on the single pre-seeded Ollama row — no provider
         creation happens here.
         """
-        provider = await self._get_seeded_provider(ModelProvider.OLLAMA_CLOUD)
+        return await self._set_provider_key(ModelProvider.OLLAMA_CLOUD, api_key)
+
+    async def set_anthropic_api_key(self, api_key: str) -> ProviderConfigTable:
+        """Set / clear the Anthropic provider's API key.
+
+        When set, the orchestrator injects ``ANTHROPIC_API_KEY`` into agent
+        containers instead of relying on the Docker-mounted ``~/.claude``
+        credentials — enabling key-based auth for non-Docker providers and
+        cloud-native deployments.
+        """
+        return await self._set_provider_key(ModelProvider.ANTHROPIC, api_key)
+
+    async def set_openai_api_key(self, api_key: str) -> ProviderConfigTable:
+        """Set / clear the OpenAI provider's API key.
+
+        Reserved for the OpenAI provider path (ModelProvider.OPENAI).
+        An empty string clears the key and disables the provider.
+        """
+        return await self._set_provider_key(ModelProvider.OPENAI, api_key)
+
+    async def _set_provider_key(
+        self, provider_type: ModelProvider, api_key: str
+    ) -> ProviderConfigTable:
+        """Shared implementation: set or clear a provider's encrypted API key."""
+        provider = await self._get_seeded_provider(provider_type)
         provider_svc = ProviderService(self.session)
         await provider_svc.update_provider(
             require_uuid(provider.id),
@@ -351,7 +375,7 @@ class ModelRoutingService(BaseService):
             ),
         )
         # Re-fetch for the caller.
-        return await self._get_seeded_provider(ModelProvider.OLLAMA_CLOUD)
+        return await self._get_seeded_provider(provider_type)
 
     async def _get_seeded_provider(
         self, provider_type: ModelProvider
