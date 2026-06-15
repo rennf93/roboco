@@ -280,6 +280,34 @@ class Settings(BaseSettings):
     )
 
     # ==========================================================================
+    # Autonomous strategy engine ("engine 2") — DORMANT by default
+    # ==========================================================================
+    # A separate background loop that watches the company against its standing
+    # goals and surfaces drift/idle/stranded work to the CEO (notify-only —
+    # never spends or builds). Default OFF: the loop never starts and the
+    # existing delivery lifecycle is untouched until the CEO opts in.
+    strategy_engine_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for the autonomous strategy engine. OFF by default; "
+            "when off the background loop does not run at all."
+        ),
+    )
+    strategy_engine_interval_seconds: int = Field(
+        default=1800,
+        ge=60,
+        description="Seconds between strategy-engine assessment passes.",
+    )
+    strategy_stranded_blocked_minutes: int = Field(
+        default=120,
+        ge=5,
+        description=(
+            "A task blocked longer than this is surfaced as stranded "
+            "(needs a human decision)."
+        ),
+    )
+
+    # ==========================================================================
     # Workspaces (Multi-Agent Git)
     # ==========================================================================
     workspaces_root: str = Field(

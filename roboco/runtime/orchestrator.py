@@ -566,6 +566,7 @@ class AgentOrchestrator:
         # Rate-limit probe loop: 30-second interval, scans Redis for all
         # rate-limited providers and resolves waiting agents on success.
         self._rate_limit_probe_task: asyncio.Task | None = None
+        self._strategy_engine_task: asyncio.Task | None = None
         # Tracks which providers have already received a CEO notification
         # during the current rate-limit episode.  Cleared when the probe
         # succeeds and the rate limit is lifted (tracker.clear() path).
@@ -643,6 +644,7 @@ class AgentOrchestrator:
         self._dispatcher_task = asyncio.create_task(self._dispatcher_loop())
         self._sweeper_task = asyncio.create_task(self._sweeper_loop())
         self._rate_limit_probe_task = asyncio.create_task(self._rate_limit_probe_loop())
+        self._strategy_engine_task = asyncio.create_task(self._strategy_engine_loop())
 
         logger.info(
             "Orchestrator started",
@@ -674,6 +676,11 @@ class AgentOrchestrator:
             self._rate_limit_probe_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._rate_limit_probe_task
+
+        if self._strategy_engine_task:
+            self._strategy_engine_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._strategy_engine_task
 
         # Stop all agents
         for agent_id in list(self._instances.keys()):
@@ -4250,6 +4257,29 @@ Start by:
     # =========================================================================
     # RATE-LIMIT PROBE LOOP
     # =========================================================================
+
+    async def _strategy_engine_loop(self) -> None:
+        """Engine 2: periodically surface goal drift / idle / stranded work.
+
+        Dormant by default — returns immediately unless ``strategy_engine_enabled``
+        is set, so it adds zero behaviour to a standard deployment. Notify-only;
+        it never spends or builds.
+        """
+        if not settings.strategy_engine_enabled:
+            return
+        from roboco.db import get_db_context
+        from roboco.services.strategy_engine import get_strategy_engine
+
+        interval = settings.strategy_engine_interval_seconds
+        while self._running:
+            try:
+                await asyncio.sleep(interval)
+                async with get_db_context() as db:
+                    await get_strategy_engine(db).run_cycle()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("strategy engine cycle failed")
 
     async def _rate_limit_probe_loop(self) -> None:
         """Background loop: probe rate-limited providers every ~30 seconds.
