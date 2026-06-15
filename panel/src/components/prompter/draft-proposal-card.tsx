@@ -18,7 +18,7 @@ interface DraftProposalCardProps {
 
 // 0 is the highest priority, 3 the lowest — matches the backend contract.
 const PRIORITY_LABELS: Record<number, string> = {
-  0: "Urgent",
+  0: "Highest",
   1: "High",
   2: "Medium",
   3: "Low",

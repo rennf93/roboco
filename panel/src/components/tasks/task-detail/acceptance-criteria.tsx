@@ -235,6 +235,7 @@ export function AcceptanceCriteria({ task }: AcceptanceCriteriaProps) {
                       <Button
                         size="sm"
                         onClick={handleSaveEdit}
+                        onMouseDown={(e) => e.preventDefault()}
                         className="h-7 w-7 p-0"
                       >
                         <Check className="h-4 w-4" />
