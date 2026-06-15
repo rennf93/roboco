@@ -602,6 +602,35 @@ class PitchTable(Base):
     )
 
 
+class SecretaryDirectiveTable(Base):
+    """One action the Secretary took (or queued) on the CEO's behalf.
+
+    Direct (low-risk) directives are written already ``executed``; gated
+    (high-impact) ones are ``pending`` until the CEO confirms, then run. The
+    full row is the command audit trail.
+    """
+
+    __tablename__ = "secretary_directives"
+
+    id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="pending", index=True
+    )
+    requested_by: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    decided_by: Mapped[PyUUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    result: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 # =============================================================================
 # WORK SESSION TABLE
 # =============================================================================
