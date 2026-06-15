@@ -257,6 +257,7 @@ class AgentOrchestrator(
         from roboco.llm.providers import (
             ClaudeCodeProvider,
             OllamaLocalProvider,
+            OpenCodeProvider,
         )
         from roboco.llm.providers.registry import ProviderRegistry as _Reg
 
@@ -270,6 +271,7 @@ class AgentOrchestrator(
             ClaudeCodeProvider(project_root=self.project_root),
         )
         registry.register(_ModelProvider.LOCAL, OllamaLocalProvider())
+        registry.register(_ModelProvider.OPENCODE, OpenCodeProvider())
         self._provider_registry = registry
         # Keep a direct ref to the ClaudeCode provider for intake sessions
         # which build Docker commands outside the normal provider dispatch.
