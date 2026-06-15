@@ -24,6 +24,7 @@ import {
   Sparkles,
   Target,
   Briefcase,
+  Lightbulb,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -43,6 +44,7 @@ export const navItems = [
   // Development
   { title: "Projects", href: "/projects", icon: FolderGit2 },
   { title: "Products", href: "/products", icon: Boxes },
+  { title: "Pitches", href: "/pitches", icon: Lightbulb },
   { title: "Git", href: "/git", icon: GitBranch },
 
   // Team & Reference

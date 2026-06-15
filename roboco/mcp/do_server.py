@@ -236,6 +236,35 @@ def note(
     )
 
 
+def pitch(
+    title: str,
+    slug: str,
+    problem: str,
+    proposed_solution: str,
+    target_cells: list[str],
+) -> dict[str, Any]:
+    """Board: propose a product. Queues for the CEO's approval, then auto-provisions.
+
+    Args:
+        title: Short product name.
+        slug: URL-safe id (lowercase letters, digits, hyphens), e.g. 'widget-store'.
+        problem: The problem this product solves.
+        proposed_solution: How you propose to solve it.
+        target_cells: Cells that should build it — any of 'backend', 'frontend',
+            'ux_ui'.
+    """
+    return _post(
+        "/api/v1/do/pitch",
+        {
+            "title": title,
+            "slug": slug,
+            "problem": problem,
+            "proposed_solution": proposed_solution,
+            "target_cells": target_cells,
+        },
+    )
+
+
 def say(channel: str, text: str, task_id: str | None = None) -> dict[str, Any]:
     """Post to a channel. task_id auto-injected if you have an active task.
 
@@ -507,6 +536,7 @@ def read_messages() -> dict[str, Any]:
 _TOOLS: dict[str, Any] = {
     "commit": commit,
     "note": note,
+    "pitch": pitch,
     "say": say,
     "dm": dm,
     "notify": notify,

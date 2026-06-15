@@ -244,6 +244,24 @@ class ContentActionsDeps:
 
 
 _VALID_NOTIFY_PRIORITIES: frozenset[str] = frozenset(p.value for p in _comms.Priority)
+# The Board roles that may author a pitch (a product proposal for CEO approval).
+_PITCH_ROLES: frozenset[str] = frozenset({"product_owner", "head_marketing"})
+
+
+def _coerce_pitch_cells(target_cells: list[str]) -> list[Any]:
+    """Validate target-cell slugs into Team values; raise ValueError on a bad one."""
+    from roboco.foundation.identity import CELL_TEAMS, Team
+
+    cells: list[Any] = []
+    for c in target_cells:
+        try:
+            team = Team(c)
+        except ValueError as exc:
+            raise ValueError(f"unknown cell {c!r}") from exc
+        if team not in CELL_TEAMS:
+            raise ValueError(f"{c!r} is not a cell team")
+        cells.append(team)
+    return cells
 
 
 class ContentActions:
@@ -501,6 +519,69 @@ class ContentActions:
             status="noted",
             task_id=str(task_id) if task_id else None,
             next="continue",
+            context_briefing={},
+        )
+
+    async def pitch(
+        self,
+        *,
+        agent_id: UUID,
+        title: str,
+        slug: str,
+        problem: str,
+        proposed_solution: str,
+        target_cells: list[str],
+    ) -> Envelope:
+        """Board (PO / Head of Marketing) proposes a product for the CEO to approve.
+
+        A pitch is content, not a lifecycle transition: it records the Board's
+        proposal. On CEO approval the system provisions a repo per target cell,
+        registers the projects, and seeds the first Main-PM task.
+        """
+        from pydantic import ValidationError as PydanticValidationError
+
+        from roboco.models.pitch import PitchCreate
+        from roboco.services.base import ConflictError, ValidationError
+        from roboco.services.pitch import get_pitch_service
+
+        agent = await self.task.agent_for(agent_id)
+        caller_role = str(agent.role) if agent is not None else ""
+        if caller_role not in _PITCH_ROLES:
+            return Envelope.not_authorized(
+                message=(
+                    f"role {caller_role!r} cannot pitch; only the Board "
+                    "(product_owner / head_marketing) may propose products"
+                ),
+                remediate="this verb is Board-only",
+                context_briefing={},
+            )
+        try:
+            create = PitchCreate(
+                title=title,
+                slug=slug,
+                problem=problem,
+                proposed_solution=proposed_solution,
+                target_cells=_coerce_pitch_cells(target_cells),
+            )
+            pitch = await get_pitch_service(self.task.session).create(
+                create, created_by=agent_id
+            )
+        except (
+            ConflictError,
+            ValidationError,
+            PydanticValidationError,
+            ValueError,
+        ) as exc:
+            detail = getattr(exc, "message", None) or str(exc)
+            return Envelope.invalid_state(
+                message=detail,
+                remediate="fix the pitch fields and retry",
+                context_briefing={},
+            )
+        return Envelope.ok(
+            status="proposed",
+            task_id=str(pitch.id),
+            next="await the CEO's approval in the Pitches queue",
             context_briefing={},
         )
 

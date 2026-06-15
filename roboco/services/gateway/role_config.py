@@ -100,6 +100,7 @@ _PRODUCT_OWNER_FLOW = spec.intents_for_role(spec.Role.PRODUCT_OWNER)
 _HEAD_MARKETING_FLOW = spec.intents_for_role(spec.Role.HEAD_MARKETING)
 _BOARD_DO = (
     "note",
+    "pitch",
     "say",
     "dm",
     "notify",

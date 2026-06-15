@@ -78,6 +78,16 @@ class NoteRequest(BaseModel):
         return _coerce_to_list(value)
 
 
+class PitchRequest(BaseModel):
+    """Board pitch — a product proposal queued for CEO approval."""
+
+    title: str = Field(..., min_length=1)
+    slug: str = Field(..., min_length=1)
+    problem: str = Field(..., min_length=1)
+    proposed_solution: str = Field(..., min_length=1)
+    target_cells: list[str] = Field(..., min_length=1)
+
+
 class SayRequest(BaseModel):
     channel: str
     text: str = Field(..., min_length=1)

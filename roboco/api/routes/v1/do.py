@@ -19,6 +19,7 @@ from roboco.api.schemas.v1.do import (
     NotifyListRequest,
     NotifyRequest,
     OpenSessionRequest,
+    PitchRequest,
     ProgressRequest,
     PRUpdateRequest,
     ReadMessagesRequest,
@@ -71,6 +72,24 @@ async def do_note(
             "what_struggled": body.what_struggled,
             "next_steps": body.next_steps,
         },
+    )
+    return envelope_to_response(env, request)
+
+
+@router.post("/pitch")
+async def do_pitch(
+    request: Request,
+    body: PitchRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.pitch(
+        agent_id=x_agent_id,
+        title=body.title,
+        slug=body.slug,
+        problem=body.problem,
+        proposed_solution=body.proposed_solution,
+        target_cells=body.target_cells,
     )
     return envelope_to_response(env, request)
 
