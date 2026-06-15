@@ -16,10 +16,12 @@ The legacy ``chunk_index`` / integer ``id`` columns are left untouched: the
 engine never references them and dropping them would be a needless destructive
 change.
 
-Both directions guard on actual column presence, so the migration is idempotent
+The work runs inside a single plpgsql ``DO`` block that guards each step on
+``information_schema`` at execution time. That keeps the migration idempotent
 and safe whether a table is piragi-shaped, already engine-shaped, or absent
-(e.g. ``chunks_code``, which has never been populated and will be created fresh
-in the correct shape by the engine).
+(e.g. ``chunks_code``, never populated) — and, unlike Python-side reflection,
+it renders under ``alembic upgrade --sql`` (offline mode) where no live
+connection exists.
 
 Revision ID: 030_rag_chunks_content_schema
 Revises: 029_project_quality_command
@@ -28,24 +30,17 @@ Create Date: 2026-06-15
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-import sqlalchemy as sa
 from alembic import op
-
-if TYPE_CHECKING:
-    from sqlalchemy.engine import Inspector
 
 revision = "030_rag_chunks_content_schema"
 down_revision = "029_project_quality_command"
 branch_labels = None
 depends_on = None
 
-# Frozen snapshot of the chunk tables — one per ``IndexType`` value at the time
-# of writing. Hardcoded so the migration stays self-contained and never imports
-# evolving application code; a unit test guards this tuple against the live
-# ``IndexType`` enum so a newly added index type cannot silently escape the
-# schema alignment.
+# One per ``IndexType`` value at the time of writing. Hardcoded so the migration
+# stays self-contained and never imports evolving application code; a unit test
+# guards this tuple against the live ``IndexType`` enum so a newly added index
+# type cannot silently escape the schema alignment.
 CHUNK_TABLES = (
     "chunks_code",
     "chunks_documentation",
@@ -58,39 +53,64 @@ CHUNK_TABLES = (
     "chunks_learnings",
 )
 
-
-def _columns(inspector: Inspector, table: str) -> set[str]:
-    """Return the set of column names currently present on ``table``."""
-    return {col["name"] for col in inspector.get_columns(table)}
+# SQL array literal of the table names (validated identifiers from the tuple).
+_TABLES_SQL = ", ".join(f"'{name}'" for name in CHUNK_TABLES)
 
 
 def upgrade() -> None:
-    inspector = sa.inspect(op.get_bind())
-    for table in CHUNK_TABLES:
-        if not inspector.has_table(table):
-            continue
-        cols = _columns(inspector, table)
-        if "text" in cols and "content" not in cols:
-            op.alter_column(table, "text", new_column_name="content")
-        if "created_at" not in cols:
-            op.add_column(
-                table,
-                sa.Column(
-                    "created_at",
-                    sa.TIMESTAMP(timezone=True),
-                    nullable=False,
-                    server_default=sa.text("NOW()"),
-                ),
-            )
+    op.execute(
+        f"""
+        DO $$
+        DECLARE
+            t text;
+        BEGIN
+            FOREACH t IN ARRAY ARRAY[{_TABLES_SQL}] LOOP
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = t AND column_name = 'text'
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = t AND column_name = 'content'
+                ) THEN
+                    EXECUTE format('ALTER TABLE %I RENAME COLUMN text TO content', t);
+                END IF;
+                EXECUTE format(
+                    'ALTER TABLE IF EXISTS %I '
+                    'ADD COLUMN IF NOT EXISTS created_at '
+                    'TIMESTAMPTZ NOT NULL DEFAULT NOW()',
+                    t
+                );
+            END LOOP;
+        END $$;
+        """
+    )
 
 
 def downgrade() -> None:
-    inspector = sa.inspect(op.get_bind())
-    for table in CHUNK_TABLES:
-        if not inspector.has_table(table):
-            continue
-        cols = _columns(inspector, table)
-        if "created_at" in cols:
-            op.drop_column(table, "created_at")
-        if "content" in cols and "text" not in cols:
-            op.alter_column(table, "content", new_column_name="text")
+    op.execute(
+        f"""
+        DO $$
+        DECLARE
+            t text;
+        BEGIN
+            FOREACH t IN ARRAY ARRAY[{_TABLES_SQL}] LOOP
+                EXECUTE format(
+                    'ALTER TABLE IF EXISTS %I DROP COLUMN IF EXISTS created_at', t
+                );
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = t AND column_name = 'content'
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = t AND column_name = 'text'
+                ) THEN
+                    EXECUTE format('ALTER TABLE %I RENAME COLUMN content TO text', t);
+                END IF;
+            END LOOP;
+        END $$;
+        """
+    )
