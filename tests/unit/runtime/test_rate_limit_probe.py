@@ -100,27 +100,27 @@ def test_target_unknown_provider_is_unprobeable() -> None:
 @pytest.mark.usefixtures("with_anthropic_key")
 async def test_probe_anthropic_ok_is_lifted(orch: AgentOrchestrator) -> None:
     fake = _fake_async_client(status_code=_HTTP_OK)
-    with patch("roboco.runtime.orchestrator.httpx.AsyncClient", fake):
+    with patch("roboco.runtime._probe.httpx.AsyncClient", fake):
         assert await orch._do_probe("anthropic") is True
 
 
 @pytest.mark.usefixtures("with_anthropic_key")
 async def test_probe_anthropic_429_stays_limited(orch: AgentOrchestrator) -> None:
     fake = _fake_async_client(status_code=_HTTP_TOO_MANY_REQUESTS)
-    with patch("roboco.runtime.orchestrator.httpx.AsyncClient", fake):
+    with patch("roboco.runtime._probe.httpx.AsyncClient", fake):
         assert await orch._do_probe("anthropic") is False
 
 
 @pytest.mark.usefixtures("with_anthropic_key")
 async def test_probe_network_error_stays_parked(orch: AgentOrchestrator) -> None:
     fake = _fake_async_client(raise_exc=httpx.ConnectError("boom"))
-    with patch("roboco.runtime.orchestrator.httpx.AsyncClient", fake):
+    with patch("roboco.runtime._probe.httpx.AsyncClient", fake):
         assert await orch._do_probe("anthropic") is False
 
 
 async def test_probe_ollama_ok_is_lifted(orch: AgentOrchestrator) -> None:
     fake = _fake_async_client(status_code=_HTTP_OK)
-    with patch("roboco.runtime.orchestrator.httpx.AsyncClient", fake):
+    with patch("roboco.runtime._probe.httpx.AsyncClient", fake):
         assert await orch._do_probe("ollama_cloud") is True
 
 
@@ -131,7 +131,7 @@ async def test_probe_unprobeable_falls_back_to_optimism(
     original = settings.anthropic_api_key
     settings.anthropic_api_key = None
     try:
-        with patch("roboco.runtime.orchestrator.httpx.AsyncClient") as client_cls:
+        with patch("roboco.runtime._probe.httpx.AsyncClient") as client_cls:
             assert await orch._do_probe("anthropic") is True
             client_cls.assert_not_called()
     finally:
