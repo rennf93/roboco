@@ -2015,8 +2015,12 @@ class AgentOrchestrator:
             # but on a cold cache (first spawn after an image rebuild) the
             # download takes minutes and the MCP servers never come up
             # before the agent burns its budget. Pinning the project env
-            # to the pre-baked venv makes `uv run` reuse it instantly,
-            # regardless of cwd.
+            # to the pre-baked venv is necessary but NOT sufficient: `uv run`
+            # still resolves the project from the workspace cwd and re-syncs
+            # when the clone's uv.lock drifts from the image — leaving the MCP
+            # servers stuck at status="pending" so the agent gets zero gateway
+            # verbs. Each server is therefore launched with `uv run --no-sync`
+            # (below) to use /app/.venv as-is and start instantly.
             "UV_PROJECT_ENVIRONMENT": "/app/.venv",
         }
 
@@ -2031,19 +2035,19 @@ class AgentOrchestrator:
             # Intent verbs — every role-scoped lifecycle transition.
             "roboco-flow": {
                 "command": "uv",
-                "args": ["run", "python", "-m", "roboco.mcp.flow_server"],
+                "args": ["run", "--no-sync", "python", "-m", "roboco.mcp.flow_server"],
                 "env": mcp_env,
             },
             # Content tools — commit, push, PR, journal, notify, message.
             "roboco-do": {
                 "command": "uv",
-                "args": ["run", "python", "-m", "roboco.mcp.do_server"],
+                "args": ["run", "--no-sync", "python", "-m", "roboco.mcp.do_server"],
                 "env": mcp_env,
             },
             # Read-only git views — status, log, diff, branches.
             "roboco-git-readonly": {
                 "command": "uv",
-                "args": ["run", "python", "-m", "roboco.mcp.git_readonly"],
+                "args": ["run", "--no-sync", "python", "-m", "roboco.mcp.git_readonly"],
                 "env": mcp_env,
             },
             # Knowledge base — RAG / semantic search / ask_mentor.
@@ -2051,6 +2055,7 @@ class AgentOrchestrator:
                 "command": "uv",
                 "args": [
                     "run",
+                    "--no-sync",
                     "python",
                     "-m",
                     "roboco.mcp.optimal_server",
@@ -2075,6 +2080,7 @@ class AgentOrchestrator:
                 "command": "uv",
                 "args": [
                     "run",
+                    "--no-sync",
                     "python",
                     "-m",
                     "roboco.mcp.docs_server",
@@ -2097,6 +2103,7 @@ class AgentOrchestrator:
                 "command": "uv",
                 "args": [
                     "run",
+                    "--no-sync",
                     "python",
                     "-m",
                     "roboco.mcp.search_server",

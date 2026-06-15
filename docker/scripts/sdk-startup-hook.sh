@@ -18,15 +18,18 @@ PRECOMPACT_FILE="/tmp/roboco-precompact-${AGENT_ID}.md"
 # set (torch/lancedb/pyarrow/scipy, ~350MB) into a fresh venv. On a cold
 # uv wheel cache (first spawn after an image rebuild) that download takes
 # minutes and the SDK/MCP layer never comes up before the agent reaps.
-# Pin uv to the pre-baked image venv so it starts instantly regardless
-# of cwd. (The orchestrator sets the same var in every MCP server's env
-# in the generated mcp-config.json — keep both in sync.)
+# Pin uv to the pre-baked image venv AND pass `--no-sync` on the run below.
+# Pinning the env location alone is NOT sufficient: `uv run` still discovers
+# the cwd project and re-syncs the pinned venv against the clone's (drifted)
+# lock — that resync is the actual multi-minute stall. `--no-sync` skips it.
+# (The orchestrator passes the same var + --no-sync to every MCP server in
+# the generated mcp-config.json — keep both in sync.)
 export UV_PROJECT_ENVIRONMENT=/app/.venv
 
 # --- SDK bring-up ---------------------------------------------------------
 if ! curl -sf "http://localhost:${SDK_PORT}/health" >/dev/null 2>&1; then
     echo "[SDK] Starting for agent ${AGENT_ID} on port ${SDK_PORT}..."
-    nohup uv run python -m roboco.agent_sdk.server > "$LOG_FILE" 2>&1 &
+    nohup uv run --no-sync python -m roboco.agent_sdk.server > "$LOG_FILE" 2>&1 &
     SDK_PID=$!
     sleep 2
     if curl -sf "http://localhost:${SDK_PORT}/health" >/dev/null 2>&1; then
