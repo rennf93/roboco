@@ -41,6 +41,7 @@ from roboco.config import settings
 from roboco.foundation import identity as _foundation
 from roboco.foundation.identity import CELL_TEAMS
 from roboco.foundation.policy.agent_loop import DEFAULT_BUDGET as _AGENT_LOOP_BUDGET
+from roboco.llm.providers.base import AgentProvider as _AgentProvider
 from roboco.models import AgentRole, Team
 from roboco.models.runtime import (
     ROLE_MODEL_MAP,
@@ -50,6 +51,8 @@ from roboco.models.runtime import (
     SpawnGitContext,
     WaitingRecord,
 )
+from roboco.models.base import ModelProvider as _ModelProvider
+from roboco.llm.providers import ProviderRegistry as _ProviderRegistry
 from roboco.seeds.initial_data import AGENT_UUIDS
 
 logger = structlog.get_logger()
@@ -197,6 +200,10 @@ class AgentOrchestrator(
         # directly; production never uses _task_svc from __init__.
         self._claim_heartbeat_ttl: int = settings.stale_claim_reap_seconds
 
+        # Provider registry — maps ModelProvider enum to AgentProvider instances.
+        # Populated in start() once providers are importable.
+        self._provider_registry: _ProviderRegistry | None = None
+
     # =========================================================================
     # LIFECYCLE
     # =========================================================================
@@ -228,11 +235,57 @@ class AgentOrchestrator(
         self._sweeper_task = asyncio.create_task(self._sweeper_loop())
         self._rate_limit_probe_task = asyncio.create_task(self._rate_limit_probe_loop())
 
+        # Initialize the provider registry so non-Docker provider spawns work.
+        self._init_provider_registry()
+
         logger.info(
             "Orchestrator started",
-            dispatcher_interval=self.dispatcher_interval,
-            internal_api_url=self._api_url,
+            project_root=str(self.project_root),
+            agent_count=len(self._instances),
         )
+
+    def _init_provider_registry(self) -> _ProviderRegistry:
+        """Build and return the provider registry.
+
+        Registers the default providers:
+
+        - ``ANTHROPIC`` / ``OLLAMA_CLOUD`` → ``ClaudeCodeProvider`` (Docker)
+        - ``LOCAL`` → ``OllamaLocalProvider`` (subprocess, no Docker)
+        """
+        from roboco.llm.providers import (
+            ClaudeCodeProvider,
+            OllamaLocalProvider,
+        )
+        from roboco.llm.providers.registry import ProviderRegistry as _Reg
+
+        registry = _Reg()
+        registry.register(_ModelProvider.ANTHROPIC, ClaudeCodeProvider())
+        registry.register(_ModelProvider.OLLAMA_CLOUD, ClaudeCodeProvider())
+        registry.register(_ModelProvider.LOCAL, OllamaLocalProvider())
+        self._provider_registry = registry
+        logger.info(
+            "Provider registry initialized",
+            providers=[p.value for p in registry.registered_types()],
+        )
+        return registry
+
+    async def _get_provider_for_agent(
+        self, provider_type_str: str
+    ) -> _AgentProvider | None:
+        """Resolve an ``AgentProvider`` for *provider_type_str*.
+
+        Returns ``None`` when the provider type has no registered handler,
+        signalling the caller to use the legacy Docker path.
+        """
+        if self._provider_registry is None:
+            return None
+        try:
+            pt = _ModelProvider(provider_type_str)
+        except ValueError:
+            return None  # Unknown provider type → legacy Docker path
+        if not self._provider_registry.is_registered(pt):
+            return None
+        return self._provider_registry.get(pt)
 
     async def stop(self) -> None:
         """Stop the orchestrator and all agents."""
@@ -657,28 +710,51 @@ class AgentOrchestrator(
         initial_prompt: str | None,
         agent_settings_path: Path | None,
     ) -> AgentInstance:
-        """Launch the container and emit spawn audit events.
+        """Launch the agent and emit spawn audit events.
+
+        Delegates to the registered provider for the config's ``provider_type``.
+        Falls back to the legacy Docker ``_spawn_container`` when no provider
+        is registered (ANTHROPIC / OLLAMA_CLOUD default path).
 
         `agent_id` was dropped as a redundant parameter — `config.agent_id`
         is the same value and was always the caller's source.
         """
         agent_slug = config.agent_id
         try:
-            container_id = await self._spawn_container(
-                config, initial_prompt, agent_settings_path
-            )
-            instance.container_id = container_id
-            instance.state = AgentState.ACTIVE
-            instance.started_at = datetime.now(UTC)
-            instance.last_activity = datetime.now(UTC)
-
-            logger.info(
-                "Agent spawned",
-                agent_id=agent_slug,
-                container_id=container_id[:12],
-                model=config.model,
-                task_id=task_id,
-            )
+            provider = await self._get_provider_for_agent(config.provider_type)
+            if provider is not None:
+                # Provider-based spawn (e.g. Ollama local subprocess).
+                spawn_result = await provider.spawn(
+                    config, initial_prompt, agent_settings_path
+                )
+                instance.container_id = spawn_result.instance_id
+                instance.state = AgentState.ACTIVE
+                instance.started_at = datetime.now(UTC)
+                instance.last_activity = datetime.now(UTC)
+                logger.info(
+                    "Agent spawned via provider",
+                    agent_id=agent_slug,
+                    provider_type=config.provider_type,
+                    instance_id=spawn_result.instance_id[:20],
+                    model=config.model,
+                    task_id=task_id,
+                )
+            else:
+                # Legacy Docker spawn path.
+                container_id = await self._spawn_container(
+                    config, initial_prompt, agent_settings_path
+                )
+                instance.container_id = container_id
+                instance.state = AgentState.ACTIVE
+                instance.started_at = datetime.now(UTC)
+                instance.last_activity = datetime.now(UTC)
+                logger.info(
+                    "Agent spawned",
+                    agent_id=agent_slug,
+                    container_id=container_id[:12],
+                    model=config.model,
+                    task_id=task_id,
+                )
 
             self._fire_audit(
                 event_type="agent.spawned",
@@ -2212,33 +2288,42 @@ class AgentOrchestrator(
 
             if instance.container_id:
                 instance.state = AgentState.STOPPING
-                container_name = f"roboco-agent-{agent_id}"
 
-                if graceful:
-                    # Graceful stop with timeout
-                    proc = await asyncio.create_subprocess_exec(
-                        "docker",
-                        "stop",
-                        "-t",
-                        "10",
-                        container_name,
-                        stdout=asyncio.subprocess.DEVNULL,
-                        stderr=asyncio.subprocess.DEVNULL,
-                    )
-                    await proc.wait()
+                # Check if this agent uses a registered provider.
+                provider_type_str = (
+                    instance.config.provider_type if instance.config else "anthropic"
+                )
+                provider = await self._get_provider_for_agent(provider_type_str)
+
+                if provider is not None:
+                    # Provider-based stop (e.g. Ollama local subprocess).
+                    await provider.stop(instance.container_id, graceful=graceful)
+                    await provider.remove(instance.container_id)
                 else:
-                    # Force kill
-                    proc = await asyncio.create_subprocess_exec(
-                        "docker",
-                        "kill",
-                        container_name,
-                        stdout=asyncio.subprocess.DEVNULL,
-                        stderr=asyncio.subprocess.DEVNULL,
-                    )
-                    await proc.wait()
+                    # Legacy Docker stop path.
+                    container_name = f"roboco-agent-{agent_id}"
+                    if graceful:
+                        proc = await asyncio.create_subprocess_exec(
+                            "docker",
+                            "stop",
+                            "-t",
+                            "10",
+                            container_name,
+                            stdout=asyncio.subprocess.DEVNULL,
+                            stderr=asyncio.subprocess.DEVNULL,
+                        )
+                        await proc.wait()
+                    else:
+                        proc = await asyncio.create_subprocess_exec(
+                            "docker",
+                            "kill",
+                            container_name,
+                            stdout=asyncio.subprocess.DEVNULL,
+                            stderr=asyncio.subprocess.DEVNULL,
+                        )
+                        await proc.wait()
 
-                # Remove container
-                await self._remove_container(container_name)
+                    await self._remove_container(container_name)
 
             instance.state = AgentState.OFFLINE
             instance.container_id = None
