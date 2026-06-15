@@ -327,6 +327,7 @@ export function TabDependencies({ task }: TabDependenciesProps) {
               <Button
                 size="sm"
                 onClick={handleParentSave}
+                onMouseDown={(e) => e.preventDefault()}
                 disabled={updateTask.isPending}
                 className="h-7 w-7 p-0"
               >

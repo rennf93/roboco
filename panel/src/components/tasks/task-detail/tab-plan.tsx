@@ -121,7 +121,7 @@ function ApproachSection({ task, plan }: { task: Task; plan: TaskPlan }) {
                 </TabsList>
               </Tabs>
               <Button size="sm" variant="ghost" onClick={handleCancel}><X className="h-4 w-4" /></Button>
-              <Button size="sm" onClick={handleSave} disabled={updateTask.isPending}>
+              <Button size="sm" onClick={handleSave} onMouseDown={(e) => e.preventDefault()} disabled={updateTask.isPending}>
                 <Check className="h-4 w-4 mr-1" />Save
               </Button>
             </div>
@@ -333,7 +333,7 @@ function SubTasksSection({ task, plan }: { task: Task; plan: TaskPlan }) {
               <Button size="sm" variant="ghost" onClick={() => { setNewTitle(""); setIsAdding(false); }} className="h-7 w-7 p-0">
                 <X className="h-4 w-4" />
               </Button>
-              <Button size="sm" onClick={handleAdd} disabled={!newTitle.trim()} className="h-7 w-7 p-0">
+              <Button size="sm" onClick={handleAdd} onMouseDown={(e) => e.preventDefault()} disabled={!newTitle.trim()} className="h-7 w-7 p-0">
                 <Check className="h-4 w-4" />
               </Button>
             </div>
@@ -489,7 +489,7 @@ function TechConsiderationsSection({ task, plan }: { task: Task; plan: TaskPlan 
               <Button size="sm" variant="ghost" onClick={() => { setNewItem(""); setIsAdding(false); }} className="h-7 w-7 p-0">
                 <X className="h-4 w-4" />
               </Button>
-              <Button size="sm" onClick={handleAdd} disabled={!newItem.trim()} className="h-7 w-7 p-0">
+              <Button size="sm" onClick={handleAdd} onMouseDown={(e) => e.preventDefault()} disabled={!newItem.trim()} className="h-7 w-7 p-0">
                 <Check className="h-4 w-4" />
               </Button>
             </li>
@@ -620,7 +620,7 @@ function RisksSection({ task, plan }: { task: Task; plan: TaskPlan }) {
                   </Select>
                   <div className="flex-1" />
                   <Button size="sm" variant="ghost" onClick={() => setEditingIdx(null)}><X className="h-4 w-4" /></Button>
-                  <Button size="sm" onClick={handleEdit}><Check className="h-4 w-4" /></Button>
+                  <Button size="sm" onClick={handleEdit} onMouseDown={(e) => e.preventDefault()}><Check className="h-4 w-4" /></Button>
                 </div>
               </div>
             ) : (
@@ -682,7 +682,7 @@ function RisksSection({ task, plan }: { task: Task; plan: TaskPlan }) {
                 </Select>
                 <div className="flex-1" />
                 <Button size="sm" variant="ghost" onClick={() => { setNewDesc(""); setNewMit(""); setIsAdding(false); }}><X className="h-4 w-4" /></Button>
-                <Button size="sm" onClick={handleAdd} disabled={!newDesc.trim()}><Check className="h-4 w-4" /></Button>
+                <Button size="sm" onClick={handleAdd} onMouseDown={(e) => e.preventDefault()} disabled={!newDesc.trim()}><Check className="h-4 w-4" /></Button>
               </div>
             </div>
           )}
@@ -801,7 +801,7 @@ function OpenQuestionsSection({ task, plan }: { task: Task; plan: TaskPlan }) {
                 <div className="flex items-center gap-2">
                   <div className="flex-1" />
                   <Button size="sm" variant="ghost" onClick={() => setEditingIdx(null)}><X className="h-4 w-4" /></Button>
-                  <Button size="sm" onClick={handleEdit}><Check className="h-4 w-4" /></Button>
+                  <Button size="sm" onClick={handleEdit} onMouseDown={(e) => e.preventDefault()}><Check className="h-4 w-4" /></Button>
                 </div>
               </div>
             ) : (
@@ -860,7 +860,7 @@ function OpenQuestionsSection({ task, plan }: { task: Task; plan: TaskPlan }) {
               <div className="flex items-center gap-2">
                 <div className="flex-1" />
                 <Button size="sm" variant="ghost" onClick={() => { setNewQuestion(""); setIsAdding(false); }}><X className="h-4 w-4" /></Button>
-                <Button size="sm" onClick={handleAdd} disabled={!newQuestion.trim()}><Check className="h-4 w-4" /></Button>
+                <Button size="sm" onClick={handleAdd} onMouseDown={(e) => e.preventDefault()} disabled={!newQuestion.trim()}><Check className="h-4 w-4" /></Button>
               </div>
             </div>
           )}
