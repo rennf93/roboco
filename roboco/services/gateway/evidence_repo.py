@@ -41,7 +41,7 @@ class EvidenceRepo:
         objectives = row.objectives or []
         constraints = row.constraints or []
         operating_policy = row.operating_policy or {}
-        if not (north_star or objectives or constraints or operating_policy):
+        if not any((north_star, objectives, constraints, operating_policy)):
             return None
         return {
             "north_star": north_star,
