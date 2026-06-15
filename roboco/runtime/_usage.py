@@ -9,13 +9,17 @@ from __future__ import annotations
 import contextlib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from uuid import UUID
 
 import httpx
 import structlog
 from fastapi import status as http_status
 
 from roboco.agents_config import get_agent_role, get_agent_team
+from roboco.models.runtime import AgentInstance, OrchestratorAgentConfig
 from roboco.models.runtime import OrchestratorAgentState as AgentState
 from roboco.runtime._helpers import SDK_PORT
 

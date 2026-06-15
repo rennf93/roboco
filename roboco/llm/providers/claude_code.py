@@ -18,7 +18,12 @@ from typing import Any
 
 import structlog
 
-from roboco.agents_config import ALL_DOCS, get_agent_role, get_agent_team
+from roboco.agents_config import (
+    ALL_DOCS,
+    get_agent_role,
+    get_agent_team,
+    issue_agent_token,
+)
 from roboco.config import settings
 from roboco.llm.providers.base import AgentProvider, ProviderError, SpawnResult
 
@@ -409,18 +414,8 @@ class ClaudeCodeProvider(AgentProvider):
     @staticmethod
     def _append_agent_auth_env(cmd: list[str], config: Any) -> None:
         """Append agent HMAC token env var to the docker run cmd."""
-        from roboco.agents_config import (
-            get_agent_role as _get_role,
-        )
-        from roboco.agents_config import (
-            get_agent_team as _get_team,
-        )
-        from roboco.agents_config import (
-            issue_agent_token,
-        )
-
-        _role = _get_role(config.agent_id)
-        _team = _get_team(config.agent_id) or ""
+        _role = get_agent_role(config.agent_id)
+        _team = get_agent_team(config.agent_id) or ""
         _token = issue_agent_token(config.agent_id, _role, _team)
         cmd.extend(["-e", f"ROBOCO_AGENT_TOKEN={_token}"])
 

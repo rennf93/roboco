@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import httpx
 import structlog

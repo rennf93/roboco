@@ -40,8 +40,8 @@ from roboco.config import settings
 from roboco.foundation import identity as _foundation
 from roboco.foundation.identity import CELL_TEAMS
 from roboco.foundation.policy.agent_loop import DEFAULT_BUDGET as _AGENT_LOOP_BUDGET
-from roboco.llm.providers.registry import ProviderRegistry as _ProviderRegistry
 from roboco.llm.providers.base import AgentProvider as _AgentProvider
+from roboco.llm.providers.registry import ProviderRegistry as _ProviderRegistry
 from roboco.models import AgentRole, Team
 from roboco.models.base import ModelProvider as _ModelProvider
 from roboco.models.runtime import (
@@ -762,7 +762,7 @@ class AgentOrchestrator(
                 agent_slug=agent_slug,
                 task_id=task_id,
                 details={
-                    "container_id": container_id[:12],
+                    "container_id": spawn_result.instance_id[:12],
                     "model": config.model,
                 },
             )

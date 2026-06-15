@@ -168,7 +168,7 @@ async def get_provider_key_status(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unknown provider type: {provider_type!r}",
-        )
+        ) from None
     provider_svc = get_provider_service(db)
     providers = await provider_svc.list_providers(include_disabled=True)
     match = next((p for p in providers if p.type == pt), None)
@@ -204,7 +204,7 @@ async def set_provider_key(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unknown provider type: {provider_type!r}",
-        )
+        ) from None
 
     routing = get_model_routing_service(db)
     try:
@@ -217,7 +217,9 @@ async def set_provider_key(
         else:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"API key management not supported for provider: {provider_type!r}",
+                detail=(
+                    f"API key management not supported for provider: {provider_type!r}"
+                ),
             )
     except NotFoundError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e

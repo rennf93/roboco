@@ -13,6 +13,7 @@ This provider is ideal for:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import signal
 from pathlib import Path
@@ -75,7 +76,7 @@ class OllamaLocalProvider(AgentProvider):
         self,
         config: Any,
         initial_prompt: str | None = None,
-        agent_settings_path: Path | None = None,
+        _agent_settings_path: Path | None = None,
     ) -> SpawnResult:
         """Launch a local subprocess agent.
 
@@ -200,10 +201,8 @@ class OllamaLocalProvider(AgentProvider):
             if str(proc.pid) == pid:
                 del self._processes[agent_id]
                 pid_path = self._log_dir / agent_id / "agent.pid"
-                try:
+                with contextlib.suppress(OSError):
                     pid_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
                 break
 
     async def _build_claude_cmd(

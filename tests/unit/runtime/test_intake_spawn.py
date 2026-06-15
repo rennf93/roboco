@@ -13,7 +13,7 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 from uuid import UUID
 
 import pytest
@@ -228,8 +228,6 @@ def _wire_spawn_mocks(
     monkeypatch.setattr(orch, "_fire_audit", lambda **_k: None)
     # The provider registry isn't initialized in minimal tests — provide
     # a no-op claude_provider so _spawn_intake_session can call remove().
-    from unittest.mock import AsyncMock
-
     orch._claude_provider = AsyncMock()
     monkeypatch.setattr(
         orch,
