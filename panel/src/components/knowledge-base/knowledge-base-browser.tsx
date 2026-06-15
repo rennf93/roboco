@@ -64,7 +64,6 @@ import { KBCategoryView } from "./kb-category-view";
 type TabValue = "search" | "ask" | "mentor" | "browse" | "admin";
 
 const INDEX_LABELS: Record<KBIndexType, string> = {
-  [KBIndexType.CODE]: "Codebase",
   [KBIndexType.DOCUMENTATION]: "Documentation",
   [KBIndexType.CONVERSATIONS]: "Conversations",
   [KBIndexType.JOURNALS]: "Agent Journals",
@@ -77,7 +76,6 @@ const INDEX_LABELS: Record<KBIndexType, string> = {
 
 // Valid KB index types for URL param validation
 const VALID_INDEX_TYPES: KBIndexType[] = [
-  KBIndexType.CODE,
   KBIndexType.DOCUMENTATION,
   KBIndexType.CONVERSATIONS,
   KBIndexType.JOURNALS,
@@ -207,12 +205,11 @@ function KnowledgeBaseBrowserContent() {
       const result = await reindexAll.mutateAsync({ force: true });
       // Show detailed results if available
       if (result.overall_success) {
-        const codeCount = result.code?.successful ?? 0;
         const docsCount = result.documentation?.successful ?? 0;
-        toast.success(
-          `Reindexed ${codeCount} code files, ${docsCount} docs. ` +
-            `${result.warnings?.length ? `Warnings: ${result.warnings.length}` : ""}`
-        );
+        const warns = result.warnings?.length
+          ? ` Warnings: ${result.warnings.length}`
+          : "";
+        toast.success(`Reindexed ${docsCount} docs.${warns}`);
       } else {
         toast.warning(
           `Reindex completed with issues: ${result.warnings?.join(", ") ?? "Unknown errors"}`

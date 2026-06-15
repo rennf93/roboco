@@ -1,15 +1,10 @@
 "use client";
 
 import { KBIndexType, KBStats } from "@/types";
-import { Code, FileText, MessageSquare, BookOpen, ChevronRight, AlertTriangle, Scale, GitBranch, ClipboardCheck, Lightbulb } from "lucide-react";
+import { FileText, MessageSquare, BookOpen, ChevronRight, AlertTriangle, Scale, GitBranch, ClipboardCheck, Lightbulb } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 
 const categoryConfig: Record<KBIndexType, { label: string; description: string; icon: React.ReactNode }> = {
-  [KBIndexType.CODE]: {
-    label: "Code",
-    description: "Source code, functions, and classes",
-    icon: <Code className="h-5 w-5 text-purple-500" />,
-  },
   [KBIndexType.DOCUMENTATION]: {
     label: "Documentation",
     description: "READMEs, guides, and API docs",

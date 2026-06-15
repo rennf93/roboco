@@ -3,11 +3,10 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { KBStats, KBIndexType } from "@/types";
-import { Database, Code, FileText, MessageSquare, BookOpen, AlertTriangle, Scale, GitBranch, ClipboardCheck, Lightbulb } from "lucide-react";
+import { Database, FileText, MessageSquare, BookOpen, AlertTriangle, Scale, GitBranch, ClipboardCheck, Lightbulb } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 
 const indexIcons: Record<KBIndexType, React.ReactNode> = {
-  [KBIndexType.CODE]: <Code className="h-4 w-4 text-purple-500" />,
   [KBIndexType.DOCUMENTATION]: <FileText className="h-4 w-4 text-blue-500" />,
   [KBIndexType.CONVERSATIONS]: <MessageSquare className="h-4 w-4 text-green-500" />,
   [KBIndexType.JOURNALS]: <BookOpen className="h-4 w-4 text-orange-500" />,
@@ -19,7 +18,6 @@ const indexIcons: Record<KBIndexType, React.ReactNode> = {
 };
 
 const indexLabels: Record<KBIndexType, string> = {
-  [KBIndexType.CODE]: "Code",
   [KBIndexType.DOCUMENTATION]: "Docs",
   [KBIndexType.CONVERSATIONS]: "Convos",
   [KBIndexType.JOURNALS]: "Journals",
@@ -73,6 +71,12 @@ export function KBStatsCard({ stats, isLoading }: KBStatsCardProps) {
     );
   }
 
+  const latestUpdated = stats.indexes.reduce<string | null>(
+    (acc, idx) =>
+      idx.last_updated && (!acc || idx.last_updated > acc) ? idx.last_updated : acc,
+    null,
+  );
+
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -104,9 +108,9 @@ export function KBStatsCard({ stats, isLoading }: KBStatsCardProps) {
             <span>{stats.total_chunks.toLocaleString()}</span>
           </div>
         </div>
-        {stats.indexes[0]?.last_updated && (
+        {latestUpdated && (
           <p className="text-xs text-muted-foreground pt-1">
-            Updated {formatDistanceToNow(new Date(stats.indexes[0].last_updated))} ago
+            Updated {formatDistanceToNow(new Date(latestUpdated))} ago
           </p>
         )}
       </CardContent>

@@ -136,12 +136,6 @@ class Settings(BaseSettings):
         description="Use HyDE (hypothetical document embeddings). "
         "Makes one LLM call per query for better semantic matching.",
     )
-    rag_use_hybrid_search: bool = Field(
-        default=True, description="Use BM25 + vector hybrid search"
-    )
-    rag_use_cross_encoder: bool = Field(
-        default=True, description="Use neural reranking (slower but more accurate)"
-    )
     rag_auto_update_enabled: bool = Field(default=True)
     rag_auto_update_interval: int = Field(
         default=300, ge=60, description="Seconds between auto-updates"

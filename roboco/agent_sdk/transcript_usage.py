@@ -3,7 +3,7 @@
 A dependency-light helper (only ``json`` + ``pathlib``) so callers that need
 durable token counts — notably the orchestrator's session-finalization path —
 can read them without importing the agent SDK server, which pulls in the
-FastAPI / RAG (piragi / openai) stack.
+FastAPI / RAG (in-house pgvector / openai) stack.
 """
 
 from __future__ import annotations

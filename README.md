@@ -81,7 +81,7 @@ roboco/
 │   │   ├── task.py              # Task lifecycle management
 │   │   ├── workspace.py         # Multi-agent workspace management
 │   │   ├── messaging.py         # Agent communication
-│   │   └── optimal_brain/       # RAG/Knowledge base (piragi)
+│   │   └── optimal_brain/       # RAG/Knowledge base (in-house pgvector)
 │   ├── models/                  # Pydantic domain models
 │   ├── db/                      # SQLAlchemy ORM & migrations
 │   ├── enforcement/             # Task lifecycle state machine
@@ -225,10 +225,10 @@ uv run mypy roboco/
 |-------|------------|
 | API Framework | FastAPI |
 | Database | PostgreSQL + SQLAlchemy (async) |
-| Vector Store | pgvector (via piragi) |
+| Vector Store | PostgreSQL + pgvector (in-house engine) |
 | Cache/Queue | Redis |
-| RAG Library | piragi |
-| Embeddings | qwen3-embedding:0.6b (sentence-transformers) |
+| RAG Engine | in-house (asyncpg + pgvector, HyDE) |
+| Embeddings | qwen3-embedding:0.6b (Ollama) |
 | Local LLM | Ollama (glm-5:cloud) |
 | Cloud LLM | Claude API (Anthropic) |
 | Package Manager | uv |
@@ -244,7 +244,7 @@ uv run mypy roboco/
 - [x] Messaging API
 - [x] Task API with full lifecycle
 - [x] Git operations API
-- [x] RAG/Knowledge base (piragi + pgvector)
+- [x] RAG/Knowledge base (in-house pgvector engine)
 - [x] Agent orchestrator
 - [x] CEO approval workflow
 

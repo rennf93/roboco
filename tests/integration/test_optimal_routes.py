@@ -339,6 +339,7 @@ async def test_get_single_stats_invalid_type(optimal_client: AsyncClient) -> Non
 async def test_get_single_stats_success(optimal_client: AsyncClient) -> None:
     with patch("roboco.api.routes.optimal.get_optimal_service") as mock_get:
         mock_service = AsyncMock()
+        mock_service.is_index_registered = MagicMock(return_value=True)
         mock_service.get_index_stats = AsyncMock(
             return_value={
                 "index_type": "documentation",
@@ -352,6 +353,20 @@ async def test_get_single_stats_success(optimal_client: AsyncClient) -> None:
             "/api/optimal/stats/documentation", headers=_HDR
         )
     assert response.status_code == HTTPStatus.OK
+
+
+@pytest.mark.asyncio
+async def test_get_single_stats_deprecated_index_returns_404(
+    optimal_client: AsyncClient,
+) -> None:
+    """A valid-but-unregistered index type (e.g. deprecated `code`) returns 404,
+    not a 500 leaked from _get_plugin's missing-plugin RuntimeError."""
+    with patch("roboco.api.routes.optimal.get_optimal_service") as mock_get:
+        mock_service = AsyncMock()
+        mock_service.is_index_registered = MagicMock(return_value=False)
+        mock_get.return_value = mock_service
+        response = await optimal_client.get("/api/optimal/stats/code", headers=_HDR)
+    assert response.status_code == HTTPStatus.NOT_FOUND
 
 
 @pytest.mark.asyncio
@@ -450,6 +465,7 @@ async def test_clear_index_invalid_type(optimal_client: AsyncClient) -> None:
 async def test_clear_index_success(optimal_client: AsyncClient) -> None:
     with patch("roboco.api.routes.optimal.get_optimal_service") as mock_get:
         mock_service = AsyncMock()
+        mock_service.is_index_registered = MagicMock(return_value=True)
         mock_service.clear_index = AsyncMock(return_value=None)
         mock_get.return_value = mock_service
         response = await optimal_client.delete(
@@ -523,6 +539,7 @@ async def test_refresh_index_invalid_type(optimal_client: AsyncClient) -> None:
 async def test_refresh_index_with_sources(optimal_client: AsyncClient) -> None:
     with patch("roboco.api.routes.optimal.get_optimal_service") as mock_get:
         mock_service = AsyncMock()
+        mock_service.is_index_registered = MagicMock(return_value=True)
         mock_service.refresh_index = AsyncMock(return_value=None)
         mock_get.return_value = mock_service
         response = await optimal_client.post(
@@ -538,6 +555,7 @@ async def test_refresh_index_empty_sources(optimal_client: AsyncClient) -> None:
     """Empty sources -> service.get_indexed_sources_for is called."""
     with patch("roboco.api.routes.optimal.get_optimal_service") as mock_get:
         mock_service = AsyncMock()
+        mock_service.is_index_registered = MagicMock(return_value=True)
         mock_service.get_indexed_sources_for = AsyncMock(return_value=["x.md"])
         mock_service.refresh_index = AsyncMock(return_value=None)
         mock_get.return_value = mock_service

@@ -68,8 +68,6 @@ class IndexConfig:
     chunk_size: int = 512
     chunk_overlap: int = 50
     use_hyde: bool = True
-    use_hybrid_search: bool = True
-    use_cross_encoder: bool = False
     embedding_model: str = "qwen3-embedding:0.6b"
     llm_model: str = "glm-5:cloud"
     llm_base_url: str = "http://roboco-ollama:11434/v1"
@@ -91,8 +89,6 @@ class IndexConfig:
             chunk_size=chunk_size,
             chunk_overlap=settings.rag_chunk_overlap,
             use_hyde=settings.rag_use_hyde,
-            use_hybrid_search=settings.rag_use_hybrid_search,
-            use_cross_encoder=settings.rag_use_cross_encoder,
             embedding_model=settings.default_embedding_model,
             llm_model=settings.local_llm_model,
             llm_base_url=settings.local_llm_base_url,
@@ -136,6 +132,13 @@ class BaseIndexPlugin(ABC):
     - search() for custom search behavior
     - validate_content() for content validation
     """
+
+    # When True (default), re-ingesting a source first deletes that source's
+    # existing chunks so a reindex *replaces* rather than appends — preventing
+    # unbounded duplicate-chunk growth on startup/periodic/manual reindex.
+    # Plugins whose multiple records share one source URI (conversations) set
+    # this False to preserve append semantics.
+    replace_on_reingest: bool = True
 
     def __init__(self, config: IndexConfig | None = None) -> None:
         """Initialize the plugin with optional config override."""
@@ -463,6 +466,8 @@ class BaseIndexPlugin(ABC):
                 embedder.embed_chunks, chunks
             )
 
+        if self.replace_on_reingest:
+            await store.delete_by_source(doc.source)
         await store.add_chunks(chunks_with_embeddings)
         return len(chunks)
 
@@ -564,6 +569,10 @@ class BaseIndexPlugin(ABC):
                 chunks_with_embeddings = await asyncio.to_thread(
                     embedder.embed_chunks, all_chunks
                 )
+            if self.replace_on_reingest:
+                for idx, (doc, _, _) in enumerate(docs_to_process):
+                    if chunk_counts.get(idx, 0) > 0:
+                        await store.delete_by_source(doc.source)
             await store.add_chunks(chunks_with_embeddings)
 
     @staticmethod

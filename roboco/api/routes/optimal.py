@@ -495,6 +495,11 @@ async def get_single_index_stats(
         ) from e
 
     service = await get_optimal_service()
+    if not service.is_index_registered(idx_type):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Index '{index_type}' is not available",
+        )
     stats = await service.get_index_stats(idx_type)
 
     return SingleIndexStatsResponse(
@@ -544,6 +549,11 @@ async def clear_index(
         ) from e
 
     service = await get_optimal_service()
+    if not service.is_index_registered(idx_type):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Index '{index_type}' is not available",
+        )
     await service.clear_index(idx_type)
 
     return ClearIndexResponse(status="cleared", index_type=index_type)
@@ -583,7 +593,6 @@ async def list_documents(
                 metadata={
                     "title": d["title"],
                     "preview": d["preview"],
-                    "chunk_count": d["chunk_count"],
                     **d["extra_data"],
                 },
             )
@@ -618,6 +627,11 @@ async def refresh_index(
         ) from e
 
     service = await get_optimal_service()
+    if not service.is_index_registered(idx_type):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Index '{request.index_type}' is not available",
+        )
 
     # Empty sources = "refresh everything currently registered in this
     # index". The service knows how to enumerate them so the UI's

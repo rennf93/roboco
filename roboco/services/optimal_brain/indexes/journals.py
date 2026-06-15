@@ -8,7 +8,11 @@ from typing import Any
 from uuid import UUID
 
 from roboco.models.optimal import IndexJournalEntryParams, IndexType
-from roboco.services.optimal_brain.indexes.base import BaseIndexPlugin, build_doc_source
+from roboco.services.optimal_brain.indexes.base import (
+    BaseIndexPlugin,
+    IngestResult,
+    build_doc_source,
+)
 
 
 class JournalsIndexPlugin(BaseIndexPlugin):
@@ -49,14 +53,17 @@ class JournalsIndexPlugin(BaseIndexPlugin):
         entry_id = str(raw) if raw is not None else None
         return build_doc_source(kind="journals", id_=entry_id)
 
-    async def index_entry(self, params: IndexJournalEntryParams) -> None:
+    async def index_entry(self, params: IndexJournalEntryParams) -> IngestResult:
         """
         Index a journal entry.
 
         Args:
             params: IndexJournalEntryParams containing entry details
+
+        Returns:
+            IngestResult so the caller can tell whether the entry persisted.
         """
-        await self.ingest(
+        return await self.ingest(
             content=params.content,
             doc_id=str(params.entry_id)[:50],
             entry_id=params.entry_id,

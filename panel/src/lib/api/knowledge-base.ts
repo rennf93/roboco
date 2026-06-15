@@ -54,13 +54,6 @@ import { isMockMode } from "@/lib/mock-data";
 
 const mockSearchResults: KBSearchResult[] = [
   {
-    content: "The TaskService handles all task lifecycle operations including creation, assignment, status transitions, and completion tracking...",
-    source: "roboco/services/tasks.py",
-    score: 0.92,
-    index_type: KBIndexType.CODE,
-    metadata: { language: "python", lines: "45-120" },
-  },
-  {
     content: "## Task Lifecycle\n\nTasks follow a strict state machine from PENDING through IN_PROGRESS to COMPLETED. Each transition requires specific conditions...",
     source: "docs/architecture/task-lifecycle.md",
     score: 0.88,
@@ -85,7 +78,6 @@ const mockSearchResults: KBSearchResult[] = [
 
 const mockStats: KBStats = {
   indexes: [
-    { index_type: KBIndexType.CODE, document_count: 1250, chunk_count: 8500, last_updated: "2024-01-15T12:00:00Z" },
     { index_type: KBIndexType.DOCUMENTATION, document_count: 45, chunk_count: 320, last_updated: "2024-01-15T11:30:00Z" },
     { index_type: KBIndexType.CONVERSATIONS, document_count: 890, chunk_count: 4200, last_updated: "2024-01-15T12:15:00Z" },
     { index_type: KBIndexType.JOURNALS, document_count: 156, chunk_count: 780, last_updated: "2024-01-15T10:00:00Z" },
@@ -95,8 +87,8 @@ const mockStats: KBStats = {
     { index_type: KBIndexType.REVIEWS, document_count: 234, chunk_count: 1170, last_updated: "2024-01-15T10:00:00Z" },
     { index_type: KBIndexType.LEARNINGS, document_count: 89, chunk_count: 445, last_updated: "2024-01-15T10:00:00Z" },
   ],
-  total_documents: 2799,
-  total_chunks: 15245,
+  total_documents: 1549,
+  total_chunks: 6745,
 };
 
 // Backend returns stats as dict, we need to transform to array
@@ -202,8 +194,8 @@ async function getContext(params: RAGQueryRequest): Promise<KBSearchResult[]> {
     top_k: params.max_context_chunks ?? 5,
   };
 
-  const response = await api.post<{ context: KBSearchResult[] }>("/optimal/rag/context", backendParams);
-  return response.data.context;
+  const response = await api.post<KBSearchResponse>("/optimal/rag/context", backendParams);
+  return response.data.results;
 }
 
 // =============================================================================

@@ -1,7 +1,7 @@
 """
 Text Chunker — in-house character-based sliding-window chunker.
 
-This module replaces the piragi ``Chunker`` and provides the data-transfer
+This module is the in-house ``Chunker`` and provides the data-transfer
 types (``Chunk``, ``Document``, ``Citation``) that the rest of the optimal
 brain stack uses.  **No external tokenizers** are required: chunking is done
 by character count only, which is a good approximation for our embedding
@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 # ---------------------------------------------------------------------------
-# Transfer types — replicate the piragi.types surface used by the stack
+# Transfer types — the data-transfer surface used across the RAG stack
 # ---------------------------------------------------------------------------
 
 

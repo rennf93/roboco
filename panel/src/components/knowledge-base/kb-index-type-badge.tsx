@@ -2,14 +2,9 @@
 
 import { Badge } from "@/components/ui/badge";
 import { KBIndexType } from "@/types";
-import { Code, FileText, MessageSquare, BookOpen, AlertTriangle, Scale, GitBranch, ClipboardCheck, Lightbulb } from "lucide-react";
+import { FileText, MessageSquare, BookOpen, AlertTriangle, Scale, GitBranch, ClipboardCheck, Lightbulb } from "lucide-react";
 
 const indexTypeConfig: Record<KBIndexType, { label: string; color: string; icon: React.ReactNode }> = {
-  [KBIndexType.CODE]: {
-    label: "Code",
-    color: "bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300",
-    icon: <Code className="h-3 w-3" />,
-  },
   [KBIndexType.DOCUMENTATION]: {
     label: "Docs",
     color: "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300",

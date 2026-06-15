@@ -78,8 +78,8 @@ pnpm test
 |-------|------------|
 | API Framework | FastAPI |
 | Database | PostgreSQL + asyncpg |
-| Vector Store | PostgreSQL + pgvector (via piragi) |
-| RAG Engine | piragi (HyDE, hybrid search, BM25) |
+| Vector Store | PostgreSQL + pgvector (in-house engine) |
+| RAG Engine | in-house (asyncpg + pgvector, HyDE) |
 | Cache/Queue | Redis |
 | Container Runtime | Docker + Docker Compose |
 | Cloud LLM | Claude API (claude-opus-4-6) |
@@ -394,7 +394,7 @@ Core services in `roboco/services/`:
 | `MessagingService` | Channels, sessions, messages |
 | `NotificationService` | Formal notifications |
 | `JournalService` | Agent journals and entries |
-| `OptimalService` | RAG queries using piragi |
+| `OptimalService` | RAG queries (in-house pgvector engine) |
 | `PermissionsService` | Role-based access control |
 
 ## Configuration
@@ -422,7 +422,7 @@ ROBOCO_WORKSPACES_ROOT=/data/workspaces
 ROBOCO_WORKSPACE_AUTO_CLONE=true
 ROBOCO_WORKSPACE_CLONE_TIMEOUT=300
 
-# RAG (piragi + pgvector)
+# RAG (in-house pgvector engine)
 ROBOCO_RAG_CHUNK_STRATEGY=fixed
 ROBOCO_RAG_CHUNK_SIZE=512
 ROBOCO_RAG_USE_HYDE=true

@@ -1,7 +1,8 @@
 """
 Optimal API Service (Refactored with Plugin Architecture)
 
-Knowledge base, RAG queries, and prompt optimization using piragi.
+Knowledge base, RAG queries, and prompt optimization over an in-house
+PostgreSQL/pgvector engine.
 This service provides semantic search across documentation,
 conversations, journal entries, errors, standards, decisions, reviews, and learnings.
 
@@ -15,7 +16,7 @@ import asyncio
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -48,6 +49,9 @@ from roboco.services.optimal_brain.indexes.learnings import (
 from roboco.services.optimal_brain.indexes.reviews import (
     RecordReviewParams as ReviewParams,
 )
+
+if TYPE_CHECKING:
+    from roboco.services.optimal_brain.indexes.base import IngestResult
 
 logger = structlog.get_logger()
 
@@ -147,8 +151,8 @@ class OptimalService:
     """
     Service for knowledge base operations and RAG queries.
 
-    Uses a plugin-based architecture with piragi and PostgreSQL/pgvector
-    for vector storage. Manages multiple indexes for different content types:
+    Uses a plugin-based architecture over an in-house PostgreSQL/pgvector
+    vector store. Manages multiple indexes for different content types:
 
     Existing:
     - Code: Repositories, functions, classes
@@ -594,6 +598,15 @@ class OptimalService:
             )
         return plugin
 
+    def is_index_registered(self, index_type: IndexType) -> bool:
+        """Whether a live plugin is registered for *index_type*.
+
+        Distinguishes a valid-but-deprecated index (e.g. ``code``) from an
+        active one, so callers can return 404 instead of leaking a 500 from
+        :meth:`_get_plugin`.
+        """
+        return self._initialized and index_type in self._plugins
+
     # =========================================================================
     # INDEXING OPERATIONS (Existing - Backwards Compatible)
     # =========================================================================
@@ -741,9 +754,9 @@ class OptimalService:
         """Index a conversation message."""
         plugin = self._get_plugin(IndexType.CONVERSATIONS)
         if isinstance(plugin, ConversationsIndexPlugin):
-            await plugin.index_message(params)
+            result = await plugin.index_message(params)
         else:
-            await plugin.ingest(
+            result = await plugin.ingest(
                 content=params.content,
                 channel_id=params.channel_id,
                 session_id=params.session_id,
@@ -760,6 +773,16 @@ class OptimalService:
                 "build doc-source with placeholder. Caller must pass a "
                 "flushed session UUID."
             )
+        # Best-effort: an actual failure (e.g. embedder down) must not record
+        # the message as indexed. A successful-but-empty result (short message
+        # filtered to zero chunks) still tracks, matching prior behavior.
+        if not result.success:
+            logger.warning(
+                "Conversation indexing failed; skipping tracking row",
+                session_id=str(params.session_id),
+                error=result.error,
+            )
+            return
         source = f"roboco://conversations/{params.session_id}"
         await self._track_indexed_document(
             IndexType.CONVERSATIONS,
@@ -777,9 +800,9 @@ class OptimalService:
         """Index a journal entry."""
         plugin = self._get_plugin(IndexType.JOURNALS)
         if isinstance(plugin, JournalsIndexPlugin):
-            await plugin.index_entry(params)
+            result = await plugin.index_entry(params)
         else:
-            await plugin.ingest(
+            result = await plugin.ingest(
                 content=params.content,
                 entry_id=params.entry_id,
                 agent_id=params.agent_id,
@@ -799,6 +822,14 @@ class OptimalService:
                 "events without a journal entry must use a different "
                 "indexing path."
             )
+        # Best-effort: don't record a failed embed as an indexed entry.
+        if not result.success:
+            logger.warning(
+                "Journal indexing failed; skipping tracking row",
+                entry_id=str(params.entry_id),
+                error=result.error,
+            )
+            return
         source = f"roboco://journals/{params.entry_id}"
         await self._track_indexed_document(
             IndexType.JOURNALS,
@@ -820,8 +851,11 @@ class OptimalService:
     async def index_error(self, params: IndexErrorParams) -> None:
         """Index an error pattern with solution."""
         plugin = self._get_plugin(IndexType.ERRORS)
+        result: IngestResult | None = None
         if isinstance(plugin, ErrorsIndexPlugin):
-            await plugin.record_error(params)
+            result = await plugin.record_error(params)
+        if result is not None and not result.success:
+            raise RuntimeError(f"Failed to index error pattern: {result.error}")
 
         # Track in database
         import hashlib
@@ -845,8 +879,11 @@ class OptimalService:
     async def index_standard(self, params: IndexStandardParams) -> None:
         """Index a coding/security/workflow standard."""
         plugin = self._get_plugin(IndexType.STANDARDS)
+        result: IngestResult | None = None
         if isinstance(plugin, StandardsIndexPlugin):
-            await plugin.index_standard(params)
+            result = await plugin.index_standard(params)
+        if result is not None and not result.success:
+            raise RuntimeError(f"Failed to index standard: {result.error}")
 
         # Track in database
         source = f"roboco://standards/{params.domain or 'general'}"
@@ -866,8 +903,11 @@ class OptimalService:
     async def index_decision(self, params: IndexDecisionParams) -> None:
         """Index an architectural/design decision."""
         plugin = self._get_plugin(IndexType.DECISIONS)
+        result: IngestResult | None = None
         if isinstance(plugin, DecisionsIndexPlugin):
-            await plugin.record_decision(params)
+            result = await plugin.record_decision(params)
+        if result is not None and not result.success:
+            raise RuntimeError(f"Failed to index decision: {result.error}")
 
         # Track in database
         import hashlib
@@ -895,6 +935,7 @@ class OptimalService:
         """Record a code review for future reference."""
         plugin = self._get_plugin(IndexType.REVIEWS)
         doc_id = ""
+        result: IngestResult | None = None
         if isinstance(plugin, ReviewsIndexPlugin):
             review_params = ReviewParams(
                 comment=params.summary,
@@ -906,6 +947,8 @@ class OptimalService:
             )
             result = await plugin.record_review(review_params)
             doc_id = result.doc_id
+        if result is not None and not result.success:
+            raise RuntimeError(f"Failed to record review: {result.error}")
 
         # Track in database. Refuse to fall back to 'unknown' — file_path
         # is typed `str` (required) and an empty value means the caller is
@@ -935,9 +978,12 @@ class OptimalService:
         """Record a learning for cross-agent knowledge sharing."""
         plugin = self._get_plugin(IndexType.LEARNINGS)
         doc_id = ""
+        result: IngestResult | None = None
         if isinstance(plugin, LearningsIndexPlugin):
             result = await plugin.record_learning(params)
             doc_id = result.doc_id
+        if result is not None and not result.success:
+            raise RuntimeError(f"Failed to record learning: {result.error}")
 
         # Track in database
         import hashlib

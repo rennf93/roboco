@@ -196,6 +196,20 @@ class VectorStore:
                 records,
             )
 
+    async def delete_by_source(self, source: str) -> None:
+        """Delete every chunk row for *source* (idempotent — no-op if absent).
+
+        Makes re-ingestion of a source *replace* its chunks instead of
+        appending a duplicate set on each reindex. ``source`` is bound as a
+        query parameter; only the validated table identifier is interpolated.
+        """
+        pool = self._require_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                self._q("DELETE FROM {table} WHERE source = $1"),
+                source,
+            )
+
     # ------------------------------------------------------------------
     # Read
     # ------------------------------------------------------------------

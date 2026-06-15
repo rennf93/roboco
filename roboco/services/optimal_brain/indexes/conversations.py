@@ -8,7 +8,11 @@ from typing import Any
 from uuid import UUID
 
 from roboco.models.optimal import IndexConversationParams, IndexType
-from roboco.services.optimal_brain.indexes.base import BaseIndexPlugin, build_doc_source
+from roboco.services.optimal_brain.indexes.base import (
+    BaseIndexPlugin,
+    IngestResult,
+    build_doc_source,
+)
 
 
 class ConversationsIndexPlugin(BaseIndexPlugin):
@@ -20,6 +24,11 @@ class ConversationsIndexPlugin(BaseIndexPlugin):
     - Session discussions
     - Channel conversations
     """
+
+    # Many messages share one source URI per session+agent, so deleting by
+    # source on re-ingest would wipe earlier messages. Keep append semantics
+    # for this index (the only one whose source is not 1:1 with a record).
+    replace_on_reingest = False
 
     @property
     def index_type(self) -> IndexType:
@@ -55,14 +64,17 @@ class ConversationsIndexPlugin(BaseIndexPlugin):
         combined = f"{raw_session}-{agent_id}"
         return build_doc_source(kind="conversations", id_=combined)
 
-    async def index_message(self, params: IndexConversationParams) -> None:
+    async def index_message(self, params: IndexConversationParams) -> IngestResult:
         """
         Index a conversation message.
 
         Args:
             params: IndexConversationParams containing message details
+
+        Returns:
+            IngestResult so the caller can tell whether the message persisted.
         """
-        await self.ingest(
+        return await self.ingest(
             content=params.content,
             doc_id=f"{params.session_id}-{params.agent_id}"[:50],
             channel_id=params.channel_id,

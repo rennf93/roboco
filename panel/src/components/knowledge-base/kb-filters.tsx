@@ -2,10 +2,9 @@
 
 import { KBIndexType } from "@/types";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Code, FileText, MessageSquare, BookOpen, AlertTriangle, Scale, GitBranch, ClipboardCheck, Lightbulb } from "lucide-react";
+import { FileText, MessageSquare, BookOpen, AlertTriangle, Scale, GitBranch, ClipboardCheck, Lightbulb } from "lucide-react";
 
 const indexTypeConfig: Record<KBIndexType, { label: string; icon: React.ReactNode }> = {
-  [KBIndexType.CODE]: { label: "Code", icon: <Code className="h-4 w-4 text-purple-500" /> },
   [KBIndexType.DOCUMENTATION]: { label: "Documentation", icon: <FileText className="h-4 w-4 text-blue-500" /> },
   [KBIndexType.CONVERSATIONS]: { label: "Conversations", icon: <MessageSquare className="h-4 w-4 text-green-500" /> },
   [KBIndexType.JOURNALS]: { label: "Journals", icon: <BookOpen className="h-4 w-4 text-orange-500" /> },

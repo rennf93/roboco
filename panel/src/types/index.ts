@@ -736,7 +736,6 @@ export interface CEOOverview {
 // =============================================================================
 
 export enum KBIndexType {
-  CODE = "code",
   DOCUMENTATION = "documentation",
   CONVERSATIONS = "conversations",
   JOURNALS = "journals",
@@ -975,8 +974,9 @@ export interface LearningSearchRequest {
 export interface ProactiveContextItem {
   content: string;
   source: string;
-  relevance: number;
-  type: string;
+  score: number;
+  index_type: string;
+  metadata: Record<string, unknown>;
 }
 
 export interface ProactiveContextRequest {
