@@ -23,6 +23,7 @@ import {
   Cpu,
   Sparkles,
   Target,
+  Briefcase,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -37,6 +38,7 @@ export const navItems = [
   { title: "Tasks", href: "/tasks", icon: ListTodo },
   { title: "Kanban", href: "/kanban", icon: Kanban },
   { title: "Task Assistant", href: "/prompter", icon: Sparkles },
+  { title: "Secretary", href: "/secretary", icon: Briefcase },
 
   // Development
   { title: "Projects", href: "/projects", icon: FolderGit2 },
