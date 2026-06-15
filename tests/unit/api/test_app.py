@@ -21,6 +21,27 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
 
+def _registered_paths(app: FastAPI) -> set[str]:
+    """Every registered path, robust to FastAPI 0.137+ routing internals.
+
+    From 0.137, ``include_router`` wraps each sub-router in an ``_IncludedRouter``
+    (a ``BaseRoute`` with no ``.path``) instead of flattening its routes into
+    ``app.routes`` — so ``{r.path for r in app.routes}`` raised AttributeError
+    and missed every included route. Collect HTTP paths from the OpenAPI schema
+    (the stable public contract) plus each included router's prefix, which also
+    covers websocket mounts like ``/ws`` that never appear in the schema.
+    """
+    paths = set(app.openapi().get("paths", {}))
+    for r in app.routes:
+        path = getattr(r, "path", None)
+        if isinstance(path, str):
+            paths.add(path)
+        prefix = getattr(getattr(r, "include_context", None), "prefix", None)
+        if prefix:
+            paths.add(prefix)
+    return paths
+
+
 def test_default_app_is_a_fastapi_instance() -> None:
     """Importing the module yields a configured FastAPI instance."""
     assert isinstance(default_app, FastAPI)
@@ -37,7 +58,7 @@ def test_create_app_returns_new_instance_each_call() -> None:
 def test_create_app_registers_all_router_prefixes() -> None:
     """Every router is mounted under its expected prefix."""
     app = create_app()
-    paths = {r.path for r in app.routes}  # type: ignore[attr-defined]
+    paths = _registered_paths(app)
     # Spot-check a representative path from each prefix group.
     expected_prefixes = [
         "/api/agents",
@@ -70,7 +91,7 @@ def test_create_app_registers_all_router_prefixes() -> None:
 def test_create_app_includes_v1_flow_routes() -> None:
     """API v1 (intent-verb) routers from `routes/v1/*` are mounted."""
     app = create_app()
-    paths = {r.path for r in app.routes}  # type: ignore[attr-defined]
+    paths = _registered_paths(app)
     # v1 routers register their own prefixes; we just confirm /api/v1 paths
     # exist after include_router.
     assert any(p.startswith("/api/v1") for p in paths)
