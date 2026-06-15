@@ -1395,6 +1395,42 @@ class GitService(BaseService):
                 {"owner": owner, "repo": repo, "head": payload.get("head")},
             ) from e
 
+    async def _pr_base_on_remote(
+        self,
+        workspace: Path,
+        target_branch: str,
+        default_branch: str,
+        git_token: str,
+        task_id: UUID,
+    ) -> str:
+        """Return a PR base branch that actually exists on origin.
+
+        GitHub rejects PR creation with 422 "base field invalid" when the base
+        branch is absent on the remote — which happens when an ancestor task's
+        branch was claimed but never pushed (e.g. a PM paused before any commit),
+        stranding every child at PR time. Mirror the branch-cutting fallback in
+        ``create_branch``: if the resolved base is missing on origin, retarget to
+        the default branch instead of hard-failing. The default branch is assumed
+        present, so it is returned unchecked.
+        """
+        if target_branch == default_branch:
+            return target_branch
+        ls = await self._run_git(
+            workspace,
+            ["ls-remote", "--heads", "origin", target_branch],
+            check=False,
+            token=git_token,
+        )
+        if ls.stdout.strip():
+            return target_branch
+        self.log.warning(
+            "PR base branch not on remote; retargeting PR to the default branch",
+            base_branch=target_branch,
+            default_branch=default_branch,
+            task_id=str(task_id),
+        )
+        return default_branch
+
     async def create_pull_request(
         self, workspace: Path, request: GitCreatePRRequest
     ) -> tuple[int, str, str, str, str]:
@@ -1413,6 +1449,9 @@ class GitService(BaseService):
 
         target_branch = await self._resolve_pr_target_branch(
             request, task, default_branch
+        )
+        target_branch = await self._pr_base_on_remote(
+            workspace, target_branch, default_branch, git_token, request.task_id
         )
         pr_title, pr_body = await self._generate_pr_title_body(
             request, task, source_branch, target_branch, request.task_id
@@ -1814,6 +1853,45 @@ class GitService(BaseService):
             owner, repo, branch_name, git_token
         )
 
+    async def _first_allowed_merge_method(
+        self,
+        owner: str,
+        repo: str,
+        git_token: str,
+        *,
+        exclude: str | None = None,
+    ) -> str | None:
+        """Return a merge method the repo permits (squash > merge > rebase),
+        skipping ``exclude``; ``None`` if the lookup fails.
+
+        Recovers when a merge is refused with 405 because the repo disables that
+        merge method in its settings.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
+                resp = await client.get(
+                    f"https://api.github.com/repos/{owner}/{repo}",
+                    headers={
+                        "Authorization": f"Bearer {git_token}",
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                )
+            if not resp.is_success:
+                return None
+            data = resp.json()
+        except httpx.HTTPError:
+            return None
+        allowed = {
+            "squash": data.get("allow_squash_merge", True),
+            "merge": data.get("allow_merge_commit", True),
+            "rebase": data.get("allow_rebase_merge", True),
+        }
+        for method in ("squash", "merge", "rebase"):
+            if method != exclude and allowed.get(method):
+                return method
+        return None
+
     async def merge_pull_request(
         self, workspace: Path, pr_number: int, merge_method: str, project_slug: str
     ) -> tuple[str, str]:
@@ -1829,6 +1907,26 @@ class GitService(BaseService):
         resp = await self._call_merge_api(
             owner, repo, pr_number, git_token, merge_method
         )
+        # A 405 means the repo disallows this merge method (e.g. "Squash merges
+        # are not allowed on this repository" when that button is off). Fall back
+        # to a method the repo permits and retry once, so a repo's merge-button
+        # settings can't permanently wedge the PM on an open, mergeable PR.
+        if resp.status_code == httpx.codes.METHOD_NOT_ALLOWED:
+            fallback = await self._first_allowed_merge_method(
+                owner, repo, git_token, exclude=merge_method
+            )
+            if fallback and fallback != merge_method:
+                self.log.info(
+                    "Merge method refused by repo; retrying with a permitted one",
+                    requested=merge_method,
+                    fallback=fallback,
+                    owner=owner,
+                    repo=repo,
+                    pr=pr_number,
+                )
+                resp = await self._call_merge_api(
+                    owner, repo, pr_number, git_token, fallback
+                )
         if not resp.is_success:
             raise GitError(
                 f"GitHub API refused PR merge ({resp.status_code}): {resp.text[:200]}",
