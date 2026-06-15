@@ -53,6 +53,22 @@ def _vec_to_str(embedding: list[float]) -> str:
     return "[" + ",".join(str(x) for x in embedding) + "]"
 
 
+def _as_dict(value: Any) -> dict[str, Any]:
+    """Decode a ``jsonb`` column value into a dict.
+
+    No json codec is registered on the pool, so asyncpg returns ``jsonb`` as a
+    JSON *string*; ``dict(value)`` would then iterate characters and raise
+    "dictionary update sequence element #0 has length 1; 2 is required". Handle
+    both the string form and an already-decoded mapping (and null → ``{}``).
+    """
+    if not value:
+        return {}
+    if isinstance(value, str):
+        loaded = json.loads(value)
+        return dict(loaded) if isinstance(loaded, dict) else {}
+    return dict(value)
+
+
 class VectorStore:
     """Async vector store backed by PostgreSQL + pgvector.
 
@@ -259,7 +275,7 @@ class VectorStore:
                 chunk=row["content"],
                 source=row["source"],
                 score=float(row["score"]),
-                metadata=dict(row["metadata"]) if row["metadata"] else {},
+                metadata=_as_dict(row["metadata"]),
             )
             for row in rows
         ]
@@ -307,7 +323,7 @@ class VectorStore:
                 "indexed_at": row["indexed_at"].isoformat()
                 if row["indexed_at"]
                 else "",
-                "metadata": dict(row["metadata"]) if row["metadata"] else {},
+                "metadata": _as_dict(row["metadata"]),
             }
             for row in rows
         ]
