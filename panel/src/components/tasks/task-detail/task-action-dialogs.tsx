@@ -71,7 +71,7 @@ export function EscalateToCeoDialog({
           </div>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" onClick={() => handleOpenChange(false)}>
             Cancel
           </Button>
           <Button onClick={handleConfirm} disabled={!reason.trim() || isPending}>
@@ -133,7 +133,7 @@ export function CeoRejectDialog({
           </div>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" onClick={() => handleOpenChange(false)}>
             Cancel
           </Button>
           <Button
@@ -232,7 +232,7 @@ export function CeoApproveDialog({
         </DialogHeader>
         <div className="grid gap-4 py-4">
           <div className="grid gap-2">
-            <Label htmlFor="ceo-approve-notes">Approval notes</Label>
+            <Label htmlFor="ceo-approve-notes">Notes required</Label>
             <Textarea
               id="ceo-approve-notes"
               value={notes}
@@ -246,7 +246,7 @@ export function CeoApproveDialog({
           </div>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" onClick={() => handleOpenChange(false)}>
             Cancel
           </Button>
           <Button onClick={handleConfirm} disabled={tooShort || isPending}>
@@ -325,7 +325,7 @@ export function RequiredNotesDialog({
           </div>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" onClick={() => handleOpenChange(false)}>
             Cancel
           </Button>
           <Button
@@ -398,7 +398,7 @@ export function CreateBranchDialog({
           </div>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" onClick={() => handleOpenChange(false)}>
             Cancel
           </Button>
           <Button onClick={handleConfirm} disabled={isPending}>
@@ -480,7 +480,7 @@ export function CreatePRDialog({
           </div>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" onClick={() => handleOpenChange(false)}>
             Cancel
           </Button>
           <Button onClick={handleConfirm} disabled={!title.trim() || isPending}>

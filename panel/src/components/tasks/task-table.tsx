@@ -47,10 +47,10 @@ const priorityColors: Record<number, string> = {
 };
 
 const priorityLabels: Record<number, string> = {
-  0: "P0",
-  1: "P1",
-  2: "P2",
-  3: "P3",
+  0: "P0 - Highest",
+  1: "P1 - High",
+  2: "P2 - Medium",
+  3: "P3 - Low",
 };
 
 // Sorting types - exported for parent components
@@ -514,8 +514,8 @@ export function TaskTable({
                       {task.team.replace(/_/g, " ")}
                     </TableCell>
                     <TableCell className="whitespace-nowrap">
-                      <Badge className={priorityColors[task.priority] ?? priorityColors[2]}>
-                        {priorityLabels[task.priority] ?? "P2"}
+                      <Badge className={(priorityColors[task.priority] ?? priorityColors[2]) + " text-xs"}>
+                        {priorityLabels[task.priority] ?? "P2 - Medium"}
                       </Badge>
                     </TableCell>
                     <TableCell className="whitespace-nowrap">

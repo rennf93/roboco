@@ -45,9 +45,9 @@ const typeIcons: Record<NotificationType, React.ReactNode> = {
 };
 
 const priorityColors: Record<NotificationPriority, string> = {
-  [NotificationPriority.NORMAL]: "bg-gray-100 text-gray-700",
-  [NotificationPriority.HIGH]: "bg-orange-100 text-orange-700",
-  [NotificationPriority.URGENT]: "bg-red-100 text-red-700",
+  [NotificationPriority.NORMAL]: "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300",
+  [NotificationPriority.HIGH]: "bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300",
+  [NotificationPriority.URGENT]: "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300",
 };
 
 interface NotificationCardProps {
