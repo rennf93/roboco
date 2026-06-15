@@ -32,7 +32,7 @@ class TestGatewayEnabledRoles:
 class TestBuildManifestForAgent:
     def test_developer_writes_file(self, tmp_path: Path) -> None:
         """Developer role produces a manifest JSON file at the expected host path."""
-        with patch("roboco.runtime.orchestrator.settings") as mock_settings:
+        with patch("roboco.runtime._helpers.settings") as mock_settings:
             mock_settings.manifest_host_dir = str(tmp_path)
             mock_settings.workspaces_root = str(tmp_path / "workspaces")
 
@@ -49,7 +49,7 @@ class TestBuildManifestForAgent:
         self, tmp_path: Path
     ) -> None:
         """The returned path is inside manifest_host_dir."""
-        with patch("roboco.runtime.orchestrator.settings") as mock_settings:
+        with patch("roboco.runtime._helpers.settings") as mock_settings:
             mock_settings.manifest_host_dir = str(tmp_path)
             mock_settings.workspaces_root = str(tmp_path / "workspaces")
 
@@ -60,7 +60,7 @@ class TestBuildManifestForAgent:
 
     def test_developer_manifest_content_valid(self, tmp_path: Path) -> None:
         """Written manifest has required top-level keys."""
-        with patch("roboco.runtime.orchestrator.settings") as mock_settings:
+        with patch("roboco.runtime._helpers.settings") as mock_settings:
             mock_settings.manifest_host_dir = str(tmp_path)
             mock_settings.workspaces_root = str(tmp_path / "workspaces")
 
@@ -83,7 +83,7 @@ class TestBuildManifestForAgent:
         self, tmp_path: Path
     ) -> None:
         """agent_id field in the manifest matches the seeded UUID for be-dev-1."""
-        with patch("roboco.runtime.orchestrator.settings") as mock_settings:
+        with patch("roboco.runtime._helpers.settings") as mock_settings:
             mock_settings.manifest_host_dir = str(tmp_path)
             mock_settings.workspaces_root = str(tmp_path / "workspaces")
 
@@ -95,7 +95,7 @@ class TestBuildManifestForAgent:
 
     def test_qa_writes_file(self, tmp_path: Path) -> None:
         """Phase 2: QA role now produces a manifest JSON file (same as developer)."""
-        with patch("roboco.runtime.orchestrator.settings") as mock_settings:
+        with patch("roboco.runtime._helpers.settings") as mock_settings:
             mock_settings.manifest_host_dir = str(tmp_path)
             mock_settings.workspaces_root = str(tmp_path / "workspaces")
 
@@ -110,7 +110,7 @@ class TestBuildManifestForAgent:
 
     def test_documenter_writes_file(self, tmp_path: Path) -> None:
         """Phase 3: Documenter role produces a manifest JSON file."""
-        with patch("roboco.runtime.orchestrator.settings") as mock_settings:
+        with patch("roboco.runtime._helpers.settings") as mock_settings:
             mock_settings.manifest_host_dir = str(tmp_path)
             mock_settings.workspaces_root = str(tmp_path / "workspaces")
 
@@ -125,7 +125,7 @@ class TestBuildManifestForAgent:
 
     def test_cell_pm_writes_file(self, tmp_path: Path) -> None:
         """Phase 3: Cell PM role produces a manifest JSON file."""
-        with patch("roboco.runtime.orchestrator.settings") as mock_settings:
+        with patch("roboco.runtime._helpers.settings") as mock_settings:
             mock_settings.manifest_host_dir = str(tmp_path)
             mock_settings.workspaces_root = str(tmp_path / "workspaces")
 
@@ -140,7 +140,7 @@ class TestBuildManifestForAgent:
 
     def test_main_pm_writes_file(self, tmp_path: Path) -> None:
         """Phase 3: Main PM role produces a manifest JSON file."""
-        with patch("roboco.runtime.orchestrator.settings") as mock_settings:
+        with patch("roboco.runtime._helpers.settings") as mock_settings:
             mock_settings.manifest_host_dir = str(tmp_path)
             mock_settings.workspaces_root = str(tmp_path / "workspaces")
 
@@ -157,7 +157,7 @@ class TestBuildManifestForAgent:
         nested = tmp_path / "new" / "nested" / "dir"
         assert not nested.exists()
 
-        with patch("roboco.runtime.orchestrator.settings") as mock_settings:
+        with patch("roboco.runtime._helpers.settings") as mock_settings:
             mock_settings.manifest_host_dir = str(nested)
             mock_settings.workspaces_root = str(tmp_path / "workspaces")
 
