@@ -729,6 +729,7 @@ class Choreographer:
             recent_team_activity=await repo.recent_team_activity(agent_id),
             blockers_in_my_lane=await repo.blockers_in_lane(agent_id),
             task_handoff=task_handoff,
+            company_goals=await repo.company_goals(),
         )
         return build_context_briefing(inputs)
 

@@ -46,6 +46,9 @@ class BriefingInputs:
     # respawned agent picks up where the previous worker left off instead of
     # re-exploring the codebase from cold.
     task_handoff: dict[str, Any] | None = None
+    # Compact company charter (north star + objectives + operating policy), or
+    # None when unset — injected so every agent's work is goal-aware.
+    company_goals: dict[str, Any] | None = None
 
 
 def build_evidence_for_task(
@@ -132,4 +135,5 @@ def build_context_briefing(inputs: BriefingInputs) -> dict[str, Any]:
         "recent_team_activity": inputs.recent_team_activity[:BRIEFING_LIST_CAP],
         "blockers_in_my_lane": inputs.blockers_in_my_lane[:BRIEFING_LIST_CAP],
         "task_handoff": inputs.task_handoff,
+        "company_goals": inputs.company_goals,
     }

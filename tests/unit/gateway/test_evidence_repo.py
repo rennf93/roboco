@@ -38,6 +38,45 @@ def _repo_with_rows(rows: list[object], *, scalar: object = None) -> EvidenceRep
     return EvidenceRepo(db)
 
 
+def _repo_with_goals_row(row: object | None) -> EvidenceRepo:
+    """Repo whose execute().scalar_one_or_none() yields the singleton row."""
+    db = MagicMock()
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = row
+    db.execute = AsyncMock(return_value=result)
+    return EvidenceRepo(db)
+
+
+@pytest.mark.asyncio
+async def test_company_goals_none_when_no_row() -> None:
+    assert await _repo_with_goals_row(None).company_goals() is None
+
+
+@pytest.mark.asyncio
+async def test_company_goals_none_when_empty_charter() -> None:
+    row = SimpleNamespace(
+        north_star="", objectives=[], constraints=[], operating_policy={}
+    )
+    assert await _repo_with_goals_row(row).company_goals() is None
+
+
+@pytest.mark.asyncio
+async def test_company_goals_compact_dict_when_set() -> None:
+    row = SimpleNamespace(
+        north_star="Win the market",
+        objectives=[{"metric": "NPS", "target": 50}],
+        constraints=["AGPL"],
+        operating_policy={"autonomy_level": "assisted"},
+    )
+    goals = await _repo_with_goals_row(row).company_goals()
+    assert goals == {
+        "north_star": "Win the market",
+        "objectives": [{"metric": "NPS", "target": 50}],
+        "constraints": ["AGPL"],
+        "operating_policy": {"autonomy_level": "assisted"},
+    }
+
+
 @pytest.mark.asyncio
 async def test_constructor_stores_db_session() -> None:
     fake_db = MagicMock()

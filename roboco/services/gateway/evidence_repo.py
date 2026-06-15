@@ -19,6 +19,37 @@ class EvidenceRepo:
     def __init__(self, db_session: AsyncSession) -> None:
         self._db = db_session
 
+    async def company_goals(self) -> dict[str, Any] | None:
+        """The company charter, compacted for the briefing — or None when unset.
+
+        A single-row lookup (the charter is a singleton); returns only the
+        goal-relevant fields and omits audit columns to keep the briefing
+        token-light. Returns None when the charter is empty, so an unset charter
+        does not bloat every briefing.
+        """
+        from sqlalchemy import select
+
+        from roboco.db.tables import CompanyGoalsTable
+        from roboco.services.gateway.evidence_builder import BRIEFING_LIST_CAP
+
+        row = (
+            await self._db.execute(select(CompanyGoalsTable).limit(1))
+        ).scalar_one_or_none()
+        if row is None:
+            return None
+        north_star = row.north_star or ""
+        objectives = row.objectives or []
+        constraints = row.constraints or []
+        operating_policy = row.operating_policy or {}
+        if not (north_star or objectives or constraints or operating_policy):
+            return None
+        return {
+            "north_star": north_star,
+            "objectives": objectives[:BRIEFING_LIST_CAP],
+            "constraints": constraints[:BRIEFING_LIST_CAP],
+            "operating_policy": operating_policy,
+        }
+
     async def list_unread_a2a(self, agent_id: UUID) -> list[dict[str, Any]]:
         """Open A2A conversations with unread messages for this agent.
 

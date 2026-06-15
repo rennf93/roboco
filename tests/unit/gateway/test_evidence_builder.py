@@ -109,6 +109,30 @@ class TestContextBriefing:
         )
         assert build_context_briefing(with_handoff)["task_handoff"] == {"pr_number": 8}
 
+    def test_company_goals_defaults_none_and_surfaces_in_briefing(self) -> None:
+        inputs = BriefingInputs(
+            unread_a2a=[],
+            unread_mentions=[],
+            pending_notifications=[],
+            task_metadata_gaps=[],
+            recent_team_activity=[],
+            blockers_in_my_lane=[],
+        )
+        assert build_context_briefing(inputs)["company_goals"] is None
+
+        with_goals = BriefingInputs(
+            unread_a2a=[],
+            unread_mentions=[],
+            pending_notifications=[],
+            task_metadata_gaps=[],
+            recent_team_activity=[],
+            blockers_in_my_lane=[],
+            company_goals={"north_star": "win"},
+        )
+        assert build_context_briefing(with_goals)["company_goals"] == {
+            "north_star": "win"
+        }
+
 
 class TestTaskHandoff:
     def test_none_task_returns_none(self) -> None:
