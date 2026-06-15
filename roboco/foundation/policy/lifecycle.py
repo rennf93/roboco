@@ -911,6 +911,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
                 Role.HEAD_MARKETING,
                 Role.AUDITOR,
                 Role.PROMPTER,
+                Role.SECRETARY,
             }
         ),
         description=(

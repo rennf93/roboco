@@ -29,6 +29,7 @@ class Role(StrEnum):
     HEAD_MARKETING = "head_marketing"
     AUDITOR = "auditor"
     PROMPTER = "prompter"  # intake interviewer — talks only to the human, drafts tasks
+    SECRETARY = "secretary"  # CEO's chief-of-staff — acts only under CEO command
     CEO = "ceo"
     SYSTEM = "system"  # sentinel only — used for orchestrator-generated rows
 
@@ -200,6 +201,16 @@ AGENTS: dict[str, AgentRow] = {
         Team.BOARD,
         _u("00000000-0000-0000-0004-000000000005"),
     ),
+    # Secretary — the CEO's conversational chief-of-staff. Like intake, a single
+    # seeded, board-adjacent agent the human chats with; unlike intake it carries
+    # gated CEO authority and acts only under CEO command. Deliberately absent
+    # from BOARD_ROLES (not a board reviewer).
+    "secretary-1": AgentRow(
+        "secretary-1",
+        Role.SECRETARY,
+        Team.BOARD,
+        _u("00000000-0000-0000-0004-000000000006"),
+    ),
 }
 
 
@@ -225,6 +236,7 @@ ROLE_LEVEL: dict[Role, RoleLevel] = {
     Role.HEAD_MARKETING: RoleLevel.BOARD,
     Role.AUDITOR: RoleLevel.AUDITOR,
     Role.PROMPTER: RoleLevel.INTAKE,
+    Role.SECRETARY: RoleLevel.BOARD,
     Role.CEO: RoleLevel.CEO,
 }
 

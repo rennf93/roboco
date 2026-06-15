@@ -123,6 +123,13 @@ _PROMPTER_FLOW = spec.intents_for_role(
 # live-session bridge, not these gateway tools.
 _PROMPTER_DO = ("note", "evidence")
 
+# Secretary: the CEO's chief-of-staff. Foundation tools mirror the prompter
+# (note + evidence; its conversation with the CEO runs over the live-session
+# bridge). Its gated CEO-authority directive tools are layered on separately by
+# the secretary authority surface, not registered as generic do-tools here.
+_SECRETARY_FLOW = spec.intents_for_role(spec.Role.SECRETARY)  # none — human-only
+_SECRETARY_DO = ("note", "evidence")
+
 
 ROLE_CONFIGS: dict[str, RoleConfig] = {
     "developer": RoleConfig(
@@ -198,6 +205,18 @@ ROLE_CONFIGS: dict[str, RoleConfig] = {
         description=(
             "Intake interviewer; chats only with the human, reads the codebase, "
             "and drafts a task. No outward agent comms; never writes or merges."
+        ),
+    ),
+    "secretary": RoleConfig(
+        role="secretary",
+        flow_tools=_SECRETARY_FLOW,
+        do_tools=_SECRETARY_DO,
+        allows_write=False,
+        allows_subagent=True,
+        description=(
+            "CEO's chief-of-staff; chats only with the CEO and carries gated CEO "
+            "authority. Reads company state and executes the CEO's directives, "
+            "bouncing high-impact ones back for explicit confirmation."
         ),
     ),
 }

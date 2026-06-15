@@ -61,6 +61,8 @@ ROLE_READ_TIERS: dict[Role, ReadTier] = {
     # Intake interviewer is isolated — talks only to the human, reads only its
     # own journal.
     Role.PROMPTER: ReadTier.OWN,
+    # Secretary advises the CEO — reads everything to give an informed picture.
+    Role.SECRETARY: ReadTier.ALL,
     Role.CEO: ReadTier.ALL,
 }
 

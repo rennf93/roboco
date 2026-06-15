@@ -117,4 +117,6 @@ ROLE_MODEL_MAP: dict[str, str] = {
     "ceo": "opus",
     # Intake interviewer — reads real code and drafts the spec; needs to be sharp.
     "prompter": "opus",
+    # Secretary — carries CEO authority; needs strong judgment.
+    "secretary": "opus",
 }

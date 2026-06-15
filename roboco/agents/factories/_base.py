@@ -65,6 +65,8 @@ _ROLE_LAYER_MAP: dict[str, str] = {
     # propose_draft mission. Without this the prompter only sees the
     # gateway verbs layer (i_am_idle) and refuses to draft.
     "prompter": "prompter.md",
+    # Secretary — CEO's chief-of-staff live-session role prompt.
+    "secretary": "secretary.md",
 }
 
 _TEAM_LAYER_MAP: dict[str, str] = {
