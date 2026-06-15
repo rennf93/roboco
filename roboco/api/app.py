@@ -36,6 +36,7 @@ from roboco.api.routes.prompter_live import router as prompter_live_router
 from roboco.api.routes.provider import router as provider_router
 from roboco.api.routes.research import router as research_router
 from roboco.api.routes.secretary import router as secretary_router
+from roboco.api.routes.secretary_live import router as secretary_live_router
 from roboco.api.routes.sessions import router as sessions_router
 from roboco.api.routes.settings import router as settings_router
 from roboco.api.routes.stream import router as stream_router
@@ -287,6 +288,12 @@ def create_app() -> FastAPI:
     # Secretary — the CEO's chief-of-staff: company-state reads + gated directives.
     app.include_router(
         secretary_router,
+        prefix=f"{api_prefix}/secretary",
+        tags=["Secretary"],
+    )
+    # Secretary live chat — panel <-> Secretary container bridge.
+    app.include_router(
+        secretary_live_router,
         prefix=f"{api_prefix}/secretary",
         tags=["Secretary"],
     )

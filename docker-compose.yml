@@ -206,6 +206,16 @@ services:
     depends_on:
       - agent-base-image
 
+  agent-secretary-image:
+    build:
+      context: .
+      dockerfile: docker/agent-secretary.Dockerfile
+    image: roboco-agent-secretary
+    entrypoint: ["/bin/sh", "-c", 'echo "Agent Secretary image built"']
+    restart: "no"
+    depends_on:
+      - agent-base-image
+
   # ==========================================================================
   # Orchestrator - API Server + Agent Spawner
   # ==========================================================================
