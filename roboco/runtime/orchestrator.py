@@ -53,6 +53,7 @@ from roboco.models.runtime import (
 )
 from roboco.models.base import ModelProvider as _ModelProvider
 from roboco.llm.providers import ProviderRegistry as _ProviderRegistry
+from roboco.llm.providers.claude_code import ClaudeCodeProvider as _ClaudeCodeProvider
 from roboco.seeds.initial_data import AGENT_UUIDS
 
 logger = structlog.get_logger()
@@ -133,6 +134,14 @@ class AgentOrchestrator(
     - Cost-efficient on-demand spawning
     """
 
+    # Backward-compat aliases for methods migrated to ClaudeCodeProvider.
+    # Kept so tests and external callers that reference these as
+    # AgentOrchestrator._build_mount_args(...) still resolve.
+    _build_mount_args = _ClaudeCodeProvider._build_mount_args
+    _append_image_and_claude_args = _ClaudeCodeProvider._append_image_and_claude_args
+    _append_agent_auth_env = _ClaudeCodeProvider._append_agent_auth_env
+    _append_git_context_env = _ClaudeCodeProvider._append_git_context_env
+
     def __init__(
         self,
         mcp_config_dir: Path | None = None,
@@ -203,6 +212,9 @@ class AgentOrchestrator(
         # Provider registry — maps ModelProvider enum to AgentProvider instances.
         # Populated in start() once providers are importable.
         self._provider_registry: _ProviderRegistry | None = None
+        # Direct reference to the ClaudeCodeProvider for internal use
+        # (e.g. _spawn_intake_session which bypasses the registry).
+        self._claude_provider: _AgentProvider | None = None
 
     # =========================================================================
     # LIFECYCLE
@@ -259,10 +271,19 @@ class AgentOrchestrator(
         from roboco.llm.providers.registry import ProviderRegistry as _Reg
 
         registry = _Reg()
-        registry.register(_ModelProvider.ANTHROPIC, ClaudeCodeProvider())
-        registry.register(_ModelProvider.OLLAMA_CLOUD, ClaudeCodeProvider())
+        registry.register(
+            _ModelProvider.ANTHROPIC,
+            ClaudeCodeProvider(project_root=self.project_root),
+        )
+        registry.register(
+            _ModelProvider.OLLAMA_CLOUD,
+            ClaudeCodeProvider(project_root=self.project_root),
+        )
         registry.register(_ModelProvider.LOCAL, OllamaLocalProvider())
         self._provider_registry = registry
+        # Keep a direct ref to the ClaudeCode provider for intake sessions
+        # which build Docker commands outside the normal provider dispatch.
+        self._claude_provider = registry.get(_ModelProvider.ANTHROPIC)
         logger.info(
             "Provider registry initialized",
             providers=[p.value for p in registry.registered_types()],
@@ -713,8 +734,9 @@ class AgentOrchestrator(
         """Launch the agent and emit spawn audit events.
 
         Delegates to the registered provider for the config's ``provider_type``.
-        Falls back to the legacy Docker ``_spawn_container`` when no provider
-        is registered (ANTHROPIC / OLLAMA_CLOUD default path).
+        Every provider type must have a registered provider — the registry is
+        initialized with ``ClaudeCodeProvider`` for ``ANTHROPIC`` and
+        ``OLLAMA_CLOUD``, and ``OllamaLocalProvider`` for ``LOCAL``.
 
         `agent_id` was dropped as a redundant parameter — `config.agent_id`
         is the same value and was always the caller's source.
@@ -722,39 +744,28 @@ class AgentOrchestrator(
         agent_slug = config.agent_id
         try:
             provider = await self._get_provider_for_agent(config.provider_type)
-            if provider is not None:
-                # Provider-based spawn (e.g. Ollama local subprocess).
-                spawn_result = await provider.spawn(
-                    config, initial_prompt, agent_settings_path
+            if provider is None:
+                raise RuntimeError(
+                    f"No provider registered for {config.provider_type!r}. "
+                    "The provider registry must be initialized before spawn."
                 )
-                instance.container_id = spawn_result.instance_id
-                instance.state = AgentState.ACTIVE
-                instance.started_at = datetime.now(UTC)
-                instance.last_activity = datetime.now(UTC)
-                logger.info(
-                    "Agent spawned via provider",
-                    agent_id=agent_slug,
-                    provider_type=config.provider_type,
-                    instance_id=spawn_result.instance_id[:20],
-                    model=config.model,
-                    task_id=task_id,
-                )
-            else:
-                # Legacy Docker spawn path.
-                container_id = await self._spawn_container(
-                    config, initial_prompt, agent_settings_path
-                )
-                instance.container_id = container_id
-                instance.state = AgentState.ACTIVE
-                instance.started_at = datetime.now(UTC)
-                instance.last_activity = datetime.now(UTC)
-                logger.info(
-                    "Agent spawned",
-                    agent_id=agent_slug,
-                    container_id=container_id[:12],
-                    model=config.model,
-                    task_id=task_id,
-                )
+
+            spawn_result = await provider.spawn(
+                config, initial_prompt, agent_settings_path
+            )
+            instance.container_id = spawn_result.instance_id
+            instance.state = AgentState.ACTIVE
+            instance.started_at = datetime.now(UTC)
+            instance.last_activity = datetime.now(UTC)
+
+            logger.info(
+                "Agent spawned",
+                agent_id=agent_slug,
+                provider_type=config.provider_type,
+                instance_id=spawn_result.instance_id[:20],
+                model=config.model,
+                task_id=task_id,
+            )
 
             self._fire_audit(
                 event_type="agent.spawned",
@@ -845,7 +856,6 @@ class AgentOrchestrator(
             )
         # Record the task as handled so later dispatchers in the same
         # tick don't act on it again. Safe even if _launch_spawn fails
-        # — the next tick starts fresh.
         self._mark_task_handled(task_id)
         return await self._launch_spawn(
             task_id,
@@ -855,382 +865,25 @@ class AgentOrchestrator(
             agent_settings_path,
         )
 
-    def _resolve_host_paths(
-        self, config: AgentConfig, agent_settings_path: Path | None
-    ) -> dict[str, str | None]:
-        """Compute host mount paths for both containerized and host runtime."""
-        mcp_name = config.mcp_config_path.name if config.mcp_config_path else ""
-        if PROJECT_HOST_PATH:
-            return {
-                "docs": f"{PROJECT_HOST_PATH}/docs",
-                "workspaces": f"{DATA_HOST_PATH}/workspaces",
-                "claude": CLAUDE_AUTH_HOST_PATH,
-                "mcp_config": f"{DATA_HOST_PATH}/mcp-configs/{mcp_name}",
-                "prompt": (
-                    f"{DATA_HOST_PATH}/prompts-generated/{config.agent_id}-prompt.md"
-                ),
-                "settings": (
-                    f"{DATA_HOST_PATH}/agent-settings/{config.agent_id}-settings.json"
-                    if agent_settings_path
-                    else None
-                ),
-                "briefing": (
-                    f"{DATA_HOST_PATH}/briefings/{config.agent_id}.md"
-                    if config.briefing_path
-                    else None
-                ),
-            }
-        return {
-            "docs": str((self.project_root / "docs").absolute()),
-            "workspaces": str(Path(settings.workspaces_root)),
-            "claude": CLAUDE_AUTH_HOST_PATH,
-            "mcp_config": str(config.mcp_config_path),
-            "prompt": str(
-                Path(tempfile.gettempdir())
-                / "roboco-prompts"
-                / f"{config.agent_id}-prompt.md"
-            ),
-            "settings": str(agent_settings_path) if agent_settings_path else None,
-            "briefing": (str(config.briefing_path) if config.briefing_path else None),
-        }
-
-    @staticmethod
-    def _build_mount_args(
-        container_name: str, config: AgentConfig, hosts: dict[str, str | None]
-    ) -> list[str]:
-        """Compose `docker run -v/-e` mount + env args for the agent."""
-        cmd: list[str] = [
-            "docker",
-            "run",
-            "-d",
-            "--name",
-            container_name,
-            "--network",
-            AGENT_NETWORK,
-            # Mount Claude auth directory (for API keys, etc.)
-            "-v",
-            f"{hosts['claude']}:/home/agent/.claude",
-        ]
-        AgentOrchestrator._append_claude_json_mount(cmd, hosts)
-        AgentOrchestrator._append_optional_host_mounts(cmd, hosts)
-        role = get_agent_role(config.agent_id) or "developer"
-        cmd.extend(AgentOrchestrator._core_volume_and_env_args(config, hosts, role))
-        AgentOrchestrator._append_provider_env(cmd, config)
-        subagent_model = _resolve_agent_cli_model(config.provider_type, config.model)
-        cmd.extend(["-e", f"CLAUDE_CODE_SUBAGENT_MODEL={subagent_model}"])
-        AgentOrchestrator._append_manifest_args(cmd, config, subagent_model)
-        AgentOrchestrator._append_workspace_cwd(cmd, config)
-        return cmd
-
-    @staticmethod
-    def _append_claude_json_mount(cmd: list[str], hosts: dict[str, str | None]) -> None:
-        """Mount host's ~/.claude.json sibling FILE if present."""
-        claude_dir = hosts["claude"]
-        if not claude_dir:
-            return
-        claude_json_host = f"{claude_dir.rstrip('/')}.json"
-        if Path(claude_json_host).exists():
-            cmd.extend(["-v", f"{claude_json_host}:/home/agent/.claude.json"])
-
-    @staticmethod
-    def _append_optional_host_mounts(
-        cmd: list[str], hosts: dict[str, str | None]
-    ) -> None:
-        """Mount agent settings.json and briefing.md when their hosts exist."""
-        settings_host = hosts.get("settings")
-        if settings_host:
-            cmd.extend(["-v", f"{settings_host}:/home/agent/.claude/settings.json:ro"])
-        briefing_host = hosts.get("briefing")
-        if briefing_host:
-            cmd.extend(["-v", f"{briefing_host}:/app/briefing.md:ro"])
-
-    @staticmethod
-    def _core_volume_and_env_args(
-        config: AgentConfig, hosts: dict[str, str | None], role: str
-    ) -> list[str]:
-        """The always-on -v/-e block (prompt, docs, workspaces, env)."""
-        docs_ro = "" if config.agent_id in ALL_DOCS else ":ro"
-        return [
-            "-v",
-            f"{hosts['prompt']}:/app/system-prompt.md:ro",
-            "-v",
-            f"{hosts['docs']}:/app/docs{docs_ro}",
-            "-v",
-            f"{hosts['workspaces']}:/data/workspaces",
-            "-v",
-            f"{hosts['mcp_config']}:/app/mcp-config.json:ro",
-            "-e",
-            f"ROBOCO_AGENT_ID={config.agent_id}",
-            "-e",
-            f"ROBOCO_AGENT_ROLE={role}",
-            "-e",
-            "ROBOCO_API_URL=http://roboco-orchestrator:8000",
-            "-e",
-            "ROBOCO_SDK_PORT=9000",
-            "-e",
-            "ROBOCO_SDK_URL=http://localhost:9000",
-            "-e",
-            f"ROBOCO_AGENT_TOOL_CALL_WARN={settings.agent_tool_call_warn}",
-            "-e",
-            f"ROBOCO_AGENT_TOOL_CALL_HALT={settings.agent_tool_call_halt}",
-            "-e",
-            f"ROBOCO_AGENT_LOOP_THRESHOLD={settings.agent_loop_threshold}",
-            "-e",
-            f"ROBOCO_AGENT_LOOP_WINDOW={settings.agent_loop_window}",
-            "-e",
-            f"ROBOCO_AGENT_STOP_ATTEMPT_ALLOWANCE={settings.agent_stop_attempt_allowance}",
-        ]
-
-    @staticmethod
-    def _append_provider_env(cmd: list[str], config: AgentConfig) -> None:
-        """Inject ANTHROPIC_* env only on non-Anthropic providers."""
-        # Provider routing: only inject ANTHROPIC_* env vars when the
-        # resolved provider is non-Anthropic (i.e. Ollama Cloud). For the
-        # Anthropic default path both fields are None and Claude Code
-        # inside the container continues to use its mounted ~/.claude
-        # credentials — preserving legacy behaviour byte-for-byte.
-        if config.provider_base_url:
-            cmd.extend(["-e", f"ANTHROPIC_BASE_URL={config.provider_base_url}"])
-        if config.provider_auth_token:
-            cmd.extend(["-e", f"ANTHROPIC_AUTH_TOKEN={config.provider_auth_token}"])
-
-    @staticmethod
-    def _append_manifest_args(
-        cmd: list[str], config: AgentConfig, subagent_model: str
-    ) -> None:
-        """Write the spawn manifest and flip the gateway flag."""
-        # Spawn manifest + gateway flag — developer role only in Phase 1.
-        # _build_manifest_for_agent writes the JSON file to the host and
-        # returns the path; other roles get None and the gateway flag stays off.
-        manifest_host_path = _build_manifest_for_agent(config.agent_id, subagent_model)
-        if manifest_host_path:
-            cmd.extend(
-                [
-                    "-v",
-                    f"{manifest_host_path}:/app/tool-manifest.json:ro",
-                    "-e",
-                    "ROBOCO_GATEWAY_ENABLED=true",
-                    "-e",
-                    "ROBOCO_TOOL_MANIFEST_PATH=/app/tool-manifest.json",
-                ]
-            )
-        else:
-            cmd.extend(["-e", "ROBOCO_GATEWAY_ENABLED=false"])
-
-    _ROLES_WITH_AGENT_WORKSPACE: ClassVar[frozenset[str]] = frozenset(
-        {"developer", "product_owner", "head_marketing"}
-    )
-    _ROLES_WITH_CELL_WORKSPACE: ClassVar[frozenset[str]] = frozenset({"documenter"})
-
-    @staticmethod
-    def _append_workspace_cwd(cmd: list[str], config: AgentConfig) -> None:
-        """Set the container -w to the agent or cell workspace by role."""
-        # Pre-gateway parity: set the container's cwd
-        # to the agent's task workspace so Edit/Write resolve to paths that
-        # match _get_role_permissions allowlist, and `git add` operates inside
-        # the workspace clone. Without this, container WORKDIR (/app from the
-        # Dockerfile) shadows the workspace and every file op fails.
-        #
-        # Mirror the workspace-path selection in _get_role_permissions exactly:
-        # - developer / product_owner / head_marketing: per-agent workspace
-        # - documenter: cell workspace
-        # - qa / cell_pm / main_pm / auditor: no write workspace → omit -w
-        role = get_agent_role(config.agent_id) or "developer"
-        team = get_agent_team(config.agent_id) or ""
-        project = _resolve_project_slug_from_git_context(config.git_context)
-        if role in AgentOrchestrator._ROLES_WITH_AGENT_WORKSPACE:
-            cmd.extend(["-w", _agent_workspace_path(project, team, config.agent_id)])
-        elif role in AgentOrchestrator._ROLES_WITH_CELL_WORKSPACE:
-            cmd.extend(["-w", _cell_workspace_path(project, team)])
-
-    @staticmethod
-    def _append_agent_auth_env(cmd: list[str], config: AgentConfig) -> None:
-        """Append agent HMAC token env var to the docker run cmd."""
-        # Agent HMAC auth token — bound to (agent_id, role, team). The
-        # API middleware refuses requests whose headers don't match the
-        # token, which stops one agent on the Docker network from
-        # spoofing another agent's role. Token is stable per agent as
-        # long as the secret doesn't rotate, so it's fine to compute at
-        # spawn time and inject once.
-        from roboco.agents_config import (
-            get_agent_role as _get_role,
-        )
-        from roboco.agents_config import (
-            get_agent_team as _get_team,
-        )
-        from roboco.agents_config import (
-            issue_agent_token,
-        )
-
-        _role = _get_role(config.agent_id)
-        _team = _get_team(config.agent_id) or ""
-        _token = issue_agent_token(config.agent_id, _role, _team)
-        cmd.extend(["-e", f"ROBOCO_AGENT_TOKEN={_token}"])
-
-    @staticmethod
-    def _append_git_context_env(cmd: list[str], config: AgentConfig) -> None:
-        """Append git-context env vars to the docker run cmd."""
-        if not config.git_context:
-            return
-        if config.git_context.project_slug:
-            cmd.extend(["-e", f"ROBOCO_PROJECT_SLUG={config.git_context.project_slug}"])
-        if config.git_context.branch_name:
-            cmd.extend(["-e", f"ROBOCO_BRANCH={config.git_context.branch_name}"])
-
-    @staticmethod
-    def _default_spawn_prompt() -> str:
-        """Fallback prompt when the caller provided none."""
-        return (
-            "You may have been spawned without a specific task assignment. "
-            "Follow your standard workflow:\n\n"
-            "1. Call `give_me_work()` to find work for your role\n"
-            "2. Begin the assigned task (its details arrive in the "
-            "response): UNDERSTAND -> PLAN -> EXECUTE -> VERIFY -> HANDOFF\n"
-            "3. If no tasks available, call `i_am_idle()` "
-            "to shutdown gracefully\n\n"
-            "Start now by scanning for work."
-        )
-
-    @classmethod
-    def _append_image_and_claude_args(
-        cls, cmd: list[str], config: AgentConfig, initial_prompt: str | None
-    ) -> None:
-        """Append the image + Claude Code CLI args to the docker run cmd.
-
-        `--tools` explicitly enumerates the built-in tools loaded at session
-        start. Without it, Claude CLI's default behavior leaves Edit/Write
-        in the deferred pool, so an agent that doesn't reliably call
-        ToolSearch (e.g. weaker non-Anthropic models routed via
-        Ollama-cloud) ends up unable to modify any file. The set below is
-        the minimum every agent role needs:
-          - Read/Write/Edit  : file IO inside the workspace
-          - Bash             : shell commands (gated by bash-guard hook)
-          - Grep/Glob        : code navigation
-          - TodoWrite        : per-session planning
-        Permissions still gate *which* paths Edit/Write can touch (see
-        `_get_role_permissions`), so this is purely about loading vs
-        denying.
-        """
-        claude_args = [
-            get_agent_image(config.agent_id),
-            "--model",
-            cls._resolve_cli_model(config),
-            "--system-prompt-file",
-            "/app/system-prompt.md",
-            "--mcp-config",
-            "/app/mcp-config.json",
-            "--strict-mcp-config",
-            "--tools",
-            "Read,Write,Edit,Bash,Grep,Glob,TodoWrite",
-            "--output-format",
-            "stream-json",
-            "--verbose",
-        ]
-        # Pin the Claude session id so the agent's transcript is locatable by id
-        # at finalize, regardless of which project/cwd dir Claude Code writes it
-        # to (review/coordinate roles run at /app, not a per-agent workspace).
-        if config.claude_session_id:
-            claude_args += ["--session-id", config.claude_session_id]
-        claude_args += ["-p", initial_prompt or cls._default_spawn_prompt()]
-        cmd.extend(claude_args)
-
-    @staticmethod
-    def _resolve_cli_model(config: AgentConfig) -> str:
-        """Return the string to pass to `claude --model`."""
-        return _resolve_agent_cli_model(config.provider_type, config.model)
-
     async def _spawn_container(
         self,
         config: AgentConfig,
         initial_prompt: str | None = None,
         agent_settings_path: Path | None = None,
     ) -> str:
-        """Spawn a Docker container for the agent.
+        """Deprecated — use the provider registry instead.
 
-        Args:
-            config: Agent configuration
-            initial_prompt: Optional initial prompt for the agent
-            agent_settings_path: Path to per-agent Claude settings file
+        All spawns now go through the registered provider
+        (``ClaudeCodeProvider``, ``OllamaLocalProvider``, etc.).  This stub
+        exists for call sites that haven't been migrated yet.
         """
-        container_name = f"roboco-agent-{config.agent_id}"
-        await self._remove_container(container_name)
-
-        if not config.mcp_config_path:
-            raise RuntimeError("MCP config path not set")
-
-        hosts = self._resolve_host_paths(config, agent_settings_path)
-        cmd = self._build_mount_args(container_name, config, hosts)
-        self._append_agent_auth_env(cmd, config)
-        self._append_git_context_env(cmd, config)
-        self._append_image_and_claude_args(cmd, config, initial_prompt)
-
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await proc.communicate()
-
-        if proc.returncode != 0:
-            raise RuntimeError(f"Failed to start container: {stderr.decode()}")
-
-        return stdout.decode().strip()
-
-    async def _remove_container(self, container_name: str) -> None:
-        """Remove a container if it exists, dumping its logs to disk first.
-
-        Docker deletes the container's json-file log when we `docker rm`, so
-        before removal we copy the current log to /data/logs/agents/{slug}/
-        with a timestamp. That gives us persistent history across respawns
-        without needing an entrypoint wrapper inside the agent image.
-        """
-        # Check the container actually exists before trying to dump logs;
-        # _remove_container is routinely called pre-spawn to clear stale
-        # containers, and on first spawn there's nothing to dump.
-        inspect = await asyncio.create_subprocess_exec(
-            "docker",
-            "inspect",
-            "--format={{.Id}}",
-            container_name,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        exists = (await inspect.wait()) == 0
-
-        if exists:
-            slug = container_name.removeprefix("roboco-agent-")
-            log_dir = Path("/data/logs/agents") / slug
-            try:
-                log_dir.mkdir(parents=True, exist_ok=True)
-                timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-                log_path = log_dir / f"{timestamp}.log"
-                with log_path.open("wb") as out:
-                    dump_proc = await asyncio.create_subprocess_exec(
-                        "docker",
-                        "logs",
-                        container_name,
-                        stdout=out,
-                        stderr=out,
-                    )
-                    await dump_proc.wait()
-                if log_path.stat().st_size == 0:
-                    log_path.unlink(missing_ok=True)
-            except Exception as e:
-                logger.warning(
-                    "Could not dump container logs before removal",
-                    container=container_name,
-                    error=str(e),
-                )
-
-        proc = await asyncio.create_subprocess_exec(
-            "docker",
-            "rm",
-            "-f",
-            container_name,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await proc.wait()
+        provider = await self._get_provider_for_agent(config.provider_type)
+        if provider is None:
+            raise RuntimeError(
+                f"Cannot spawn — no provider registered for {config.provider_type!r}."
+            )
+        result = await provider.spawn(config, initial_prompt, agent_settings_path)
+        return result.instance_id
 
     async def _generate_mcp_config(
         self,
@@ -2010,7 +1663,8 @@ class AgentOrchestrator(
 
         await self._ensure_agent_image(INTAKE_AGENT_ID)
         container_name = f"roboco-agent-{INTAKE_AGENT_ID}"
-        await self._remove_container(container_name)
+        # Remove any stale container via the registered provider.
+        await self._claude_provider.remove(container_name)
 
         cmd = self._build_intake_run_cmd(
             _IntakeRunSpec(
@@ -2169,7 +1823,7 @@ class AgentOrchestrator(
             "-v",
             f"{spec.hosts['claude']}:/home/agent/.claude",
         ]
-        AgentOrchestrator._append_claude_json_mount(cmd, spec.hosts)
+        _ClaudeCodeProvider._append_claude_json_mount(cmd, spec.hosts)
         cmd.extend(
             [
                 "-v",
@@ -2289,41 +1943,21 @@ class AgentOrchestrator(
             if instance.container_id:
                 instance.state = AgentState.STOPPING
 
-                # Check if this agent uses a registered provider.
+                # Resolve the provider for this agent and delegate stop/remove.
+                # Every provider type has a registered provider in the registry
+                # (ClaudeCodeProvider for ANTHROPIC/OLLAMA_CLOUD, OllamaLocalProvider
+                # for LOCAL), so the fallback Docker path is no longer needed.
                 provider_type_str = (
                     instance.config.provider_type if instance.config else "anthropic"
                 )
                 provider = await self._get_provider_for_agent(provider_type_str)
-
-                if provider is not None:
-                    # Provider-based stop (e.g. Ollama local subprocess).
-                    await provider.stop(instance.container_id, graceful=graceful)
-                    await provider.remove(instance.container_id)
-                else:
-                    # Legacy Docker stop path.
-                    container_name = f"roboco-agent-{agent_id}"
-                    if graceful:
-                        proc = await asyncio.create_subprocess_exec(
-                            "docker",
-                            "stop",
-                            "-t",
-                            "10",
-                            container_name,
-                            stdout=asyncio.subprocess.DEVNULL,
-                            stderr=asyncio.subprocess.DEVNULL,
-                        )
-                        await proc.wait()
-                    else:
-                        proc = await asyncio.create_subprocess_exec(
-                            "docker",
-                            "kill",
-                            container_name,
-                            stdout=asyncio.subprocess.DEVNULL,
-                            stderr=asyncio.subprocess.DEVNULL,
-                        )
-                        await proc.wait()
-
-                    await self._remove_container(container_name)
+                if provider is None:
+                    raise RuntimeError(
+                        f"No provider registered for {provider_type_str!r}. "
+                        "Cannot stop agent."
+                    )
+                await provider.stop(instance.container_id, graceful=graceful)
+                await provider.remove(instance.container_id)
 
             instance.state = AgentState.OFFLINE
             instance.container_id = None

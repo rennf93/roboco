@@ -532,14 +532,17 @@ async def test_stop_agent_finalizes_before_lock() -> None:
     async def _fake_finalize(agent_id: str, **_kwargs: object) -> None:
         finalized.append(agent_id)
 
-    # Stub out the Docker subprocess so stop_agent doesn't actually run Docker
-    mock_proc = MagicMock()
-    mock_proc.wait = AsyncMock()
+    # Mock the provider so stop_agent delegates to it instead of hitting the
+    # provider registry (only populated in start(), not __init__).
+    mock_provider = MagicMock()
+    mock_provider.stop = AsyncMock()
+    mock_provider.remove = AsyncMock()
 
     with (
         patch.object(orch, "_finalize_spawn_session", side_effect=_fake_finalize),
-        patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_proc)),
-        patch.object(orch, "_remove_container", AsyncMock()),
+        patch.object(
+            orch, "_get_provider_for_agent", AsyncMock(return_value=mock_provider)
+        ),
     ):
         await orch.stop_agent(_AGENT_ID, graceful=True)
 

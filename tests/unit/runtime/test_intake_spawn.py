@@ -224,9 +224,13 @@ def _wire_spawn_mocks(
     monkeypatch.setattr(orch, "_clone_intake_scope", _clone)
     monkeypatch.setattr(orch, "_resolve_agent_route", _route)
     monkeypatch.setattr(orch, "_ensure_agent_image", _noop)
-    monkeypatch.setattr(orch, "_remove_container", _noop)
     monkeypatch.setattr(orch, "_run_container_cmd", _run)
     monkeypatch.setattr(orch, "_fire_audit", lambda **_k: None)
+    # The provider registry isn't initialized in minimal tests — provide
+    # a no-op claude_provider so _spawn_intake_session can call remove().
+    from unittest.mock import AsyncMock
+
+    orch._claude_provider = AsyncMock()
     monkeypatch.setattr(
         orch,
         "_generate_composed_prompt",
