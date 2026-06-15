@@ -4,6 +4,7 @@ import {
   useAuditorDashboard,
   useAuditorFlags,
   useAuditorReports,
+  useCreateAuditorReport,
 } from "@/hooks/use-dashboard";
 import { LiveFeedsPanel } from "./live-feeds-panel";
 import { QualityMetricsPanel } from "./quality-metrics-panel";
@@ -11,6 +12,7 @@ import { FlaggedItemsPanel } from "./flagged-items-panel";
 import { ReportsPanel } from "./reports-panel";
 import { Button } from "@/components/ui/button";
 import { RefreshCw, FileText } from "lucide-react";
+import { toast } from "sonner";
 
 export function AuditorDashboard() {
   const {
@@ -20,9 +22,25 @@ export function AuditorDashboard() {
   } = useAuditorDashboard();
   const { data: flags, isLoading: loadingFlags } = useAuditorFlags();
   const { data: reports, isLoading: loadingReports } = useAuditorReports();
+  const createReport = useCreateAuditorReport();
 
   const handleRefresh = () => {
     refetch();
+  };
+
+  const handleGenerateReport = () => {
+    createReport.mutate(
+      {
+        report_type: "audit_summary",
+        title: `Audit Summary — ${new Date().toLocaleDateString()}`,
+        summary: "Automatically generated audit summary report.",
+        sections: [],
+      },
+      {
+        onSuccess: () => toast.success("Audit report generated successfully"),
+        onError: () => toast.error("Failed to generate audit report"),
+      }
+    );
   };
 
   return (
@@ -40,7 +58,7 @@ export function AuditorDashboard() {
             <RefreshCw className="h-4 w-4 mr-2" />
             Refresh
           </Button>
-          <Button>
+          <Button onClick={handleGenerateReport} disabled={createReport.isPending}>
             <FileText className="h-4 w-4 mr-2" />
             Generate Report
           </Button>

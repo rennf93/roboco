@@ -13,6 +13,12 @@ import {
 import { NotificationBell } from "@/components/notifications/notification-bell";
 import { ConnectionStatus } from "./connection-status";
 import { MobileSidebar } from "./mobile-sidebar";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 
 export function Header() {
   const { setTheme } = useTheme();
@@ -23,14 +29,22 @@ export function Header() {
       <div className="flex items-center gap-4 flex-1 max-w-md">
         {/* Mobile nav trigger — only shown below md, where the sidebar is hidden */}
         <MobileSidebar />
-        <div className="relative w-full">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            type="search"
-            placeholder="Search tasks, agents..."
-            className="pl-10"
-          />
-        </div>
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <div className="relative w-full">
+                <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  type="search"
+                  placeholder="Search tasks, agents..."
+                  className="pl-10"
+                  disabled={true}
+                />
+              </div>
+            </TooltipTrigger>
+            <TooltipContent>Coming Soon</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
       </div>
 
       {/* Actions */}

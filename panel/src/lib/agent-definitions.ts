@@ -27,7 +27,8 @@ export const getBoardAgents = (agents: AgentDefinition[] | undefined | null) =>
       (a.team === Team.BOARD ||
         a.role === AgentRole.HEAD_MARKETING ||
         a.role === AgentRole.AUDITOR ||
-        a.role === AgentRole.PRODUCT_OWNER)
+        a.role === AgentRole.PRODUCT_OWNER ||
+        a.role === AgentRole.MAIN_PM)
   );
 
 export const getMainPm = (agents: AgentDefinition[] | undefined | null) =>
