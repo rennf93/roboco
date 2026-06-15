@@ -17,6 +17,7 @@ from roboco.api.routes.a2a import router as a2a_router
 from roboco.api.routes.a2a import wellknown_router as a2a_wellknown_router
 from roboco.api.routes.agents import router as agents_router
 from roboco.api.routes.channels import router as channels_router
+from roboco.api.routes.company_goals import router as company_goals_router
 from roboco.api.routes.dashboard import router as dashboard_router
 from roboco.api.routes.docs import router as docs_router
 from roboco.api.routes.git import router as git_router
@@ -226,6 +227,12 @@ def create_app() -> FastAPI:
         settings_router,
         prefix=f"{api_prefix}/settings",
         tags=["Settings"],
+    )
+
+    app.include_router(
+        company_goals_router,
+        prefix=f"{api_prefix}/company-goals",
+        tags=["Company"],
     )
 
     app.include_router(
