@@ -45,10 +45,12 @@ class OllamaLocalProvider(AgentProvider):
         default_model: str = "kimi-k2.6:cloud",
     ) -> None:
         self._ollama_base_url = (
-            ollama_base_url or os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+            ollama_base_url
+            or os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
         ).rstrip("/")
         self._log_dir = Path(
-            log_dir or os.environ.get("OLLAMA_LOCAL_LOG_DIR", "/data/logs/ollama-agents")
+            log_dir
+            or os.environ.get("OLLAMA_LOCAL_LOG_DIR", "/data/logs/ollama-agents")
         )
         self._default_model = default_model
         self._processes: dict[str, asyncio.subprocess.Process] = {}

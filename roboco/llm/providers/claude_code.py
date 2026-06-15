@@ -11,14 +11,12 @@ Extracted from ``orchestrator.py`` to make the orchestrator provider-agnostic.
 from __future__ import annotations
 
 import asyncio
-import os
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import structlog
-from fastapi import status as http_status
 
 from roboco.agents_config import ALL_DOCS, get_agent_role, get_agent_team
 from roboco.config import settings
@@ -27,7 +25,6 @@ from roboco.llm.providers.base import AgentProvider, ProviderError, SpawnResult
 # ---------------------------------------------------------------------------
 # Module-level constants used by Docker spawn
 # ---------------------------------------------------------------------------
-
 # These are imported from the orchestrator's _helpers module to keep
 # path resolution in one place.
 from roboco.runtime._helpers import (
@@ -330,9 +327,7 @@ class ClaudeCodeProvider(AgentProvider):
         """Mount agent settings.json and briefing.md when their hosts exist."""
         settings_host = hosts.get("settings")
         if settings_host:
-            cmd.extend(
-                ["-v", f"{settings_host}:/home/agent/.claude/settings.json:ro"]
-            )
+            cmd.extend(["-v", f"{settings_host}:/home/agent/.claude/settings.json:ro"])
         briefing_host = hosts.get("briefing")
         if briefing_host:
             cmd.extend(["-v", f"{briefing_host}:/app/briefing.md:ro"])
@@ -383,13 +378,9 @@ class ClaudeCodeProvider(AgentProvider):
             cmd.extend(["-e", f"ANTHROPIC_AUTH_TOKEN={config.provider_auth_token}"])
 
     @staticmethod
-    def _append_manifest_args(
-        cmd: list[str], config: Any, subagent_model: str
-    ) -> None:
+    def _append_manifest_args(cmd: list[str], config: Any, subagent_model: str) -> None:
         """Write the spawn manifest and flip the gateway flag."""
-        manifest_host_path = _build_manifest_for_agent(
-            config.agent_id, subagent_model
-        )
+        manifest_host_path = _build_manifest_for_agent(config.agent_id, subagent_model)
         if manifest_host_path:
             cmd.extend(
                 [
@@ -411,9 +402,7 @@ class ClaudeCodeProvider(AgentProvider):
         team = get_agent_team(config.agent_id) or ""
         project = _resolve_project_slug_from_git_context(config.git_context)
         if role in _ROLES_WITH_AGENT_WORKSPACE:
-            cmd.extend(
-                ["-w", _agent_workspace_path(project, team, config.agent_id)]
-            )
+            cmd.extend(["-w", _agent_workspace_path(project, team, config.agent_id)])
         elif role in _ROLES_WITH_CELL_WORKSPACE:
             cmd.extend(["-w", _cell_workspace_path(project, team)])
 
@@ -441,9 +430,7 @@ class ClaudeCodeProvider(AgentProvider):
         if not config.git_context:
             return
         if config.git_context.project_slug:
-            cmd.extend(
-                ["-e", f"ROBOCO_PROJECT_SLUG={config.git_context.project_slug}"]
-            )
+            cmd.extend(["-e", f"ROBOCO_PROJECT_SLUG={config.git_context.project_slug}"])
         if config.git_context.branch_name:
             cmd.extend(["-e", f"ROBOCO_BRANCH={config.git_context.branch_name}"])
 

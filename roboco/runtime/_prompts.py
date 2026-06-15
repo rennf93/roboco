@@ -14,8 +14,7 @@ logger = structlog.get_logger()
 
 
 class AgentPromptsMixin:
-    """Mixin for AgentOrchestrator: Prompts.
-    """
+    """Mixin for AgentOrchestrator: Prompts."""
 
     def _build_dev_prompt(self, task: dict[str, Any]) -> str:
         """Build state-aware initial prompt for a developer."""

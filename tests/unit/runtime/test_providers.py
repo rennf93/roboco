@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
-
 from roboco.llm.providers import (
     ClaudeCodeProvider,
     OllamaLocalProvider,
@@ -128,7 +127,9 @@ class TestOllamaLocalProvider:
     os.kill/asyncio.create_subprocess_exec for process management.
     """
 
-    @patch("roboco.llm.providers.ollama_local.OllamaLocalProvider._verify_ollama_reachable")
+    @patch(
+        "roboco.llm.providers.ollama_local.OllamaLocalProvider._verify_ollama_reachable"
+    )
     @patch("roboco.llm.providers.ollama_local.asyncio.create_subprocess_exec")
     @patch("roboco.llm.providers.ollama_local.os.kill")
     async def test_spawn_and_stop(
@@ -204,7 +205,7 @@ class _FakePath:
     def write_text(self, text: str) -> None:
         self.text = text
 
-    def __truediv__(self, other: object) -> "_FakePath":
+    def __truediv__(self, other: object) -> _FakePath:
         return _FakePath()
 
 

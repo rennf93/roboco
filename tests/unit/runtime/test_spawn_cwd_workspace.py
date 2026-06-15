@@ -13,6 +13,7 @@ import re
 from pathlib import Path
 from unittest.mock import patch
 
+from roboco.llm.providers.claude_code import ClaudeCodeProvider
 from roboco.models.runtime import OrchestratorAgentConfig, SpawnGitContext
 from roboco.runtime.orchestrator import AgentOrchestrator
 
@@ -124,7 +125,7 @@ def _build_cmd(container_name: str, config: OrchestratorAgentConfig) -> list[str
     ):
         for k, v in attrs.items():
             setattr(mock_settings, k, v)
-        return AgentOrchestrator._build_mount_args(container_name, config, hosts)
+        return ClaudeCodeProvider._build_mount_args(container_name, config, hosts)
 
 
 def _make_minimal_orchestrator() -> AgentOrchestrator:

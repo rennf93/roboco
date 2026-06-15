@@ -23,8 +23,7 @@ logger = structlog.get_logger()
 
 
 class AgentUsageMixin:
-    """Mixin for AgentOrchestrator: Usage.
-    """
+    """Mixin for AgentOrchestrator: Usage."""
 
     async def _record_spawn_session(
         self,
@@ -577,4 +576,3 @@ class AgentUsageMixin:
             )
         else:
             db.add(DailyUsageRollupTable(id=uuid4(), **key, **values))
-

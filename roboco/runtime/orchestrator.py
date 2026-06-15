@@ -32,7 +32,6 @@ from fastapi import status as http_status
 
 from roboco.agents.factories._base import compose_prompt
 from roboco.agents_config import (
-    ALL_DOCS,
     get_agent_role,
     get_agent_team,
     get_escalation_target,
@@ -41,8 +40,10 @@ from roboco.config import settings
 from roboco.foundation import identity as _foundation
 from roboco.foundation.identity import CELL_TEAMS
 from roboco.foundation.policy.agent_loop import DEFAULT_BUDGET as _AGENT_LOOP_BUDGET
+from roboco.llm.providers.registry import ProviderRegistry as _ProviderRegistry
 from roboco.llm.providers.base import AgentProvider as _AgentProvider
 from roboco.models import AgentRole, Team
+from roboco.models.base import ModelProvider as _ModelProvider
 from roboco.models.runtime import (
     ROLE_MODEL_MAP,
     AgentInstance,
@@ -51,9 +52,6 @@ from roboco.models.runtime import (
     SpawnGitContext,
     WaitingRecord,
 )
-from roboco.models.base import ModelProvider as _ModelProvider
-from roboco.llm.providers import ProviderRegistry as _ProviderRegistry
-from roboco.llm.providers.claude_code import ClaudeCodeProvider as _ClaudeCodeProvider
 from roboco.seeds.initial_data import AGENT_UUIDS
 
 logger = structlog.get_logger()
@@ -133,14 +131,6 @@ class AgentOrchestrator(
     - Provide status API
     - Cost-efficient on-demand spawning
     """
-
-    # Backward-compat aliases for methods migrated to ClaudeCodeProvider.
-    # Kept so tests and external callers that reference these as
-    # AgentOrchestrator._build_mount_args(...) still resolve.
-    _build_mount_args = _ClaudeCodeProvider._build_mount_args
-    _append_image_and_claude_args = _ClaudeCodeProvider._append_image_and_claude_args
-    _append_agent_auth_env = _ClaudeCodeProvider._append_agent_auth_env
-    _append_git_context_env = _ClaudeCodeProvider._append_git_context_env
 
     def __init__(
         self,
@@ -1823,7 +1813,11 @@ class AgentOrchestrator(
             "-v",
             f"{spec.hosts['claude']}:/home/agent/.claude",
         ]
-        _ClaudeCodeProvider._append_claude_json_mount(cmd, spec.hosts)
+        # Lazy import avoids circular dependency (roboco.runtime.__init__
+        # imports orchestrator, and claude_code.py imports from _helpers).
+        from roboco.llm.providers.claude_code import ClaudeCodeProvider as _CCP
+
+        _CCP._append_claude_json_mount(cmd, spec.hosts)
         cmd.extend(
             [
                 "-v",
@@ -5574,4 +5568,3 @@ Run the project's quality checks against acceptance criteria:
         return instructions.get(
             state, f'Call evidence(task_id="{task_id}") to check status.'
         )
-

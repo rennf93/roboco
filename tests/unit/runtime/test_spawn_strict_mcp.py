@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from roboco.llm.providers.claude_code import ClaudeCodeProvider
 from roboco.models.runtime import OrchestratorAgentConfig, SpawnGitContext
 from roboco.runtime.orchestrator import AgentOrchestrator
 
@@ -41,7 +42,7 @@ def _build_image_args(config: OrchestratorAgentConfig) -> list[str]:
         "roboco.runtime.orchestrator._resolve_agent_cli_model",
         return_value="claude-sonnet-4-6",
     ):
-        AgentOrchestrator._append_image_and_claude_args(cmd, config, None)
+        ClaudeCodeProvider._append_image_and_claude_args(cmd, config, None)
     return cmd
 
 

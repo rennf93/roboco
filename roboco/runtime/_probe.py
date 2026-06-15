@@ -25,8 +25,7 @@ logger = structlog.get_logger()
 
 
 class AgentRateLimitMixin:
-    """Mixin for AgentOrchestrator: Probe.
-    """
+    """Mixin for AgentOrchestrator: Probe."""
 
     async def _rate_limit_probe_loop(self) -> None:
         """Background loop: probe rate-limited providers every ~30 seconds.
@@ -303,4 +302,3 @@ class AgentRateLimitMixin:
                 provider=provider,
                 error=str(e),
             )
-
