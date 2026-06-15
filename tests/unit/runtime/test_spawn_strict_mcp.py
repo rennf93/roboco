@@ -92,3 +92,13 @@ class TestMcpConfigPinsBakedVenv:
                 f"/app/.venv — without it `uv run` re-downloads deps into a "
                 f"cwd-relative venv on every spawn (#179). env={spec['env']}"
             )
+            # Pinning the env location is necessary but NOT sufficient: from a
+            # workspace-clone cwd `uv run` still discovers the clone project and
+            # re-syncs the pinned venv against its drifted lock, which stalls and
+            # leaves the server stuck at status="pending" (zero gateway verbs).
+            # `--no-sync` skips that resync — it must come right after `run`.
+            assert spec["args"][:2] == ["run", "--no-sync"], (
+                f"MCP server {name!r} must launch with `uv run --no-sync ...` so "
+                f"a drifted workspace-clone lock can't trigger a resync stall; "
+                f"got args={spec['args']}"
+            )

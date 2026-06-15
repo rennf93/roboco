@@ -64,7 +64,7 @@ export function KanbanColumn({
                 key={task.id}
                 task={task}
                 onAction={onAction}
-                showQaActions={showQaActions && status === TaskStatus.AWAITING_QA}
+                showQaActions={showQaActions && (status === TaskStatus.AWAITING_QA || status === TaskStatus.VERIFYING)}
               />
             ))}
           </div>

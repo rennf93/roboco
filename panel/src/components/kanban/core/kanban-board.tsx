@@ -105,6 +105,19 @@ export function KanbanBoard({
       return;
     }
 
+    // When QA actions are active, dragging to QA transition columns must go
+    // through the notes/audit dialog — do NOT fire the mutation directly.
+    if (showQaActions) {
+      if (newStatus === TaskStatus.NEEDS_REVISION) {
+        setPendingNotesAction({ kind: "fail-qa", taskId });
+        return;
+      }
+      if (newStatus === TaskStatus.AWAITING_DOCUMENTATION) {
+        setPendingNotesAction({ kind: "pass-qa", taskId });
+        return;
+      }
+    }
+
     try {
       await updateTask.mutateAsync({
         taskId,

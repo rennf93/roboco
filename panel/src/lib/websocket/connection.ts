@@ -104,8 +104,8 @@ export class WebSocketConnection {
       this.ws.onerror = () => {
         // WebSocket errors are expected when backend is offline
         // Don't log - the onclose handler will manage reconnection
-        // Increment attempts on error to prevent infinite loops
-        this.reconnectAttempts++;
+        // Do NOT increment reconnectAttempts here; scheduleReconnect() is the
+        // sole place that advances the counter to avoid double-counting.
       };
     } catch {
       // Connection failed - backend likely offline

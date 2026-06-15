@@ -27,7 +27,7 @@ const AGENT_ROSTER: Agent[] = [
   // UX/UI Cell
   { id: "15", agent_id: "ux-dev-1", name: "UX/UI Dev 1", role: "developer" as AgentRole, team: "ux_ui" as Team, cell: "ux_ui", status: "idle" as AgentState },
   { id: "16", agent_id: "ux-dev-2", name: "UX/UI Dev 2", role: "developer" as AgentRole, team: "ux_ui" as Team, cell: "ux_ui", status: "idle" as AgentState },
-  { id: "16", agent_id: "ux-qa", name: "UX/UI QA", role: "qa" as AgentRole, team: "ux_ui" as Team, cell: "ux_ui", status: "idle" as AgentState },
+  { id: "19", agent_id: "ux-qa", name: "UX/UI QA", role: "qa" as AgentRole, team: "ux_ui" as Team, cell: "ux_ui", status: "idle" as AgentState },
   { id: "17", agent_id: "ux-pm", name: "UX/UI PM", role: "cell_pm" as AgentRole, team: "ux_ui" as Team, cell: "ux_ui", status: "idle" as AgentState },
   { id: "18", agent_id: "ux-doc", name: "UX/UI Documenter", role: "documenter" as AgentRole, team: "ux_ui" as Team, cell: "ux_ui", status: "idle" as AgentState },
 ];
@@ -77,7 +77,7 @@ export function useAgents() {
         };
       });
     },
-    staleTime: Infinity, // Static data, only updates when orchestrator updates
+    staleTime: 5 * 60 * 1000, // 5 min — allows roster to refresh when orchestrator status changes
     enabled: true,
   });
 }
