@@ -201,6 +201,7 @@ class ModelProvider(StrEnum):
     OLLAMA_CLOUD = "ollama_cloud"
     OPENAI = "openai"
     LOCAL = "local"
+    OPENCODE = "opencode"
 
 
 class AssignmentScope(StrEnum):

@@ -11,6 +11,7 @@ import pytest
 from roboco.llm.providers import (
     ClaudeCodeProvider,
     OllamaLocalProvider,
+    OpenCodeProvider,
     ProviderRegistry,
 )
 from roboco.llm.providers.base import ProviderError, SpawnResult
@@ -495,6 +496,62 @@ class TestClaudeCodeProvider:
         assert cmd[2] == "-d"
         assert "--name" in cmd
         assert "roboco-agent-be-dev-1" in cmd
+
+
+class TestOpenCodeProvider:
+    """OpenCodeProvider: local subprocess agent via ``opencode run``."""
+
+    @patch("roboco.llm.providers.opencode.asyncio.create_subprocess_exec")
+    async def test_spawn(self, mock_subproc: AsyncMock) -> None:
+        mock_proc = AsyncMock()
+        mock_proc.pid = 54321
+        mock_subproc.return_value = mock_proc
+
+        provider = OpenCodeProvider(default_model="test-model", log_dir="/tmp/t")
+        config = _make_config("opencode-test-1")
+        result = await provider.spawn(config, initial_prompt="Build it")
+
+        assert isinstance(result, SpawnResult)
+        assert result.instance_id == "54321"
+        assert result.extra["model"] == "sonnet"  # from config
+
+    @patch("roboco.llm.providers.opencode.asyncio.create_subprocess_exec")
+    async def test_spawn_uses_default_model(self, mock_subproc: AsyncMock) -> None:
+        mock_proc = AsyncMock()
+        mock_proc.pid = 54322
+        mock_subproc.return_value = mock_proc
+
+        provider = OpenCodeProvider(
+            default_model="zai-coding-plan/glm-5.2", log_dir="/tmp/t"
+        )
+        # config has no model set → should use provider default
+        config = _make_config("opencode-test-2", model=None)
+        result = await provider.spawn(config, initial_prompt="Do it")
+
+        assert result.extra["model"] == "zai-coding-plan/glm-5.2"
+
+    @patch("roboco.llm.providers.opencode.os.kill")
+    async def test_stop_graceful(self, mock_kill: AsyncMock) -> None:
+        mock_kill.side_effect = [None, OSError]  # first kill ok, second (probe) raises
+
+        provider = OpenCodeProvider(log_dir="/tmp/t")
+        await provider.stop("54321", graceful=True)
+
+        mock_kill.assert_any_call(54321, 15)  # SIGTERM
+
+    @patch("roboco.llm.providers.opencode.os.kill")
+    async def test_health_ok(self, mock_kill: AsyncMock) -> None:
+        mock_kill.return_value = None
+
+        provider = OpenCodeProvider(log_dir="/tmp/t")
+        assert await provider.health_check("54321") is True
+
+    @patch("roboco.llm.providers.opencode.os.kill")
+    async def test_health_dead(self, mock_kill: AsyncMock) -> None:
+        mock_kill.side_effect = OSError()
+
+        provider = OpenCodeProvider(log_dir="/tmp/t")
+        assert await provider.health_check("54321") is False
 
 
 class TestOllamaLocalProvider:
