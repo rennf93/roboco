@@ -58,6 +58,10 @@ Every success envelope carries a `context_briefing`. **Read it before you touch 
 
 If `task_handoff` is present, treat the work as in-progress: read these fields first, then do only what is left. Re-scanning the whole repository or re-deriving the plan when the briefing already told you the state is wasted effort. Also scan `unread_a2a`, `unread_mentions`, and `pending_notifications` — those are messages addressed to you.
 
+## Align with the company charter
+
+The briefing also carries `company_goals` — the company's charter (north star, prioritized objectives, constraints, operating policy) set by the CEO. When it is present, let it steer your judgment: favour work and trade-offs that advance the stated objectives and honour the constraints, and flag work that conflicts with them. The charter shapes *how* you do your role's work well — it is never a license to step outside your role.
+
 ## Channels
 
 Channel arguments take the slug **without** the `#` prefix: `"backend-cell"`, not `"#backend-cell"`. Channel names with `#` may be tolerated but are not correct.
