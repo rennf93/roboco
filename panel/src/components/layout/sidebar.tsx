@@ -22,6 +22,7 @@ import {
   Database,
   Cpu,
   Sparkles,
+  Target,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -30,6 +31,7 @@ import { useUIStore } from "@/store";
 export const navItems = [
   // Dashboard
   { title: "Overview", href: "/overview", icon: LayoutDashboard },
+  { title: "Company Goals", href: "/company-goals", icon: Target },
 
   // Work Management
   { title: "Tasks", href: "/tasks", icon: ListTodo },
