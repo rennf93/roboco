@@ -40,14 +40,12 @@ export function MentorChat({ onAsk, isLoading }: MentorChatProps) {
   const [input, setInput] = useState("");
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [expandedSources, setExpandedSources] = useState<number | null>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  // Auto-scroll to bottom when new messages arrive
+  // Auto-scroll to the newest message using a sentinel div + scrollIntoView
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isLoading]);
 
   const handleSubmit = async (question?: string) => {
@@ -176,7 +174,7 @@ export function MentorChat({ onAsk, isLoading }: MentorChatProps) {
       </div>
 
       {/* Messages */}
-      <ScrollArea className="flex-1 pr-4" ref={scrollRef}>
+      <ScrollArea className="flex-1 pr-4">
         <div className="space-y-4">
           {messages.map((msg, idx) => (
             <div key={idx}>
@@ -278,6 +276,9 @@ export function MentorChat({ onAsk, isLoading }: MentorChatProps) {
               <span className="text-sm">Mentor is thinking...</span>
             </div>
           )}
+
+          {/* Sentinel div — scrollIntoView targets this to keep the newest message visible */}
+          <div ref={bottomRef} />
         </div>
       </ScrollArea>
 

@@ -16,7 +16,8 @@ export function Providers({ children }: { children: React.ReactNode }) {
             staleTime: 5 * 60 * 1000,
             // Keep unused data in cache for 30 minutes
             gcTime: 30 * 60 * 1000,
-            // Don't refetch on window focus by default
+            // Intentionally disabled: refetching on window focus causes excessive
+            // API calls when the user alt-tabs back to the panel.
             refetchOnWindowFocus: false,
             // Don't refetch on reconnect by default
             refetchOnReconnect: false,

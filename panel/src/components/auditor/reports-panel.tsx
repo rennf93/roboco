@@ -1,7 +1,7 @@
 "use client";
 
 import { AuditorReport } from "@/types";
-import { useSendAuditorReport } from "@/hooks/use-dashboard";
+import { useSendAuditorReport, useCreateAuditorReport } from "@/hooks/use-dashboard";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -26,6 +26,27 @@ function formatDate(timestamp: string): string {
 
 export function ReportsPanel({ reports, isLoading, onCreateReport }: ReportsPanelProps) {
   const sendReport = useSendAuditorReport();
+  const createReport = useCreateAuditorReport();
+
+  const handleNewReport = () => {
+    if (onCreateReport) {
+      onCreateReport();
+      return;
+    }
+    // No parent handler provided — create a draft report directly
+    createReport.mutate(
+      {
+        report_type: "summary",
+        title: `New Report — ${new Date().toLocaleDateString()}`,
+        summary: "Draft report created from the Reports panel.",
+        sections: [],
+      },
+      {
+        onSuccess: () => toast.success("Draft report created"),
+        onError: () => toast.error("Failed to create report"),
+      }
+    );
+  };
 
   const handleSend = async (reportId: string) => {
     try {
@@ -44,7 +65,7 @@ export function ReportsPanel({ reports, isLoading, onCreateReport }: ReportsPane
             <FileText className="h-5 w-5" />
             Reports
           </CardTitle>
-          <Button size="sm" onClick={onCreateReport}>
+          <Button size="sm" onClick={handleNewReport} disabled={createReport.isPending}>
             <Plus className="h-4 w-4 mr-1" />
             New Report
           </Button>
