@@ -29,6 +29,7 @@ from roboco.api.routes.messages import router as messages_router
 from roboco.api.routes.notifications import router as notifications_router
 from roboco.api.routes.optimal import router as optimal_router
 from roboco.api.routes.orchestrator import router as orchestrator_router
+from roboco.api.routes.pitch import router as pitch_router
 from roboco.api.routes.product import router as product_router
 from roboco.api.routes.project import router as project_router
 from roboco.api.routes.prompter_live import router as prompter_live_router
@@ -273,6 +274,13 @@ def create_app() -> FastAPI:
         research_router,
         prefix=f"{api_prefix}/research",
         tags=["Research"],
+    )
+
+    # Pitches — Board proposals + CEO approve -> auto-provision origination path.
+    app.include_router(
+        pitch_router,
+        prefix=f"{api_prefix}/pitches",
+        tags=["Pitches"],
     )
 
     # Phase 5: Management - Tasks, Kanban, Dashboards

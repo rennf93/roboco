@@ -241,6 +241,45 @@ class Settings(BaseSettings):
     )
 
     # ==========================================================================
+    # GitHub repository provisioning (pitch -> approve -> auto-provision)
+    # ==========================================================================
+    # The only place that CREATES GitHub repos (vs. clone/branch/PR existing
+    # ones). Server-side only; never injected into agent containers. Unset
+    # token/org => disabled => the pitch approval path is inert (no repo is
+    # created) until the CEO configures it.
+    provisioning_enabled: bool = Field(
+        default=True,
+        description=(
+            "Master switch for pitch auto-provisioning. With no token/org set "
+            "the capability is inert regardless of this flag."
+        ),
+    )
+    provisioning_token: str = Field(
+        default="",
+        description=(
+            "GitHub PAT used to create repos in the provisioning org "
+            "(needs repo + org admin scope). Server-side only."
+        ),
+    )
+    provisioning_org: str = Field(
+        default="",
+        description="GitHub organization where new repos are provisioned.",
+    )
+    github_api_base_url: str = Field(
+        default="https://api.github.com",
+        description="GitHub REST API base URL (override for GitHub Enterprise).",
+    )
+    provisioning_timeout_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        description="Per-request timeout for outbound GitHub provisioning calls.",
+    )
+    provisioning_repo_private: bool = Field(
+        default=True,
+        description="Whether provisioned repos are created private.",
+    )
+
+    # ==========================================================================
     # Workspaces (Multi-Agent Git)
     # ==========================================================================
     workspaces_root: str = Field(

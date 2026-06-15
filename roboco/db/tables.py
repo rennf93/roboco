@@ -557,6 +557,51 @@ class ProductProjectTable(Base):
     )
 
 
+class PitchTable(Base):
+    """A Board proposal the CEO approves to auto-provision a product.
+
+    Independent of the task lifecycle: a pitch carries its own status
+    (proposed -> provisioned/rejected/failed). On approval the provisioning
+    flow creates repos, registers Projects (+ a Product when multi-cell), and
+    seeds a Main-PM delivery task, recording the produced ids here.
+    """
+
+    __tablename__ = "pitches"
+
+    id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    slug: Mapped[str] = mapped_column(
+        String(50), unique=True, nullable=False, index=True
+    )
+    problem: Mapped[str] = mapped_column(Text, nullable=False)
+    proposed_solution: Mapped[str] = mapped_column(Text, nullable=False)
+    target_cells: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="proposed", index=True
+    )
+    created_by: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    decided_by: Mapped[PyUUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    decision_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provisioned_product_id: Mapped[PyUUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    provisioned_project_ids: Mapped[list[str] | None] = mapped_column(
+        JSON, nullable=True
+    )
+    seed_task_id: Mapped[PyUUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
+    )
+
+
 # =============================================================================
 # WORK SESSION TABLE
 # =============================================================================
