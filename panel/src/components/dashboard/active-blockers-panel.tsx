@@ -64,7 +64,7 @@ export function ActiveBlockersPanel({ tasks, isLoading }: ActiveBlockersPanelPro
           <div className="space-y-3">
             {blockedTasks.map((task) => (
               <Link key={task.id} href={"/tasks/" + task.id}>
-                <div className="flex items-start gap-3 p-3 rounded-lg border border-red-200 bg-red-50 hover:bg-red-100 transition-colors">
+                <div className="flex items-start gap-3 p-3 rounded-lg border border-red-200 bg-red-50 hover:bg-red-100 dark:border-red-900 dark:bg-red-950 dark:hover:bg-red-900 transition-colors">
                   <span className="text-lg">\uD83D\uDD34</span>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
