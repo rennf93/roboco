@@ -42,7 +42,7 @@ dependencies = [
     "sse-starlette",  # Server-Sent Events for A2A streaming
     # Direct imports (promoted from transitive)
     "cryptography",  # utils/crypto.py — Fernet-encrypted project git tokens
-    "claude-agent-sdk>=0.2.94",
+    "claude-agent-sdk>=0.2.101",
 ]
 
 [project.optional-dependencies]
@@ -393,8 +393,8 @@ DEP003 = ["starlette"]
 
 [dependency-groups]
 dev = [
-    "pytest>=9.0.3",
-    "pytest-asyncio>=1.3.0",
+    "pytest>=9.1.0",
+    "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
 ]
 
