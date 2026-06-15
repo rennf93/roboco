@@ -65,10 +65,10 @@ def test_ceo_can_write_any_channel(svc: PermissionService) -> None:
     assert svc.can_write_channel(ceo, "backend-cell")
 
 
-def test_auditor_can_write_any_channel(svc: PermissionService) -> None:
-    """Auditor write returns True (cover-maintenance is a convention)."""
+def test_auditor_cannot_write_any_channel(svc: PermissionService) -> None:
+    """Auditor is a silent, read-only observer — it cannot write to channels."""
     auditor = _ctx(AgentRole.AUDITOR)
-    assert svc.can_write_channel(auditor, "backend-cell")
+    assert not svc.can_write_channel(auditor, "backend-cell")
 
 
 def test_main_pm_can_write_any_channel(svc: PermissionService) -> None:

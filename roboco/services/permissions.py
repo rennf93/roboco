@@ -215,9 +215,10 @@ class PermissionService(SingletonService):
         if agent.role == AgentRole.CEO:
             return True
 
-        # Auditor can write but usually doesn't (to maintain cover)
+        # Auditor is a silent, read-only observer (no say/dm in its verb surface);
+        # deny channel writes so this layer matches the role's actual capabilities.
         if agent.role == AgentRole.AUDITOR:
-            return True
+            return False
 
         # Main PM has access to all channels
         if agent.role == AgentRole.MAIN_PM:

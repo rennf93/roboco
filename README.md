@@ -274,6 +274,15 @@ and team. Token enforcement is gated by `ROBOCO_AGENT_AUTH_REQUIRED`:
   never holds the signing secret. Generate that token with `make panel-token`
   and set it as `ROBOCO_PANEL_AGENT_TOKEN` in `.env` before enabling secure mode.
 
+**WebSocket streams.** Token enforcement is currently REST-only. The `/ws/*`
+endpoints authenticate by `agent_id` query param at most and do not yet validate
+`X-Agent-Token`, even in secure mode — nginx injects the token so the panel
+works, but a direct WebSocket connection that bypasses nginx is not rejected. In
+particular the operator stream `/ws/system` (rate-limit lifecycle + token-usage
+snapshots for the dashboard) is unauthenticated. These streams are read-only —
+no control surface, secrets, or task content — but treat the orchestrator port
+as trusted-network-only until WebSocket auth lands.
+
 **Secrets** (the Fernet `ROBOCO_ENCRYPTION_KEY`, GitHub PATs) live encrypted in
 the database and in gitignored env files — never in the repo. Per-project git
 tokens are Fernet-encrypted at rest and never returned by the API.

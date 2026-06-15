@@ -156,7 +156,7 @@ restart: stop start-example
 lint:
 	@echo 'Formatting w/ Ruff...' ; echo '' ; uv run ruff format .
 	@echo '' ; echo '' ; echo 'Linting w/ Ruff...' ; echo '' ; uv run ruff check .
-	@echo '' ; echo '' ; echo 'Type checking w/ Mypy...' ; echo '' ; uv run mypy roboco/
+	@echo '' ; echo '' ; echo 'Type checking w/ Mypy...' ; echo '' ; uv run mypy roboco/ tests/
 	@echo '' ; echo '' ; echo 'Finding dead code w/ Vulture...' ; echo '' ; uv run vulture vulture_whitelist.py
 
 # Fix code
@@ -285,7 +285,7 @@ quality-fast:
 gate:
 	@uv run ruff format --check .
 	@uv run ruff check .
-	@uv run mypy roboco/
+	@uv run mypy roboco/ tests/
 	@uv run xenon --max-absolute B --max-modules A --max-average A roboco/
 
 # Run all analysis tools

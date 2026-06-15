@@ -472,7 +472,7 @@ The orchestrator exposes WebSocket endpoints under `/ws` (router in
 | Endpoint | Purpose |
 |----------|---------|
 | `/ws/channels/{id}`, `/ws/agents/{id}`, `/ws/sessions/{id}`, `/ws/notifications/{id}` | Per-resource live streams |
-| `/ws/system` | Operator/system-wide stream (no per-agent keying) — the rate-limit lifecycle (`RATE_LIMIT_HIT` / `RATE_LIMIT_LIFTED`) and live usage (`USAGE_UPDATE` / `USAGE_SNAPSHOT`, pushed to the usage dashboard) |
+| `/ws/system` | Operator/system-wide stream (no per-agent keying) — the rate-limit lifecycle (`RATE_LIMIT_HIT` / `RATE_LIMIT_LIFTED`) and live usage (`USAGE_SNAPSHOT`, pushed to the usage dashboard) |
 
 Server-side events reach these sockets through `roboco/api/websocket_bridge.py`,
 which subscribes to the `StreamEventBus` and forwards each event to the matching
@@ -493,7 +493,7 @@ stand up a parallel endpoint or client stack.
   `agent_spawn_sessions` → `daily_usage_rollups` → dashboard). Cost uses
   provider-aware pricing in `roboco/billing/pricing.py` (Anthropic priced;
   local/Ollama intentionally `$0`). The token sweep also publishes
-  `USAGE_UPDATE`/`USAGE_SNAPSHOT` to `/ws/system`, so the dashboard's
+  `USAGE_SNAPSHOT` to `/ws/system`, so the dashboard's
   "Token Usage & Cost" panel updates live and falls back to HTTP polling when
   the stream is down.
 
