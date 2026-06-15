@@ -45,7 +45,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 All of these are additive and opt-in or default-off — an unconfigured deployment
 behaves exactly as before.
 
-## [Released]
+## [0.3.0] - 2026-06-15
+
+### Added
+
+- **In-house RAG engine.** Replaced the piragi/torch retrieval stack with an
+  in-house pgvector engine (asyncpg), then added **hybrid retrieval** —
+  pgvector cosine fused with Postgres full-text ranking — retiring HyDE, plus
+  an embed-once / concurrent-search pass that cut multi-index query latency.
+- **Self-hosted LLM provider** with dynamic model discovery, so agents can run
+  against a local or self-hosted model endpoint.
+- **Quality gates at the source.** Developers run a fast quality gate at
+  `i_am_done` and the full fast gate (including complexity) at their desk; QA
+  requires a per-acceptance-criterion verdict before passing; cells run two
+  developers in parallel with split-before-claim sizing.
+- **Board redraft loop** — the Board can send a drafted task back to intake for
+  an in-context re-draft before it starts.
+- **Transcript retention** — a background sweep prunes old agent transcripts,
+  with a panel-tunable retention window.
+- **`tests/` type-gated under mypy** — the whole test suite now type-checks in CI.
+
+### Fixed
+
+- **PR-divergence respawn-loop meltdown.** Capped the PM respawn loop-gate,
+  added CEO god-mode status override, a PR-conflict auto-resolver (rebase →
+  close-superseded / re-merge / escalate), and sequence-ordered sibling merge;
+  the dispatcher can now claim an ownerless `awaiting_pm_review` task without
+  transitioning it.
+- **Git robustness.** Fall back to a permitted merge method when the repo
+  refuses the requested one, and retarget a PR's base to the default branch
+  when the resolved base is missing on the remote.
+- **RAG outage.** Migrated the live `chunks_*` tables to the in-house schema
+  (offline-renderable migration), closed engine audit gaps, decoded jsonb
+  metadata returned as a string by asyncpg, and kept the embedding model
+  resident to stop ingest timeouts.
+- **Panel.** Fixed task lifecycle (updates, merge, reassignment, copy),
+  responsive grids + mobile overflow, the status dropdown duplicating the
+  current status, the orchestrator-status reachability signal, and surfaced
+  the CEO "Approve & Start" gate so it can't be missed.
+- **Usage attribution.** Agent transcripts are attributed by an
+  orchestrator-assigned session id, fixing zeroed token/cost capture for
+  review-role agents.
+- Composed the prompter role layer for the intake agent; aligned auditor
+  channel permissions; made the app route-registration test robust to FastAPI
+  0.137; cleared an xenon complexity failure and fixable test warnings.
+
+### Security
+
+- Documented that WebSocket authentication is REST-only and `/ws/system` is
+  unauthenticated.
 
 ## [0.2.0] - 2026-06-11
 
@@ -106,6 +154,7 @@ behaves exactly as before.
 - Next.js control panel (`panel/`) behind a single nginx entry point.
 - Multi-agent workspace management with per-project encrypted git tokens.
 
-[Released]: https://github.com/rennf93/roboco/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/rennf93/roboco/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/rennf93/roboco/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/rennf93/roboco/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/rennf93/roboco/releases/tag/v0.1.0
