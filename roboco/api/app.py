@@ -17,6 +17,7 @@ from roboco.api.routes.a2a import router as a2a_router
 from roboco.api.routes.a2a import wellknown_router as a2a_wellknown_router
 from roboco.api.routes.agents import router as agents_router
 from roboco.api.routes.channels import router as channels_router
+from roboco.api.routes.cockpit import router as cockpit_router
 from roboco.api.routes.company_goals import router as company_goals_router
 from roboco.api.routes.dashboard import router as dashboard_router
 from roboco.api.routes.docs import router as docs_router
@@ -276,6 +277,13 @@ def create_app() -> FastAPI:
         research_router,
         prefix=f"{api_prefix}/research",
         tags=["Research"],
+    )
+
+    # Cockpit — the CEO's read-only "is the business winning?" summary.
+    app.include_router(
+        cockpit_router,
+        prefix=f"{api_prefix}/cockpit",
+        tags=["Cockpit"],
     )
 
     # Pitches — Board proposals + CEO approve -> auto-provision origination path.
