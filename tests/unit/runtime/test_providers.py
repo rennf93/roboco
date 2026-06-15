@@ -361,8 +361,13 @@ class TestClaudeCodeProvider:
     @patch("roboco.llm.providers.claude_code.asyncio.create_subprocess_exec")
     @patch("roboco.llm.providers.claude_code.ClaudeCodeProvider._resolve_host_paths")
     @patch("roboco.llm.providers.claude_code.PROJECT_HOST_PATH", "/data/project")
+    @patch(
+        "roboco.llm.providers.claude_code._build_manifest_for_agent",
+        return_value=None,
+    )
     async def test_spawn_success(
         self,
+        _mock_manifest: AsyncMock,
         mock_resolve_hosts: AsyncMock,
         mock_subproc: AsyncMock,
     ) -> None:
@@ -429,8 +434,13 @@ class TestClaudeCodeProvider:
 
     @patch("roboco.llm.providers.claude_code.asyncio.create_subprocess_exec")
     @patch("roboco.llm.providers.claude_code.PROJECT_HOST_PATH", "/data/project")
+    @patch(
+        "roboco.llm.providers.claude_code._build_manifest_for_agent",
+        return_value=None,
+    )
     async def test_spawn_docker_run_fails(
         self,
+        _mock_manifest: AsyncMock,
         mock_subproc: AsyncMock,
     ) -> None:
         """Non-zero returncode from docker run raises ProviderError."""
@@ -457,7 +467,14 @@ class TestClaudeCodeProvider:
     # New: _build_mount_args — composed command structure
     # ======================================================================
 
-    def test_build_mount_args_structure(self) -> None:
+    @patch(
+        "roboco.llm.providers.claude_code._build_manifest_for_agent",
+        return_value=None,
+    )
+    def test_build_mount_args_structure(
+        self,
+        _mock_manifest: AsyncMock,
+    ) -> None:
         """Verify the docker run command has expected structure."""
         hosts = {
             "docs": "/data/docs",
