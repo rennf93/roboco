@@ -169,14 +169,3 @@ export const sessionsApi = {
     return data;
   },
 };
-
-export const groupsApi = {
-  // Get groups for a channel
-  listByChannel: async (channelId: string): Promise<unknown[]> => {
-    if (isMockMode()) {
-      return [];
-    }
-    const { data } = await api.get<unknown[]>("/channels/" + channelId + "/groups");
-    return data;
-  },
-};
