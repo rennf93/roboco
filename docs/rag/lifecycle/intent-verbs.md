@@ -98,7 +98,7 @@ Submit work for QA. Auto-runs in_progress->verifying then verifying->awaiting_qa
 
 Signal you have no active work. PMs auto-pause owned in_progress tasks.
 
-**Allowed roles:** auditor, cell_pm, developer, documenter, head_marketing, main_pm, product_owner, prompter, qa
+**Allowed roles:** auditor, cell_pm, developer, documenter, head_marketing, main_pm, product_owner, prompter, qa, secretary
 
 **Composes:** (no atomic actions)
 

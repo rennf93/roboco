@@ -159,7 +159,8 @@
         "main_pm",
         "product_owner",
         "prompter",
-        "qa"
+        "qa",
+        "secretary"
       ],
       "composes": [],
       "description": "Signal you have no active work. PMs auto-pause owned in_progress tasks.",
