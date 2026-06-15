@@ -1761,6 +1761,34 @@ class SystemSettingTable(Base):
     )
 
 
+class CompanyGoalsTable(Base):
+    """Singleton company charter — north star, objectives, operating policy.
+
+    Exactly one row (the all-zeros singleton id). The CEO owns it (writes are
+    CEO-only via the API); it is injected compactly into every agent's
+    ``context_briefing`` so all work is goal-aware.
+    """
+
+    __tablename__ = "company_goals"
+
+    id: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    north_star: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    objectives: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    constraints: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    operating_policy: Mapped[dict[str, Any]] = mapped_column(
+        JSON, nullable=False, default=dict
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+    updated_by: Mapped[PyUUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+
+
 class ModelAssignmentTable(Base):
     """SQLAlchemy table for (scope, provider, model) routing rows.
 
