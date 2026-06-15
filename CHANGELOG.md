@@ -29,8 +29,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   watches the company against its standing goals and surfaces drift, idle, and
   long-stranded blocked work to the CEO (notify-only — it never spends, builds,
   or auto-approves). Off by default; the delivery lifecycle is unchanged.
+- **The Secretary — the CEO's chief-of-staff.** A live conversational agent (its
+  own role, distinct from the Prompter) the CEO chats with in the panel. It acts
+  only under the CEO's command: it reads company state and relays dictated
+  messages directly, but high-impact actions — editing the charter, starting /
+  cancelling / overriding tasks, approving a pitch, announcements — are queued
+  and run only after the CEO's explicit confirmation (the gate list). Its
+  authority is HMAC-scoped to the secretary role and routed through the existing
+  enforcement, never a parallel permission model.
+- **The Cockpit.** A read-only `/cockpit` view answering "is the business
+  winning, what's happening, what needs me" — the charter, delivery counts,
+  30-day spend vs the budget cap, pending pitches, and the strategy engine's
+  signals. Honestly stamped `basis: proxy` (a proxy until real launches).
 
-All four are additive and opt-in or default-off — an unconfigured deployment
+All of these are additive and opt-in or default-off — an unconfigured deployment
 behaves exactly as before.
 
 ## [Released]
