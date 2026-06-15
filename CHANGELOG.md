@@ -5,6 +5,34 @@ All notable changes to RoboCo are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Business Goals — the company charter.** A single CEO-owned charter (north
+  star, prioritized objectives, constraints, operating policy) injected
+  compactly into every agent's briefing so all work is goal-aware.
+  `GET /api/company-goals` (any agent) / `PUT` (CEO-only), with a panel editor.
+- **Web research for the Board and PMs.** Pluggable `web_search` / `web_fetch`
+  exposed through a `roboco-search` MCP server backed by `/api/research/*`, with
+  Tavily / Brave / Exa adapters and a graceful no-op when no provider is
+  configured. The provider key stays server-side — agent containers never make
+  the external request themselves — and a per-agent daily quota (Redis,
+  fail-open) bounds cost.
+- **Pitch → approve → provision.** The Board proposes a product (a "pitch");
+  on CEO approval the system provisions a GitHub repo per target cell, registers
+  a Project for each (and a Product when multi-cell), and seeds one Main-PM
+  delivery task — reusing the existing Product / coordination-task machinery.
+  Default-off: with no provisioning token configured, approval is refused and
+  nothing is created.
+- **Autonomous strategy engine (dormant).** An optional second engine that
+  watches the company against its standing goals and surfaces drift, idle, and
+  long-stranded blocked work to the CEO (notify-only — it never spends, builds,
+  or auto-approves). Off by default; the delivery lifecycle is unchanged.
+
+All four are additive and opt-in or default-off — an unconfigured deployment
+behaves exactly as before.
+
 ## [Released]
 
 ## [0.2.0] - 2026-06-11
