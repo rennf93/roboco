@@ -2048,6 +2048,28 @@ class AgentOrchestrator:
                 "env": mcp_env,
             }
 
+        # Web research — external search/fetch for Board + PM roles. The
+        # provider key stays server-side (the route holds it); the agent only
+        # ever talks to the backend, so the container needs no external egress.
+        research_roles = (
+            "cell_pm",
+            "main_pm",
+            "product_owner",
+            "head_marketing",
+        )
+        if settings.research_enabled and agent_role in research_roles:
+            mcp_servers["roboco-search"] = {
+                "command": "uv",
+                "args": [
+                    "run",
+                    "python",
+                    "-m",
+                    "roboco.mcp.search_server",
+                    agent_id,
+                ],
+                "env": mcp_env,
+            }
+
         config: dict[str, Any] = {"mcpServers": mcp_servers}
 
         # Write to shared config directory (mounted in both orchestrator and agents)

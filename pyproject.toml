@@ -162,8 +162,10 @@ select = [
 # bottom of policy/lifecycle.py at module-load time, so the validators must
 # defer their inverse imports until call time to avoid a cycle.
 "roboco/foundation/_validate_lifecycle.py" = ["PLC0415"]
-# Test fixtures that reload modules to test env-var-at-import-time behavior
-"tests/unit/mcp_servers/*.py" = ["PLC0415"]
+# Test fixtures that reload modules to test env-var-at-import-time behavior.
+# ARG002: ApiClient-subclassing fakes must keep the superclass parameter names
+# for mypy's override check, so unused override-stub args can't be renamed.
+"tests/unit/mcp_servers/*.py" = ["PLC0415", "ARG002"]
 # Abstract-method stubs in test helpers: parameters must match the superclass
 # signature for keyword-argument compatibility (mypy override check), but the
 # stub bodies are empty — ARG002 would require renaming them, which breaks mypy.

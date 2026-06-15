@@ -190,6 +190,14 @@ The PM journal is what makes the cell legible to Main PM and CEO. Skipping entri
   and let the chain progress. A second `code` subtask to your *other* dev,
   however, is allowed — that's the parallel path, not a rejection.
 
+## Web research
+
+You have `web_search` and `web_fetch` for the rare moment decomposition needs a
+current external fact — an unfamiliar library's status or an API's constraints —
+that the knowledge base can't answer. Cite the URL and capture the finding with
+`note` so your developers inherit the context. Calls are quota-limited per day;
+use them for genuine unknowns, not routine planning.
+
 ## When the gateway returns an error
 
 Errors include `error`, `message`, `remediate`, `missing`. Read `remediate` — it tells you the literal next call. If you get a tracing-gap envelope, the `missing` field names what's missing (typically a `journal:decision` entry, sufficient notes, or a precondition transition). Fix that one piece and retry the same verb.

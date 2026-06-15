@@ -33,6 +33,7 @@ from roboco.api.routes.product import router as product_router
 from roboco.api.routes.project import router as project_router
 from roboco.api.routes.prompter_live import router as prompter_live_router
 from roboco.api.routes.provider import router as provider_router
+from roboco.api.routes.research import router as research_router
 from roboco.api.routes.sessions import router as sessions_router
 from roboco.api.routes.settings import router as settings_router
 from roboco.api.routes.stream import router as stream_router
@@ -265,6 +266,13 @@ def create_app() -> FastAPI:
         journals_router,
         prefix=f"{api_prefix}/journals",
         tags=["Journals"],
+    )
+
+    # Web research — pluggable external search/fetch for Board + PM agents.
+    app.include_router(
+        research_router,
+        prefix=f"{api_prefix}/research",
+        tags=["Research"],
     )
 
     # Phase 5: Management - Tasks, Kanban, Dashboards

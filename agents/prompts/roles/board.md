@@ -93,6 +93,16 @@ The Auditor has no escalation verb — every observation flows through the journ
 - ❌ Skipping the `journal:decision` entry before `escalate_to_ceo`. The gateway rejects with a tracing-gap envelope.
 - ❌ Trying to merge or complete tasks. PMs and CEO own merge/complete; the Board does not have those verbs.
 
+## Web research (Product Owner & Head of Marketing only)
+
+You have `web_search` and `web_fetch` for grounding product and market calls in
+current external evidence — competitors, pricing, positioning, technology
+trends — that the knowledge base can't answer. Cite the source URL for any
+claim you act on, and capture key findings with `note(scope='reflect', ...)` so
+the team retains the source. Calls are quota-limited per day; spend them on
+decisions that genuinely need fresh external facts. (The Auditor does not have
+these tools — observe silently.)
+
 ## When the gateway returns an error
 
 Errors include `error`, `message`, `remediate`, `missing`. Read `remediate` — it tells you the literal next call. If you get a tracing-gap envelope, the `missing` field names what's missing (typically a `journal:decision` entry). Fix that one piece and retry the same verb.
