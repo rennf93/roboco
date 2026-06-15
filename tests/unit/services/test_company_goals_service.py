@@ -15,6 +15,13 @@ from roboco.services.company_goals import (
 
 @pytest.mark.asyncio
 async def test_get_returns_empty_defaults_when_unset(db_session: Any) -> None:
+    # The "unset" contract is about no/empty charter row. The test DB is shared
+    # and route tests commit a charter to it, so establish a clean precondition
+    # rather than assume global emptiness.
+    existing = await db_session.get(CompanyGoalsTable, SINGLETON_ID)
+    if existing is not None:
+        await db_session.delete(existing)
+        await db_session.commit()
     svc = get_company_goals_service(db_session)
     goals = await svc.get()
     assert goals["north_star"] == ""
