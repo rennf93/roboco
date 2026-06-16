@@ -53,13 +53,14 @@ function ChannelList({ channels, selectedId, onSelect, isLoading }: ChannelListP
           {title}
         </h4>
         {items.map((channel) => (
-          <button
+          <Button
             key={channel.id}
             onClick={() => onSelect(channel.id)}
+            variant="ghost"
             className={
-              "w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-left transition-colors " +
+              "w-full h-auto justify-start gap-2 px-3 py-2 text-sm font-normal whitespace-normal " +
               (selectedId === channel.id
-                ? "bg-primary text-primary-foreground"
+                ? "bg-primary text-primary-foreground hover:bg-primary hover:text-primary-foreground"
                 : "hover:bg-muted")
             }
           >
@@ -69,7 +70,7 @@ function ChannelList({ channels, selectedId, onSelect, isLoading }: ChannelListP
               <Hash className="h-4 w-4 shrink-0" />
             )}
             <span className="truncate">{channel.name}</span>
-          </button>
+          </Button>
         ))}
       </div>
     );
@@ -135,13 +136,14 @@ function GroupList({ channelId, selectedId, onSelect }: GroupListProps) {
     <ScrollArea className="h-full">
       <div className="p-2 space-y-1">
         {groups.map((group) => (
-          <button
+          <Button
             key={group.id}
             onClick={() => onSelect(group.id)}
+            variant="ghost"
             className={
-              "w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm text-left transition-colors " +
+              "w-full h-auto justify-between px-3 py-2 text-sm font-normal whitespace-normal " +
               (selectedId === group.id
-                ? "bg-primary text-primary-foreground"
+                ? "bg-primary text-primary-foreground hover:bg-primary hover:text-primary-foreground"
                 : "hover:bg-muted")
             }
           >
@@ -152,7 +154,7 @@ function GroupList({ channelId, selectedId, onSelect }: GroupListProps) {
             <Badge variant="secondary" className="text-xs shrink-0 ml-2">
               {group.total_messages}
             </Badge>
-          </button>
+          </Button>
         ))}
       </div>
     </ScrollArea>

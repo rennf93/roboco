@@ -2,6 +2,7 @@
 
 import { Channel } from "@/types";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Hash, Lock } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -19,12 +20,13 @@ export function ChannelItem({
   unreadCount = 0,
 }: ChannelItemProps) {
   return (
-    <button
+    <Button
       onClick={onClick}
+      variant="ghost"
       className={cn(
-        "w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-left transition-colors",
+        "w-full h-auto justify-start gap-2 px-2 py-1.5 font-normal whitespace-normal",
         isSelected
-          ? "bg-primary/10 text-primary"
+          ? "bg-primary/10 text-primary hover:bg-primary/10 hover:text-primary"
           : "text-muted-foreground hover:bg-muted hover:text-foreground"
       )}
     >
@@ -39,6 +41,6 @@ export function ChannelItem({
           {unreadCount}
         </Badge>
       )}
-    </button>
+    </Button>
   );
 }

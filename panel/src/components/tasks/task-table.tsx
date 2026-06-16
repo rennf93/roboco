@@ -180,15 +180,16 @@ function SortableHeader({ label, field, sortConfig, onSort, className }: Sortabl
 
   return (
     <TableHead className={className}>
-      <button
+      <Button
         onClick={() => onSort(field)}
-        className="flex items-center gap-1 hover:text-foreground transition-colors -ml-2 px-2 py-1 rounded hover:bg-muted"
+        variant="ghost"
+        className="h-auto -ml-2 px-2 py-1 gap-1 font-normal"
       >
         {label}
         {!isActive && <ArrowUpDown className="h-4 w-4 text-muted-foreground" />}
         {direction === "asc" && <ArrowUp className="h-4 w-4" />}
         {direction === "desc" && <ArrowDown className="h-4 w-4" />}
-      </button>
+      </Button>
     </TableHead>
   );
 }
@@ -479,16 +480,18 @@ export function TaskTable({
                         style={{ paddingLeft: `${node.depth * 1.5}rem` }}
                       >
                         {hasChildren ? (
-                          <button
+                          <Button
                             onClick={() => toggleExpand(task.id)}
-                            className="p-0.5 hover:bg-muted rounded shrink-0"
+                            variant="ghost"
+                            size="icon-sm"
+                            className="p-0.5 h-5 w-5 shrink-0"
                           >
                             {isExpanded ? (
                               <ChevronDown className="h-4 w-4" />
                             ) : (
                               <ChevronRightIcon className="h-4 w-4" />
                             )}
-                          </button>
+                          </Button>
                         ) : (
                           <span className="w-5 shrink-0" />
                         )}
