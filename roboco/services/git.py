@@ -1650,6 +1650,58 @@ class GitService(BaseService):
                 {"owner": owner, "repo": repo, "pr": pr_number},
             )
 
+    async def post_pr_review(
+        self,
+        project_slug: str,
+        pr_number: int,
+        body: str,
+        *,
+        event: str = "REQUEST_CHANGES",
+    ) -> dict[str, Any]:
+        """Post ONE review to a PR — ``POST /pulls/{n}/reviews``.
+
+        ``event`` is ``REQUEST_CHANGES`` (default), ``APPROVE``, or ``COMMENT``.
+        Authenticates as the project's PAT owner (the bot account); the agent /
+        role that authored the review is named in ``body``, not the GitHub
+        identity. Raises ``GitError`` on any GitHub failure so the calling
+        side-effect can surface it (and stays idempotent — it runs once, after
+        the DB commit).
+        """
+        details = {"project": project_slug, "pr": pr_number}
+        project = await get_project_service(self.session).get_by_slug(project_slug)
+        if project is None or not project.git_url:
+            raise GitError(f"unknown project for PR review: {project_slug!r}", details)
+        owner, repo = self._parse_git_url(project.git_url)
+        git_token = await self._token_for_project(project_slug)
+        if not git_token:
+            raise GitError(f"no git token for project {project_slug!r}", details)
+        api_base = settings.github_api_base_url.rstrip("/")
+        try:
+            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
+                resp = await client.post(
+                    f"{api_base}/repos/{owner}/{repo}/pulls/{pr_number}/reviews",
+                    headers={
+                        "Authorization": f"Bearer {git_token}",
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                    json={"body": body, "event": event},
+                )
+        except httpx.HTTPError as e:
+            raise GitError(
+                f"GitHub API error while posting review to PR #{pr_number}: {e}",
+                details,
+            ) from e
+        if resp.status_code == _HTTP_NOT_FOUND:
+            raise GitError(f"PR not found: #{pr_number} on {owner}/{repo}", details)
+        if not resp.is_success:
+            raise GitError(
+                f"GitHub API refused PR review ({resp.status_code}): "
+                f"{resp.text[:200]}",
+                details,
+            )
+        return cast("dict[str, Any]", resp.json())
+
     async def update_pr_for_task(
         self,
         task_id: UUID,
