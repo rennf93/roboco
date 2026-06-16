@@ -230,3 +230,82 @@ class GitMergePRResponse(BaseModel):
     merged: bool
     merge_commit: str | None = None
     target_branch: str
+
+
+# =============================================================================
+# PULL
+# =============================================================================
+
+
+class GitPullRequest(BaseModel):
+    """Request to pull latest changes from origin."""
+
+    project_slug: str
+    task_id: UUID
+    agent_id: str
+
+
+class GitPullResponse(BaseModel):
+    """Response from git pull — branch status after the pull."""
+
+    project_slug: str
+    current_branch: str
+    has_changes: bool
+    staged_files: list[str] = []
+    unstaged_files: list[str] = []
+    untracked_files: list[str] = []
+    ahead: int = 0
+    behind: int = 0
+
+
+# =============================================================================
+# FETCH
+# =============================================================================
+
+
+class GitFetchRequest(BaseModel):
+    """Request to fetch changes from origin without merging."""
+
+    project_slug: str
+    task_id: UUID
+    agent_id: str
+
+
+class GitFetchResponse(BaseModel):
+    """Response from git fetch — branch status after the fetch."""
+
+    project_slug: str
+    current_branch: str
+    has_changes: bool
+    staged_files: list[str] = []
+    unstaged_files: list[str] = []
+    untracked_files: list[str] = []
+    ahead: int = 0
+    behind: int = 0
+
+
+# =============================================================================
+# REBASE
+# =============================================================================
+
+
+class GitRebaseRequest(BaseModel):
+    """Request to rebase the current branch onto a target branch."""
+
+    project_slug: str
+    task_id: UUID
+    agent_id: str
+    target_branch: str
+
+
+class GitRebaseResponse(BaseModel):
+    """Response from git rebase.
+
+    On success: conflict=False, conflicted_files=[].
+    On conflict: conflict=True, conflicted_files lists the unmerged paths;
+    the rebase has been aborted so the workspace is clean.
+    """
+
+    project_slug: str
+    conflict: bool = False
+    conflicted_files: list[str] = []

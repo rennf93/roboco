@@ -41,11 +41,17 @@ from roboco.api.schemas.git import (
     GitCreatePRRequest,
     GitCreatePRResponse,
     GitDiffResponse,
+    GitFetchRequest,
+    GitFetchResponse,
     GitLogResponse,
     GitMergePRRequest,
     GitMergePRResponse,
+    GitPullRequest,
+    GitPullResponse,
     GitPushRequest,
     GitPushResponse,
+    GitRebaseRequest,
+    GitRebaseResponse,
     GitStatusResponse,
 )
 from roboco.exceptions import GitCommandError, GitError, GitTimeoutError
@@ -471,4 +477,105 @@ async def merge_pull_request(
         merged=True,
         merge_commit=merge_commit,
         target_branch=target_branch,
+    )
+
+
+@router.post("/pull", response_model=GitPullResponse)
+async def pull_commits(
+    data: GitPullRequest,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> GitPullResponse:
+    """Pull latest changes from origin into the agent workspace."""
+    project_slug = await _resolve_project_slug(data.project_slug, db)
+    git_service = get_git_service(db)
+
+    try:
+        workspace = await git_service.get_workspace(project_slug, agent.agent_id)
+        (
+            current_branch,
+            has_changes,
+            staged,
+            unstaged,
+            untracked,
+            ahead,
+            behind,
+        ) = await git_service.pull(workspace)
+    except _TranslatableError as e:
+        raise _translate_error(e) from e
+
+    return GitPullResponse(
+        project_slug=project_slug,
+        current_branch=current_branch,
+        has_changes=has_changes,
+        staged_files=staged,
+        unstaged_files=unstaged,
+        untracked_files=untracked,
+        ahead=ahead,
+        behind=behind,
+    )
+
+
+@router.post("/fetch", response_model=GitFetchResponse)
+async def fetch_commits(
+    data: GitFetchRequest,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> GitFetchResponse:
+    """Fetch changes from origin without merging."""
+    project_slug = await _resolve_project_slug(data.project_slug, db)
+    git_service = get_git_service(db)
+
+    try:
+        workspace = await git_service.get_workspace(project_slug, agent.agent_id)
+        (
+            current_branch,
+            has_changes,
+            staged,
+            unstaged,
+            untracked,
+            ahead,
+            behind,
+        ) = await git_service.fetch(workspace)
+    except _TranslatableError as e:
+        raise _translate_error(e) from e
+
+    return GitFetchResponse(
+        project_slug=project_slug,
+        current_branch=current_branch,
+        has_changes=has_changes,
+        staged_files=staged,
+        unstaged_files=unstaged,
+        untracked_files=untracked,
+        ahead=ahead,
+        behind=behind,
+    )
+
+
+@router.post("/rebase", response_model=GitRebaseResponse)
+async def rebase_branch(
+    data: GitRebaseRequest,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> GitRebaseResponse:
+    """Rebase the current branch onto target_branch.
+
+    On conflict: aborts the rebase and returns conflict=True with the
+    list of conflicted files.  On success: returns conflict=False.
+    """
+    project_slug = await _resolve_project_slug(data.project_slug, db)
+    git_service = get_git_service(db)
+
+    try:
+        workspace = await git_service.get_workspace(project_slug, agent.agent_id)
+        conflict, conflicted_files = await git_service.rebase(
+            workspace, data.target_branch
+        )
+    except _TranslatableError as e:
+        raise _translate_error(e) from e
+
+    return GitRebaseResponse(
+        project_slug=project_slug,
+        conflict=conflict,
+        conflicted_files=conflicted_files,
     )

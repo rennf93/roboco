@@ -1149,6 +1149,72 @@ class GitService(BaseService):
         return pushed
 
     # =========================================================================
+    # PULL / FETCH / REBASE METHODS
+    # =========================================================================
+
+    async def pull(
+        self, workspace: Path
+    ) -> tuple[str, bool, list[str], list[str], list[str], int, int]:
+        """Pull latest changes from origin and return post-pull status.
+
+        Uses _network_git_timeout() because the operation talks to origin.
+
+        Returns: (current_branch, has_changes, staged, unstaged, untracked,
+                  ahead, behind)
+        """
+        token = await self._token_for_workspace(workspace)
+        await self._run_git(
+            workspace, ["pull"], token=token, timeout=_network_git_timeout()
+        )
+        return await self.get_status(workspace)
+
+    async def fetch(
+        self, workspace: Path
+    ) -> tuple[str, bool, list[str], list[str], list[str], int, int]:
+        """Fetch changes from origin without merging and return post-fetch status.
+
+        Uses _network_git_timeout() because the operation talks to origin.
+
+        Returns: (current_branch, has_changes, staged, unstaged, untracked,
+                  ahead, behind)
+        """
+        token = await self._token_for_workspace(workspace)
+        await self._run_git(
+            workspace,
+            ["fetch", "origin"],
+            token=token,
+            timeout=_network_git_timeout(),
+        )
+        return await self.get_status(workspace)
+
+    async def rebase(
+        self, workspace: Path, target_branch: str
+    ) -> tuple[bool, list[str]]:
+        """Rebase the current branch onto target_branch.
+
+        On conflict (non-zero exit): captures unmerged files via
+        ``git diff --name-only --diff-filter=U``, aborts the rebase to
+        restore a clean workspace, and returns ``(True, conflicted_files)``.
+
+        On success: returns ``(False, [])``.
+        """
+        result = await self._run_git(workspace, ["rebase", target_branch], check=False)
+        if result.returncode != 0:
+            conflict_result = await self._run_git(
+                workspace,
+                ["diff", "--name-only", "--diff-filter=U"],
+                check=False,
+            )
+            conflicted_files = [
+                f.strip()
+                for f in conflict_result.stdout.strip().split("\n")
+                if f.strip()
+            ]
+            await self._run_git(workspace, ["rebase", "--abort"], check=False)
+            return True, conflicted_files
+        return False, []
+
+    # =========================================================================
     # PR METHODS
     # =========================================================================
 
