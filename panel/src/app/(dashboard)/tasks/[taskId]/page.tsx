@@ -106,6 +106,14 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
           await lifecycle.reopen.mutateAsync(task.id);
           toast.success("Task reopened");
           break;
+        case "activate":
+          await lifecycle.activate.mutateAsync(task.id);
+          toast.success("Task activated");
+          break;
+        case "start-revision":
+          await lifecycle.start.mutateAsync(task.id);
+          toast.success("Revision started");
+          break;
         // Git workflow actions
         case "docs-complete":
           setDocsCompleteDialogOpen(true);
