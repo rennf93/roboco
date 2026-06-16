@@ -374,13 +374,14 @@ export function GitActionsPanel({
               Rebase onto Remote
             </Button>
           </AlertDialogTrigger>
-          <AlertDialogContent>
+          <AlertDialogContent className="border-destructive bg-destructive/5">
             <AlertDialogHeader>
               <AlertDialogTitle>Rebase onto remote?</AlertDialogTitle>
               <AlertDialogDescription>
-                This will rewrite your local commit history by replaying your
-                commits on top of the latest remote branch. Any force-push will
-                be required afterward. This action cannot be undone.
+                This will rewrite the commit history of branch{" "}
+                <strong>{status?.current_branch}</strong> by replaying commits
+                on top of the latest remote. A force-push will be required
+                afterward. This action cannot be undone.
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
