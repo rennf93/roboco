@@ -263,3 +263,43 @@ async def test_i_am_idle_decomposition_guard_is_pm_only() -> None:
     env = await c.i_am_idle(agent_id)
     assert env.status == "idle"
     task_svc.unclaimed_parent_acceptance_criteria.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_i_am_idle_lets_dev_idle_when_pending_is_lane_held() -> None:
+    """A dev's pending code leaf waiting behind its own earlier queue item must
+    NOT pin it to idle — the orchestrator spawns it when the lane clears."""
+    agent_id = uuid4()
+    pending = MagicMock(id=uuid4(), status="pending")
+    task_svc = AsyncMock()
+    task_svc.list_assigned_for_agent.return_value = [pending]
+    task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.agent_for.return_value = MagicMock(role="developer")
+    task_svc.has_earlier_incomplete_code_sibling.return_value = True
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_am_idle(agent_id)
+    assert env.status == "idle"
+    task_svc.mark_agent_idle.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_i_am_idle_still_blocks_dev_with_non_lane_held_pending() -> None:
+    """A pending leaf that is NOT lane-held (no earlier live sibling) still
+    blocks idle — the dev must claim or unclaim it."""
+    agent_id = uuid4()
+    pending = MagicMock(id=uuid4(), status="pending")
+    task_svc = AsyncMock()
+    task_svc.list_assigned_for_agent.return_value = [pending]
+    task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.agent_for.return_value = MagicMock(role="developer")
+    task_svc.has_earlier_incomplete_code_sibling.return_value = False
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_am_idle(agent_id)
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+    assert "i_will_work_on" in body["remediate"]
+    task_svc.mark_agent_idle.assert_not_awaited()

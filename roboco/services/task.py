@@ -4803,6 +4803,39 @@ class TaskService(BaseService):
         )
         return list(result.scalars().all())
 
+    async def has_earlier_incomplete_code_sibling(self, task: TaskTable) -> bool:
+        """True if a lower-sequence, non-terminal, same-assignee code sibling exists.
+
+        Service-layer mirror of the orchestrator's per-dev lane dispatch barrier
+        (``_blocked_by_earlier_lane_sibling``). Used by the i_am_idle pending-work
+        guard so a developer can exit cleanly while the rest of its code queue is
+        still waiting its turn: a pre-delegated queue leaf (``pending``, assigned
+        to this dev) that sits behind an earlier non-terminal sibling in the same
+        lane should NOT pin the dev — the orchestrator spawns it once the lane
+        clears. Without this the dev can neither idle nor proceed without jumping
+        its own queue order. Only ``code`` queues sequence this way.
+        """
+        if str(getattr(task, "task_type", "")) != TaskType.CODE.value:
+            return False
+        parent_id = task.parent_task_id
+        owner = task.assigned_to
+        seq = task.sequence
+        if parent_id is None or owner is None or seq is None:
+            return False
+        result = await self.session.execute(
+            select(TaskTable.status, TaskTable.sequence).where(
+                TaskTable.parent_task_id == parent_id,
+                TaskTable.assigned_to == owner,
+                TaskTable.task_type == TaskType.CODE,
+                TaskTable.id != task.id,
+            )
+        )
+        terminal = {TaskStatus.COMPLETED, TaskStatus.CANCELLED}
+        return any(
+            (sib_seq or 0) < seq and status not in terminal
+            for status, sib_seq in result.all()
+        )
+
     async def get_all_descendants(self, task_id: UUID) -> list[TaskTable]:
         """Recursively get ALL descendant tasks (children, grandchildren, etc.).
 

@@ -746,6 +746,81 @@ async def test_unclaimed_parent_acs_counts_live_children_not_just_completed() ->
     ]
 
 
+def _svc_with_sibling_status_seq(rows: list[tuple]) -> TaskService:
+    """TaskService whose execute() yields (status, sequence) sibling rows."""
+    res = MagicMock()
+    res.all.return_value = rows
+    return TaskService(MagicMock(execute=AsyncMock(return_value=res)))
+
+
+@pytest.mark.asyncio
+async def test_earlier_incomplete_code_sibling_true_for_live_lower_seq() -> None:
+    # A dev's queued code leaf (seq 2) is lane-held while its own seq-0 sibling
+    # is still in flight — so it must not pin the dev to idle.
+    task = _build_task(
+        task_type=TaskType.CODE.value,
+        parent_task_id=uuid4(),
+        assigned_to=uuid4(),
+        sequence=2,
+    )
+    svc = _svc_with_sibling_status_seq([(TaskStatus.IN_PROGRESS, 0)])
+    assert await svc.has_earlier_incomplete_code_sibling(task) is True
+
+
+@pytest.mark.asyncio
+async def test_earlier_incomplete_code_sibling_false_when_earlier_terminal() -> None:
+    task = _build_task(
+        task_type=TaskType.CODE.value,
+        parent_task_id=uuid4(),
+        assigned_to=uuid4(),
+        sequence=2,
+    )
+    svc = _svc_with_sibling_status_seq(
+        [(TaskStatus.COMPLETED, 0), (TaskStatus.CANCELLED, 1)]
+    )
+    assert await svc.has_earlier_incomplete_code_sibling(task) is False
+
+
+@pytest.mark.asyncio
+async def test_earlier_incomplete_code_sibling_false_for_higher_seq_only() -> None:
+    # A LATER sibling (seq 3) does not hold an earlier leaf (seq 2).
+    task = _build_task(
+        task_type=TaskType.CODE.value,
+        parent_task_id=uuid4(),
+        assigned_to=uuid4(),
+        sequence=2,
+    )
+    svc = _svc_with_sibling_status_seq([(TaskStatus.IN_PROGRESS, 3)])
+    assert await svc.has_earlier_incomplete_code_sibling(task) is False
+
+
+@pytest.mark.asyncio
+async def test_earlier_incomplete_code_sibling_non_code_short_circuits() -> None:
+    # Only code queues sequence this way; a planning/doc leaf never queries.
+    session = MagicMock(execute=AsyncMock())
+    svc = TaskService(session)
+    task = _build_task(
+        task_type="planning",
+        parent_task_id=uuid4(),
+        assigned_to=uuid4(),
+        sequence=2,
+    )
+    assert await svc.has_earlier_incomplete_code_sibling(task) is False
+    session.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_earlier_incomplete_code_sibling_false_when_fields_missing() -> None:
+    task = _build_task(
+        task_type=TaskType.CODE.value,
+        parent_task_id=None,
+        assigned_to=uuid4(),
+        sequence=2,
+    )
+    svc = _svc_with_sibling_status_seq([(TaskStatus.IN_PROGRESS, 0)])
+    assert await svc.has_earlier_incomplete_code_sibling(task) is False
+
+
 @pytest.mark.asyncio
 async def test_unblock_with_branch_resumes_in_progress() -> None:
     # A task claimed (has a branch) before it blocked resumes in_progress.

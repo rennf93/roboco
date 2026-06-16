@@ -2928,13 +2928,8 @@ class Choreographer:
         if not pending:
             return None
         agent = await self.task.agent_for(agent_id)
-        # Board/advisory roles (product_owner, head_marketing, auditor) review
-        # and advise without ever claiming — they have no i_will_work_on /
-        # i_will_plan verb. Their one-shot board dispatch is meant to leave the
-        # coordination task pending for the CEO to reassign to Main PM, so they
-        # must be allowed to idle after recording their review. Without this
-        # they wedge: the gate would demand a claim verb the role does not have.
-        if agent and agent.role in ("product_owner", "head_marketing", "auditor"):
+        pending = await self._pending_blocking_idle(agent, pending)
+        if not pending:
             return None
         first = pending[0]
         verb = (
@@ -2953,6 +2948,41 @@ class Choreographer:
             ),
             context_briefing=briefing,
         )
+
+    async def _pending_blocking_idle(self, agent: Any, pending: list[Any]) -> list[Any]:
+        """Pending tasks that should block i_am_idle, after role exemptions.
+
+        Board/advisory roles (product_owner, head_marketing, auditor) review and
+        advise without ever claiming — they have no i_will_work_on / i_will_plan
+        verb, and their one-shot dispatch is meant to leave the coordination task
+        pending for the CEO to reassign. They must idle freely, so nothing blocks
+        them. Developers own a whole per-dev code queue up front, so a leaf still
+        waiting behind an earlier non-terminal sibling in its own lane must not
+        pin them — the orchestrator spawns it when the lane clears (see
+        ``_pending_not_lane_held``). Other roles: every pending task blocks.
+        """
+        if not agent:
+            return pending
+        if agent.role in ("product_owner", "head_marketing", "auditor"):
+            return []
+        if agent.role == "developer":
+            return await self._pending_not_lane_held(pending)
+        return pending
+
+    async def _pending_not_lane_held(self, pending: list[Any]) -> list[Any]:
+        """Drop a dev's pending code leaves that are waiting behind an earlier
+        non-terminal sibling in the same dev's lane (per-dev sequenced queues).
+
+        Those leaves are spawned by the orchestrator when the lane clears, so
+        they must not pin the dev to idle. ``is not True`` keeps this inert under
+        partial test mocks (an AsyncMock returns a truthy stub, not a real bool)
+        — only a leaf the service positively confirms is lane-held is dropped.
+        """
+        live: list[Any] = []
+        for t in pending:
+            if await self.task.has_earlier_incomplete_code_sibling(t) is not True:
+                live.append(t)
+        return live
 
     async def _pm_unfinished_review_guard(
         self, agent_id: UUID, briefing: dict[str, Any]
