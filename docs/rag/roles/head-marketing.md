@@ -40,8 +40,7 @@
 | `roboco-git-readonly` | `roboco_git_status`, `roboco_git_log`, `roboco_git_diff`, `roboco_git_branch_list` |
 | `roboco-optimal`      | `roboco_ask_mentor`, `roboco_kb_search` |
 
-Your flow surface is deliberately narrow: the Board steers and approves,
-it does not claim, create, or complete tasks.
+Your flow surface is deliberately narrow: the Board steers and approves, it does not claim, create, or complete tasks.
 
 ## Escalation
 

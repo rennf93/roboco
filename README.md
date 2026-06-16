@@ -28,11 +28,7 @@ AI Agents Company - A virtual organization of 22 AI agents + 1 human CEO, design
 </p>
 
 > [!WARNING]
-> **RoboCo is early-stage, work-in-progress software (v0).** It's under active
-> development, runs in a homelab, and *will* have rough edges, breaking changes,
-> and bugs. It is **not production-ready** and the API/database schema are not
-> stable yet. Treat it as a working prototype to explore and build on — please
-> don't expose it to the public internet as-is. Issues and PRs very welcome.
+> **RoboCo is early-stage, work-in-progress software (v0).** It's under active development, runs in a homelab, and *will* have rough edges, breaking changes, and bugs. It is **not production-ready** and the API/database schema are not stable yet. Treat it as a working prototype to explore and build on — please  don't expose it to the public internet as-is. Issues and PRs very welcome.
 
 ## Overview
 
@@ -57,22 +53,16 @@ CEO (You, the human)
 
 ## How it works
 
-You hand a task to the company; it runs through a real
-*build → review → document → merge* pipeline and comes back to you to approve.
+You hand a task to the company; it runs through a real *build → review → document → merge* pipeline and comes back to you to approve.
 
 One full loop, put simply:
 
-1. **You give the Board a task — they review it.** The Product Owner and Head of
-   Marketing turn your ask into requirements and acceptance criteria.
-2. **You approve — the Main PM starts the work.** A notification asks for your
-   *Approve & Start* decision; approve, and the Main PM breaks it into per-cell
-   subtasks.
-3. **Each cell's PM delegates, supports, and triages** its developers (UX/UI,
-   Frontend, Backend).
+1. **You give the Board a task — they review it.** The Product Owner and Head of Marketing turn your ask into requirements and acceptance criteria.
+2. **You approve — the Main PM starts the work.** A notification asks for your *Approve & Start* decision; approve, and the Main PM breaks it into per-cell subtasks.
+3. **Each cell's PM delegates, supports, and triages** its developers (UX/UI, Frontend, Backend).
 4. **Developers build it, QA verifies and gates it, Documenters keep the books.**
 5. **Cell PMs merge their PRs into the Main PM's branch.**
-6. **The Main PM opens the final PR and notifies you "It's done!"** — you approve
-   and merge, or send it back for rework. *(Only you ever merge to `master`.)*
+6. **The Main PM opens the final PR and notifies you "It's done!"** — you approve and merge, or send it back for rework. *(Only you ever merge to `master`.)*
 
 **— Full circle —**
 
@@ -113,18 +103,11 @@ roboco/
 
 ## Running RoboCo
 
-You need **Docker** + **Docker Compose** and a Claude Code auth directory on
-the host (`~/.claude`, mounted into the orchestrator so agents can reach the
-model). Copy `.env.example` to `.env` and set at least `ROBOCO_ENCRYPTION_KEY`
-and `ROBOCO_AGENT_AUTH_SECRET` (that file shows how to generate each). However
-you start it, the whole company is reachable at one origin:
-**http://localhost:3000**.
+You need **Docker** + **Docker Compose** and a Claude Code auth directory on the host (`~/.claude`, mounted into the orchestrator so agents can reach the model). Copy `.env.example` to `.env` and set at least `ROBOCO_ENCRYPTION_KEY` and `ROBOCO_AGENT_AUTH_SECRET` (that file shows how to generate each). However you start it, the whole company is reachable at one origin: **http://localhost:3000**.
 
 ### Option 1 — Run the pre-built images (quickest)
 
-Every release publishes all RoboCo images to both the GitHub Container
-Registry and Docker Hub, so you can run the full stack without building
-anything. Use the registry compose:
+Every release publishes all RoboCo images to both the GitHub Container Registry and Docker Hub, so you can run the full stack without building anything. Use the registry compose:
 
 ```bash
 git clone https://github.com/rennf93/roboco.git && cd roboco
@@ -140,8 +123,7 @@ ROBOCO_REGISTRY=ghcr.io/rennf93   # or docker.io/renzof93
 ROBOCO_VERSION=latest             # or a pinned release, e.g. 0.5.0
 ```
 
-The orchestrator spawns the matching pre-built agent images on demand — no
-build toolchain or source compile on your host.
+The orchestrator spawns the matching pre-built agent images on demand — no build toolchain or source compile on your host.
 
 ### Option 2 — Build from source
 
@@ -155,8 +137,7 @@ docker compose up -d              # builds images on first run, then starts ever
 
 ### Option 3 — Local development (no full stack)
 
-For hacking on the code itself, run only the backing services in Docker and
-the API on your host:
+For hacking on the code itself, run only the backing services in Docker and the API on your host:
 
 ```bash
 uv sync
@@ -238,8 +219,7 @@ Domain routes are mounted under `/api`:
 | `/api/journals` | Agent journals/reflections |
 | `/api/orchestrator/status` | Orchestrator / dispatcher status |
 
-The agent **gateway** verbs are served separately under `/api/v1/flow/{role}/{verb}`
-(intent verbs) and `/api/v1/do` (content tools) — see the [Agent Gateway](CLAUDE.md#agent-gateway).
+The agent **gateway** verbs are served separately under `/api/v1/flow/{role}/{verb}` (intent verbs) and `/api/v1/do` (content tools) — see the [Agent Gateway](CLAUDE.md#agent-gateway).
 
 ## Development
 
@@ -305,53 +285,25 @@ uv run mypy roboco/
 ## Security
 
 > [!IMPORTANT]
-> **Do not expose RoboCo to the public internet as-is.** It is designed to run
-> on a trusted private network (homelab / LAN).
+> **Do not expose RoboCo to the public internet as-is.** It is designed to run on a trusted private network (homelab / LAN).
 
-**Agent authentication.** Requests identify the caller with `X-Agent-Id` /
-`X-Agent-Role` headers. The orchestrator issues each spawned agent an HMAC token
-(`X-Agent-Token`, signed with `ROBOCO_AGENT_AUTH_SECRET`) that binds its id, role
-and team. Token enforcement is gated by `ROBOCO_AGENT_AUTH_REQUIRED`:
+**Agent authentication.** Requests identify the caller with `X-Agent-Id` / `X-Agent-Role` headers. The orchestrator issues each spawned agent an HMAC token (`X-Agent-Token`, signed with `ROBOCO_AGENT_AUTH_SECRET`) that binds its id, role and team. Token enforcement is gated by `ROBOCO_AGENT_AUTH_REQUIRED`:
 
-- **`ROBOCO_AGENT_AUTH_REQUIRED` unset/false (default):** *header-trust mode* —
-  the role headers are accepted without a token, so any client that can reach the
-  API may claim any role (including `ceo`). The API logs a warning at startup in
-  this mode. Acceptable only on a trusted network.
-- **`ROBOCO_AGENT_AUTH_REQUIRED=true`:** every request must carry a valid token;
-  an agent cannot spoof another agent's role. The control panel keeps working
-  because **nginx** — the only trusted hop between the browser and the API —
-  injects the CEO token (`X-Agent-Token`) on `/api` and `/ws`, so the browser
-  never holds the signing secret. Generate that token with `make panel-token`
-  and set it as `ROBOCO_PANEL_AGENT_TOKEN` in `.env` before enabling secure mode.
+- **`ROBOCO_AGENT_AUTH_REQUIRED` unset/false (default):** *header-trust mode* — the role headers are accepted without a token, so any client that can reach the API may claim any role (including `ceo`). The API logs a warning at startup in this mode. Acceptable only on a trusted network.
+- **`ROBOCO_AGENT_AUTH_REQUIRED=true`:** every request must carry a valid token; an agent cannot spoof another agent's role. The control panel keeps working because **nginx** — the only trusted hop between the browser and the API — injects the CEO token (`X-Agent-Token`) on `/api` and `/ws`, so the browser never holds the signing secret. Generate that token with `make panel-token` and set it as `ROBOCO_PANEL_AGENT_TOKEN` in `.env` before enabling secure mode.
 
-**WebSocket streams.** Token enforcement is currently REST-only. The `/ws/*`
-endpoints authenticate by `agent_id` query param at most and do not yet validate
-`X-Agent-Token`, even in secure mode — nginx injects the token so the panel
-works, but a direct WebSocket connection that bypasses nginx is not rejected. In
-particular the operator stream `/ws/system` (rate-limit lifecycle + token-usage
-snapshots for the dashboard) is unauthenticated. These streams are read-only —
-no control surface, secrets, or task content — but treat the orchestrator port
-as trusted-network-only until WebSocket auth lands.
+**WebSocket streams.** Token enforcement is currently REST-only. The `/ws/*` endpoints authenticate by `agent_id` query param at most and do not yet validate `X-Agent-Token`, even in secure mode — nginx injects the token so the panel works, but a direct WebSocket connection that bypasses nginx is not rejected. In particular the operator stream `/ws/system` (rate-limit lifecycle + token-usage snapshots for the dashboard) is unauthenticated. These streams are read-only — no control surface, secrets, or task content — but treat the orchestrator port as trusted-network-only until WebSocket auth lands.
 
-**Secrets** (the Fernet `ROBOCO_ENCRYPTION_KEY`, GitHub PATs) live encrypted in
-the database and in gitignored env files — never in the repo. Per-project git
-tokens are Fernet-encrypted at rest and never returned by the API.
+**Secrets** (the Fernet `ROBOCO_ENCRYPTION_KEY`, GitHub PATs) live encrypted in the database and in gitignored env files — never in the repo. Per-project git tokens are Fernet-encrypted at rest and never returned by the API.
 
 ## License
 
 Copyright (c) 2026 Renzo Franceschini
 
-RoboCo is licensed under the **GNU Affero General Public License v3.0**
-(AGPL-3.0). See [`LICENSE`](./LICENSE) for the full text.
+RoboCo is licensed under the **GNU Affero General Public License v3.0** (AGPL-3.0). See [`LICENSE`](./LICENSE) for the full text.
 
-The AGPL's network-use clause (section 13) means that if you run a modified
-version of RoboCo as a network service, you must make your modified source
-available to its users. This keeps the project open while preventing closed,
-hosted re-distributions.
+The AGPL's network-use clause (section 13) means that if you run a modified version of RoboCo as a network service, you must make your modified source available to its users. This keeps the project open while preventing closed, hosted re-distributions.
 
 ## Contributing
 
-Contributions are welcome. All contributors must sign the Contributor License
-Agreement ([`CLA.md`](./CLA.md)) — this is automated on your first pull
-request. See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the workflow and why
-the CLA exists.
+Contributions are welcome. All contributors must sign the Contributor License Agreement ([`CLA.md`](./CLA.md)) — this is automated on your first pull request. See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for the workflow and why the CLA exists.

@@ -3,8 +3,7 @@
 ## Preconditions
 
 - Task is in `awaiting_qa` status
-- The developer's PR is open (the choreographer opened it during their
-  `open_pr(task_id)` call)
+- The developer's PR is open (the choreographer opened it during their `open_pr(task_id)` call)
 - You are not the original developer of the task (self-review guard)
 
 ## Steps
@@ -39,9 +38,7 @@ note(text="Verified AC #1 (429 on 101st req), #2 (TTL match), #3 "
      task_id="<task>")
 ```
 
-There is no `roboco_task_claim / _start / _qa_pass / _qa_fail` and no
-`roboco_git_checkout`. The verbs above (`claim_review`, `pass`, `fail`)
-are the actual surface; branch checkout is a side-effect of `claim_review`.
+There is no `roboco_task_claim / _start / _qa_pass / _qa_fail` and no `roboco_git_checkout`. The verbs above (`claim_review`, `pass`, `fail`) are the actual surface; branch checkout is a side-effect of `claim_review`.
 
 ## Review Checklist
 
@@ -72,8 +69,7 @@ Result:
 
 - Task advances to `awaiting_documentation`
 - Documenter and the original dev work in parallel from here
-- The PR stays open; it will be merged later by the Cell PM via
-  `complete(task_id, ...)`
+- The PR stays open; it will be merged later by the Cell PM via `complete(task_id, ...)`
 
 ## Failing QA
 
@@ -111,14 +107,10 @@ note(
 
 ## Self-Review Prevention
 
-The system blocks QA from reviewing their own dev work. The original
-developer is recorded in `quick_context` at submit-for-qa time. If
-`qa_agent_id == original_developer_id`, **all** QA actions on the task
-return `not_authorized`:
+The system blocks QA from reviewing their own dev work. The original developer is recorded in `quick_context` at submit-for-qa time. If `qa_agent_id == original_developer_id`, **all** QA actions on the task return `not_authorized`:
 
 - `claim_review` — FORBIDDEN
 - `pass` — FORBIDDEN (defence-in-depth even if claim somehow succeeded)
 - `fail` — FORBIDDEN (same)
 
-Enforced at the gateway layer in
-`roboco/services/gateway/choreographer/_impl.py`.
+Enforced at the gateway layer in `roboco/services/gateway/choreographer/_impl.py`.

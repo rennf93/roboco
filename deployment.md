@@ -17,10 +17,7 @@ claude  # Login via browser
 
 ## Quick Start (NAS/Server)
 
-Everything runs in Docker - no need to install Python/uv on the host. There
-are two ways to get the stack: **pull the pre-built images** (every release
-publishes them) or **build from source**. Both start from a clone, which gives
-you the compose files, the nginx config, and `.env.example`.
+Everything runs in Docker - no need to install Python/uv on the host. There are two ways to get the stack: **pull the pre-built images** (every release publishes them) or **build from source**. Both start from a clone, which gives you the compose files, the nginx config, and `.env.example`.
 
 ```bash
 # 1. Clone the project
@@ -44,10 +41,7 @@ docker compose -f docker-compose.registry.yml up -d
 docker compose -f docker-compose.registry.yml logs -f orchestrator
 ```
 
-Choose the registry and version with `ROBOCO_REGISTRY` (`ghcr.io/rennf93` or
-`docker.io/renzof93`) and `ROBOCO_VERSION` (`latest` or a pinned release such
-as `0.5.0`). The orchestrator pulls and spawns the matching pre-built agent
-images on demand.
+Choose the registry and version with `ROBOCO_REGISTRY` (`ghcr.io/rennf93` or `docker.io/renzof93`) and `ROBOCO_VERSION` (`latest` or a pinned release such as `0.5.0`). The orchestrator pulls and spawns the matching pre-built agent images on demand.
 
 ### Option B — Build from source
 

@@ -57,11 +57,7 @@ ROBOCO_WORKSPACE_CLONE_TIMEOUT=300
 
 ## No Workspace Tools — It's Automatic
 
-There are **no** agent-facing workspace tools. Workspaces are created and
-cloned for you by the orchestrator (`WorkspaceService`) before your
-container starts. You never `ensure`, `clone`, or `checkout` a workspace
-by hand — your repo is already on disk at the path below, and the gateway
-verbs (`i_will_work_on`, `claim_review`, ...) check out the right branch.
+There are **no** agent-facing workspace tools. Workspaces are created and cloned for you by the orchestrator (`WorkspaceService`) before your container starts. You never `ensure`, `clone`, or `checkout` a workspace by hand — your repo is already on disk at the path below, and the gateway verbs (`i_will_work_on`, `claim_review`, ...) check out the right branch.
 
 ## Workspace Resolution
 
@@ -76,7 +72,4 @@ HTTPS repositories require a GitHub PAT configured on the project:
 - **Token configured**: Auto-clone works, git operations succeed
 - **Token missing**: Error "Project requires a git token for HTTPS repositories"
 
-**If you see this error**: Contact your PM. The project's git token is
-configured by a human in the control panel (project settings) — it is not
-an agent tool. The token is encrypted at rest and never exposed to your
-container; the orchestrator injects it into git operations for you.
+**If you see this error**: Contact your PM. The project's git token is configured by a human in the control panel (project settings) — it is not an agent tool. The token is encrypted at rest and never exposed to your container; the orchestrator injects it into git operations for you.

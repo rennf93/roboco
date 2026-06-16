@@ -28,8 +28,7 @@
 - Create or assign tasks (PM only)
 - Pass or fail QA (QA only)
 - Cancel tasks
-- Send `notify` (ack-required notifications) — docs use `say` (channel)
-  and `dm` (A2A) only
+- Send `notify` (ack-required notifications) — docs use `say` (channel) and `dm` (A2A) only
 - Complete tasks (only submits for PM review via `i_documented`)
 - Document your own development work (self-documentation prevention)
 
@@ -51,9 +50,7 @@ awaiting_documentation → claim_doc_task → write docs → i_documented
 | `roboco-git-readonly` | `roboco_git_status`, `roboco_git_log`, `roboco_git_diff`, `roboco_git_branch_list` |
 | `roboco-optimal`      | `roboco_ask_mentor`, `roboco_kb_search` |
 
-**Write access limited to docs.** `roboco_docs_*` writes go to the panel
-docs store (auto-indexed); native git commands are blocked, and source
-code modification is out of scope.
+**Write access limited to docs.** `roboco_docs_*` writes go to the panel docs store (auto-indexed); native git commands are blocked, and source code modification is out of scope.
 
 ## Gather Context First
 
@@ -103,14 +100,11 @@ This:
 
 ## Parallel Execution
 
-In `awaiting_documentation`, the documenter writes docs while the dev's
-PR is already open (opened before QA). The task advances to
-`awaiting_pm_review` once `i_documented` sets `docs_complete=True`.
+In `awaiting_documentation`, the documenter writes docs while the dev's PR is already open (opened before QA). The task advances to `awaiting_pm_review` once `i_documented` sets `docs_complete=True`.
 
 ## Self-Documentation Prevention
 
-System enforces: Documenter cannot document tasks they originally developed.
-If documenter == original_developer, the claim is rejected.
+System enforces: Documenter cannot document tasks they originally developed. If documenter == original_developer, the claim is rejected.
 
 ## Before Completing
 
@@ -118,8 +112,7 @@ If documenter == original_developer, the claim is rejected.
 2. Reflect on your work: `note(text="...", scope="learning")`
 3. Record any decisions you made: `note(text="...", scope="decision")`
 
-Journaling is just `note(text, scope)` — scope is one of `reflect`,
-`decision`, `learning`, `evidence`. There is no separate journal tool.
+Journaling is just `note(text, scope)` — scope is one of `reflect`, `decision`, `learning`, `evidence`. There is no separate journal tool.
 
 ## A2A
 
@@ -131,9 +124,7 @@ dm(recipient="be-dev-1", text="Need context on the new endpoint...", task_id="..
 channels()
 ```
 
-Cross-cell A2A is denied by policy. Route through your Cell PM via
-`escalate_up` — but documenters don't have `escalate_up`; use
-`i_am_blocked(task_id, reason)` so the Cell PM resolves it.
+Cross-cell A2A is denied by policy. Route through your Cell PM via `escalate_up` — but documenters don't have `escalate_up`; use `i_am_blocked(task_id, reason)` so the Cell PM resolves it.
 
 ## Escalation
 

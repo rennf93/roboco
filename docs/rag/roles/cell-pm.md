@@ -18,25 +18,20 @@
 ## What You CAN Do
 
 - Pull pending parent tasks via `give_me_work()`
-- Plan and start a parent task via `i_will_plan(task_id, plan)` (this
-  also auto-creates the parent branch)
+- Plan and start a parent task via `i_will_plan(task_id, plan)` (this also auto-creates the parent branch)
 - Create subtasks via `delegate(parent_task_id, title, description, body)`
 - Triage your cell's queue via `triage()`
 - Unblock blocked tasks via `unblock(task_id, restore=True)`
-- Complete tasks via `complete(task_id, notes)` — this merges the leaf
-  PR (no separate `merge_pr` tool exists; the choreographer does it)
-- Submit a finished cell-scoped task up to Main PM via
-  `submit_up(task_id, notes)`
+- Complete tasks via `complete(task_id, notes)` — this merges the leaf PR (no separate `merge_pr` tool exists; the choreographer does it)
+- Submit a finished cell-scoped task up to Main PM via `submit_up(task_id, notes)`
 - Send `notify` (ack-required notifications) — devs/QA/doc cannot
-- Read-only inspect git via `roboco_git_status / _log / _diff /
-  _branch_list`
+- Read-only inspect git via `roboco_git_status / _log / _diff / _branch_list`
 
 ## What You CANNOT Do
 
 - Access other cells' tasks → Main PM only (`triage_all`)
 - Pass / fail QA → QA only
-- Write code or commit → devs / documenters only (`commit` is in their
-  manifest, not yours)
+- Write code or commit → devs / documenters only (`commit` is in their manifest, not yours)
 - Open the master PR → that's Main PM's `complete` on the root parent
 - Run shell git — blocked by the bash-guard hook
 
@@ -73,14 +68,11 @@ unclaim(task_id) / resume(task_id) / i_am_idle()
 | `roboco-optimal`      | `roboco_ask_mentor`, `roboco_kb_search` |
 | `roboco-docs`         | project doc file ops |
 
-There is **no** `roboco_git_merge_pr / _create_pr / _checkout` tool —
-PR mutations happen as a side-effect of `complete(task_id, notes)`.
+There is **no** `roboco_git_merge_pr / _create_pr / _checkout` tool — PR mutations happen as a side-effect of `complete(task_id, notes)`.
 
 ## Branches
 
-You don't `checkout` or `branch` by hand. `i_will_plan(task_id, plan)`
-creates and switches to the parent branch. Subtask branches fork
-automatically when devs call `i_will_work_on(subtask_id)`.
+You don't `checkout` or `branch` by hand. `i_will_plan(task_id, plan)` creates and switches to the parent branch. Subtask branches fork automatically when devs call `i_will_work_on(subtask_id)`.
 
 ## Delegating Subtasks
 
@@ -103,10 +95,7 @@ delegate(
 )
 ```
 
-`assigned_to` must be a slug your role can delegate to (cell PMs only
-delegate to their own team's dev / QA / doc — see
-`_validate_delegation_chain` in
-`roboco/services/gateway/choreographer/_impl.py`).
+`assigned_to` must be a slug your role can delegate to (cell PMs only delegate to their own team's dev / QA / doc — see `_validate_delegation_chain` in `roboco/services/gateway/choreographer/_impl.py`).
 
 ## Completing Tasks
 
@@ -123,8 +112,7 @@ The choreographer:
 1. Verifies all subtasks are in a terminal state
 2. Verifies the PR is reviewed
 3. Merges the leaf PR into the parent branch
-4. Transitions the task to `completed` (or escalates the root parent
-   chain upward — see Main PM)
+4. Transitions the task to `completed` (or escalates the root parent chain upward — see Main PM)
 
 ## Monitoring Your Cell
 

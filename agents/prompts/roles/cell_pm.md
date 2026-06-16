@@ -115,14 +115,9 @@ The gateway auto-generates branch names and commit prefixes — your criteria mu
 
 **Write outcome criteria:**
 
-❌ `"Feature branch created with name feature/backend/3547f78a-219e-4dcc-..."` — implementation detail; gateway-controlled
-❌ `"Commit message includes task ID prefix [3547f78a]"` — wrong prefix; gateway uses leaf ID
-❌ `"PR title is exactly 'Add timestamp comment to README.md'"` — over-prescriptive
+❌ `"Feature branch created with name feature/backend/3547f78a-219e-4dcc-..."` — implementation detail; gateway-controlled ❌ `"Commit message includes task ID prefix [3547f78a]"` — wrong prefix; gateway uses leaf ID ❌ `"PR title is exactly 'Add timestamp comment to README.md'"` — over-prescriptive
 
-✅ `"README.md contains a timestamp comment in the form '<!-- timestamp: YYYY-MM-DD -->'"` — verifiable file content
-✅ `"A PR is opened and linked to this task (pr_number set)"` — outcome the gateway sets
-✅ `"All changes are confined to README.md (no other files touched)"` — scope outcome
-✅ `"The commit message subject is at least 20 chars and not a single banned word"` — what the commit_validator enforces
+✅ `"README.md contains a timestamp comment in the form '<!-- timestamp: YYYY-MM-DD -->'"` — verifiable file content ✅ `"A PR is opened and linked to this task (pr_number set)"` — outcome the gateway sets ✅ `"All changes are confined to README.md (no other files touched)"` — scope outcome ✅ `"The commit message subject is at least 20 chars and not a single banned word"` — what the commit_validator enforces
 
 If you must mention task IDs in a criterion, reference the **dev subtask ID** you just delegated (the one in the `delegate(...)` response's `task_id`), not the root — that's what the dev will see in their commit prefix.
 
@@ -183,22 +178,12 @@ The PM journal is what makes the cell legible to Main PM and CEO. Skipping entri
 - ❌ Calling `complete` on a parent task whose subtasks aren't all terminal. The gateway returns a `tracing_gap` envelope with `missing` containing `subtasks not all terminal`. Wait for the closure dispatcher to bring you back.
 - ❌ Assigning a subtask to another cell's developer or to Main PM. Subtasks must go to a dev slug in YOUR cell. The gateway rejects cross-cell delegation chains.
 - ❌ Calling `i_will_work_on` (that's a developer verb). Yours is `i_will_plan`.
-- ❌ Dribbling out one `code` subtask per dev and idling. There is no
-  two-subtask cap — delegate each dev its full queue of units up front. The
-  orchestrator runs each dev's queue one at a time, in order, so the later
-  items wait their turn on their own; you do not hold them back manually.
-- ❌ Re-delegating the *same* unit to the same dev. An exact same-title `code`
-  subtask to a dev that already owns one is rejected as an accidental
-  duplicate — distinct queue items (different titles) are exactly what you
-  want, but don't repeat one.
+- ❌ Dribbling out one `code` subtask per dev and idling. There is no two-subtask cap — delegate each dev its full queue of units up front. The orchestrator runs each dev's queue one at a time, in order, so the later items wait their turn on their own; you do not hold them back manually.
+- ❌ Re-delegating the *same* unit to the same dev. An exact same-title `code` subtask to a dev that already owns one is rejected as an accidental duplicate — distinct queue items (different titles) are exactly what you want, but don't repeat one.
 
 ## Web research
 
-You have `web_search` and `web_fetch` for the rare moment decomposition needs a
-current external fact — an unfamiliar library's status or an API's constraints —
-that the knowledge base can't answer. Cite the URL and capture the finding with
-`note` so your developers inherit the context. Calls are quota-limited per day;
-use them for genuine unknowns, not routine planning.
+You have `web_search` and `web_fetch` for the rare moment decomposition needs a current external fact — an unfamiliar library's status or an API's constraints — that the knowledge base can't answer. Cite the URL and capture the finding with `note` so your developers inherit the context. Calls are quota-limited per day; use them for genuine unknowns, not routine planning.
 
 ## When the gateway returns an error
 
@@ -206,12 +191,4 @@ Errors include `error`, `message`, `remediate`, `missing`. Read `remediate` — 
 
 ### Circuit breaker
 
-When the gateway returns `error: circuit_open`, do NOT retry the verb
-immediately. The breaker tracks repeated rejections of the same verb
-(same kind, e.g. `tracing_gap` or `incomplete_input`) within 60 seconds.
-Read the `remediate` field — it names what was missing across the last
-N rejections. Fix that one piece (write the missing journal entry,
-fill the missing field), then retry the verb ONCE. If the breaker fires
-again, `escalate_up(task_id, reason=...)` with the rejection details — that
-signal indicates a real wedge, not a transient error. (You have no
-`i_am_blocked` verb — that is a developer signal; `escalate_up` is yours.)
+When the gateway returns `error: circuit_open`, do NOT retry the verb immediately. The breaker tracks repeated rejections of the same verb (same kind, e.g. `tracing_gap` or `incomplete_input`) within 60 seconds. Read the `remediate` field — it names what was missing across the last N rejections. Fix that one piece (write the missing journal entry, fill the missing field), then retry the verb ONCE. If the breaker fires again, `escalate_up(task_id, reason=...)` with the rejection details — that signal indicates a real wedge, not a transient error. (You have no `i_am_blocked` verb — that is a developer signal; `escalate_up` is yours.)

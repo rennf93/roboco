@@ -17,8 +17,7 @@ ___
 Current Documentation
 ---------------------
 
-Link to (or name) the current documentation page or section that needs improvement:
-[Link it here](https://example.com)
+Link to (or name) the current documentation page or section that needs improvement: [Link it here](https://example.com)
 
 ___
 

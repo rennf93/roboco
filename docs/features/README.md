@@ -11,5 +11,4 @@ Documentation for features organized by team.
 
 ## Access
 
-Each team subdirectory follows the same access pattern as the main team docs.
-The `/shared/` directory is readable by all and writable by any documenter.
+Each team subdirectory follows the same access pattern as the main team docs. The `/shared/` directory is readable by all and writable by any documenter.

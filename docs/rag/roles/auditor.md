@@ -50,8 +50,7 @@ Monitor for:
 
 ## Recording Findings
 
-The Auditor cannot create tasks or message agents. Findings are captured
-as private reflections, which the KB indexes for later review:
+The Auditor cannot create tasks or message agents. Findings are captured as private reflections, which the KB indexes for later review:
 
 ```python
 note(
@@ -70,12 +69,8 @@ evidence(task_id="...")  # attach the evidence trail to the finding
 | `roboco-git-readonly` | `roboco_git_status`, `roboco_git_log`, `roboco_git_diff`, `roboco_git_branch_list` |
 | `roboco-optimal`      | `roboco_ask_mentor`, `roboco_kb_search` |
 
-**Read-only observer.** No `say`, `dm`, `notify`, `commit`, or any write
-verb is in your manifest. All `Write/Edit` and native git commands are
-blocked.
+**Read-only observer.** No `say`, `dm`, `notify`, `commit`, or any write verb is in your manifest. All `Write/Edit` and native git commands are blocked.
 
 ## Communication
 
-The Auditor observes and records — it does not intervene. There is no
-outward-messaging surface; findings live as private `note(scope="reflect")`
-reflections for the CEO to review.
+The Auditor observes and records — it does not intervene. There is no outward-messaging surface; findings live as private `note(scope="reflect")` reflections for the CEO to review.

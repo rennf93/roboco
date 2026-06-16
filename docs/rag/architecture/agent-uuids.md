@@ -73,8 +73,7 @@ delegate(assigned_to="00000000-0000-0000-0001-000000000001", ...)
 
 ## Usage
 
-Verbs take the `task_id` UUID directly (returned by `give_me_work()` /
-`triage()`); recipient/assignee arguments accept either a slug or a UUID:
+Verbs take the `task_id` UUID directly (returned by `give_me_work()` / `triage()`); recipient/assignee arguments accept either a slug or a UUID:
 ```python
 i_will_work_on(task_id)               # task_id is a UUID
 dm(recipient="be-qa", text="...", task_id="...")   # slug recipient

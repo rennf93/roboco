@@ -1,8 +1,6 @@
 # Git Tools
 
-There is **no** "roboco_git_commit / _push / _create_pr / _merge_pr / _checkout"
-MCP tool. Anything mutating the repo goes through one of two role-scoped
-verbs and the choreographer handles git for you.
+There is **no** "roboco_git_commit / _push / _create_pr / _merge_pr / _checkout" MCP tool. Anything mutating the repo goes through one of two role-scoped verbs and the choreographer handles git for you.
 
 ## Read Operations (any role) — `roboco-git-readonly`
 
@@ -28,9 +26,7 @@ Branches are auto-created when an agent transitions a task to `in_progress`:
 - Subtask → `feature/team/ROOT_ID--SUB_ID`
 - Sub-subtask → `feature/team/ROOT_ID--SUB_ID--SUBSUB_ID`
 
-You never run `git checkout` or `git branch` yourself; calling
-`i_will_work_on(task_id)` (developers) or `i_will_plan(task_id, plan)` (PMs)
-creates the branch and switches your workspace to it.
+You never run `git checkout` or `git branch` yourself; calling `i_will_work_on(task_id)` (developers) or `i_will_plan(task_id, plan)` (PMs) creates the branch and switches your workspace to it.
 
 ## Write Path — by role
 
@@ -45,8 +41,7 @@ creates the branch and switches your workspace to it.
 commit(message="Add rate limiting endpoint", files=["roboco/api/routes/rate.py"])
 ```
 
-There is no separate `push` step and no separate `create_pr` step. Both are
-side-effects of the lifecycle transitions the verbs already drive.
+There is no separate `push` step and no separate `create_pr` step. Both are side-effects of the lifecycle transitions the verbs already drive.
 
 ### PMs → `complete` (roboco-flow)
 
@@ -56,8 +51,7 @@ side-effects of the lifecycle transitions the verbs already drive.
 complete(task_id="a1b2c3d4-...", notes="QA passed; docs complete; ready to ship.")
 ```
 
-PMs never run `git` directly and have no commit/push tools. PMs `delegate`
-code work to devs, then `complete` to merge once QA + docs sign off.
+PMs never run `git` directly and have no commit/push tools. PMs `delegate` code work to devs, then `complete` to merge once QA + docs sign off.
 
 ## Branch Naming Convention
 
@@ -71,6 +65,4 @@ code work to devs, then `complete` to merge once QA + docs sign off.
 | `docs/` | Documentation |
 | `hotfix/` | Urgent fixes |
 
-Hierarchy uses `--` (two hyphens) as the separator, not `/`, so a hierarchy
-slug like `ABC12345--DEF67890--GHI11111` is one git branch segment, not
-three nested directories.
+Hierarchy uses `--` (two hyphens) as the separator, not `/`, so a hierarchy slug like `ABC12345--DEF67890--GHI11111` is one git branch segment, not three nested directories.

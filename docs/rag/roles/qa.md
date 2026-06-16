@@ -19,8 +19,7 @@
 - Pull awaiting-QA tasks via `give_me_work()` / `claim_review(task_id)`
 - Pass via `pass(task_id, notes)` (transitions to `awaiting_documentation`)
 - Fail via `fail(task_id, issues)` (returns to `needs_revision`)
-- Read-only inspect git via `roboco_git_status / _log / _diff /
-  _branch_list`
+- Read-only inspect git via `roboco_git_status / _log / _diff / _branch_list`
 - Search the knowledge base via `roboco_ask_mentor` / `roboco_kb_search`
 - Note evidence via `note(text=..., scope="...")` and `evidence(...)`
 
@@ -54,9 +53,7 @@ unclaim(task_id) / resume(task_id) / i_am_idle()
 | `roboco-git-readonly` | `roboco_git_status`, `roboco_git_log`, `roboco_git_diff`, `roboco_git_branch_list` |
 | `roboco-optimal`      | `roboco_ask_mentor`, `roboco_kb_search` |
 
-There is **no** `commit` / `roboco_git_commit / _push / _create_pr` tool
-in your surface — QA is read-only by design. Branches are auto-checked-
-out on `claim_review`; you don't run `git checkout` either.
+There is **no** `commit` / `roboco_git_commit / _push / _create_pr` tool in your surface — QA is read-only by design. Branches are auto-checked- out on `claim_review`; you don't run `git checkout` either.
 
 ## Review Checklist
 
@@ -64,15 +61,12 @@ Before deciding, gather evidence:
 
 1. Read the task: criteria + dev's notes are on the task object.
 2. Read the dev's journal: filter on the developer's slug + this task.
-3. Inspect the diff: `roboco_git_diff(project_slug=...)` against the
-   PR head.
+3. Inspect the diff: `roboco_git_diff(project_slug=...)` against the PR head.
 4. Run the suite if relevant:
    - Backend: `uv run pytest`, `uv run ruff check .`, `uv run mypy roboco/`
    - Frontend: `pnpm test`, `pnpm lint`, `pnpm typecheck`
-5. Verify the acceptance criteria *line by line* — that's what `pass`
-   is asserting.
-6. `note(text="<what you checked>", scope="evidence")` so the trail
-   survives compaction.
+5. Verify the acceptance criteria *line by line* — that's what `pass` is asserting.
+6. `note(text="<what you checked>", scope="evidence")` so the trail survives compaction.
 
 ## Passing QA
 
@@ -87,10 +81,7 @@ pass(
 )
 ```
 
-`notes` must be substantive — the enforcement layer rejects empty or
-near-empty notes. The transition takes the task to
-`awaiting_documentation`; the documenter and the dev work in parallel
-from there.
+`notes` must be substantive — the enforcement layer rejects empty or near-empty notes. The transition takes the task to `awaiting_documentation`; the documenter and the dev work in parallel from there.
 
 ## Failing QA
 
@@ -104,21 +95,15 @@ fail(
 )
 ```
 
-The task goes back to `needs_revision`. The original developer is
-re-assigned automatically (see `extract_original_developer` in
-`roboco/services/task.py`).
+The task goes back to `needs_revision`. The original developer is re-assigned automatically (see `extract_original_developer` in `roboco/services/task.py`).
 
 ## Self-Review Prevention
 
-The system blocks QA from reviewing their own dev work. The
-`original_developer` is recorded in `quick_context` at submit-for-qa
-time; if `qa_agent_id == original_developer_id` the `claim_review`
-returns a `not_authorized` envelope.
+The system blocks QA from reviewing their own dev work. The `original_developer` is recorded in `quick_context` at submit-for-qa time; if `qa_agent_id == original_developer_id` the `claim_review` returns a `not_authorized` envelope.
 
 ## Escalation
 
-`escalate_up` is **not** in your manifest. Use `dm` to your Cell PM if
-something needs attention beyond pass/fail:
+`escalate_up` is **not** in your manifest. Use `dm` to your Cell PM if something needs attention beyond pass/fail:
 
 ```python
 dm(recipient="be-pm",
@@ -127,7 +112,4 @@ dm(recipient="be-pm",
    task_id="...")
 ```
 
-If the situation is unresolvable from the QA side (e.g. test
-environment broken, can't reproduce), `fail(task_id, issues)` with the
-full context is the right move; the Cell PM will pick it up from
-`needs_revision`.
+If the situation is unresolvable from the QA side (e.g. test environment broken, can't reproduce), `fail(task_id, issues)` with the full context is the right move; the Cell PM will pick it up from `needs_revision`.

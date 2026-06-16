@@ -14,5 +14,4 @@ Documentation for the Backend Cell team.
 
 ## Contributing
 
-Backend team members should request documentation updates through the Cell PM.
-Only the Backend Documenter (be-doc) can write to this directory.
+Backend team members should request documentation updates through the Cell PM. Only the Backend Documenter (be-doc) can write to this directory.

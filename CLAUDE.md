@@ -4,14 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Licensing
 
-RoboCo is licensed under **AGPL-3.0** (see `LICENSE`). Copyright (c) 2026
-Renzo Franceschini. Do NOT reintroduce an MIT or other license reference
-anywhere (README, headers, package metadata) — the project is AGPL.
+RoboCo is licensed under **AGPL-3.0** (see `LICENSE`). Copyright (c) 2026 Renzo Franceschini. Do NOT reintroduce an MIT or other license reference anywhere (README, headers, package metadata) — the project is AGPL.
 
-Contributions require a signed **Contributor License Agreement** (`CLA.md`),
-automated via the CLA Assistant workflow (`.github/workflows/cla.yml`). The
-CLA preserves the option to dual-license / offer a commercial edition later;
-keep copyright assignment language intact. See `CONTRIBUTING.md`.
+Contributions require a signed **Contributor License Agreement** (`CLA.md`), automated via the CLA Assistant workflow (`.github/workflows/cla.yml`). The CLA preserves the option to dual-license / offer a commercial edition later; keep copyright assignment language intact. See `CONTRIBUTING.md`.
 
 ## Project Overview
 
@@ -112,19 +107,14 @@ Each agent gets their own git clone of a project, enabling parallel development 
         +-- fe-dev-2/
 ```
 
-Note: the Next.js control panel now lives at `roboco/panel/` inside this
-repo (no longer a separate `roboco-panel` project or workspace).
+Note: the Next.js control panel now lives at `roboco/panel/` inside this repo (no longer a separate `roboco-panel` project or workspace).
 
 **Key Configuration (roboco/config.py):**
 - `ROBOCO_WORKSPACES_ROOT`: Root directory for workspaces (default: `/data/workspaces`)
 - `ROBOCO_WORKSPACE_AUTO_CLONE`: Auto-clone repos on first access (default: `true`)
 - `ROBOCO_WORKSPACE_CLONE_TIMEOUT`: Clone timeout in seconds (default: `300`)
 
-On a Python workspace, `WorkspaceService` runs `uv sync --extra dev` (not plain
-`uv sync`) so the clone's `.venv` carries the full gate toolchain
-(ruff/mypy/xenon/pytest) — the lint/type/complexity tools live in the `dev`
-**extra**, which plain `uv sync` skips. Without it an agent's `make quality`
-fails on `ruff: command not found` and the agent can't gate its own work.
+On a Python workspace, `WorkspaceService` runs `uv sync --extra dev` (not plain `uv sync`) so the clone's `.venv` carries the full gate toolchain (ruff/mypy/xenon/pytest) — the lint/type/complexity tools live in the `dev` **extra**, which plain `uv sync` skips. Without it an agent's `make quality` fails on `ruff: command not found` and the agent can't gate its own work.
 
 ## Git Workflow
 
@@ -190,8 +180,7 @@ Git authentication is managed **per-project** through encrypted GitHub PATs:
 
 ### Task States
 
-The complete task lifecycle is defined in `roboco/foundation/policy/lifecycle.py`
-(`roboco/enforcement/task_lifecycle.py` is a backwards-compat shim over it):
+The complete task lifecycle is defined in `roboco/foundation/policy/lifecycle.py` (`roboco/enforcement/task_lifecycle.py` is a backwards-compat shim over it):
 
 ```
 backlog -> pending -> claimed -> in_progress -> [blocked|paused] -> verifying
@@ -248,19 +237,13 @@ All status transitions are validated through the enforcement layer. Key restrict
 
 ### Git Integration Requirements
 
-All tasks follow git workflow. PR is created BEFORE QA review (not after)
-so QA can review the real PR diff on GitHub and downstream PM/CEO approval
-chain off a PR that already exists:
+All tasks follow git workflow. PR is created BEFORE QA review (not after) so QA can review the real PR diff on GitHub and downstream PM/CEO approval chain off a PR that already exists:
 
 1. **claimed -> in_progress**: `branch_name` is auto-set on claim (hierarchical branches)
-2. **verifying -> awaiting_qa** (submit-qa): Requires `self_verified`, `commits`,
-   `pr_number` (PR open), and at least one `progress_updates` entry
-3. **awaiting_qa -> awaiting_documentation** (pass-qa): Requires `pr_number` and
-   substantive QA notes
-4. **awaiting_documentation -> awaiting_pm_review**: Requires `docs_complete=True`
-   (PR already exists from step 2 above)
-5. **awaiting_pm_review -> awaiting_ceo_approval**: Must have `pr_number` set
-   and all subtasks in a terminal state
+2. **verifying -> awaiting_qa** (submit-qa): Requires `self_verified`, `commits`, `pr_number` (PR open), and at least one `progress_updates` entry
+3. **awaiting_qa -> awaiting_documentation** (pass-qa): Requires `pr_number` and substantive QA notes
+4. **awaiting_documentation -> awaiting_pm_review**: Requires `docs_complete=True` (PR already exists from step 2 above)
+5. **awaiting_pm_review -> awaiting_ceo_approval**: Must have `pr_number` set and all subtasks in a terminal state
 
 ### CEO Approval Workflow
 
@@ -308,8 +291,7 @@ commits: list[CommitRef] # All commits made for this task
 
 ## Communication Model
 
-**Communication** = constant stream (always flowing, logged, observed)
-**Notifications** = formal signals (require acknowledgment, sent by PMs/Board only)
+**Communication** = constant stream (always flowing, logged, observed) **Notifications** = formal signals (require acknowledgment, sent by PMs/Board only)
 
 ### Channel Structure
 - Cell channels: `#backend-cell`, `#frontend-cell`, `#uxui-cell`
@@ -333,17 +315,9 @@ The Auditor has silent read access to ALL channels.
 
 ## Agent Gateway
 
-Agents do not call the API or per-domain MCP tools directly. They go through
-two thin MCP servers (`roboco-flow`, `roboco-do`) backed by the server-side
-**Choreographer** in `roboco/services/gateway/`. The Choreographer composes
-the existing services (TaskService, JournalService, GitService, etc.) into
-intent-verb sequences. Tracing, claim-locking, evidence assembly, and
-remediation hints are all centralized there.
+Agents do not call the API or per-domain MCP tools directly. They go through two thin MCP servers (`roboco-flow`, `roboco-do`) backed by the server-side **Choreographer** in `roboco/services/gateway/`. The Choreographer composes the existing services (TaskService, JournalService, GitService, etc.) into intent-verb sequences. Tracing, claim-locking, evidence assembly, and remediation hints are all centralized there.
 
-Each agent gets a **spawn manifest** at `/app/tool-manifest.json` listing
-the verbs its role is allowed to call. The orchestrator builds the
-manifest from `roboco/services/gateway/role_config.py` and mounts it
-read-only into the agent container.
+Each agent gets a **spawn manifest** at `/app/tool-manifest.json` listing the verbs its role is allowed to call. The orchestrator builds the manifest from `roboco/services/gateway/role_config.py` and mounts it read-only into the agent container.
 
 ### Verb surface (canonical source: `lifecycle.intents_for_role`; every role also gets `i_am_idle`)
 
@@ -361,11 +335,7 @@ read-only into the agent container.
 | prompter      | (none beyond `i_am_idle` — not a delivery-lifecycle role; intake interviewer, human-only)        |
 | secretary     | (none beyond `i_am_idle` — human-only chief-of-staff; reads company state + runs gated CEO directives) |
 
-Content tools (do_server) — most roles: `commit`, `note`, `say`, `dm`, `evidence`.
-Auditor is restricted to `note` (scope=reflect) + `evidence`. The `pr_reviewer`
-posts its change-request on the PR itself (no agent comms). The `prompter`
-(intake) and `secretary` are restricted to `note` + `evidence` — human-only,
-no `say`/`dm`/`notify`.
+Content tools (do_server) — most roles: `commit`, `note`, `say`, `dm`, `evidence`. Auditor is restricted to `note` (scope=reflect) + `evidence`. The `pr_reviewer` posts its change-request on the PR itself (no agent comms). The `prompter` (intake) and `secretary` are restricted to `note` + `evidence` — human-only, no `say`/`dm`/`notify`.
 
 ### MCP servers running per agent container
 
@@ -381,9 +351,7 @@ Every verb returns a standardized **Envelope**:
 - ok: `{status, task_id, next, evidence?, context_briefing}`
 - error: `{error, message, remediate, missing}`
 
-The `next` field tells the agent what to call next; the `remediate` field
-on errors tells them exactly how to fix and retry. Agents should not guess
-state — trust the response.
+The `next` field tells the agent what to call next; the `remediate` field on errors tells them exactly how to fix and retry. Agents should not guess state — trust the response.
 
 ## Services
 
@@ -443,9 +411,7 @@ ROBOCO_OLLAMA_BASE_URL=http://roboco-ollama:11434
 
 ### Container Architecture
 
-The system runs as Docker Compose services. All Dockerfiles live under
-`docker/` at the project root; every service uses `context: .` plus
-`dockerfile: docker/<name>.Dockerfile`.
+The system runs as Docker Compose services. All Dockerfiles live under `docker/` at the project root; every service uses `context: .` plus `dockerfile: docker/<name>.Dockerfile`.
 
 | Service | Purpose | Healthcheck |
 |---------|---------|-------------|
@@ -465,41 +431,23 @@ The system runs as Docker Compose services. All Dockerfiles live under
 - `/api/*` and `/ws/*` → `orchestrator:8000`
 - everything else → `panel:3000`
 
-This avoids CORS since the browser sees one origin. The Next.js code uses
-relative URLs (`/api`, `/ws`) and lets nginx do the dispatch.
+This avoids CORS since the browser sees one origin. The Next.js code uses relative URLs (`/api`, `/ws`) and lets nginx do the dispatch.
 
 ### WebSocket streams
 
-The orchestrator exposes WebSocket endpoints under `/ws` (router in
-`roboco/api/websocket.py`, `ConnectionManager` + `broadcast_*` helpers):
+The orchestrator exposes WebSocket endpoints under `/ws` (router in `roboco/api/websocket.py`, `ConnectionManager` + `broadcast_*` helpers):
 
 | Endpoint | Purpose |
 |----------|---------|
 | `/ws/channels/{id}`, `/ws/agents/{id}`, `/ws/sessions/{id}`, `/ws/notifications/{id}` | Per-resource live streams |
 | `/ws/system` | Operator/system-wide stream (no per-agent keying) — the rate-limit lifecycle (`RATE_LIMIT_HIT` / `RATE_LIMIT_LIFTED`) and live usage (`USAGE_SNAPSHOT`, pushed to the usage dashboard) |
 
-Server-side events reach these sockets through `roboco/api/websocket_bridge.py`,
-which subscribes to the `StreamEventBus` and forwards each event to the matching
-connections. To add a new live event: define an `EventType` (dotted value),
-publish it to the bus, add a `_handle_*` forwarder in `websocket_bridge`, and
-consume it on the panel via the `useWebSocket("/<endpoint>", …)` hook — do not
-stand up a parallel endpoint or client stack.
+Server-side events reach these sockets through `roboco/api/websocket_bridge.py`, which subscribes to the `StreamEventBus` and forwards each event to the matching connections. To add a new live event: define an `EventType` (dotted value), publish it to the bus, add a `_handle_*` forwarder in `websocket_bridge`, and consume it on the panel via the `useWebSocket("/<endpoint>", …)` hook — do not stand up a parallel endpoint or client stack.
 
 ### Rate limiting & usage
 
-- **Provider rate limits** are tracked in Redis (`RateLimitStateTracker`,
-  `roboco/services/gateway/`). On a provider 429 an agent calls
-  `i_am_blocked(reason="rate_limited")`; the spawn gate then **queues** (never
-  drops) further work for that provider, and a background probe-and-resume loop
-  in the orchestrator clears the limit and revives parked agents when it lifts.
-- **Token usage** is captured per agent session from the Claude Code transcript
-  via the SDK server's `/usage/sync` (hook → orchestrator finalize →
-  `agent_spawn_sessions` → `daily_usage_rollups` → dashboard). Cost uses
-  provider-aware pricing in `roboco/billing/pricing.py` (Anthropic priced;
-  local/Ollama intentionally `$0`). The token sweep also publishes
-  `USAGE_SNAPSHOT` to `/ws/system`, so the dashboard's
-  "Token Usage & Cost" panel updates live and falls back to HTTP polling when
-  the stream is down.
+- **Provider rate limits** are tracked in Redis (`RateLimitStateTracker`, `roboco/services/gateway/`). On a provider 429 an agent calls `i_am_blocked(reason="rate_limited")`; the spawn gate then **queues** (never drops) further work for that provider, and a background probe-and-resume loop in the orchestrator clears the limit and revives parked agents when it lifts.
+- **Token usage** is captured per agent session from the Claude Code transcript via the SDK server's `/usage/sync` (hook → orchestrator finalize → `agent_spawn_sessions` → `daily_usage_rollups` → dashboard). Cost uses provider-aware pricing in `roboco/billing/pricing.py` (Anthropic priced; local/Ollama intentionally `$0`). The token sweep also publishes `USAGE_SNAPSHOT` to `/ws/system`, so the dashboard's "Token Usage & Cost" panel updates live and falls back to HTTP polling when the stream is down.
 
 ### Startup Sequence
 

@@ -14,14 +14,9 @@ Developer/QA/Documenter
         CEO
 ```
 
-`escalate_up` walks this chain **one rung at a time** — it auto-routes to
-your immediate escalation target; you cannot choose a higher level or skip
-a rung.
+`escalate_up` walks this chain **one rung at a time** — it auto-routes to your immediate escalation target; you cannot choose a higher level or skip a rung.
 
-The one exception is `escalate_to_ceo`: it is a **separate** verb,
-available only to Main PM and the Board (Product Owner / Head of
-Marketing), that goes straight to the CEO for final approval of a major
-task. It is not part of the `escalate_up` chain.
+The one exception is `escalate_to_ceo`: it is a **separate** verb, available only to Main PM and the Board (Product Owner / Head of Marketing), that goes straight to the CEO for final approval of a major task. It is not part of the `escalate_up` chain.
 
 ## How to Escalate (up one rung)
 
@@ -51,9 +46,7 @@ Auto-routes to your escalation target (you cannot choose it).
 | **Escalate** | Need a decision / help from above | `escalate_up` |
 | **Block** | Can't proceed on an external dependency | `i_am_blocked` |
 
-There is no agent-facing "pause" verb. If you need to step off a task you
-claimed but haven't progressed, use `unclaim(task_id)` to return it to
-the pool.
+There is no agent-facing "pause" verb. If you need to step off a task you claimed but haven't progressed, use `unclaim(task_id)` to return it to the pool.
 
 ## Blocking a Task
 
@@ -85,8 +78,7 @@ Requirements:
 - Only Main PM, Product Owner, or Head of Marketing can call it
 - **PARENT TASKS ONLY** — subtasks cannot be escalated to CEO
 
-If you need to escalate a subtask, escalate the parent task instead. The
-CEO reviews the complete feature, not individual components.
+If you need to escalate a subtask, escalate the parent task instead. The CEO reviews the complete feature, not individual components.
 
 ## Good Escalation Format
 
@@ -105,5 +97,4 @@ Include:
 4. Communicate the decision (`say` / `dm` / `notify`)
 5. Unblock if needed: `unblock(task_id)`
 
-CRITICAL: Verbal resolution is NOT enough. To clear a block you MUST call
-`unblock(task_id)`.
+CRITICAL: Verbal resolution is NOT enough. To clear a block you MUST call `unblock(task_id)`.

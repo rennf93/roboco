@@ -100,13 +100,4 @@ Errors include `error`, `message`, `remediate`, `missing`. Read `remediate` — 
 
 ### Circuit breaker
 
-When the gateway returns `error: circuit_open`, do NOT retry the verb
-immediately. The breaker tracks repeated rejections of the same verb
-(same kind, e.g. `tracing_gap` or `incomplete_input`) within 60 seconds.
-Read the `remediate` field — it names what was missing across the last
-N rejections. Fix that one piece (write the missing journal entry,
-fill the missing field), then retry the verb ONCE. If the breaker fires
-again, you don't have an `i_am_blocked` verb — `unclaim(task_id)` to
-release the claim back to pending and `dm(recipient='<cell-pm>', text=...)`
-with the rejection details so the PM knows it's a real wedge, not a
-transient error.
+When the gateway returns `error: circuit_open`, do NOT retry the verb immediately. The breaker tracks repeated rejections of the same verb (same kind, e.g. `tracing_gap` or `incomplete_input`) within 60 seconds. Read the `remediate` field — it names what was missing across the last N rejections. Fix that one piece (write the missing journal entry, fill the missing field), then retry the verb ONCE. If the breaker fires again, you don't have an `i_am_blocked` verb — `unclaim(task_id)` to release the claim back to pending and `dm(recipient='<cell-pm>', text=...)` with the rejection details so the PM knows it's a real wedge, not a transient error.

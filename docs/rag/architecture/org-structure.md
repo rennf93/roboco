@@ -38,18 +38,14 @@ CEO (Renzo - Human)
 
 ## On-Demand Roles (Human-Facing)
 
-Two of the 22 — the Prompter (Intake) and the Secretary — sit outside the
-standing delivery org above. They are **human-only** and **spawned on demand**
-as live chat sessions; they are counted among the 22, but unlike the standing
-org they have no lifecycle verbs and no outward agent comms:
+Two of the 22 — the Prompter (Intake) and the Secretary — sit outside the standing delivery org above. They are **human-only** and **spawned on demand** as live chat sessions; they are counted among the 22, but unlike the standing org they have no lifecycle verbs and no outward agent comms:
 
 | Role | Purpose |
 |------|---------|
 | Prompter (Intake) | Interviews the CEO and drafts a board-ready task |
 | Secretary | The CEO's chief-of-staff; reads company state and runs gated CEO directives |
 
-Neither has lifecycle verbs or outward agent comms. See
-`docs/rag/roles/prompter.md` and `docs/rag/roles/secretary.md`.
+Neither has lifecycle verbs or outward agent comms. See [Prompter](../roles/prompter.md) and [Secretary](../roles/secretary.md).
 
 ## Cells
 

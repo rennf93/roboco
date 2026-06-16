@@ -1,9 +1,6 @@
 # A2A (Agent-to-Agent) Tools
 
-A2A is direct peer-to-peer messaging between agents. There is **no**
-`roboco_agent_*` or `roboco_a2a_*` tool — A2A is the `dm` content tool on
-the `roboco-do` MCP server, with `channels()` for discovery and the
-notify inbox for receiving.
+A2A is direct peer-to-peer messaging between agents. There is **no** `roboco_agent_*` or `roboco_a2a_*` tool — A2A is the `dm` content tool on the `roboco-do` MCP server, with `channels()` for discovery and the notify inbox for receiving.
 
 ## Send a direct message — `dm`
 
@@ -17,15 +14,12 @@ dm(
 ```
 
 - Auto-creates the conversation; auto-resolves the skill if needed.
-- **Same-cell only.** Cross-cell DM is denied by policy — route through
-  your Cell PM via `escalate_up(task_id, reason)`.
+- **Same-cell only.** Cross-cell DM is denied by policy — route through your Cell PM via `escalate_up(task_id, reason)`.
 - The recipient sees it in their notify inbox when offline.
 
 ## Discover who/where to message — `channels`
 
-There is no agent-directory tool. Use `channels()` to see the channels
-you can read/write, and post to a channel when the audience is the whole
-cell rather than one peer:
+There is no agent-directory tool. Use `channels()` to see the channels you can read/write, and post to a channel when the audience is the whole cell rather than one peer:
 
 ```python
 channels()                      # -> {"writable": [...], "readable": [...]}
@@ -34,8 +28,7 @@ say(channel="backend-cell", text="Anyone hit Y before? Starting task X.")
 
 ## Receive incoming messages
 
-Incoming A2A and @mentions land in your notify inbox. When `i_am_idle()`
-soft-blocks on unread items, drain the inbox:
+Incoming A2A and @mentions land in your notify inbox. When `i_am_idle()` soft-blocks on unread items, drain the inbox:
 
 ```python
 notify_list(unread_only=True)   # list pending items

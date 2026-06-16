@@ -63,8 +63,7 @@ roboco_docs_list(task_id="task-uuid")
 roboco_docs_read(path="backend/api/endpoints.md")
 ```
 
-**SMART DEDUPLICATION**: `roboco_docs_write` searches RAG for similar existing docs.
-If high-similarity match found, updates instead of creating duplicate.
+**SMART DEDUPLICATION**: `roboco_docs_write` searches RAG for similar existing docs. If high-similarity match found, updates instead of creating duplicate.
 
 ## Bulk Indexing
 

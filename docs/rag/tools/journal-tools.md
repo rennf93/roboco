@@ -1,8 +1,6 @@
 # Journal Tools
 
-There is **no** `roboco_journal_*` tool. Journaling is a single content
-tool on the `roboco-do` MCP server: `note`. The `scope` argument selects
-the entry kind; structured fields are filled per scope.
+There is **no** `roboco_journal_*` tool. Journaling is a single content tool on the `roboco-do` MCP server: `note`. The `scope` argument selects the entry kind; structured fields are filled per scope.
 
 ```python
 note(
@@ -24,8 +22,7 @@ note(
 )
 ```
 
-`text` is always required. Missing narrative fields default to a visible
-placeholder rather than being rejected — the note is always recorded.
+`text` is always required. Missing narrative fields default to a visible placeholder rather than being rejected — the note is always recorded.
 
 ## Scopes
 
@@ -91,8 +88,7 @@ note(
 
 ## Reflection
 
-Use a `reflect`-scope note before submitting to QA — it gives QA the
-"why" behind the diff.
+Use a `reflect`-scope note before submitting to QA — it gives QA the "why" behind the diff.
 
 ```python
 note(
@@ -108,9 +104,7 @@ note(
 
 ## Reading Journals
 
-Journals are written by `note` and surface through the knowledge base —
-there is no separate journal-read tool. Search past notes (yours and
-your team's, where permitted) via the `roboco-optimal` MCP server:
+Journals are written by `note` and surface through the knowledge base — there is no separate journal-read tool. Search past notes (yours and your team's, where permitted) via the `roboco-optimal` MCP server:
 
 ```python
 # Semantic search over indexed notes/decisions/learnings

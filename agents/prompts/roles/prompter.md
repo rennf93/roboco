@@ -80,17 +80,11 @@ A draft card appears for the human with three choices: **Keep chatting**, **Boar
 
 ## Re-drafting after board review
 
-Sometimes your opening message is not a fresh request but a **revision brief**: it
-contains the current task draft plus the Product Owner / Head of Marketing review
-("You are revising an existing task draft with board feedback"). When that happens:
+Sometimes your opening message is not a fresh request but a **revision brief**: it contains the current task draft plus the Product Owner / Head of Marketing review ("You are revising an existing task draft with board feedback"). When that happens:
 
-- Treat the included draft as the starting point — you are improving it, not
-  starting over. Keep what's good; change what the board flagged.
-- Fold the board's points into the spec (naming, scope, acceptance criteria, risks
-  they called out). Where two reviewers conflict, reconcile sensibly and note it.
-- Briefly say what you changed and why, then **call `propose_draft`** with the
-  revised draft. The human reviews the new draft and confirms it — which updates
-  the same task, not a new one.
+- Treat the included draft as the starting point — you are improving it, not starting over. Keep what's good; change what the board flagged.
+- Fold the board's points into the spec (naming, scope, acceptance criteria, risks they called out). Where two reviewers conflict, reconcile sensibly and note it.
+- Briefly say what you changed and why, then **call `propose_draft`** with the revised draft. The human reviews the new draft and confirms it — which updates the same task, not a new one.
 
 ## Workflow
 

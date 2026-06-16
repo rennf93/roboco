@@ -29,16 +29,10 @@ What each role can do in the system.
 | Docs Complete (`i_documented`) | - | - | - | - | - | - | - | Yes |
 
 Notes (verified against `roboco/foundation/policy/lifecycle.py`):
-- **Create / Assign** (`create_subtask`, `delegate`) are PM-only: `cell_pm`
-  and `main_pm`. The Board (Product Owner, Head Marketing), Auditor, and CEO
-  do NOT create or assign tasks via the gateway.
-- **Cancel** is allowed to PM roles + CEO (`cell_pm`, `main_pm`, `ceo`). The
-  Board and Auditor CANNOT cancel.
-- **Complete** (final approve/merge) is PM-only (`cell_pm`, `main_pm`). The
-  CEO acts only on tasks escalated to `awaiting_ceo_approval`.
-- **Claim** is role-matched: developers claim code tasks, QA claims
-  `awaiting_qa`, documenters claim `awaiting_documentation`. PMs can claim
-  the planning/coordination work assigned to them.
+- **Create / Assign** (`create_subtask`, `delegate`) are PM-only: `cell_pm` and `main_pm`. The Board (Product Owner, Head Marketing), Auditor, and CEO do NOT create or assign tasks via the gateway.
+- **Cancel** is allowed to PM roles + CEO (`cell_pm`, `main_pm`, `ceo`). The Board and Auditor CANNOT cancel.
+- **Complete** (final approve/merge) is PM-only (`cell_pm`, `main_pm`). The CEO acts only on tasks escalated to `awaiting_ceo_approval`.
+- **Claim** is role-matched: developers claim code tasks, QA claims `awaiting_qa`, documenters claim `awaiting_documentation`. PMs can claim the planning/coordination work assigned to them.
 
 ## Index Permissions
 
@@ -55,9 +49,7 @@ Note: Board (Product Owner, Head Marketing) can only index docs, not code.
 
 ## Notification Permissions
 
-Sending notifications means calling the `notify(target, text, priority)`
-content tool. The sender allowlist is `NOTIFY_SENDER_ROLES` in
-`roboco/foundation/policy/communications.py`.
+Sending notifications means calling the `notify(target, text, priority)` content tool. The sender allowlist is `NOTIFY_SENDER_ROLES` in `roboco/foundation/policy/communications.py`.
 
 | Role | Can Send (`notify`) | Scope |
 |------|---------------------|-------|
@@ -71,26 +63,19 @@ content tool. The sender allowlist is `NOTIFY_SENDER_ROLES` in
 | qa | No | - |
 | documenter | No | - |
 
-Non-senders (developer, qa, documenter, auditor) still communicate via
-`say(channel, text)` for channel posts and `dm(recipient, text)` for direct
-agent-to-agent messages — those are not ack-required notifications. The
-Auditor is restricted further: it has `note(scope=reflect)` + `evidence` +
-read-only `notify_list`/`notify_get`/`channels`, and NO `say`/`dm`/`notify`.
+Non-senders (developer, qa, documenter, auditor) still communicate via `say(channel, text)` for channel posts and `dm(recipient, text)` for direct agent-to-agent messages — those are not ack-required notifications. The Auditor is restricted further: it has `note(scope=reflect)` + `evidence` + read-only `notify_list`/`notify_get`/`channels`, and NO `say`/`dm`/`notify`.
 
 ## Task-Creator Roles
 
-These roles can create/assign tasks (`create_subtask`, `delegate` — PM-only
-per `lifecycle.py`):
+These roles can create/assign tasks (`create_subtask`, `delegate` — PM-only per `lifecycle.py`):
 - `main_pm`
 - `cell_pm`
 
-The Board (`product_owner`, `head_marketing`), the Auditor, and the CEO do
-NOT create or assign tasks through the gateway.
+The Board (`product_owner`, `head_marketing`), the Auditor, and the CEO do NOT create or assign tasks through the gateway.
 
 ## Cancellation Roles
 
-These roles can cancel tasks (the `cancel` action's `allowed_roles` in
-`lifecycle.py` = PM roles + CEO):
+These roles can cancel tasks (the `cancel` action's `allowed_roles` in `lifecycle.py` = PM roles + CEO):
 - `cell_pm`
 - `main_pm`
 - `ceo`

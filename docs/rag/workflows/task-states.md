@@ -73,8 +73,4 @@ backlog → pending (a PM activates the task during `triage`)
 
 ## Checking State
 
-You don't poll task state directly — every flow verb returns a
-standardized envelope whose `status` and `next` fields tell you the
-task's current state and what to call next. Trust the envelope rather
-than guessing. To pull the full task context (criteria, prior notes,
-handoff), call `evidence(task_id)`.
+You don't poll task state directly — every flow verb returns a standardized envelope whose `status` and `next` fields tell you the task's current state and what to call next. Trust the envelope rather than guessing. To pull the full task context (criteria, prior notes, handoff), call `evidence(task_id)`.

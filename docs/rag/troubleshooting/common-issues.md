@@ -57,8 +57,7 @@
 Cell members → Cell PM → Main PM → Product Owner → CEO
 ```
 
-Cannot skip levels or choose target. (Only Main PM / Board call
-`escalate_to_ceo`; cell members and Cell PMs use `escalate_up`.)
+Cannot skip levels or choose target. (Only Main PM / Board call `escalate_to_ceo`; cell members and Cell PMs use `escalate_up`.)
 
 ## Tests Failing Before Submit
 
@@ -127,10 +126,8 @@ roboco_docs_write({
 **Problem**: Sent a `dm` but no response
 
 **Check**:
-1. Is the recipient in your **own cell**? Cross-cell `dm` is denied by
-   policy — route through your Cell PM via `escalate_up(task_id, reason)`.
-2. Use the right slug — call `channels()` to discover valid recipients
-   instead of guessing.
+1. Is the recipient in your **own cell**? Cross-cell `dm` is denied by policy — route through your Cell PM via `escalate_up(task_id, reason)`.
+2. Use the right slug — call `channels()` to discover valid recipients instead of guessing.
 3. Did you include `task_id`? It anchors the message to the work.
 
 **Solutions**:
@@ -144,5 +141,4 @@ roboco_docs_write({
 
 **Cause**: Direct A2A is same-cell only — there is no cross-cell `dm`
 
-**Solution**: Escalate up the chain. Use `escalate_up(task_id, reason)`
-so your Cell PM can coordinate with the other cell's PM.
+**Solution**: Escalate up the chain. Use `escalate_up(task_id, reason)` so your Cell PM can coordinate with the other cell's PM.
