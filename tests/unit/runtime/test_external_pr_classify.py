@@ -51,3 +51,18 @@ def test_pr_author_allowed(
     pr: dict[str, object], allowlist: set[str], *, expected: bool
 ) -> None:
     assert AgentOrchestrator._pr_author_allowed(pr, allowlist) is expected
+
+
+@pytest.mark.parametrize(
+    ("quick_context", "expected"),
+    [
+        ("external_pr_supersede pr=42 review=abc", 42),
+        ("external_pr_supersede pr=7 review=abc closed=1", 7),
+        ("external_pr_supersede pr=50 review=abc", 50),  # not confused by pr=5
+        ("", None),
+        ("no marker here", None),
+        ("external_pr_supersede pr=notanint review=abc", None),
+    ],
+)
+def test_parse_supersede_pr(quick_context: str, expected: int | None) -> None:
+    assert AgentOrchestrator._parse_supersede_pr(quick_context) == expected

@@ -4598,8 +4598,54 @@ Start by:
                 )
                 if created is not None:
                     ingested += 1
+        # Close-on-land: retire the contributor PR for any supersede that merged.
+        await self._close_superseded_prs(git, task_service, system_id)
         await db.commit()
         return ingested
+
+    async def _close_superseded_prs(
+        self, git: Any, task_service: Any, system_id: "UUID"
+    ) -> int:
+        """Close + link the contributor PR for each landed supersede umbrella.
+
+        Idempotent: each umbrella is marked ``closed=1`` after its contributor PR
+        is closed, so it is processed once. ``delete_branch=False`` — the
+        contributor's branch lives on their fork; we never touch it. Caller
+        commits.
+        """
+        closed = 0
+        for umbrella in await task_service.supersede_umbrellas_pending_close():
+            pr_number = self._parse_supersede_pr(umbrella.quick_context or "")
+            if pr_number is None:
+                continue
+            try:
+                await git.close_pull_request(
+                    pr_number,
+                    comment=(
+                        "Superseded by the roboco team's own PR — the work was "
+                        "finished and hardened to our standards. Thanks for the "
+                        "contribution!"
+                    ),
+                    delete_branch=False,
+                    actor_agent_id=system_id,
+                )
+            except Exception:
+                logger.exception("close-on-land failed", pr_number=pr_number)
+                continue
+            await task_service.mark_supersede_pr_closed(cast("UUID", umbrella.id))
+            closed += 1
+        return closed
+
+    @staticmethod
+    def _parse_supersede_pr(quick_context: str) -> int | None:
+        """Extract the contributor PR number from a supersede umbrella marker."""
+        for part in quick_context.split():
+            if part.startswith("pr="):
+                try:
+                    return int(part[3:])
+                except ValueError:
+                    return None
+        return None
 
     @staticmethod
     def _pr_author_allowed(pr: dict[str, Any], allowlist: set[str]) -> bool:

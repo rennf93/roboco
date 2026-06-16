@@ -821,6 +821,33 @@ class TaskService(BaseService):
                 return task
         return None
 
+    async def supersede_umbrellas_pending_close(self) -> list[TaskTable]:
+        """Landed supersede umbrellas whose contributor PR hasn't been closed yet.
+
+        A supersede umbrella that reached COMPLETED means our own PR merged, so
+        the contributor's PR should be closed + linked. The ``closed=1`` marker
+        in quick_context makes close-on-land idempotent (closed only once).
+        """
+        result = await self.session.execute(
+            select(TaskTable).where(
+                TaskTable.source == "external_pr_supersede",
+                TaskTable.status == TaskStatus.COMPLETED,
+            )
+        )
+        return [
+            task
+            for task in result.scalars().all()
+            if "closed=1" not in (task.quick_context or "")
+        ]
+
+    async def mark_supersede_pr_closed(self, task_id: UUID) -> None:
+        """Record that a landed supersede's contributor PR has been closed."""
+        task = await self.get(task_id)
+        if task is None:
+            return
+        task.quick_context = f"{task.quick_context or ''} closed=1".strip()
+        await self.session.flush()
+
     async def _inherit_parent_session(
         self,
         task_id: UUID,
