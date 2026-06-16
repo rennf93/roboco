@@ -5,6 +5,82 @@ All notable changes to RoboCo are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-06-16
+
+### Added
+
+- **Acceptance-criteria & decomposition guardrails.** Every task's acceptance
+  criteria now carry stable per-criterion ids, and each decomposed subtask
+  records which parent criteria it is responsible for (`covers_parent_criteria`).
+  Two gates build on that linkage: a PM can no longer go idle leaving a parent
+  criterion with no subtask responsible for it (the decomposition floor), and a
+  parent can no longer complete / submit up / escalate to the CEO unless every
+  one of its criteria traces to a child that passed QA on it (the roll-up gate).
+  PMs see live coverage in their briefings (`parent_ac_coverage`,
+  `unclaimed_parent_acs`) after each `delegate`. Safe-by-construction: every gate
+  stays inert until a PM starts declaring coverage, so existing decompositions
+  are never blocked. (Migration 036.)
+- **Per-dev sequenced code queues.** A cell PM now delegates each developer its
+  full queue of code subtasks up front instead of one task at a time. Both cell
+  developers build in parallel, and each works its own queue one task at a time,
+  in order — enforced by a per-lane dispatch barrier, with leaf PRs still merged
+  in sequence into the shared cell branch. The old "two code subtasks per parent"
+  ceiling is removed; the 12-subtask hard cap and a same-title duplicate guard
+  remain.
+- **Unified Business page.** The Company Goals, Secretary, and Pitches pages are
+  consolidated into one tabbed **Business** page (Goals / Secretary / Pitches),
+  modeled on the Knowledge Base page with deep-linkable `?tab=` URLs. A single
+  sidebar entry replaces four.
+
+### Changed
+
+- **Company Goals, Secretary, and Pitches brought to the panel's standards.**
+  Skeleton loading and offline/error states, structured fields instead of raw
+  JSON dumps, required-note confirmation dialogs for pitch and directive
+  decisions, and markdown rendering in the Secretary chat.
+
+### Removed
+
+- **The standalone Cockpit page.** Its data duplicated the Dashboard and Metrics;
+  its one unique element — the strategy-engine "needs your attention" signals —
+  was relocated to the Dashboard, served by a new lightweight
+  `GET /api/cockpit/signals` endpoint. The `/cockpit`, `/company-goals`,
+  `/secretary`, and `/pitches` panel routes are all retired (404); the Goals,
+  Secretary, and Pitches views now live under `/business?tab=…`.
+
+### Fixed
+
+- **Agent MCP/SDK servers no longer stall on spawn.** They launch with
+  `uv run --no-sync`, so a workspace clone whose lockfile has drifted from the
+  baked image no longer triggers a multi-minute dependency re-sync that left the
+  gateway tools stuck "pending" and the developer respawning in a loop.
+- **`open_pr` no longer fails on a missing base branch.** `create_pr`
+  auto-creates and pushes the PR's base branch off the default branch when it is
+  not yet on the remote, instead of returning a GitHub 422.
+- **Admin status overrides restore task ownership.** Forcing a blocked task back
+  to pending / in_progress now restores its pre-block assignee, so an escalated
+  code task no longer re-enters the pool still owned by a PM and is dispatched to
+  that PM as if it were a developer.
+- **A developer can idle past its own queued work.** With per-dev queues, a dev
+  whose current leaf has moved to QA now idles cleanly while its later queue
+  items wait their turn (the orchestrator respawns it when the lane clears),
+  instead of looping on the idle guard or claiming the next leaf out of order.
+- **26 verified panel UI bugs** across the dashboard, kanban, task detail, and
+  API layer: consistent priority labels and badge sizing, dark-mode coverage,
+  kanban drag-and-drop that prompts for the required audit note, auto-scroll in
+  the message and mentor-chat views, corrected WebSocket reconnect counting,
+  `PATCH` (not `PUT`) for partial task updates, working "Activate Task" and
+  "Start Revision" actions for backlog and needs-revision tasks (no more
+  dead-end menus), the previously-dead "New / Generate Report" buttons, a
+  duplicate agent id, a "0h ago" timestamp, and more.
+
+### Internal
+
+- Verb-table generation no longer emits tables for the driver-based roles
+  (prompter, secretary), whose real tools live in their SDK drivers rather than
+  the gateway verb surface; and the `_briefing_for` typed stub was aligned with
+  its implementation so the composed choreographer type-checks under full mypy.
+
 ## [0.4.0] - 2026-06-15
 
 ### Added
@@ -154,6 +230,7 @@ behaves exactly as before.
 - Next.js control panel (`panel/`) behind a single nginx entry point.
 - Multi-agent workspace management with per-project encrypted git tokens.
 
+[0.5.0]: https://github.com/rennf93/roboco/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/rennf93/roboco/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/rennf93/roboco/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/rennf93/roboco/compare/v0.1.0...v0.2.0
