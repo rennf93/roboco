@@ -11,7 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { RefreshCw } from "lucide-react";
+import { ChevronLeft, ChevronRight, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import {
   DndContext,
@@ -64,6 +64,7 @@ export function KanbanBoard({
   const updateTask = useUpdateTask();
   const [activeTask, setActiveTask] = useState<Task | null>(null);
   const [pendingNotesAction, setPendingNotesAction] = useState<PendingNotesAction | null>(null);
+  const [activeColumnIndex, setActiveColumnIndex] = useState(0);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -293,7 +294,56 @@ export function KanbanBoard({
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
       >
-        <div className="flex gap-4 overflow-x-auto pb-4">
+        {/* Mobile: single-column view with prev/next navigator (hidden on lg+) */}
+        <div className="lg:hidden">
+          <div className="flex items-center gap-2 mb-4">
+            <Button
+              variant="outline"
+              size="icon"
+              className="min-h-11 min-w-11 shrink-0"
+              onClick={() => setActiveColumnIndex((i) => Math.max(0, i - 1))}
+              disabled={activeColumnIndex === 0}
+              aria-label="Previous column"
+            >
+              <ChevronLeft className="h-5 w-5" />
+            </Button>
+            <p className="flex-1 text-center text-sm font-semibold">
+              <span className="text-muted-foreground font-normal text-xs mr-1">
+                {activeColumnIndex + 1}/{columns.length}
+              </span>
+              {columns[activeColumnIndex]?.title}
+            </p>
+            <Button
+              variant="outline"
+              size="icon"
+              className="min-h-11 min-w-11 shrink-0"
+              onClick={() =>
+                setActiveColumnIndex((i) => Math.min(columns.length - 1, i + 1))
+              }
+              disabled={activeColumnIndex === columns.length - 1}
+              aria-label="Next column"
+            >
+              <ChevronRight className="h-5 w-5" />
+            </Button>
+          </div>
+          {columns[activeColumnIndex] && (
+            <KanbanColumn
+              key={columns[activeColumnIndex].id}
+              id={columns[activeColumnIndex].id}
+              title={columns[activeColumnIndex].title}
+              status={columns[activeColumnIndex].status}
+              tasks={tasksByStatus[columns[activeColumnIndex].status] || []}
+              color={columns[activeColumnIndex].color}
+              isLoading={isLoading}
+              onAction={handleAction}
+              showQaActions={showQaActions}
+              className="w-full sm:w-full"
+            />
+          )}
+        </div>
+
+        {/* Desktop: horizontal scrolling layout (hidden below lg) */}
+        <div className="hidden lg:flex gap-4 overflow-x-auto pb-4">
           {columns.map((col) => (
             <KanbanColumn
               key={col.id}

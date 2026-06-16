@@ -6,6 +6,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { KanbanCard } from "./kanban-card";
 import { useDroppable } from "@dnd-kit/core";
+import { cn } from "@/lib/utils";
 
 interface KanbanColumnProps {
   id: string;
@@ -16,6 +17,8 @@ interface KanbanColumnProps {
   isLoading: boolean;
   onAction?: (action: string, taskId: string) => void;
   showQaActions?: boolean;
+  /** Extra Tailwind classes forwarded to the root element (e.g. w-full for mobile). */
+  className?: string;
 }
 
 export function KanbanColumn({
@@ -27,6 +30,7 @@ export function KanbanColumn({
   isLoading,
   onAction,
   showQaActions,
+  className,
 }: KanbanColumnProps) {
   void _id; // Reserved for future use
   const { setNodeRef, isOver } = useDroppable({
@@ -36,9 +40,12 @@ export function KanbanColumn({
   return (
     <div
       ref={setNodeRef}
-      className={`flex flex-col rounded-lg p-3 w-72 shrink-0 sm:w-80 ${color} ${
-        isOver ? "ring-2 ring-primary ring-offset-2" : ""
-      }`}
+      className={cn(
+        "flex flex-col rounded-lg p-3 w-72 shrink-0 sm:w-80",
+        color,
+        isOver && "ring-2 ring-primary ring-offset-2",
+        className,
+      )}
     >
       <div className="flex items-center justify-between mb-3">
         <h3 className="font-semibold text-sm text-gray-800 dark:text-gray-100">{title}</h3>
