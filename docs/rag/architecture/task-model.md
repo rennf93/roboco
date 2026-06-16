@@ -8,9 +8,25 @@
 | `title` | String | Task title |
 | `description` | Text | Detailed description |
 | `acceptance_criteria` | Array | How we know it's done |
+| `acceptance_criteria_ids` | Array | Stable per-criterion id (1:1 with `acceptance_criteria`) |
+| `parent_ac_refs` | Array | Parent AC ids this subtask is responsible for |
 | `status` | Enum | Lifecycle state |
 | `priority` | Int | 0=P0 (highest) to 3=P3 |
 | `team` | Enum | backend, frontend, ux_ui |
+
+## Acceptance-Criteria Tracking
+
+Every task's `acceptance_criteria` get a parallel list of stable
+`acceptance_criteria_ids` — one id per criterion, generated automatically when a
+task is created. The ids are stable across edits, so other tasks can reference a
+specific criterion.
+
+When a parent task is decomposed, each subtask declares which parent criteria it
+covers in `parent_ac_refs` (set from the `covers_parent_criteria` argument to
+`delegate`). That child→parent link is what lets the org guarantee a
+decomposition actually covers the parent's full intent. See
+`docs/rag/workflows/task-planning.md` for the coverage gates and the PM's
+coverage briefing.
 
 ## Task Types
 

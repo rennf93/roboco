@@ -35,12 +35,13 @@ checkout by hand.
 ```python
 give_me_work()                  # returns an awaiting_qa task
 claim_review(task_id)           # claim for review (auto-checks-out dev branch)
-pass(task_id, notes)            # awaiting_qa -> awaiting_documentation
-fail(task_id, issues=[...])     # awaiting_qa -> needs_revision (dev gets it back)
+pass_review(task_id, notes)     # awaiting_qa -> awaiting_documentation
+fail_review(task_id, issues=[...])
+                                # awaiting_qa -> needs_revision (dev gets it back)
 unclaim(task_id) / resume(task_id) / i_am_idle()
 ```
 
-`notes` (on pass) and `issues` (on fail) must be substantive — the
+`notes` (on pass_review) and `issues` (on fail_review) must be substantive — the
 enforcement layer rejects empty or near-empty content. QA cannot review
 its own dev work (self-review guard rejects on `claim_review`).
 
@@ -63,14 +64,25 @@ the doc phase after a code task passes QA.
 triage()                        # list actionable tasks in your cell
 i_will_plan(task_id, plan, approach)
                                 # claim + plan + start a parent task
-delegate(parent_task_id, title, description, assigned_to, team,
-         task_type, nature, estimated_complexity, acceptance_criteria)
-                                # create a subtask under the current task
+delegate(parent_task_id, title, description, assigned_to, team, task_type,
+         nature, estimated_complexity, acceptance_criteria,
+         covers_parent_criteria=[...])
+                                # create a subtask; covers_parent_criteria maps
+                                # it to the parent ACs it is responsible for
+reassign(task_id, assigned_to)  # move a subtask to a different agent
 unblock(task_id)                # blocked -> in_progress (PM only)
 submit_up(task_id, notes)       # open cell->root PR; -> awaiting_pm_review
 complete(task_id, notes)        # awaiting_pm_review -> completed (merges leaf PR)
 escalate_up(task_id, reason)    # escalate to your escalation target
 ```
+
+After `i_will_plan` and each `delegate`, the envelope includes a coverage view
+of the parent — `parent_ac_coverage` (per-criterion `id` / `text` / `claimed` /
+`verified`) and `unclaimed_parent_acs` (criteria no subtask covers yet). A
+parent cannot idle with unclaimed criteria, nor `complete` / `submit_up` /
+`escalate_to_ceo` until every criterion traces to a child that passed QA. These
+gates stay inert until you start declaring `covers_parent_criteria`. See
+`docs/rag/workflows/task-planning.md`.
 
 **Delegation rules** (enforced): `main_pm -> cell_pm`; `cell_pm -> its
 team's devs`. Cell PMs receive planning-typed parent tasks; devs get
@@ -80,7 +92,10 @@ verb for agents.
 
 ## Main PM flow
 
-The Main PM has the Cell PM verbs **plus**:
+The Main PM shares most Cell PM verbs (`i_will_plan`, `delegate`, `complete`,
+`unblock`, `triage`, `escalate_up`), **adds** the two below, and — unlike a Cell
+PM — has **no** `submit_up` or `reassign` (there is no PM above it to submit to;
+it completes or escalates the root directly):
 
 ```python
 triage_all()                    # list actionable tasks across all teams
