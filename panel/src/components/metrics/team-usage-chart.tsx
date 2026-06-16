@@ -66,7 +66,7 @@ export function TeamUsageChart({ data, isLoading }: TeamUsageChartProps) {
                 ]}
                 contentStyle={{ fontSize: 12 }}
               />
-              <Bar dataKey="Tokens" fill="var(--chart-2)" radius={[3, 3, 0, 0]} />
+              <Bar dataKey="Tokens" fill="#3b82f6" radius={[3, 3, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         )}

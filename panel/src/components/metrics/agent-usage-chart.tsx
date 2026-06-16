@@ -69,7 +69,7 @@ export function AgentUsageChart({ data, isLoading }: AgentUsageChartProps) {
                 ]}
                 contentStyle={{ fontSize: 12 }}
               />
-              <Bar dataKey="Tokens" fill="var(--chart-1)" radius={[3, 3, 0, 0]} />
+              <Bar dataKey="Tokens" fill="#3b82f6" radius={[3, 3, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         )}
