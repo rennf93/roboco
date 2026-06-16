@@ -1,5 +1,6 @@
 "use client";
 
+import { useRef, useEffect } from "react";
 import { Message } from "@/types";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -12,6 +13,13 @@ interface MessageListProps {
 }
 
 export function MessageList({ messages, isLoading }: MessageListProps) {
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll to the newest message using a sentinel div + scrollIntoView
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
   if (isLoading) {
     return (
       <div className="space-y-4 p-4">
@@ -44,6 +52,8 @@ export function MessageList({ messages, isLoading }: MessageListProps) {
         {messages.map((message) => (
           <MessageItem key={message.id} message={message} />
         ))}
+        {/* Sentinel div — scrollIntoView targets this to keep the newest message visible */}
+        <div ref={bottomRef} />
       </div>
     </ScrollArea>
   );

@@ -12,17 +12,22 @@ import { CeoApprovalQueue } from "./ceo-approval-queue";
 import type { Activity } from "./activity-item";
 import { Button } from "@/components/ui/button";
 import { UsageOverviewPanel } from "./usage-overview-panel";
-import { RefreshCw, Settings } from "lucide-react";
+import { RefreshCw, Settings, AlertCircle } from "lucide-react";
 import Link from "next/link";
 
 export function CommandCenter() {
-  const { data: overview, isLoading: loadingOverview, refetch: refetchOverview } = useCeoOverview();
-  const { data: flags, isLoading: loadingFlags } = useAuditorFlags({ resolved: false });
-  const { data: tasks, isLoading: loadingTasks } = useTasks();
-  const { data: activity, isLoading: loadingActivity } = useRecentActivity(24);
+  const { data: overview, isLoading: loadingOverview, isError: errorOverview, refetch: refetchOverview } = useCeoOverview();
+  const { data: flags, isLoading: loadingFlags, isError: errorFlags, refetch: refetchFlags } = useAuditorFlags({ resolved: false });
+  const { data: tasks, isLoading: loadingTasks, isError: errorTasks, refetch: refetchTasks } = useTasks();
+  const { data: activity, isLoading: loadingActivity, isError: errorActivity, refetch: refetchActivity } = useRecentActivity(24);
+
+  const hasError = errorOverview || errorFlags || errorTasks || errorActivity;
 
   const handleRefresh = () => {
     refetchOverview();
+    refetchFlags();
+    refetchTasks();
+    refetchActivity();
   };
 
   return (
@@ -47,6 +52,14 @@ export function CommandCenter() {
           </Link>
         </div>
       </div>
+
+      {/* Error indicator */}
+      {hasError && (
+        <div className="flex items-center gap-2 rounded-md border border-destructive/50 bg-destructive/10 px-4 py-2 text-sm text-destructive">
+          <AlertCircle className="h-4 w-4 shrink-0" />
+          Some data failed to load. Click Refresh to try again.
+        </div>
+      )}
 
       {/* Team Health */}
       <section>

@@ -26,9 +26,14 @@ export function ChatComposer({
   const handleSend = async () => {
     const text = value.trim();
     if (!text || isSending || disabled) return;
-    setValue("");
-    await onSend(text);
-    // Refocus after send
+    try {
+      await onSend(text);
+      // Clear only after a successful send — a failed send leaves the original text intact.
+      setValue("");
+    } catch {
+      // onSend threw; leave the text so the user can retry.
+    }
+    // Refocus after send (success or failure)
     textareaRef.current?.focus();
   };
 

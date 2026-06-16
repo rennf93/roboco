@@ -139,7 +139,7 @@ export const tasksApi = {
       mockTasks[idx] = { ...mockTasks[idx], ...updates, updated_at: new Date().toISOString() };
       return mockTasks[idx];
     }
-    const { data } = await api.put<Task>("/tasks/" + taskId, updates);
+    const { data } = await api.patch<Task>("/tasks/" + taskId, updates);
     return data;
   },
 

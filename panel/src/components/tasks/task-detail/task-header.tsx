@@ -297,6 +297,12 @@ export function TaskHeader({ task, onAction }: TaskHeaderProps) {
       case TaskStatus.CANCELLED:
         actions.push({ label: "Reopen Task", action: "reopen", icon: <Play className="h-4 w-4 mr-2" /> });
         break;
+      case TaskStatus.BACKLOG:
+        actions.push({ label: "Activate Task", action: "activate", icon: <Play className="h-4 w-4 mr-2" /> });
+        break;
+      case TaskStatus.NEEDS_REVISION:
+        actions.push({ label: "Start Revision", action: "start-revision", icon: <Play className="h-4 w-4 mr-2" /> });
+        break;
     }
 
     // Cancel is always available for non-terminal states

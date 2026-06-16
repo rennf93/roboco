@@ -181,7 +181,7 @@ export function CreateTaskDialog() {
   };
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={(newOpen) => { setOpen(newOpen); if (!newOpen) resetForm(); }}>
       <DialogTrigger asChild>
         <Button>
           <Plus className="h-4 w-4 mr-2" />
