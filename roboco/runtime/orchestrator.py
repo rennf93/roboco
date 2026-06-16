@@ -4632,6 +4632,7 @@ Start by:
         umbrella for Main PM to delegate to a cell. Returns a status dict.
         """
         from roboco.db import get_db_context
+        from roboco.models.base import TaskStatus
         from roboco.services.git import GitService
         from roboco.services.project import get_project_service
         from roboco.services.task import get_task_service
@@ -4646,26 +4647,51 @@ Start by:
                     "ok": False,
                     "error": "review task missing project or pr_number",
                 }
+            # Review-first: only supersede a PR the org has actually reviewed.
+            if review.status != TaskStatus.COMPLETED:
+                return {
+                    "ok": False,
+                    "error": "review not complete — review the PR first",
+                }
             project = await get_project_service(db).get(cast("UUID", review.project_id))
             if project is None:
                 return {"ok": False, "error": "project not found"}
             pr_number = int(review.pr_number)
+            project_id = cast("UUID", review.project_id)
+            # Idempotent: a repeat call returns the existing umbrella — no second
+            # branch cut, no duplicate cell takeover.
+            existing = await task_service.find_supersede_umbrella(project_id, pr_number)
+            if existing is not None:
+                return {
+                    "ok": True,
+                    "supersede_task_id": str(existing.id),
+                    "branch": existing.branch_name,
+                    "already_superseded": True,
+                }
+            system_id = _foundation.AGENTS["system"].uuid
+            branch_name = f"feature/main_pm/supersede-pr-{pr_number}"
             # The CEO authorized fetching + finishing the contributor's code.
             review.confirmed_by_human = True
-            await db.flush()
-            git = GitService(db)
-            system_id = _foundation.AGENTS["system"].uuid
-            workspace = await git.get_workspace(project.slug, agent_id=system_id)
-            branch_name = f"feature/main_pm/supersede-pr-{pr_number}"
-            await git.create_branch_from_pr_head(
-                workspace, project.slug, pr_number, branch_name
-            )
+            # Create the umbrella BEFORE the push: a create failure then can't
+            # orphan a pushed branch. Only a commit failure after the push could
+            # (rare) — the branch is logged so an orphan stays discoverable.
             umbrella = await task_service.create_supersede_umbrella(
                 review_task_id=review_task_id,
                 branch_name=branch_name,
                 created_by=system_id,
             )
             umbrella_id = str(umbrella.id) if umbrella is not None else None
+            git = GitService(db)
+            workspace = await git.get_workspace(project.slug, agent_id=system_id)
+            logger.warning(
+                "supersede: cutting roboco branch off untrusted fork PR head",
+                branch=branch_name,
+                pr_number=pr_number,
+                project=project.slug,
+            )
+            await git.create_branch_from_pr_head(
+                workspace, project.slug, pr_number, branch_name
+            )
             await db.commit()
         self._dispatch_wake.set()
         return {"ok": True, "supersede_task_id": umbrella_id, "branch": branch_name}

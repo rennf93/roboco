@@ -743,9 +743,11 @@ class TaskService(BaseService):
     ) -> TaskTable | None:
         """Create the supersede coordination task for a reviewed external PR.
 
-        A planning task on the same repo, parented to the review task (so the
-        contributor PR number stays reachable as ``review.pr_number`` for
-        close-on-land), handed to Main PM to delegate the code work to a cell.
+        A ROOT planning task on the same repo (NOT parented to the review task —
+        that would burn a MAX_TASK_DEPTH level and block the cell->dev
+        decomposition), handed to Main PM to delegate the code work to a cell.
+        The contributor PR number + review-task id are carried in
+        ``quick_context`` (so close-on-land and dedup don't need a parent walk).
         ``branch_name`` is the roboco-owned branch already cut from the
         contributor's fork head, so the delegated code subtask builds on the
         contributor's commits (we never push to the fork). ``confirmed_by_human``
@@ -776,15 +778,18 @@ class TaskService(BaseService):
             nature=TaskNature.TECHNICAL,
             estimated_complexity=Complexity.MEDIUM,
             project_id=cast("UUID", review.project_id),
-            parent_task_id=review_task_id,
             source="external_pr_supersede",
             confirmed_by_human=True,
         )
         umbrella = await self.create(req)
         # Carry the pre-cut fork branch so the delegated code subtask cuts off
         # the contributor's commits (via _resolve_base_branch's parent-branch
-        # rule), not the default branch.
+        # rule), not the default branch. The marker links back to the review +
+        # contributor PR for dedup and close-on-land (no parent link needed).
         umbrella.branch_name = branch_name
+        umbrella.quick_context = (
+            f"external_pr_supersede pr={pr_number} review={review_task_id}"
+        )
         await self.session.flush()
         self.log.info(
             "Supersede umbrella created",
@@ -793,6 +798,28 @@ class TaskService(BaseService):
             pr_number=pr_number,
         )
         return umbrella
+
+    async def find_supersede_umbrella(
+        self, project_id: UUID, pr_number: int
+    ) -> TaskTable | None:
+        """The existing (non-cancelled) supersede umbrella for this PR, or None.
+
+        Idempotency for the supersede trigger — a repeat CEO call must not cut a
+        second branch or spawn a second umbrella. Matches the ``quick_context``
+        marker exactly (``pr={n} review=`` won't false-match pr=50 for pr=5).
+        """
+        result = await self.session.execute(
+            select(TaskTable).where(
+                TaskTable.project_id == project_id,
+                TaskTable.source == "external_pr_supersede",
+                TaskTable.status != TaskStatus.CANCELLED,
+            )
+        )
+        needle = f"pr={pr_number} review="
+        for task in result.scalars().all():
+            if needle in (task.quick_context or ""):
+                return task
+        return None
 
     async def _inherit_parent_session(
         self,
