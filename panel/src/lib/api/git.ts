@@ -23,6 +23,12 @@ import type {
   GitCreatePRResponse,
   GitMergePRRequest,
   GitMergePRResponse,
+  GitPullRequest,
+  GitPullResponse,
+  GitFetchRequest,
+  GitFetchResponse,
+  GitRebaseRequest,
+  GitRebaseResponse,
 } from "@/types/git";
 
 // =============================================================================
@@ -237,6 +243,53 @@ export const gitApi = {
       };
     }
     const { data } = await api.post<GitMergePRResponse>("/git/pr/merge", request);
+    return data;
+  },
+
+  /**
+   * Pull latest changes from remote
+   */
+  pull: async (request: GitPullRequest): Promise<GitPullResponse> => {
+    if (isMockMode()) {
+      return {
+        project_slug: request.project_slug,
+        branch: "feature/backend/abc12345",
+        commits_received: 2,
+        remote: request.remote ?? "origin",
+      };
+    }
+    const { data } = await api.post<GitPullResponse>("/git/pull", request);
+    return data;
+  },
+
+  /**
+   * Fetch refs from remote without merging
+   */
+  fetch: async (request: GitFetchRequest): Promise<GitFetchResponse> => {
+    if (isMockMode()) {
+      return {
+        project_slug: request.project_slug,
+        remote: request.remote ?? "origin",
+        refs_updated: 3,
+      };
+    }
+    const { data } = await api.post<GitFetchResponse>("/git/fetch", request);
+    return data;
+  },
+
+  /**
+   * Rebase current branch onto remote (destructive — rewrites history)
+   */
+  rebase: async (request: GitRebaseRequest): Promise<GitRebaseResponse> => {
+    if (isMockMode()) {
+      return {
+        project_slug: request.project_slug,
+        branch: "feature/backend/abc12345",
+        onto: request.onto ?? "origin/main",
+        commits_rebased: 3,
+      };
+    }
+    const { data } = await api.post<GitRebaseResponse>("/git/rebase", request);
     return data;
   },
 };

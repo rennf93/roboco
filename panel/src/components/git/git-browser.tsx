@@ -49,7 +49,7 @@ function GitBrowserContent() {
   const { data: unstagedDiff, isLoading: loadingUnstagedDiff } = useGitDiff(projectSlug, false, undefined, !!projectSlug);
 
   // Git operations
-  const { commit, push, createBranch, checkout, createPR, mergePR } = useGitOperations();
+  const { commit, push, createBranch, checkout, createPR, mergePR, pull, fetch, rebase } = useGitOperations();
 
   // Update URL params
   const updateParams = useCallback(
@@ -174,6 +174,44 @@ function GitBrowserContent() {
     }
   };
 
+  const handlePull = async () => {
+    try {
+      const result = await pull.mutateAsync({
+        project_slug: projectSlug,
+        task_id: taskId || "manual",
+        agent_id: "ceo",
+      });
+      toast.success(`Pulled ${result.commits_received} commits from ${result.remote}`);
+    } catch {
+      toast.error("Failed to pull from remote");
+    }
+  };
+
+  const handleFetch = async () => {
+    try {
+      const result = await fetch.mutateAsync({
+        project_slug: projectSlug,
+        agent_id: "ceo",
+      });
+      toast.success(`Fetched ${result.refs_updated} refs from ${result.remote}`);
+    } catch {
+      toast.error("Failed to fetch from remote");
+    }
+  };
+
+  const handleRebase = async () => {
+    try {
+      const result = await rebase.mutateAsync({
+        project_slug: projectSlug,
+        task_id: taskId || "manual",
+        agent_id: "ceo",
+      });
+      toast.success(`Rebased ${result.commits_rebased} commits onto ${result.onto}`);
+    } catch {
+      toast.error("Failed to rebase");
+    }
+  };
+
   // Check offline
   const isOffline = projectsError && (
     projectsError.message?.includes("Network Error") ||
@@ -258,10 +296,16 @@ function GitBrowserContent() {
               onPush={handlePush}
               onCreatePR={handleCreatePR}
               onMergePR={handleMergePR}
+              onPull={handlePull}
+              onFetch={handleFetch}
+              onRebase={handleRebase}
               isCommitting={commit.isPending}
               isPushing={push.isPending}
               isCreatingPR={createPR.isPending}
               isMerging={mergePR.isPending}
+              isPulling={pull.isPending}
+              isFetching={fetch.isPending}
+              isRebasing={rebase.isPending}
             />
           </div>
 
