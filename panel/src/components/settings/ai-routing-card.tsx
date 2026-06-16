@@ -42,6 +42,8 @@ import { toast } from "sonner";
 import { AssignmentScope, ModelProvider } from "@/types";
 import type { RoutingMode, SelfHostedTestResult } from "@/lib/api/providers";
 import { SelfHostedSection } from "@/components/settings/self-hosted-section";
+import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 
 // Matches the roboco agents_config AGENT_ROLE_MAP / AGENT_TEAM_MAP.
 // Hard-coded so Mix mode shows a stable 18-row picker without an extra
@@ -254,13 +256,13 @@ export function AIRoutingCard() {
           <div className="flex items-center justify-between">
             <Label className="text-sm font-medium">Ollama Cloud API key</Label>
             {hasOllamaKey ? (
-              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-600">
+              <Badge className="bg-emerald-500/10 text-emerald-600 border-0">
                 <KeyRound className="h-3 w-3" /> key set
-              </span>
+              </Badge>
             ) : (
-              <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-xs font-medium text-amber-600">
+              <Badge className="bg-amber-500/10 text-amber-600 border-0">
                 <Key className="h-3 w-3" /> not set
-              </span>
+              </Badge>
             )}
           </div>
           <div className="flex gap-2">
@@ -278,13 +280,13 @@ export function AIRoutingCard() {
             </Button>
           </div>
           {hasOllamaKey ? (
-            <label className="flex items-center gap-2 text-xs text-muted-foreground">
-              <input
-                type="checkbox"
+            <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+              <Checkbox
                 checked={clearKey}
-                onChange={(e) => {
-                  setClearKey(e.target.checked);
-                  if (e.target.checked) setApiKey("");
+                onCheckedChange={(checked) => {
+                  const next = checked === true;
+                  setClearKey(next);
+                  if (next) setApiKey("");
                 }}
               />
               Clear the stored key
@@ -543,29 +545,27 @@ function ModeButton({
   highlight?: boolean;
 }) {
   return (
-    <button
+    <Button
       type="button"
+      variant="outline"
       onClick={onClick}
       disabled={disabled}
       className={
-        "rounded-md border p-3 text-left transition-colors " +
-        (active || highlight
-          ? "border-primary bg-primary/5"
-          : "hover:bg-muted") +
-        (disabled ? " cursor-not-allowed opacity-50" : "")
+        "h-auto flex-col items-start justify-start p-3 whitespace-normal " +
+        (active || highlight ? "border-primary bg-primary/5" : "")
       }
     >
-      <div className="flex items-center gap-2 text-sm font-medium">
+      <div className="flex w-full items-center gap-2 text-sm font-medium">
         {icon}
         <span>{label}</span>
         {active ? (
-          <span className="ml-auto rounded-full bg-primary/15 px-2 py-0.5 text-xs text-primary">
+          <Badge className="ml-auto bg-primary/15 text-primary border-0 text-xs">
             active
-          </span>
+          </Badge>
         ) : null}
       </div>
-      <p className="mt-1 text-xs text-muted-foreground">{description}</p>
-    </button>
+      <p className="mt-1 text-xs text-muted-foreground font-normal">{description}</p>
+    </Button>
   );
 }
 

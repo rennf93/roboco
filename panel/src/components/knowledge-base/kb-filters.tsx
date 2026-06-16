@@ -2,6 +2,7 @@
 
 import { KBIndexType } from "@/types";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Button } from "@/components/ui/button";
 import { FileText, MessageSquare, BookOpen, AlertTriangle, Scale, GitBranch, ClipboardCheck, Lightbulb } from "lucide-react";
 
 const indexTypeConfig: Record<KBIndexType, { label: string; icon: React.ReactNode }> = {
@@ -36,12 +37,14 @@ export function KBFilters({ selectedTypes, onTypesChange }: KBFiltersProps) {
       <div className="flex items-center justify-between">
         <span className="text-sm font-medium">Filter by type</span>
         {selectedTypes.length > 0 && (
-          <button
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={() => onTypesChange([])}
-            className="text-xs text-muted-foreground hover:text-foreground"
+            className="h-auto py-0 px-1 text-xs text-muted-foreground hover:text-foreground"
           >
             Clear
-          </button>
+          </Button>
         )}
       </div>
       <div className="space-y-2">

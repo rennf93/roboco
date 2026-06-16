@@ -4,6 +4,7 @@ import { Agent } from "@/types";
 import { User } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getAgentDisplayName } from "@/lib/agent-utils";
+import { Button } from "@/components/ui/button";
 
 interface AgentItemProps {
   agent: Agent;
@@ -14,12 +15,13 @@ interface AgentItemProps {
 
 export function AgentItem({ agent, isSelected, onClick, hasEntries }: AgentItemProps) {
   return (
-    <button
+    <Button
       onClick={onClick}
+      variant="ghost"
       className={cn(
-        "w-full flex items-center gap-3 p-2 rounded-lg text-left transition-colors",
+        "w-full h-auto justify-start gap-3 p-2 font-normal whitespace-normal",
         isSelected
-          ? "bg-primary/10 border border-primary/30"
+          ? "bg-primary/10 border border-primary/30 hover:bg-primary/10"
           : "hover:bg-muted/50"
       )}
     >
@@ -37,6 +39,6 @@ export function AgentItem({ agent, isSelected, onClick, hasEntries }: AgentItemP
           {agent.role.replace(/_/g, " ")}
         </p>
       </div>
-    </button>
+    </Button>
   );
 }
