@@ -59,6 +59,7 @@ class ChoreographerHelpers:
         task_id: UUID | None,
         *,
         task: Any | None = None,
+        include_ac_coverage: bool = False,
     ) -> dict[str, Any]:
         raise NotImplementedError
 
