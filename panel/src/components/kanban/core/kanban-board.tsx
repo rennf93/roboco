@@ -294,8 +294,8 @@ export function KanbanBoard({
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
       >
-        {/* Mobile: single-column view with prev/next navigator (hidden on lg+) */}
-        <div className="lg:hidden">
+        {/* Mobile: single-column view with prev/next navigator (hidden on sm+) */}
+        <div className="sm:hidden">
           <div className="flex items-center gap-2 mb-4">
             <Button
               variant="outline"
@@ -342,8 +342,8 @@ export function KanbanBoard({
           )}
         </div>
 
-        {/* Desktop: horizontal scrolling layout (hidden below lg) */}
-        <div className="hidden lg:flex gap-4 overflow-x-auto pb-4">
+        {/* Desktop: horizontal scrolling layout (shown at sm+, i.e. >= 640px) */}
+        <div className="hidden sm:flex gap-4 overflow-x-auto pb-4">
           {columns.map((col) => (
             <KanbanColumn
               key={col.id}
