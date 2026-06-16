@@ -399,6 +399,9 @@ class TaskService(BaseService):
             # can reach in_progress and delegate. product_id is a plain column
             # (no lazy load).
             is_coordination=(task.project_id is None and task.product_id is not None),
+            # An external-PR review task reviews someone else's PR read-only —
+            # no branch of its own — so it is branch-gate exempt.
+            is_external_review=(getattr(task, "source", "manual") == "external_pr"),
         )
         validate_git_requirements(current, target, git_ctx)
 
@@ -670,6 +673,38 @@ class TaskService(BaseService):
         task.pr_number = pr_number
         task.pr_url = pr_url
         await self.session.flush()
+        return task
+
+    async def complete_review(
+        self, reviewer_agent_id: UUID, task_id: UUID, notes: str | None = None
+    ) -> TaskTable | None:
+        """Mark an external-PR review task complete (in_progress -> completed).
+
+        The terminal for the pr_reviewer's ``post_pr_review`` verb: the review
+        has been posted, so the review task is done. Attributed to the reviewer.
+        Mirrors ``qa_pass``'s validated-transition shape; the ``pr_review_done``
+        transition (in_progress -> completed, role pr_reviewer) is defined in the
+        lifecycle spec and is git-gate exempt (the review task has no branch).
+        """
+        task = await self.get(task_id)
+        if task is None:
+            return None
+        if task.status != TaskStatus.IN_PROGRESS:
+            return None
+        if notes:
+            task.qa_notes = notes
+        reviewer_id = to_python_uuid(task.claimed_by) or reviewer_agent_id
+        task.assigned_to = None
+        task.claimed_by = None
+        task.active_claimant_id = cast("Any", None)
+        self._validate_and_set_status(
+            task,
+            TaskStatus.COMPLETED,
+            "pr_reviewer",
+            audit_agent_id=reviewer_id,
+        )
+        await self.session.flush()
+        self.log.info("External PR review complete", task_id=str(task_id))
         return task
 
     async def _inherit_parent_session(

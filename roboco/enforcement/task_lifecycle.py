@@ -321,6 +321,10 @@ class GitContext:
     # `_is_coordination_task` in the orchestrator and the `_ensure_branch_for_task`
     # short-circuit in TaskService.
     is_coordination: bool = False
+    # An inbound external-PR review task reviews someone else's PR read-only; it
+    # does no git work of its own and never gets a branch, so it is exempt from
+    # the claimed->in_progress branch gate (same rationale as is_coordination).
+    is_external_review: bool = False
 
 
 def validate_git_requirements(
@@ -387,6 +391,7 @@ def validate_git_requirements(
         transition == ("claimed", "in_progress")
         and not git_ctx.branch_name
         and not git_ctx.is_coordination
+        and not git_ctx.is_external_review
     ):
         raise GitRequirementError(
             transition=transition,

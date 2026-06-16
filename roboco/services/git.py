@@ -1696,11 +1696,58 @@ class GitService(BaseService):
             raise GitError(f"PR not found: #{pr_number} on {owner}/{repo}", details)
         if not resp.is_success:
             raise GitError(
-                f"GitHub API refused PR review ({resp.status_code}): "
-                f"{resp.text[:200]}",
+                f"GitHub API refused PR review ({resp.status_code}): {resp.text[:200]}",
                 details,
             )
         return cast("dict[str, Any]", resp.json())
+
+    async def get_pr_diff(self, project_slug: str, pr_number: int) -> str:
+        """Fetch a PR's unified diff READ-ONLY via the GitHub API.
+
+        ``GET /pulls/{n}`` with the diff media type returns the unified diff
+        text without checking out or running any of the contributor's code —
+        the review is read-only; untrusted fork code never executes here.
+        Returns ``""`` on a missing token / unparseable remote / GitHub error
+        so the reviewer's claim still returns context instead of crashing.
+        """
+        project = await get_project_service(self.session).get_by_slug(project_slug)
+        if project is None or not project.git_url:
+            return ""
+        try:
+            owner, repo = self._parse_git_url(project.git_url)
+        except GitError:
+            return ""
+        git_token = await self._token_for_project(project_slug)
+        if not git_token:
+            return ""
+        api_base = settings.github_api_base_url.rstrip("/")
+        try:
+            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
+                resp = await client.get(
+                    f"{api_base}/repos/{owner}/{repo}/pulls/{pr_number}",
+                    headers={
+                        "Authorization": f"Bearer {git_token}",
+                        "Accept": "application/vnd.github.v3.diff",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                )
+        except httpx.HTTPError as e:
+            self.log.warning(
+                "get_pr_diff request failed",
+                project=project_slug,
+                pr=pr_number,
+                error=str(e),
+            )
+            return ""
+        if not resp.is_success:
+            self.log.warning(
+                "get_pr_diff non-2xx",
+                project=project_slug,
+                pr=pr_number,
+                status=resp.status_code,
+            )
+            return ""
+        return resp.text
 
     async def update_pr_for_task(
         self,
