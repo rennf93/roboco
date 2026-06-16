@@ -32,3 +32,22 @@ from roboco.runtime.orchestrator import AgentOrchestrator
 )
 def test_is_external_pr(pr: dict[str, object], *, expected: bool) -> None:
     assert AgentOrchestrator._is_external_pr(pr) is expected
+
+
+@pytest.mark.parametrize(
+    ("pr", "allowlist", "expected"),
+    [
+        # Empty allowlist -> every external PR is reviewed (read-only, safe).
+        ({"user_login": "corey"}, set(), True),
+        # Non-empty allowlist gates by GitHub login (case-insensitive).
+        ({"user_login": "corey"}, {"corey"}, True),
+        ({"user_login": "Corey"}, {"corey"}, True),
+        ({"user_login": "mallory"}, {"corey"}, False),
+        ({"user_login": None}, {"corey"}, False),
+        ({}, {"corey"}, False),
+    ],
+)
+def test_pr_author_allowed(
+    pr: dict[str, object], allowlist: set[str], *, expected: bool
+) -> None:
+    assert AgentOrchestrator._pr_author_allowed(pr, allowlist) is expected

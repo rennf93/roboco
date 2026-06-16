@@ -4569,11 +4569,14 @@ Start by:
         task_service = get_task_service(db)
         projects = await get_project_service(db).list_all(active_only=True)
         system_id = _foundation.AGENTS["system"].uuid
+        allowlist = {a.lower() for a in settings.external_pr_author_allowlist}
         ingested = 0
         for project in projects:
             for pr in await git.list_open_prs(project.slug):
                 number = pr.get("number")
                 if number is None or not self._is_external_pr(pr):
+                    continue
+                if not self._pr_author_allowed(pr, allowlist):
                     continue
                 created = await task_service.ingest_external_pr(
                     project_id=cast("UUID", project.id),
@@ -4585,6 +4588,18 @@ Start by:
                     ingested += 1
         await db.commit()
         return ingested
+
+    @staticmethod
+    def _pr_author_allowed(pr: dict[str, Any], allowlist: set[str]) -> bool:
+        """With a non-empty allowlist, only those GitHub authors are reviewed.
+
+        An empty allowlist (the default) reviews every external PR — the review
+        is read-only, so it is safe; the ``confirmed_by_human`` gate still
+        protects any later supersede that would run the contributor's code.
+        """
+        if not allowlist:
+            return True
+        return (pr.get("user_login") or "").lower() in allowlist
 
     @staticmethod
     def _is_external_pr(pr: dict[str, Any]) -> bool:
