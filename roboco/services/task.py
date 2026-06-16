@@ -675,6 +675,37 @@ class TaskService(BaseService):
         await self.session.flush()
         return task
 
+    async def pr_review_claim(
+        self, reviewer_agent_id: UUID, task_id: UUID
+    ) -> TaskTable | None:
+        """Claim an external-PR review task: pending -> in_progress, no plan, no branch.
+
+        The review is read-only and does no git of its own, so it must NOT route
+        through claim()/start() — those would require a plan (start() returns
+        None for a planless task) and auto-create + push a branch. Mirrors
+        qa_claim's specialized-claim pattern (the verb body owns dispatch instead
+        of the generic verb runner). The ``is_external_review`` branch-gate
+        exemption (from source='external_pr') keeps claimed->in_progress valid
+        with no branch. Returns None if the task is not PENDING (already taken).
+        """
+        task = await self.get(task_id)
+        if task is None or task.status != TaskStatus.PENDING:
+            return None
+        task.assigned_to = cast("Any", reviewer_agent_id)
+        task.claimed_by = cast("Any", reviewer_agent_id)
+        self._validate_and_set_status(
+            task, TaskStatus.CLAIMED, "pr_reviewer", audit_agent_id=reviewer_agent_id
+        )
+        self._validate_and_set_status(
+            task,
+            TaskStatus.IN_PROGRESS,
+            "pr_reviewer",
+            audit_agent_id=reviewer_agent_id,
+        )
+        await self.session.flush()
+        self.log.info("External PR review claimed", task_id=str(task_id))
+        return task
+
     async def complete_review(
         self, reviewer_agent_id: UUID, task_id: UUID, notes: str | None = None
     ) -> TaskTable | None:

@@ -88,19 +88,24 @@ class PRReviewerMixin(_Base):
                 task_id=task_id,
                 verb="claim_pr_review",
             )
-        runner = self._verb_runner()
-        try:
-            t = await runner.run_intent("claim_pr_review", t, agent, spec_ctx)
-        except Exception as exc:
-            return await self._runner_failure(
-                exc,
-                t,
-                role_str,
-                briefing,
-                reviewer_agent_id,
-                task_id,
-                "claim_pr_review",
+        # Verb body owns the claim (mirrors QA's claim_review): a specialized
+        # pending->in_progress claim with NO plan and NO branch. The spec's
+        # composes=("claim","start") is for the gate above only — routing it
+        # through the verb runner would hit start()'s plan gate and auto-create
+        # a branch, neither of which a read-only review task wants.
+        claimed = await self.task.pr_review_claim(reviewer_agent_id, task_id)
+        if claimed is None:
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message="this external-PR review task is no longer claimable",
+                    remediate="it may already be claimed; give_me_work for the next",
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
+                agent_id=reviewer_agent_id,
+                task_id=task_id,
+                verb="claim_pr_review",
             )
+        t = claimed
         evidence = await self._build_pr_review_evidence(t)
         return Envelope.ok(
             status=str(t.status),
@@ -133,9 +138,7 @@ class PRReviewerMixin(_Base):
                 task_id=task_id,
                 verb="post_pr_review",
             )
-        pre = await self._post_pr_review_preflight(
-            t, reviewer_agent_id, task_id, body
-        )
+        pre = await self._post_pr_review_preflight(t, reviewer_agent_id, task_id, body)
         if isinstance(pre, Envelope):
             return pre
         agent, role_str, briefing, spec_ctx = pre

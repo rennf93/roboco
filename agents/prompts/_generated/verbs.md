@@ -255,10 +255,10 @@ real tools live in their agent_sdk drivers, not role_config.
 
 | Verb | Body schema |
 |------|-------------|
-| `claim_pr_review` | `claim_pr_review(unknown — no Pydantic schema)` |
+| `claim_pr_review` | `claim_pr_review(task_id: UUID)` |
 | `give_me_work` | `give_me_work()` |
 | `i_am_idle` | `i_am_idle()` |
-| `post_pr_review` | `post_pr_review(unknown — no Pydantic schema)` |
+| `post_pr_review` | `post_pr_review(task_id: UUID, body: str, event: str = 'REQUEST_CHANGES')` |
 
 ### Content (do) tools
 

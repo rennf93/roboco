@@ -909,6 +909,18 @@ class AgentOrchestrator:
                     "Edit(*)",
                 ],
             },
+            "pr_reviewer": {
+                # PR reviewer reads untrusted external/fork PR diffs and posts a
+                # change-request via the gateway — it never writes files. Make the
+                # read-only invariant explicit at the permission layer (it is the
+                # highest-value prompt-injection target), not just implicit in the
+                # absence of a writable mount.
+                "allow": [],
+                "deny": [
+                    "Write(*)",
+                    "Edit(*)",
+                ],
+            },
         }
 
         if role not in configs:

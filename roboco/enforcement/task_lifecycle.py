@@ -162,7 +162,13 @@ def _build_role_restricted_transitions() -> dict[tuple[str, str], tuple[str, ...
         if t.role_constraint is not None
     }
     for (src, tgt), roles in _LEGACY_ROLE_GATES.items():
-        out[(src.value, tgt.value)] = roles
+        # UNION (not overwrite): legacy gates ADD operational roles to an edge;
+        # overwriting silently dropped any spec-derived roles that share the
+        # same edge. pr_review_done puts pr_reviewer on (in_progress, completed)
+        # — the same edge the legacy PM-self-complete gate pins — so an
+        # overwrite erased pr_reviewer and the review task could never complete.
+        existing = out.get((src.value, tgt.value), ())
+        out[(src.value, tgt.value)] = tuple(sorted(set(existing) | set(roles)))
     return out
 
 
