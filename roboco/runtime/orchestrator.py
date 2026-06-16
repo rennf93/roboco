@@ -612,6 +612,11 @@ class AgentOrchestrator:
         self._dispatch_wake: asyncio.Event = asyncio.Event()
         self._running = False
         self._lock = asyncio.Lock()
+        # Serializes CEO supersede calls so a double-click can't pass the
+        # find_supersede_umbrella dedup check twice and cut two branches /
+        # spawn two umbrellas for the same PR (the check is read-then-write
+        # with no DB-level uniqueness).
+        self._supersede_lock = asyncio.Lock()
         # Per-tick set of task_ids already handled by an earlier
         # dispatcher. Reset at the start of every _dispatch_all_work.
         # Consumed via `self._mark_task_handled` / `_is_task_handled`.
@@ -4210,6 +4215,35 @@ Start by:
         # operator's bind-mounted ~/.claude doesn't grow without bound.
         await self._sweep_transcript_retention()
 
+        # Close-on-land for landed supersedes — runs here (always-on sweeper)
+        # rather than the default-off external-PR poll loop, so a supersede that
+        # lands after external_pr_enabled is toggled off is still reconciled.
+        await self._sweep_superseded_prs()
+
+    async def _sweep_superseded_prs(self) -> None:
+        """Retire the contributor PR for any supersede umbrella that landed.
+
+        Dormant in a standard deployment: when no ``external_pr_supersede``
+        umbrellas exist the lookup returns nothing and no GitHub call is made,
+        so this is safe to run unconditionally on every sweep.
+        """
+        from roboco.db.base import get_session_factory
+        from roboco.services.git import GitService
+        from roboco.services.task import get_task_service
+
+        system_id = _foundation.AGENTS["system"].uuid
+        session_factory = get_session_factory()
+        async with session_factory() as db:
+            try:
+                git = GitService(db)
+                task_service = get_task_service(db)
+                closed = await self._close_superseded_prs(git, task_service, system_id)
+                if closed:
+                    await db.commit()
+            except Exception as e:
+                await db.rollback()
+                logger.warning("Supersede close-on-land sweep failed", error=str(e))
+
     async def _sweep_transcript_retention(self) -> None:
         """Prune agent transcripts older than the retention window.
 
@@ -4598,8 +4632,6 @@ Start by:
                 )
                 if created is not None:
                     ingested += 1
-        # Close-on-land: retire the contributor PR for any supersede that merged.
-        await self._close_superseded_prs(git, task_service, system_id)
         await db.commit()
         return ingested
 
@@ -4628,9 +4660,16 @@ Start by:
                     ),
                     delete_branch=False,
                     actor_agent_id=system_id,
+                    # PR numbers are per-repo — scope the close to THIS
+                    # umbrella's project so a same-numbered PR in another
+                    # project's repo is never resolved (and closed) by mistake.
+                    project_id=cast("UUID", umbrella.project_id),
                 )
             except Exception:
-                logger.exception("close-on-land failed", pr_number=pr_number)
+                # A permanent close failure (deleted PR, revoked PAT) would
+                # otherwise re-fire + re-log every tick forever; keep it a single
+                # warning rather than a per-tick stack trace.
+                logger.warning("close-on-land failed", pr_number=pr_number)
                 continue
             await task_service.mark_supersede_pr_closed(cast("UUID", umbrella.id))
             closed += 1
@@ -4638,13 +4677,22 @@ Start by:
 
     @staticmethod
     def _parse_supersede_pr(quick_context: str) -> int | None:
-        """Extract the contributor PR number from a supersede umbrella marker."""
-        for part in quick_context.split():
-            if part.startswith("pr="):
-                try:
-                    return int(part[3:])
-                except ValueError:
-                    return None
+        """Extract the contributor PR number from a supersede umbrella marker.
+
+        Anchored to the marker line so a CEO note containing ``pr=`` on a later
+        line of the multi-writer ``quick_context`` can't be misread as the PR.
+        """
+        for raw in quick_context.splitlines():
+            line = raw.strip()
+            if not line.startswith("external_pr_supersede"):
+                continue
+            for part in line.split():
+                if part.startswith("pr="):
+                    try:
+                        return int(part[3:])
+                    except ValueError:
+                        return None
+            return None
         return None
 
     @staticmethod
@@ -4683,7 +4731,9 @@ Start by:
         from roboco.services.project import get_project_service
         from roboco.services.task import get_task_service
 
-        async with get_db_context() as db:
+        # Serialize concurrent CEO calls (double-click) — the dedup check and
+        # the umbrella/branch creation are not atomic across DB sessions.
+        async with self._supersede_lock, get_db_context() as db:
             task_service = get_task_service(db)
             review = await task_service.get(review_task_id)
             if review is None or getattr(review, "source", "") != "external_pr":

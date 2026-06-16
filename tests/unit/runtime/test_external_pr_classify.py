@@ -62,6 +62,8 @@ def test_pr_author_allowed(
         ("", None),
         ("no marker here", None),
         ("external_pr_supersede pr=notanint review=abc", None),
+        # A CEO note on a later line must not shadow the marker line's pr=.
+        ("external_pr_supersede pr=11 review=abc\nceo_approval_notes: pr=99 ok", 11),
     ],
 )
 def test_parse_supersede_pr(quick_context: str, expected: int | None) -> None:

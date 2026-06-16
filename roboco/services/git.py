@@ -918,9 +918,13 @@ class GitService(BaseService):
         """
         project_token = await self._token_for_project(project_slug)
         pull_ref = f"refs/pull/{pr_number}/head"
+        # Force the refspec (``+``) so a retry after a prior push (e.g. the
+        # commit after the push failed and rolled the umbrella back) updates the
+        # leftover local branch in the persistent system workspace instead of
+        # hard-erroring on the existing ref — the branch cut is then idempotent.
         await self._run_git(
             workspace,
-            ["fetch", "origin", f"{pull_ref}:{branch_name}"],
+            ["fetch", "origin", f"+{pull_ref}:{branch_name}"],
             token=project_token,
             timeout=_network_git_timeout(),
         )
@@ -2872,20 +2876,29 @@ class GitService(BaseService):
         comment: str | None = None,
         delete_branch: bool = True,
         actor_agent_id: UUID | None = None,
+        project_id: UUID | None = None,
     ) -> None:
         """Close PR ``pr_number`` on GitHub, optionally with an explanatory comment.
 
         Used to retire a PR whose work is already in the base (superseded) so a
         wedged task can complete without a merge — the "close the dead PR"
         action agents had no verb for. Best-effort branch cleanup on close.
+
+        ``pr_number`` alone is ambiguous across projects (GitHub numbers PRs
+        per-repo), so when the caller knows which project the PR belongs to it
+        MUST pass ``project_id`` — the task lookup is then scoped to it so a
+        same-numbered PR in another project's repo is never resolved by
+        accident. Idempotent: a PR that is already closed is a no-op (no
+        duplicate comment), so a retried close-on-land never re-comments.
         """
         from sqlalchemy import select
 
         from roboco.db.tables import TaskTable as _TaskTable
 
-        result = await self.session.execute(
-            select(_TaskTable).where(_TaskTable.pr_number == pr_number).limit(1)
-        )
+        stmt = select(_TaskTable).where(_TaskTable.pr_number == pr_number)
+        if project_id is not None:
+            stmt = stmt.where(_TaskTable.project_id == project_id)
+        result = await self.session.execute(stmt.limit(1))
         task = result.scalar_one_or_none()
         if task is None:
             raise NotFoundError("PR", str(pr_number))
@@ -2904,23 +2917,32 @@ class GitService(BaseService):
             "X-GitHub-Api-Version": "2022-11-28",
         }
         async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
-            if comment:
-                await client.post(
-                    f"https://api.github.com/repos/{owner}/{repo}/issues/"
-                    f"{pr_number}/comments",
-                    headers=headers,
-                    json={"body": comment},
-                )
-            resp = await client.patch(
+            existing = await client.get(
                 f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}",
                 headers=headers,
-                json={"state": "closed"},
             )
-        if not resp.is_success:
-            raise GitError(
-                f"GitHub API refused PR close ({resp.status_code}): {resp.text[:200]}",
-                {"owner": owner, "repo": repo, "pr": pr_number},
+            already_closed = (
+                existing.is_success and existing.json().get("state") == "closed"
             )
+            if not already_closed:
+                if comment:
+                    await client.post(
+                        f"https://api.github.com/repos/{owner}/{repo}/issues/"
+                        f"{pr_number}/comments",
+                        headers=headers,
+                        json={"body": comment},
+                    )
+                resp = await client.patch(
+                    f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}",
+                    headers=headers,
+                    json={"state": "closed"},
+                )
+                if not resp.is_success:
+                    raise GitError(
+                        f"GitHub API refused PR close ({resp.status_code}): "
+                        f"{resp.text[:200]}",
+                        {"owner": owner, "repo": repo, "pr": pr_number},
+                    )
         if delete_branch:
             await self._delete_pr_branch_best_effort(owner, repo, pr_number, git_token)
 

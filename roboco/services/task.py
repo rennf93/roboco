@@ -331,6 +331,27 @@ def extract_original_developer(quick_context: str | None) -> str | None:
     return None
 
 
+_SUPERSEDE_MARKER_PREFIX = "external_pr_supersede"
+
+
+def supersede_marker_line(quick_context: str | None) -> str:
+    """Return the supersede marker line from a (multi-writer) quick_context.
+
+    The supersede marker (``external_pr_supersede pr={n} review={uuid}`` plus a
+    ``closed=1`` token once the contributor PR is retired) is always written on
+    its own line, while ``escalate_to_ceo`` / ``ceo_approve`` append free-form
+    CEO notes on later lines. Dedup and close-state checks therefore parse THIS
+    line rather than substring-scanning the whole field — a CEO note that
+    happened to contain ``closed=1`` or ``pr=N review=`` must not be mistaken
+    for the marker (mirrors :func:`extract_original_developer`).
+    """
+    for raw in (quick_context or "").splitlines():
+        line = raw.strip()
+        if line.startswith(_SUPERSEDE_MARKER_PREFIX):
+            return line
+    return ""
+
+
 class TaskService(BaseService):
     """
     Service for managing tasks.
@@ -817,16 +838,20 @@ class TaskService(BaseService):
         )
         needle = f"pr={pr_number} review="
         for task in result.scalars().all():
-            if needle in (task.quick_context or ""):
+            if needle in supersede_marker_line(task.quick_context):
                 return task
         return None
 
     async def supersede_umbrellas_pending_close(self) -> list[TaskTable]:
         """Landed supersede umbrellas whose contributor PR hasn't been closed yet.
 
-        A supersede umbrella that reached COMPLETED means our own PR merged, so
-        the contributor's PR should be closed + linked. The ``closed=1`` marker
-        in quick_context makes close-on-land idempotent (closed only once).
+        A supersede umbrella reaching COMPLETED is necessary but not sufficient
+        proof that our replacement PR merged — the CEO can force-complete the
+        root over a *cancelled* code subtask, in which case the team abandoned
+        the work and the contributor's still-valid PR must NOT be retired. So we
+        additionally require a non-cancelled descendant that landed a PR (see
+        :meth:`_supersede_replacement_landed`). The ``closed=1`` token on the
+        marker line makes close-on-land idempotent (closed only once).
         """
         result = await self.session.execute(
             select(TaskTable).where(
@@ -834,18 +859,60 @@ class TaskService(BaseService):
                 TaskTable.status == TaskStatus.COMPLETED,
             )
         )
-        return [
-            task
-            for task in result.scalars().all()
-            if "closed=1" not in (task.quick_context or "")
-        ]
+        pending: list[TaskTable] = []
+        for task in result.scalars().all():
+            if "closed=1" in supersede_marker_line(task.quick_context).split():
+                continue
+            if not await self._supersede_replacement_landed(cast("UUID", task.id)):
+                continue
+            pending.append(task)
+        return pending
+
+    async def _supersede_replacement_landed(self, umbrella_id: UUID) -> bool:
+        """True if a non-cancelled descendant of the umbrella landed a PR.
+
+        Walks the umbrella's subtree (bounded by MAX_TASK_DEPTH) and returns
+        True as soon as it finds a COMPLETED task carrying a ``pr_number`` — the
+        team's merged replacement PR. Returns False when every code descendant
+        was cancelled (force-completed umbrella), so close-on-land then leaves
+        the contributor PR open.
+        """
+        frontier: list[UUID] = [umbrella_id]
+        seen: set[UUID] = set()
+        while frontier:
+            result = await self.session.execute(
+                select(TaskTable).where(TaskTable.parent_task_id.in_(frontier))
+            )
+            frontier = []
+            for child in result.scalars().all():
+                child_id = cast("UUID", child.id)
+                if child_id in seen:
+                    continue
+                seen.add(child_id)
+                if child.status == TaskStatus.COMPLETED and child.pr_number is not None:
+                    return True
+                frontier.append(child_id)
+        return False
 
     async def mark_supersede_pr_closed(self, task_id: UUID) -> None:
-        """Record that a landed supersede's contributor PR has been closed."""
+        """Record that a landed supersede's contributor PR has been closed.
+
+        Appends ``closed=1`` to the marker LINE (not the end of the whole
+        multi-writer field) so the idempotency token stays anchored to the
+        marker and survives appended CEO notes.
+        """
         task = await self.get(task_id)
         if task is None:
             return
-        task.quick_context = f"{task.quick_context or ''} closed=1".strip()
+        lines = (task.quick_context or "").splitlines()
+        for i, raw in enumerate(lines):
+            if raw.strip().startswith(_SUPERSEDE_MARKER_PREFIX):
+                if "closed=1" not in raw.split():
+                    lines[i] = f"{raw} closed=1"
+                break
+        else:
+            lines.append(f"{_SUPERSEDE_MARKER_PREFIX} closed=1")
+        task.quick_context = "\n".join(lines)
         await self.session.flush()
 
     async def _inherit_parent_session(

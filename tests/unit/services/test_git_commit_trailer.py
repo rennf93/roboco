@@ -1,7 +1,5 @@
 """Unit tests: commit-trailer links use ROBOCO_PUBLIC_BASE_URL."""
 
-import importlib
-
 import pytest
 import roboco.config as config_module
 from roboco.templates.git.commit import (
@@ -41,17 +39,18 @@ def test_build_commit_message_strips_trailing_slash() -> None:
 
 def test_links_use_public_base_url(monkeypatch: pytest.MonkeyPatch) -> None:
     """settings.public_base_url drives the api_base passed to build_commit_message."""
+    # Construct a fresh Settings() to read the patched env — do NOT
+    # importlib.reload(roboco.config), which would rebind the module-level
+    # ``settings`` singleton to a new object and leak that divergence into any
+    # other test that captured the original reference via ``from roboco.config
+    # import settings`` (e.g. the PM decision-window gate).
     monkeypatch.setenv("ROBOCO_PUBLIC_BASE_URL", "https://roboco.example.com")
-    importlib.reload(config_module)
-    try:
-        settings = config_module.Settings()
-        api_base = settings.public_base_url.rstrip("/") + "/api"
-        ctx = _make_ctx()
-        out = build_commit_message(ctx, api_base)
-        assert "https://roboco.example.com" in out
-        assert "127.0.0.1" not in out
-    finally:
-        importlib.reload(config_module)
+    settings = config_module.Settings()
+    api_base = settings.public_base_url.rstrip("/") + "/api"
+    ctx = _make_ctx()
+    out = build_commit_message(ctx, api_base)
+    assert "https://roboco.example.com" in out
+    assert "127.0.0.1" not in out
 
 
 def test_commit_context_invalid_type_raises() -> None:
