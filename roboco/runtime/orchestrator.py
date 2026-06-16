@@ -21,13 +21,15 @@ import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import httpx
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
     from uuid import UUID
+
+    from sqlalchemy.ext.asyncio import AsyncSession
 
     from roboco.services.llm import AgentRoute
     from roboco.services.task import TaskService
@@ -595,6 +597,7 @@ class AgentOrchestrator:
         # rate-limited providers and resolves waiting agents on success.
         self._rate_limit_probe_task: asyncio.Task | None = None
         self._strategy_engine_task: asyncio.Task | None = None
+        self._external_pr_poll_task: asyncio.Task | None = None
         # Tracks which providers have already received a CEO notification
         # during the current rate-limit episode.  Cleared when the probe
         # succeeds and the rate limit is lifted (tracker.clear() path).
@@ -673,6 +676,7 @@ class AgentOrchestrator:
         self._sweeper_task = asyncio.create_task(self._sweeper_loop())
         self._rate_limit_probe_task = asyncio.create_task(self._rate_limit_probe_loop())
         self._strategy_engine_task = asyncio.create_task(self._strategy_engine_loop())
+        self._external_pr_poll_task = asyncio.create_task(self._external_pr_poll_loop())
 
         logger.info(
             "Orchestrator started",
@@ -709,6 +713,11 @@ class AgentOrchestrator:
             self._strategy_engine_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._strategy_engine_task
+
+        if self._external_pr_poll_task:
+            self._external_pr_poll_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._external_pr_poll_task
 
         # Stop all agents
         for agent_id in list(self._instances.keys()):
@@ -4518,6 +4527,72 @@ Start by:
                 break
             except Exception:
                 logger.exception("strategy engine cycle failed")
+
+    async def _external_pr_poll_loop(self) -> None:
+        """Engine 3: discover inbound external PRs and open review tasks.
+
+        Dormant by default — returns immediately unless ``external_pr_enabled``,
+        so a standard deployment makes no inbound GitHub call. This only lists
+        open PRs and records a review task per newly-seen external one; it never
+        fetches or runs contributor code (that waits on a human confirmation
+        downstream). New review tasks wake the dispatcher.
+        """
+        if not settings.external_pr_enabled:
+            return
+        from roboco.db import get_db_context
+
+        interval = settings.external_pr_poll_interval_seconds
+        while self._running:
+            try:
+                await asyncio.sleep(interval)
+                async with get_db_context() as db:
+                    ingested = await self._poll_external_prs_once(db)
+                if ingested:
+                    self._dispatch_wake.set()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("external-PR poll cycle failed")
+
+    async def _poll_external_prs_once(self, db: "AsyncSession") -> int:
+        """One discovery pass across active projects; returns tasks ingested.
+
+        Lists each active project's open PRs, keeps the external ones, and
+        ingests a de-duped review task for each. Commits once at the end.
+        """
+        from roboco.services.git import GitService
+        from roboco.services.project import get_project_service
+        from roboco.services.task import get_task_service
+
+        git = GitService(db)
+        task_service = get_task_service(db)
+        projects = await get_project_service(db).list_all(active_only=True)
+        system_id = _foundation.AGENTS["system"].uuid
+        ingested = 0
+        for project in projects:
+            for pr in await git.list_open_prs(project.slug):
+                number = pr.get("number")
+                if number is None or not self._is_external_pr(pr):
+                    continue
+                created = await task_service.ingest_external_pr(
+                    project_id=cast("UUID", project.id),
+                    pr=pr,
+                    created_by=system_id,
+                    team=Team.BOARD,
+                )
+                if created is not None:
+                    ingested += 1
+        await db.commit()
+        return ingested
+
+    @staticmethod
+    def _is_external_pr(pr: dict[str, Any]) -> bool:
+        """A PR the org did not author: a fork head or a non-member author."""
+        if pr.get("is_fork"):
+            return True
+        trusted = {"OWNER", "MEMBER", "COLLABORATOR"}
+        assoc = (pr.get("author_association") or "").upper()
+        return assoc not in trusted
 
     async def _rate_limit_probe_loop(self) -> None:
         """Background loop: probe rate-limited providers every ~30 seconds.

@@ -36,6 +36,7 @@ from roboco.models.base import (
     AgentRole,
     AgentStatus,
     BlockerResolverType,
+    Complexity,
     JournalEntryType,
     TaskNature,
     TaskStatus,
@@ -600,6 +601,75 @@ class TaskService(BaseService):
             title=req.title,
             team=req.team if isinstance(req.team, str) else req.team.value,
         )
+        return task
+
+    async def external_review_task_exists(
+        self, project_id: UUID, pr_number: int
+    ) -> bool:
+        """True if a review task already exists for this (project, external PR).
+
+        The de-dupe key for inbound external-PR ingestion: one review task per
+        ``(project_id, source='external_pr', pr_number)`` so re-polling an open
+        PR never creates a duplicate.
+        """
+        result = await self.session.execute(
+            select(TaskTable.id).where(
+                TaskTable.project_id == project_id,
+                TaskTable.source == "external_pr",
+                TaskTable.pr_number == pr_number,
+            )
+        )
+        return result.first() is not None
+
+    async def ingest_external_pr(
+        self,
+        *,
+        project_id: UUID,
+        pr: dict[str, Any],
+        created_by: UUID,
+        team: Team,
+    ) -> TaskTable | None:
+        """Create one review task for a newly-seen external PR; ``None`` if it exists.
+
+        ``pr`` is a normalized record from ``GitService.list_open_prs`` (number,
+        url, title). De-duped on ``(project_id, source='external_pr', pr_number)``.
+        The task is CODE-typed with ``source='external_pr'`` and
+        ``confirmed_by_human=False`` — a deliberate gate: no agent fetches, checks
+        out, or runs the contributor's code until a human confirms the PR. Caller
+        commits.
+        """
+        pr_number = int(pr["number"])
+        pr_url = str(pr.get("url") or "")
+        pr_title = str(pr.get("title") or "")
+        if await self.external_review_task_exists(project_id, pr_number):
+            return None
+        title = f"Review external PR #{pr_number}: {pr_title}".strip()
+        req = TaskCreateRequest(
+            title=title[:200],
+            description=(
+                f"An external contributor opened PR #{pr_number} ({pr_url}).\n\n"
+                "Review it adversarially and post a single, complete "
+                "change-request with per-criterion findings. Do not fetch, check "
+                "out, or run the contributor's code until a human has confirmed "
+                "this PR."
+            ),
+            acceptance_criteria=[
+                "Exactly one complete GitHub review is posted with per-criterion "
+                "findings",
+            ],
+            team=team,
+            created_by=created_by,
+            task_type=TaskType.CODE,
+            nature=TaskNature.TECHNICAL,
+            estimated_complexity=Complexity.MEDIUM,
+            project_id=project_id,
+            source="external_pr",
+            confirmed_by_human=False,
+        )
+        task = await self.create(req)
+        task.pr_number = pr_number
+        task.pr_url = pr_url
+        await self.session.flush()
         return task
 
     async def _inherit_parent_session(

@@ -1370,6 +1370,72 @@ class GitService(BaseService):
             return cast("dict[str, Any]", existing.json()[0])
         return None
 
+    async def list_open_prs(self, project_slug: str) -> list[dict[str, Any]]:
+        """List a project's open PRs, normalized with fork/author classification.
+
+        The inbound counterpart to the org's outbound PR calls: lists ALL open
+        PRs (no ``head=`` filter), so it sees external/fork contributions the org
+        did not create. Each record carries ``number``, ``url``, ``title``,
+        ``head_ref``, ``is_fork`` (head repo differs from base repo),
+        ``user_login`` and ``author_association`` so the caller can classify
+        trust. Returns ``[]`` on a missing token, unparseable remote, or any
+        GitHub error — it never raises into the poll loop.
+        """
+        project = await get_project_service(self.session).get_by_slug(project_slug)
+        if project is None or not project.git_url:
+            return []
+        try:
+            owner, repo = self._parse_git_url(project.git_url)
+        except GitError:
+            return []
+        git_token = await self._token_for_project(project_slug)
+        if not git_token:
+            return []
+        api_base = settings.github_api_base_url.rstrip("/")
+        try:
+            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
+                resp = await client.get(
+                    f"{api_base}/repos/{owner}/{repo}/pulls",
+                    headers={
+                        "Authorization": f"Bearer {git_token}",
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                    params={"state": "open", "per_page": 100},
+                )
+        except httpx.HTTPError as e:
+            self.log.warning(
+                "list_open_prs request failed",
+                project=project_slug,
+                error=str(e),
+            )
+            return []
+        if not resp.is_success:
+            self.log.warning(
+                "list_open_prs non-2xx",
+                project=project_slug,
+                status=resp.status_code,
+            )
+            return []
+        base_full = f"{owner}/{repo}"
+        prs: list[dict[str, Any]] = []
+        for pr in resp.json():
+            head = pr.get("head") or {}
+            head_repo = head.get("repo") or {}
+            head_full = head_repo.get("full_name")
+            prs.append(
+                {
+                    "number": pr.get("number"),
+                    "url": pr.get("html_url") or "",
+                    "title": pr.get("title") or "",
+                    "head_ref": head.get("ref"),
+                    "is_fork": bool(head_full and head_full != base_full),
+                    "user_login": (pr.get("user") or {}).get("login"),
+                    "author_association": pr.get("author_association"),
+                }
+            )
+        return prs
+
     async def _post_pr(
         self,
         owner: str,
