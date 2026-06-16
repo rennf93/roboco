@@ -217,6 +217,19 @@ services:
       - agent-base-image
 
   # ==========================================================================
+  # Agent PR Reviewer Image Builder (read-only reviewer of inbound external PRs)
+  # ==========================================================================
+  agent-pr-reviewer-image:
+    build:
+      context: .
+      dockerfile: docker/agent-pr-reviewer.Dockerfile
+    image: roboco-agent-pr-reviewer
+    entrypoint: ["/bin/sh", "-c", 'echo "Agent PR Reviewer image built"']
+    restart: "no"
+    depends_on:
+      - agent-base-image
+
+  # ==========================================================================
   # Orchestrator - API Server + Agent Spawner
   # ==========================================================================
   orchestrator:

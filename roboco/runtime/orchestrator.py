@@ -123,11 +123,10 @@ AGENT_IMAGES: dict[str, str] = {
     "product-owner": "roboco-agent-pm",
     "head-marketing": "roboco-agent-pm",
     "auditor": "roboco-agent-pm",
-    # PR Reviewer — read-only reviewer (fetches the PR diff via API, greps the
-    # code, posts one change-request; never runs code). The base image has
-    # everything it needs, so it intentionally reuses it rather than shipping a
-    # dedicated image. Explicit (not a silent fallback) so the choice is visible.
-    "pr-reviewer-1": AGENT_BASE_IMAGE,
+    # PR Reviewer — read-only reviewer (diff via API, grep, post one
+    # change-request; never runs code). Its own image for parity with the other
+    # agents; built FROM the base, no extra toolchain.
+    "pr-reviewer-1": "roboco-agent-pr-reviewer",
     # Intake — persistent Agent-SDK driver, not a one-shot `claude -p`.
     INTAKE_AGENT_ID: "roboco-agent-prompter",
     # Secretary — persistent Agent-SDK driver with gated CEO authority.
@@ -787,6 +786,7 @@ class AgentOrchestrator:
                     "roboco-agent-ux": "agent-ux.Dockerfile",
                     "roboco-agent-prompter": "agent-prompter.Dockerfile",
                     "roboco-agent-secretary": "agent-secretary.Dockerfile",
+                    "roboco-agent-pr-reviewer": "agent-pr-reviewer.Dockerfile",
                 }
                 dockerfile = dockerfile_map.get(bare)
                 if dockerfile:

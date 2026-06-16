@@ -53,8 +53,10 @@ def test_get_agent_image_local_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(orch.settings, "agent_image_registry", "")
     monkeypatch.setattr(orch.settings, "agent_image_tag", "")
     assert orch.get_agent_image("be-dev-1") == "roboco-agent-dev-be"
-    # Unknown agent id falls back to the base image.
-    assert orch.get_agent_image("pr-reviewer-1") == "roboco-agent-base"
+    # The PR reviewer has its own image (parity with the other agents).
+    assert orch.get_agent_image("pr-reviewer-1") == "roboco-agent-pr-reviewer"
+    # A genuinely unknown agent id falls back to the base image.
+    assert orch.get_agent_image("nope-not-real") == "roboco-agent-base"
 
 
 def test_get_agent_image_registry_mode(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -66,5 +68,5 @@ def test_get_agent_image_registry_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     assert (
         orch.get_agent_image("pr-reviewer-1")
-        == "ghcr.io/rennf93/roboco-agent-base:0.5.0"
+        == "ghcr.io/rennf93/roboco-agent-pr-reviewer:0.5.0"
     )

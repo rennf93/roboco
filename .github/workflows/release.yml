@@ -99,6 +99,7 @@ jobs:
             [roboco-agent-doc]=docker/agent-doc.Dockerfile
             [roboco-agent-prompter]=docker/agent-prompter.Dockerfile
             [roboco-agent-secretary]=docker/agent-secretary.Dockerfile
+            [roboco-agent-pr-reviewer]=docker/agent-pr-reviewer.Dockerfile
           )
           for name in "${!IMAGES[@]}"; do
             echo "::group::build ${name}"

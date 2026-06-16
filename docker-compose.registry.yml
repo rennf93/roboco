@@ -155,6 +155,11 @@ services:
     entrypoint: ["/bin/sh", "-c", "echo 'agent-secretary image present'"]
     restart: "no"
 
+  agent-pr-reviewer-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-pr-reviewer:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-pr-reviewer image present'"]
+    restart: "no"
+
   # --------------------------------------------------------------------------
   # Orchestrator — API server + agent spawner
   # --------------------------------------------------------------------------
