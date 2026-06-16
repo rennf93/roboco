@@ -4645,11 +4645,43 @@ Start by:
             except Exception:
                 logger.exception("external-PR poll cycle failed")
 
-    async def _poll_external_prs_once(self, db: "AsyncSession") -> int:
-        """One discovery pass across active projects; returns tasks ingested.
+    @staticmethod
+    def _repo_key(git_url: str) -> str:
+        """Normalized repo identity (case/.git/trailing-slash insensitive)."""
+        return git_url.lower().rstrip("/").removesuffix(".git")
 
-        Lists each active project's open PRs, keeps the external ones, and
-        ingests a de-duped review task for each. Commits once at the end.
+    @classmethod
+    def _projects_one_per_repo(cls, projects: list[Any]) -> list[Any]:
+        """One canonical project per distinct repo.
+
+        Many projects can point at the SAME repo — a monorepo product's
+        backend/frontend/ux cells each have their own Project mapping to one
+        git_url. Polling per-project would then ingest one review task per cell
+        for a single external PR (the per-(project,pr) dedup can't see across
+        projects). Collapse to one canonical project per repo (deterministic by
+        slug so the pick is stable across polls); genuinely separate repos
+        (multi-repo) each keep their own. Projects without a git_url are skipped.
+        """
+        seen: set[str] = set()
+        canonical: list[Any] = []
+        for project in sorted(projects, key=lambda p: str(p.slug)):
+            git_url = getattr(project, "git_url", None)
+            if not git_url:
+                continue
+            key = cls._repo_key(git_url)
+            if key in seen:
+                continue
+            seen.add(key)
+            canonical.append(project)
+        return canonical
+
+    async def _poll_external_prs_once(self, db: "AsyncSession") -> int:
+        """One discovery pass across active repos; returns tasks ingested.
+
+        Repo-aware: collapses active projects to one canonical project per
+        distinct repo (so a monorepo product yields ONE review per PR, not one
+        per cell-project), lists each repo's open PRs, keeps the external ones,
+        and ingests a de-duped review task for each. Commits once at the end.
         """
         from roboco.services.git import GitService
         from roboco.services.project import get_project_service
@@ -4661,7 +4693,7 @@ Start by:
         system_id = _foundation.AGENTS["system"].uuid
         allowlist = {a.lower() for a in settings.external_pr_author_allowlist}
         ingested = 0
-        for project in projects:
+        for project in self._projects_one_per_repo(projects):
             for pr in await git.list_open_prs(project.slug):
                 number = pr.get("number")
                 if number is None or not self._is_external_pr(pr):

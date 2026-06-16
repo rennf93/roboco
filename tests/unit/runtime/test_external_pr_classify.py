@@ -7,8 +7,40 @@ side) for anything it does not positively recognize as internal.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from roboco.runtime.orchestrator import AgentOrchestrator
+
+
+def _proj(slug: str, git_url: str | None) -> SimpleNamespace:
+    return SimpleNamespace(slug=slug, git_url=git_url)
+
+
+def test_projects_one_per_repo_collapses_monorepo() -> None:
+    # Three cell-projects all pointing at the same repo (a monorepo product)
+    # collapse to ONE canonical project; a genuinely separate repo is kept.
+    projects = [
+        _proj("roboco-uix", "https://github.com/rennf93/roboco.git"),
+        _proj("roboco-api", "https://github.com/rennf93/roboco.git"),
+        _proj("roboco-panel", "https://github.com/rennf93/roboco.git"),
+        _proj("other", "https://github.com/rennf93/other-repo.git"),
+    ]
+    out = AgentOrchestrator._projects_one_per_repo(projects)
+    slugs = [p.slug for p in out]
+    # one per distinct repo; canonical pick is deterministic (first by slug).
+    assert slugs == ["other", "roboco-api"]
+
+
+def test_projects_one_per_repo_normalizes_and_skips_repoless() -> None:
+    projects = [
+        _proj("a", "https://github.com/rennf93/roboco"),  # no .git
+        _proj("b", "https://github.com/rennf93/roboco.git/"),  # .git + slash
+        _proj("coordination", None),  # product/coordination project, no repo
+    ]
+    out = AgentOrchestrator._projects_one_per_repo(projects)
+    # a & b are the same repo; coordination (no git_url) is skipped.
+    assert [p.slug for p in out] == ["a"]
 
 
 @pytest.mark.parametrize(
