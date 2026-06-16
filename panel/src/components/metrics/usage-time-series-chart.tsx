@@ -58,12 +58,12 @@ export function UsageTimeSeriesChart({ data, isLoading }: UsageTimeSeriesChartPr
             >
               <defs>
                 <linearGradient id="fillInput" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="var(--chart-1)" stopOpacity={0.8} />
-                  <stop offset="95%" stopColor="var(--chart-1)" stopOpacity={0.1} />
+                  <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.8} />
+                  <stop offset="95%" stopColor="#3b82f6" stopOpacity={0.1} />
                 </linearGradient>
                 <linearGradient id="fillOutput" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="var(--chart-2)" stopOpacity={0.8} />
-                  <stop offset="95%" stopColor="var(--chart-2)" stopOpacity={0.1} />
+                  <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.8} />
+                  <stop offset="95%" stopColor="#f59e0b" stopOpacity={0.1} />
                 </linearGradient>
               </defs>
               <CartesianGrid strokeDasharray="3 3" className="opacity-20" />
@@ -93,14 +93,14 @@ export function UsageTimeSeriesChart({ data, isLoading }: UsageTimeSeriesChartPr
                 type="monotone"
                 dataKey="Input"
                 stackId="1"
-                stroke="var(--chart-1)"
+                stroke="#3b82f6"
                 fill="url(#fillInput)"
               />
               <Area
                 type="monotone"
                 dataKey="Output"
                 stackId="1"
-                stroke="var(--chart-2)"
+                stroke="#f59e0b"
                 fill="url(#fillOutput)"
               />
             </AreaChart>

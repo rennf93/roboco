@@ -12,12 +12,14 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { ModelUsageSlice } from "@/types";
 
+// Semantic color palette: blue (informational), amber (warning), green (success),
+// red (error/blocked), purple (supplemental)
 const CHART_COLORS = [
-  "var(--chart-1)",
-  "var(--chart-2)",
-  "var(--chart-3)",
-  "var(--chart-4)",
-  "var(--chart-5)",
+  "#3b82f6", // blue-500  — informational
+  "#f59e0b", // amber-500 — warning / pending
+  "#22c55e", // green-500 — success / healthy
+  "#ef4444", // red-500   — error / blocked
+  "#a855f7", // purple-500 — supplemental
 ];
 
 interface ModelUsageDonutProps {
