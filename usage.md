@@ -4,7 +4,7 @@ Operating the AI company after deployment.
 
 ## The Organization
 
-20 AI agents organized as a company:
+22 AI agents organized as a company:
 
 ```
 CEO (You)
@@ -235,12 +235,19 @@ docker logs -f roboco-agent-be-dev-1
 
 ### Resource Usage
 
-Each agent container uses ~500MB-2GB RAM depending on context. With 128GB RAM:
-- 3 agents: ~6GB
-- 6 agents: ~12GB
-- 20 agents: ~40GB (the intake interviewer is on-demand — it only runs while you're drafting a task)
+RAM is modest. Agent containers are spawned on demand and torn down when
+their work is done, so you rarely have more than a handful live at once — and
+the on-demand Intake and Secretary only run while you're interacting with them.
+Steady-state memory is dominated by the standing services (Postgres, Redis,
+and especially Ollama with its models loaded), not by the agents.
+
+Storage is the larger footprint: the built (or pulled) image set. The agent
+images all share a common base layer, so on disk they cost far less than their
+nominal sizes added together. `docker system prune` reclaims old image versions
+and stopped agent containers.
 
 Monitor with:
 ```bash
-docker stats --filter "name=roboco-agent"
+docker stats        # live RAM / CPU per running container
+docker system df    # image / container / build-cache disk usage
 ```

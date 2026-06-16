@@ -5,38 +5,43 @@
 ```
 CEO (Renzo - Human)
     |
-    +-- Board (3 agents)
-         +-- Product Owner
-         +-- Head of Marketing
-         +-- Auditor (silent observer)
-              |
-              +-- Main PM
-                   |
-                   +-- Backend Cell
-                   +-- Frontend Cell
-                   +-- UX/UI Cell
+    +-- Board (4 agents)
+    |    +-- Product Owner
+    |    +-- Head of Marketing
+    |    +-- Auditor (silent observer)
+    |    +-- PR Reviewer (read-only safety check on PRs)
+    |
+    +-- Main PM
+         |
+         +-- Backend Cell
+         +-- Frontend Cell
+         +-- UX/UI Cell
 ```
 
 ## Agent Count
 
 | Role | Count |
 |------|-------|
-| CEO | 1 (human) |
+| CEO | 1 (human — not counted in the 22) |
 | Product Owner | 1 |
 | Head of Marketing | 1 |
 | Auditor | 1 |
+| PR Reviewer | 1 |
 | Main PM | 1 |
 | Cell PMs | 3 |
 | Developers | 6 (2 per cell) |
 | QAs | 3 (1 per cell) |
 | Documenters | 3 (1 per cell) |
-| **Total** | **20** (19 AI + 1 human) |
+| Prompter (Intake) | 1 (on-demand) |
+| Secretary | 1 (on-demand) |
+| **Total AI agents** | **22** |
 
 ## On-Demand Roles (Human-Facing)
 
-Two roles sit outside the standing delivery org above. They are **human-only**,
-**spawned on demand** as live chat sessions, and are not part of the 20-agent
-count:
+Two of the 22 — the Prompter (Intake) and the Secretary — sit outside the
+standing delivery org above. They are **human-only** and **spawned on demand**
+as live chat sessions; they are counted among the 22, but unlike the standing
+org they have no lifecycle verbs and no outward agent comms:
 
 | Role | Purpose |
 |------|---------|
@@ -59,7 +64,7 @@ Neither has lifecycle verbs or outward agent comms. See
 | Team | Members |
 |------|---------|
 | executive | ceo |
-| board | product-owner, head-marketing, auditor |
+| board | product-owner, head-marketing, auditor, pr-reviewer-1 |
 | management | main-pm, be-pm, fe-pm, ux-pm |
 | developers | all devs |
 | qa | all QAs |
@@ -80,6 +85,7 @@ Each role can communicate with:
 | CEO | Everyone |
 | Board | CEO, other board, Main PM |
 | Auditor | Everyone (silent read all) |
+| PR Reviewer | Read-only; posts one change-request on the PR itself, no agent comms |
 | Main PM | CEO, Board, Cell PMs |
 | Cell PM | Main PM, cell members |
 | Cell Members | Cell PM, other cell members |

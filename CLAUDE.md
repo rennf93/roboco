@@ -15,7 +15,7 @@ keep copyright assignment language intact. See `CONTRIBUTING.md`.
 
 ## Project Overview
 
-**RoboCo** is an AI Agentic Company - a virtual organization of 20 AI agents + 1 human CEO, designed to operate as a complete software development workforce. The system implements a structured organizational hierarchy with formal communication protocols, task management, and quality controls.
+**RoboCo** is an AI Agentic Company - a virtual organization of 22 AI agents + 1 human CEO, designed to operate as a complete software development workforce. The system implements a structured organizational hierarchy with formal communication protocols, task management, and quality controls.
 
 ### Core Architecture
 
