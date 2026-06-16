@@ -899,6 +899,40 @@ class GitService(BaseService):
 
         return branch_name, base_branch
 
+    async def create_branch_from_pr_head(
+        self,
+        workspace: Path,
+        project_slug: str,
+        pr_number: int,
+        branch_name: str,
+    ) -> str:
+        """Create + push a roboco-owned branch off a fork PR's head commits.
+
+        Fork PR heads are NOT branches on origin; GitHub exposes them at the
+        special ref ``refs/pull/{n}/head``. We fetch that ref into a
+        roboco-owned local branch and push it to origin, so a dev cell can
+        finish the contribution on a branch WE own and merge — we NEVER push to
+        the contributor's fork. This is the first point untrusted contributor
+        code enters a roboco branch, so the caller MUST only invoke it for a
+        human-confirmed (``confirmed_by_human``) supersede.
+        """
+        project_token = await self._token_for_project(project_slug)
+        pull_ref = f"refs/pull/{pr_number}/head"
+        await self._run_git(
+            workspace,
+            ["fetch", "origin", f"{pull_ref}:{branch_name}"],
+            token=project_token,
+            timeout=_network_git_timeout(),
+        )
+        await self._run_git(workspace, ["checkout", branch_name])
+        await self._run_git(
+            workspace,
+            ["push", "-u", "origin", branch_name],
+            token=project_token,
+            timeout=_network_git_timeout(),
+        )
+        return branch_name
+
     @staticmethod
     def _enum_str(value: Any) -> str | None:
         """Return .value when present; otherwise str(), preserving None."""
