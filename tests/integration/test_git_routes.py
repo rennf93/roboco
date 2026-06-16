@@ -681,5 +681,182 @@ async def test_status_generic_service_error(git_client: dict) -> None:
     assert response.status_code == HTTPStatus.INTERNAL_SERVER_ERROR
 
 
+# ---------------------------------------------------------------------------
+# pull
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pull_success(git_client: dict) -> None:
+    with patch("roboco.api.routes.git.get_git_service") as mock_get:
+        svc = AsyncMock()
+        svc.get_workspace = AsyncMock(return_value="/tmp/ws")
+        svc.pull = AsyncMock(return_value=("main", False, [], [], [], 0, 0))
+        mock_get.return_value = svc
+        response = await git_client["client"].post(
+            "/api/git/pull",
+            json={
+                "project_slug": git_client["project"].slug,
+                "task_id": str(uuid4()),
+                "agent_id": str(uuid4()),
+            },
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.OK
+    data = response.json()
+    assert data["current_branch"] == "main"
+    assert "ahead" in data
+    assert "behind" in data
+    assert "has_changes" in data
+    assert "staged_files" in data
+    assert "unstaged_files" in data
+    assert "untracked_files" in data
+
+
+@pytest.mark.asyncio
+async def test_pull_git_command_error(git_client: dict) -> None:
+    with patch("roboco.api.routes.git.get_git_service") as mock_get:
+        svc = AsyncMock()
+        svc.get_workspace = AsyncMock(return_value="/tmp/ws")
+        svc.pull = AsyncMock(side_effect=GitCommandError("pull", "network error"))
+        mock_get.return_value = svc
+        response = await git_client["client"].post(
+            "/api/git/pull",
+            json={
+                "project_slug": git_client["project"].slug,
+                "task_id": str(uuid4()),
+                "agent_id": str(uuid4()),
+            },
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.INTERNAL_SERVER_ERROR
+
+
+# ---------------------------------------------------------------------------
+# fetch
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fetch_success(git_client: dict) -> None:
+    with patch("roboco.api.routes.git.get_git_service") as mock_get:
+        svc = AsyncMock()
+        svc.get_workspace = AsyncMock(return_value="/tmp/ws")
+        _ahead = 2
+        _behind = 1
+        svc.fetch = AsyncMock(
+            return_value=("feature/x", True, ["a.py"], [], [], _ahead, _behind)
+        )
+        mock_get.return_value = svc
+        response = await git_client["client"].post(
+            "/api/git/fetch",
+            json={
+                "project_slug": git_client["project"].slug,
+                "task_id": str(uuid4()),
+                "agent_id": str(uuid4()),
+            },
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.OK
+    data = response.json()
+    assert data["current_branch"] == "feature/x"
+    assert data["ahead"] == _ahead
+    assert data["behind"] == _behind
+    assert data["has_changes"] is True
+    assert "staged_files" in data
+    assert "unstaged_files" in data
+    assert "untracked_files" in data
+
+
+@pytest.mark.asyncio
+async def test_fetch_git_command_error(git_client: dict) -> None:
+    with patch("roboco.api.routes.git.get_git_service") as mock_get:
+        svc = AsyncMock()
+        svc.get_workspace = AsyncMock(return_value="/tmp/ws")
+        svc.fetch = AsyncMock(side_effect=GitCommandError("fetch", "network error"))
+        mock_get.return_value = svc
+        response = await git_client["client"].post(
+            "/api/git/fetch",
+            json={
+                "project_slug": git_client["project"].slug,
+                "task_id": str(uuid4()),
+                "agent_id": str(uuid4()),
+            },
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.INTERNAL_SERVER_ERROR
+
+
+# ---------------------------------------------------------------------------
+# rebase
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rebase_success(git_client: dict) -> None:
+    with patch("roboco.api.routes.git.get_git_service") as mock_get:
+        svc = AsyncMock()
+        svc.get_workspace = AsyncMock(return_value="/tmp/ws")
+        svc.rebase = AsyncMock(return_value=(False, []))
+        mock_get.return_value = svc
+        response = await git_client["client"].post(
+            "/api/git/rebase",
+            json={
+                "project_slug": git_client["project"].slug,
+                "task_id": str(uuid4()),
+                "agent_id": str(uuid4()),
+                "target_branch": "main",
+            },
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.OK
+    data = response.json()
+    assert data["conflict"] is False
+    assert data["conflicted_files"] == []
+
+
+@pytest.mark.asyncio
+async def test_rebase_conflict(git_client: dict) -> None:
+    with patch("roboco.api.routes.git.get_git_service") as mock_get:
+        svc = AsyncMock()
+        svc.get_workspace = AsyncMock(return_value="/tmp/ws")
+        svc.rebase = AsyncMock(return_value=(True, ["src/foo.py", "src/bar.py"]))
+        mock_get.return_value = svc
+        response = await git_client["client"].post(
+            "/api/git/rebase",
+            json={
+                "project_slug": git_client["project"].slug,
+                "task_id": str(uuid4()),
+                "agent_id": str(uuid4()),
+                "target_branch": "main",
+            },
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.OK
+    data = response.json()
+    assert data["conflict"] is True
+    assert data["conflicted_files"] == ["src/foo.py", "src/bar.py"]
+
+
+@pytest.mark.asyncio
+async def test_rebase_git_command_error(git_client: dict) -> None:
+    with patch("roboco.api.routes.git.get_git_service") as mock_get:
+        svc = AsyncMock()
+        svc.get_workspace = AsyncMock(return_value="/tmp/ws")
+        svc.rebase = AsyncMock(side_effect=GitCommandError("rebase", "fatal error"))
+        mock_get.return_value = svc
+        response = await git_client["client"].post(
+            "/api/git/rebase",
+            json={
+                "project_slug": git_client["project"].slug,
+                "task_id": str(uuid4()),
+                "agent_id": str(uuid4()),
+                "target_branch": "main",
+            },
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.INTERNAL_SERVER_ERROR
+
+
 # Re-export to keep import alive (TC reorders imports)
 _ = SimpleNamespace
