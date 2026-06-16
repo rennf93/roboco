@@ -9,6 +9,7 @@ import { ActiveBlockersPanel } from "./active-blockers-panel";
 import { RecentActivityFeed } from "./recent-activity-feed";
 import { QuickActionsBar } from "./quick-actions-bar";
 import { CeoApprovalQueue } from "./ceo-approval-queue";
+import { StrategySignalsPanel } from "./strategy-signals-panel";
 import type { Activity } from "./activity-item";
 import { Button } from "@/components/ui/button";
 import { UsageOverviewPanel } from "./usage-overview-panel";
@@ -70,10 +71,11 @@ export function CommandCenter() {
         />
       </section>
 
-      {/* CEO Approval Queue - Your primary action item */}
-      <section>
+      {/* CEO Approval Queue + Strategy Signals - side-by-side on lg+ */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <CeoApprovalQueue />
-      </section>
+        <StrategySignalsPanel />
+      </div>
 
       {/* Metrics, Alerts, and Usage Row */}
       <div className="grid grid-cols-1 lg:grid-cols-3 xl:grid-cols-3 2xl:grid-cols-3 gap-6">
