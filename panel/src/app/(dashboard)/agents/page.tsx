@@ -17,6 +17,7 @@ import {
   getBackendAgents,
   getFrontendAgents,
   getUxAgents,
+  getOnDemandAgents,
 } from "@/lib/agent-definitions";
 import {
   OrchestratorStatusCards,
@@ -134,6 +135,18 @@ export default function AgentsPage() {
         isLoading={(isLoading || agentsLoading) && !isOffline}
         columns={4}
       />
+
+      {/* On-Demand Agents: spawned as needed (e.g. Intake interviewer) */}
+      {getOnDemandAgents(agents).length > 0 && (
+        <AgentGrid
+          title="On-Demand Agents"
+          agents={getOnDemandAgents(agents)}
+          agentStatuses={agentStatuses}
+          agentUsage={agentUsageMap}
+          isLoading={(isLoading || agentsLoading) && !isOffline}
+          columns={4}
+        />
+      )}
     </div>
   );
 }
