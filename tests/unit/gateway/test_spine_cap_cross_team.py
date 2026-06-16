@@ -1,16 +1,16 @@
 """Spine-cap concurrency rules for delegated subtasks.
 
 The per-parent cap is type-aware (`_SPINE_TYPE_CAPS`):
-  - ``code``: 2 — one per cell developer, so both build independent units in
-    parallel. A third concurrent code subtask is rejected; a second code
-    subtask to the SAME developer is rejected (same-assignee rule).
+  - ``code``: no per-parent cap. A PM delegates a full per-dev queue up front
+    (per-dev sequenced queues); both cell devs build in parallel and each works
+    its own queue one task at a time (enforced by the orchestrator's per-lane
+    dispatch barrier, not this cap). Total fan-out is bounded by the 12-subtask
+    hard cap. Only an exact same-title duplicate to one dev is rejected here.
   - ``planning`` / ``documentation``: 1.
 
 Cross-team exemption:
   - ``planning`` on a different team does NOT count toward the cap — that's
     main_pm's legitimate cross-cell fanout (be-pm + fe-pm + ux-pm in parallel).
-  - ``code`` / ``documentation`` count regardless of team (a parent's code
-    spine is bounded by the two devs in its one cell).
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ def _sibling(
     team: str,
     status: str = "pending",
     assignee: str = "some-pm",
+    title: str = "some unit",
 ) -> MagicMock:
     sib = MagicMock()
     sib.id = "11111111-aaaa-bbbb-cccc-dddddddddddd"
@@ -33,6 +34,7 @@ def _sibling(
     sib.task_type = task_type
     sib.team = team
     sib.assigned_to = assignee
+    sib.title = title
     return sib
 
 
@@ -91,36 +93,56 @@ def test_one_code_sibling_allows_a_second_parallel_dev() -> None:
     assert env is None, f"A second parallel code subtask must be allowed. Got: {env}"
 
 
-def test_two_code_siblings_reject_a_third() -> None:
-    """Both cell devs busy (2 non-terminal code subtasks) → a third is capped."""
+def test_third_code_subtask_is_allowed_queue() -> None:
+    """No per-parent code cap: a third (and beyond) code subtask is allowed so a
+    PM can delegate a full per-dev queue up front. Concurrency is bounded by the
+    per-lane dispatch barrier, not by rejecting the delegate."""
     sibs = [
-        _sibling(task_type="code", team="backend", assignee="be-dev-1"),
-        _sibling(task_type="code", team="backend", assignee="be-dev-2"),
+        _sibling(task_type="code", team="backend", assignee="be-dev-1", title="u1"),
+        _sibling(task_type="code", team="backend", assignee="be-dev-2", title="u2"),
     ]
     env = Choreographer._sibling_cap_envelope(
         siblings=sibs,
         new_type="code",
         new_team="backend",
         new_assignee="be-dev-1",
+        new_title="u3",
     )
-    assert env is not None
-    body = env.as_dict()
-    assert body["error"] == "invalid_state", body
+    assert env is None, f"A third code subtask (queue) must be allowed. Got: {env}"
 
 
-def test_second_code_to_same_dev_is_rejected() -> None:
-    """The same developer never holds two code subtasks under one parent
-    (same-assignee rule), even though the cap is 2."""
-    sib = _sibling(task_type="code", team="backend", assignee="be-dev-1")
+def test_second_distinct_code_to_same_dev_is_allowed_queue() -> None:
+    """A dev legitimately owns a QUEUE — a second code subtask to the same dev
+    with a DISTINCT title is allowed (it's the dev's next queue item)."""
+    sib = _sibling(
+        task_type="code", team="backend", assignee="be-dev-1", title="add login form"
+    )
     env = Choreographer._sibling_cap_envelope(
         siblings=[sib],
         new_type="code",
         new_team="backend",
         new_assignee="be-dev-1",
+        new_title="add logout button",
+    )
+    assert env is None, f"A distinct queue item for the same dev must pass. Got: {env}"
+
+
+def test_exact_duplicate_code_to_same_dev_is_rejected() -> None:
+    """An exact same-title code subtask to a dev that already owns one is an
+    accidental re-delegation — rejected even though queues are allowed.
+    Title match is case/whitespace-insensitive."""
+    sib = _sibling(
+        task_type="code", team="backend", assignee="be-dev-1", title="Add Login Form"
+    )
+    env = Choreographer._sibling_cap_envelope(
+        siblings=[sib],
+        new_type="code",
+        new_team="backend",
+        new_assignee="be-dev-1",
+        new_title="add   login form",
     )
     assert env is not None
-    body = env.as_dict()
-    assert body["error"] == "invalid_state", body
+    assert env.as_dict()["error"] == "invalid_state", env
 
 
 def test_documentation_still_capped_at_one() -> None:

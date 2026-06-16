@@ -3373,11 +3373,14 @@ class Choreographer:
         )
 
     _TERMINAL_STATUSES: ClassVar[frozenset[str]] = frozenset({"completed", "cancelled"})
-    # Per-parent concurrency cap by spine task_type. `code` is capped at the
-    # number of developers in a cell (2) so both can build independent units in
-    # parallel; `planning` and `documentation` stay sequential (one at a time).
+    # Per-parent concurrency cap by spine task_type. `planning` and
+    # `documentation` stay sequential (one non-terminal at a time). `code` has
+    # NO per-parent cap: a PM delegates a full per-dev queue up front (Spec 3
+    # per-dev sequenced queues) — both cell devs build in parallel, each works
+    # its own queue in sequence order, and the orchestrator's per-lane dispatch
+    # barrier (`_blocked_by_earlier_lane_sibling`) keeps a dev to one live task
+    # at a time. Total fan-out is still bounded by `_SUBTASK_HARD_CAP`.
     _SPINE_TYPE_CAPS: ClassVar[dict[str, int]] = {
-        "code": 2,
         "planning": 1,
         "documentation": 1,
     }
@@ -3450,38 +3453,26 @@ class Choreographer:
     def _spine_type_dup_envelope(
         new_type: str, sibling: Any, sib_assignee: str, cap: int = 1
     ) -> Envelope:
-        """Rule-1 rejection: spine-type concurrency cap hit."""
-        capacity = (
-            f"The {new_type!r} spine is sequential — only one non-terminal at a time."
-            if cap == 1
-            else (
-                f"The {new_type!r} spine is capped at {cap} concurrent "
-                f"(one per cell developer) and both are already in flight."
-            )
-        )
-        parallel_hint = (
-            "If the work is genuinely parallel (two independent modules), "
-            "split this parent into two sibling parents instead of two code "
-            "subtasks under one parent.\n\n"
-            if cap == 1
-            else (
-                f"You may run up to {cap} code subtasks at once (one per dev) "
-                "when they touch independent files; a further one must wait for "
-                "an in-flight sibling to finish.\n\n"
-            )
-        )
+        """Rule-1 rejection: a sequential spine (planning/documentation) is full.
+
+        Only ``planning`` and ``documentation`` are cap-limited now (1 at a
+        time); ``code`` has no per-parent cap (Spec 3 per-dev queues), so this
+        only ever fires for the sequential spines. ``cap`` is kept for the
+        message but is 1 in every live call.
+        """
         return Envelope.invalid_state(
             message=(
                 f"parent already has {cap} non-terminal "
                 f"task_type={new_type!r} subtask(s) "
                 f"(e.g. {sibling.id}, assigned_to={sib_assignee!r}, "
-                f"status={sibling.status}). {capacity}"
+                f"status={sibling.status}). The {new_type!r} spine is "
+                "sequential — only one non-terminal at a time."
             ),
             remediate=(
                 "Drive an existing sibling to completion / cancel it before "
-                "delegating another of the same type. "
-                + parallel_hint
-                + "**DO NOT work around this by delegating again with a "
+                "delegating another of the same type. If the work is genuinely "
+                "parallel, split this parent into two sibling parents instead.\n\n"
+                "**DO NOT work around this by delegating again with a "
                 "different task_type** (e.g. 'documentation' or "
                 "'research' as a 'verification' subtask). The lifecycle "
                 "handles QA, documentation, and PM-review automatically "
@@ -3532,18 +3523,22 @@ class Choreographer:
         new_type: str,
         new_team: str,
         new_assignee: str,
+        new_title: str = "",
     ) -> Envelope | None:
         """Apply Rule-2 (same-assignee) then Rule-1 (spine concurrency cap).
 
-        Rule 2: a PM never gives one agent two non-terminal subtasks of the
-        same type under one parent.
+        Rule 2: prevent accidental duplicate delegation to one agent — for
+        ``planning`` / ``documentation`` no two same-type subtasks per parent;
+        for ``code`` only an exact same-title repeat (a dev may own a sequenced
+        queue otherwise).
 
         Rule 1: a parent may hold at most ``_SPINE_TYPE_CAPS[type]`` non-terminal
-        subtasks of a spine type. ``code`` is capped at 2 (one per cell dev) so
-        both developers can build independent units in parallel; ``planning``
-        and ``documentation`` stay at 1. ``planning`` on a different team does
-        not count toward the cap — that's main_pm's legitimate cross-cell fanout
-        (see :meth:`_is_cross_team_planning`).
+        subtasks of a spine type. ``code`` has no per-parent cap (a full per-dev
+        queue is delegated up front; the per-lane dispatch barrier and
+        ``_SUBTASK_HARD_CAP`` bound it); ``planning`` and ``documentation`` stay
+        at 1. ``planning`` on a different team does not count toward the cap —
+        that's main_pm's legitimate cross-cell fanout (see
+        :meth:`_is_cross_team_planning`).
         """
         live = [
             s
@@ -3551,22 +3546,44 @@ class Choreographer:
             if str(getattr(s, "status", "")) not in cls._TERMINAL_STATUSES
         ]
         return cls._same_assignee_rejection(
-            live, new_type, new_assignee
+            live, new_type, new_assignee, new_title
         ) or cls._spine_cap_rejection(live, new_type, new_team)
+
+    @staticmethod
+    def _norm_title(title: str) -> str:
+        """Lower-case, whitespace-collapsed title for duplicate comparison."""
+        return " ".join((title or "").lower().split())
 
     @classmethod
     def _same_assignee_rejection(
-        cls, live: list[Any], new_type: str, new_assignee: str
+        cls, live: list[Any], new_type: str, new_assignee: str, new_title: str = ""
     ) -> Envelope | None:
-        """Rule 2: a PM never gives one agent two same-type subtasks per parent."""
+        """Rule 2: prevent accidental duplicate delegation to one agent.
+
+        For ``planning`` / ``documentation`` (sequential spines) a PM never
+        gives one agent two non-terminal subtasks of the same type under one
+        parent. For ``code`` a dev legitimately owns a *queue* of sequenced
+        subtasks (Spec 3 per-dev parallelism), so same-type alone is allowed —
+        only an exact same-title duplicate (the accidental re-delegation bug,
+        e.g. "Cell PM created two code tasks for be-dev-1") is rejected.
+        """
         if not new_assignee:
             return None
+        norm_new = cls._norm_title(new_title)
         for sibling in live:
-            if (
-                str(getattr(sibling, "assigned_to", "") or "") == new_assignee
-                and str(getattr(sibling, "task_type", "")) == new_type
-            ):
-                return cls._same_assignee_dup_envelope(new_type, new_assignee, sibling)
+            if str(getattr(sibling, "assigned_to", "") or "") != new_assignee:
+                continue
+            if str(getattr(sibling, "task_type", "")) != new_type:
+                continue
+            if new_type == "code":
+                # A distinct queue item is fine; an exact title repeat is not.
+                sib_title = cls._norm_title(str(getattr(sibling, "title", "") or ""))
+                if norm_new and sib_title == norm_new:
+                    return cls._same_assignee_dup_envelope(
+                        new_type, new_assignee, sibling
+                    )
+                continue
+            return cls._same_assignee_dup_envelope(new_type, new_assignee, sibling)
         return None
 
     @classmethod
@@ -3599,18 +3616,19 @@ class Choreographer:
     ) -> Envelope | None:
         """Block PM-decomposition over-spread (the smoke-run runaway pattern).
 
-        Two rules, both rooted in bounded per-parent concurrency:
+        Two rules:
 
         1. **Same-type concurrency cap**: a parent may hold at most
            ``_SPINE_TYPE_CAPS[type]`` non-terminal subtasks of a spine type —
-           ``code`` is capped at 2 (one per cell developer, so both build
-           independent units in parallel); ``planning`` and ``documentation``
-           stay at 1. Exception: ``planning`` subtasks on different teams do
-           not count toward the cap — that's main_pm's legitimate cross-cell
-           fanout.
-        2. **Same-assignee same-type** (fallback): a PM never delegates two
-           subtasks of the same type to the same agent under the same parent
-           (so the two parallel ``code`` slots always go to different devs).
+           ``planning`` and ``documentation`` stay at 1. ``code`` has no
+           per-parent cap (a full per-dev sequenced queue is delegated up front;
+           concurrency is bounded by the per-lane dispatch barrier and
+           ``_SUBTASK_HARD_CAP``). Exception: ``planning`` on a different team
+           does not count — that's main_pm's legitimate cross-cell fanout.
+        2. **Same-assignee duplicate** (fallback): a PM never delegates two
+           ``planning``/``documentation`` subtasks of the same type to one
+           agent under one parent; for ``code`` a dev may own a queue, so only
+           an exact same-title repeat is blocked (accidental re-delegation).
 
         Both rules surface an existing sibling id so the PM can finish
         or cancel it instead of guessing.
@@ -3621,6 +3639,7 @@ class Choreographer:
             str(inputs.task_type or ""),
             str(inputs.team or ""),
             str(inputs.assigned_to or ""),
+            str(inputs.title or ""),
         )
 
     async def _delegate_static_guards(

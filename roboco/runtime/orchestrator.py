@@ -6684,6 +6684,12 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         """Validate and spawn a dev agent for a pending, pre-assigned task."""
         if self._is_agent_active(agent_slug):
             return
+        # Per-dev queue order: hold a dev's higher-sequence code leaf while it
+        # still has an earlier non-terminal code sibling under the same parent,
+        # so the dev works its queue one task at a time, in order. Loop-free —
+        # just not dispatched this tick.
+        if await self._blocked_by_earlier_lane_sibling(task):
+            return
         validation_issue = await self._validate_task_for_spawn(client, task, agent_slug)
         if validation_issue:
             logger.warning(
@@ -7048,6 +7054,71 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             ):
                 return True
         return False
+
+    async def _blocked_by_earlier_lane_sibling(self, task: dict[str, Any]) -> bool:
+        """True if the SAME dev has an earlier non-terminal code sibling.
+
+        Per-dev sequenced queues (Spec 3): a PM delegates a full queue of code
+        subtasks to each cell dev up front. This BUILD/dispatch barrier holds a
+        dev's higher-sequence code leaf until its own lower-sequence code
+        siblings under the same parent are terminal, so the dev works its queue
+        one live task at a time, in order — while the other dev's lane runs
+        concurrently (true two-dev parallelism).
+
+        Distinct from :meth:`_blocked_by_earlier_sibling` (the MERGE barrier,
+        keyed on team): this is keyed on the assignee and only gates ``code``.
+        Loop-free (skip this tick — no reject, no respawn churn) and best-effort
+        (any lookup failure falls through to dispatch so the check never wedges).
+        """
+        if str(task.get("task_type") or "") != "code":
+            return False
+        parent_id = task.get("parent_task_id")
+        seq = task.get("sequence")
+        owner = task.get("assigned_to") or task.get("claimed_by")
+        if not parent_id or seq is None or not owner:
+            return False
+        from uuid import UUID
+
+        from roboco.db.base import get_session_factory
+        from roboco.models.base import TaskStatus
+        from roboco.services.task import get_task_service
+
+        terminal = {TaskStatus.COMPLETED, TaskStatus.CANCELLED}
+        try:
+            session_factory = get_session_factory()
+            async with session_factory() as db:
+                task_svc = get_task_service(db)
+                siblings = await task_svc.get_subtasks(UUID(str(parent_id)))
+        except Exception as exc:
+            logger.debug(
+                "lane-order check failed; dispatching anyway",
+                task_id=task.get("id"),
+                error=str(exc),
+            )
+            return False
+        task_id = str(task.get("id"))
+        return any(
+            self._is_earlier_live_lane_sibling(
+                sib, task_id=task_id, owner=str(owner), seq=seq, terminal=terminal
+            )
+            for sib in siblings
+        )
+
+    @staticmethod
+    def _is_earlier_live_lane_sibling(
+        sib: Any, *, task_id: str, owner: str, seq: int, terminal: set[Any]
+    ) -> bool:
+        """True if ``sib`` is a lower-sequence non-terminal code task for ``owner``."""
+        if str(sib.id) == task_id:
+            return False
+        sib_type = getattr(sib, "task_type", None)
+        sib_type_val = getattr(sib_type, "value", sib_type)
+        return (
+            str(getattr(sib, "assigned_to", None)) == owner
+            and str(sib_type_val) == "code"
+            and (getattr(sib, "sequence", 0) or 0) < seq
+            and getattr(sib, "status", None) not in terminal
+        )
 
     async def _dispatch_pm_review_work(self, client: httpx.AsyncClient) -> None:
         """
