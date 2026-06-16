@@ -352,6 +352,32 @@ def fail_review(task_id: str, issues: list[str]) -> dict[str, Any]:
     return _post(_role_path("fail"), {"task_id": task_id, "issues": issues})
 
 
+# ---------- PR reviewer verbs ----------
+
+
+def claim_pr_review(task_id: str) -> dict[str, Any]:
+    """PR reviewer: claim an inbound external/fork-PR review task.
+
+    Returns the contributor's unified diff inline (read-only — the fork code is
+    never checked out or run). Inspect it, then call post_pr_review.
+    """
+    return _post(_role_path("claim_pr_review"), {"task_id": task_id})
+
+
+def post_pr_review(
+    task_id: str, body: str, event: str = "REQUEST_CHANGES"
+) -> dict[str, Any]:
+    """PR reviewer: post ONE complete change-request to the PR and finish the task.
+
+    body: the full review (per-criterion findings). event: REQUEST_CHANGES
+    (default), APPROVE, or COMMENT. Requires a journal:learning entry first.
+    """
+    return _post(
+        _role_path("post_pr_review"),
+        {"task_id": task_id, "body": body, "event": event},
+    )
+
+
 # ---------- Doc verbs ----------
 
 
@@ -531,6 +557,9 @@ _TOOLS: dict[str, Any] = {
     "claim_review": claim_review,
     "pass": pass_review,
     "fail": fail_review,
+    # pr reviewer (inbound external/fork PRs)
+    "claim_pr_review": claim_pr_review,
+    "post_pr_review": post_pr_review,
     # doc
     "claim_doc_task": claim_doc_task,
     "i_documented": i_documented,

@@ -5903,6 +5903,7 @@ Start now: evidence(task_id="{task_id}")
                 ("pm_closure_work", self._dispatch_pm_closure_work(client)),
                 ("dev_work", self._dispatch_dev_work(client)),
                 ("qa_work", self._dispatch_qa_work(client)),
+                ("pr_review_work", self._dispatch_pr_review_work(client)),
                 ("doc_work", self._dispatch_doc_work(client)),
                 ("pm_review_work", self._dispatch_pm_review_work(client)),
                 ("marketing_work", self._dispatch_marketing_work(client)),
@@ -6392,6 +6393,10 @@ Start now: evidence(task_id="{task_id}")
         for task in tasks:
             if self._is_task_handled_this_tick(task.get("id")):
                 continue
+            # External-PR review tasks are owned by _dispatch_pr_review_work; the
+            # PM hierarchy never routes or spawns them.
+            if task.get("source") == "external_pr":
+                continue
             assigned_to = task.get("assigned_to")
             if assigned_to:
                 if self._resolve_agent_slug(assigned_to) in self._BOARD_AGENTS:
@@ -6694,6 +6699,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             "main_pm": self._build_main_pm_triage_prompt,
             "product_owner": self._build_board_prompt,
             "auditor": lambda _task: self._build_audit_prompt(),
+            "pr_reviewer": self._build_pr_review_prompt,
         }
         builder = builders.get(role, self._build_dev_prompt)
         return builder(task)
@@ -6721,6 +6727,10 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
 
         for task in tasks:
             if self._is_task_handled_this_tick(task.get("id")):
+                continue
+            # External-PR review tasks belong to the pr_reviewer, never a dev —
+            # _dispatch_pr_review_work owns them.
+            if task.get("source") == "external_pr":
                 continue
             await self._dev_dispatch_one(client, task)
 
@@ -6960,6 +6970,34 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 git_context=self._task_git_context(task),
             )
             # Only spawn one QA at a time per cell
+            break
+
+    async def _dispatch_pr_review_work(self, client: httpx.AsyncClient) -> None:
+        """Dispatch inbound external-PR review tasks to the PR reviewer.
+
+        Monitors: pending tasks with ``source='external_pr'``.
+        Spawns: the single global reviewer ``pr-reviewer-1`` (one review at a
+        time). No pre-claim — the task stays PENDING until the reviewer claims
+        it itself via ``claim_pr_review``; the prompt carries the task id. The
+        ``is_agent_active`` guard prevents a double-spawn across ticks.
+        """
+        reviewer = "pr-reviewer-1"
+        if self._is_agent_active(reviewer):
+            return
+        tasks = await self._fetch_tasks(client, "pending")
+        for task in tasks:
+            if task.get("source") != "external_pr":
+                continue
+            if self._is_task_handled_this_tick(task.get("id")):
+                continue
+            if task.get("assigned_to"):
+                continue
+            await self.spawn_agent(
+                agent_id=reviewer,
+                task_id=task["id"],
+                initial_prompt=self._build_pr_review_prompt(task),
+                git_context=self._task_git_context(task),
+            )
             break
 
     async def _dispatch_doc_work(self, client: httpx.AsyncClient) -> None:
@@ -7957,6 +7995,42 @@ TEAM: {team}
    for anything worth flagging.
 5. give_me_work() to pick up the next QA item,
    or i_am_idle() if the queue is empty.
+"""
+
+    def _build_pr_review_prompt(self, task: dict[str, Any]) -> str:
+        """Build the initial prompt for the PR reviewer on an external PR."""
+        task_id = task.get("id", "unknown")
+        title = task.get("title", "Untitled")
+        pr_number = task.get("pr_number", "?")
+        pr_url = task.get("pr_url", "")
+
+        return f"""An external contributor opened a pull request. Review it.
+
+TASK ID: {task_id}
+TITLE: {title}
+EXTERNAL PR: #{pr_number}  {pr_url}
+
+== TRUST BOUNDARY ==
+This PR is from OUTSIDE the org — the code is untrusted. The review is
+READ-ONLY: you read the diff, you do NOT fetch, check out, build, or run the
+contributor's code. Do not push to their fork. You never merge.
+
+== REVIEW WORKFLOW ==
+
+1. claim_pr_review(task_id="{task_id}")
+   — starts the review; returns the contributor's unified diff inline.
+2. Review the diff adversarially: correctness, security (injection, secret
+   leaks, supply-chain/dependency risk), scope, and the codebase's standards.
+   Reason about it from the diff alone — do not run it.
+3. note(scope="learning", task_id="{task_id}", text="<what the review surfaced>")
+   — required before you can post.
+4. post_pr_review(task_id="{task_id}",
+        body="<one complete change-request: per-finding file + line + expected
+        vs actual; be specific and actionable>",
+        event="REQUEST_CHANGES")
+   — posts ONE complete review to the PR and finishes the task. Use
+   event="APPROVE" only if the PR is genuinely ready as-is.
+5. i_am_idle() when done.
 """
 
     def _build_doc_prompt(self, task: dict[str, Any]) -> str:

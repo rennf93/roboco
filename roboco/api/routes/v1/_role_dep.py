@@ -44,6 +44,7 @@ require_cell_pm = _require_roles(frozenset({Role.CELL_PM}))
 require_main_pm = _require_roles(frozenset({Role.MAIN_PM}))
 require_board = _require_roles(frozenset({Role.PRODUCT_OWNER, Role.HEAD_MARKETING}))
 require_auditor = _require_roles(frozenset({Role.AUDITOR}))
+require_pr_reviewer = _require_roles(frozenset({Role.PR_REVIEWER}))
 
 
 def envelope_to_response(env: Envelope, request: Request) -> dict[str, Any]:
