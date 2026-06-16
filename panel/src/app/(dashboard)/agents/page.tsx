@@ -136,10 +136,11 @@ export default function AgentsPage() {
         columns={4}
       />
 
-      {/* On-Demand Agents: spawned as needed (e.g. Intake interviewer) */}
+      {/* On-Demand section: Prompter/Intake and Secretary agents — only rendered
+          when the API returns at least one matching agent */}
       {getOnDemandAgents(agents).length > 0 && (
         <AgentGrid
-          title="On-Demand Agents"
+          title="On-Demand"
           agents={getOnDemandAgents(agents)}
           agentStatuses={agentStatuses}
           agentUsage={agentUsageMap}

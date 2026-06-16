@@ -71,6 +71,14 @@ export function CommandCenter() {
         />
       </section>
 
+      {/* Quick Actions — placed immediately after Team Health so it is
+          visible without scrolling on a 900px-tall viewport, before the
+          data-heavy grid rows below. */}
+      <section>
+        <h2 className="text-lg font-semibold mb-4">Quick Actions</h2>
+        <QuickActionsBar />
+      </section>
+
       {/* CEO Approval Queue + Strategy Signals - side-by-side on lg+ */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <CeoApprovalQueue />
@@ -95,12 +103,6 @@ export function CommandCenter() {
           isLoading={loadingActivity}
         />
       </div>
-
-      {/* Quick Actions */}
-      <section className="pt-4 border-t">
-        <h2 className="text-lg font-semibold mb-4">Quick Actions</h2>
-        <QuickActionsBar />
-      </section>
     </div>
   );
 }
