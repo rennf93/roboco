@@ -4622,6 +4622,54 @@ Start by:
         assoc = (pr.get("author_association") or "").upper()
         return assoc not in trusted
 
+    async def supersede_external_pr(self, review_task_id: "UUID") -> dict[str, Any]:
+        """CEO-authorized takeover of a reviewed external PR.
+
+        Confirms the review task (this CEO action is the human confirmation that
+        authorizes running the contributor's code), cuts a roboco-owned branch
+        off the contributor's fork head (refs/pull/{n}/head — the only point
+        untrusted code enters a roboco branch), and creates the supersede
+        umbrella for Main PM to delegate to a cell. Returns a status dict.
+        """
+        from roboco.db import get_db_context
+        from roboco.services.git import GitService
+        from roboco.services.project import get_project_service
+        from roboco.services.task import get_task_service
+
+        async with get_db_context() as db:
+            task_service = get_task_service(db)
+            review = await task_service.get(review_task_id)
+            if review is None or getattr(review, "source", "") != "external_pr":
+                return {"ok": False, "error": "not an external-PR review task"}
+            if not review.project_id or not review.pr_number:
+                return {
+                    "ok": False,
+                    "error": "review task missing project or pr_number",
+                }
+            project = await get_project_service(db).get(cast("UUID", review.project_id))
+            if project is None:
+                return {"ok": False, "error": "project not found"}
+            pr_number = int(review.pr_number)
+            # The CEO authorized fetching + finishing the contributor's code.
+            review.confirmed_by_human = True
+            await db.flush()
+            git = GitService(db)
+            system_id = _foundation.AGENTS["system"].uuid
+            workspace = await git.get_workspace(project.slug, agent_id=system_id)
+            branch_name = f"feature/main_pm/supersede-pr-{pr_number}"
+            await git.create_branch_from_pr_head(
+                workspace, project.slug, pr_number, branch_name
+            )
+            umbrella = await task_service.create_supersede_umbrella(
+                review_task_id=review_task_id,
+                branch_name=branch_name,
+                created_by=system_id,
+            )
+            umbrella_id = str(umbrella.id) if umbrella is not None else None
+            await db.commit()
+        self._dispatch_wake.set()
+        return {"ok": True, "supersede_task_id": umbrella_id, "branch": branch_name}
+
     async def _rate_limit_probe_loop(self) -> None:
         """Background loop: probe rate-limited providers every ~30 seconds.
 

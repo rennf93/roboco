@@ -738,6 +738,62 @@ class TaskService(BaseService):
         self.log.info("External PR review complete", task_id=str(task_id))
         return task
 
+    async def create_supersede_umbrella(
+        self, *, review_task_id: UUID, branch_name: str, created_by: UUID
+    ) -> TaskTable | None:
+        """Create the supersede coordination task for a reviewed external PR.
+
+        A planning task on the same repo, parented to the review task (so the
+        contributor PR number stays reachable as ``review.pr_number`` for
+        close-on-land), handed to Main PM to delegate the code work to a cell.
+        ``branch_name`` is the roboco-owned branch already cut from the
+        contributor's fork head, so the delegated code subtask builds on the
+        contributor's commits (we never push to the fork). ``confirmed_by_human``
+        is True — the CEO authorized this supersede. Returns None if the review
+        task is missing or is not an external-PR review.
+        """
+        review = await self.get(review_task_id)
+        if review is None or getattr(review, "source", "") != "external_pr":
+            return None
+        pr_number = review.pr_number
+        req = TaskCreateRequest(
+            title=f"Supersede external PR #{pr_number}: finish + harden it ourselves",
+            description=(
+                f"The org reviewed external PR #{pr_number} and is taking it over. "
+                f"A roboco-owned branch ('{branch_name}') has been cut from the "
+                "contributor's commits. Delegate the work to the appropriate cell "
+                "to finish + harden it to our standards on that branch, open our "
+                "own PR, and merge it; the contributor PR is closed and linked on "
+                "land. Never push to the contributor's fork."
+            ),
+            acceptance_criteria=[
+                "The contributor's PR is superseded by our own merged PR",
+                "The work meets the project's quality standards",
+            ],
+            team=Team.MAIN_PM,
+            created_by=created_by,
+            task_type=TaskType.PLANNING,
+            nature=TaskNature.TECHNICAL,
+            estimated_complexity=Complexity.MEDIUM,
+            project_id=cast("UUID", review.project_id),
+            parent_task_id=review_task_id,
+            source="external_pr_supersede",
+            confirmed_by_human=True,
+        )
+        umbrella = await self.create(req)
+        # Carry the pre-cut fork branch so the delegated code subtask cuts off
+        # the contributor's commits (via _resolve_base_branch's parent-branch
+        # rule), not the default branch.
+        umbrella.branch_name = branch_name
+        await self.session.flush()
+        self.log.info(
+            "Supersede umbrella created",
+            task_id=str(umbrella.id),
+            review_task_id=str(review_task_id),
+            pr_number=pr_number,
+        )
+        return umbrella
+
     async def _inherit_parent_session(
         self,
         task_id: UUID,
