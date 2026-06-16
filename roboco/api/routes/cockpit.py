@@ -3,7 +3,7 @@
 from fastapi import APIRouter, HTTPException, status
 
 from roboco.api.deps import CurrentAgentContext, DbSession
-from roboco.api.schemas.cockpit import CockpitSummary
+from roboco.api.schemas.cockpit import CockpitSignals, CockpitSummary
 from roboco.models import AgentRole
 from roboco.services.cockpit import get_cockpit_service
 
@@ -29,3 +29,15 @@ async def cockpit_summary(db: DbSession, agent: CurrentAgentContext) -> CockpitS
             detail=f"role '{agent.role}' may not view the cockpit",
         )
     return CockpitSummary(**await get_cockpit_service(db).summary())
+
+
+@router.get("/signals", response_model=CockpitSignals)
+async def cockpit_signals(db: DbSession, agent: CurrentAgentContext) -> CockpitSignals:
+    """Just the strategy-engine signals — the lightweight slice the Dashboard's
+    Strategy Signals panel needs (lighter than ``/summary``, same role gate)."""
+    if agent.role not in _COCKPIT_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"role '{agent.role}' may not view cockpit signals",
+        )
+    return CockpitSignals(**await get_cockpit_service(db).signals())

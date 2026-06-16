@@ -74,6 +74,18 @@ class CockpitService(BaseService):
             ],
         }
 
+    async def signals(self) -> dict[str, Any]:
+        """Just the strategy-engine signals (what needs the CEO) — the lightweight
+        slice the Dashboard's panel needs, without the full ``summary`` fan-out
+        (goals / usage / task-counts / pitches)."""
+        observations = await get_strategy_engine(self.session).assess()
+        return {
+            "signals": [
+                {"kind": o.kind, "summary": o.summary, "detail": o.detail}
+                for o in observations
+            ],
+        }
+
 
 def get_cockpit_service(session: AsyncSession) -> CockpitService:
     """Construct a CockpitService bound to ``session``."""

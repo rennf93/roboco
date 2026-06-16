@@ -18,13 +18,13 @@ interface StrategySignalsPanelProps {
 }
 
 export function StrategySignalsPanel({ className }: StrategySignalsPanelProps) {
-  const { data: summary, isLoading } = useQuery({
-    queryKey: ["cockpit", "summary"],
-    queryFn: () => cockpitApi.summary(),
+  const { data: signalsData, isLoading } = useQuery({
+    queryKey: ["cockpit", "signals"],
+    queryFn: () => cockpitApi.signals(),
     refetchInterval: 30000,
   });
 
-  const signals = summary?.signals ?? [];
+  const signals = signalsData ?? [];
 
   return (
     <Card className={className}>

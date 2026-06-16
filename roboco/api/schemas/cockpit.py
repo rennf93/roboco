@@ -35,3 +35,10 @@ class CockpitSummary(BaseModel):
     spend: SpendSummary
     pending_pitches: int
     signals: list[CockpitSignal]
+
+
+class CockpitSignals(BaseModel):
+    """Just the strategy-engine signals — the Dashboard panel's lightweight slice
+    (avoids the full /summary fan-out: goals / usage / task-counts / pitches)."""
+
+    signals: list[CockpitSignal]

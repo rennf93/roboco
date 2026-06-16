@@ -121,3 +121,35 @@ async def test_route_ok_for_ceo(monkeypatch: pytest.MonkeyPatch) -> None:
     resp = await croute.cockpit_summary(MagicMock(), _agent(AgentRole.CEO))
     assert resp.basis == "proxy"
     assert resp.spend.over_budget is False
+
+
+@pytest.mark.asyncio
+async def test_signals_returns_only_strategy_signals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The lightweight slice returns ONLY the strategy signals — none of the
+    # summary fan-out (goals / spend / counts / pitches).
+    _patch(monkeypatch)
+    out = await CockpitService(MagicMock()).signals()
+    assert list(out.keys()) == ["signals"]
+    assert out["signals"][0]["kind"] == "idle"
+    assert out["signals"][0]["summary"] == "s"
+
+
+@pytest.mark.asyncio
+async def test_signals_route_forbidden_for_developer() -> None:
+    with pytest.raises(HTTPException) as exc:
+        await croute.cockpit_signals(MagicMock(), _agent(AgentRole.DEVELOPER))
+    assert exc.value.status_code == HTTPStatus.FORBIDDEN
+
+
+@pytest.mark.asyncio
+async def test_signals_route_ok_for_ceo(monkeypatch: pytest.MonkeyPatch) -> None:
+    svc = MagicMock(
+        signals=AsyncMock(
+            return_value={"signals": [{"kind": "idle", "summary": "s", "detail": "d"}]}
+        )
+    )
+    monkeypatch.setattr(croute, "get_cockpit_service", lambda _db: svc)
+    resp = await croute.cockpit_signals(MagicMock(), _agent(AgentRole.CEO))
+    assert resp.signals[0].kind == "idle"
