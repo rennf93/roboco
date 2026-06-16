@@ -146,14 +146,14 @@ export function SelfHostedSection({
         <Server className="h-4 w-4 text-muted-foreground" />
         <Label className="text-sm font-medium">Self-Hosted LLM</Label>
         {testResult?.ok === true && (
-          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-600">
+          <Badge className="bg-emerald-500/10 text-emerald-600 border-0">
             <CheckCircle2 className="h-3 w-3" /> connected
-          </span>
+          </Badge>
         )}
         {testResult?.ok === false && (
-          <span className="inline-flex items-center gap-1 rounded-full bg-red-500/10 px-2 py-0.5 text-xs font-medium text-red-600">
+          <Badge className="bg-red-500/10 text-red-600 border-0">
             <XCircle className="h-3 w-3" /> error
-          </span>
+          </Badge>
         )}
       </div>
 
@@ -194,10 +194,12 @@ export function SelfHostedSection({
               }
               className="pr-10"
             />
-            <button
+            <Button
               type="button"
+              variant="ghost"
+              size="icon-sm"
               onClick={() => setShowToken((v) => !v)}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              className="absolute right-1 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
               aria-label={showToken ? "Hide token" : "Show token"}
             >
               {showToken ? (
@@ -205,7 +207,7 @@ export function SelfHostedSection({
               ) : (
                 <Eye className="h-4 w-4" />
               )}
-            </button>
+            </Button>
           </div>
           <Button onClick={handleSave} disabled={saveConfig.isPending}>
             {saveConfig.isPending ? "Saving…" : "Save"}
@@ -243,17 +245,17 @@ export function SelfHostedSection({
 
         {/* Inline result badge */}
         {testResult?.ok === true && (
-          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-700 dark:text-emerald-400">
+          <Badge className="bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-0 px-3 py-1 text-xs">
             <CheckCircle2 className="h-3.5 w-3.5" />
             Connected &mdash; {testResult.model_count ?? 0} model
             {(testResult.model_count ?? 0) === 1 ? "" : "s"} available
-          </span>
+          </Badge>
         )}
         {testResult?.ok === false && (
-          <span className="inline-flex items-center gap-1 rounded-full bg-red-500/10 px-3 py-1 text-xs font-medium text-red-700 dark:text-red-400">
+          <Badge className="bg-red-500/10 text-red-700 dark:text-red-400 border-0 px-3 py-1 text-xs">
             <XCircle className="h-3.5 w-3.5" />
             {testResult.error ?? "Connection failed"}
-          </span>
+          </Badge>
         )}
       </div>
 

@@ -3,8 +3,10 @@
 import { GitLogResponse, CommitInfo } from "@/types/git";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { cn } from "@/lib/utils";
 import { GitCommit, User, Calendar } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 
@@ -68,15 +70,14 @@ export function GitLogPanel({
         <ScrollArea className="h-80">
           <div className="p-4 space-y-0">
             {log.commits.map((commit, index) => (
-              <button
+              <Button
                 key={commit.hash}
                 onClick={() => onSelectCommit?.(commit)}
-                className={
-                  "w-full text-left p-3 rounded-lg transition-colors relative " +
-                  (selectedHash === commit.hash
-                    ? "bg-primary/10"
-                    : "hover:bg-muted")
-                }
+                variant="ghost"
+                className={cn(
+                  "w-full h-auto justify-start text-left p-3 font-normal whitespace-normal relative",
+                  selectedHash === commit.hash ? "bg-primary/10 hover:bg-primary/10" : ""
+                )}
               >
                 {/* Timeline line */}
                 {index < log.commits.length - 1 && (
@@ -123,7 +124,7 @@ export function GitLogPanel({
                     </div>
                   </div>
                 </div>
-              </button>
+              </Button>
             ))}
           </div>
         </ScrollArea>

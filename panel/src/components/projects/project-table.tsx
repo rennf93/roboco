@@ -129,12 +129,13 @@ export function ProjectTable({ projects, isLoading }: ProjectTableProps) {
               <TableRow key={project.id}>
                 <TableCell>
                   <div>
-                    <button
+                    <Button
                       onClick={() => setEditingProjectId(project.id)}
-                      className="font-medium hover:underline text-left"
+                      variant="link"
+                      className="h-auto p-0 font-medium text-foreground"
                     >
                       {project.name}
-                    </button>
+                    </Button>
                     <p className="text-xs text-muted-foreground font-mono">
                       {project.slug}
                     </p>

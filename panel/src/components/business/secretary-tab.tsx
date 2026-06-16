@@ -245,7 +245,7 @@ export function SecretaryTab() {
         </CardHeader>
         <CardContent className="flex flex-1 flex-col gap-4">
           <ChatMessages messages={messages} streaming={streaming} />
-          <div className="flex gap-2">
+          <div className="flex items-stretch gap-2">
             <Textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}

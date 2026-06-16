@@ -1,5 +1,7 @@
 "use client";
 
+import { Suspense } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
 import { useOrchestratorStatus } from "@/hooks/use-agents";
 import { useTasks } from "@/hooks/use-tasks";
 import {
@@ -14,10 +16,10 @@ import {
 } from "@/hooks/use-usage";
 import { TaskStatus, Team } from "@/types";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import { OfflineState } from "@/components/ui/offline-state";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { OfflineState } from "@/components/ui/offline-state";
 import {
   UsageTimeSeriesChart,
   ModelUsageDonut,
@@ -34,12 +36,30 @@ import {
   Users,
   CheckCircle,
   XCircle,
-  RefreshCw,
   Zap,
   Timer,
   Coins,
   Sparkles,
 } from "lucide-react";
+import type { UsageProjection as UP, CacheEfficiencyResponse as CER } from "@/types";
+
+// ─── Humanized number formatting ─────────────────────────────────────────────
+
+/** Format counts with K/M suffix for values >= 1000. */
+function humanizeCount(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + "K";
+  return String(n);
+}
+
+/** Format token counts (same as humanizeCount but used for token display). */
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + "M";
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + "K";
+  return String(n);
+}
+
+// ─── Shared sub-components ────────────────────────────────────────────────────
 
 interface MetricCardProps {
   title: string;
@@ -51,6 +71,7 @@ interface MetricCardProps {
 }
 
 function MetricCard({ title, value, subtitle, icon, trend, trendValue }: MetricCardProps) {
+  const displayValue = typeof value === "number" ? humanizeCount(value) : value;
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between pb-2">
@@ -60,12 +81,12 @@ function MetricCard({ title, value, subtitle, icon, trend, trendValue }: MetricC
         {icon}
       </CardHeader>
       <CardContent>
-        <div className="text-2xl font-bold">{value}</div>
+        <div className="text-2xl font-bold">{displayValue}</div>
         {subtitle && (
           <p className="text-xs text-muted-foreground mt-1">{subtitle}</p>
         )}
         {trend && trendValue && (
-          <div className={"flex items-center gap-1 mt-2 text-xs " + 
+          <div className={"flex items-center gap-1 mt-2 text-xs " +
             (trend === "up" ? "text-green-600" : trend === "down" ? "text-red-600" : "text-gray-500")
           }>
             <TrendingUp className={"h-3 w-3 " + (trend === "down" ? "rotate-180" : "")} />
@@ -118,7 +139,9 @@ function TeamHealthCard({ team, activeTasks, blockedTasks, completedToday }: Tea
   );
 }
 
-export default function MetricsPage() {
+// ─── Performance tab content ─────────────────────────────────────────────────
+
+function PerformanceTabContent() {
   const { data: tasks, error: tasksError, refetch: refetchTasks } = useTasks();
   const { data: status, error: statusError, refetch: refetchStatus } = useOrchestratorStatus();
 
@@ -132,7 +155,6 @@ export default function MetricsPage() {
     refetchStatus();
   };
 
-  // Calculate metrics from local data
   const taskList = tasks || [];
   const agentList = status?.agents || [];
 
@@ -159,7 +181,7 @@ export default function MetricsPage() {
   const awaitingQa = taskList.filter((t) => t.status === TaskStatus.AWAITING_QA).length;
   const completed = taskList.filter((t) => t.status === TaskStatus.COMPLETED).length;
 
-  // Agent counts (from by_state if available, or count from agents array)
+  // Agent counts
   const runningAgents = status?.by_state?.running || agentList.filter((a) => a.state === "running").length;
   const idleAgents = status?.by_state?.idle || agentList.filter((a) => a.state === "idle" || a.state === "stopped").length;
   const waitingAgents = status?.waiting_count || agentList.filter((a) => a.state === "waiting_long").length;
@@ -170,164 +192,145 @@ export default function MetricsPage() {
     const teamTasks = taskList.filter((t) => t.team === team);
     return {
       team,
-      activeTasks: teamTasks.filter((t) => 
+      activeTasks: teamTasks.filter((t) =>
         [TaskStatus.IN_PROGRESS, TaskStatus.CLAIMED].includes(t.status)
       ).length,
       blockedTasks: teamTasks.filter((t) => t.status === TaskStatus.BLOCKED).length,
       completedToday: teamTasks.filter((t) => {
         if (!t.completed_at) return false;
-        const completed = new Date(t.completed_at);
+        const c = new Date(t.completed_at);
         const today = new Date();
-        return completed.toDateString() === today.toDateString();
+        return c.toDateString() === today.toDateString();
       }).length,
     };
   });
 
+  if (isOffline) {
+    return (
+      <OfflineState
+        title="Cannot Load Performance Metrics"
+        description="Start the RoboCo orchestrator to view performance analytics."
+        onRetry={refetch}
+      />
+    );
+  }
+
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Metrics</h1>
-          <p className="text-muted-foreground">
-            Performance analytics and operational insights
-          </p>
+      {/* Velocity Metrics */}
+      <div>
+        <h2 className="text-lg font-semibold mb-3">Velocity</h2>
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-4 2xl:grid-cols-4">
+          <MetricCard
+            title="Completed Today"
+            value={completedToday}
+            subtitle="Tasks finished"
+            icon={<Zap className="h-4 w-4 text-green-500" />}
+          />
+          <MetricCard
+            title="Completed This Week"
+            value={completedThisWeek}
+            subtitle="Rolling 7 days"
+            icon={<TrendingUp className="h-4 w-4 text-blue-500" />}
+          />
+          <MetricCard
+            title="Total Completed"
+            value={completed}
+            subtitle="All time"
+            icon={<CheckCircle className="h-4 w-4 text-green-500" />}
+          />
+          <MetricCard
+            title="Completion Rate"
+            value={taskList.length > 0 ? Math.round((completed / taskList.length) * 100) + "%" : "0%"}
+            subtitle="Of all tasks"
+            icon={<Activity className="h-4 w-4 text-purple-500" />}
+          />
         </div>
-        <Button variant="outline" onClick={refetch}>
-          <RefreshCw className="h-4 w-4 mr-2" />
-          Refresh
-        </Button>
       </div>
 
-      {isOffline ? (
-        <OfflineState
-          title="Cannot Load Metrics"
-          description="Start the RoboCo orchestrator to view performance analytics."
-          onRetry={refetch}
-        />
-      ) : (
-        <>
-          {/* Velocity Metrics */}
-          <div>
-            <h2 className="text-lg font-semibold mb-3">Velocity</h2>
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-4 2xl:grid-cols-4">
-              <MetricCard
-                title="Completed Today"
-                value={completedToday}
-                subtitle="Tasks finished"
-                icon={<Zap className="h-4 w-4 text-green-500" />}
-              />
-              <MetricCard
-                title="Completed This Week"
-                value={completedThisWeek}
-                subtitle="Rolling 7 days"
-                icon={<TrendingUp className="h-4 w-4 text-blue-500" />}
-              />
-              <MetricCard
-                title="Total Completed"
-                value={completed}
-                subtitle="All time"
-                icon={<CheckCircle className="h-4 w-4 text-green-500" />}
-              />
-              <MetricCard
-                title="Completion Rate"
-                value={taskList.length > 0 ? Math.round((completed / taskList.length) * 100) + "%" : "0%"}
-                subtitle="Of all tasks"
-                icon={<Activity className="h-4 w-4 text-purple-500" />}
-              />
-            </div>
-          </div>
+      {/* Task Status */}
+      <div>
+        <h2 className="text-lg font-semibold mb-3">Task Status</h2>
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5 xl:grid-cols-5 2xl:grid-cols-5">
+          <MetricCard
+            title="Pending"
+            value={pending}
+            icon={<Clock className="h-4 w-4 text-gray-500" />}
+          />
+          <MetricCard
+            title="In Progress"
+            value={inProgress}
+            icon={<Activity className="h-4 w-4 text-blue-500" />}
+          />
+          <MetricCard
+            title="Blocked"
+            value={blocked}
+            icon={<AlertTriangle className="h-4 w-4 text-red-500" />}
+          />
+          <MetricCard
+            title="Awaiting QA"
+            value={awaitingQa}
+            icon={<Timer className="h-4 w-4 text-yellow-500" />}
+          />
+          <MetricCard
+            title="Completed"
+            value={completed}
+            icon={<CheckCircle className="h-4 w-4 text-green-500" />}
+          />
+        </div>
+      </div>
 
-          {/* Task Status */}
-          <div>
-            <h2 className="text-lg font-semibold mb-3">Task Status</h2>
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5 xl:grid-cols-5 2xl:grid-cols-5">
-              <MetricCard
-                title="Pending"
-                value={pending}
-                icon={<Clock className="h-4 w-4 text-gray-500" />}
-              />
-              <MetricCard
-                title="In Progress"
-                value={inProgress}
-                icon={<Activity className="h-4 w-4 text-blue-500" />}
-              />
-              <MetricCard
-                title="Blocked"
-                value={blocked}
-                icon={<AlertTriangle className="h-4 w-4 text-red-500" />}
-              />
-              <MetricCard
-                title="Awaiting QA"
-                value={awaitingQa}
-                icon={<Timer className="h-4 w-4 text-yellow-500" />}
-              />
-              <MetricCard
-                title="Completed"
-                value={completed}
-                icon={<CheckCircle className="h-4 w-4 text-green-500" />}
-              />
-            </div>
-          </div>
+      {/* Agent Status */}
+      <div>
+        <h2 className="text-lg font-semibold mb-3">Agent Status</h2>
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-4 2xl:grid-cols-4">
+          <MetricCard
+            title="Running"
+            value={runningAgents}
+            subtitle="Active agents"
+            icon={<Users className="h-4 w-4 text-green-500" />}
+          />
+          <MetricCard
+            title="Idle"
+            value={idleAgents}
+            subtitle="Available"
+            icon={<Users className="h-4 w-4 text-gray-500" />}
+          />
+          <MetricCard
+            title="Waiting"
+            value={waitingAgents}
+            subtitle="Needs input"
+            icon={<Clock className="h-4 w-4 text-yellow-500" />}
+          />
+          <MetricCard
+            title="Errors"
+            value={errorAgents}
+            subtitle="Failed agents"
+            icon={<XCircle className="h-4 w-4 text-red-500" />}
+          />
+        </div>
+      </div>
 
-          {/* Agent Status */}
-          <div>
-            <h2 className="text-lg font-semibold mb-3">Agent Status</h2>
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4 xl:grid-cols-4 2xl:grid-cols-4">
-              <MetricCard
-                title="Running"
-                value={runningAgents}
-                subtitle="Active agents"
-                icon={<Users className="h-4 w-4 text-green-500" />}
-              />
-              <MetricCard
-                title="Idle"
-                value={idleAgents}
-                subtitle="Available"
-                icon={<Users className="h-4 w-4 text-gray-500" />}
-              />
-              <MetricCard
-                title="Waiting"
-                value={waitingAgents}
-                subtitle="Needs input"
-                icon={<Clock className="h-4 w-4 text-yellow-500" />}
-              />
-              <MetricCard
-                title="Errors"
-                value={errorAgents}
-                subtitle="Failed agents"
-                icon={<XCircle className="h-4 w-4 text-red-500" />}
-              />
-            </div>
-          </div>
-
-          {/* Team Health */}
-          <div>
-            <h2 className="text-lg font-semibold mb-3">Team Health</h2>
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5 xl:grid-cols-5 2xl:grid-cols-6">
-              {teamMetrics.map((tm) => (
-                <TeamHealthCard
-                  key={tm.team}
-                  team={tm.team}
-                  activeTasks={tm.activeTasks}
-                  blockedTasks={tm.blockedTasks}
-                  completedToday={tm.completedToday}
-                />
-              ))}
-            </div>
-          </div>
-
-          {/* ─── Token Usage & Costs ─────────────────────────────────── */}
-          <TokenUsageCostsSection />
-        </>
-      )}
+      {/* Team Health */}
+      <div>
+        <h2 className="text-lg font-semibold mb-3">Team Health</h2>
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5 xl:grid-cols-5 2xl:grid-cols-6">
+          {teamMetrics.map((tm) => (
+            <TeamHealthCard
+              key={tm.team}
+              team={tm.team}
+              activeTasks={tm.activeTasks}
+              blockedTasks={tm.blockedTasks}
+              completedToday={tm.completedToday}
+            />
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
 
-// =============================================================================
-// TOKEN USAGE & COSTS SECTION
-// =============================================================================
+// ─── Token Usage & Costs tab content ─────────────────────────────────────────
 
 function TokenUsageCostsSection() {
   const { data: summary, isLoading: loadingSnap } = useUsageSummary("24h");
@@ -343,8 +346,6 @@ function TokenUsageCostsSection() {
 
   return (
     <div className="space-y-6">
-      <h2 className="text-lg font-semibold">Token Usage &amp; Costs</h2>
-
       {/* Row 1 — Summary cards */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 2xl:grid-cols-6">
         <SummaryCard
@@ -411,19 +412,13 @@ function TokenUsageCostsSection() {
         <CacheEfficiencyCard cacheStats={cacheStats} isLoading={loadingCache} />
       </div>
 
-      {/* Row 5 — Sessions table (mock-mode only; empty in production) */}
+      {/* Row 5 — Sessions table */}
       <SessionsTable data={sessions} isLoading={loadingSessions} />
     </div>
   );
 }
 
 // ─── Helper sub-components ────────────────────────────────────────────────────
-
-function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + "M";
-  if (n >= 1_000) return (n / 1_000).toFixed(1) + "K";
-  return String(n);
-}
 
 interface SummaryCardProps {
   title: string;
@@ -462,8 +457,6 @@ function SummaryCard({ title, value, icon, trend, isLoading }: SummaryCardProps)
     </Card>
   );
 }
-
-import type { UsageProjection as UP, CacheEfficiencyResponse as CER } from "@/types";
 
 interface ProjectionCardProps {
   projection: UP | undefined;
@@ -529,5 +522,95 @@ function CacheEfficiencyCard({ cacheStats, isLoading }: CacheEfficiencyCardProps
         )}
       </CardContent>
     </Card>
+  );
+}
+
+// ─── Tab types ────────────────────────────────────────────────────────────────
+
+type MetricsTab = "performance" | "token-usage";
+
+const VALID_METRICS_TABS: MetricsTab[] = ["performance", "token-usage"];
+
+function isValidMetricsTab(value: string | null): value is MetricsTab {
+  return VALID_METRICS_TABS.includes(value as MetricsTab);
+}
+
+// ─── Main page content (uses useSearchParams) ─────────────────────────────────
+
+function MetricsPageContent() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
+  // Read ?tab= from URL, default to "performance"
+  const rawTab = searchParams.get("tab");
+  const activeTab: MetricsTab = isValidMetricsTab(rawTab) ? rawTab : "performance";
+
+  function handleTabChange(value: string) {
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("tab", value);
+    router.push(`?${params.toString()}`);
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Metrics</h1>
+          <p className="text-muted-foreground">
+            Performance analytics and operational insights
+          </p>
+        </div>
+      </div>
+
+      <Tabs value={activeTab} onValueChange={handleTabChange}>
+        <TabsList>
+          <TabsTrigger value="performance">Performance</TabsTrigger>
+          <TabsTrigger value="token-usage">Token Usage</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="performance" className="mt-6">
+          <PerformanceTabContent />
+        </TabsContent>
+
+        <TabsContent value="token-usage" className="mt-6">
+          <TokenUsageCostsSection />
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}
+
+// Wrap in Suspense for useSearchParams
+export default function MetricsPage() {
+  return (
+    <Suspense fallback={
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <Skeleton className="h-9 w-32 mb-2" />
+            <Skeleton className="h-5 w-72" />
+          </div>
+        </div>
+        <div className="flex gap-2">
+          <Skeleton className="h-9 w-28" />
+          <Skeleton className="h-9 w-28" />
+        </div>
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <Card key={i}>
+              <CardHeader className="pb-2">
+                <Skeleton className="h-4 w-24" />
+              </CardHeader>
+              <CardContent>
+                <Skeleton className="h-8 w-16" />
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      </div>
+    }>
+      <MetricsPageContent />
+    </Suspense>
   );
 }

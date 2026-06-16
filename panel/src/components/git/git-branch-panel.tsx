@@ -164,14 +164,15 @@ export function GitBranchPanel({
               </h4>
               <div className="space-y-0.5">
                 {localBranches.map((branch) => (
-                  <button
+                  <Button
                     key={branch.name}
                     onClick={() => !branch.is_current && onCheckout(branch.name)}
                     disabled={branch.is_current || isCheckingOut}
+                    variant="ghost"
                     className={
-                      "w-full flex items-center justify-between px-2 py-1.5 rounded text-sm text-left transition-colors " +
+                      "w-full h-auto justify-between px-2 py-1.5 text-sm font-normal whitespace-normal " +
                       (branch.is_current
-                        ? "bg-primary/10 text-primary"
+                        ? "bg-primary/10 text-primary hover:bg-primary/10 hover:text-primary"
                         : "hover:bg-muted")
                     }
                   >
@@ -188,7 +189,7 @@ export function GitBranchPanel({
                         {branch.last_commit.slice(0, 7)}
                       </span>
                     )}
-                  </button>
+                  </Button>
                 ))}
               </div>
             </div>
@@ -202,16 +203,17 @@ export function GitBranchPanel({
                 </h4>
                 <div className="space-y-0.5">
                   {remoteBranches.map((branch) => (
-                    <button
+                    <Button
                       key={branch.name}
                       onClick={() => onCheckout(branch.name)}
                       disabled={isCheckingOut}
-                      className="w-full flex items-center justify-between px-2 py-1.5 rounded text-sm text-left transition-colors hover:bg-muted"
+                      variant="ghost"
+                      className="w-full h-auto justify-start px-2 py-1.5 text-sm font-normal whitespace-normal hover:bg-muted"
                     >
                       <span className="truncate font-mono text-xs text-muted-foreground">
                         {branch.name}
                       </span>
-                    </button>
+                    </Button>
                   ))}
                 </div>
               </div>

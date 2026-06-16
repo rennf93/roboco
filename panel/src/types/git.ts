@@ -147,3 +147,43 @@ export interface GitMergePRRequest {
   merge_method?: MergeMethod;
   agent_id: string;
 }
+
+export interface GitPullRequest {
+  project_slug: string;
+  task_id: string;
+  agent_id: string;
+  remote?: string;
+}
+
+export interface GitPullResponse {
+  project_slug: string;
+  branch: string;
+  commits_received: number;
+  remote: string;
+}
+
+export interface GitFetchRequest {
+  project_slug: string;
+  agent_id: string;
+  remote?: string;
+}
+
+export interface GitFetchResponse {
+  project_slug: string;
+  remote: string;
+  refs_updated: number;
+}
+
+export interface GitRebaseRequest {
+  project_slug: string;
+  task_id: string;
+  agent_id: string;
+  onto?: string;
+}
+
+export interface GitRebaseResponse {
+  project_slug: string;
+  branch: string;
+  onto: string;
+  commits_rebased: number;
+}

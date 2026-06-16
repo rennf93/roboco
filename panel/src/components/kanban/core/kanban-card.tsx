@@ -183,7 +183,7 @@ export function KanbanCard({ task, onAction, showQaActions, isDragging: isDraggi
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="h-7 text-muted-foreground hover:text-foreground"
+                  className="min-h-11 text-muted-foreground hover:text-foreground"
                   onClick={(e) => e.stopPropagation()}
                   disabled={isBacklog}
                 >
@@ -210,7 +210,7 @@ export function KanbanCard({ task, onAction, showQaActions, isDragging: isDraggi
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="h-7 text-green-600 hover:text-green-700 hover:bg-green-50"
+                    className="min-h-11 text-green-600 hover:text-green-700 hover:bg-green-50"
                     onClick={(e) => {
                       e.stopPropagation();
                       onAction("pass-qa", task.id);
@@ -222,7 +222,7 @@ export function KanbanCard({ task, onAction, showQaActions, isDragging: isDraggi
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="h-7 text-red-600 hover:text-red-700 hover:bg-red-50"
+                    className="min-h-11 text-red-600 hover:text-red-700 hover:bg-red-50"
                     onClick={(e) => {
                       e.stopPropagation();
                       onAction("fail-qa", task.id);
@@ -238,7 +238,7 @@ export function KanbanCard({ task, onAction, showQaActions, isDragging: isDraggi
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="h-6 w-6"
+                    className="h-11 w-11"
                     onClick={(e) => {
                       e.stopPropagation();
                       onAction("move-forward", task.id);

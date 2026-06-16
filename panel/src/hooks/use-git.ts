@@ -23,6 +23,12 @@ import type {
   GitCreatePRResponse,
   GitMergePRRequest,
   GitMergePRResponse,
+  GitPullRequest,
+  GitPullResponse,
+  GitFetchRequest,
+  GitFetchResponse,
+  GitRebaseRequest,
+  GitRebaseResponse,
 } from "@/types/git";
 
 // =============================================================================
@@ -226,6 +232,60 @@ export function useMergePR() {
   });
 }
 
+/**
+ * Pull latest changes from remote
+ */
+export function useGitPull() {
+  const queryClient = useQueryClient();
+
+  return useMutation<GitPullResponse, Error, GitPullRequest>({
+    mutationFn: (request) => gitApi.pull(request),
+    onSuccess: (_, variables) => {
+      // Invalidate status and log after pull
+      queryClient.invalidateQueries({ queryKey: gitKeys.status(variables.project_slug) });
+      queryClient.invalidateQueries({
+        queryKey: [...gitKeys.all, "log", variables.project_slug],
+      });
+    },
+  });
+}
+
+/**
+ * Fetch refs from remote without merging
+ */
+export function useGitFetch() {
+  const queryClient = useQueryClient();
+
+  return useMutation<GitFetchResponse, Error, GitFetchRequest>({
+    mutationFn: (request) => gitApi.fetch(request),
+    onSuccess: (_, variables) => {
+      // Invalidate status after fetch
+      queryClient.invalidateQueries({ queryKey: gitKeys.status(variables.project_slug) });
+    },
+  });
+}
+
+/**
+ * Rebase current branch onto remote (destructive — rewrites history)
+ */
+export function useGitRebase() {
+  const queryClient = useQueryClient();
+
+  return useMutation<GitRebaseResponse, Error, GitRebaseRequest>({
+    mutationFn: (request) => gitApi.rebase(request),
+    onSuccess: (_, variables) => {
+      // Invalidate everything after rebase since history has changed
+      queryClient.invalidateQueries({ queryKey: gitKeys.status(variables.project_slug) });
+      queryClient.invalidateQueries({
+        queryKey: [...gitKeys.all, "log", variables.project_slug],
+      });
+      queryClient.invalidateQueries({
+        queryKey: [...gitKeys.all, "diff", variables.project_slug],
+      });
+    },
+  });
+}
+
 // =============================================================================
 // Bundled Hook for Git Operations
 // =============================================================================
@@ -240,6 +300,9 @@ export function useGitOperations() {
   const checkout = useCheckout();
   const createPR = useCreatePR();
   const mergePR = useMergePR();
+  const pull = useGitPull();
+  const fetch = useGitFetch();
+  const rebase = useGitRebase();
 
   return {
     commit,
@@ -248,5 +311,8 @@ export function useGitOperations() {
     checkout,
     createPR,
     mergePR,
+    pull,
+    fetch,
+    rebase,
   };
 }

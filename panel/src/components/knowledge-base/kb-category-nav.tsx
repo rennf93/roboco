@@ -3,6 +3,8 @@
 import { KBIndexType, KBStats } from "@/types";
 import { FileText, MessageSquare, BookOpen, ChevronRight, AlertTriangle, Scale, GitBranch, ClipboardCheck, Lightbulb } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 const categoryConfig: Record<KBIndexType, { label: string; description: string; icon: React.ReactNode }> = {
   [KBIndexType.DOCUMENTATION]: {
@@ -90,17 +92,19 @@ export function KBCategoryNav({
         const isSelected = selectedCategory === type;
 
         return (
-          <button
+          <Button
             key={type}
             onClick={() => onSelectCategory(type)}
-            className={`w-full flex items-center gap-3 p-3 rounded-lg border transition-colors text-left ${
+            variant="outline"
+            className={cn(
+              "w-full h-auto justify-start gap-3 p-3 font-normal whitespace-normal",
               isSelected
                 ? "bg-primary/10 border-primary"
                 : "hover:bg-muted/50 border-transparent hover:border-border"
-            }`}
+            )}
           >
             <div className="shrink-0">{config.icon}</div>
-            <div className="flex-1 min-w-0">
+            <div className="flex-1 min-w-0 text-left">
               <div className="flex items-center justify-between">
                 <span className="font-medium text-sm">{config.label}</span>
                 <span className="text-xs text-muted-foreground">
@@ -109,8 +113,8 @@ export function KBCategoryNav({
               </div>
               <p className="text-xs text-muted-foreground truncate">{config.description}</p>
             </div>
-            <ChevronRight className={`h-4 w-4 text-muted-foreground shrink-0 transition-transform ${isSelected ? "rotate-90" : ""}`} />
-          </button>
+            <ChevronRight className={cn("h-4 w-4 text-muted-foreground shrink-0 transition-transform", isSelected && "rotate-90")} />
+          </Button>
         );
       })}
     </div>

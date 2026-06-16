@@ -2,7 +2,7 @@
 
 import { Button } from "@/components/ui/button";
 import { CreateTaskDialog } from "@/components/tasks/create-task-dialog";
-import { Users, Megaphone, BookOpen, Shield } from "lucide-react";
+import { Users, Megaphone, BookOpen, Shield, Sparkles, Bot } from "lucide-react";
 import Link from "next/link";
 
 export function QuickActionsBar() {
@@ -14,6 +14,20 @@ export function QuickActionsBar() {
         <Button variant="outline">
           <Users className="h-4 w-4 mr-2" />
           Spawn Agent
+        </Button>
+      </Link>
+
+      <Link href="/prompter">
+        <Button variant="outline">
+          <Sparkles className="h-4 w-4 mr-2" />
+          Task Intake
+        </Button>
+      </Link>
+
+      <Link href="/business?tab=secretary">
+        <Button variant="outline">
+          <Bot className="h-4 w-4 mr-2" />
+          Secretary
         </Button>
       </Link>
 
