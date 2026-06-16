@@ -2,7 +2,7 @@
 
 import { use, useState } from "react";
 import axios from "axios";
-import { useTask, useTaskLifecycle } from "@/hooks/use-tasks";
+import { useTask, useTaskLifecycle, useUpdateTask } from "@/hooks/use-tasks";
 import { useProject } from "@/hooks/use-projects";
 import { useCreateBranch, useCreatePR, useMergePR } from "@/hooks/use-git";
 import { Team, TaskStatus } from "@/types";
@@ -35,6 +35,7 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
   const { data: task, isLoading, error, refetch } = useTask(taskId);
   const { data: project } = useProject(task?.project_id ?? "");
   const lifecycle = useTaskLifecycle();
+  const updateTask = useUpdateTask();
   const createBranch = useCreateBranch();
   const createPR = useCreatePR();
   const mergePR = useMergePR();
@@ -111,7 +112,13 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
           toast.success("Task activated");
           break;
         case "start-revision":
-          await lifecycle.start.mutateAsync(task.id);
+          // Operator override: /start is assignee-only, so route the
+          // needs_revision -> in_progress nudge through the audited admin
+          // status path (PATCH /tasks/{id}), which privileged roles may use.
+          await updateTask.mutateAsync({
+            taskId: task.id,
+            updates: { status: TaskStatus.IN_PROGRESS },
+          });
           toast.success("Revision started");
           break;
         // Git workflow actions
