@@ -284,6 +284,15 @@ services:
       # _reap_stale_claims uses (the one that was killing in-progress work).
       ROBOCO_CLAIM_STALE_SECONDS: "1800"
       ROBOCO_STALE_CLAIM_REAP_SECONDS: "1800"
+      # External-PR review. When on, the org discovers inbound external/fork PRs
+      # and the PR reviewer posts one change-request — READ-ONLY (it never runs
+      # contributor code). The supersede that fetches + builds their code is
+      # separately CEO-triggered and stays gated by require_human_confirm.
+      # Override either via .env. (Config default is off; this enables it here.)
+      ROBOCO_EXTERNAL_PR_ENABLED: ${ROBOCO_EXTERNAL_PR_ENABLED:-true}
+      ROBOCO_EXTERNAL_PR_REQUIRE_HUMAN_CONFIRM: ${ROBOCO_EXTERNAL_PR_REQUIRE_HUMAN_CONFIRM:-true}
+      # ROBOCO_EXTERNAL_PR_POLL_INTERVAL_SECONDS: "300"
+      # ROBOCO_EXTERNAL_PR_AUTHOR_ALLOWLIST: '["corey"]'   # empty = every external PR
     volumes:
       # Docker socket - allows spawning agent containers
       - /var/run/docker.sock:/var/run/docker.sock
