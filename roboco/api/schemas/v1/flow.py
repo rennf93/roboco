@@ -210,6 +210,9 @@ class DelegateRequest(BaseModel):
     # resolves the project from the parent's Product map for this cell, then
     # falls back to the parent's project. Plain optional field — no validator.
     project_id: UUID | None = None
+    # Parent acceptance-criterion ids this subtask is responsible for. Lets the
+    # coverage + roll-up AC gates verify every parent AC is claimed and satisfied.
+    covers_parent_criteria: list[str] | None = None
 
     # Pre-gateway parity: cross-field validators that catch the most common
     # LLM-vs-schema confusions. Pre-gateway lived in

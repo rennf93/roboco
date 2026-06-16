@@ -462,6 +462,7 @@ def delegate(
     nature: str,
     acceptance_criteria: list[str],
     estimated_complexity: str = "medium",
+    covers_parent_criteria: list[str] | None = None,
 ) -> dict[str, Any]:
     """PM: create a subtask of parent_task_id.
 
@@ -476,6 +477,11 @@ def delegate(
         nature: One of "technical" | "non_technical".
         acceptance_criteria: Non-empty list of verifiable outcome strings.
         estimated_complexity: One of "low" | "medium" | "high". Default "medium".
+        covers_parent_criteria: The parent task's acceptance-criterion ids this
+            subtask is responsible for. Declare these so the gateway can verify
+            EVERY parent criterion is claimed by a subtask and satisfied before
+            the parent rolls up — split the parent's criteria across subtasks so
+            their union covers all of them.
     """
     return _post(
         _role_path("delegate"),
@@ -489,6 +495,7 @@ def delegate(
             "nature": nature,
             "acceptance_criteria": acceptance_criteria,
             "estimated_complexity": estimated_complexity,
+            "covers_parent_criteria": covers_parent_criteria,
         },
     )
 
