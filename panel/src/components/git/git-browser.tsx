@@ -115,7 +115,7 @@ function GitBrowserContent() {
       const result = await commit.mutateAsync({
         project_slug: projectSlug,
         message,
-        task_id: taskId || "manual",
+        task_id: taskId || undefined,
         agent_id: "ceo",
       });
       toast.success(`Committed: ${result.commit_hash.slice(0, 7)}`);
@@ -128,7 +128,7 @@ function GitBrowserContent() {
     try {
       const result = await push.mutateAsync({
         project_slug: projectSlug,
-        task_id: taskId || "manual",
+        task_id: taskId || undefined,
         agent_id: "ceo",
         force,
       });
@@ -142,7 +142,7 @@ function GitBrowserContent() {
     try {
       const result = await createPR.mutateAsync({
         project_slug: projectSlug,
-        task_id: taskId || "manual",
+        task_id: taskId || undefined,
         title,
         body,
         agent_id: "ceo",
@@ -165,7 +165,7 @@ function GitBrowserContent() {
       const result = await mergePR.mutateAsync({
         project_slug: projectSlug,
         pr_number: prNumber,
-        task_id: taskId || "manual",
+        task_id: taskId || undefined,
         agent_id: "ceo",
       });
       toast.success(`Merged PR #${result.pr_number} → ${result.target_branch}`);
@@ -179,7 +179,6 @@ function GitBrowserContent() {
       const result = await pull.mutateAsync({
         project_slug: projectSlug,
         task_id: taskId || undefined,
-        agent_id: "ceo",
       });
       toast.success(`Pulled: now on ${result.current_branch}`);
     } catch {
@@ -192,7 +191,6 @@ function GitBrowserContent() {
       const result = await fetch.mutateAsync({
         project_slug: projectSlug,
         task_id: taskId || undefined,
-        agent_id: "ceo",
       });
       toast.success(`Fetched: now on ${result.current_branch}`);
     } catch {
