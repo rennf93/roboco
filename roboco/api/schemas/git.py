@@ -7,7 +7,7 @@ Request/response models for git operation endpoints.
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # =============================================================================
 # STATUS
@@ -289,13 +289,39 @@ class GitFetchResponse(BaseModel):
 # =============================================================================
 
 
+_PROTECTED_BRANCH_NAMES: frozenset[str] = frozenset({"main", "master", "develop"})
+
+
 class GitRebaseRequest(BaseModel):
     """Request to rebase the current branch onto a target branch."""
 
     project_slug: str
-    task_id: UUID
+    task_id: UUID | None = None
     agent_id: str
     target_branch: str
+
+    @field_validator("target_branch")
+    @classmethod
+    def validate_target_branch(cls, v: str) -> str:
+        """Reject branch names that start with '-' or match protected names.
+
+        A branch name starting with '-' is ambiguous on the git CLI (it looks
+        like a flag) and is never a valid ref name.  Protected branch names
+        (main, master, develop) must not be used as rebase targets — the
+        service layer guards against this too, but an early schema-level
+        rejection produces a cleaner 422 instead of a 400 from the service.
+        """
+        if v.startswith("-"):
+            raise ValueError(
+                f"INVALID_BRANCH_NAME: target_branch '{v}' starts with '-', "
+                "which is not a valid git branch name."
+            )
+        if v in _PROTECTED_BRANCH_NAMES:
+            raise ValueError(
+                f"PROTECTED_BRANCH: target_branch '{v}' is a protected branch "
+                "name and cannot be used as a rebase target."
+            )
+        return v
 
 
 class GitRebaseResponse(BaseModel):

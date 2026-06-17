@@ -20,17 +20,35 @@ the next pre-configured result in order.
 Also covers the ``rebase()`` safety gate added by the git-schema cleanup
 task: rebasing onto or from a protected branch (master/main) is rejected
 with a service-layer ``ValidationError`` before any git command runs.
+
+Also covers:
+* ``pull()`` dirty-tree and diverged-branch ``ValidationError`` gates.
+* ``pull()`` success path.
+* ``GitRebaseRequest.target_branch`` Pydantic field validator.
+* Route-level role gate: DEVELOPER → 403, CELL_PM → 200.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import AsyncMock, MagicMock, call, patch
+from uuid import uuid4
 
+import pydantic
 import pytest
+from fastapi import FastAPI
+from httpx import ASGITransport, AsyncClient
+from roboco.api.deps import get_agent_context, get_db
+from roboco.api.routes.git import router as git_router
+from roboco.api.schemas.git import GitRebaseRequest
+from roboco.models.base import AgentRole
+from roboco.models.permissions import AgentContext
 from roboco.services.base import ValidationError
 from roboco.services.git import GitService
+
+_HTTP_200 = 200
+_HTTP_403 = 403
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -276,3 +294,221 @@ async def test_rebase_raises_validation_error_when_head_branch_is_main(
     svc = _git_service()
     with pytest.raises(ValidationError, match="REBASE_FORBIDDEN"):
         await svc.rebase(_WORKSPACE, "feature/backend/some-task")
+
+
+# ---------------------------------------------------------------------------
+# pull() safety-gate tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pull_raises_validation_error_on_dirty_tree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """pull() raises ValidationError(DIRTY_TREE) when staged changes exist.
+
+    The pre-flight get_status returns staged files; pull must reject
+    immediately before any network call.
+    """
+    monkeypatch.setattr(
+        GitService,
+        "get_status",
+        AsyncMock(
+            return_value=("feature/backend/task", True, ["dirty.py"], [], [], 0, 0)
+        ),
+    )
+    svc = _git_service()
+    with pytest.raises(ValidationError, match="DIRTY_TREE"):
+        await svc.pull(_WORKSPACE)
+
+
+@pytest.mark.asyncio
+async def test_pull_raises_validation_error_on_diverged_branch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """pull() raises ValidationError(DIVERGED_BRANCH) when ahead > 0 and behind > 0.
+
+    A branch with local commits (ahead=2) and remote-only commits (behind=3)
+    has diverged; a plain git pull would produce an unwanted merge commit.
+    """
+    monkeypatch.setattr(
+        GitService,
+        "get_status",
+        AsyncMock(return_value=("feature/backend/task", False, [], [], [], 2, 3)),
+    )
+    svc = _git_service()
+    with pytest.raises(ValidationError, match="DIVERGED_BRANCH"):
+        await svc.pull(_WORKSPACE)
+
+
+@pytest.mark.asyncio
+async def test_pull_success_returns_post_pull_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """pull() returns the post-pull status on a clean, non-diverged branch.
+
+    A branch that is only *behind* (ahead=0, behind=2) passes the pre-flight
+    check and can be fast-forwarded.  Two get_status calls are expected:
+    the pre-flight check and the post-pull status.
+    """
+    _pre_flight = ("feature/backend/task", False, [], [], [], 0, 2)
+    _post_pull = ("feature/backend/task", False, [], [], [], 0, 0)
+    monkeypatch.setattr(
+        GitService,
+        "get_status",
+        AsyncMock(side_effect=[_pre_flight, _post_pull]),
+    )
+    monkeypatch.setattr(
+        GitService, "_token_for_workspace", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(GitService, "_run_git", AsyncMock(return_value=_result()))
+
+    svc = _git_service()
+    result = await svc.pull(_WORKSPACE)
+
+    assert result == _post_pull
+
+
+# ---------------------------------------------------------------------------
+# GitRebaseRequest.target_branch field validator tests
+# ---------------------------------------------------------------------------
+
+
+def test_rebase_request_target_branch_dash_prefix_rejected() -> None:
+    """GitRebaseRequest rejects target_branch that starts with '-'.
+
+    Branch names beginning with '-' are not valid git ref names and look
+    like CLI flags, so the schema validator rejects them with a clear error.
+    """
+    with pytest.raises(pydantic.ValidationError, match="INVALID_BRANCH_NAME"):
+        GitRebaseRequest(
+            project_slug="roboco",
+            agent_id="be-pm",
+            target_branch="-bad-branch",
+        )
+
+
+def test_rebase_request_target_branch_protected_name_rejected() -> None:
+    """GitRebaseRequest rejects target_branch 'main' (a protected branch name)."""
+    with pytest.raises(pydantic.ValidationError, match="PROTECTED_BRANCH"):
+        GitRebaseRequest(
+            project_slug="roboco",
+            agent_id="be-pm",
+            target_branch="main",
+        )
+
+
+def test_rebase_request_target_branch_master_rejected() -> None:
+    """GitRebaseRequest rejects target_branch 'master' (a protected branch name)."""
+    with pytest.raises(pydantic.ValidationError, match="PROTECTED_BRANCH"):
+        GitRebaseRequest(
+            project_slug="roboco",
+            agent_id="be-pm",
+            target_branch="master",
+        )
+
+
+def test_rebase_request_valid_target_branch_accepted() -> None:
+    """GitRebaseRequest accepts a valid, non-protected target_branch."""
+    req = GitRebaseRequest(
+        project_slug="roboco",
+        agent_id="be-pm",
+        target_branch="feature/backend/some-task",
+    )
+    assert req.target_branch == "feature/backend/some-task"
+
+
+# ---------------------------------------------------------------------------
+# Route-level tests: role gate on POST /rebase
+# ---------------------------------------------------------------------------
+
+
+async def _mock_db_generator() -> Any:
+    """Async generator yielding a MagicMock as the database session.
+
+    FastAPI's original ``get_db`` is an async generator (uses ``yield``).
+    The override must also be a generator (or at least async) so FastAPI
+    handles the dependency lifecycle correctly.
+    """
+    yield MagicMock()
+
+
+def _build_git_app(agent_context: AgentContext) -> FastAPI:
+    """Minimal FastAPI app with the git router and overridden agent context."""
+    app = FastAPI()
+    app.include_router(git_router, prefix="/git")
+    app.dependency_overrides[get_agent_context] = lambda: agent_context
+    app.dependency_overrides[get_db] = _mock_db_generator
+    return app
+
+
+@pytest.mark.asyncio
+async def test_rebase_endpoint_developer_gets_403() -> None:
+    """POST /git/rebase returns HTTP 403 for a DEVELOPER-role agent.
+
+    The role gate fires before any service call, so no git service mock
+    is needed.
+    """
+    agent = AgentContext(agent_id=uuid4(), role=AgentRole.DEVELOPER)
+    app = _build_git_app(agent)
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/git/rebase",
+            json={
+                "project_slug": "roboco",
+                "agent_id": "be-dev-1",
+                "target_branch": "feature/backend/some-task",
+            },
+        )
+
+    assert response.status_code == _HTTP_403
+    detail = response.json()["detail"]
+    assert "REBASE_ROLE_RESTRICTED" in detail
+
+
+@pytest.mark.asyncio
+async def test_rebase_endpoint_pm_gets_200() -> None:
+    """POST /git/rebase returns HTTP 200 for a CELL_PM-role agent.
+
+    The role gate passes; no task_id is supplied so the ownership check
+    is skipped; project resolution and the git service are patched.
+    """
+    agent = AgentContext(agent_id=uuid4(), role=AgentRole.CELL_PM)
+    app = _build_git_app(agent)
+
+    # Mock project service → returns a project with slug "roboco"
+    mock_project = MagicMock()
+    mock_project.slug = "roboco"
+    mock_project_svc = MagicMock()
+    mock_project_svc.get_by_slug = AsyncMock(return_value=mock_project)
+
+    # Mock git service → workspace + rebase succeed without conflict
+    mock_git_svc = MagicMock()
+    mock_git_svc.get_workspace = AsyncMock(return_value=Path("/tmp/fake-ws"))
+    mock_git_svc.rebase = AsyncMock(return_value=(False, []))
+
+    transport = ASGITransport(app=app)
+
+    with (
+        patch(
+            "roboco.api.routes.git.get_project_service", return_value=mock_project_svc
+        ),
+        patch("roboco.api.routes.git.get_git_service", return_value=mock_git_svc),
+    ):
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(
+                "/git/rebase",
+                json={
+                    "project_slug": "roboco",
+                    "agent_id": "be-pm",
+                    "target_branch": "feature/backend/some-task",
+                },
+            )
+
+    assert response.status_code == _HTTP_200
+    body = response.json()
+    assert body["project_slug"] == "roboco"
+    assert body["conflict"] is False
+    assert body["conflicted_files"] == []

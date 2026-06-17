@@ -1159,9 +1159,39 @@ class GitService(BaseService):
 
         Uses _network_git_timeout() because the operation talks to origin.
 
+        Pre-flight safety gates (raise ValidationError before touching origin):
+        * DIRTY_TREE — uncommitted staged or unstaged changes are present.
+          A pull on a dirty tree can produce surprise merge conflicts or
+          silently overwrite local edits.  The caller must commit or stash
+          first.
+        * DIVERGED_BRANCH — local branch has both ahead *and* behind commits
+          relative to origin.  A plain ``git pull`` in this state either
+          refuses or creates a merge commit; the caller should rebase instead.
+
         Returns: (current_branch, has_changes, staged, unstaged, untracked,
                   ahead, behind)
         """
+        # Pre-flight: check for dirty tree and diverged branch before pulling.
+        (
+            _pre_branch,
+            _has,
+            staged,
+            unstaged,
+            _untracked,
+            ahead,
+            behind,
+        ) = await self.get_status(workspace)
+        if staged or unstaged:
+            raise ValidationError(
+                "DIRTY_TREE: Workspace has uncommitted changes (staged or "
+                "unstaged). Commit or stash your changes before pulling."
+            )
+        if ahead > 0 and behind > 0:
+            raise ValidationError(
+                "DIVERGED_BRANCH: Local branch has diverged from origin "
+                f"(ahead={ahead}, behind={behind}). Use rebase instead of pull "
+                "to reconcile diverged histories."
+            )
         token = await self._token_for_workspace(workspace)
         await self._run_git(
             workspace, ["pull"], token=token, timeout=_network_git_timeout()
