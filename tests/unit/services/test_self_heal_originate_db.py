@@ -22,6 +22,7 @@ from roboco.services.notification import NotificationService
 from roboco.services.self_heal_engine import SelfHealEngine
 from roboco.services.task import TaskService, get_task_service
 from roboco.services.telemetry import TelemetrySample
+from sqlalchemy import select
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -53,23 +54,30 @@ def _breach(signal: str) -> TelemetrySample:
 
 
 async def _seed_project(session: AsyncSession, slug: str = SLUG) -> None:
-    """Seed the system agent (FK target for created_by) + RoboCo's own project."""
-    session.add(
-        AgentTable(
-            id=SYSTEM_UUID,
-            name="System",
-            slug=f"system-{slug}",
-            role=AgentRole.SYSTEM,
-            team=None,
-            status=AgentStatus.ACTIVE,
-            model_config={},
-            system_prompt="system",
-            capabilities=[],
-            permissions={},
-            metrics={},
+    """Seed the system agent (FK target for created_by) + RoboCo's own project.
+
+    The system agent has a FIXED foundation uuid (origination hardcodes it as
+    created_by). Another test in the full suite may have already committed it
+    into the session-scoped DB, so get-or-create by id — a plain insert collides
+    on pk_agents (green in isolation, red in the full CI run).
+    """
+    if await session.get(AgentTable, SYSTEM_UUID) is None:
+        session.add(
+            AgentTable(
+                id=SYSTEM_UUID,
+                name="System",
+                slug=f"system-{slug}",
+                role=AgentRole.SYSTEM,
+                team=None,
+                status=AgentStatus.ACTIVE,
+                model_config={},
+                system_prompt="system",
+                capabilities=[],
+                permissions={},
+                metrics={},
+            )
         )
-    )
-    await session.flush()
+        await session.flush()
     session.add(
         ProjectTable(
             name="RoboCo",
@@ -218,23 +226,28 @@ async def test_ceo_approve_and_start_flips_the_confirmation_gate(
     """The opened task is unconfirmed (held out of dispatch); the CEO's
     approve_and_start flips confirmed_by_human=True so it can then dispatch."""
     await _seed_project(db_session)
-    # approve_and_start reassigns to the main-pm agent — seed it.
-    db_session.add(
-        AgentTable(
-            id=uuid4(),
-            name="Main PM",
-            slug="main-pm",
-            role=AgentRole.MAIN_PM,
-            team=Team.MAIN_PM,
-            status=AgentStatus.ACTIVE,
-            model_config={},
-            system_prompt="pm",
-            capabilities=[],
-            permissions={},
-            metrics={},
+    # approve_and_start reassigns to the main-pm agent — get-or-create by slug
+    # (the full suite may already have committed a "main-pm" agent).
+    existing_pm = (
+        await db_session.execute(select(AgentTable).where(AgentTable.slug == "main-pm"))
+    ).scalar_one_or_none()
+    if existing_pm is None:
+        db_session.add(
+            AgentTable(
+                id=uuid4(),
+                name="Main PM",
+                slug="main-pm",
+                role=AgentRole.MAIN_PM,
+                team=Team.MAIN_PM,
+                status=AgentStatus.ACTIVE,
+                model_config={},
+                system_prompt="pm",
+                capabilities=[],
+                permissions={},
+                metrics={},
+            )
         )
-    )
-    await db_session.flush()
+        await db_session.flush()
     _enable(monkeypatch)
     # approve_and_start emits a stream event; stub it out (no bus in the test).
     monkeypatch.setattr(TaskService, "_emit_task_event", AsyncMock())
