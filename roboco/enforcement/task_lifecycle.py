@@ -356,33 +356,48 @@ def validate_git_requirements(
         return True
 
     transition = (current_status, target_status)
+    _check_doc_phase_gate(transition, git_ctx)
+    _check_ceo_escalation_gate(transition, git_ctx)
+    _check_claim_branch_gate(transition, git_ctx)
+    return True
 
-    if transition == ("awaiting_documentation", "awaiting_pm_review"):
-        if not git_ctx.docs_complete:
-            raise GitRequirementError(
-                transition=transition,
-                requirement="docs_complete",
-                message=(
-                    "Blocked: documentation not yet complete. "
-                    "In awaiting_documentation, Documenter and Developer work in "
-                    "parallel. Wait for Documenter to call i_documented()."
-                ),
-            )
-        if not git_ctx.pr_created:
-            raise GitRequirementError(
-                transition=transition,
-                requirement="pr_created",
-                message=(
-                    "Blocked: PR not yet created. "
-                    "In awaiting_documentation, Documenter and Developer work in "
-                    "parallel. Wait for the Developer's submit_for_qa(task_id) "
-                    "call to complete — the choreographer opens the PR as part "
-                    "of that transition."
-                ),
-            )
 
-    is_ceo_escalation = transition == ("awaiting_pm_review", "awaiting_ceo_approval")
-    if is_ceo_escalation and git_ctx.pr_number is None:
+def _check_doc_phase_gate(transition: tuple[str, str], git_ctx: GitContext) -> None:
+    """awaiting_documentation -> awaiting_pm_review needs docs_complete + pr_created."""
+    if transition != ("awaiting_documentation", "awaiting_pm_review"):
+        return
+    if not git_ctx.docs_complete:
+        raise GitRequirementError(
+            transition=transition,
+            requirement="docs_complete",
+            message=(
+                "Blocked: documentation not yet complete. "
+                "In awaiting_documentation, Documenter and Developer work in "
+                "parallel. Wait for Documenter to call i_documented()."
+            ),
+        )
+    if not git_ctx.pr_created:
+        raise GitRequirementError(
+            transition=transition,
+            requirement="pr_created",
+            message=(
+                "Blocked: PR not yet created. "
+                "In awaiting_documentation, Documenter and Developer work in "
+                "parallel. Wait for the Developer's submit_for_qa(task_id) "
+                "call to complete — the choreographer opens the PR as part "
+                "of that transition."
+            ),
+        )
+
+
+def _check_ceo_escalation_gate(
+    transition: tuple[str, str], git_ctx: GitContext
+) -> None:
+    """awaiting_pm_review -> awaiting_ceo_approval needs a recorded pr_number."""
+    if (
+        transition == ("awaiting_pm_review", "awaiting_ceo_approval")
+        and git_ctx.pr_number is None
+    ):
         raise GitRequirementError(
             transition=transition,
             requirement="pr_number",
@@ -393,6 +408,9 @@ def validate_git_requirements(
             ),
         )
 
+
+def _check_claim_branch_gate(transition: tuple[str, str], git_ctx: GitContext) -> None:
+    """claimed -> in_progress needs a branch (coordination/external review exempt)."""
     if (
         transition == ("claimed", "in_progress")
         and not git_ctx.branch_name
@@ -408,8 +426,6 @@ def validate_git_requirements(
                 "re-claim the task or check if parent task needs claiming first."
             ),
         )
-
-    return True
 
 
 def check_parallel_completion(docs_complete: bool, pr_created: bool) -> bool:

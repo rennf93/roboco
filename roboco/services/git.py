@@ -1587,6 +1587,16 @@ class GitService(BaseService):
         git_token = await self._token_for_project(project_slug)
         if not git_token:
             return []
+        raw = await self._fetch_open_prs(project_slug, owner, repo, git_token)
+        if raw is None:
+            return []
+        base_full = f"{owner}/{repo}"
+        return [self._normalize_open_pr(pr, base_full) for pr in raw]
+
+    async def _fetch_open_prs(
+        self, project_slug: str, owner: str, repo: str, git_token: str
+    ) -> list[dict[str, Any]] | None:
+        """GET a repo's open PRs; return the raw list, or None on any error."""
         api_base = settings.github_api_base_url.rstrip("/")
         try:
             async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
@@ -1601,37 +1611,35 @@ class GitService(BaseService):
                 )
         except httpx.HTTPError as e:
             self.log.warning(
-                "list_open_prs request failed",
-                project=project_slug,
-                error=str(e),
+                "list_open_prs request failed", project=project_slug, error=str(e)
             )
-            return []
+            return None
         if not resp.is_success:
             self.log.warning(
                 "list_open_prs non-2xx",
                 project=project_slug,
                 status=resp.status_code,
             )
-            return []
-        base_full = f"{owner}/{repo}"
-        prs: list[dict[str, Any]] = []
-        for pr in resp.json():
-            head = pr.get("head") or {}
-            head_repo = head.get("repo") or {}
-            head_full = head_repo.get("full_name")
-            prs.append(
-                {
-                    "number": pr.get("number"),
-                    "url": pr.get("html_url") or "",
-                    "title": pr.get("title") or "",
-                    "head_ref": head.get("ref"),
-                    "head_sha": head.get("sha"),
-                    "is_fork": bool(head_full and head_full != base_full),
-                    "user_login": (pr.get("user") or {}).get("login"),
-                    "author_association": pr.get("author_association"),
-                }
-            )
-        return prs
+            return None
+        data = resp.json()
+        return data if isinstance(data, list) else []
+
+    @staticmethod
+    def _normalize_open_pr(pr: dict[str, Any], base_full: str) -> dict[str, Any]:
+        """Normalize one GitHub PR payload into the inbound-review record."""
+        head = pr.get("head") or {}
+        head_repo = head.get("repo") or {}
+        head_full = head_repo.get("full_name")
+        return {
+            "number": pr.get("number"),
+            "url": pr.get("html_url") or "",
+            "title": pr.get("title") or "",
+            "head_ref": head.get("ref"),
+            "head_sha": head.get("sha"),
+            "is_fork": bool(head_full and head_full != base_full),
+            "user_login": (pr.get("user") or {}).get("login"),
+            "author_association": pr.get("author_association"),
+        }
 
     async def _post_pr(
         self,
@@ -1709,27 +1717,9 @@ class GitService(BaseService):
         source_branch = await self.get_current_branch(workspace)
         default_branch = await self._project_default_branch(request.project_slug)
         git_token = await self._get_project_token_or_raise(request.project_slug)
-
-        if request.task_id is not None:
-            task_service = get_task_service(self.session)
-            task = await task_service.get(request.task_id)
-            if not task:
-                raise NotFoundError("Task", str(request.task_id))
-            target_branch = await self._resolve_pr_target_branch(
-                request, task, default_branch
-            )
-            target_branch = await self._pr_base_on_remote(
-                workspace, target_branch, default_branch, git_token, request.task_id
-            )
-            pr_title, pr_body = await self._generate_pr_title_body(
-                request, task, source_branch, target_branch, request.task_id
-            )
-        else:
-            # No task context: target the default branch directly, use provided
-            # title/body or fall back to minimal defaults.
-            target_branch = default_branch
-            pr_title = request.title or source_branch
-            pr_body = request.body or ""
+        target_branch, pr_title, pr_body = await self._resolve_new_pr_context(
+            workspace, request, source_branch, default_branch, git_token
+        )
 
         owner, repo = self._parse_github_remote(workspace)
         resp = await self._post_pr(
@@ -1744,19 +1734,11 @@ class GitService(BaseService):
             },
         )
 
-        # Idempotency: PR already exists for this head→base.
-        if resp.status_code == _GH_UNPROCESSABLE and "already exists" in resp.text:
-            found = await self._find_existing_pr(
-                owner, repo, source_branch, target_branch, git_token
-            )
-            if found:
-                return (
-                    int(found["number"]),
-                    found["html_url"],
-                    found.get("title", pr_title or ""),
-                    source_branch,
-                    target_branch,
-                )
+        existing = await self._existing_pr_tuple(
+            resp, (owner, repo), (source_branch, target_branch), git_token, pr_title
+        )
+        if existing is not None:
+            return existing
 
         if not resp.is_success:
             raise GitError(
@@ -1770,6 +1752,65 @@ class GitService(BaseService):
             int(pr_data["number"]),
             str(pr_data["html_url"]),
             pr_title or "",
+            source_branch,
+            target_branch,
+        )
+
+    async def _resolve_new_pr_context(
+        self,
+        workspace: Path,
+        request: GitCreatePRRequest,
+        source_branch: str,
+        default_branch: str,
+        git_token: str,
+    ) -> tuple[str, str | None, str | None]:
+        """Resolve (target_branch, title, body) for a new PR.
+
+        With a ``task_id``: look the task up, resolve the target + remote base,
+        and generate the title/body from templates. Without one: target the
+        default branch and use the provided title/body (or minimal fallbacks).
+        """
+        if request.task_id is None:
+            return default_branch, request.title or source_branch, request.body or ""
+        task = await get_task_service(self.session).get(request.task_id)
+        if not task:
+            raise NotFoundError("Task", str(request.task_id))
+        target_branch = await self._resolve_pr_target_branch(
+            request, task, default_branch
+        )
+        target_branch = await self._pr_base_on_remote(
+            workspace, target_branch, default_branch, git_token, request.task_id
+        )
+        pr_title, pr_body = await self._generate_pr_title_body(
+            request, task, source_branch, target_branch, request.task_id
+        )
+        return target_branch, pr_title, pr_body
+
+    async def _existing_pr_tuple(
+        self,
+        resp: httpx.Response,
+        owner_repo: tuple[str, str],
+        branches: tuple[str, str],
+        git_token: str,
+        pr_title: str | None,
+    ) -> tuple[int, str, str, str, str] | None:
+        """Idempotency: if the create hit an 'already exists' 422, return that PR.
+
+        ``owner_repo`` is (owner, repo); ``branches`` is (source, target).
+        """
+        if resp.status_code != _GH_UNPROCESSABLE or "already exists" not in resp.text:
+            return None
+        owner, repo = owner_repo
+        source_branch, target_branch = branches
+        found = await self._find_existing_pr(
+            owner, repo, source_branch, target_branch, git_token
+        )
+        if not found:
+            return None
+        return (
+            int(found["number"]),
+            found["html_url"],
+            found.get("title", pr_title or ""),
             source_branch,
             target_branch,
         )
