@@ -63,8 +63,7 @@ def test_get_agent_image_registry_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(orch.settings, "agent_image_registry", "ghcr.io/rennf93")
     monkeypatch.setattr(orch.settings, "agent_image_tag", "0.5.0")
     assert (
-        orch.get_agent_image("be-dev-1")
-        == "ghcr.io/rennf93/roboco-agent-dev-be:0.5.0"
+        orch.get_agent_image("be-dev-1") == "ghcr.io/rennf93/roboco-agent-dev-be:0.5.0"
     )
     assert (
         orch.get_agent_image("pr-reviewer-1")
