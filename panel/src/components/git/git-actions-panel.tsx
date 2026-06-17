@@ -49,7 +49,7 @@ interface GitActionsPanelProps {
   onMergePR: (prNumber: number) => void;
   onPull: () => void;
   onFetch: () => void;
-  onRebase: () => void;
+  onRebase: (targetBranch: string) => void;
   isCommitting: boolean;
   isPushing: boolean;
   isCreatingPR: boolean;
@@ -87,6 +87,7 @@ export function GitActionsPanel({
   const [prTitle, setPrTitle] = useState("");
   const [prBody, setPrBody] = useState("");
   const [mergePrNumber, setMergePrNumber] = useState("");
+  const [rebaseTargetBranch, setRebaseTargetBranch] = useState("");
 
   const hasStagedChanges = (status?.staged_files.length ?? 0) > 0;
   const hasUnpushedCommits = (status?.ahead ?? 0) > 0;
@@ -376,19 +377,33 @@ export function GitActionsPanel({
           </AlertDialogTrigger>
           <AlertDialogContent className="border-destructive bg-destructive/5">
             <AlertDialogHeader>
-              <AlertDialogTitle>Rebase onto remote?</AlertDialogTitle>
+              <AlertDialogTitle>Rebase onto target branch?</AlertDialogTitle>
               <AlertDialogDescription>
                 This will rewrite the commit history of branch{" "}
                 <strong>{status?.current_branch}</strong> by replaying commits
-                on top of the latest remote. A force-push will be required
-                afterward. This action cannot be undone.
+                on top of the specified target branch. A force-push will be
+                required afterward. This action cannot be undone.
               </AlertDialogDescription>
             </AlertDialogHeader>
+            <div className="px-6 py-2 space-y-2">
+              <label className="text-sm font-medium">Target branch</label>
+              <Input
+                placeholder="e.g. main or origin/main"
+                value={rebaseTargetBranch}
+                onChange={(e) => setRebaseTargetBranch(e.target.value)}
+              />
+            </div>
             <AlertDialogFooter>
-              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogCancel onClick={() => setRebaseTargetBranch("")}>
+                Cancel
+              </AlertDialogCancel>
               <AlertDialogAction
                 className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                onClick={onRebase}
+                disabled={!rebaseTargetBranch.trim()}
+                onClick={() => {
+                  onRebase(rebaseTargetBranch.trim());
+                  setRebaseTargetBranch("");
+                }}
               >
                 Rebase
               </AlertDialogAction>
