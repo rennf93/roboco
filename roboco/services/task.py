@@ -331,6 +331,40 @@ def extract_original_developer(quick_context: str | None) -> str | None:
     return None
 
 
+_REQUIRED_CELLS_PREFIX = "required_cells:"
+
+
+def _normalize_cell(value: object) -> str:
+    """Normalize a team/cell token for comparison (e.g. backend, frontend, ux_ui)."""
+    raw = str(getattr(value, "value", value)).strip().lower()
+    return raw.replace("/", "_").replace("-", "_").replace(" ", "")
+
+
+def extract_required_cells(quick_context: str | None) -> list[str]:
+    """Cells the brief explicitly named, from a ``required_cells:`` marker line.
+
+    The Main PM must create a subtask for each named cell (it may not silently
+    collapse one into a neighbour — see commit 60de3499). The marker is a single
+    line, e.g. ``required_cells: backend, frontend, ux_ui``. Absent → no
+    constraint (the gate is inert). Returns normalized, de-duplicated cells in
+    marker order.
+    """
+    if not quick_context:
+        return []
+    for raw in quick_context.splitlines():
+        line = raw.strip()
+        if not line.lower().startswith(_REQUIRED_CELLS_PREFIX):
+            continue
+        body = line[len(_REQUIRED_CELLS_PREFIX) :]
+        seen: list[str] = []
+        for tok in body.split(","):
+            cell = _normalize_cell(tok)
+            if cell and cell not in seen:
+                seen.append(cell)
+        return seen
+    return []
+
+
 _SUPERSEDE_MARKER_PREFIX = "external_pr_supersede"
 
 
@@ -5205,6 +5239,23 @@ class TaskService(BaseService):
             .order_by(TaskTable.created_at)
         )
         return list(result.scalars().all())
+
+    async def uncovered_required_cells(self, parent_task_id: UUID) -> list[str]:
+        """Named cells (parent's ``required_cells:`` marker) with no subtask.
+
+        Inert ([]) when the parent carries no marker — legacy / un-named
+        decompositions are never blocked. Otherwise returns each named cell that
+        has no child subtask on that team, in marker order.
+        """
+        parent = await self.get(parent_task_id)
+        if parent is None:
+            return []
+        required = extract_required_cells(parent.quick_context)
+        if not required:
+            return []
+        children = await self.get_subtasks(parent_task_id)
+        covered = {_normalize_cell(c.team) for c in children if c.team is not None}
+        return [cell for cell in required if cell not in covered]
 
     async def has_earlier_incomplete_code_sibling(self, task: TaskTable) -> bool:
         """True if a lower-sequence, non-terminal, same-assignee code sibling exists.

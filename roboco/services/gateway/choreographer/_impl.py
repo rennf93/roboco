@@ -2893,6 +2893,10 @@ class Choreographer:
             return await self._emit_rejection(
                 guard, agent_id=agent_id, task_id=None, verb="i_am_idle"
             )
+        if guard := await self._pm_uncovered_required_cells_guard(agent_id, briefing):
+            return await self._emit_rejection(
+                guard, agent_id=agent_id, task_id=None, verb="i_am_idle"
+            )
         paused_ids = await self._auto_pause_in_progress_tasks(agent_id)
         await self.task.mark_agent_idle(agent_id)
         if paused_ids:
@@ -3054,6 +3058,46 @@ class Choreographer:
                 remediate=(
                     "delegate (or reassign) subtasks whose covers_parent_criteria"
                     f" include these criteria, then retry i_am_idle: {listing}"
+                ),
+                context_briefing=briefing,
+            )
+        return None
+
+    async def _pm_uncovered_required_cells_guard(
+        self, agent_id: UUID, briefing: dict[str, Any]
+    ) -> Envelope | None:
+        """Refuse i_am_idle when a PM left an explicitly-named cell undelegated.
+
+        The brief / acceptance criteria / Board handoff can name specific cells
+        (recorded as a ``required_cells:`` marker on the parent). The Main PM
+        must create a subtask for each — its discretion covers only un-named
+        scope; a genuinely-unnecessary named cell must be confirmed via
+        escalate_up/dm, not silently dropped. This is the structured companion
+        to the prompt rule (commit 60de3499), firing at PM exit. Inert when no
+        parent carries the marker, so legacy decompositions are never blocked.
+        """
+        agent = await self.task.agent_for(agent_id)
+        if not agent or agent.role not in ("cell_pm", "main_pm"):
+            return None
+        assigned = await self.task.list_assigned_for_agent(agent_id)
+        for parent in assigned:
+            if str(parent.status) in self._TERMINAL_STATUSES:
+                continue
+            uncovered = await self.task.uncovered_required_cells(parent.id)
+            # isinstance keeps the gate inert under partial test mocks (an
+            # AsyncMock TaskService returns a truthy stub, not a concrete list).
+            if not isinstance(uncovered, list) or not uncovered:
+                continue
+            listing = ", ".join(uncovered)
+            return Envelope.invalid_state(
+                message=(
+                    f"task {parent.id} names cells with no subtask: {listing}; "
+                    "cannot idle while an explicitly-named cell is undelegated."
+                ),
+                remediate=(
+                    f"delegate a subtask for each named cell ({listing}); if one is "
+                    "genuinely unnecessary, confirm via escalate_up/dm rather than "
+                    "dropping it, then retry i_am_idle"
                 ),
                 context_briefing=briefing,
             )
