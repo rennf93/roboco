@@ -158,7 +158,7 @@ export const gitApi = {
     if (isMockMode()) {
       return {
         commit_hash: "abc123456789abcdef",
-        message: `[${request.task_id.slice(0, 8)}] ${request.message}`,
+        message: `[${request.task_id?.slice(0, 8) ?? "manual"}] ${request.message}`,
         files_changed: request.files?.length || 1,
         insertions: 10,
         deletions: 5,
