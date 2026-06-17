@@ -257,7 +257,7 @@ uv run mypy roboco/
 | Database | PostgreSQL + SQLAlchemy (async) |
 | Vector Store | PostgreSQL + pgvector (in-house engine) |
 | Cache/Queue | Redis |
-| RAG Engine | in-house (asyncpg + pgvector, HyDE) |
+| RAG Engine | in-house (asyncpg + pgvector, hybrid retrieval) |
 | Embeddings | qwen3-embedding:0.6b (Ollama) |
 | Local LLM | Ollama (glm-5:cloud) |
 | Cloud LLM | Claude API (Anthropic) |

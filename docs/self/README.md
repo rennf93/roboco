@@ -10,7 +10,7 @@ Meta-documentation about the RoboCo system itself.
 
 ## Access
 
-- **READ**: Board + PM roles
+- **READ**: Main PM, Cell PMs, Product Owner, Auditor
 - **WRITE**: Main PM, Auditor
 
 ## Purpose

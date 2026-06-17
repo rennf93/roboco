@@ -9,9 +9,11 @@ Operating the AI company after deployment.
 ```
 CEO (You)
 ├── Intake (on-demand interviewer: chats only with you to draft a task)
+├── Secretary (your chief-of-staff: runs gated directives under your command)
 └── Board
     ├── Product Owner
     ├── Head of Marketing
+    ├── PR Reviewer (read-only: gates inbound external/fork PRs)
     └── Auditor
         └── Main PM
             ├── Backend Cell (PM, 2 Devs, QA, Documenter)
@@ -40,6 +42,8 @@ CEO (You)
 | `head-marketing` | Head of Marketing | Board |
 | `auditor` | Auditor | Board |
 | `intake-1` | Intake (interviewer) | Board |
+| `secretary-1` | Secretary (chief-of-staff) | Board |
+| `pr-reviewer-1` | PR Reviewer (read-only) | Board |
 
 ## Spawning Agents
 
@@ -122,9 +126,9 @@ Enum values: `task_type` ∈ {`code`, `documentation`, `research`, `planning`, `
 ## Task Lifecycle
 
 ```
-pending → claimed → in_progress → verifying → awaiting_qa → awaiting_documentation → completed
-                         ↓
-                    blocked/paused
+pending → claimed → in_progress → verifying → awaiting_qa → awaiting_documentation → awaiting_pm_review → completed
+                         ↓                                                                    ↓
+                    blocked/paused                                                  awaiting_ceo_approval (major tasks)
 ```
 
 Agents automatically:

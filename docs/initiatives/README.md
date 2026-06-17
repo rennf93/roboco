@@ -16,8 +16,8 @@ initiatives/
 
 ## Access
 
-- **READ**: Assigned teams
-- **WRITE**: Assigned documenters
+- **READ**: Main PM, Cell PMs, Product Owner
+- **WRITE**: Main PM
 
 ## Creating an Initiative
 

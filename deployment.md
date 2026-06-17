@@ -59,21 +59,27 @@ Your NAS/Server
 │   │
 │   ├── roboco-postgres (pgvector)
 │   ├── roboco-redis
-│   └── roboco-orchestrator
-│       │
-│       ├── Runs FastAPI on port 8000
-│       ├── Builds (from source) or pulls (registry) the agent images
-│       └── Spawns agent containers:
-│           ├── roboco-agent-main-pm
-│           ├── roboco-agent-be-dev-1
-│           ├── roboco-agent-be-qa
-│           └── ... (each mounts ~/.claude for auth)
+│   ├── roboco-ollama (+ ollama-init: pulls the embedding + local LLM models)
+│   ├── roboco-orchestrator
+│   │   │
+│   │   ├── Runs FastAPI on port 8000
+│   │   ├── Builds (from source) or pulls (registry) the agent images
+│   │   └── Spawns agent containers:
+│   │       ├── roboco-agent-main-pm
+│   │       ├── roboco-agent-be-dev-1
+│   │       ├── roboco-agent-be-qa
+│   │       └── ... (each mounts ~/.claude for auth)
+│   ├── roboco-panel (Next.js control panel, internal)
+│   └── roboco-nginx (single entry point on :3000 → panel + /api,/ws → orchestrator)
 │
 ├── ~/.claude/              ← Your Claude Code auth (from host)
 │
 └── ./data/                 ← Persistent data
     ├── postgres/
     ├── redis/
+    ├── ollama/             ← model cache (multi-GB)
+    ├── workspaces/         ← per-agent git clones
+    ├── logs/
     └── mcp-configs/
 ```
 
@@ -143,6 +149,9 @@ All data is persisted to the host:
 |----------------|-----------|
 | postgres data | `./data/postgres/` |
 | redis data | `./data/redis/` |
+| Ollama models | `./data/ollama/` |
+| Agent workspaces | `./data/workspaces/` |
+| Agent + orchestrator logs | `./data/logs/` |
 | MCP configs | `./data/mcp-configs/` |
 
 For NAS RAID protection, set `ROBOCO_DATA_DIR` to your RAID volume:

@@ -74,11 +74,11 @@ pnpm test
 | API Framework | FastAPI |
 | Database | PostgreSQL + asyncpg |
 | Vector Store | PostgreSQL + pgvector (in-house engine) |
-| RAG Engine | in-house (asyncpg + pgvector, HyDE) |
+| RAG Engine | in-house (asyncpg + pgvector, hybrid retrieval) |
 | Cache/Queue | Redis |
 | Container Runtime | Docker + Docker Compose |
 | Cloud LLM | Claude API (claude-opus-4-6) |
-| Local LLM | Ollama (glm-5:cloud for HyDE/RAG) |
+| Local LLM | Ollama (glm-5:cloud for RAG/hybrid retrieval) |
 | Embeddings | qwen3-embedding:0.6b (1024 dim) |
 | Frontend | Next.js 16 + TypeScript + Tailwind + Radix UI (in `panel/`) |
 | Edge / Proxy | nginx (single entry point on port 3000) |
@@ -503,9 +503,4 @@ ROBOCO_OLLAMA_BASE_URL=http://roboco-ollama:11434          # Native API
 
 ## Blueprint Reference
 
-The complete system design is documented in `HOMELAB_TEAM_V0.md`, which contains:
-- Organizational structure and role descriptions
-- Communication matrix and notification permissions
-- API endpoint specifications
-- Security and access control model
-- Configuration templates
+The organizational structure, communication matrix, role descriptions, and access-control model are documented inline above and in the published `docs/` tree (per-area `README.md` files, `usage.md`, `deployment.md`).
