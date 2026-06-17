@@ -379,6 +379,16 @@ class Settings(BaseSettings):
             "even when enabled."
         ),
     )
+    self_heal_ci_workflow: str = Field(
+        default="",
+        description=(
+            "Optional GitHub Actions workflow file name (e.g. 'ci.yml') to scope "
+            "the CI signal to. Empty = use the latest completed run across ALL "
+            "workflows on the default branch, which is imprecise when the repo "
+            "has several workflows; set this to the real CI workflow for a "
+            "reliable signal."
+        ),
+    )
     self_heal_originate_enabled: bool = Field(
         default=False,
         description=(

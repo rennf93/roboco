@@ -241,3 +241,18 @@ async def test_get_latest_ci_conclusion_none_when_no_runs() -> None:
         patch("roboco.services.git.httpx.AsyncClient", return_value=client),
     ):
         assert await svc.get_latest_ci_conclusion("roboco") is None
+
+
+@pytest.mark.asyncio
+async def test_get_latest_ci_conclusion_scopes_to_workflow() -> None:
+    # With a workflow file given, hit the workflow-scoped endpoint (precise signal).
+    svc = _service()
+    client = _client(_resp(200, json_payload={"workflow_runs": [_run("success")]}))
+    with (
+        _patch_project_ci(),
+        patch("roboco.services.git.httpx.AsyncClient", return_value=client),
+    ):
+        out = await svc.get_latest_ci_conclusion("roboco", workflow="ci.yml")
+    assert out is not None
+    assert out["conclusion"] == "success"
+    assert client.get.await_args.args[0].endswith("/actions/workflows/ci.yml/runs")

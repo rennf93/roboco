@@ -1642,7 +1642,7 @@ class GitService(BaseService):
         }
 
     async def get_latest_ci_conclusion(
-        self, project_slug: str
+        self, project_slug: str, *, workflow: str | None = None
     ) -> dict[str, Any] | None:
         """Latest completed CI (GitHub Actions) run on a project's default branch.
 
@@ -1650,10 +1650,12 @@ class GitService(BaseService):
         workflow run on the project's default branch, normalized to
         ``conclusion`` (``success`` / ``failure`` / ``timed_out`` / ...),
         ``head_sha``, ``run_url``, ``run_name``, ``branch`` and ``completed_at``.
-        Repo-agnostic — resolves owner/repo and the git token PER PROJECT, so it
-        works on any registered repo, never a hardcoded one. Returns ``None`` on a
-        missing token, unparseable remote, GitHub error, or a repo with no Actions
-        runs (a repo that doesn't use GitHub Actions yields no signal, not a false
+        Resolves owner/repo and the git token PER PROJECT. ``workflow`` (a
+        workflow file name like ``ci.yml``) scopes the signal to one workflow —
+        without it the latest run across ALL workflows is used, which is
+        imprecise on a multi-workflow repo. Returns ``None`` on a missing token,
+        unparseable remote, GitHub error, or a repo with no matching Actions runs
+        (a repo that doesn't use GitHub Actions yields no signal, not a false
         one). It never raises into the poll loop.
         """
         project = await get_project_service(self.session).get_by_slug(project_slug)
@@ -1668,7 +1670,7 @@ class GitService(BaseService):
             return None
         branch = project.default_branch or "main"
         run = await self._fetch_latest_ci_run(
-            project_slug, owner, repo, branch, git_token
+            project_slug, (owner, repo), branch, git_token, workflow
         )
         if run is None:
             return None
@@ -1682,14 +1684,26 @@ class GitService(BaseService):
         }
 
     async def _fetch_latest_ci_run(
-        self, project_slug: str, owner: str, repo: str, branch: str, git_token: str
+        self,
+        project_slug: str,
+        owner_repo: tuple[str, str],
+        branch: str,
+        git_token: str,
+        workflow: str | None = None,
     ) -> dict[str, Any] | None:
-        """GET the most recent completed Actions run on ``branch``; None on error."""
+        """GET the most recent completed Actions run on ``branch``; None on error.
+
+        Scopes to ``workflow`` (a workflow file name) when given — the precise
+        signal — otherwise looks across all workflows.
+        """
+        owner, repo = owner_repo
         api_base = settings.github_api_base_url.rstrip("/")
+        base = f"{api_base}/repos/{owner}/{repo}/actions"
+        url = f"{base}/workflows/{workflow}/runs" if workflow else f"{base}/runs"
         try:
             async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
                 resp = await client.get(
-                    f"{api_base}/repos/{owner}/{repo}/actions/runs",
+                    url,
                     headers={
                         "Authorization": f"Bearer {git_token}",
                         "Accept": "application/vnd.github+json",

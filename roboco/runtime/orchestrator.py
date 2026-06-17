@@ -4682,6 +4682,15 @@ Start by:
         from roboco.db import get_db_context
         from roboco.services.self_heal_engine import get_self_heal_engine
 
+        # Operability: self-heal is armed but has no target → it will silently
+        # no-op every cycle. Say so once at startup so a misconfiguration (unset
+        # or wrong ROBOCO_SELF_HEAL_PROJECT_SLUG) isn't mistaken for "all green".
+        if not settings.self_heal_project_slug.strip():
+            logger.warning(
+                "self-heal enabled but self_heal_project_slug is unset — the loop "
+                "will not detect anything until the target project is configured"
+            )
+
         interval = settings.self_heal_interval_seconds
         while self._running:
             try:

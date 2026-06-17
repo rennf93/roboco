@@ -78,7 +78,10 @@ class GitHubCITelemetrySource:
         slug = settings.self_heal_project_slug.strip()
         if not slug:
             return []
-        ci = await GitService(self.session).get_latest_ci_conclusion(slug)
+        workflow = settings.self_heal_ci_workflow.strip() or None
+        ci = await GitService(self.session).get_latest_ci_conclusion(
+            slug, workflow=workflow
+        )
         if ci is None:
             return []
         conclusion = (ci.get("conclusion") or "").lower()
