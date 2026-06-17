@@ -34,11 +34,14 @@ export enum AgentRole {
   PRODUCT_OWNER = "product_owner",
   HEAD_MARKETING = "head_marketing",
   AUDITOR = "auditor",
+  PR_REVIEWER = "pr_reviewer",
   MAIN_PM = "main_pm",
   CELL_PM = "cell_pm",
   DEVELOPER = "developer",
   QA = "qa",
   DOCUMENTER = "documenter",
+  PROMPTER = "prompter",
+  SECRETARY = "secretary",
 }
 
 export enum AgentState {

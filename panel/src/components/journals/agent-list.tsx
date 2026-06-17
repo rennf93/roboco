@@ -1,7 +1,6 @@
 "use client";
 
 import { Agent, Team, AgentRole } from "@/types";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AgentItem } from "./agent-item";
 
@@ -84,7 +83,7 @@ export function AgentList({
   const grouped = groupByTeam(agents);
 
   return (
-    <ScrollArea className="h-[calc(100vh-200px)]">
+    <div className="overflow-y-auto max-h-[calc(100vh-200px)]">
       <div className="p-2 space-y-4">
         {Object.entries(grouped).map(([teamKey, teamAgents]) => {
           if (teamAgents.length === 0) return null;
@@ -108,6 +107,6 @@ export function AgentList({
           );
         })}
       </div>
-    </ScrollArea>
+    </div>
   );
 }

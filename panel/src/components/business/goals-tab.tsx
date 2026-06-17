@@ -341,8 +341,8 @@ function GoalsForm({ goals, refetch }: GoalsFormProps) {
           )}
         </div>
 
-        {/* Hidden — just to make the refetch prop used */}
-        <button type="button" className="hidden" onClick={refetch} />
+        {/* Hidden — keeps the refetch prop wired up for future use */}
+        <Button type="button" className="hidden" onClick={refetch} />
       </CardContent>
     </Card>
   );

@@ -16,12 +16,26 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import {
   GitCommit,
   Upload,
   GitPullRequest,
   GitMerge,
   RefreshCw,
   ArrowUp,
+  Download,
+  RefreshCcw,
+  GitGraph,
 } from "lucide-react";
 
 interface GitActionsPanelProps {
@@ -33,10 +47,16 @@ interface GitActionsPanelProps {
   onPush: (force?: boolean) => void;
   onCreatePR: (title: string, body: string) => void;
   onMergePR: (prNumber: number) => void;
+  onPull: () => void;
+  onFetch: () => void;
+  onRebase: (targetBranch: string) => void;
   isCommitting: boolean;
   isPushing: boolean;
   isCreatingPR: boolean;
   isMerging: boolean;
+  isPulling: boolean;
+  isFetching: boolean;
+  isRebasing: boolean;
 }
 
 export function GitActionsPanel({
@@ -48,10 +68,16 @@ export function GitActionsPanel({
   onPush,
   onCreatePR,
   onMergePR,
+  onPull,
+  onFetch,
+  onRebase,
   isCommitting,
   isPushing,
   isCreatingPR,
   isMerging,
+  isPulling,
+  isFetching,
+  isRebasing,
 }: GitActionsPanelProps) {
   void _agentId; // Reserved for future use
   const [showCommitDialog, setShowCommitDialog] = useState(false);
@@ -61,6 +87,7 @@ export function GitActionsPanel({
   const [prTitle, setPrTitle] = useState("");
   const [prBody, setPrBody] = useState("");
   const [mergePrNumber, setMergePrNumber] = useState("");
+  const [rebaseTargetBranch, setRebaseTargetBranch] = useState("");
 
   const hasStagedChanges = (status?.staged_files.length ?? 0) > 0;
   const hasUnpushedCommits = (status?.ahead ?? 0) > 0;
@@ -301,6 +328,88 @@ export function GitActionsPanel({
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
+        {/* Pull Action */}
+        <Button
+          className="w-full justify-start"
+          variant="outline"
+          disabled={isPulling}
+          onClick={onPull}
+        >
+          {isPulling ? (
+            <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+          ) : (
+            <Download className="h-4 w-4 mr-2" />
+          )}
+          Pull from Remote
+        </Button>
+
+        {/* Fetch Action */}
+        <Button
+          className="w-full justify-start"
+          variant="outline"
+          disabled={isFetching}
+          onClick={onFetch}
+        >
+          {isFetching ? (
+            <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+          ) : (
+            <RefreshCcw className="h-4 w-4 mr-2" />
+          )}
+          Fetch Remote
+        </Button>
+
+        {/* Rebase Action — destructive, requires confirmation */}
+        <AlertDialog>
+          <AlertDialogTrigger asChild>
+            <Button
+              className="w-full justify-start"
+              variant="outline"
+              disabled={isRebasing}
+            >
+              {isRebasing ? (
+                <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <GitGraph className="h-4 w-4 mr-2" />
+              )}
+              Rebase onto Remote
+            </Button>
+          </AlertDialogTrigger>
+          <AlertDialogContent className="border-destructive bg-destructive/5">
+            <AlertDialogHeader>
+              <AlertDialogTitle>Rebase onto target branch?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This will rewrite the commit history of branch{" "}
+                <strong>{status?.current_branch}</strong> by replaying commits
+                on top of the specified target branch. A force-push will be
+                required afterward. This action cannot be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <div className="px-6 py-2 space-y-2">
+              <label className="text-sm font-medium">Target branch</label>
+              <Input
+                placeholder="Remote ref (e.g. origin/HEAD)"
+                value={rebaseTargetBranch}
+                onChange={(e) => setRebaseTargetBranch(e.target.value)}
+              />
+            </div>
+            <AlertDialogFooter>
+              <AlertDialogCancel onClick={() => setRebaseTargetBranch("")}>
+                Cancel
+              </AlertDialogCancel>
+              <AlertDialogAction
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                disabled={!rebaseTargetBranch.trim()}
+                onClick={() => {
+                  onRebase(rebaseTargetBranch.trim());
+                  setRebaseTargetBranch("");
+                }}
+              >
+                Rebase
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
 
         {/* Status Summary */}
         {status && (

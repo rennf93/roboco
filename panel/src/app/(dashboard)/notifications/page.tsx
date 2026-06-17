@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { Suspense } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
 import {
   useNotifications,
   useMarkNotificationRead,
@@ -105,17 +106,34 @@ function NotificationCard({ notification, onMarkRead, onAcknowledge }: Notificat
   );
 }
 
-export default function NotificationsPage() {
-  // Default to Unread: the actionable view. Landing on "All" buries new
-  // notifications under everything already seen.
-  const [activeTab, setActiveTab] = useState<"all" | "unread" | "pending">("unread");
-  
+type TabValue = "all" | "unread" | "pending";
+
+const VALID_TABS: TabValue[] = ["all", "unread", "pending"];
+
+function isValidTab(value: string | null): value is TabValue {
+  return VALID_TABS.includes(value as TabValue);
+}
+
+function NotificationsPageContent() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
+  // Read ?tab= from URL, default to "unread" (most actionable view)
+  const rawTab = searchParams.get("tab");
+  const activeTab: TabValue = isValidTab(rawTab) ? rawTab : "unread";
+
+  function handleTabChange(value: string) {
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("tab", value);
+    router.push(`?${params.toString()}`);
+  }
+
   const { data, isLoading, error, refetch } = useNotifications(
     activeTab === "unread" ? { unread_only: true } :
     activeTab === "pending" ? { pending_ack_only: true } :
     undefined
   );
-  
+
   const markRead = useMarkNotificationRead();
   const acknowledge = useAcknowledgeNotification();
   const markAllRead = useMarkAllNotificationsRead();
@@ -219,7 +237,7 @@ export default function NotificationsPage() {
           onRetry={() => refetch()}
         />
       ) : (
-        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as typeof activeTab)}>
+        <Tabs value={activeTab} onValueChange={handleTabChange}>
           <TabsList>
             <TabsTrigger value="all">All</TabsTrigger>
             <TabsTrigger value="unread">
@@ -260,5 +278,48 @@ export default function NotificationsPage() {
         </Tabs>
       )}
     </div>
+  );
+}
+
+// Wrap in Suspense for useSearchParams
+export default function NotificationsPage() {
+  return (
+    <Suspense fallback={
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <Skeleton className="h-9 w-48 mb-2" />
+            <Skeleton className="h-5 w-72" />
+          </div>
+          <div className="flex items-center gap-2">
+            <Skeleton className="h-9 w-36" />
+            <Skeleton className="h-9 w-24" />
+          </div>
+        </div>
+        <div className="grid grid-cols-3 gap-4">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <Card key={i}>
+              <CardHeader className="pb-2">
+                <Skeleton className="h-4 w-16" />
+              </CardHeader>
+              <CardContent>
+                <Skeleton className="h-8 w-12" />
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+        <div className="space-y-3">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <Card key={i}>
+              <CardContent className="p-4">
+                <Skeleton className="h-20 w-full" />
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      </div>
+    }>
+      <NotificationsPageContent />
+    </Suspense>
   );
 }

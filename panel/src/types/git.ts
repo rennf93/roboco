@@ -102,14 +102,14 @@ export interface GitMergePRResponse {
 export interface GitCommitRequest {
   project_slug: string;
   message: string;
-  task_id: string;
+  task_id?: string;
   agent_id: string;
   files?: string[] | null;
 }
 
 export interface GitPushRequest {
   project_slug: string;
-  task_id: string;
+  task_id?: string;
   agent_id: string;
   force?: boolean;
 }
@@ -132,7 +132,7 @@ export interface GitCheckoutRequest {
 
 export interface GitCreatePRRequest {
   project_slug: string;
-  task_id: string;
+  task_id?: string;
   title: string;
   body: string;
   agent_id: string;
@@ -143,7 +143,49 @@ export type MergeMethod = "merge" | "squash" | "rebase";
 export interface GitMergePRRequest {
   project_slug: string;
   pr_number: number;
-  task_id: string;
+  task_id?: string;
   merge_method?: MergeMethod;
   agent_id: string;
+}
+
+export interface GitPullRequest {
+  project_slug: string;
+  task_id?: string;
+}
+
+export interface GitPullResponse {
+  current_branch: string;
+  has_changes: boolean;
+  staged_files: string[];
+  unstaged_files: string[];
+  untracked_files: string[];
+  ahead: number;
+  behind: number;
+}
+
+export interface GitFetchRequest {
+  project_slug: string;
+  task_id?: string;
+}
+
+export interface GitFetchResponse {
+  current_branch: string;
+  has_changes: boolean;
+  staged_files: string[];
+  unstaged_files: string[];
+  untracked_files: string[];
+  ahead: number;
+  behind: number;
+}
+
+export interface GitRebaseRequest {
+  project_slug: string;
+  target_branch: string;
+  task_id?: string;
+  agent_id?: string;
+}
+
+export interface GitRebaseResponse {
+  conflict: boolean;
+  conflicted_files: string[];
 }

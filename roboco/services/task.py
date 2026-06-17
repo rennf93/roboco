@@ -1297,7 +1297,6 @@ class TaskService(BaseService):
             task_id=require_uuid(task.id),
             project_slug=project.slug,
             branch_type="feature",
-            agent_id=str(agent_id),
             parent_branch=parent_branch,
         )
 

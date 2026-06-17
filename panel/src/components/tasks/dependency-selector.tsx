@@ -7,9 +7,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Search, X, Link2, Check } from "lucide-react";
+import { Search, X, Link2 } from "lucide-react";
 
 interface DependencySelectorProps {
   selectedIds: string[];
@@ -114,22 +115,22 @@ export function DependencySelector({
                 {filteredTasks.map((task) => {
                   const isSelected = selectedIds.includes(task.id);
                   return (
-                    <button
+                    <Button
                       key={task.id}
                       type="button"
-                      className={`w-full flex items-center gap-2 p-2 rounded-md text-left hover:bg-muted transition-colors ${
-                        isSelected ? "bg-primary/10" : ""
+                      variant="ghost"
+                      className={`w-full h-auto justify-start gap-2 p-2 font-normal whitespace-normal ${
+                        isSelected ? "bg-primary/10 hover:bg-primary/10" : ""
                       }`}
                       onClick={() => toggleTask(task.id)}
                     >
-                      <div
-                        className={`h-4 w-4 rounded border flex items-center justify-center shrink-0 ${
-                          isSelected ? "bg-primary border-primary" : "border-muted-foreground"
-                        }`}
-                      >
-                        {isSelected && <Check className="h-3 w-3 text-primary-foreground" />}
-                      </div>
-                      <div className="flex-1 min-w-0">
+                      <Checkbox
+                        checked={isSelected}
+                        tabIndex={-1}
+                        className="pointer-events-none shrink-0"
+                        aria-hidden
+                      />
+                      <div className="flex-1 min-w-0 text-left">
                         <p className="text-sm truncate">{task.title}</p>
                         <div className="flex items-center gap-2 text-xs text-muted-foreground">
                           <Badge variant="outline" className="font-mono text-xs">
@@ -138,7 +139,7 @@ export function DependencySelector({
                           <span className="capitalize">{task.status.replace(/_/g, " ")}</span>
                         </div>
                       </div>
-                    </button>
+                    </Button>
                   );
                 })}
               </div>

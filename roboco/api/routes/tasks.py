@@ -228,7 +228,6 @@ async def _merge_pr_if_awaiting_pm_review(
                 pr_number=pre_task.pr_number,
                 task_id=task_id,
                 merge_method="squash",
-                agent_id=str(agent.agent_id),
             ),
         )
     except (ServiceError, GitError) as e:
@@ -1809,7 +1808,6 @@ async def approve_and_merge_task(
                 pr_number=task.pr_number,
                 task_id=task_id,
                 merge_method="squash",
-                agent_id=str(agent.agent_id),
             ),
         )
     except (ServiceError, GitError) as e:

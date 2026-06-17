@@ -23,12 +23,14 @@ export const getBoardAgents = (agents: AgentDefinition[] | undefined | null) =>
     (a) =>
       // The CEO is the human operator, not a spawnable agent — exclude it even
       // though its record carries team=board.
+      // MAIN_PM has its own dedicated section below Board, so exclude it here.
       a.role !== AgentRole.CEO &&
+      a.role !== AgentRole.MAIN_PM &&
       (a.team === Team.BOARD ||
         a.role === AgentRole.HEAD_MARKETING ||
         a.role === AgentRole.AUDITOR ||
         a.role === AgentRole.PRODUCT_OWNER ||
-        a.role === AgentRole.MAIN_PM)
+        a.role === AgentRole.PR_REVIEWER)
   );
 
 export const getMainPm = (agents: AgentDefinition[] | undefined | null) =>
@@ -45,3 +47,14 @@ export const getUxAgents = (agents: AgentDefinition[] | undefined | null) =>
 
 export const getMarketingAgents = (agents: AgentDefinition[] | undefined | null) =>
   (agents ?? []).filter((a) => a.team === Team.MARKETING);
+
+// On-demand agents (Prompter/Intake, Secretary) are not part of any standing
+// cell team — they are spawned on request. Captured by inclusion of their
+// explicit roles so new on-demand agents appear automatically when roles
+// are added to the enum.
+export const getOnDemandAgents = (agents: AgentDefinition[] | undefined | null) =>
+  (agents ?? []).filter(
+    (a) =>
+      a.role === AgentRole.PROMPTER ||
+      a.role === AgentRole.SECRETARY
+  );

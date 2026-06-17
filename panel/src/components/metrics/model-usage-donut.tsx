@@ -12,6 +12,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { ModelUsageSlice } from "@/types";
 
+// Design-system chart tokens — resolves to theme-aware palette
 const CHART_COLORS = [
   "var(--chart-1)",
   "var(--chart-2)",

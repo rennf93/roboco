@@ -60,12 +60,13 @@ export function ProductTable({ products, isLoading }: ProductTableProps) {
               <TableRow key={product.id}>
                 <TableCell>
                   <div>
-                    <button
+                    <Button
                       onClick={() => setEditingProductId(product.id)}
-                      className="font-medium hover:underline text-left"
+                      variant="link"
+                      className="h-auto p-0 font-medium text-foreground"
                     >
                       {product.name}
-                    </button>
+                    </Button>
                     <p className="text-xs text-muted-foreground font-mono">{product.slug}</p>
                   </div>
                 </TableCell>

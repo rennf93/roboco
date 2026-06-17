@@ -41,15 +41,22 @@ from roboco.api.schemas.git import (
     GitCreatePRRequest,
     GitCreatePRResponse,
     GitDiffResponse,
+    GitFetchRequest,
+    GitFetchResponse,
     GitLogResponse,
     GitMergePRRequest,
     GitMergePRResponse,
+    GitPullRequest,
+    GitPullResponse,
     GitPushRequest,
     GitPushResponse,
+    GitRebaseRequest,
+    GitRebaseResponse,
     GitStatusResponse,
 )
 from roboco.exceptions import GitCommandError, GitError, GitTimeoutError
 from roboco.logging import get_logger
+from roboco.models.base import AgentRole
 from roboco.services.base import (
     NotFoundError,
     ServiceError,
@@ -58,6 +65,7 @@ from roboco.services.base import (
 )
 from roboco.services.git import get_git_service
 from roboco.services.project import get_project_service
+from roboco.services.task import get_task_service
 
 logger = get_logger(__name__)
 
@@ -72,6 +80,16 @@ _LOG_FORMAT_PARTS = 5
 # git timeouts/command failures to be translated to 504/500 instead of
 # bubbling as 500 Internal Server Errors with no `detail`.
 _TranslatableError = (ServiceError, GitError)
+
+# Roles permitted to rebase branches via the /rebase endpoint.
+# Rebase is a history-rewriting operation that should be authorised only by
+# PM-level or CEO-level callers. Developers are intentionally excluded:
+# they commit to their feature branch and let PMs/CEO manage integration
+# rebases. This gate prevents developers from accidentally force-rewriting
+# shared branch history.
+_REBASE_ALLOWED_ROLES: frozenset[AgentRole] = frozenset(
+    {AgentRole.CEO, AgentRole.CELL_PM, AgentRole.MAIN_PM}
+)
 
 
 def _translate_error(e: ServiceError | GitError) -> HTTPException:
@@ -471,4 +489,139 @@ async def merge_pull_request(
         merged=True,
         merge_commit=merge_commit,
         target_branch=target_branch,
+    )
+
+
+@router.post("/pull", response_model=GitPullResponse)
+async def pull_commits(
+    data: GitPullRequest,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> GitPullResponse:
+    """Pull latest changes from origin into the agent workspace."""
+    project_slug = await _resolve_project_slug(data.project_slug, db)
+    git_service = get_git_service(db)
+
+    try:
+        workspace = await git_service.get_workspace(project_slug, agent.agent_id)
+        (
+            current_branch,
+            has_changes,
+            staged,
+            unstaged,
+            untracked,
+            ahead,
+            behind,
+        ) = await git_service.pull(workspace)
+    except _TranslatableError as e:
+        raise _translate_error(e) from e
+
+    return GitPullResponse(
+        project_slug=project_slug,
+        current_branch=current_branch,
+        has_changes=has_changes,
+        staged_files=staged,
+        unstaged_files=unstaged,
+        untracked_files=untracked,
+        ahead=ahead,
+        behind=behind,
+    )
+
+
+@router.post("/fetch", response_model=GitFetchResponse)
+async def fetch_commits(
+    data: GitFetchRequest,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> GitFetchResponse:
+    """Fetch changes from origin without merging."""
+    project_slug = await _resolve_project_slug(data.project_slug, db)
+    git_service = get_git_service(db)
+
+    try:
+        workspace = await git_service.get_workspace(project_slug, agent.agent_id)
+        (
+            current_branch,
+            has_changes,
+            staged,
+            unstaged,
+            untracked,
+            ahead,
+            behind,
+        ) = await git_service.fetch(workspace)
+    except _TranslatableError as e:
+        raise _translate_error(e) from e
+
+    return GitFetchResponse(
+        project_slug=project_slug,
+        current_branch=current_branch,
+        has_changes=has_changes,
+        staged_files=staged,
+        unstaged_files=unstaged,
+        untracked_files=untracked,
+        ahead=ahead,
+        behind=behind,
+    )
+
+
+@router.post("/rebase", response_model=GitRebaseResponse)
+async def rebase_branch(
+    data: GitRebaseRequest,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> GitRebaseResponse:
+    """Rebase the current branch onto target_branch.
+
+    Role-gated: only CEO and PM roles (cell_pm, main_pm) may rebase branches.
+    Developers, QA, documenters, and other roles are rejected with 403.
+
+    If task_id is provided and the caller is not CEO, the task's assigned_to
+    is checked: if the task is not assigned to the calling agent, 403 is
+    returned (or 404 if the task does not exist).
+
+    On conflict: aborts the rebase and returns conflict=True with the
+    list of conflicted files.  On success: returns conflict=False.
+    """
+    if agent.role not in _REBASE_ALLOWED_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"REBASE_ROLE_RESTRICTED: Role '{agent.role}' is not permitted "
+                "to rebase. Only CEO and PM roles (cell_pm, main_pm) may use "
+                "this endpoint."
+            ),
+        )
+    # Task ownership check: if a task_id is supplied and the caller is not CEO,
+    # ensure the task is assigned to the calling agent.
+    if data.task_id is not None and agent.role != AgentRole.CEO:
+        task_service = get_task_service(db)
+        task = await task_service.get(data.task_id)
+        if task is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Task not found: {data.task_id}",
+            )
+        if task.assigned_to != agent.agent_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "REBASE_OWNERSHIP_RESTRICTED: This task is not assigned to "
+                    "you. Only the task's assigned agent or CEO may rebase it."
+                ),
+            )
+    project_slug = await _resolve_project_slug(data.project_slug, db)
+    git_service = get_git_service(db)
+
+    try:
+        workspace = await git_service.get_workspace(project_slug, agent.agent_id)
+        conflict, conflicted_files = await git_service.rebase(
+            workspace, data.target_branch
+        )
+    except _TranslatableError as e:
+        raise _translate_error(e) from e
+
+    return GitRebaseResponse(
+        project_slug=project_slug,
+        conflict=conflict,
+        conflicted_files=conflicted_files,
     )

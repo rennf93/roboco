@@ -23,6 +23,12 @@ import type {
   GitCreatePRResponse,
   GitMergePRRequest,
   GitMergePRResponse,
+  GitPullRequest,
+  GitPullResponse,
+  GitFetchRequest,
+  GitFetchResponse,
+  GitRebaseRequest,
+  GitRebaseResponse,
 } from "@/types/git";
 
 // =============================================================================
@@ -152,7 +158,7 @@ export const gitApi = {
     if (isMockMode()) {
       return {
         commit_hash: "abc123456789abcdef",
-        message: `[${request.task_id.slice(0, 8)}] ${request.message}`,
+        message: `[${request.task_id?.slice(0, 8) ?? "manual"}] ${request.message}`,
         files_changed: request.files?.length || 1,
         insertions: 10,
         deletions: 5,
@@ -237,6 +243,58 @@ export const gitApi = {
       };
     }
     const { data } = await api.post<GitMergePRResponse>("/git/pr/merge", request);
+    return data;
+  },
+
+  /**
+   * Pull latest changes from remote
+   */
+  pull: async (request: GitPullRequest): Promise<GitPullResponse> => {
+    if (isMockMode()) {
+      return {
+        current_branch: "feature/backend/abc12345",
+        has_changes: false,
+        staged_files: [],
+        unstaged_files: [],
+        untracked_files: [],
+        ahead: 0,
+        behind: 0,
+      };
+    }
+    const { data } = await api.post<GitPullResponse>("/git/pull", request);
+    return data;
+  },
+
+  /**
+   * Fetch refs from remote without merging
+   */
+  fetch: async (request: GitFetchRequest): Promise<GitFetchResponse> => {
+    if (isMockMode()) {
+      return {
+        current_branch: "feature/backend/abc12345",
+        has_changes: false,
+        staged_files: [],
+        unstaged_files: [],
+        untracked_files: [],
+        ahead: 0,
+        behind: 0,
+      };
+    }
+    const { data } = await api.post<GitFetchResponse>("/git/fetch", request);
+    return data;
+  },
+
+  /**
+   * Rebase current branch onto target branch (destructive — rewrites history)
+   */
+  rebase: async (request: GitRebaseRequest): Promise<GitRebaseResponse> => {
+    if (isMockMode()) {
+      return {
+        conflict: false,
+        conflicted_files: [],
+      };
+    }
+    const { data } = await api.post<GitRebaseResponse>("/git/rebase", request);
     return data;
   },
 };
