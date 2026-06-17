@@ -68,6 +68,7 @@ export function KBSearchBar({
             variant="ghost"
             size="icon-sm"
             onClick={handleClear}
+            aria-label="Clear search"
             className="absolute right-1 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
           >
             <X className="h-4 w-4" />
