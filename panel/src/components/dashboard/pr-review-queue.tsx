@@ -21,7 +21,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { GitPullRequest, ExternalLink, Rocket, XCircle, FileText } from "lucide-react";
+import { GitPullRequest, ExternalLink, Rocket, XCircle, FileText, Loader2 } from "lucide-react";
 import Link from "next/link";
 import { type Task } from "@/types";
 import { toast } from "sonner";
@@ -133,67 +133,89 @@ export function PrReviewQueue({ className }: PrReviewQueueProps) {
             </Badge>
           </CardTitle>
           <CardDescription>
-            External PRs the org reviewed — supersede or dismiss
+            External PRs the org is reviewing or has reviewed — the reviewer
+            posts its change-request on the PR; supersede or dismiss once it
+            lands
           </CardDescription>
         </CardHeader>
         <CardContent>
           <div className="space-y-3">
-            {items.map((task) => (
-              <div
-                key={task.id}
-                className="flex items-start justify-between p-4 border rounded-lg hover:bg-muted/50 transition-colors"
-              >
-                <div className="flex-1 min-w-0">
-                  <Link
-                    href={`/tasks/${task.id}`}
-                    className="font-medium hover:underline line-clamp-1"
-                  >
-                    {task.title}
-                  </Link>
-                  {task.description && (
-                    <p className="text-sm text-muted-foreground mt-1 line-clamp-2">
-                      {task.description}
-                    </p>
-                  )}
-                </div>
-                <div className="flex items-center gap-2 ml-4 flex-shrink-0">
-                  {task.pr_url && (
-                    <a
-                      href={task.pr_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      title="View PR on GitHub"
-                    >
+            {items.map((task) => {
+              const awaiting = (task.status || "").toLowerCase() === "completed";
+              return (
+                <div
+                  key={task.id}
+                  className="flex items-start justify-between p-4 border rounded-lg hover:bg-muted/50 transition-colors"
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <Link
+                        href={`/tasks/${task.id}`}
+                        className="font-medium hover:underline line-clamp-1"
+                      >
+                        {task.title}
+                      </Link>
+                      {awaiting ? (
+                        <Badge variant="secondary" className="shrink-0">
+                          Awaiting your call
+                        </Badge>
+                      ) : (
+                        <Badge variant="outline" className="shrink-0 gap-1">
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                          Reviewing
+                        </Badge>
+                      )}
+                    </div>
+                    {task.description && (
+                      <p className="text-sm text-muted-foreground mt-1 line-clamp-2">
+                        {task.description}
+                      </p>
+                    )}
+                    {task.pr_url && (
+                      <a
+                        href={task.pr_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-1 inline-flex items-center gap-1 text-xs text-primary hover:underline"
+                      >
+                        {awaiting
+                          ? "Change-request posted on the PR"
+                          : "Findings will post as a change-request on the PR"}
+                        <ExternalLink className="h-3 w-3" />
+                      </a>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 ml-4 flex-shrink-0">
+                    <Link href={`/tasks/${task.id}`} title="Review details">
                       <Button variant="ghost" size="sm">
-                        <ExternalLink className="h-4 w-4" />
+                        <FileText className="h-4 w-4" />
                       </Button>
-                    </a>
-                  )}
-                  <Link href={`/tasks/${task.id}`} title="Review details">
-                    <Button variant="ghost" size="sm">
-                      <FileText className="h-4 w-4" />
-                    </Button>
-                  </Link>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="text-destructive hover:text-destructive"
-                    onClick={() => open(task, "dismiss")}
-                  >
-                    <XCircle className="h-4 w-4 mr-1" />
-                    Dismiss
-                  </Button>
-                  <Button
-                    size="sm"
-                    className="bg-blue-600 hover:bg-blue-700"
-                    onClick={() => open(task, "supersede")}
-                  >
-                    <Rocket className="h-4 w-4 mr-1" />
-                    Supersede
-                  </Button>
+                    </Link>
+                    {awaiting && (
+                      <>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="text-destructive hover:text-destructive"
+                          onClick={() => open(task, "dismiss")}
+                        >
+                          <XCircle className="h-4 w-4 mr-1" />
+                          Dismiss
+                        </Button>
+                        <Button
+                          size="sm"
+                          className="bg-blue-600 hover:bg-blue-700"
+                          onClick={() => open(task, "supersede")}
+                        >
+                          <Rocket className="h-4 w-4 mr-1" />
+                          Supersede
+                        </Button>
+                      </>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </CardContent>
       </Card>

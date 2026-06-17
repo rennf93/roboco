@@ -741,6 +741,37 @@ class TaskService(BaseService):
             if "dismissed=1" not in (t.quick_context or "").split()
         ]
 
+    async def list_external_pr_reviews(self) -> list[TaskTable]:
+        """Live external-PR reviews for the panel: in-flight PLUS awaiting-decision.
+
+        Every ``source='external_pr'`` task that is not finished-and-decided:
+        active reviews (the reviewer is still working — pending / claimed /
+        in_progress / verifying / blocked / paused) AND completed reviews the CEO
+        has neither superseded (``confirmed_by_human=True``) nor dismissed
+        (``dismissed=1`` in quick_context). Cancelled tasks are excluded.
+
+        Active reviews are surfaced on purpose: the reviewer posts its
+        change-request to the PR itself, so the panel must show that a review is
+        underway and link to that PR rather than going dark until the review
+        finishes. Each task carries its ``status`` so the panel can tell
+        "reviewing" apart from "awaiting your decision".
+        """
+        result = await self.session.execute(
+            select(TaskTable).where(
+                TaskTable.source == "external_pr",
+                TaskTable.status != TaskStatus.CANCELLED,
+                or_(
+                    TaskTable.status != TaskStatus.COMPLETED,
+                    TaskTable.confirmed_by_human.is_(False),
+                ),
+            )
+        )
+        return [
+            t
+            for t in result.scalars().all()
+            if "dismissed=1" not in (t.quick_context or "").split()
+        ]
+
     async def dismiss_external_pr_review(self, task_id: UUID) -> TaskTable | None:
         """CEO declines to act on a reviewed external PR — drop it from the queue.
 

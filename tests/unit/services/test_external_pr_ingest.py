@@ -77,6 +77,17 @@ async def test_list_awaiting_decision_excludes_dismissed() -> None:
 
 
 @pytest.mark.asyncio
+async def test_list_external_pr_reviews_excludes_dismissed() -> None:
+    # The panel queue surfaces in-flight reviews too (the status filter lives in
+    # SQL); here we pin the post-query behavior: dismissed reviews drop out.
+    reviewing = MagicMock(quick_context="external_pr_head=abc")
+    dismissed = MagicMock(quick_context="external_pr_head=def dismissed=1")
+    svc = _service([reviewing, dismissed])
+    out = await svc.list_external_pr_reviews()
+    assert out == [reviewing]
+
+
+@pytest.mark.asyncio
 async def test_dismiss_marks_and_is_idempotent() -> None:
     task = MagicMock(source="external_pr", quick_context="external_pr_head=abc")
     session = MagicMock()

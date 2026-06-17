@@ -647,10 +647,13 @@ async def get_external_pr_reviews(
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
 ) -> list[TaskResponse]:
-    """Inbound external PRs that were reviewed and await the CEO's decision.
+    """Inbound external PRs the org is reviewing or has reviewed.
 
-    The PR-review decision queue: completed external-PR review tasks the CEO has
-    neither superseded nor dismissed. Org-wide; visible to PMs and above.
+    The PR-review queue: external-PR review tasks still in flight (the reviewer
+    is working) OR completed and awaiting the CEO's decision (not yet superseded
+    or dismissed). Active reviews surface so the panel shows a review underway
+    and links to the PR where the change-request is posted, instead of going
+    dark until it finishes. Org-wide; visible to PMs and above.
     """
     can_view_all = permissions.can_perform_task_action(agent, TaskAction.VIEW_ALL)
     is_pm = agent.role in (AgentRole.CELL_PM, AgentRole.MAIN_PM)
@@ -661,7 +664,7 @@ async def get_external_pr_reviews(
             detail="Only PMs and management can view the PR-review queue",
         )
     service = get_task_service(db)
-    tasks = await service.list_external_pr_reviews_awaiting_decision()
+    tasks = await service.list_external_pr_reviews()
     return task_list_to_response(tasks)
 
 
