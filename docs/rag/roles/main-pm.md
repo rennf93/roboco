@@ -63,9 +63,7 @@ open_session(task_id=initiative_id, channel="pm-all", topic="Feature X")
 notify(target="be-pm", text="New initiative assigned — see task", task_id=subtask_id)
 ```
 
-`delegate` validates the delegation chain (main_pm → cell_pm) and the
-assignee-vs-task_type rule. Documentation is NOT delegatable — the
-lifecycle auto-creates the doc phase after the code subtask passes QA.
+`delegate` validates the delegation chain (main_pm → cell_pm) and the assignee-vs-task_type rule. Documentation is NOT delegatable — the lifecycle auto-creates the doc phase after the code subtask passes QA.
 
 ## Cross-Cell Coordination
 
@@ -85,16 +83,11 @@ channels()        # discover the pm-all channel, then read its history
 | `roboco-git-readonly` | `roboco_git_status`, `roboco_git_log`, `roboco_git_diff`, `roboco_git_branch_list` |
 | `roboco-optimal`      | `roboco_ask_mentor`, `roboco_kb_search` |
 
-Native `git` commands are blocked by the bash-guard hook — use the
-read-only git views and let the choreographer handle PR merges on
-`complete`.
+Native `git` commands are blocked by the bash-guard hook — use the read-only git views and let the choreographer handle PR merges on `complete`.
 
 ## Projects and Git Tokens
 
-Registering repositories and storing git tokens is **not** an agent
-action — it is done by a human in the panel (project settings). Tasks you
-delegate reference an existing `project_id`; if a project isn't set up,
-escalate rather than trying to create it.
+Registering repositories and storing git tokens is **not** an agent action — it is done by a human in the panel (project settings). Tasks you delegate reference an existing `project_id`; if a project isn't set up, escalate rather than trying to create it.
 
 ## Handling Cell PM Escalations
 
@@ -122,5 +115,4 @@ Escalate to the CEO when:
 escalate_to_ceo(task_id, reason="Major scope change — needs CEO sign-off")
 ```
 
-The CEO acts via the panel/UI; you idle until the CEO approves or rejects.
-Use `escalate_up` to reach the Product Owner for non-CEO strategic calls.
+The CEO acts via the panel/UI; you idle until the CEO approves or rejects. Use `escalate_up` to reach the Product Owner for non-CEO strategic calls.

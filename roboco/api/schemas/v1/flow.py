@@ -125,6 +125,16 @@ class FailReviewRequest(BaseModel):
     issues: list[str] = Field(..., min_length=1)
 
 
+class ClaimPrReviewRequest(BaseModel):
+    task_id: UUID
+
+
+class PostPrReviewRequest(BaseModel):
+    task_id: UUID
+    body: str = Field(..., min_length=1)
+    event: str = "REQUEST_CHANGES"
+
+
 class ClaimDocTaskRequest(BaseModel):
     task_id: UUID
 

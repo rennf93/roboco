@@ -252,6 +252,13 @@ _STATUS_TRANSITIONS: tuple[StatusTransition, ...] = (
     # Dev verify + submit
     StatusTransition(Status.IN_PROGRESS, Status.VERIFYING, "submit_verification", None),
     StatusTransition(Status.VERIFYING, Status.AWAITING_QA, "submit_qa", None),
+    # PR reviewer posts its change-request and the review task is done
+    StatusTransition(
+        Status.IN_PROGRESS,
+        Status.COMPLETED,
+        "pr_review_done",
+        frozenset({Role.PR_REVIEWER}),
+    ),
     # QA pass / fail
     StatusTransition(
         Status.AWAITING_QA,
@@ -363,7 +370,9 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
     # checks consistency between them.
     "claim": ActionSpec(
         name="claim",
-        allowed_roles=frozenset(_DEV_ROLES | _QA_ROLES | _DOC_ROLES | _PM_ROLES),
+        allowed_roles=frozenset(
+            _DEV_ROLES | _QA_ROLES | _DOC_ROLES | _PM_ROLES | {Role.PR_REVIEWER}
+        ),
         source_statuses=frozenset(
             {
                 Status.PENDING,
@@ -380,7 +389,9 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
     ),
     "start": ActionSpec(
         name="start",
-        allowed_roles=frozenset(_DEV_ROLES | _QA_ROLES | _DOC_ROLES | _PM_ROLES),
+        allowed_roles=frozenset(
+            _DEV_ROLES | _QA_ROLES | _DOC_ROLES | _PM_ROLES | {Role.PR_REVIEWER}
+        ),
         source_statuses=frozenset({Status.CLAIMED}),
         target_status=Status.IN_PROGRESS,
         allowed_task_types=None,
@@ -477,6 +488,16 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
         preconditions=(),
         self_review_block=True,
         needs_team_match=True,
+    ),
+    "pr_review_done": ActionSpec(
+        name="pr_review_done",
+        allowed_roles=frozenset({Role.PR_REVIEWER}),
+        source_statuses=frozenset({Status.IN_PROGRESS}),
+        target_status=Status.COMPLETED,
+        allowed_task_types=None,
+        preconditions=(),
+        self_review_block=False,
+        needs_team_match=False,
     ),
     "docs_complete": ActionSpec(
         name="docs_complete",
@@ -585,6 +606,7 @@ CLAIM_RULES: dict[Role, frozenset[Status]] = {
     Role.PRODUCT_OWNER: frozenset(),
     Role.HEAD_MARKETING: frozenset(),
     Role.AUDITOR: frozenset(),
+    Role.PR_REVIEWER: frozenset({Status.PENDING}),
     Role.CEO: frozenset(),
 }
 
@@ -614,6 +636,7 @@ ROLE_TEAM_RULES: dict[str, str | None] = {
     "product-owner": None,
     "head-marketing": None,
     "auditor": None,
+    "pr-reviewer-1": None,
     "ceo": None,
 }
 
@@ -773,6 +796,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
                 Role.DOCUMENTER,
                 Role.CELL_PM,
                 Role.MAIN_PM,
+                Role.PR_REVIEWER,
             }
         ),
         description="Return your most-actionable task or signal idle.",
@@ -912,6 +936,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
                 Role.AUDITOR,
                 Role.PROMPTER,
                 Role.SECRETARY,
+                Role.PR_REVIEWER,
             }
         ),
         description=(
@@ -949,6 +974,33 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         extra_preconditions=(),
         side_effects=(),
         next_hint=_next_hint_dev_revise,
+    ),
+    # PR reviewer verbs (inbound external/fork PRs — distinct from QA's surface)
+    "claim_pr_review": IntentSpec(
+        name="claim_pr_review",
+        allowed_roles=frozenset({Role.PR_REVIEWER}),
+        description=(
+            "Claim an inbound external-PR review task and start work."
+            " pending -> claimed -> in_progress."
+        ),
+        composes=("claim", "start"),
+        extra_preconditions=(),
+        side_effects=(),
+        next_hint=lambda _t: (
+            "review the contributor's diff, then post_pr_review(task_id, ...)"
+        ),
+    ),
+    "post_pr_review": IntentSpec(
+        name="post_pr_review",
+        allowed_roles=frozenset({Role.PR_REVIEWER}),
+        description=(
+            "Post one complete change-request to the external PR and finish the"
+            " review task. in_progress -> completed."
+        ),
+        composes=("pr_review_done",),
+        extra_preconditions=(),
+        side_effects=(),
+        next_hint=_next_hint_idle,
     ),
     # Phase 3: documenter verbs
     "claim_doc_task": IntentSpec(

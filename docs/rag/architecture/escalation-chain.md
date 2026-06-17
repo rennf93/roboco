@@ -49,10 +49,7 @@ escalate_up(
 )
 ```
 
-Auto-routes to your escalation target. You CANNOT choose a different
-target. `escalate_up` is a PM verb (Cell PM / Main PM); cell members
-(devs, QA, documenters) signal blockers with `i_am_blocked(task_id,
-reason)`, which their Cell PM resolves.
+Auto-routes to your escalation target. You CANNOT choose a different target. `escalate_up` is a PM verb (Cell PM / Main PM); cell members (devs, QA, documenters) signal blockers with `i_am_blocked(task_id, reason)`, which their Cell PM resolves.
 
 ## CEO Escalation (Main PM / Board Only)
 
@@ -66,8 +63,7 @@ escalate_to_ceo(
 Requirements:
 - Task in `awaiting_pm_review`
 - PR exists
-- Only Main PM, Product Owner, or Head of Marketing can call this
-  (Cell PMs cannot — they `escalate_up` to Main PM first)
+- Only Main PM, Product Owner, or Head of Marketing can call this (Cell PMs cannot — they `escalate_up` to Main PM first)
 
 ## Cannot Skip Levels
 

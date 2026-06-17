@@ -9,9 +9,7 @@
 
 ## The Tool
 
-Journaling is a single content tool: `note(text, scope, ...)` on the
-`roboco-do` MCP server. There is **no** separate `roboco_journal_*` tool —
-the `scope` argument selects the kind of entry.
+Journaling is a single content tool: `note(text, scope, ...)` on the `roboco-do` MCP server. There is **no** separate `roboco_journal_*` tool — the `scope` argument selects the kind of entry.
 
 | `scope` | Use For |
 |---------|---------|
@@ -55,9 +53,7 @@ note(
 )
 ```
 
-`options`, `consequences`, and `next_steps` accept either a list or a
-single value. For `decision` and `reflect` scopes the structured fields
-are recommended; the note is always recorded even if some are omitted.
+`options`, `consequences`, and `next_steps` accept either a list or a single value. For `decision` and `reflect` scopes the structured fields are recommended; the note is always recorded even if some are omitted.
 
 ## Required Reflections
 
@@ -77,8 +73,7 @@ note(
 
 ## Searching Journals
 
-Journal entries are indexed into the knowledge base. Search them through
-the `roboco-optimal` RAG tools (there is no dedicated journal-search verb):
+Journal entries are indexed into the knowledge base. Search them through the `roboco-optimal` RAG tools (there is no dedicated journal-search verb):
 
 ```python
 # Semantic search across the KB, filtered to journal entries

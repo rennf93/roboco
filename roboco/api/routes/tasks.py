@@ -641,6 +641,86 @@ async def get_awaiting_ceo_approval_tasks(
     return task_list_to_response(tasks)
 
 
+@router.get("/external-pr-reviews", response_model=list[TaskResponse])
+async def get_external_pr_reviews(
+    db: DbSession,
+    agent: CurrentAgentContext,
+    permissions: PermissionServiceDep,
+) -> list[TaskResponse]:
+    """Inbound external PRs that were reviewed and await the CEO's decision.
+
+    The PR-review decision queue: completed external-PR review tasks the CEO has
+    neither superseded nor dismissed. Org-wide; visible to PMs and above.
+    """
+    can_view_all = permissions.can_perform_task_action(agent, TaskAction.VIEW_ALL)
+    is_pm = agent.role in (AgentRole.CELL_PM, AgentRole.MAIN_PM)
+    is_ceo = agent.role == AgentRole.CEO
+    if not (can_view_all or is_pm or is_ceo):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only PMs and management can view the PR-review queue",
+        )
+    service = get_task_service(db)
+    tasks = await service.list_external_pr_reviews_awaiting_decision()
+    return task_list_to_response(tasks)
+
+
+@router.post("/{task_id}/supersede-external-pr")
+async def supersede_external_pr(
+    task_id: UUID,
+    agent: CurrentAgentContext,
+) -> dict[str, Any]:
+    """CEO-authorized takeover of a reviewed external PR.
+
+    Confirms the review task and hands the contribution to the org: a
+    roboco-owned branch is cut from the contributor's fork head and a supersede
+    task is created for Main PM to delegate to a cell. This is the human
+    confirmation that authorizes fetching + running the contributor's code, so
+    it is CEO-only.
+    """
+    if agent.role != AgentRole.CEO:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="only the CEO may supersede an external PR",
+        )
+    from roboco.api.deps import get_orchestrator
+
+    result = await get_orchestrator().supersede_external_pr(task_id)
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(result.get("error", "supersede failed")),
+        )
+    return result
+
+
+@router.post("/{task_id}/dismiss-external-pr")
+async def dismiss_external_pr(
+    task_id: UUID,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> dict[str, Any]:
+    """CEO declines to act on a reviewed external PR — drop it from the queue.
+
+    The review stays on the GitHub PR; this only records that the CEO chose not
+    to supersede, so the PR-review decision queue stops surfacing it. CEO-only.
+    """
+    if agent.role != AgentRole.CEO:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="only the CEO may dismiss an external-PR review",
+        )
+    service = get_task_service(db)
+    task = await service.dismiss_external_pr_review(task_id)
+    if task is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="external-PR review task not found",
+        )
+    await db.commit()
+    return {"ok": True, "task_id": str(task_id)}
+
+
 @router.get("/lifecycle-transitions", response_model=dict[str, list[str]])
 async def get_lifecycle_transitions() -> dict[str, list[str]]:
     """Return the task lifecycle state graph as a JSON-serialisable dict.

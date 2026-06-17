@@ -161,12 +161,19 @@ async def test_close_pull_request_patches_state_closed(
         status_code = 200
         text = ""
 
+        def json(self) -> dict[str, str]:
+            return {"state": "open"}
+
     class _Client:
         async def __aenter__(self) -> _Client:
             return self
 
         async def __aexit__(self, *_a: Any) -> None:
             return None
+
+        async def get(self, url: str, **_kw: Any) -> _Resp:
+            calls.append(("GET", url))
+            return _Resp()
 
         async def post(self, url: str, **_kw: Any) -> _Resp:
             calls.append(("POST", url))
@@ -185,3 +192,74 @@ async def test_close_pull_request_patches_state_closed(
     ) in calls
     assert ("PATCH", "https://api.github.com/repos/owner/repo/pulls/159") in calls
     delete_branch.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_close_pull_request_idempotent_when_already_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An already-closed PR is a no-op: no duplicate comment, no PATCH.
+
+    Guards the close-on-land retry path — a transient failure between the
+    comment POST and the close PATCH must not re-post the explanatory comment
+    on the next sweep.
+    """
+    svc = _git_service()
+    task = type("T", (), {"id": "t", "assigned_to": None, "created_by": None})()
+    session = AsyncMock()
+    session.execute = AsyncMock(
+        return_value=type("Res", (), {"scalar_one_or_none": lambda _self: task})()
+    )
+    monkeypatch.setattr(svc, "session", session, raising=False)
+    monkeypatch.setattr(
+        svc,
+        "_project_for_task",
+        AsyncMock(return_value=type("P", (), {"slug": "proj"})()),
+    )
+    monkeypatch.setattr(
+        svc, "_resolve_workspace_agent_id", MagicMock(return_value=None)
+    )
+    monkeypatch.setattr(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
+    monkeypatch.setattr(
+        svc, "_get_project_token_or_raise", AsyncMock(return_value="tok")
+    )
+    monkeypatch.setattr(
+        svc, "_parse_github_remote", MagicMock(return_value=("owner", "repo"))
+    )
+    monkeypatch.setattr(svc, "_delete_pr_branch_best_effort", AsyncMock())
+
+    calls: list[tuple[str, str]] = []
+
+    class _Resp:
+        is_success = True
+        status_code = 200
+        text = ""
+
+        def json(self) -> dict[str, str]:
+            return {"state": "closed"}
+
+    class _Client:
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *_a: Any) -> None:
+            return None
+
+        async def get(self, url: str, **_kw: Any) -> _Resp:
+            calls.append(("GET", url))
+            return _Resp()
+
+        async def post(self, url: str, **_kw: Any) -> _Resp:
+            calls.append(("POST", url))
+            return _Resp()
+
+        async def patch(self, url: str, **_kw: Any) -> _Resp:
+            calls.append(("PATCH", url))
+            return _Resp()
+
+    with patch("roboco.services.git.httpx.AsyncClient", return_value=_Client()):
+        await svc.close_pull_request(
+            159, comment="superseded by #158", delete_branch=False
+        )
+
+    assert [c[0] for c in calls] == ["GET"]  # no POST comment, no PATCH

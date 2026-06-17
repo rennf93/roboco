@@ -63,6 +63,10 @@ ROLE_READ_TIERS: dict[Role, ReadTier] = {
     Role.PROMPTER: ReadTier.OWN,
     # Secretary advises the CEO — reads everything to give an informed picture.
     Role.SECRETARY: ReadTier.ALL,
+    # PR reviewer is global (reviews any cell's PRs). Cross-cell tier so it can
+    # read developer / QA / cell-PM journals to understand the internal intent
+    # behind a change — like QA does — without board-private access.
+    Role.PR_REVIEWER: ReadTier.ALL_CELLS,
     Role.CEO: ReadTier.ALL,
 }
 

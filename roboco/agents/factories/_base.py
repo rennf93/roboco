@@ -67,6 +67,8 @@ _ROLE_LAYER_MAP: dict[str, str] = {
     "prompter": "prompter.md",
     # Secretary — CEO's chief-of-staff live-session role prompt.
     "secretary": "secretary.md",
+    # PR reviewer — reviews inbound external/fork PRs, posts one change-request.
+    "pr_reviewer": "pr_reviewer.md",
 }
 
 _TEAM_LAYER_MAP: dict[str, str] = {
@@ -137,6 +139,7 @@ _ROLE_BUILTIN_TOOLS: dict[str, tuple[str, ...]] = {
     "product_owner": _BUILTIN_TOOLS_COMMON,
     "head_marketing": _BUILTIN_TOOLS_COMMON,
     "auditor": _BUILTIN_TOOLS_COMMON,
+    "pr_reviewer": _BUILTIN_TOOLS_COMMON,
 }
 
 

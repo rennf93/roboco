@@ -9,6 +9,15 @@ Claim awaiting_documentation. Returns evidence inline.
 **Composes:** (no atomic actions)
 
 
+## claim_pr_review
+
+Claim an inbound external-PR review task and start work. pending -> claimed -> in_progress.
+
+**Allowed roles:** pr_reviewer
+
+**Composes:** claim → start
+
+
 ## claim_review
 
 Claim a task in awaiting_qa for review. Returns evidence inline.
@@ -69,7 +78,7 @@ Fail QA with concrete issues. Transitions to needs_revision.
 
 Return your most-actionable task or signal idle.
 
-**Allowed roles:** cell_pm, developer, documenter, main_pm, qa
+**Allowed roles:** cell_pm, developer, documenter, main_pm, pr_reviewer, qa
 
 **Composes:** (no atomic actions)
 
@@ -98,7 +107,7 @@ Submit work for QA. Auto-runs in_progress->verifying then verifying->awaiting_qa
 
 Signal you have no active work. PMs auto-pause owned in_progress tasks.
 
-**Allowed roles:** auditor, cell_pm, developer, documenter, head_marketing, main_pm, product_owner, prompter, qa, secretary
+**Allowed roles:** auditor, cell_pm, developer, documenter, head_marketing, main_pm, pr_reviewer, product_owner, prompter, qa, secretary
 
 **Composes:** (no atomic actions)
 
@@ -154,6 +163,15 @@ Pass QA. Transitions awaiting_qa -> awaiting_documentation.
 **Allowed roles:** qa
 
 **Composes:** qa_pass
+
+
+## post_pr_review
+
+Post one complete change-request to the external PR and finish the review task. in_progress -> completed.
+
+**Allowed roles:** pr_reviewer
+
+**Composes:** pr_review_done
 
 
 ## reassign

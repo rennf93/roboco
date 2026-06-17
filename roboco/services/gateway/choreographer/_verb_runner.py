@@ -152,6 +152,11 @@ class VerbRunner:
             "create_subtask requires DelegateInputs; verb body owns dispatch"
         )
 
+    async def _do_pr_review_done(self, task: Any, agent: Any, ctx: spec.Context) -> Any:
+        return await self.task_service.complete_review(
+            agent.id, task.id, ctx.notes or ""
+        )
+
     @classmethod
     def _atomic_handlers(cls) -> dict[str, _AtomicHandler]:
         return {
@@ -170,6 +175,7 @@ class VerbRunner:
             "unblock": cls._do_unblock,
             "resume": cls._do_resume,
             "create_subtask": cls._do_create_subtask,
+            "pr_review_done": cls._do_pr_review_done,
         }
 
     # -- Side-effect handlers ---------------------------------------------

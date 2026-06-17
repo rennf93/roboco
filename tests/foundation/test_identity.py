@@ -20,6 +20,7 @@ def test_role_enum_has_every_role_inc_system() -> None:
         "product_owner",
         "head_marketing",
         "auditor",
+        "pr_reviewer",
         "prompter",
         "secretary",
         "ceo",
@@ -84,6 +85,7 @@ def test_agents_catalog_has_all_seed_slugs() -> None:
         "auditor",
         "intake-1",
         "secretary-1",
+        "pr-reviewer-1",
     }
     actual = set(identity.AGENTS.keys())
     assert actual == expected_slugs, f"agent catalog drift: {actual ^ expected_slugs}"

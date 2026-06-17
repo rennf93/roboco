@@ -25,9 +25,7 @@ claim_doc_task(task_id)    # Documenter
 # - assigned_to: your agent ID
 ```
 
-The claim verb both claims and starts the task — there is no separate
-`start` call. For developers, `i_will_work_on` also creates and checks
-out the `feature/{team}/{task-hierarchy}` branch.
+The claim verb both claims and starts the task — there is no separate `start` call. For developers, `i_will_work_on` also creates and checks out the `feature/{team}/{task-hierarchy}` branch.
 
 ## Before Claiming
 
@@ -62,9 +60,7 @@ unclaim(task_id)
 # - You can now claim new work
 ```
 
-`unclaim` takes only the `task_id` — it returns the task to the pool for
-re-pickup. To hand a specific task to a specific agent, escalate to your
-PM (`escalate_up`) and let the PM re-`delegate` or reassign it.
+`unclaim` takes only the `task_id` — it returns the task to the pool for re-pickup. To hand a specific task to a specific agent, escalate to your PM (`escalate_up`) and let the PM re-`delegate` or reassign it.
 
 **When to use unclaim:**
 - Task is out of your team's scope

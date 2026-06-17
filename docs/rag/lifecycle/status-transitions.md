@@ -26,6 +26,7 @@
 | in_progress | awaiting_pm_review | submit_pm_review | any |
 | in_progress | blocked | block | any |
 | in_progress | cancelled | cancel | cell_pm, ceo, main_pm |
+| in_progress | completed | pr_review_done | pr_reviewer |
 | in_progress | paused | pause | any |
 | in_progress | verifying | submit_verification | any |
 | needs_revision | cancelled | cancel | cell_pm, ceo, main_pm |

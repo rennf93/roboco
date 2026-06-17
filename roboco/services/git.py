@@ -921,6 +921,44 @@ class GitService(BaseService):
 
         return branch_name, base_branch
 
+    async def create_branch_from_pr_head(
+        self,
+        workspace: Path,
+        project_slug: str,
+        pr_number: int,
+        branch_name: str,
+    ) -> str:
+        """Create + push a roboco-owned branch off a fork PR's head commits.
+
+        Fork PR heads are NOT branches on origin; GitHub exposes them at the
+        special ref ``refs/pull/{n}/head``. We fetch that ref into a
+        roboco-owned local branch and push it to origin, so a dev cell can
+        finish the contribution on a branch WE own and merge — we NEVER push to
+        the contributor's fork. This is the first point untrusted contributor
+        code enters a roboco branch, so the caller MUST only invoke it for a
+        human-confirmed (``confirmed_by_human``) supersede.
+        """
+        project_token = await self._token_for_project(project_slug)
+        pull_ref = f"refs/pull/{pr_number}/head"
+        # Force the refspec (``+``) so a retry after a prior push (e.g. the
+        # commit after the push failed and rolled the umbrella back) updates the
+        # leftover local branch in the persistent system workspace instead of
+        # hard-erroring on the existing ref — the branch cut is then idempotent.
+        await self._run_git(
+            workspace,
+            ["fetch", "origin", f"+{pull_ref}:{branch_name}"],
+            token=project_token,
+            timeout=_network_git_timeout(),
+        )
+        await self._run_git(workspace, ["checkout", branch_name])
+        await self._run_git(
+            workspace,
+            ["push", "-u", "origin", branch_name],
+            token=project_token,
+            timeout=_network_git_timeout(),
+        )
+        return branch_name
+
     @staticmethod
     def _enum_str(value: Any) -> str | None:
         """Return .value when present; otherwise str(), preserving None."""
@@ -1527,6 +1565,74 @@ class GitService(BaseService):
             return cast("dict[str, Any]", existing.json()[0])
         return None
 
+    async def list_open_prs(self, project_slug: str) -> list[dict[str, Any]]:
+        """List a project's open PRs, normalized with fork/author classification.
+
+        The inbound counterpart to the org's outbound PR calls: lists ALL open
+        PRs (no ``head=`` filter), so it sees external/fork contributions the org
+        did not create. Each record carries ``number``, ``url``, ``title``,
+        ``head_ref``, ``head_sha`` (the head commit — the change signal for
+        re-review), ``is_fork`` (head repo differs from base repo),
+        ``user_login`` and ``author_association`` so the caller can classify
+        trust. Returns ``[]`` on a missing token, unparseable remote, or any
+        GitHub error — it never raises into the poll loop.
+        """
+        project = await get_project_service(self.session).get_by_slug(project_slug)
+        if project is None or not project.git_url:
+            return []
+        try:
+            owner, repo = self._parse_git_url(project.git_url)
+        except GitError:
+            return []
+        git_token = await self._token_for_project(project_slug)
+        if not git_token:
+            return []
+        api_base = settings.github_api_base_url.rstrip("/")
+        try:
+            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
+                resp = await client.get(
+                    f"{api_base}/repos/{owner}/{repo}/pulls",
+                    headers={
+                        "Authorization": f"Bearer {git_token}",
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                    params={"state": "open", "per_page": 100},
+                )
+        except httpx.HTTPError as e:
+            self.log.warning(
+                "list_open_prs request failed",
+                project=project_slug,
+                error=str(e),
+            )
+            return []
+        if not resp.is_success:
+            self.log.warning(
+                "list_open_prs non-2xx",
+                project=project_slug,
+                status=resp.status_code,
+            )
+            return []
+        base_full = f"{owner}/{repo}"
+        prs: list[dict[str, Any]] = []
+        for pr in resp.json():
+            head = pr.get("head") or {}
+            head_repo = head.get("repo") or {}
+            head_full = head_repo.get("full_name")
+            prs.append(
+                {
+                    "number": pr.get("number"),
+                    "url": pr.get("html_url") or "",
+                    "title": pr.get("title") or "",
+                    "head_ref": head.get("ref"),
+                    "head_sha": head.get("sha"),
+                    "is_fork": bool(head_full and head_full != base_full),
+                    "user_login": (pr.get("user") or {}).get("login"),
+                    "author_association": pr.get("author_association"),
+                }
+            )
+        return prs
+
     async def _post_pr(
         self,
         owner: str,
@@ -1751,6 +1857,105 @@ class GitService(BaseService):
                 f"{resp.text[:200]}",
                 {"owner": owner, "repo": repo, "pr": pr_number},
             )
+
+    async def post_pr_review(
+        self,
+        project_slug: str,
+        pr_number: int,
+        body: str,
+        *,
+        event: str = "REQUEST_CHANGES",
+    ) -> dict[str, Any]:
+        """Post ONE review to a PR — ``POST /pulls/{n}/reviews``.
+
+        ``event`` is ``REQUEST_CHANGES`` (default), ``APPROVE``, or ``COMMENT``.
+        Authenticates as the project's PAT owner (the bot account); the agent /
+        role that authored the review is named in ``body``, not the GitHub
+        identity. Raises ``GitError`` on any GitHub failure so the calling
+        side-effect can surface it (and stays idempotent — it runs once, after
+        the DB commit).
+        """
+        details = {"project": project_slug, "pr": pr_number}
+        project = await get_project_service(self.session).get_by_slug(project_slug)
+        if project is None or not project.git_url:
+            raise GitError(f"unknown project for PR review: {project_slug!r}", details)
+        owner, repo = self._parse_git_url(project.git_url)
+        git_token = await self._token_for_project(project_slug)
+        if not git_token:
+            raise GitError(f"no git token for project {project_slug!r}", details)
+        api_base = settings.github_api_base_url.rstrip("/")
+        try:
+            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
+                resp = await client.post(
+                    f"{api_base}/repos/{owner}/{repo}/pulls/{pr_number}/reviews",
+                    headers={
+                        "Authorization": f"Bearer {git_token}",
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                    json={"body": body, "event": event},
+                )
+        except httpx.HTTPError as e:
+            raise GitError(
+                f"GitHub API error while posting review to PR #{pr_number}: {e}",
+                details,
+            ) from e
+        if resp.status_code == _HTTP_NOT_FOUND:
+            raise GitError(f"PR not found: #{pr_number} on {owner}/{repo}", details)
+        if not resp.is_success:
+            raise GitError(
+                f"GitHub API refused PR review ({resp.status_code}): {resp.text[:200]}",
+                details,
+            )
+        return cast("dict[str, Any]", resp.json())
+
+    async def get_pr_diff(self, project_slug: str, pr_number: int) -> str:
+        """Fetch a PR's unified diff READ-ONLY via the GitHub API.
+
+        ``GET /pulls/{n}`` with the diff media type returns the unified diff
+        text without checking out or running any of the contributor's code —
+        the review is read-only; untrusted fork code never executes here.
+        Returns ``""`` on a missing token / unparseable remote / GitHub error
+        so the reviewer's claim still returns context instead of crashing.
+        """
+        project = await get_project_service(self.session).get_by_slug(project_slug)
+        if project is None or not project.git_url:
+            return ""
+        try:
+            owner, repo = self._parse_git_url(project.git_url)
+        except GitError:
+            return ""
+        git_token = await self._token_for_project(project_slug)
+        if not git_token:
+            return ""
+        api_base = settings.github_api_base_url.rstrip("/")
+        try:
+            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
+                resp = await client.get(
+                    f"{api_base}/repos/{owner}/{repo}/pulls/{pr_number}",
+                    headers={
+                        "Authorization": f"Bearer {git_token}",
+                        "Accept": "application/vnd.github.v3.diff",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                )
+        except httpx.HTTPError as e:
+            self.log.warning(
+                "get_pr_diff request failed",
+                project=project_slug,
+                pr=pr_number,
+                error=str(e),
+            )
+            return ""
+        if not resp.is_success:
+            self.log.warning(
+                "get_pr_diff non-2xx",
+                project=project_slug,
+                pr=pr_number,
+                status=resp.status_code,
+            )
+            return ""
+        return resp.text
 
     async def update_pr_for_task(
         self,
@@ -2865,20 +3070,29 @@ class GitService(BaseService):
         comment: str | None = None,
         delete_branch: bool = True,
         actor_agent_id: UUID | None = None,
+        project_id: UUID | None = None,
     ) -> None:
         """Close PR ``pr_number`` on GitHub, optionally with an explanatory comment.
 
         Used to retire a PR whose work is already in the base (superseded) so a
         wedged task can complete without a merge — the "close the dead PR"
         action agents had no verb for. Best-effort branch cleanup on close.
+
+        ``pr_number`` alone is ambiguous across projects (GitHub numbers PRs
+        per-repo), so when the caller knows which project the PR belongs to it
+        MUST pass ``project_id`` — the task lookup is then scoped to it so a
+        same-numbered PR in another project's repo is never resolved by
+        accident. Idempotent: a PR that is already closed is a no-op (no
+        duplicate comment), so a retried close-on-land never re-comments.
         """
         from sqlalchemy import select
 
         from roboco.db.tables import TaskTable as _TaskTable
 
-        result = await self.session.execute(
-            select(_TaskTable).where(_TaskTable.pr_number == pr_number).limit(1)
-        )
+        stmt = select(_TaskTable).where(_TaskTable.pr_number == pr_number)
+        if project_id is not None:
+            stmt = stmt.where(_TaskTable.project_id == project_id)
+        result = await self.session.execute(stmt.limit(1))
         task = result.scalar_one_or_none()
         if task is None:
             raise NotFoundError("PR", str(pr_number))
@@ -2897,23 +3111,32 @@ class GitService(BaseService):
             "X-GitHub-Api-Version": "2022-11-28",
         }
         async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
-            if comment:
-                await client.post(
-                    f"https://api.github.com/repos/{owner}/{repo}/issues/"
-                    f"{pr_number}/comments",
-                    headers=headers,
-                    json={"body": comment},
-                )
-            resp = await client.patch(
+            existing = await client.get(
                 f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}",
                 headers=headers,
-                json={"state": "closed"},
             )
-        if not resp.is_success:
-            raise GitError(
-                f"GitHub API refused PR close ({resp.status_code}): {resp.text[:200]}",
-                {"owner": owner, "repo": repo, "pr": pr_number},
+            already_closed = (
+                existing.is_success and existing.json().get("state") == "closed"
             )
+            if not already_closed:
+                if comment:
+                    await client.post(
+                        f"https://api.github.com/repos/{owner}/{repo}/issues/"
+                        f"{pr_number}/comments",
+                        headers=headers,
+                        json={"body": comment},
+                    )
+                resp = await client.patch(
+                    f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}",
+                    headers=headers,
+                    json={"state": "closed"},
+                )
+                if not resp.is_success:
+                    raise GitError(
+                        f"GitHub API refused PR close ({resp.status_code}): "
+                        f"{resp.text[:200]}",
+                        {"owner": owner, "repo": repo, "pr": pr_number},
+                    )
         if delete_branch:
             await self._delete_pr_branch_best_effort(owner, repo, pr_number, git_token)
 

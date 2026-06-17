@@ -19,18 +19,13 @@ Links:
 - Journal: {api}/journals/{agent-slug}
 ```
 
-**Required:** the conventional `type` (feat, fix, chore, docs, refactor,
-test, style, perf, ci, build) at the start of the subject. The
-`commit_validator` rejects messages that don't start with one of these
-followed by `(scope)?:`.
+**Required:** the conventional `type` (feat, fix, chore, docs, refactor, test, style, perf, ci, build) at the start of the subject. The `commit_validator` rejects messages that don't start with one of these followed by `(scope)?:`.
 
-**Optional:** `scope` (api, auth, db, ui), `body`, the `files` argument
-to scope the commit.
+**Optional:** `scope` (api, auth, db, ui), `body`, the `files` argument to scope the commit.
 
 ## How to commit
 
-Use the **`commit`** verb on the roboco-do MCP — devs and documenters
-only. There is no `roboco_git_commit` tool.
+Use the **`commit`** verb on the roboco-do MCP — devs and documenters only. There is no `roboco_git_commit` tool.
 
 ```python
 commit(
@@ -50,5 +45,4 @@ The choreographer:
 6. Pushes to the agent's branch on origin
 7. Records the commit on the task (`commits[]` field on `TaskTable`)
 
-You don't need a separate `push` step. There is no `roboco_git_push`
-tool.
+You don't need a separate `push` step. There is no `roboco_git_push` tool.

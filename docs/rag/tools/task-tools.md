@@ -1,11 +1,6 @@
 # Task Management Tools
 
-There is **no** `roboco_task_*` tool surface. Tasks move through the
-lifecycle via **flow verbs** on the `roboco-flow` MCP server. Each verb is
-role-scoped — you only see the ones your role is allowed to call (the
-spawn manifest registers them per role). Every verb returns an
-**Envelope** whose `next` field tells you what to call next; trust it
-rather than guessing state.
+There is **no** `roboco_task_*` tool surface. Tasks move through the lifecycle via **flow verbs** on the `roboco-flow` MCP server. Each verb is role-scoped — you only see the ones your role is allowed to call (the spawn manifest registers them per role). Every verb returns an **Envelope** whose `next` field tells you what to call next; trust it rather than guessing state.
 
 The verbs below are grouped by who calls them.
 
@@ -25,10 +20,7 @@ resume(task_id)                 # recover a paused task after compact/restart
 i_am_idle()                     # no work in your queue right now
 ```
 
-There is no separate claim / start / pause verb — `i_will_work_on`
-composes claim + set-plan + start atomically, and `i_am_done` composes
-verify + submit-qa. Branches are auto-created on `i_will_work_on`; do not
-checkout by hand.
+There is no separate claim / start / pause verb — `i_will_work_on` composes claim + set-plan + start atomically, and `i_am_done` composes verify + submit-qa. Branches are auto-created on `i_will_work_on`; do not checkout by hand.
 
 ## QA flow
 
@@ -41,9 +33,7 @@ fail_review(task_id, issues=[...])
 unclaim(task_id) / resume(task_id) / i_am_idle()
 ```
 
-`notes` (on pass_review) and `issues` (on fail_review) must be substantive — the
-enforcement layer rejects empty or near-empty content. QA cannot review
-its own dev work (self-review guard rejects on `claim_review`).
+`notes` (on pass_review) and `issues` (on fail_review) must be substantive — the enforcement layer rejects empty or near-empty content. QA cannot review its own dev work (self-review guard rejects on `claim_review`).
 
 ## Documenter flow
 
@@ -55,8 +45,7 @@ i_documented(task_id, notes, files)
                                 # awaiting_documentation -> awaiting_pm_review
 ```
 
-Documentation tasks are **not** delegated — the lifecycle auto-creates
-the doc phase after a code task passes QA.
+Documentation tasks are **not** delegated — the lifecycle auto-creates the doc phase after a code task passes QA.
 
 ## Cell PM flow
 
@@ -76,26 +65,13 @@ complete(task_id, notes)        # awaiting_pm_review -> completed (merges leaf P
 escalate_up(task_id, reason)    # escalate to your escalation target
 ```
 
-After `i_will_plan` and each `delegate`, the envelope includes a coverage view
-of the parent — `parent_ac_coverage` (per-criterion `id` / `text` / `claimed` /
-`verified`) and `unclaimed_parent_acs` (criteria no subtask covers yet). A
-parent cannot idle with unclaimed criteria, nor `complete` / `submit_up` /
-`escalate_to_ceo` until every criterion traces to a child that passed QA. These
-gates stay inert until you start declaring `covers_parent_criteria`. See
-`docs/rag/workflows/task-planning.md`.
+After `i_will_plan` and each `delegate`, the envelope includes a coverage view of the parent — `parent_ac_coverage` (per-criterion `id` / `text` / `claimed` / `verified`) and `unclaimed_parent_acs` (criteria no subtask covers yet). A parent cannot idle with unclaimed criteria, nor `complete` / `submit_up` / `escalate_to_ceo` until every criterion traces to a child that passed QA. These gates stay inert until you start declaring `covers_parent_criteria`. See `docs/rag/workflows/task-planning.md`.
 
-**Delegation rules** (enforced): `main_pm -> cell_pm`; `cell_pm -> its
-team's devs`. Cell PMs receive planning-typed parent tasks; devs get
-code/research (UX devs also design). Always create subtasks via
-`delegate` with `parent_task_id` set — there is no standalone task-create
-verb for agents.
+**Delegation rules** (enforced): `main_pm -> cell_pm`; `cell_pm -> its team's devs`. Cell PMs receive planning-typed parent tasks; devs get code/research (UX devs also design). Always create subtasks via `delegate` with `parent_task_id` set — there is no standalone task-create verb for agents.
 
 ## Main PM flow
 
-The Main PM shares most Cell PM verbs (`i_will_plan`, `delegate`, `complete`,
-`unblock`, `triage`, `escalate_up`), **adds** the two below, and — unlike a Cell
-PM — has **no** `submit_up` or `reassign` (there is no PM above it to submit to;
-it completes or escalates the root directly):
+The Main PM shares most Cell PM verbs (`i_will_plan`, `delegate`, `complete`, `unblock`, `triage`, `escalate_up`), **adds** the two below, and — unlike a Cell PM — has **no** `submit_up` or `reassign` (there is no PM above it to submit to; it completes or escalates the root directly):
 
 ```python
 triage_all()                    # list actionable tasks across all teams
@@ -104,8 +80,7 @@ escalate_to_ceo(task_id, reason)
 give_me_work()                  # Main PM may also pull work directly
 ```
 
-`complete` for the Main PM merges the **root** PR. Only the CEO merges to
-`master`; agents stop at `escalate_to_ceo`.
+`complete` for the Main PM merges the **root** PR. Only the CEO merges to `master`; agents stop at `escalate_to_ceo`.
 
 ## Board flow (Product Owner / Head of Marketing)
 
@@ -115,8 +90,7 @@ escalate_to_ceo(task_id, reason)
 i_am_idle()
 ```
 
-The Board **cannot** claim, create, complete, or cancel tasks. Strategic
-decisions are escalated to the CEO.
+The Board **cannot** claim, create, complete, or cancel tasks. Strategic decisions are escalated to the CEO.
 
 ## Auditor flow
 
@@ -125,23 +99,18 @@ triage()                        # read-only list of actionable tasks
 i_am_idle()
 ```
 
-The Auditor is a silent observer: read-only `triage`, no `say`/`dm`/
-`notify`, no claim/complete/cancel.
+The Auditor is a silent observer: read-only `triage`, no `say`/`dm`/ `notify`, no claim/complete/cancel.
 
 ## Cancel
 
-Cancelling a task (any non-terminal status -> `cancelled`) is restricted
-to **PM roles and the CEO**. There is no agent verb to cancel — it is a
-PM/CEO operation through the lifecycle.
+Cancelling a task (any non-terminal status -> `cancelled`) is restricted to **PM roles and the CEO**. There is no agent verb to cancel — it is a PM/CEO operation through the lifecycle.
 
 ## Progress
 
-Record progress against your plan with the `progress` content tool (on
-`roboco-do`), not a task verb:
+Record progress against your plan with the `progress` content tool (on `roboco-do`), not a task verb:
 
 ```python
 progress(task_id, message="API skeleton landed", plan_step="2")
 ```
 
-Your plan's steps are the progress checklist; the percentage is derived
-from completed steps — you do not set it.
+Your plan's steps are the progress checklist; the percentage is derived from completed steps — you do not set it.

@@ -2,12 +2,9 @@
 
 ## Overview
 
-Agents collaborate directly through two content tools on the `roboco-do`
-MCP server: `dm` for agent-to-agent messages and `say` for channel posts.
-Use `channels()` to discover the channels you can post to.
+Agents collaborate directly through two content tools on the `roboco-do` MCP server: `dm` for agent-to-agent messages and `say` for channel posts. Use `channels()` to discover the channels you can post to.
 
-**Key:** A2A is about *existing* tasks, NOT task creation. Pass the
-`task_id` you're collaborating on so the message is linked to it.
+**Key:** A2A is about *existing* tasks, NOT task creation. Pass the `task_id` you're collaborating on so the message is linked to it.
 
 ## Flow
 
@@ -29,9 +26,7 @@ dm(
 )
 ```
 
-Cross-cell `dm` is **denied by policy**. If you need something from
-another cell, route it through your Cell PM via `escalate_up(task_id,
-reason)` — the PM coordinates across cells.
+Cross-cell `dm` is **denied by policy**. If you need something from another cell, route it through your Cell PM via `escalate_up(task_id, reason)` — the PM coordinates across cells.
 
 ## Channel Posts
 
@@ -44,13 +39,11 @@ say(
 )
 ```
 
-Call `channels()` first if you're unsure of the exact slug — it returns
-the channels you're allowed to post to, so you don't have to guess.
+Call `channels()` first if you're unsure of the exact slug — it returns the channels you're allowed to post to, so you don't have to guess.
 
 ## Task Creation Rules
 
-**Only PMs create tasks** (via the `delegate` verb). Regular agents
-cannot create work from a `dm` or `say`.
+**Only PMs create tasks** (via the `delegate` verb). Regular agents cannot create work from a `dm` or `say`.
 
 If a conversation surfaces work that needs a new task:
 1. Escalate to your Cell PM: `escalate_up(task_id, reason="Needs a subtask for X")`
@@ -58,12 +51,8 @@ If a conversation surfaces work that needs a new task:
 
 ## Permissions
 
-Most roles can `dm` (same-cell) and `say` to their channels, plus read
-their inbox with `notify_list` / `notify_get`.
+Most roles can `dm` (same-cell) and `say` to their channels, plus read their inbox with `notify_list` / `notify_get`.
 
-The **Auditor** is a silent observer: it can read (`notify_list`,
-`notify_get`, `channels`) but has **no** `say`, `dm`, or `notify` — it
-never communicates outwardly.
+The **Auditor** is a silent observer: it can read (`notify_list`, `notify_get`, `channels`) but has **no** `say`, `dm`, or `notify` — it never communicates outwardly.
 
-Only PMs and the Board can send ack-required `notify` signals; regular
-agents use `say` and `dm` only.
+Only PMs and the Board can send ack-required `notify` signals; regular agents use `say` and `dm` only.

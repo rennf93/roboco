@@ -263,6 +263,8 @@ VERB_REQUIREMENTS: dict[str, frozenset[Requirement]] = {
             Requirement.JOURNAL_LEARNING,
         }
     ),
+    # PR reviewer posts its change-request — must record a learning entry first.
+    "post_pr_review": frozenset({Requirement.JOURNAL_LEARNING}),
     # Doc submit.
     "i_documented": frozenset(
         {
@@ -313,6 +315,8 @@ VERBS_WITHOUT_TRACING: frozenset[str] = frozenset(
         "resume",  # pure state move paused→in_progress
         # claim_review's tracing applies on pass_review / fail_review.
         "claim_review",
+        # claim_pr_review's tracing applies on post_pr_review.
+        "claim_pr_review",
         # claim_doc_task's tracing applies on i_documented.
         "claim_doc_task",
         # open_pr is a mechanical push+open; preconditions are inline.

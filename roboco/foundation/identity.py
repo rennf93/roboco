@@ -28,6 +28,7 @@ class Role(StrEnum):
     PRODUCT_OWNER = "product_owner"
     HEAD_MARKETING = "head_marketing"
     AUDITOR = "auditor"
+    PR_REVIEWER = "pr_reviewer"  # reviews PRs (inbound external/fork PRs first)
     PROMPTER = "prompter"  # intake interviewer — talks only to the human, drafts tasks
     SECRETARY = "secretary"  # CEO's chief-of-staff — acts only under CEO command
     CEO = "ceo"
@@ -211,6 +212,16 @@ AGENTS: dict[str, AgentRow] = {
         Team.BOARD,
         _u("00000000-0000-0000-0004-000000000006"),
     ),
+    # PR reviewer — a single global, read-only agent. Reviews PRs (inbound
+    # external/fork PRs first) and posts one change-request; never writes code.
+    # Like the auditor it is board-team and read-only, but it DOES act on review
+    # tasks.
+    "pr-reviewer-1": AgentRow(
+        "pr-reviewer-1",
+        Role.PR_REVIEWER,
+        Team.BOARD,
+        _u("00000000-0000-0000-0004-000000000007"),
+    ),
 }
 
 
@@ -220,6 +231,7 @@ BOARD_ROLES: frozenset[Role] = frozenset(
     {Role.PRODUCT_OWNER, Role.HEAD_MARKETING, Role.AUDITOR}
 )
 DEV_ROLES: frozenset[Role] = frozenset({Role.DEVELOPER})
+REVIEWER_ROLES: frozenset[Role] = frozenset({Role.PR_REVIEWER})
 ALL_ROLES: frozenset[Role] = frozenset(Role)
 
 # Hierarchical level for "X or above" checks. SYSTEM is the sentinel below all
@@ -235,6 +247,7 @@ ROLE_LEVEL: dict[Role, RoleLevel] = {
     Role.PRODUCT_OWNER: RoleLevel.BOARD,
     Role.HEAD_MARKETING: RoleLevel.BOARD,
     Role.AUDITOR: RoleLevel.AUDITOR,
+    Role.PR_REVIEWER: RoleLevel.QA,  # a code reviewer, peer to QA in authority
     Role.PROMPTER: RoleLevel.INTAKE,
     Role.SECRETARY: RoleLevel.BOARD,
     Role.CEO: RoleLevel.CEO,

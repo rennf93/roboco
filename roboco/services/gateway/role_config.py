@@ -115,6 +115,13 @@ _AUDITOR_FLOW = spec.intents_for_role(spec.Role.AUDITOR)
 # no ack (silent observer — wouldn't ack notifications). channels for read map.
 _AUDITOR_DO = ("note", "evidence", "notify_list", "notify_get", *_CHANNEL_DISCOVERY)
 
+# PR reviewer: a read-only reviewer of inbound external/fork PRs. Flow verbs come
+# from the lifecycle spec (a dedicated review trio, not QA's). It reads diffs and
+# records findings (note/evidence); the change-request is posted server-side, so
+# it has no outward agent comms (no say/dm).
+_PR_REVIEWER_FLOW = spec.intents_for_role(spec.Role.PR_REVIEWER)
+_PR_REVIEWER_DO = ("note", "evidence", "notify_list", "notify_get", *_CHANNEL_DISCOVERY)
+
 _PROMPTER_FLOW = spec.intents_for_role(
     spec.Role.PROMPTER
 )  # none — not a lifecycle role
@@ -196,6 +203,17 @@ ROLE_CONFIGS: dict[str, RoleConfig] = {
         allows_write=False,
         allows_subagent=False,
         description="Silent observer; reads but never communicates outwardly.",
+    ),
+    "pr_reviewer": RoleConfig(
+        role="pr_reviewer",
+        flow_tools=_PR_REVIEWER_FLOW,
+        do_tools=_PR_REVIEWER_DO,
+        allows_write=False,
+        allows_subagent=False,
+        description=(
+            "Reviews inbound external/fork PRs and posts one change-request. "
+            "Read-only; never writes code or merges."
+        ),
     ),
     "prompter": RoleConfig(
         role="prompter",

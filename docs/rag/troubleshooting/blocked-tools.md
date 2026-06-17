@@ -2,16 +2,11 @@
 
 ## Native Git Commands Blocked
 
-**Symptom:** `Bash(git commit)`, `Bash(git push)`, `Bash(git checkout)`, etc.
-denied by the bash-guard hook.
+**Symptom:** `Bash(git commit)`, `Bash(git push)`, `Bash(git checkout)`, etc. denied by the bash-guard hook.
 
-**Cause:** Shell git for network / auth / branch-mutating ops bypasses the
-PAT injection done by the MCP layer; raw `git fetch` etc. would fail with
-`could not read Username for 'https://github.com'` anyway.
+**Cause:** Shell git for network / auth / branch-mutating ops bypasses the PAT injection done by the MCP layer; raw `git fetch` etc. would fail with `could not read Username for 'https://github.com'` anyway.
 
-**Solution:** Use the role-scoped MCP verb that matches what you're trying
-to do. There is **no** `roboco_git_commit / _push / _create_pr / _merge_pr
-/ _checkout` MCP tool — the surface is smaller than that:
+**Solution:** Use the role-scoped MCP verb that matches what you're trying to do. There is **no** `roboco_git_commit / _push / _create_pr / _merge_pr / _checkout` MCP tool — the surface is smaller than that:
 
 | Blocked shell command | Use instead |
 |-----------------------|-------------|
@@ -40,8 +35,7 @@ to do. There is **no** `roboco_git_commit / _push / _create_pr / _merge_pr
 
 **Cause:** QA role is read-only — cannot modify code or open PRs.
 
-**Solution:** QA `pass(task_id, notes)` or `fail(task_id, issues)` only.
-Developers fix issues and re-submit.
+**Solution:** QA `pass(task_id, notes)` or `fail(task_id, issues)` only. Developers fix issues and re-submit.
 
 ## NO_PLAN Error on Start
 
@@ -49,20 +43,17 @@ Developers fix issues and re-submit.
 
 **Cause:** Parent tasks require a plan before they can leave `pending`.
 
-**Solution:** PMs call `i_will_plan(task_id, plan)`; the verb both records
-the plan and transitions the task into `in_progress`.
+**Solution:** PMs call `i_will_plan(task_id, plan)`; the verb both records the plan and transitions the task into `in_progress`.
 
 ## Parent Branch Required
 
 **Symptom:** Can't claim subtask, error "Parent task must be claimed first"
 
-**Cause:** Parent task hasn't been claimed/started yet, so it has no
-branch for the subtask's branch to fork from.
+**Cause:** Parent task hasn't been claimed/started yet, so it has no branch for the subtask's branch to fork from.
 
 **Solution:**
 
-1. Parent task must transition to `in_progress` first (PMs:
-   `i_will_plan(parent_id, plan)`; devs: `i_will_work_on(parent_id)`).
+1. Parent task must transition to `in_progress` first (PMs: `i_will_plan(parent_id, plan)`; devs: `i_will_work_on(parent_id)`).
 2. Then the subtask's branch will auto-fork from the parent's on claim.
 
 Branches are auto-created hierarchically. No manual creation needed.

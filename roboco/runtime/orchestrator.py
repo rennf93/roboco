@@ -21,13 +21,15 @@ import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import httpx
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
     from uuid import UUID
+
+    from sqlalchemy.ext.asyncio import AsyncSession
 
     from roboco.services.llm import AgentRoute
     from roboco.services.task import TaskService
@@ -121,6 +123,10 @@ AGENT_IMAGES: dict[str, str] = {
     "product-owner": "roboco-agent-pm",
     "head-marketing": "roboco-agent-pm",
     "auditor": "roboco-agent-pm",
+    # PR Reviewer — read-only reviewer (diff via API, grep, post one
+    # change-request; never runs code). Its own image for parity with the other
+    # agents; built FROM the base, no extra toolchain.
+    "pr-reviewer-1": "roboco-agent-pr-reviewer",
     # Intake — persistent Agent-SDK driver, not a one-shot `claude -p`.
     INTAKE_AGENT_ID: "roboco-agent-prompter",
     # Secretary — persistent Agent-SDK driver with gated CEO authority.
@@ -128,9 +134,23 @@ AGENT_IMAGES: dict[str, str] = {
 }
 
 
+def _qualify_agent_image(bare: str) -> str:
+    """Apply the configured registry namespace + tag to a bare agent image.
+
+    Default (no ``agent_image_registry``, no ``agent_image_tag``) returns the
+    bare name unchanged — the local build flow. With a registry set the
+    orchestrator spawns (and ensures) ``{registry}/roboco-agent-*[:tag]``, the
+    pre-built images the release workflow publishes, instead of building.
+    """
+    registry = settings.agent_image_registry.rstrip("/")
+    name = f"{registry}/{bare}" if registry else bare
+    tag = settings.agent_image_tag
+    return f"{name}:{tag}" if tag else name
+
+
 def get_agent_image(agent_id: str) -> str:
-    """Get the Docker image for an agent."""
-    return AGENT_IMAGES.get(agent_id, AGENT_BASE_IMAGE)
+    """Get the Docker image for an agent (registry-qualified when configured)."""
+    return _qualify_agent_image(AGENT_IMAGES.get(agent_id, AGENT_BASE_IMAGE))
 
 
 # When running in a container, we need host paths for volume mounts.
@@ -303,7 +323,12 @@ def _resolve_project_slug_from_git_context(
 # SPAWN MANIFEST — per-developer tool manifest mounting (Phase 1)
 # =============================================================================
 
-# Phase 4: every role gets a gateway manifest. The legacy briefing path is gone.
+# Phase 4: every spawned role gets a gateway manifest. The legacy briefing path
+# is gone. A role omitted here gets NO manifest and ROBOCO_GATEWAY_ENABLED=false,
+# i.e. none of its flow verbs are pre-registered — so it can never claim its work
+# and the dispatcher respawns it on the same task forever. The only roles that
+# may be absent are the human-only ones (prompter, secretary) that the
+# orchestrator never spawns as delivery agents.
 GATEWAY_ENABLED_ROLES: frozenset[str] = frozenset(
     {
         "developer",
@@ -314,6 +339,7 @@ GATEWAY_ENABLED_ROLES: frozenset[str] = frozenset(
         "product_owner",
         "head_marketing",
         "auditor",
+        "pr_reviewer",
     }
 )
 
@@ -595,6 +621,7 @@ class AgentOrchestrator:
         # rate-limited providers and resolves waiting agents on success.
         self._rate_limit_probe_task: asyncio.Task | None = None
         self._strategy_engine_task: asyncio.Task | None = None
+        self._external_pr_poll_task: asyncio.Task | None = None
         # Tracks which providers have already received a CEO notification
         # during the current rate-limit episode.  Cleared when the probe
         # succeeds and the rate limit is lifted (tracker.clear() path).
@@ -609,6 +636,11 @@ class AgentOrchestrator:
         self._dispatch_wake: asyncio.Event = asyncio.Event()
         self._running = False
         self._lock = asyncio.Lock()
+        # Serializes CEO supersede calls so a double-click can't pass the
+        # find_supersede_umbrella dedup check twice and cut two branches /
+        # spawn two umbrellas for the same PR (the check is read-then-write
+        # with no DB-level uniqueness).
+        self._supersede_lock = asyncio.Lock()
         # Per-tick set of task_ids already handled by an earlier
         # dispatcher. Reset at the start of every _dispatch_all_work.
         # Consumed via `self._mark_task_handled` / `_is_task_handled`.
@@ -673,6 +705,7 @@ class AgentOrchestrator:
         self._sweeper_task = asyncio.create_task(self._sweeper_loop())
         self._rate_limit_probe_task = asyncio.create_task(self._rate_limit_probe_loop())
         self._strategy_engine_task = asyncio.create_task(self._strategy_engine_loop())
+        self._external_pr_poll_task = asyncio.create_task(self._external_pr_poll_loop())
 
         logger.info(
             "Orchestrator started",
@@ -710,6 +743,11 @@ class AgentOrchestrator:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._strategy_engine_task
 
+        if self._external_pr_poll_task:
+            self._external_pr_poll_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._external_pr_poll_task
+
         # Stop all agents
         for agent_id in list(self._instances.keys()):
             await self.stop_agent(agent_id)
@@ -717,9 +755,12 @@ class AgentOrchestrator:
         logger.info("Orchestrator stopped")
 
     async def _ensure_agent_image(self, agent_id: str | None = None) -> None:
-        """Ensure the agent Docker images are built.
+        """Ensure the agent Docker images are present.
 
-        Builds base image first, then specialized image if agent_id provided.
+        Local mode (no ``agent_image_registry``) builds the base image first,
+        then the role-specialized image, from ``docker/agent-*.Dockerfile``.
+        Registry mode pulls the pre-built images instead. Idempotent — skips
+        anything already present locally.
         """
         # Determine build context
         if PROJECT_HOST_PATH:
@@ -730,17 +771,17 @@ class AgentOrchestrator:
             docker_dir = str(self.project_root / "docker")
 
         # Always ensure base image exists
-        await self._build_image_if_missing(
+        await self._ensure_image_present(
             AGENT_BASE_IMAGE,
             f"{docker_dir}/agent-base.Dockerfile",
             build_context,
         )
 
-        # Build specialized image if agent specified
+        # Ensure the role-specialized image if this agent uses one
         if agent_id:
-            image = get_agent_image(agent_id)
-            if image != AGENT_BASE_IMAGE:
-                # Map image name to dockerfile
+            bare = AGENT_IMAGES.get(agent_id, AGENT_BASE_IMAGE)
+            if bare != AGENT_BASE_IMAGE:
+                # Map the bare image name to its dockerfile
                 dockerfile_map = {
                     "roboco-agent-pm": "agent-pm.Dockerfile",
                     "roboco-agent-dev-be": "agent-dev-be.Dockerfile",
@@ -750,49 +791,72 @@ class AgentOrchestrator:
                     "roboco-agent-doc": "agent-doc.Dockerfile",
                     "roboco-agent-ux": "agent-ux.Dockerfile",
                     "roboco-agent-prompter": "agent-prompter.Dockerfile",
+                    "roboco-agent-secretary": "agent-secretary.Dockerfile",
+                    "roboco-agent-pr-reviewer": "agent-pr-reviewer.Dockerfile",
                 }
-                dockerfile = dockerfile_map.get(image)
+                dockerfile = dockerfile_map.get(bare)
                 if dockerfile:
-                    await self._build_image_if_missing(
-                        image,
+                    await self._ensure_image_present(
+                        bare,
                         f"{docker_dir}/{dockerfile}",
                         build_context,
                     )
 
-    async def _build_image_if_missing(
-        self, image_name: str, dockerfile_path: str, build_context: str
+    async def _ensure_image_present(
+        self, bare_image: str, dockerfile_path: str, build_context: str
     ) -> None:
-        """Build a Docker image if it doesn't exist."""
+        """Ensure one agent image is present locally.
+
+        Pulls it (registry mode) or builds it from its Dockerfile (local mode)
+        when missing; no-op if already present.
+        """
+        image = _qualify_agent_image(bare_image)
         # Check if image exists
         proc = await asyncio.create_subprocess_exec(
             "docker",
             "image",
             "inspect",
-            image_name,
+            image,
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
         await proc.wait()
+        if proc.returncode == 0:
+            return
 
-        if proc.returncode != 0:
-            logger.info("Building Docker image...", image=image_name)
+        if settings.agent_image_registry:
+            # Registry mode: pull the pre-built image; never build from source
+            # (a deployment running pre-built images has no build context).
+            logger.info("Pulling agent image...", image=image)
             proc = await asyncio.create_subprocess_exec(
                 "docker",
-                "build",
-                "-t",
-                image_name,
-                "-f",
-                dockerfile_path,
-                build_context,
+                "pull",
+                image,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
             _, stderr = await proc.communicate()
             if proc.returncode != 0:
-                raise RuntimeError(
-                    f"Failed to build image {image_name}: {stderr.decode()}"
-                )
-            logger.info("Docker image built successfully", image=image_name)
+                raise RuntimeError(f"Failed to pull image {image}: {stderr.decode()}")
+            logger.info("Agent image pulled", image=image)
+            return
+
+        logger.info("Building Docker image...", image=image)
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "build",
+            "-t",
+            image,
+            "-f",
+            dockerfile_path,
+            build_context,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            raise RuntimeError(f"Failed to build image {image}: {stderr.decode()}")
+        logger.info("Docker image built successfully", image=image)
 
     # =========================================================================
     # PER-AGENT SETTINGS GENERATION
@@ -894,6 +958,18 @@ class AgentOrchestrator:
             },
             "auditor": {
                 # Auditor is read-only across the org — observes, never edits.
+                "allow": [],
+                "deny": [
+                    "Write(*)",
+                    "Edit(*)",
+                ],
+            },
+            "pr_reviewer": {
+                # PR reviewer reads untrusted external/fork PR diffs and posts a
+                # change-request via the gateway — it never writes files. Make the
+                # read-only invariant explicit at the permission layer (it is the
+                # highest-value prompt-injection target), not just implicit in the
+                # absence of a writable mount.
                 "allow": [],
                 "deny": [
                     "Write(*)",
@@ -2390,6 +2466,7 @@ class AgentOrchestrator:
         "product_owner": _COMMON_BUILTIN_TOOLS,
         "head_marketing": _COMMON_BUILTIN_TOOLS,
         "auditor": _COMMON_BUILTIN_TOOLS,
+        "pr_reviewer": _COMMON_BUILTIN_TOOLS,
     }
 
     def _build_tool_load_block(self, role: str) -> str:
@@ -4188,6 +4265,35 @@ Start by:
         # operator's bind-mounted ~/.claude doesn't grow without bound.
         await self._sweep_transcript_retention()
 
+        # Close-on-land for landed supersedes — runs here (always-on sweeper)
+        # rather than the default-off external-PR poll loop, so a supersede that
+        # lands after external_pr_enabled is toggled off is still reconciled.
+        await self._sweep_superseded_prs()
+
+    async def _sweep_superseded_prs(self) -> None:
+        """Retire the contributor PR for any supersede umbrella that landed.
+
+        Dormant in a standard deployment: when no ``external_pr_supersede``
+        umbrellas exist the lookup returns nothing and no GitHub call is made,
+        so this is safe to run unconditionally on every sweep.
+        """
+        from roboco.db.base import get_session_factory
+        from roboco.services.git import GitService
+        from roboco.services.task import get_task_service
+
+        system_id = _foundation.AGENTS["system"].uuid
+        session_factory = get_session_factory()
+        async with session_factory() as db:
+            try:
+                git = GitService(db)
+                task_service = get_task_service(db)
+                closed = await self._close_superseded_prs(git, task_service, system_id)
+                if closed:
+                    await db.commit()
+            except Exception as e:
+                await db.rollback()
+                logger.warning("Supersede close-on-land sweep failed", error=str(e))
+
     async def _sweep_transcript_retention(self) -> None:
         """Prune agent transcripts older than the retention window.
 
@@ -4518,6 +4624,255 @@ Start by:
                 break
             except Exception:
                 logger.exception("strategy engine cycle failed")
+
+    async def _external_pr_poll_loop(self) -> None:
+        """Engine 3: discover inbound external PRs and open review tasks.
+
+        Dormant by default — returns immediately unless ``external_pr_enabled``,
+        so a standard deployment makes no inbound GitHub call. This only lists
+        open PRs and records a review task per newly-seen external one; it never
+        fetches or runs contributor code (that waits on a human confirmation
+        downstream). New review tasks wake the dispatcher.
+        """
+        if not settings.external_pr_enabled:
+            return
+        from roboco.db import get_db_context
+
+        interval = settings.external_pr_poll_interval_seconds
+        while self._running:
+            try:
+                await asyncio.sleep(interval)
+                async with get_db_context() as db:
+                    ingested = await self._poll_external_prs_once(db)
+                if ingested:
+                    self._dispatch_wake.set()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("external-PR poll cycle failed")
+
+    @staticmethod
+    def _repo_key(git_url: str) -> str:
+        """Normalized repo identity (case/.git/trailing-slash insensitive)."""
+        return git_url.lower().rstrip("/").removesuffix(".git")
+
+    @classmethod
+    def _projects_one_per_repo(cls, projects: list[Any]) -> list[Any]:
+        """One canonical project per distinct repo.
+
+        Many projects can point at the SAME repo — a monorepo product's
+        backend/frontend/ux cells each have their own Project mapping to one
+        git_url. Polling per-project would then ingest one review task per cell
+        for a single external PR (the per-(project,pr) dedup can't see across
+        projects). Collapse to one canonical project per repo (deterministic by
+        slug so the pick is stable across polls); genuinely separate repos
+        (multi-repo) each keep their own. Projects without a git_url are skipped.
+        """
+        seen: set[str] = set()
+        canonical: list[Any] = []
+        for project in sorted(projects, key=lambda p: str(p.slug)):
+            git_url = getattr(project, "git_url", None)
+            if not git_url:
+                continue
+            key = cls._repo_key(git_url)
+            if key in seen:
+                continue
+            seen.add(key)
+            canonical.append(project)
+        return canonical
+
+    async def _poll_external_prs_once(self, db: "AsyncSession") -> int:
+        """One discovery pass across active repos; returns tasks ingested.
+
+        Repo-aware: collapses active projects to one canonical project per
+        distinct repo (so a monorepo product yields ONE review per PR, not one
+        per cell-project), lists each repo's open PRs, keeps the external ones,
+        and ingests a de-duped review task for each. Commits once at the end.
+        """
+        from roboco.services.git import GitService
+        from roboco.services.project import get_project_service
+        from roboco.services.task import get_task_service
+
+        git = GitService(db)
+        task_service = get_task_service(db)
+        projects = await get_project_service(db).list_all(active_only=True)
+        system_id = _foundation.AGENTS["system"].uuid
+        allowlist = {a.lower() for a in settings.external_pr_author_allowlist}
+        ingested = 0
+        for project in self._projects_one_per_repo(projects):
+            for pr in await git.list_open_prs(project.slug):
+                number = pr.get("number")
+                if number is None or not self._is_external_pr(pr):
+                    continue
+                if not self._pr_author_allowed(pr, allowlist):
+                    continue
+                created = await task_service.ingest_external_pr(
+                    project_id=cast("UUID", project.id),
+                    pr=pr,
+                    created_by=system_id,
+                    team=Team.BOARD,
+                )
+                if created is not None:
+                    ingested += 1
+        await db.commit()
+        return ingested
+
+    async def _close_superseded_prs(
+        self, git: Any, task_service: Any, system_id: "UUID"
+    ) -> int:
+        """Close + link the contributor PR for each landed supersede umbrella.
+
+        Idempotent: each umbrella is marked ``closed=1`` after its contributor PR
+        is closed, so it is processed once. ``delete_branch=False`` — the
+        contributor's branch lives on their fork; we never touch it. Caller
+        commits.
+        """
+        closed = 0
+        for umbrella in await task_service.supersede_umbrellas_pending_close():
+            pr_number = self._parse_supersede_pr(umbrella.quick_context or "")
+            if pr_number is None:
+                continue
+            try:
+                await git.close_pull_request(
+                    pr_number,
+                    comment=(
+                        "Superseded by the roboco team's own PR — the work was "
+                        "finished and hardened to our standards. Thanks for the "
+                        "contribution!"
+                    ),
+                    delete_branch=False,
+                    actor_agent_id=system_id,
+                    # PR numbers are per-repo — scope the close to THIS
+                    # umbrella's project so a same-numbered PR in another
+                    # project's repo is never resolved (and closed) by mistake.
+                    project_id=cast("UUID", umbrella.project_id),
+                )
+            except Exception:
+                # A permanent close failure (deleted PR, revoked PAT) would
+                # otherwise re-fire + re-log every tick forever; keep it a single
+                # warning rather than a per-tick stack trace.
+                logger.warning("close-on-land failed", pr_number=pr_number)
+                continue
+            await task_service.mark_supersede_pr_closed(cast("UUID", umbrella.id))
+            closed += 1
+        return closed
+
+    @staticmethod
+    def _parse_supersede_pr(quick_context: str) -> int | None:
+        """Extract the contributor PR number from a supersede umbrella marker.
+
+        Anchored to the marker line so a CEO note containing ``pr=`` on a later
+        line of the multi-writer ``quick_context`` can't be misread as the PR.
+        """
+        for raw in quick_context.splitlines():
+            line = raw.strip()
+            if not line.startswith("external_pr_supersede"):
+                continue
+            for part in line.split():
+                if part.startswith("pr="):
+                    try:
+                        return int(part[3:])
+                    except ValueError:
+                        return None
+            return None
+        return None
+
+    @staticmethod
+    def _pr_author_allowed(pr: dict[str, Any], allowlist: set[str]) -> bool:
+        """With a non-empty allowlist, only those GitHub authors are reviewed.
+
+        An empty allowlist (the default) reviews every external PR — the review
+        is read-only, so it is safe; the ``confirmed_by_human`` gate still
+        protects any later supersede that would run the contributor's code.
+        """
+        if not allowlist:
+            return True
+        return (pr.get("user_login") or "").lower() in allowlist
+
+    @staticmethod
+    def _is_external_pr(pr: dict[str, Any]) -> bool:
+        """A PR the org did not author: a fork head or a non-member author."""
+        if pr.get("is_fork"):
+            return True
+        trusted = {"OWNER", "MEMBER", "COLLABORATOR"}
+        assoc = (pr.get("author_association") or "").upper()
+        return assoc not in trusted
+
+    async def supersede_external_pr(self, review_task_id: "UUID") -> dict[str, Any]:
+        """CEO-authorized takeover of a reviewed external PR.
+
+        Confirms the review task (this CEO action is the human confirmation that
+        authorizes running the contributor's code), cuts a roboco-owned branch
+        off the contributor's fork head (refs/pull/{n}/head — the only point
+        untrusted code enters a roboco branch), and creates the supersede
+        umbrella for Main PM to delegate to a cell. Returns a status dict.
+        """
+        from roboco.db import get_db_context
+        from roboco.models.base import TaskStatus
+        from roboco.services.git import GitService
+        from roboco.services.project import get_project_service
+        from roboco.services.task import get_task_service
+
+        # Serialize concurrent CEO calls (double-click) — the dedup check and
+        # the umbrella/branch creation are not atomic across DB sessions.
+        async with self._supersede_lock, get_db_context() as db:
+            task_service = get_task_service(db)
+            review = await task_service.get(review_task_id)
+            if review is None or getattr(review, "source", "") != "external_pr":
+                return {"ok": False, "error": "not an external-PR review task"}
+            if not review.project_id or not review.pr_number:
+                return {
+                    "ok": False,
+                    "error": "review task missing project or pr_number",
+                }
+            # Review-first: only supersede a PR the org has actually reviewed.
+            if review.status != TaskStatus.COMPLETED:
+                return {
+                    "ok": False,
+                    "error": "review not complete — review the PR first",
+                }
+            project = await get_project_service(db).get(cast("UUID", review.project_id))
+            if project is None:
+                return {"ok": False, "error": "project not found"}
+            pr_number = int(review.pr_number)
+            project_id = cast("UUID", review.project_id)
+            # Idempotent: a repeat call returns the existing umbrella — no second
+            # branch cut, no duplicate cell takeover.
+            existing = await task_service.find_supersede_umbrella(project_id, pr_number)
+            if existing is not None:
+                return {
+                    "ok": True,
+                    "supersede_task_id": str(existing.id),
+                    "branch": existing.branch_name,
+                    "already_superseded": True,
+                }
+            system_id = _foundation.AGENTS["system"].uuid
+            branch_name = f"feature/main_pm/supersede-pr-{pr_number}"
+            # The CEO authorized fetching + finishing the contributor's code.
+            review.confirmed_by_human = True
+            # Create the umbrella BEFORE the push: a create failure then can't
+            # orphan a pushed branch. Only a commit failure after the push could
+            # (rare) — the branch is logged so an orphan stays discoverable.
+            umbrella = await task_service.create_supersede_umbrella(
+                review_task_id=review_task_id,
+                branch_name=branch_name,
+                created_by=system_id,
+            )
+            umbrella_id = str(umbrella.id) if umbrella is not None else None
+            git = GitService(db)
+            workspace = await git.get_workspace(project.slug, agent_id=system_id)
+            logger.warning(
+                "supersede: cutting roboco branch off untrusted fork PR head",
+                branch=branch_name,
+                pr_number=pr_number,
+                project=project.slug,
+            )
+            await git.create_branch_from_pr_head(
+                workspace, project.slug, pr_number, branch_name
+            )
+            await db.commit()
+        self._dispatch_wake.set()
+        return {"ok": True, "supersede_task_id": umbrella_id, "branch": branch_name}
 
     async def _rate_limit_probe_loop(self) -> None:
         """Background loop: probe rate-limited providers every ~30 seconds.
@@ -5827,6 +6182,7 @@ Start now: evidence(task_id="{task_id}")
                 ("pm_closure_work", self._dispatch_pm_closure_work(client)),
                 ("dev_work", self._dispatch_dev_work(client)),
                 ("qa_work", self._dispatch_qa_work(client)),
+                ("pr_review_work", self._dispatch_pr_review_work(client)),
                 ("doc_work", self._dispatch_doc_work(client)),
                 ("pm_review_work", self._dispatch_pm_review_work(client)),
                 ("marketing_work", self._dispatch_marketing_work(client)),
@@ -6316,6 +6672,10 @@ Start now: evidence(task_id="{task_id}")
         for task in tasks:
             if self._is_task_handled_this_tick(task.get("id")):
                 continue
+            # External-PR review tasks are owned by _dispatch_pr_review_work; the
+            # PM hierarchy never routes or spawns them.
+            if task.get("source") == "external_pr":
+                continue
             assigned_to = task.get("assigned_to")
             if assigned_to:
                 if self._resolve_agent_slug(assigned_to) in self._BOARD_AGENTS:
@@ -6618,6 +6978,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             "main_pm": self._build_main_pm_triage_prompt,
             "product_owner": self._build_board_prompt,
             "auditor": lambda _task: self._build_audit_prompt(),
+            "pr_reviewer": self._build_pr_review_prompt,
         }
         builder = builders.get(role, self._build_dev_prompt)
         return builder(task)
@@ -6645,6 +7006,10 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
 
         for task in tasks:
             if self._is_task_handled_this_tick(task.get("id")):
+                continue
+            # External-PR review tasks belong to the pr_reviewer, never a dev —
+            # _dispatch_pr_review_work owns them.
+            if task.get("source") == "external_pr":
                 continue
             await self._dev_dispatch_one(client, task)
 
@@ -6884,6 +7249,34 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 git_context=self._task_git_context(task),
             )
             # Only spawn one QA at a time per cell
+            break
+
+    async def _dispatch_pr_review_work(self, client: httpx.AsyncClient) -> None:
+        """Dispatch inbound external-PR review tasks to the PR reviewer.
+
+        Monitors: pending tasks with ``source='external_pr'``.
+        Spawns: the single global reviewer ``pr-reviewer-1`` (one review at a
+        time). No pre-claim — the task stays PENDING until the reviewer claims
+        it itself via ``claim_pr_review``; the prompt carries the task id. The
+        ``is_agent_active`` guard prevents a double-spawn across ticks.
+        """
+        reviewer = "pr-reviewer-1"
+        if self._is_agent_active(reviewer):
+            return
+        tasks = await self._fetch_tasks(client, "pending")
+        for task in tasks:
+            if task.get("source") != "external_pr":
+                continue
+            if self._is_task_handled_this_tick(task.get("id")):
+                continue
+            if task.get("assigned_to"):
+                continue
+            await self.spawn_agent(
+                agent_id=reviewer,
+                task_id=task["id"],
+                initial_prompt=self._build_pr_review_prompt(task),
+                git_context=self._task_git_context(task),
+            )
             break
 
     async def _dispatch_doc_work(self, client: httpx.AsyncClient) -> None:
@@ -7881,6 +8274,42 @@ TEAM: {team}
    for anything worth flagging.
 5. give_me_work() to pick up the next QA item,
    or i_am_idle() if the queue is empty.
+"""
+
+    def _build_pr_review_prompt(self, task: dict[str, Any]) -> str:
+        """Build the initial prompt for the PR reviewer on an external PR."""
+        task_id = task.get("id", "unknown")
+        title = task.get("title", "Untitled")
+        pr_number = task.get("pr_number", "?")
+        pr_url = task.get("pr_url", "")
+
+        return f"""An external contributor opened a pull request. Review it.
+
+TASK ID: {task_id}
+TITLE: {title}
+EXTERNAL PR: #{pr_number}  {pr_url}
+
+== TRUST BOUNDARY ==
+This PR is from OUTSIDE the org — the code is untrusted. The review is
+READ-ONLY: you read the diff, you do NOT fetch, check out, build, or run the
+contributor's code. Do not push to their fork. You never merge.
+
+== REVIEW WORKFLOW ==
+
+1. claim_pr_review(task_id="{task_id}")
+   — starts the review; returns the contributor's unified diff inline.
+2. Review the diff adversarially: correctness, security (injection, secret
+   leaks, supply-chain/dependency risk), scope, and the codebase's standards.
+   Reason about it from the diff alone — do not run it.
+3. note(scope="learning", task_id="{task_id}", text="<what the review surfaced>")
+   — required before you can post.
+4. post_pr_review(task_id="{task_id}",
+        body="<one complete change-request: per-finding file + line + expected
+        vs actual; be specific and actionable>",
+        event="REQUEST_CHANGES")
+   — posts ONE complete review to the PR and finishes the task. Use
+   event="APPROVE" only if the PR is genuinely ready as-is.
+5. i_am_idle() when done.
 """
 
     def _build_doc_prompt(self, task: dict[str, Any]) -> str:

@@ -44,18 +44,13 @@ Auditor has silent read access (in these channels' `silent_roles`) to:
 - `pm-all`
 - `doc-all`
 
-Auditor does NOT appear in member lists but CAN read. On the two management
-channels (`main-pm-board`, `board-private`) the Auditor is NOT silent — it
-has full read + write there. (Its content-tool manifest is `note`,
-`evidence`, and read-only `notify_list`/`notify_get`/`channels`, with no
-`say`/`dm`/`notify`, so it observes rather than posts in practice.)
+Auditor does NOT appear in member lists but CAN read. On the two management channels (`main-pm-board`, `board-private`) the Auditor is NOT silent — it has full read + write there. (Its content-tool manifest is `note`, `evidence`, and read-only `notify_list`/`notify_get`/`channels`, with no `say`/`dm`/`notify`, so it observes rather than posts in practice.)
 
 ## Privileged Access
 
 These roles bypass normal membership checks:
 - **CEO**: Full access everywhere
-- **Auditor**: Silent read on cell + cross-cell channels; read/write on the
-  management channels
+- **Auditor**: Silent read on cell + cross-cell channels; read/write on the management channels
 - **Main PM**: Read access to all cell channels
 
 ## Using Channels

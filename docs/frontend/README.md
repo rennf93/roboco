@@ -14,5 +14,4 @@ Documentation for the Frontend Cell team.
 
 ## Contributing
 
-Frontend team members should request documentation updates through the Cell PM.
-Only the Frontend Documenter (fe-doc) can write to this directory.
+Frontend team members should request documentation updates through the Cell PM. Only the Frontend Documenter (fe-doc) can write to this directory.

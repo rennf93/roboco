@@ -10,17 +10,13 @@ All commits are automatically prefixed with the task ID by the choreographer:
 
 Example: `[a1b2c3d4] Add rate limiting endpoint`
 
-You write the message — the prefix is added for you. Don't include
-`[task-id]` yourself; it gets stripped and re-applied.
+You write the message — the prefix is added for you. Don't include `[task-id]` yourself; it gets stripped and re-applied.
 
 ## Who Can Commit
 
-`commit` is in the **roboco-do** MCP and is mounted only for **developers**
-and **documenters**. PMs delegate code work and call `complete` to merge.
+`commit` is in the **roboco-do** MCP and is mounted only for **developers** and **documenters**. PMs delegate code work and call `complete` to merge.
 
-There is **no** `roboco_git_commit / _push / _create_pr` MCP tool. The
-single `commit` verb covers commit + push + PR-trigger via the
-choreographer.
+There is **no** `roboco_git_commit / _push / _create_pr` MCP tool. The single `commit` verb covers commit + push + PR-trigger via the choreographer.
 
 ## Creating Commits
 
@@ -38,8 +34,7 @@ This automatically:
 3. Stages the listed files (or everything tracked + modified if omitted)
 4. Pushes to the agent's auto-created branch
 5. Records the commit on the task (`commits[]` field on `TaskTable`)
-6. Opens a PR through the choreographer when the task transitions out of
-   `in_progress` (no separate `create_pr` call required)
+6. Opens a PR through the choreographer when the task transitions out of `in_progress` (no separate `create_pr` call required)
 
 ## Before Committing
 
@@ -50,13 +45,10 @@ This automatically:
 
 ## After Committing
 
-You don't push or create a PR yourself. The choreographer pushed the
-commit during `commit()`, and the PR is opened/merged as part of the
-lifecycle transitions:
+You don't push or create a PR yourself. The choreographer pushed the commit during `commit()`, and the PR is opened/merged as part of the lifecycle transitions:
 
 - `open_pr(task_id)` — opens the PR (devs)
-- `pass(task_id)` (QA) → `i_documented(task_id)` (doc) → `complete(task_id)`
-  (cell PM merges the leaf PR; main PM opens the master PR)
+- `pass(task_id)` (QA) → `i_documented(task_id)` (doc) → `complete(task_id)` (cell PM merges the leaf PR; main PM opens the master PR)
 
 ## Viewing Commits and History
 

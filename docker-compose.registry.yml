@@ -1,0 +1,265 @@
+# ============================================================================
+# RoboCo — pre-built (registry) deployment
+# ============================================================================
+# This is the "pull and run" compose for USERS: it runs the images the release
+# workflow publishes (GHCR + Docker Hub) instead of building from source, so a
+# host needs neither the repo's build context nor a build toolchain.
+#
+#   1. Copy `.env.example` to `.env` and fill in the required secrets.
+#   2. docker compose -f docker-compose.registry.yml pull
+#   3. docker compose -f docker-compose.registry.yml up -d
+#
+# Pick the registry + version with two env vars (defaults shown):
+#   ROBOCO_REGISTRY=ghcr.io/rennf93     # or docker.io/renzof93
+#   ROBOCO_VERSION=latest               # or a pinned release, e.g. 0.5.0
+#
+# The orchestrator spawns agent containers itself; ROBOCO_AGENT_IMAGE_REGISTRY
+# + ROBOCO_AGENT_IMAGE_TAG below tell it to spawn the SAME pre-built agent
+# images (it pulls any it doesn't already have). The one-shot agent-*-image
+# services exist only so `docker compose pull` fetches every agent image up
+# front; they pull then exit.
+#
+# NOTE: this file is the registry counterpart of docker-compose.yml — when you
+# add or change a service there, mirror it here. The infra services
+# (postgres/redis/ollama/nginx) are byte-identical to the build compose.
+# ============================================================================
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: roboco-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: roboco
+      POSTGRES_PASSWORD: roboco
+      POSTGRES_DB: roboco
+    ports:
+      - "15432:5432"
+    volumes:
+      - ${ROBOCO_DATA_DIR:-./data}/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U roboco -d roboco"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:8-alpine
+    container_name: roboco-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - "16379:6379"
+    volumes:
+      - ${ROBOCO_DATA_DIR:-./data}/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: roboco-ollama
+    restart: unless-stopped
+    environment:
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY:-}
+    ports:
+      - "11435:11434"
+    volumes:
+      - ${ROBOCO_DATA_DIR:-./data}/ollama:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  ollama-init:
+    image: curlimages/curl:latest
+    container_name: roboco-ollama-init
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        echo "=== Pulling embedding model (qwen3-embedding:0.6b) ==="
+        curl -sN http://ollama:11434/api/pull -d '{"name":"qwen3-embedding:0.6b"}' | while read -r line; do
+          status=$$(echo "$$line" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
+          [ -n "$$status" ] && echo "  $$status"
+        done
+        echo "=== Pulling LLM model (glm-5:cloud) ==="
+        curl -sN http://ollama:11434/api/pull -d '{"name":"glm-5:cloud"}' | while read -r line; do
+          status=$$(echo "$$line" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
+          [ -n "$$status" ] && echo "  $$status"
+        done
+        echo "=== Verifying models are available ==="
+        curl -sf http://ollama:11434/api/tags | grep -q "qwen3-embedding" && echo "  qwen3-embedding: OK"
+        curl -sf http://ollama:11434/api/tags | grep -q "glm-5" && echo "  glm-5: OK"
+        echo "=== All models ready! ==="
+
+  # --------------------------------------------------------------------------
+  # Agent image pre-pull (one-shot). Each pulls its published image then exits,
+  # so `docker compose pull` fetches every agent image up front. The
+  # orchestrator spawns these same images at runtime.
+  # --------------------------------------------------------------------------
+  agent-base-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-base:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-base image present'"]
+    restart: "no"
+
+  agent-pm-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-pm:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-pm image present'"]
+    restart: "no"
+
+  agent-dev-be-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-dev-be:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-dev-be image present'"]
+    restart: "no"
+
+  agent-dev-fe-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-dev-fe:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-dev-fe image present'"]
+    restart: "no"
+
+  agent-qa-be-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-qa-be:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-qa-be image present'"]
+    restart: "no"
+
+  agent-qa-fe-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-qa-fe:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-qa-fe image present'"]
+    restart: "no"
+
+  agent-ux-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-ux:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-ux image present'"]
+    restart: "no"
+
+  agent-doc-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-doc:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-doc image present'"]
+    restart: "no"
+
+  agent-prompter-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-prompter:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-prompter image present'"]
+    restart: "no"
+
+  agent-secretary-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-secretary:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-secretary image present'"]
+    restart: "no"
+
+  agent-pr-reviewer-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-pr-reviewer:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-pr-reviewer image present'"]
+    restart: "no"
+
+  # --------------------------------------------------------------------------
+  # Orchestrator — API server + agent spawner
+  # --------------------------------------------------------------------------
+  orchestrator:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-orchestrator:${ROBOCO_VERSION:-latest}
+    container_name: roboco-orchestrator
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      ROBOCO_DATABASE_HOST: roboco-postgres
+      ROBOCO_DATABASE_PORT: 5432
+      ROBOCO_DATABASE_USER: roboco
+      ROBOCO_DATABASE_PASSWORD: roboco
+      ROBOCO_DATABASE_NAME: roboco
+      ROBOCO_REDIS_HOST: roboco-redis
+      ROBOCO_REDIS_PORT: 6379
+      ROBOCO_HOST: 0.0.0.0
+      ROBOCO_PORT: 8000
+      ROBOCO_ENCRYPTION_KEY: ${ROBOCO_ENCRYPTION_KEY:?ROBOCO_ENCRYPTION_KEY is required}
+      ROBOCO_AGENT_AUTH_SECRET: ${ROBOCO_AGENT_AUTH_SECRET:?ROBOCO_AGENT_AUTH_SECRET is required}
+      ROBOCO_AGENT_AUTH_REQUIRED: ${ROBOCO_AGENT_AUTH_REQUIRED:-false}
+      ROBOCO_LOCAL_LLM_BASE_URL: http://roboco-ollama:11434/v1
+      ROBOCO_LOCAL_LLM_MODEL: glm-5:cloud
+      ROBOCO_DEFAULT_EMBEDDING_MODEL: qwen3-embedding:0.6b
+      ROBOCO_OLLAMA_BASE_URL: http://roboco-ollama:11434
+      # Spawn the PRE-BUILT agent images from the same registry instead of
+      # building them from source (the orchestrator pulls any it lacks).
+      ROBOCO_AGENT_IMAGE_REGISTRY: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}
+      ROBOCO_AGENT_IMAGE_TAG: ${ROBOCO_VERSION:-latest}
+      # Host paths for spawning agent containers (Docker-in-Docker). MUST be
+      # absolute paths on the host. Default to this compose project's ./data.
+      ROBOCO_HOST_PROJECT_DIR: ${ROBOCO_HOST_PROJECT_DIR:-/opt/roboco}
+      ROBOCO_HOST_CLAUDE_DIR: ${ROBOCO_HOST_CLAUDE_DIR:-${HOME}/.claude}
+      ROBOCO_HOST_DATA_DIR: ${ROBOCO_HOST_DATA_DIR:-/opt/roboco/data}
+      # Reachable base URL for commit-trailer links — set to your host's LAN
+      # address or domain so the links in commit bodies resolve.
+      ROBOCO_PUBLIC_BASE_URL: ${ROBOCO_PUBLIC_BASE_URL:-http://localhost:8000}
+      ROBOCO_ENVIRONMENT: production
+      ROBOCO_CLAIM_STALE_SECONDS: "1800"
+      ROBOCO_STALE_CLAIM_REAP_SECONDS: "1800"
+      # External-PR review (read-only: discover inbound external/fork PRs, post
+      # one change-request; never runs contributor code — the supersede stays
+      # CEO-triggered + human-confirm gated). Matches the build compose.
+      ROBOCO_EXTERNAL_PR_ENABLED: ${ROBOCO_EXTERNAL_PR_ENABLED:-true}
+      ROBOCO_EXTERNAL_PR_REQUIRE_HUMAN_CONFIRM: ${ROBOCO_EXTERNAL_PR_REQUIRE_HUMAN_CONFIRM:-true}
+      # ROBOCO_EXTERNAL_PR_POLL_INTERVAL_SECONDS: "300"
+      # ROBOCO_EXTERNAL_PR_AUTHOR_ALLOWLIST: '["corey"]'   # empty = every external PR
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${CLAUDE_AUTH_DIR:-${HOME}/.claude}:/root/.claude
+      - ${ROBOCO_DATA_DIR:-./data}/mcp-configs:/app/mcp-configs
+      - ${ROBOCO_DATA_DIR:-./data}/prompts-generated:/app/prompts-generated
+      - ${ROBOCO_DATA_DIR:-./data}/agent-settings:/app/agent-settings
+      - ${ROBOCO_DATA_DIR:-./data}/workspaces:/data/workspaces
+      - ${ROBOCO_DATA_DIR:-./data}/logs:/data/logs
+      - ${ROBOCO_DATA_DIR:-./data}/briefings:/app/briefings
+      - ${ROBOCO_DATA_DIR:-./data}/manifests:/app/manifests
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+      ollama-init:
+        condition: service_completed_successfully
+      agent-base-image:
+        condition: service_completed_successfully
+
+  # --------------------------------------------------------------------------
+  # Next.js control panel (fronted by nginx; not exposed directly)
+  # --------------------------------------------------------------------------
+  panel:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-panel:${ROBOCO_VERSION:-latest}
+    container_name: roboco-panel
+    restart: unless-stopped
+    expose:
+      - "3000"
+    depends_on:
+      - orchestrator
+
+  # --------------------------------------------------------------------------
+  # Nginx — single entry point on port 3000
+  # --------------------------------------------------------------------------
+  nginx:
+    image: nginx:alpine
+    container_name: roboco-nginx
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    environment:
+      ROBOCO_PANEL_AGENT_TOKEN: ${ROBOCO_PANEL_AGENT_TOKEN:-}
+      NGINX_ENVSUBST_FILTER: "^ROBOCO_"
+    volumes:
+      - ./docker/nginx.conf:/etc/nginx/templates/default.conf.template:ro
+    depends_on:
+      - panel
+      - orchestrator
+
+networks:
+  default:
+    name: roboco_default

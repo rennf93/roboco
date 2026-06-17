@@ -167,6 +167,16 @@ fix:
 	@uv run ruff check --fix .
 	@find . | grep -E "(__pycache__|\.pyc|\.pyo|\.pytest_cache|\.ruff_cache|\.mypy_cache)" | xargs rm -rf
 
+# Reflow hard-wrapped markdown prose to one line per paragraph (docs style).
+.PHONY: reflow-docs
+reflow-docs:
+	uv run python scripts/reflow_md.py --apply
+
+# CI guard: fail if any in-scope doc has hard-wrapped prose. Wired into `quality`.
+.PHONY: reflow-check
+reflow-check:
+	uv run python scripts/reflow_md.py --check
+
 # Find dead code with Vulture
 .PHONY: vulture
 vulture:
@@ -240,6 +250,8 @@ quality:
 	@uv run ruff format --check .
 	@echo "==> ruff check"
 	@uv run ruff check .
+	@echo "==> markdown prose (no hard-wrapping)"
+	@uv run python scripts/reflow_md.py --check
 	@echo "==> mypy"
 	@uv run mypy roboco/ tests/
 	@echo "==> pytest with coverage"

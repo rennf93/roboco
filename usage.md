@@ -4,7 +4,7 @@ Operating the AI company after deployment.
 
 ## The Organization
 
-20 AI agents organized as a company:
+22 AI agents organized as a company:
 
 ```
 CEO (You)
@@ -96,12 +96,7 @@ docker ps --filter "name=roboco-agent" -q | xargs docker stop
 
 ## Creating Tasks
 
-`POST /api/tasks` has no silent defaults — `title`, `description` (min 20
-chars), `acceptance_criteria` (at least one), `team`, `task_type`, `nature`,
-and `estimated_complexity` are all required, plus exactly one of `project_id`
-(the repo this task targets) or `product_id` (a cell→project map for a fan-out
-task). See the `TaskCreate` schema in `roboco/models/task.py` (or the Swagger
-UI at `/docs`) for the full field list and enum values.
+`POST /api/tasks` has no silent defaults — `title`, `description` (min 20 chars), `acceptance_criteria` (at least one), `team`, `task_type`, `nature`, and `estimated_complexity` are all required, plus exactly one of `project_id` (the repo this task targets) or `product_id` (a cell→project map for a fan-out task). See the `TaskCreate` schema in `roboco/models/task.py` (or the Swagger UI at [docs](./docs)) for the full field list and enum values.
 
 ```bash
 curl -X POST http://localhost:8000/api/tasks \
@@ -122,9 +117,7 @@ curl -X POST http://localhost:8000/api/tasks \
   }'
 ```
 
-Enum values: `task_type` ∈ {`code`, `documentation`, `research`, `planning`,
-`design`, `administrative`}; `nature` ∈ {`technical`, `non_technical`};
-`estimated_complexity` ∈ {`low`, `medium`, `high`}.
+Enum values: `task_type` ∈ {`code`, `documentation`, `research`, `planning`, `design`, `administrative`}; `nature` ∈ {`technical`, `non_technical`}; `estimated_complexity` ∈ {`low`, `medium`, `high`}.
 
 ## Task Lifecycle
 
@@ -235,12 +228,27 @@ docker logs -f roboco-agent-be-dev-1
 
 ### Resource Usage
 
-Each agent container uses ~500MB-2GB RAM depending on context. With 128GB RAM:
-- 3 agents: ~6GB
-- 6 agents: ~12GB
-- 20 agents: ~40GB (the intake interviewer is on-demand — it only runs while you're drafting a task)
+RAM is modest. Agent containers are spawned on demand and torn down when their work is done, so you rarely have more than a handful live at once — and the on-demand Intake and Secretary only run while you're interacting with them. Steady-state memory is dominated by the standing services (Postgres, Redis, and especially Ollama with its models loaded), not by the agents.
+
+Measured at idle on the reference NAS (full stack up, no task running), the standing services use roughly:
+
+| Service | RAM (idle) |
+|---------|------------|
+| Ollama (models loaded) | ~2.2 GB |
+| Orchestrator | ~150 MB |
+| Postgres | ~60 MB |
+| Panel | ~35 MB |
+| Redis | ~15 MB |
+| nginx | ~10 MB |
+
+So the whole standing stack idles around ~2.5 GB, almost all of it Ollama; the application itself is a few hundred MB.
+
+Under load it stays light. Measured with five agents working concurrently (two cells' developers plus a cell PM), each agent container used ~0.5–0.65 GB, and the whole stack — agents plus services — peaked around ~6.6 GB, roughly 5% of a 128 GB box. The orchestrator itself grows with concurrency (~150 MB idle → ~1 GB while managing several live agent sessions and their streams), and a developer briefly spikes to a few CPU cores while it is actively generating. Even at full-fleet peak you stay well under ~10 GB — RAM is not the constraint; storage is.
+
+Storage is the larger footprint: the image set. The agent images all build `FROM` a shared base layer, so on disk they cost far less than their nominal sizes added together. For reference, the panel image is ~230 MB, the orchestrator ~0.9 GB, the agent base ~1.1 GB, and each agent image ~1.1 GB (the frontend dev/QA images are larger, ~1.9 GB, for their browser/Node toolchain) — but the shared base means the real on-disk total is well below their sum. `docker system prune` reclaims old image versions, stopped agent containers, and build cache (typically a few GB).
 
 Monitor with:
 ```bash
-docker stats --filter "name=roboco-agent"
+docker stats        # live RAM / CPU per running container
+docker system df    # image / container / build-cache disk usage
 ```

@@ -697,4 +697,34 @@ export const tasksApi = {
     });
     return data;
   },
+
+  // Inbound external PRs that were reviewed and await the CEO's decision
+  // (the PR-review decision queue).
+  getExternalPrReviews: async (): Promise<Task[]> => {
+    if (isMockMode()) return [];
+    const { data } = await api.get<Task[]>("/tasks/external-pr-reviews");
+    return data;
+  },
+
+  // CEO authorizes the org to take over a reviewed external PR.
+  supersedeExternalPr: async (
+    taskId: string,
+  ): Promise<{ ok: boolean; supersede_task_id?: string; branch?: string }> => {
+    const { data } = await api.post<{
+      ok: boolean;
+      supersede_task_id?: string;
+      branch?: string;
+    }>("/tasks/" + taskId + "/supersede-external-pr");
+    return data;
+  },
+
+  // CEO declines to act on a reviewed external PR (drops it from the queue).
+  dismissExternalPr: async (
+    taskId: string,
+  ): Promise<{ ok: boolean; task_id: string }> => {
+    const { data } = await api.post<{ ok: boolean; task_id: string }>(
+      "/tasks/" + taskId + "/dismiss-external-pr",
+    );
+    return data;
+  },
 };

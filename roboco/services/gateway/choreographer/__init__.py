@@ -22,10 +22,13 @@ from roboco.services.gateway.choreographer._impl import (
 )
 from roboco.services.gateway.choreographer.board import BoardMixin
 from roboco.services.gateway.choreographer.doc import DocMixin
+from roboco.services.gateway.choreographer.pr_review import PRReviewerMixin
 from roboco.services.gateway.choreographer.qa import QAMixin
 
 
-class Choreographer(BoardMixin, DocMixin, QAMixin, _LegacyChoreographer):
+class Choreographer(
+    BoardMixin, DocMixin, QAMixin, PRReviewerMixin, _LegacyChoreographer
+):
     """Composed choreographer.
 
     MRO walks left-to-right: extracted mixins resolve first, then the

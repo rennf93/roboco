@@ -285,6 +285,47 @@ class NotificationService:
             )
         )
 
+    async def send_external_pr_reviewed_notification(
+        self,
+        task_id: str,
+        pr_number: int,
+        pr_url: str,
+        from_agent: str | None = None,
+        to_ceo: str = "ceo",
+    ) -> None:
+        """Tell the CEO an inbound external PR has been reviewed — their call.
+
+        The PR reviewer is read-only: it posts one change-request and stops. The
+        CEO is the gate on what happens next (supersede the PR — the org takes it
+        over and finishes it — or dismiss it). A passive ping is not enough, so
+        this emits a formal APPROVAL notification carrying ``related_task_id`` so
+        the panel's PR-review decision queue can surface it as an actionable
+        signal. Emitted server-side as ``system`` (the reviewer has no notify
+        verb).
+        """
+        logger.info(
+            "Sending external-PR-reviewed notification to CEO",
+            task_id=task_id,
+            pr_number=pr_number,
+            to_ceo=to_ceo,
+        )
+        body = (
+            f"External PR #{pr_number} has been reviewed and a change-request "
+            f"posted ({pr_url}).\n\nYour call: supersede it (the org takes the "
+            "contribution over and finishes it to our standards) or dismiss it."
+        )
+        await self._create_notification(
+            CreateNotificationParams(
+                notification_type=NotificationType.APPROVAL,
+                priority=NotificationPriority.HIGH,
+                from_agent=from_agent or "system",
+                to_agents=[to_ceo],
+                subject=f"External PR #{pr_number} reviewed — your decision",
+                body=body,
+                related_task_id=task_id,
+            )
+        )
+
     async def send_ack_notification(
         self,
         *,

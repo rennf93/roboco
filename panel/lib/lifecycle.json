@@ -17,6 +17,9 @@
     "main_pm": [
       "pending"
     ],
+    "pr_reviewer": [
+      "pending"
+    ],
     "product_owner": [],
     "qa": [
       "awaiting_qa"
@@ -30,6 +33,19 @@
       "composes": [],
       "description": "Claim awaiting_documentation. Returns evidence inline.",
       "name": "claim_doc_task",
+      "pre_side_effects": [],
+      "side_effects": []
+    },
+    {
+      "allowed_roles": [
+        "pr_reviewer"
+      ],
+      "composes": [
+        "claim",
+        "start"
+      ],
+      "description": "Claim an inbound external-PR review task and start work. pending -> claimed -> in_progress.",
+      "name": "claim_pr_review",
       "pre_side_effects": [],
       "side_effects": []
     },
@@ -114,6 +130,7 @@
         "developer",
         "documenter",
         "main_pm",
+        "pr_reviewer",
         "qa"
       ],
       "composes": [],
@@ -157,6 +174,7 @@
         "documenter",
         "head_marketing",
         "main_pm",
+        "pr_reviewer",
         "product_owner",
         "prompter",
         "qa",
@@ -231,6 +249,18 @@
       ],
       "description": "Pass QA. Transitions awaiting_qa -> awaiting_documentation.",
       "name": "pass_review",
+      "pre_side_effects": [],
+      "side_effects": []
+    },
+    {
+      "allowed_roles": [
+        "pr_reviewer"
+      ],
+      "composes": [
+        "pr_review_done"
+      ],
+      "description": "Post one complete change-request to the external PR and finish the review task. in_progress -> completed.",
+      "name": "post_pr_review",
       "pre_side_effects": [],
       "side_effects": []
     },
@@ -527,6 +557,14 @@
       ],
       "source": "in_progress",
       "target": "cancelled"
+    },
+    {
+      "action": "pr_review_done",
+      "roles": [
+        "pr_reviewer"
+      ],
+      "source": "in_progress",
+      "target": "completed"
     },
     {
       "action": "pause",

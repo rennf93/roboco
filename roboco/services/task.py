@@ -36,6 +36,7 @@ from roboco.models.base import (
     AgentRole,
     AgentStatus,
     BlockerResolverType,
+    Complexity,
     JournalEntryType,
     TaskNature,
     TaskStatus,
@@ -330,6 +331,27 @@ def extract_original_developer(quick_context: str | None) -> str | None:
     return None
 
 
+_SUPERSEDE_MARKER_PREFIX = "external_pr_supersede"
+
+
+def supersede_marker_line(quick_context: str | None) -> str:
+    """Return the supersede marker line from a (multi-writer) quick_context.
+
+    The supersede marker (``external_pr_supersede pr={n} review={uuid}`` plus a
+    ``closed=1`` token once the contributor PR is retired) is always written on
+    its own line, while ``escalate_to_ceo`` / ``ceo_approve`` append free-form
+    CEO notes on later lines. Dedup and close-state checks therefore parse THIS
+    line rather than substring-scanning the whole field — a CEO note that
+    happened to contain ``closed=1`` or ``pr=N review=`` must not be mistaken
+    for the marker (mirrors :func:`extract_original_developer`).
+    """
+    for raw in (quick_context or "").splitlines():
+        line = raw.strip()
+        if line.startswith(_SUPERSEDE_MARKER_PREFIX):
+            return line
+    return ""
+
+
 class TaskService(BaseService):
     """
     Service for managing tasks.
@@ -398,6 +420,9 @@ class TaskService(BaseService):
             # can reach in_progress and delegate. product_id is a plain column
             # (no lazy load).
             is_coordination=(task.project_id is None and task.product_id is not None),
+            # An external-PR review task reviews someone else's PR read-only —
+            # no branch of its own — so it is branch-gate exempt.
+            is_external_review=(getattr(task, "source", "manual") == "external_pr"),
         )
         validate_git_requirements(current, target, git_ctx)
 
@@ -601,6 +626,354 @@ class TaskService(BaseService):
             team=req.team if isinstance(req.team, str) else req.team.value,
         )
         return task
+
+    async def external_review_task_exists(
+        self, project_id: UUID, pr_number: int, head_sha: str | None = None
+    ) -> bool:
+        """True if this (project, external PR) at this head commit is already reviewed.
+
+        De-dupe key for inbound external-PR ingestion. Re-review is driven by the
+        PR's head commit: a review task records the SHA it covered as an
+        ``external_pr_head=<sha>`` marker in ``quick_context``. So:
+
+        - no review task for this PR yet -> False (ingest the first review);
+        - a task already covers THIS ``head_sha`` -> True (skip — nothing changed);
+        - a legacy/markerless task exists, or ``head_sha`` is unknown -> True
+          (can't prove it changed, so don't re-review / don't spam);
+        - tasks exist but all cover OTHER SHAs -> False (the PR got new commits —
+          open a fresh review for the change).
+        """
+        result = await self.session.execute(
+            select(TaskTable.quick_context).where(
+                TaskTable.project_id == project_id,
+                TaskTable.source == "external_pr",
+                TaskTable.pr_number == pr_number,
+            )
+        )
+        contexts = result.scalars().all()
+        if not contexts:
+            return False
+        if not head_sha:
+            return True
+        marker = f"external_pr_head={head_sha}"
+        for qc in contexts:
+            text = qc or ""
+            if marker in text or "external_pr_head=" not in text:
+                return True
+        return False
+
+    async def ingest_external_pr(
+        self,
+        *,
+        project_id: UUID,
+        pr: dict[str, Any],
+        created_by: UUID,
+        team: Team,
+    ) -> TaskTable | None:
+        """Create one review task for a newly-seen external PR; ``None`` if it exists.
+
+        ``pr`` is a normalized record from ``GitService.list_open_prs`` (number,
+        url, title, head_sha). De-duped per ``(project_id, pr_number, head_sha)``
+        — re-polling an unchanged PR is skipped, but new commits (a new head SHA)
+        open a fresh review (see ``external_review_task_exists``).
+        The task is CODE-typed with ``source='external_pr'`` and
+        ``confirmed_by_human=False`` — a deliberate gate: no agent fetches, checks
+        out, or runs the contributor's code until a human confirms the PR. Caller
+        commits.
+        """
+        pr_number = int(pr["number"])
+        pr_url = str(pr.get("url") or "")
+        pr_title = str(pr.get("title") or "")
+        head_sha = str(pr.get("head_sha") or "")
+        if await self.external_review_task_exists(project_id, pr_number, head_sha):
+            return None
+        title = f"Review external PR #{pr_number}: {pr_title}".strip()
+        req = TaskCreateRequest(
+            title=title[:200],
+            description=(
+                f"An external contributor opened PR #{pr_number} ({pr_url}).\n\n"
+                "Review it adversarially and post a single, complete "
+                "change-request with per-criterion findings. Do not fetch, check "
+                "out, or run the contributor's code until a human has confirmed "
+                "this PR."
+            ),
+            acceptance_criteria=[
+                "Exactly one complete GitHub review is posted with per-criterion "
+                "findings",
+            ],
+            team=team,
+            created_by=created_by,
+            task_type=TaskType.CODE,
+            nature=TaskNature.TECHNICAL,
+            estimated_complexity=Complexity.MEDIUM,
+            project_id=project_id,
+            source="external_pr",
+            confirmed_by_human=False,
+        )
+        task = await self.create(req)
+        task.pr_number = pr_number
+        task.pr_url = pr_url
+        # Record the reviewed head commit so a later push (new SHA) re-reviews,
+        # while an unchanged PR is skipped (see external_review_task_exists).
+        if head_sha:
+            task.quick_context = f"external_pr_head={head_sha}"
+        await self.session.flush()
+        return task
+
+    async def list_external_pr_reviews_awaiting_decision(self) -> list[TaskTable]:
+        """Completed external-PR reviews still awaiting the CEO's decision.
+
+        A review is awaiting decision once the reviewer has posted (status
+        COMPLETED) and the CEO has neither superseded it (supersede sets
+        ``confirmed_by_human=True``) nor dismissed it (a ``dismissed=1`` marker
+        in quick_context). This backs the panel's PR-review decision queue.
+        """
+        result = await self.session.execute(
+            select(TaskTable).where(
+                TaskTable.source == "external_pr",
+                TaskTable.status == TaskStatus.COMPLETED,
+                TaskTable.confirmed_by_human.is_(False),
+            )
+        )
+        return [
+            t
+            for t in result.scalars().all()
+            if "dismissed=1" not in (t.quick_context or "").split()
+        ]
+
+    async def dismiss_external_pr_review(self, task_id: UUID) -> TaskTable | None:
+        """CEO declines to act on a reviewed external PR — drop it from the queue.
+
+        Appends a ``dismissed=1`` marker to quick_context so the review leaves
+        ``list_external_pr_reviews_awaiting_decision``. Returns None if the task
+        is missing or is not an external-PR review.
+        """
+        task = await self.get(task_id)
+        if task is None or getattr(task, "source", "") != "external_pr":
+            return None
+        if "dismissed=1" not in (task.quick_context or "").split():
+            task.quick_context = f"{task.quick_context or ''} dismissed=1".strip()
+        await self.session.flush()
+        return task
+
+    async def pr_review_claim(
+        self, reviewer_agent_id: UUID, task_id: UUID
+    ) -> TaskTable | None:
+        """Claim an external-PR review task: pending -> in_progress, no plan, no branch.
+
+        The review is read-only and does no git of its own, so it must NOT route
+        through claim()/start() — those would require a plan (start() returns
+        None for a planless task) and auto-create + push a branch. Mirrors
+        qa_claim's specialized-claim pattern (the verb body owns dispatch instead
+        of the generic verb runner). The ``is_external_review`` branch-gate
+        exemption (from source='external_pr') keeps claimed->in_progress valid
+        with no branch. Returns None if the task is not PENDING (already taken).
+        """
+        task = await self.get(task_id)
+        if task is None or task.status != TaskStatus.PENDING:
+            return None
+        task.assigned_to = cast("Any", reviewer_agent_id)
+        task.claimed_by = cast("Any", reviewer_agent_id)
+        self._validate_and_set_status(
+            task, TaskStatus.CLAIMED, "pr_reviewer", audit_agent_id=reviewer_agent_id
+        )
+        self._validate_and_set_status(
+            task,
+            TaskStatus.IN_PROGRESS,
+            "pr_reviewer",
+            audit_agent_id=reviewer_agent_id,
+        )
+        await self.session.flush()
+        self.log.info("External PR review claimed", task_id=str(task_id))
+        return task
+
+    async def complete_review(
+        self, reviewer_agent_id: UUID, task_id: UUID, notes: str | None = None
+    ) -> TaskTable | None:
+        """Mark an external-PR review task complete (in_progress -> completed).
+
+        The terminal for the pr_reviewer's ``post_pr_review`` verb: the review
+        has been posted, so the review task is done. Attributed to the reviewer.
+        Mirrors ``qa_pass``'s validated-transition shape; the ``pr_review_done``
+        transition (in_progress -> completed, role pr_reviewer) is defined in the
+        lifecycle spec and is git-gate exempt (the review task has no branch).
+        """
+        task = await self.get(task_id)
+        if task is None:
+            return None
+        if task.status != TaskStatus.IN_PROGRESS:
+            return None
+        if notes:
+            task.qa_notes = notes
+        reviewer_id = to_python_uuid(task.claimed_by) or reviewer_agent_id
+        task.assigned_to = None
+        task.claimed_by = None
+        task.active_claimant_id = cast("Any", None)
+        self._validate_and_set_status(
+            task,
+            TaskStatus.COMPLETED,
+            "pr_reviewer",
+            audit_agent_id=reviewer_id,
+        )
+        await self.session.flush()
+        self.log.info("External PR review complete", task_id=str(task_id))
+        return task
+
+    async def create_supersede_umbrella(
+        self, *, review_task_id: UUID, branch_name: str, created_by: UUID
+    ) -> TaskTable | None:
+        """Create the supersede coordination task for a reviewed external PR.
+
+        A ROOT planning task on the same repo (NOT parented to the review task —
+        that would burn a MAX_TASK_DEPTH level and block the cell->dev
+        decomposition), handed to Main PM to delegate the code work to a cell.
+        The contributor PR number + review-task id are carried in
+        ``quick_context`` (so close-on-land and dedup don't need a parent walk).
+        ``branch_name`` is the roboco-owned branch already cut from the
+        contributor's fork head, so the delegated code subtask builds on the
+        contributor's commits (we never push to the fork). ``confirmed_by_human``
+        is True — the CEO authorized this supersede. Returns None if the review
+        task is missing or is not an external-PR review.
+        """
+        review = await self.get(review_task_id)
+        if review is None or getattr(review, "source", "") != "external_pr":
+            return None
+        pr_number = review.pr_number
+        req = TaskCreateRequest(
+            title=f"Supersede external PR #{pr_number}: finish + harden it ourselves",
+            description=(
+                f"The org reviewed external PR #{pr_number} and is taking it over. "
+                f"A roboco-owned branch ('{branch_name}') has been cut from the "
+                "contributor's commits. Delegate the work to the appropriate cell "
+                "to finish + harden it to our standards on that branch, open our "
+                "own PR, and merge it; the contributor PR is closed and linked on "
+                "land. Never push to the contributor's fork."
+            ),
+            acceptance_criteria=[
+                "The contributor's PR is superseded by our own merged PR",
+                "The work meets the project's quality standards",
+            ],
+            team=Team.MAIN_PM,
+            created_by=created_by,
+            task_type=TaskType.PLANNING,
+            nature=TaskNature.TECHNICAL,
+            estimated_complexity=Complexity.MEDIUM,
+            project_id=cast("UUID", review.project_id),
+            source="external_pr_supersede",
+            confirmed_by_human=True,
+        )
+        umbrella = await self.create(req)
+        # Carry the pre-cut fork branch so the delegated code subtask cuts off
+        # the contributor's commits (via _resolve_base_branch's parent-branch
+        # rule), not the default branch. The marker links back to the review +
+        # contributor PR for dedup and close-on-land (no parent link needed).
+        umbrella.branch_name = branch_name
+        umbrella.quick_context = (
+            f"external_pr_supersede pr={pr_number} review={review_task_id}"
+        )
+        await self.session.flush()
+        self.log.info(
+            "Supersede umbrella created",
+            task_id=str(umbrella.id),
+            review_task_id=str(review_task_id),
+            pr_number=pr_number,
+        )
+        return umbrella
+
+    async def find_supersede_umbrella(
+        self, project_id: UUID, pr_number: int
+    ) -> TaskTable | None:
+        """The existing (non-cancelled) supersede umbrella for this PR, or None.
+
+        Idempotency for the supersede trigger — a repeat CEO call must not cut a
+        second branch or spawn a second umbrella. Matches the ``quick_context``
+        marker exactly (``pr={n} review=`` won't false-match pr=50 for pr=5).
+        """
+        result = await self.session.execute(
+            select(TaskTable).where(
+                TaskTable.project_id == project_id,
+                TaskTable.source == "external_pr_supersede",
+                TaskTable.status != TaskStatus.CANCELLED,
+            )
+        )
+        needle = f"pr={pr_number} review="
+        for task in result.scalars().all():
+            if needle in supersede_marker_line(task.quick_context):
+                return task
+        return None
+
+    async def supersede_umbrellas_pending_close(self) -> list[TaskTable]:
+        """Landed supersede umbrellas whose contributor PR hasn't been closed yet.
+
+        A supersede umbrella reaching COMPLETED is necessary but not sufficient
+        proof that our replacement PR merged — the CEO can force-complete the
+        root over a *cancelled* code subtask, in which case the team abandoned
+        the work and the contributor's still-valid PR must NOT be retired. So we
+        additionally require a non-cancelled descendant that landed a PR (see
+        :meth:`_supersede_replacement_landed`). The ``closed=1`` token on the
+        marker line makes close-on-land idempotent (closed only once).
+        """
+        result = await self.session.execute(
+            select(TaskTable).where(
+                TaskTable.source == "external_pr_supersede",
+                TaskTable.status == TaskStatus.COMPLETED,
+            )
+        )
+        pending: list[TaskTable] = []
+        for task in result.scalars().all():
+            if "closed=1" in supersede_marker_line(task.quick_context).split():
+                continue
+            if not await self._supersede_replacement_landed(cast("UUID", task.id)):
+                continue
+            pending.append(task)
+        return pending
+
+    async def _supersede_replacement_landed(self, umbrella_id: UUID) -> bool:
+        """True if a non-cancelled descendant of the umbrella landed a PR.
+
+        Walks the umbrella's subtree (bounded by MAX_TASK_DEPTH) and returns
+        True as soon as it finds a COMPLETED task carrying a ``pr_number`` — the
+        team's merged replacement PR. Returns False when every code descendant
+        was cancelled (force-completed umbrella), so close-on-land then leaves
+        the contributor PR open.
+        """
+        frontier: list[UUID] = [umbrella_id]
+        seen: set[UUID] = set()
+        while frontier:
+            result = await self.session.execute(
+                select(TaskTable).where(TaskTable.parent_task_id.in_(frontier))
+            )
+            frontier = []
+            for child in result.scalars().all():
+                child_id = cast("UUID", child.id)
+                if child_id in seen:
+                    continue
+                seen.add(child_id)
+                if child.status == TaskStatus.COMPLETED and child.pr_number is not None:
+                    return True
+                frontier.append(child_id)
+        return False
+
+    async def mark_supersede_pr_closed(self, task_id: UUID) -> None:
+        """Record that a landed supersede's contributor PR has been closed.
+
+        Appends ``closed=1`` to the marker LINE (not the end of the whole
+        multi-writer field) so the idempotency token stays anchored to the
+        marker and survives appended CEO notes.
+        """
+        task = await self.get(task_id)
+        if task is None:
+            return
+        lines = (task.quick_context or "").splitlines()
+        for i, raw in enumerate(lines):
+            if raw.strip().startswith(_SUPERSEDE_MARKER_PREFIX):
+                if "closed=1" not in raw.split():
+                    lines[i] = f"{raw} closed=1"
+                break
+        else:
+            lines.append(f"{_SUPERSEDE_MARKER_PREFIX} closed=1")
+        task.quick_context = "\n".join(lines)
+        await self.session.flush()
 
     async def _inherit_parent_session(
         self,

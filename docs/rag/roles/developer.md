@@ -19,13 +19,11 @@
 
 - Pull pending or needs-revision work via `give_me_work()`
 - Start, pause, resume your own claimed tasks
-- Make code commits via `commit(message, files)` (auto-prefixed with
-  `[task-id]`, auto-pushed by the choreographer)
+- Make code commits via `commit(message, files)` (auto-prefixed with `[task-id]`, auto-pushed by the choreographer)
 - Submit for QA when implementation is done
 - Block your own task if you hit an external dependency
 - Search the knowledge base via `roboco_ask_mentor` / `roboco_kb_search`
-- Read-only inspect git via `roboco_git_status / _log / _diff /
-  _branch_list`
+- Read-only inspect git via `roboco_git_status / _log / _diff / _branch_list`
 
 ## What You CANNOT Do
 
@@ -33,10 +31,8 @@
 - Pass or fail QA → QA only
 - Complete a task / merge a PR → PMs only
 - Cancel tasks
-- Send `notify` (ack-required notifications) — devs use `say` (channel)
-  and `dm` (A2A) only
-- Run shell git (`git commit`, `git push`, `git checkout`, etc.) —
-  blocked by the bash-guard hook
+- Send `notify` (ack-required notifications) — devs use `say` (channel) and `dm` (A2A) only
+- Run shell git (`git commit`, `git push`, `git checkout`, etc.) — blocked by the bash-guard hook
 
 ## Task Flow (gateway verbs)
 
@@ -67,16 +63,13 @@ i_am_idle()                    → no work in your queue right now
 | `roboco-git-readonly` | `roboco_git_status`, `roboco_git_log`, `roboco_git_diff`, `roboco_git_branch_list` |
 | `roboco-optimal`      | `roboco_ask_mentor`, `roboco_kb_search` |
 
-There is **no** `roboco_git_commit / _push / _create_pr / _merge_pr /
-_checkout` tool. The single `commit` verb covers commit + push + PR
-opening (the PR opens at `open_pr` time).
+There is **no** `roboco_git_commit / _push / _create_pr / _merge_pr / _checkout` tool. The single `commit` verb covers commit + push + PR opening (the PR opens at `open_pr` time).
 
 ## Branch Discipline
 
 - Branches are auto-created on `i_will_work_on()`.
 - Don't checkout branches by hand — call the verb on the right task.
-- If you see a `BRANCH_MISMATCH` envelope, you're on the wrong task.
-  Use `give_me_work()` again or `unclaim` and re-pick the intended task.
+- If you see a `BRANCH_MISMATCH` envelope, you're on the wrong task. Use `give_me_work()` again or `unclaim` and re-pick the intended task.
 
 ## Before Submitting to QA
 
@@ -84,10 +77,8 @@ opening (the PR opens at `open_pr` time).
 2. **Lint:** `uv run ruff check .` or `pnpm lint`
 3. **Types:** `uv run mypy roboco/` or `pnpm typecheck`
 4. **Format:** `uv run ruff format .` or `pnpm format`
-5. **Reflect:** `note(text="...", scope="reflect")` on what changed and
-   why — useful for QA's diff review.
-6. `open_pr(task_id)` — the choreographer pushes any unpushed
-   commits and opens the PR.
+5. **Reflect:** `note(text="...", scope="reflect")` on what changed and why — useful for QA's diff review.
+6. `open_pr(task_id)` — the choreographer pushes any unpushed commits and opens the PR.
 
 ## A2A Collaboration
 
@@ -99,16 +90,14 @@ dm(recipient="be-qa", text="Quick sanity check: ...", task_id="...")
 say(channel="backend-cell", text="Started on task X — anyone hit Y before?")
 ```
 
-Cross-cell A2A is denied by policy. Route through your Cell PM via
-`escalate_up(task_id, reason)`.
+Cross-cell A2A is denied by policy. Route through your Cell PM via `escalate_up(task_id, reason)`.
 
 ## Escalation
 
 Escalate to your Cell PM when:
 
 - Requirements are unclear
-- Blocked by an external factor (use `i_am_blocked` for in-band block;
-  `escalate_up` if PM intervention is needed)
+- Blocked by an external factor (use `i_am_blocked` for in-band block; `escalate_up` if PM intervention is needed)
 - Scope question arises
 - Architectural decision is required
 

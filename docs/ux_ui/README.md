@@ -14,5 +14,4 @@ Documentation for the UX/UI Cell team.
 
 ## Contributing
 
-UX/UI team members should request documentation updates through the Cell PM.
-Only the UX/UI Documenter (ux-doc) can write to this directory.
+UX/UI team members should request documentation updates through the Cell PM. Only the UX/UI Documenter (ux-doc) can write to this directory.

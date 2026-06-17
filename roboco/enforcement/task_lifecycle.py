@@ -162,7 +162,13 @@ def _build_role_restricted_transitions() -> dict[tuple[str, str], tuple[str, ...
         if t.role_constraint is not None
     }
     for (src, tgt), roles in _LEGACY_ROLE_GATES.items():
-        out[(src.value, tgt.value)] = roles
+        # UNION (not overwrite): legacy gates ADD operational roles to an edge;
+        # overwriting silently dropped any spec-derived roles that share the
+        # same edge. pr_review_done puts pr_reviewer on (in_progress, completed)
+        # — the same edge the legacy PM-self-complete gate pins — so an
+        # overwrite erased pr_reviewer and the review task could never complete.
+        existing = out.get((src.value, tgt.value), ())
+        out[(src.value, tgt.value)] = tuple(sorted(set(existing) | set(roles)))
     return out
 
 
@@ -321,6 +327,10 @@ class GitContext:
     # `_is_coordination_task` in the orchestrator and the `_ensure_branch_for_task`
     # short-circuit in TaskService.
     is_coordination: bool = False
+    # An inbound external-PR review task reviews someone else's PR read-only; it
+    # does no git work of its own and never gets a branch, so it is exempt from
+    # the claimed->in_progress branch gate (same rationale as is_coordination).
+    is_external_review: bool = False
 
 
 def validate_git_requirements(
@@ -387,6 +397,7 @@ def validate_git_requirements(
         transition == ("claimed", "in_progress")
         and not git_ctx.branch_name
         and not git_ctx.is_coordination
+        and not git_ctx.is_external_review
     ):
         raise GitRequirementError(
             transition=transition,

@@ -17,25 +17,36 @@ claude  # Login via browser
 
 ## Quick Start (NAS/Server)
 
-Everything runs in Docker - no need to install Python/uv on the host.
+Everything runs in Docker - no need to install Python/uv on the host. There are two ways to get the stack: **pull the pre-built images** (every release publishes them) or **build from source**. Both start from a clone, which gives you the compose files, the nginx config, and `.env.example`.
 
 ```bash
 # 1. Clone the project
-git clone <repo-url> roboco
+git clone https://github.com/rennf93/roboco.git roboco
 cd roboco
 
 # 2. Configure environment
 cp .env.example .env
 
-# 3. Set host paths for your NAS (IMPORTANT!)
-# Edit .env and set:
-#   ROBOCO_HOST_PROJECT_DIR=/volume1/roboco
-#   ROBOCO_HOST_CLAUDE_DIR=/root/.claude  (or your user's home)
+# 3. Edit .env and set at least:
+#   ROBOCO_ENCRYPTION_KEY, ROBOCO_AGENT_AUTH_SECRET   (secrets; see the file)
+#   ROBOCO_HOST_PROJECT_DIR=/volume1/roboco           (host paths for spawning agents)
+#   ROBOCO_HOST_CLAUDE_DIR=/root/.claude              (or your user's home)
+```
 
-# 4. Start everything (PostgreSQL + Redis + Orchestrator)
-docker compose up -d
+### Option A — Pull the pre-built images (no build toolchain on the host)
 
-# 5. View logs
+```bash
+docker compose -f docker-compose.registry.yml pull
+docker compose -f docker-compose.registry.yml up -d
+docker compose -f docker-compose.registry.yml logs -f orchestrator
+```
+
+Choose the registry and version with `ROBOCO_REGISTRY` (`ghcr.io/rennf93` or `docker.io/renzof93`) and `ROBOCO_VERSION` (`latest` or a pinned release such as `0.5.0`). The orchestrator pulls and spawns the matching pre-built agent images on demand.
+
+### Option B — Build from source
+
+```bash
+docker compose up -d              # builds images on first run, then starts everything
 docker compose logs -f orchestrator
 ```
 
@@ -51,7 +62,7 @@ Your NAS/Server
 │   └── roboco-orchestrator
 │       │
 │       ├── Runs FastAPI on port 8000
-│       ├── Builds roboco-agent image (once)
+│       ├── Builds (from source) or pulls (registry) the agent images
 │       └── Spawns agent containers:
 │           ├── roboco-agent-main-pm
 │           ├── roboco-agent-be-dev-1

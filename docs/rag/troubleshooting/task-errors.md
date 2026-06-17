@@ -31,9 +31,7 @@
 2. Task in wrong status
 
 **Solutions**:
-- Claim + start in one step: `i_will_work_on(task_id, plan="...")`
-  (devs), `claim_review(task_id)` (QA), `claim_doc_task(task_id)` (doc),
-  or `i_will_plan(task_id, plan, approach)` (PMs)
+- Claim + start in one step: `i_will_work_on(task_id, plan="...")` (devs), `claim_review(task_id)` (QA), `claim_doc_task(task_id)` (doc), or `i_will_plan(task_id, plan, approach)` (PMs)
 - Check current status
 
 Note: Git branches are auto-created on claim, no waiting needed.
@@ -67,14 +65,11 @@ Note: Git branches are auto-created on claim, no waiting needed.
 
 **Cause**: Attempting to escalate a task that has a `parent_task_id`
 
-**Solution**: Escalate the parent task instead. Find the parent task ID
-(it's on the subtask's `parent_task_id` field, surfaced in your
-`give_me_work()` / `triage()` envelope), then escalate the parent:
+**Solution**: Escalate the parent task instead. Find the parent task ID (it's on the subtask's `parent_task_id` field, surfaced in your `give_me_work()` / `triage()` envelope), then escalate the parent:
 ```python
 escalate_to_ceo(task_id=parent_id, reason="...")
 ```
-`escalate_to_ceo` is Main PM / Board only; Cell PMs and cell members
-use `escalate_up(task_id, reason)` instead.
+`escalate_to_ceo` is Main PM / Board only; Cell PMs and cell members use `escalate_up(task_id, reason)` instead.
 
 ## Git Task: Parent Branch Required
 
@@ -93,10 +88,8 @@ use `escalate_up(task_id, reason)` instead.
 **Cause**: Trying to complete a parent task while subtasks are still in progress
 
 **Solution**: The error message includes which subtask IDs are blocking. Either:
-1. Complete the blocking subtasks first (drive them through QA → docs →
-   `complete(task_id, notes)`)
-2. Cancel them if no longer needed (PM/CEO only — cancellation is not an
-   agent verb; ask your PM)
+1. Complete the blocking subtasks first (drive them through QA → docs → `complete(task_id, notes)`)
+2. Cancel them if no longer needed (PM/CEO only — cancellation is not an agent verb; ask your PM)
 
 ## Invalid Task Status for Operation
 

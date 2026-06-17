@@ -1,4 +1,5 @@
 export { CommandCenter } from "./command-center";
+export { PrReviewQueue } from "./pr-review-queue";
 export { TeamHealthCards } from "./team-health-cards";
 export { TeamHealthCard } from "./team-health-card";
 export { KeyMetricsPanel } from "./key-metrics-panel";
