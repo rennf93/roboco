@@ -91,7 +91,10 @@ export function KanbanCard({ task, onAction, showQaActions, isDragging: isDraggi
           <div className="flex-1 min-w-0 overflow-hidden">
             <Link href={"/tasks/" + task.id} className="block">
               <p className="font-medium text-sm line-clamp-2 hover:underline break-words">
-                <span className="text-muted-foreground">#{task.id}</span> {task.title}
+                <span className="font-mono text-muted-foreground" title={task.id}>
+                  #{task.id.slice(0, 8)}
+                </span>{" "}
+                {task.title}
               </p>
             </Link>
             {task.description && (
