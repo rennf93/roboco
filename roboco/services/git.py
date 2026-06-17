@@ -1197,7 +1197,23 @@ class GitService(BaseService):
         restore a clean workspace, and returns ``(True, conflicted_files)``.
 
         On success: returns ``(False, [])``.
+
+        Raises ``ValidationError`` when ``target_branch`` or the current
+        HEAD branch is ``master`` or ``main``; rebasing onto or from a
+        protected branch is not allowed in automation.
         """
+        _PROTECTED: frozenset[str] = frozenset({"master", "main"})
+        if target_branch in _PROTECTED:
+            raise ValidationError(
+                f"REBASE_FORBIDDEN: Cannot rebase onto '{target_branch}'. "
+                "Rebasing onto 'master' or 'main' is not allowed in automation."
+            )
+        head_branch = await self.get_current_branch(workspace)
+        if head_branch in _PROTECTED:
+            raise ValidationError(
+                f"REBASE_FORBIDDEN: Cannot rebase '{head_branch}'. "
+                "Rebasing 'master' or 'main' is not allowed in automation."
+            )
         result = await self._run_git(workspace, ["rebase", target_branch], check=False)
         if result.returncode != 0:
             conflict_result = await self._run_git(

@@ -16,6 +16,10 @@ Pins the three critical control-flow branches of ``rebase_onto_base``:
 All tests mock ``_run_git`` at the service-method level using
 ``AsyncMock`` with a ``side_effect`` list so each awaited call consumes
 the next pre-configured result in order.
+
+Also covers the ``rebase()`` safety gate added by the git-schema cleanup
+task: rebasing onto or from a protected branch (master/main) is rejected
+with a service-layer ``ValidationError`` before any git command runs.
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
+from roboco.services.base import ValidationError
 from roboco.services.git import GitService
 
 # ---------------------------------------------------------------------------
@@ -211,3 +216,63 @@ async def test_resilience_when_both_rebase_and_abort_fail_returns_conflict_no_ex
     )
 
     assert result == {"status": "conflicts", "files": ["src/conflict.py"]}
+
+
+# ---------------------------------------------------------------------------
+# Safety gate tests for rebase() — protected-branch guard
+# ---------------------------------------------------------------------------
+# These test the service-layer ``rebase()`` method (the workspace-scoped API
+# endpoint helper), NOT ``rebase_onto_base()`` (the internal gateway helper).
+# The guard runs BEFORE any git command, so no ``_run_git`` mock is needed
+# for target-branch cases; the head-branch case requires a stubbed
+# ``get_current_branch``.
+
+
+@pytest.mark.asyncio
+async def test_rebase_raises_validation_error_when_target_is_master() -> None:
+    """rebase() must raise ValidationError for target_branch='master'."""
+    svc = _git_service()
+    with pytest.raises(ValidationError, match="REBASE_FORBIDDEN"):
+        await svc.rebase(_WORKSPACE, "master")
+
+
+@pytest.mark.asyncio
+async def test_rebase_raises_validation_error_when_target_is_main() -> None:
+    """rebase() must raise ValidationError for target_branch='main'."""
+    svc = _git_service()
+    with pytest.raises(ValidationError, match="REBASE_FORBIDDEN"):
+        await svc.rebase(_WORKSPACE, "main")
+
+
+@pytest.mark.asyncio
+async def test_rebase_raises_validation_error_when_head_branch_is_master(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """rebase() must raise ValidationError when HEAD is 'master'.
+
+    The target-branch check passes (we pass a safe target), but the
+    head-branch guard fires when get_current_branch returns 'master'.
+    """
+    monkeypatch.setattr(
+        GitService,
+        "get_current_branch",
+        AsyncMock(return_value="master"),
+    )
+    svc = _git_service()
+    with pytest.raises(ValidationError, match="REBASE_FORBIDDEN"):
+        await svc.rebase(_WORKSPACE, "feature/backend/some-task")
+
+
+@pytest.mark.asyncio
+async def test_rebase_raises_validation_error_when_head_branch_is_main(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """rebase() must raise ValidationError when HEAD is 'main'."""
+    monkeypatch.setattr(
+        GitService,
+        "get_current_branch",
+        AsyncMock(return_value="main"),
+    )
+    svc = _git_service()
+    with pytest.raises(ValidationError, match="REBASE_FORBIDDEN"):
+        await svc.rebase(_WORKSPACE, "feature/backend/some-task")

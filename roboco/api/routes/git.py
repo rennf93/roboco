@@ -56,6 +56,7 @@ from roboco.api.schemas.git import (
 )
 from roboco.exceptions import GitCommandError, GitError, GitTimeoutError
 from roboco.logging import get_logger
+from roboco.models.base import AgentRole
 from roboco.services.base import (
     NotFoundError,
     ServiceError,
@@ -78,6 +79,14 @@ _LOG_FORMAT_PARTS = 5
 # git timeouts/command failures to be translated to 504/500 instead of
 # bubbling as 500 Internal Server Errors with no `detail`.
 _TranslatableError = (ServiceError, GitError)
+
+# Roles permitted to rebase branches via the /rebase endpoint.
+# QA, documenters, main-PM, and CEO should not be rebasing task branches
+# directly — developers own their branches and cell PMs coordinate branch
+# integration. This role gate prevents accidental or unauthorized rewrites.
+_REBASE_ALLOWED_ROLES: frozenset[AgentRole] = frozenset(
+    {AgentRole.DEVELOPER, AgentRole.CELL_PM}
+)
 
 
 def _translate_error(e: ServiceError | GitError) -> HTTPException:
@@ -560,9 +569,20 @@ async def rebase_branch(
 ) -> GitRebaseResponse:
     """Rebase the current branch onto target_branch.
 
+    Role-gated: only developers and cell PMs may rebase branches.
+    QA, documenters, main-PM, and CEO are rejected with 403.
+
     On conflict: aborts the rebase and returns conflict=True with the
     list of conflicted files.  On success: returns conflict=False.
     """
+    if agent.role not in _REBASE_ALLOWED_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"REBASE_ROLE_RESTRICTED: Role '{agent.role}' is not permitted "
+                "to rebase. Only developers and cell PMs may use this endpoint."
+            ),
+        )
     project_slug = await _resolve_project_slug(data.project_slug, db)
     git_service = get_git_service(db)
 
