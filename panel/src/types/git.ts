@@ -102,14 +102,14 @@ export interface GitMergePRResponse {
 export interface GitCommitRequest {
   project_slug: string;
   message: string;
-  task_id: string;
+  task_id?: string;
   agent_id: string;
   files?: string[] | null;
 }
 
 export interface GitPushRequest {
   project_slug: string;
-  task_id: string;
+  task_id?: string;
   agent_id: string;
   force?: boolean;
 }
@@ -132,7 +132,7 @@ export interface GitCheckoutRequest {
 
 export interface GitCreatePRRequest {
   project_slug: string;
-  task_id: string;
+  task_id?: string;
   title: string;
   body: string;
   agent_id: string;
@@ -143,7 +143,7 @@ export type MergeMethod = "merge" | "squash" | "rebase";
 export interface GitMergePRRequest {
   project_slug: string;
   pr_number: number;
-  task_id: string;
+  task_id?: string;
   merge_method?: MergeMethod;
   agent_id: string;
 }
@@ -151,8 +151,6 @@ export interface GitMergePRRequest {
 export interface GitPullRequest {
   project_slug: string;
   task_id?: string;
-  agent_id?: string;
-  remote?: string;
 }
 
 export interface GitPullResponse {
@@ -168,8 +166,6 @@ export interface GitPullResponse {
 export interface GitFetchRequest {
   project_slug: string;
   task_id?: string;
-  agent_id?: string;
-  remote?: string;
 }
 
 export interface GitFetchResponse {

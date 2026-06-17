@@ -388,7 +388,7 @@ export function GitActionsPanel({
             <div className="px-6 py-2 space-y-2">
               <label className="text-sm font-medium">Target branch</label>
               <Input
-                placeholder="e.g. main or origin/main"
+                placeholder="Remote ref (e.g. origin/HEAD)"
                 value={rebaseTargetBranch}
                 onChange={(e) => setRebaseTargetBranch(e.target.value)}
               />
