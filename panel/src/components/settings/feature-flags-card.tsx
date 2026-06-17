@@ -22,6 +22,9 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
   internal_pr_enabled: "Run the read-only safety reviewer on internal branch PRs.",
   research_enabled: "Let the Board and PMs run web research.",
   strategy_engine_enabled: "Generate and maintain company strategy artifacts.",
+  self_heal_enabled: "Watch RoboCo's own CI and notify you when it regresses.",
+  self_heal_originate_enabled:
+    "Also open a PENDING fix task for a detected regression (needs Self-healing on; the task waits for your approval).",
   provisioning_enabled: "Auto-provision projects from approved pitches.",
   rag_auto_update_enabled: "Keep the knowledge base index refreshed automatically.",
   transcript_prune_enabled: "Run the background sweep that prunes old transcripts.",

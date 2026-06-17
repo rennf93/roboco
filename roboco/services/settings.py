@@ -48,6 +48,8 @@ FEATURE_FLAGS: tuple[tuple[str, str], ...] = (
     ("internal_pr_enabled", "Internal-PR safety reviewer"),
     ("research_enabled", "Web research (Board + PM)"),
     ("strategy_engine_enabled", "Strategy engine"),
+    ("self_heal_enabled", "Self-healing (detect + notify)"),
+    ("self_heal_originate_enabled", "Self-healing — open fix tasks"),
     ("provisioning_enabled", "Pitch auto-provisioning"),
     ("rag_auto_update_enabled", "RAG auto-update"),
     ("transcript_prune_enabled", "Transcript pruning"),
