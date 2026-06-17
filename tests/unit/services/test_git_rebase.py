@@ -351,8 +351,24 @@ async def test_pull_success_returns_post_pull_status(
     check and can be fast-forwarded.  Two get_status calls are expected:
     the pre-flight check and the post-pull status.
     """
-    _pre_flight = ("feature/backend/task", False, [], [], [], 0, 2)
-    _post_pull = ("feature/backend/task", False, [], [], [], 0, 0)
+    _pre_flight: tuple[str, bool, list[str], list[str], list[str], int, int] = (
+        "feature/backend/task",
+        False,
+        [],
+        [],
+        [],
+        0,
+        2,
+    )
+    _post_pull: tuple[str, bool, list[str], list[str], list[str], int, int] = (
+        "feature/backend/task",
+        False,
+        [],
+        [],
+        [],
+        0,
+        0,
+    )
     monkeypatch.setattr(
         GitService,
         "get_status",
