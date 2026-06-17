@@ -858,5 +858,96 @@ async def test_rebase_git_command_error(git_client: dict) -> None:
     assert response.status_code == HTTPStatus.INTERNAL_SERVER_ERROR
 
 
+# ---------------------------------------------------------------------------
+# task_id Optional — no 422 when task_id is omitted
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_commit_without_task_id_no_422(git_client: dict) -> None:
+    """POST /commit without task_id must not return 422 (schema validation error)."""
+    with patch("roboco.api.routes.git.get_git_service") as mock_get:
+        svc = AsyncMock()
+        svc.commit_for_task = AsyncMock(
+            return_value=("abc123", "feat: add thing", 1, 5, 2)
+        )
+        mock_get.return_value = svc
+        response = await git_client["client"].post(
+            "/api/git/commit",
+            json={
+                "project_slug": git_client["project"].slug,
+                "agent_id": str(uuid4()),
+                "message": "add a new thing",
+                "commit_type": "feat",
+            },
+            headers=_HDR,
+        )
+    assert response.status_code != HTTPStatus.UNPROCESSABLE_ENTITY
+    assert response.status_code == HTTPStatus.OK
+
+
+@pytest.mark.asyncio
+async def test_push_without_task_id_no_422(git_client: dict) -> None:
+    """POST /push without task_id must not return 422 (schema validation error)."""
+    with patch("roboco.api.routes.git.get_git_service") as mock_get:
+        svc = AsyncMock()
+        svc.push_for_task = AsyncMock(return_value=("feature/x", 3))
+        mock_get.return_value = svc
+        response = await git_client["client"].post(
+            "/api/git/push",
+            json={
+                "project_slug": git_client["project"].slug,
+            },
+            headers=_HDR,
+        )
+    assert response.status_code != HTTPStatus.UNPROCESSABLE_ENTITY
+    assert response.status_code == HTTPStatus.OK
+
+
+@pytest.mark.asyncio
+async def test_create_pr_without_task_id_no_422(git_client: dict) -> None:
+    """POST /pr/create without task_id must not return 422 (schema validation error)."""
+    with patch("roboco.api.routes.git.get_git_service") as mock_get:
+        svc = AsyncMock()
+        svc.create_pr_for_task = AsyncMock(
+            return_value=(
+                7,
+                "https://github.com/x/y/pull/7",
+                "feat: add thing",
+                "feat/x",
+                "main",
+            )
+        )
+        mock_get.return_value = svc
+        response = await git_client["client"].post(
+            "/api/git/pr/create",
+            json={
+                "project_slug": git_client["project"].slug,
+            },
+            headers=_HDR,
+        )
+    assert response.status_code != HTTPStatus.UNPROCESSABLE_ENTITY
+    assert response.status_code == HTTPStatus.OK
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_without_task_id_no_422(git_client: dict) -> None:
+    """POST /pr/merge without task_id must not return 422 (schema validation error)."""
+    with patch("roboco.api.routes.git.get_git_service") as mock_get:
+        svc = AsyncMock()
+        svc.merge_pr_for_task = AsyncMock(return_value=("main", "deadbeef"))
+        mock_get.return_value = svc
+        response = await git_client["client"].post(
+            "/api/git/pr/merge",
+            json={
+                "project_slug": git_client["project"].slug,
+                "pr_number": 99,
+            },
+            headers=_HDR,
+        )
+    assert response.status_code != HTTPStatus.UNPROCESSABLE_ENTITY
+    assert response.status_code == HTTPStatus.OK
+
+
 # Re-export to keep import alive (TC reorders imports)
 _ = SimpleNamespace

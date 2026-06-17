@@ -530,10 +530,13 @@ class GitService(BaseService):
     ) -> tuple[str, str, int, int, int]:
         """Create a git commit with template-based message.
 
+        When ``request.task_id`` is ``None`` the traceability template is
+        skipped and a plain conventional-commit message is built instead
+        (``type(scope): description``).  The git commit still happens; the
+        commit is just not linked to any task record.
+
         Returns: (commit_hash, full_message, files_changed, insertions, deletions)
         """
-        task_id = request.task_id
-
         # Stage files. Large changesets get the longer commit-timeout budget
         # (see `git_commit_timeout_seconds`) — the same reason the gateway
         # `commit()` adapter uses it.
@@ -544,30 +547,42 @@ class GitService(BaseService):
         else:
             await self._run_git(workspace, ["add", "-A"], timeout=commit_timeout)
 
-        # Get task info for commit template
-        task_service = get_task_service(self.session)
-        task = await task_service.get(task_id)
+        if request.task_id is not None:
+            # Get task info for commit template
+            task_service = get_task_service(self.session)
+            task = await task_service.get(request.task_id)
 
-        # Get root task ID (walk up hierarchy)
-        root_task_id = await get_root_task_id(task_id, task_service)
+            # Get root task ID (walk up hierarchy)
+            root_task_id = await get_root_task_id(request.task_id, task_service)
 
-        # Get session ID
-        session_id = self._get_primary_session_id(task)
+            # Get session ID
+            session_id = self._get_primary_session_id(task)
 
-        # Build commit message using template
-        commit_ctx = CommitContext(
-            task_id=str(task_id),
-            root_task_id=str(root_task_id),
-            agent_slug=str(agent_id),
-            session_id=session_id,
-            commit_type=request.commit_type,
-            scope=request.scope,
-            description=request.message,
-            body=request.body,
-        )
-        full_message = build_commit_message(
-            commit_ctx, settings.public_base_url.rstrip("/") + "/api"
-        )
+            # Build commit message using template
+            commit_ctx = CommitContext(
+                task_id=str(request.task_id),
+                root_task_id=str(root_task_id),
+                agent_slug=str(agent_id),
+                session_id=session_id,
+                commit_type=request.commit_type,
+                scope=request.scope,
+                description=request.message,
+                body=request.body,
+            )
+            full_message = build_commit_message(
+                commit_ctx, settings.public_base_url.rstrip("/") + "/api"
+            )
+        else:
+            # No task context — use plain conventional-commit format so the
+            # git op still proceeds without raising CommitMessageError.
+            type_scope = (
+                f"{request.commit_type}({request.scope})"
+                if request.scope
+                else request.commit_type
+            )
+            full_message = f"{type_scope}: {request.message}"
+            if request.body:
+                full_message = f"{full_message}\n\n{request.body}"
 
         # Create commit with agent attribution
         author = f"{agent_id} <{agent_id}@roboco.ai>"
@@ -680,12 +695,18 @@ class GitService(BaseService):
         commit itself, and commit-to-task linking. Raises typed service
         errors; the API layer translates them to HTTP status codes.
 
+        When ``data.task_id`` is ``None`` the ownership, assignment, and
+        branch-mismatch checks are skipped — the git commit proceeds
+        unconditionally, and no commit-to-task linking is recorded.
+
         Returns: (commit_hash, full_message, files_changed, insertions, deletions)
         """
-        task = await self._assert_task_owned_with_branch(data.task_id, agent_id)
-
-        workspace = await self.get_workspace(data.project_slug, agent_id)
-        await self._assert_on_task_branch(workspace, task.branch_name)
+        if data.task_id is not None:
+            task = await self._assert_task_owned_with_branch(data.task_id, agent_id)
+            workspace = await self.get_workspace(data.project_slug, agent_id)
+            await self._assert_on_task_branch(workspace, task.branch_name)
+        else:
+            workspace = await self.get_workspace(data.project_slug, agent_id)
 
         (
             commit_hash,
@@ -695,9 +716,10 @@ class GitService(BaseService):
             deletions,
         ) = await self.create_commit(workspace, agent_id, data)
 
-        await self._link_commit_to_task(
-            data.task_id, commit_hash, data.message, agent_id
-        )
+        if data.task_id is not None:
+            await self._link_commit_to_task(
+                data.task_id, commit_hash, data.message, agent_id
+            )
 
         return commit_hash, full_message, files_changed, insertions, deletions
 
@@ -1108,6 +1130,10 @@ class GitService(BaseService):
         preconditions. Raises typed service errors; the API layer
         translates them to HTTP status codes.
 
+        When ``data.task_id`` is ``None`` the ownership and branch-mismatch
+        checks are skipped — the push proceeds unconditionally (force-push
+        role check still applies).
+
         Returns: (branch, commits_pushed)
         """
         if getattr(data, "force", False) and agent_role != AgentRole.CEO:
@@ -1121,10 +1147,12 @@ class GitService(BaseService):
                 ),
             )
 
-        task = await self._assert_task_owned_with_branch(data.task_id, agent_id)
-
-        workspace = await self.get_workspace(data.project_slug, agent_id)
-        await self._assert_on_task_branch(workspace, task.branch_name)
+        if data.task_id is not None:
+            task = await self._assert_task_owned_with_branch(data.task_id, agent_id)
+            workspace = await self.get_workspace(data.project_slug, agent_id)
+            await self._assert_on_task_branch(workspace, task.branch_name)
+        else:
+            workspace = await self.get_workspace(data.project_slug, agent_id)
 
         return await self.push(workspace, getattr(data, "force", False))
 
@@ -1565,26 +1593,37 @@ class GitService(BaseService):
     ) -> tuple[int, str, str, str, str]:
         """Create a pull request via the GitHub REST API.
 
+        When ``request.task_id`` is ``None`` the task lookup, target-branch
+        resolution, and template generation are skipped.  The PR targets the
+        project's default branch and uses ``request.title`` / ``request.body``
+        directly (falling back to ``source_branch`` / ``""`` when absent).
+
         Returns: (pr_number, pr_url, title, source_branch, target_branch)
         """
-        task_service = get_task_service(self.session)
-        task = await task_service.get(request.task_id)
-        if not task:
-            raise NotFoundError("Task", str(request.task_id))
-
         source_branch = await self.get_current_branch(workspace)
         default_branch = await self._project_default_branch(request.project_slug)
         git_token = await self._get_project_token_or_raise(request.project_slug)
 
-        target_branch = await self._resolve_pr_target_branch(
-            request, task, default_branch
-        )
-        target_branch = await self._pr_base_on_remote(
-            workspace, target_branch, default_branch, git_token, request.task_id
-        )
-        pr_title, pr_body = await self._generate_pr_title_body(
-            request, task, source_branch, target_branch, request.task_id
-        )
+        if request.task_id is not None:
+            task_service = get_task_service(self.session)
+            task = await task_service.get(request.task_id)
+            if not task:
+                raise NotFoundError("Task", str(request.task_id))
+            target_branch = await self._resolve_pr_target_branch(
+                request, task, default_branch
+            )
+            target_branch = await self._pr_base_on_remote(
+                workspace, target_branch, default_branch, git_token, request.task_id
+            )
+            pr_title, pr_body = await self._generate_pr_title_body(
+                request, task, source_branch, target_branch, request.task_id
+            )
+        else:
+            # No task context: target the default branch directly, use provided
+            # title/body or fall back to minimal defaults.
+            target_branch = default_branch
+            pr_title = request.title or source_branch
+            pr_body = request.body or ""
 
         owner, repo = self._parse_github_remote(workspace)
         resp = await self._post_pr(
@@ -1856,9 +1895,14 @@ class GitService(BaseService):
     ) -> tuple[int, str, str, str, str]:
         """Preconditions + PR creation + state sync.
 
+        When ``data.task_id`` is ``None`` the ownership/state gate and the
+        post-creation task-state sync are both skipped — the GitHub PR is still
+        created, but no task record is updated.
+
         Returns: (pr_number, pr_url, title, source_branch, target_branch)
         """
-        await self._assert_pr_create_allowed(data.task_id, agent_id)
+        if data.task_id is not None:
+            await self._assert_pr_create_allowed(data.task_id, agent_id)
 
         workspace = await self.get_workspace(data.project_slug, agent_id)
         (
@@ -1869,7 +1913,8 @@ class GitService(BaseService):
             target_branch,
         ) = await self.create_pull_request(workspace, data)
 
-        await self._record_pr_atomically(data.task_id, pr_number, pr_url)
+        if data.task_id is not None:
+            await self._record_pr_atomically(data.task_id, pr_number, pr_url)
         return pr_number, pr_url, title, source_branch, target_branch
 
     async def _call_merge_api(
@@ -2139,40 +2184,58 @@ class GitService(BaseService):
     ) -> tuple[str, str]:
         """Role-gated merge + work-session record + auto-complete.
 
+        When ``data.task_id`` is ``None`` the task lookup, role gate,
+        work-session update, and auto-complete are all skipped — the GitHub PR
+        merge still happens using the caller-provided ``project_slug`` and
+        ``pr_number``.
+
         Returns: (target_branch, merge_commit)
         """
-        task_service = get_task_service(self.session)
-        work_session_service = get_work_session_service(self.session)
+        if data.task_id is not None:
+            task_service = get_task_service(self.session)
+            work_session_service = get_work_session_service(self.session)
 
-        task = await task_service.get(data.task_id)
-        if not task:
-            raise NotFoundError(resource_type="Task", resource_id=str(data.task_id))
-        self._assert_merge_role(self._status_value(task), agent_role)
+            task = await task_service.get(data.task_id)
+            if not task:
+                raise NotFoundError(resource_type="Task", resource_id=str(data.task_id))
+            self._assert_merge_role(self._status_value(task), agent_role)
 
-        # A coordination root has no project of its own, so the CEO's merge
-        # request can't carry a project_slug. Resolve the root's repo from its
-        # product server-side; non-root tasks keep the client-provided slug.
-        project_slug = data.project_slug
-        if task.project_id is None:
-            root_project = await self._project_for_task(task)
-            if root_project is not None:
-                project_slug = root_project.slug
+            # A coordination root has no project of its own, so the CEO's merge
+            # request can't carry a project_slug. Resolve the root's repo from
+            # its product server-side; non-root tasks keep the client slug.
+            project_slug = data.project_slug
+            if task.project_id is None:
+                root_project = await self._project_for_task(task)
+                if root_project is not None:
+                    project_slug = root_project.slug
 
-        workspace = await self.get_workspace(project_slug, agent_id)
-        target_branch, merge_commit = await self.merge_pull_request(
-            workspace=workspace,
-            pr_number=data.pr_number,
-            merge_method=data.merge_method,
-            project_slug=project_slug,
-        )
-
-        if task.work_session_id:
-            await work_session_service.merge_pr(
-                require_uuid(task.work_session_id), agent_id
+            workspace = await self.get_workspace(project_slug, agent_id)
+            target_branch, merge_commit = await self.merge_pull_request(
+                workspace=workspace,
+                pr_number=data.pr_number,
+                merge_method=data.merge_method,
+                project_slug=project_slug,
             )
 
-        await self._auto_complete_on_merge(data.task_id, agent_id, agent_role)
-        await self.session.commit()
+            if task.work_session_id:
+                await work_session_service.merge_pr(
+                    require_uuid(task.work_session_id), agent_id
+                )
+
+            await self._auto_complete_on_merge(data.task_id, agent_id, agent_role)
+            await self.session.commit()
+        else:
+            # No task context — proceed directly to the merge without
+            # role/ownership checks or post-merge state transitions.
+            project_slug = data.project_slug
+            workspace = await self.get_workspace(project_slug, agent_id)
+            target_branch, merge_commit = await self.merge_pull_request(
+                workspace=workspace,
+                pr_number=data.pr_number,
+                merge_method=data.merge_method,
+                project_slug=project_slug,
+            )
+
         return target_branch, merge_commit
 
     # =========================================================================
