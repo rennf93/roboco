@@ -293,6 +293,17 @@ services:
       ROBOCO_EXTERNAL_PR_REQUIRE_HUMAN_CONFIRM: ${ROBOCO_EXTERNAL_PR_REQUIRE_HUMAN_CONFIRM:-true}
       # ROBOCO_EXTERNAL_PR_POLL_INTERVAL_SECONDS: "300"
       # ROBOCO_EXTERNAL_PR_AUTHOR_ALLOWLIST: '["corey"]'   # empty = every external PR
+      # Production self-healing ("engine 4"). RoboCo watches its OWN repo CI and,
+      # when red, notifies the CEO and (with originate on) opens a PENDING fix
+      # task that STOPS for the CEO's Approve-&-Start — it never self-deploys.
+      # Both toggles default OFF (arm from Settings -> Feature Flags). Set
+      # PROJECT_SLUG to the registered project that IS RoboCo; CI_WORKFLOW scopes
+      # the signal to the real CI workflow (RoboCo has several workflows, so the
+      # unscoped "latest run" would be unreliable).
+      ROBOCO_SELF_HEAL_ENABLED: ${ROBOCO_SELF_HEAL_ENABLED:-false}
+      ROBOCO_SELF_HEAL_ORIGINATE_ENABLED: ${ROBOCO_SELF_HEAL_ORIGINATE_ENABLED:-false}
+      ROBOCO_SELF_HEAL_PROJECT_SLUG: ${ROBOCO_SELF_HEAL_PROJECT_SLUG:-roboco-api}
+      ROBOCO_SELF_HEAL_CI_WORKFLOW: ${ROBOCO_SELF_HEAL_CI_WORKFLOW:-ci.yml}
     volumes:
       # Docker socket - allows spawning agent containers
       - /var/run/docker.sock:/var/run/docker.sock
