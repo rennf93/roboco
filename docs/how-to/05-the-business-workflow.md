@@ -22,15 +22,15 @@ The Secretary is your conversational chief-of-staff. You chat with it the way yo
 
 ## Web research and the strategy engine
 
-Two capabilities run above the day-to-day. Neither has a button in the panel — both are **configuration toggles**, off by default, and their effect shows up inside agent runs once enabled.
+Two capabilities run above the day-to-day. Both are **off by default** and master-switched from **Settings → Feature Flags** in the panel — the switch persists and takes effect on the next backend restart. The environment variables below are the same toggles at the source, and still carry the parts the panel deliberately doesn't surface (the research provider and its API key, which never leave the server). Their effect shows up inside agent runs once enabled.
 
 ### Web research
 
-Set `ROBOCO_RESEARCH_ENABLED=true`, choose a provider with `ROBOCO_RESEARCH_PROVIDER` (`tavily`, `brave`, or `exa`), and supply `ROBOCO_RESEARCH_API_KEY`. With that in place, the Board and PM agents gain `web_search` and `web_fetch` through the `roboco-search` MCP server — so a Product Owner scoping a feature can ground it in the live web, not just your codebase. The API key stays server-side; the agents never see it and never make the external call themselves. Leave it off and the tools simply aren't there — a no-op.
+Flip **Web research** on in Settings → Feature Flags (or set `ROBOCO_RESEARCH_ENABLED=true`), choose a provider with `ROBOCO_RESEARCH_PROVIDER` (`tavily`, `brave`, or `exa`), and supply `ROBOCO_RESEARCH_API_KEY`. With that in place, the Board and PM agents gain `web_search` and `web_fetch` through the `roboco-search` MCP server — so a Product Owner scoping a feature can ground it in the live web, not just your codebase. The API key stays server-side; the agents never see it and never make the external call themselves. Leave it off and the tools simply aren't there — a no-op.
 
 ### The strategy engine
 
-Set `ROBOCO_STRATEGY_ENGINE_ENABLED=true` and a background loop begins watching the company against its charter. When it spots drift from the objectives, agents gone idle, or work blocked for too long, it tells you. It is **notify-only by design**: it never spends, never builds, never approves — it raises the flag and leaves the decision where every decision belongs, with you. Off, it is fully dormant.
+Flip **the strategy engine** on in Settings → Feature Flags (or set `ROBOCO_STRATEGY_ENGINE_ENABLED=true`) and a background loop begins watching the company against its charter. When it spots drift from the objectives, agents gone idle, or work blocked for too long, it tells you. It is **notify-only by design**: it never spends, never builds, never approves — it raises the flag and leaves the decision where every decision belongs, with you. Off, it is fully dormant.
 
 ## Feel the whole thing
 
