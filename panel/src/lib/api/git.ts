@@ -252,10 +252,13 @@ export const gitApi = {
   pull: async (request: GitPullRequest): Promise<GitPullResponse> => {
     if (isMockMode()) {
       return {
-        project_slug: request.project_slug,
-        branch: "feature/backend/abc12345",
-        commits_received: 2,
-        remote: request.remote ?? "origin",
+        current_branch: "feature/backend/abc12345",
+        has_changes: false,
+        staged_files: [],
+        unstaged_files: [],
+        untracked_files: [],
+        ahead: 0,
+        behind: 0,
       };
     }
     const { data } = await api.post<GitPullResponse>("/git/pull", request);
@@ -268,9 +271,13 @@ export const gitApi = {
   fetch: async (request: GitFetchRequest): Promise<GitFetchResponse> => {
     if (isMockMode()) {
       return {
-        project_slug: request.project_slug,
-        remote: request.remote ?? "origin",
-        refs_updated: 3,
+        current_branch: "feature/backend/abc12345",
+        has_changes: false,
+        staged_files: [],
+        unstaged_files: [],
+        untracked_files: [],
+        ahead: 0,
+        behind: 0,
       };
     }
     const { data } = await api.post<GitFetchResponse>("/git/fetch", request);
@@ -278,15 +285,13 @@ export const gitApi = {
   },
 
   /**
-   * Rebase current branch onto remote (destructive — rewrites history)
+   * Rebase current branch onto target branch (destructive — rewrites history)
    */
   rebase: async (request: GitRebaseRequest): Promise<GitRebaseResponse> => {
     if (isMockMode()) {
       return {
-        project_slug: request.project_slug,
-        branch: "feature/backend/abc12345",
-        onto: request.onto ?? "origin/main",
-        commits_rebased: 3,
+        conflict: false,
+        conflicted_files: [],
       };
     }
     const { data } = await api.post<GitRebaseResponse>("/git/rebase", request);

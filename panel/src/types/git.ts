@@ -150,40 +150,46 @@ export interface GitMergePRRequest {
 
 export interface GitPullRequest {
   project_slug: string;
-  task_id: string;
-  agent_id: string;
+  task_id?: string;
+  agent_id?: string;
   remote?: string;
 }
 
 export interface GitPullResponse {
-  project_slug: string;
-  branch: string;
-  commits_received: number;
-  remote: string;
+  current_branch: string;
+  has_changes: boolean;
+  staged_files: string[];
+  unstaged_files: string[];
+  untracked_files: string[];
+  ahead: number;
+  behind: number;
 }
 
 export interface GitFetchRequest {
   project_slug: string;
-  agent_id: string;
+  task_id?: string;
+  agent_id?: string;
   remote?: string;
 }
 
 export interface GitFetchResponse {
-  project_slug: string;
-  remote: string;
-  refs_updated: number;
+  current_branch: string;
+  has_changes: boolean;
+  staged_files: string[];
+  unstaged_files: string[];
+  untracked_files: string[];
+  ahead: number;
+  behind: number;
 }
 
 export interface GitRebaseRequest {
   project_slug: string;
-  task_id: string;
-  agent_id: string;
-  onto?: string;
+  target_branch: string;
+  task_id?: string;
+  agent_id?: string;
 }
 
 export interface GitRebaseResponse {
-  project_slug: string;
-  branch: string;
-  onto: string;
-  commits_rebased: number;
+  conflict: boolean;
+  conflicted_files: string[];
 }

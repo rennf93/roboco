@@ -178,10 +178,10 @@ function GitBrowserContent() {
     try {
       const result = await pull.mutateAsync({
         project_slug: projectSlug,
-        task_id: taskId || "manual",
+        task_id: taskId || undefined,
         agent_id: "ceo",
       });
-      toast.success(`Pulled ${result.commits_received} commits from ${result.remote}`);
+      toast.success(`Pulled: now on ${result.current_branch}`);
     } catch {
       toast.error("Failed to pull from remote");
     }
@@ -191,22 +191,30 @@ function GitBrowserContent() {
     try {
       const result = await fetch.mutateAsync({
         project_slug: projectSlug,
+        task_id: taskId || undefined,
         agent_id: "ceo",
       });
-      toast.success(`Fetched ${result.refs_updated} refs from ${result.remote}`);
+      toast.success(`Fetched: now on ${result.current_branch}`);
     } catch {
       toast.error("Failed to fetch from remote");
     }
   };
 
-  const handleRebase = async () => {
+  const handleRebase = async (targetBranch: string) => {
     try {
       const result = await rebase.mutateAsync({
         project_slug: projectSlug,
-        task_id: taskId || "manual",
+        target_branch: targetBranch,
+        task_id: taskId || undefined,
         agent_id: "ceo",
       });
-      toast.success(`Rebased ${result.commits_rebased} commits onto ${result.onto}`);
+      if (result.conflict) {
+        toast.warning(
+          `Rebase conflicts in: ${result.conflicted_files.join(", ") || "unknown files"}`
+        );
+      } else {
+        toast.success("Rebase completed successfully");
+      }
     } catch {
       toast.error("Failed to rebase");
     }
