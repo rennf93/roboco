@@ -83,7 +83,7 @@ export function AgentList({
   const grouped = groupByTeam(agents);
 
   return (
-    <div className="overflow-y-auto max-h-[calc(100vh-200px)]">
+    <div className="flex-1 min-h-0 overflow-y-auto">
       <div className="p-2 space-y-4">
         {Object.entries(grouped).map(([teamKey, teamAgents]) => {
           if (teamAgents.length === 0) return null;

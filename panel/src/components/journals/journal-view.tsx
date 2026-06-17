@@ -81,9 +81,9 @@ export function JournalView({
   });
 
   return (
-    <div className="space-y-6">
+    <div className="flex h-full flex-col gap-6">
       {/* Agent Header */}
-      <div className="flex items-center gap-4 pb-4 border-b">
+      <div className="flex items-center gap-4 pb-4 border-b shrink-0">
         <div className="h-12 w-12 rounded-full bg-muted flex items-center justify-center">
           <User className="h-6 w-6 text-muted-foreground" />
         </div>
@@ -96,15 +96,17 @@ export function JournalView({
       </div>
 
       {/* Growth Summary */}
-      <GrowthSummary
-        journal={journal}
-        growth={growth}
-        isLoading={loadingJournal || loadingGrowth}
-      />
+      <div className="shrink-0">
+        <GrowthSummary
+          journal={journal}
+          growth={growth}
+          isLoading={loadingJournal || loadingGrowth}
+        />
+      </div>
 
-      {/* Entries Section */}
-      <div>
-        <div className="flex items-center justify-between mb-4">
+      {/* Entries Section — fills the remaining height; the entries scroll inside it */}
+      <div className="flex flex-1 min-h-0 flex-col">
+        <div className="flex items-center justify-between mb-4 shrink-0">
           <h3 className="text-lg font-semibold flex items-center gap-2">
             <BookOpen className="h-5 w-5" />
             Journal Entries
@@ -112,7 +114,7 @@ export function JournalView({
         </div>
 
         {/* Filter */}
-        <div className="mb-4">
+        <div className="mb-4 shrink-0">
           <EntryFilter
             typeFilter={typeFilter}
             onTypeChange={handleTypeChange}
@@ -143,7 +145,7 @@ export function JournalView({
             </p>
           </div>
         ) : (
-          <ScrollArea className="h-[500px] pr-4">
+          <ScrollArea className="flex-1 min-h-0 pr-4">
             <div className="space-y-4">
               {filteredEntries.map((entry) => (
                 <EntryCard key={entry.id} entry={entry} />

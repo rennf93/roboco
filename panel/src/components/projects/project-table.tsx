@@ -12,7 +12,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ExternalLink, Pencil, GitBranch, Folder, FolderX, Key, KeyRound } from "lucide-react";
+import { ExternalLink, Pencil, GitBranch, Key, KeyRound } from "lucide-react";
 import type { ProjectSummary, Team } from "@/types";
 import { EditProjectDialog } from "./edit-project-dialog";
 
@@ -38,23 +38,6 @@ const teamColors: Record<Team, string> = {
   ux_ui: "bg-pink-500/10 text-pink-500 hover:bg-pink-500/20",
   marketing: "bg-yellow-500/10 text-yellow-500 hover:bg-yellow-500/20",
 };
-
-function getWorkspaceBadge(hasWorkspace: boolean) {
-  if (hasWorkspace) {
-    return (
-      <Badge className="bg-green-500/10 text-green-500">
-        <Folder className="h-3 w-3 mr-1" />
-        Ready
-      </Badge>
-    );
-  }
-  return (
-    <Badge variant="outline" className="text-muted-foreground">
-      <FolderX className="h-3 w-3 mr-1" />
-      No workspace
-    </Badge>
-  );
-}
 
 function getTokenBadge(hasGitToken: boolean) {
   if (hasGitToken) {
@@ -119,7 +102,6 @@ export function ProjectTable({ projects, isLoading }: ProjectTableProps) {
               <TableHead>Project</TableHead>
               <TableHead>Cell</TableHead>
               <TableHead>Token</TableHead>
-              <TableHead>Workspace</TableHead>
               <TableHead>Status</TableHead>
               <TableHead className="w-[100px]">Actions</TableHead>
             </TableRow>
@@ -147,7 +129,6 @@ export function ProjectTable({ projects, isLoading }: ProjectTableProps) {
                   </Badge>
                 </TableCell>
                 <TableCell>{getTokenBadge(project.has_git_token)}</TableCell>
-                <TableCell>{getWorkspaceBadge(project.has_workspace)}</TableCell>
                 <TableCell>
                   {project.is_active ? (
                     <Badge className="bg-green-500/10 text-green-500">Active</Badge>

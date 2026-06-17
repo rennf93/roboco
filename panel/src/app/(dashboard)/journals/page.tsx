@@ -136,9 +136,9 @@ function JournalsPageContent() {
   const selectedAgent = agents?.find((a) => a.agent_id === selectedAgentId);
 
   return (
-    <div className="space-y-6">
+    <div className="flex h-full flex-col gap-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between shrink-0">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Agent Journals</h1>
           <p className="text-muted-foreground">
@@ -151,12 +151,12 @@ function JournalsPageContent() {
         </Button>
       </div>
 
-      {/* Main Content */}
-      <div className="grid grid-cols-12 gap-6">
+      {/* Main Content — one screen; the agent list and the detail each scroll inside */}
+      <div className="grid grid-cols-12 gap-6 flex-1 min-h-0">
         {/* Sidebar */}
-        <div className="col-span-12 lg:col-span-3">
-          <Card>
-            <CardContent className="p-3">
+        <div className="col-span-12 lg:col-span-3 min-h-0">
+          <Card className="h-full flex flex-col">
+            <CardContent className="p-3 flex flex-1 flex-col min-h-0">
               {/* Agent Search */}
               <div className="relative mb-3">
                 <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -180,9 +180,9 @@ function JournalsPageContent() {
         </div>
 
         {/* Journal Content */}
-        <div className="col-span-12 lg:col-span-9">
-          <Card>
-            <CardContent className="p-6">
+        <div className="col-span-12 lg:col-span-9 min-h-0">
+          <Card className="h-full flex flex-col">
+            <CardContent className="p-6 flex-1 min-h-0 overflow-hidden">
               {selectedAgent ? (
                 <JournalView
                   agent={selectedAgent}

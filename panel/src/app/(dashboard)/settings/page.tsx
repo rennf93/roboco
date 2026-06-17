@@ -31,7 +31,7 @@ import { TranscriptRetentionCard } from "@/components/settings/transcript-retent
 export default function SettingsPage() {
   const { theme, setTheme } = useTheme();
   const { sidebarCollapsed, setSidebarCollapsed } = useUIStore();
-  
+
   // Local state for settings (would be persisted in a real app)
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
   const [soundEnabled, setSoundEnabled] = useState(true);
@@ -52,8 +52,35 @@ export default function SettingsPage() {
         </p>
       </div>
 
-      {/* Cards grid — two columns on large screens */}
+      {/* Cards grid — two columns on large screens. Order (row,col):
+          User Info (1,1) · Appearance (1,2) · Data & Refresh (2,1) ·
+          Transcript Retention (2,2) · Notifications (3,1) · Connection Info (3,2). */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* User Info */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <User className="h-5 w-5" />
+              User Info
+            </CardTitle>
+            <CardDescription>Your account information</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center gap-4">
+              <div className="h-16 w-16 rounded-full bg-primary flex items-center justify-center">
+                <span className="text-primary-foreground font-bold text-2xl">CEO</span>
+              </div>
+              <div>
+                <p className="font-semibold text-lg">Renzo</p>
+                <p className="text-sm text-muted-foreground">Chief Executive Officer</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Agent ID: 00000000-0000-0000-0000-000000000001
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
         {/* Appearance */}
         <Card>
           <CardHeader>
@@ -93,45 +120,6 @@ export default function SettingsPage() {
               <Switch
                 checked={sidebarCollapsed}
                 onCheckedChange={setSidebarCollapsed}
-              />
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Notifications */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Bell className="h-5 w-5" />
-              Notifications
-            </CardTitle>
-            <CardDescription>Configure how you receive updates</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <Label>Enable Notifications</Label>
-                <p className="text-sm text-muted-foreground">
-                  Receive real-time notifications from agents
-                </p>
-              </div>
-              <Switch
-                checked={notificationsEnabled}
-                onCheckedChange={setNotificationsEnabled}
-              />
-            </div>
-            <Separator />
-            <div className="flex items-center justify-between">
-              <div>
-                <Label>Sound Alerts</Label>
-                <p className="text-sm text-muted-foreground">
-                  Play sound for important notifications
-                </p>
-              </div>
-              <Switch
-                checked={soundEnabled}
-                onCheckedChange={setSoundEnabled}
-                disabled={!notificationsEnabled}
               />
             </div>
           </CardContent>
@@ -189,6 +177,45 @@ export default function SettingsPage() {
         {/* Transcript Retention (panel-tunable; persisted server-side) */}
         <TranscriptRetentionCard />
 
+        {/* Notifications */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Bell className="h-5 w-5" />
+              Notifications
+            </CardTitle>
+            <CardDescription>Configure how you receive updates</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <Label>Enable Notifications</Label>
+                <p className="text-sm text-muted-foreground">
+                  Receive real-time notifications from agents
+                </p>
+              </div>
+              <Switch
+                checked={notificationsEnabled}
+                onCheckedChange={setNotificationsEnabled}
+              />
+            </div>
+            <Separator />
+            <div className="flex items-center justify-between">
+              <div>
+                <Label>Sound Alerts</Label>
+                <p className="text-sm text-muted-foreground">
+                  Play sound for important notifications
+                </p>
+              </div>
+              <Switch
+                checked={soundEnabled}
+                onCheckedChange={setSoundEnabled}
+                disabled={!notificationsEnabled}
+              />
+            </div>
+          </CardContent>
+        </Card>
+
         {/* Connection Info */}
         <Card>
           <CardHeader>
@@ -210,31 +237,6 @@ export default function SettingsPage() {
             <p className="text-xs text-muted-foreground">
               These values are configured via environment variables (NEXT_PUBLIC_API_URL, NEXT_PUBLIC_WS_URL)
             </p>
-          </CardContent>
-        </Card>
-
-        {/* User Info */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <User className="h-5 w-5" />
-              User Info
-            </CardTitle>
-            <CardDescription>Your account information</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex items-center gap-4">
-              <div className="h-16 w-16 rounded-full bg-primary flex items-center justify-center">
-                <span className="text-primary-foreground font-bold text-2xl">CEO</span>
-              </div>
-              <div>
-                <p className="font-semibold text-lg">Renzo</p>
-                <p className="text-sm text-muted-foreground">Chief Executive Officer</p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Agent ID: 00000000-0000-0000-0000-000000000001
-                </p>
-              </div>
-            </div>
           </CardContent>
         </Card>
       </div>

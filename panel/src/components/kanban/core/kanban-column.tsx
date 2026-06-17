@@ -41,7 +41,7 @@ export function KanbanColumn({
     <div
       ref={setNodeRef}
       className={cn(
-        "flex flex-col rounded-lg p-3 w-72 shrink-0 sm:w-80",
+        "flex flex-col rounded-lg p-3 w-72 shrink-0 sm:w-80 h-full",
         color,
         isOver && "ring-2 ring-primary ring-offset-2",
         className,
@@ -53,7 +53,7 @@ export function KanbanColumn({
           {isLoading ? "..." : tasks.length}
         </Badge>
       </div>
-      <ScrollArea className="flex-1 max-h-[calc(100vh-280px)]">
+      <ScrollArea className="flex-1 min-h-0">
         {isLoading ? (
           <div className="space-y-2">
             <Skeleton className="h-24" />

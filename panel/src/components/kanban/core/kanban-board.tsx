@@ -253,9 +253,9 @@ export function KanbanBoard({
   };
 
   return (
-    <div className="space-y-6">
+    <div className="flex h-full flex-col gap-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between shrink-0">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">{title}</h1>
           {description && (
@@ -295,8 +295,8 @@ export function KanbanBoard({
         onDragEnd={handleDragEnd}
       >
         {/* Mobile: single-column view with prev/next navigator (hidden on sm+) */}
-        <div className="sm:hidden">
-          <div className="flex items-center gap-2 mb-4">
+        <div className="sm:hidden flex flex-1 min-h-0 flex-col">
+          <div className="flex items-center gap-2 mb-4 shrink-0">
             <Button
               variant="outline"
               size="icon"
@@ -343,7 +343,7 @@ export function KanbanBoard({
         </div>
 
         {/* Desktop: horizontal scrolling layout (shown at sm+, i.e. >= 640px) */}
-        <div className="hidden sm:flex gap-4 overflow-x-auto pb-4">
+        <div className="hidden sm:flex gap-4 overflow-x-auto pb-4 flex-1 min-h-0">
           {columns.map((col) => (
             <KanbanColumn
               key={col.id}
