@@ -29,6 +29,7 @@ import { GitDiffViewer } from "./git-diff-viewer";
 import { GitActionsPanel } from "./git-actions-panel";
 import { GitBranch, RefreshCw, FolderGit2 } from "lucide-react";
 import { toast } from "sonner";
+import { getErrorMessage } from "@/lib/api/client";
 
 function GitBrowserContent() {
   const router = useRouter();
@@ -215,8 +216,8 @@ function GitBrowserContent() {
       } else {
         toast.success("Rebase completed successfully");
       }
-    } catch {
-      toast.error("Failed to rebase");
+    } catch (error) {
+      toast.error(getErrorMessage(error));
     }
   };
 
