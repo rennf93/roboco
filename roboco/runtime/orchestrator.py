@@ -2330,7 +2330,7 @@ class AgentOrchestrator:
 
     @staticmethod
     def _readiness_check_role_for_status(
-        agent_id: str, role: str, status: str
+        agent_id: str, role: str, status: str, *, is_coordination: bool = False
     ) -> str | None:
         """Verify agent role matches the role expected for the task status.
 
@@ -2339,7 +2339,10 @@ class AgentOrchestrator:
         developer/documenter to defang the bug where QA got
         respawned on a `needs_revision` task via the crash-restart path
         and immediately hit ``role 'qa' may not claim from status
-        'needs_revision'`` at the gateway.
+        'needs_revision'`` at the gateway. A coordination root (no code; product
+        fan-out owned by a PM) is the exception: it has no dev, so a CEO-rejected
+        one returns to its PM — the dev-owned states also accept the PM roles for
+        it (a pure widening; nothing currently allowed is blocked).
         """
         role_mismatch: dict[str, str | set[str]] = {
             "awaiting_qa": "qa",
@@ -2354,6 +2357,8 @@ class AgentOrchestrator:
         required = role_mismatch.get(status)
         if required is None:
             return None
+        if is_coordination and status in ("needs_revision", "verifying"):
+            required = set(required) | {"cell_pm", "main_pm"}
         ok = role in required if isinstance(required, set) else role == required
         if ok:
             return None
@@ -2379,7 +2384,9 @@ class AgentOrchestrator:
             # the readiness and stuck-detection paths agree.
             if _branch_is_expected(task) and not task.get("branch_name"):
                 return f"state={status} but branch_name is unset"
-        return self._readiness_check_role_for_status(agent_id, role, status)
+        return self._readiness_check_role_for_status(
+            agent_id, role, status, is_coordination=_is_coordination_task(task)
+        )
 
     @staticmethod
     async def _readiness_check_git_token(project_slug: str | None) -> str | None:
@@ -6217,6 +6224,10 @@ Start now: evidence(task_id="{task_id}")
             dispatchers = [
                 ("pm_work", self._dispatch_pm_work(client)),
                 ("pm_closure_work", self._dispatch_pm_closure_work(client)),
+                (
+                    "revision_coordination",
+                    self._dispatch_revision_coordination_roots(client),
+                ),
                 ("dev_work", self._dispatch_dev_work(client)),
                 ("qa_work", self._dispatch_qa_work(client)),
                 ("pr_review_work", self._dispatch_pr_review_work(client)),
@@ -6722,6 +6733,37 @@ Start now: evidence(task_id="{task_id}")
                 continue
 
             await self._route_unassigned_pm_task(client, task)
+
+    async def _dispatch_revision_coordination_roots(
+        self, client: httpx.AsyncClient
+    ) -> None:
+        """Re-spawn the owning PM for a CEO-rejected coordination root.
+
+        A coordination root (team=main_pm, product-linked, no repo) the CEO sends
+        back lands in ``needs_revision``. The dev dispatcher skips it (not a cell
+        team) and the closure path only handles paused parents, so without this
+        it would sit in needs_revision forever — the deadlock. Respawn its PM so
+        it re-coordinates the revision. Cell/code needs_revision tasks are left
+        to the dev dispatcher; this handles only coordination roots.
+        """
+        tasks = await self._fetch_tasks(client, "needs_revision")
+        for task in tasks:
+            if self._is_task_handled_this_tick(task.get("id")):
+                continue
+            if not _is_coordination_task(task):
+                continue
+            owner = task.get("assigned_to") or task.get("claimed_by")
+            agent_slug = self._resolve_agent_slug(owner) if owner else None
+            if not agent_slug or self._is_agent_active(agent_slug):
+                continue
+            if get_agent_role(agent_slug) not in ("cell_pm", "main_pm"):
+                continue
+            await self.spawn_agent(
+                agent_id=agent_slug,
+                task_id=task["id"],
+                initial_prompt=self._get_prompt_for_agent(agent_slug, task),
+                git_context=self._task_git_context(task),
+            )
 
     @staticmethod
     def _all_descendants_terminal(descendants: list[dict[str, Any]]) -> bool:

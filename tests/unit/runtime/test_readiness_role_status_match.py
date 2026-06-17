@@ -73,3 +73,60 @@ def test_unmapped_status_allows_any_role() -> None:
                 )
                 is None
             ), f"role={role} status={status} should not be rejected by this gate"
+
+
+# ---------------------------------------------------------------------------
+# Coordination roots — a CEO-rejected coordination root returns to its PM (#5).
+# ---------------------------------------------------------------------------
+
+
+def test_pm_on_needs_revision_coordination_allowed() -> None:
+    """A coordination root in needs_revision belongs to its PM, not a dev."""
+    for role in ("main_pm", "cell_pm"):
+        assert (
+            AgentOrchestrator._readiness_check_role_for_status(
+                agent_id="main-pm",
+                role=role,
+                status="needs_revision",
+                is_coordination=True,
+            )
+            is None
+        )
+
+
+def test_pm_on_verifying_coordination_allowed() -> None:
+    assert (
+        AgentOrchestrator._readiness_check_role_for_status(
+            agent_id="main-pm", role="main_pm", status="verifying", is_coordination=True
+        )
+        is None
+    )
+
+
+def test_dev_on_needs_revision_coordination_still_allowed() -> None:
+    """Widening is additive — developer is still accepted."""
+    assert (
+        AgentOrchestrator._readiness_check_role_for_status(
+            agent_id="be-dev-1",
+            role="developer",
+            status="needs_revision",
+            is_coordination=True,
+        )
+        is None
+    )
+
+
+def test_qa_on_needs_revision_coordination_still_blocked() -> None:
+    """The widening only adds the PM roles — QA is still a misroute."""
+    reason = AgentOrchestrator._readiness_check_role_for_status(
+        agent_id="be-qa", role="qa", status="needs_revision", is_coordination=True
+    )
+    assert reason is not None
+
+
+def test_pm_on_needs_revision_noncoordination_still_blocked() -> None:
+    """A normal (code) needs_revision task is still dev/doc-only for a PM."""
+    reason = AgentOrchestrator._readiness_check_role_for_status(
+        agent_id="be-pm", role="cell_pm", status="needs_revision", is_coordination=False
+    )
+    assert reason is not None
