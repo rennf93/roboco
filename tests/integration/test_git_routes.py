@@ -85,6 +85,59 @@ async def git_client(
     app.dependency_overrides.clear()
 
 
+@pytest_asyncio.fixture
+async def pm_git_client(
+    db_session: AsyncSession,
+) -> AsyncIterator[dict]:
+    """Like git_client but with CELL_PM role — required for the rebase endpoint."""
+    agent = AgentTable(
+        id=uuid4(),
+        name="PM",
+        slug=f"be-pm-{uuid4().hex[:8]}",
+        role=AgentRole.CELL_PM,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="pm",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(agent)
+    await db_session.flush()
+    project = ProjectTable(
+        id=uuid4(),
+        name="GitProj",
+        slug=f"git-proj-{uuid4().hex[:6]}",
+        git_url="https://example.com/r.git",
+        assigned_cell=Team.BACKEND,
+        created_by=agent.id,
+    )
+    db_session.add(project)
+    await db_session.flush()
+
+    app = FastAPI()
+    app.include_router(git_router, prefix="/api/git")
+
+    async def _override_db() -> AsyncGenerator[AsyncSession]:
+        yield db_session
+
+    async def _override_agent() -> AgentContext:
+        return AgentContext(
+            agent_id=cast("uuid.UUID", agent.id),
+            role=AgentRole.CELL_PM,
+            team=Team.BACKEND,
+        )
+
+    app.dependency_overrides[get_db] = _override_db
+    app.dependency_overrides[get_agent_context] = _override_agent
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield {"client": client, "agent": agent, "project": project, "db": db_session}
+    app.dependency_overrides.clear()
+
+
 _HDR = {"X-Agent-ID": str(uuid4()), "X-Agent-Role": "developer"}
 
 
@@ -793,19 +846,17 @@ async def test_fetch_git_command_error(git_client: dict) -> None:
 
 
 @pytest.mark.asyncio
-async def test_rebase_success(git_client: dict) -> None:
+async def test_rebase_success(pm_git_client: dict) -> None:
     with patch("roboco.api.routes.git.get_git_service") as mock_get:
         svc = AsyncMock()
         svc.get_workspace = AsyncMock(return_value="/tmp/ws")
         svc.rebase = AsyncMock(return_value=(False, []))
         mock_get.return_value = svc
-        response = await git_client["client"].post(
+        response = await pm_git_client["client"].post(
             "/api/git/rebase",
             json={
-                "project_slug": git_client["project"].slug,
-                "task_id": str(uuid4()),
-                "agent_id": str(uuid4()),
-                "target_branch": "main",
+                "project_slug": pm_git_client["project"].slug,
+                "target_branch": "develop",
             },
             headers=_HDR,
         )
@@ -816,19 +867,17 @@ async def test_rebase_success(git_client: dict) -> None:
 
 
 @pytest.mark.asyncio
-async def test_rebase_conflict(git_client: dict) -> None:
+async def test_rebase_conflict(pm_git_client: dict) -> None:
     with patch("roboco.api.routes.git.get_git_service") as mock_get:
         svc = AsyncMock()
         svc.get_workspace = AsyncMock(return_value="/tmp/ws")
         svc.rebase = AsyncMock(return_value=(True, ["src/foo.py", "src/bar.py"]))
         mock_get.return_value = svc
-        response = await git_client["client"].post(
+        response = await pm_git_client["client"].post(
             "/api/git/rebase",
             json={
-                "project_slug": git_client["project"].slug,
-                "task_id": str(uuid4()),
-                "agent_id": str(uuid4()),
-                "target_branch": "main",
+                "project_slug": pm_git_client["project"].slug,
+                "target_branch": "develop",
             },
             headers=_HDR,
         )
@@ -839,23 +888,112 @@ async def test_rebase_conflict(git_client: dict) -> None:
 
 
 @pytest.mark.asyncio
-async def test_rebase_git_command_error(git_client: dict) -> None:
+async def test_rebase_git_command_error(pm_git_client: dict) -> None:
     with patch("roboco.api.routes.git.get_git_service") as mock_get:
         svc = AsyncMock()
         svc.get_workspace = AsyncMock(return_value="/tmp/ws")
         svc.rebase = AsyncMock(side_effect=GitCommandError("rebase", "fatal error"))
         mock_get.return_value = svc
-        response = await git_client["client"].post(
+        response = await pm_git_client["client"].post(
             "/api/git/rebase",
             json={
-                "project_slug": git_client["project"].slug,
-                "task_id": str(uuid4()),
-                "agent_id": str(uuid4()),
-                "target_branch": "main",
+                "project_slug": pm_git_client["project"].slug,
+                "target_branch": "develop",
             },
             headers=_HDR,
         )
     assert response.status_code == HTTPStatus.INTERNAL_SERVER_ERROR
+
+
+# ---------------------------------------------------------------------------
+# task_id Optional — no 422 when task_id is omitted
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_commit_without_task_id_no_422(git_client: dict) -> None:
+    """POST /commit without task_id must not return 422 (schema validation error)."""
+    with patch("roboco.api.routes.git.get_git_service") as mock_get:
+        svc = AsyncMock()
+        svc.commit_for_task = AsyncMock(
+            return_value=("abc123", "feat: add thing", 1, 5, 2)
+        )
+        mock_get.return_value = svc
+        response = await git_client["client"].post(
+            "/api/git/commit",
+            json={
+                "project_slug": git_client["project"].slug,
+                "agent_id": str(uuid4()),
+                "message": "add a new thing",
+                "commit_type": "feat",
+            },
+            headers=_HDR,
+        )
+    assert response.status_code != HTTPStatus.UNPROCESSABLE_ENTITY
+    assert response.status_code == HTTPStatus.OK
+
+
+@pytest.mark.asyncio
+async def test_push_without_task_id_no_422(git_client: dict) -> None:
+    """POST /push without task_id must not return 422 (schema validation error)."""
+    with patch("roboco.api.routes.git.get_git_service") as mock_get:
+        svc = AsyncMock()
+        svc.push_for_task = AsyncMock(return_value=("feature/x", 3))
+        mock_get.return_value = svc
+        response = await git_client["client"].post(
+            "/api/git/push",
+            json={
+                "project_slug": git_client["project"].slug,
+            },
+            headers=_HDR,
+        )
+    assert response.status_code != HTTPStatus.UNPROCESSABLE_ENTITY
+    assert response.status_code == HTTPStatus.OK
+
+
+@pytest.mark.asyncio
+async def test_create_pr_without_task_id_no_422(git_client: dict) -> None:
+    """POST /pr/create without task_id must not return 422 (schema validation error)."""
+    with patch("roboco.api.routes.git.get_git_service") as mock_get:
+        svc = AsyncMock()
+        svc.create_pr_for_task = AsyncMock(
+            return_value=(
+                7,
+                "https://github.com/x/y/pull/7",
+                "feat: add thing",
+                "feat/x",
+                "main",
+            )
+        )
+        mock_get.return_value = svc
+        response = await git_client["client"].post(
+            "/api/git/pr/create",
+            json={
+                "project_slug": git_client["project"].slug,
+            },
+            headers=_HDR,
+        )
+    assert response.status_code != HTTPStatus.UNPROCESSABLE_ENTITY
+    assert response.status_code == HTTPStatus.OK
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_without_task_id_no_422(git_client: dict) -> None:
+    """POST /pr/merge without task_id must not return 422 (schema validation error)."""
+    with patch("roboco.api.routes.git.get_git_service") as mock_get:
+        svc = AsyncMock()
+        svc.merge_pr_for_task = AsyncMock(return_value=("main", "deadbeef"))
+        mock_get.return_value = svc
+        response = await git_client["client"].post(
+            "/api/git/pr/merge",
+            json={
+                "project_slug": git_client["project"].slug,
+                "pr_number": 99,
+            },
+            headers=_HDR,
+        )
+    assert response.status_code != HTTPStatus.UNPROCESSABLE_ENTITY
+    assert response.status_code == HTTPStatus.OK
 
 
 # Re-export to keep import alive (TC reorders imports)

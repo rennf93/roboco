@@ -127,7 +127,7 @@ class GitCommitRequest(BaseModel):
     """Request to create a commit."""
 
     project_slug: str
-    task_id: UUID
+    task_id: UUID | None = None
     # Commit message fields
     message: str = Field(
         ...,
@@ -165,7 +165,7 @@ class GitPushRequest(BaseModel):
     """Request to push commits."""
 
     project_slug: str
-    task_id: UUID
+    task_id: UUID | None = None
     force: bool = False
 
 
@@ -187,7 +187,7 @@ class GitCreatePRRequest(BaseModel):
     """Request to create a pull request."""
 
     project_slug: str
-    task_id: UUID
+    task_id: UUID | None = None
     # PR content (auto-generated from templates if not provided)
     title: str | None = Field(None, description="PR title (auto-generated if not set)")
     body: str | None = Field(None, description="PR body (auto-generated if not set)")
@@ -213,7 +213,7 @@ class GitMergePRRequest(BaseModel):
 
     project_slug: str
     pr_number: int
-    task_id: UUID
+    task_id: UUID | None = None
     merge_method: str = Field(default="squash", pattern=r"^(merge|squash|rebase)$")
 
 
