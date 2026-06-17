@@ -67,11 +67,12 @@ def _git_service() -> GitService:
     return svc
 
 
-def _result(returncode: int = 0, stdout: str = "") -> Any:
+def _result(returncode: int = 0, stdout: str = "", stderr: str = "") -> Any:
     """Minimal subprocess result stand-in."""
     r = MagicMock()
     r.returncode = returncode
     r.stdout = stdout
+    r.stderr = stderr
     return r
 
 
@@ -305,20 +306,18 @@ async def test_rebase_raises_validation_error_when_head_branch_is_main(
 async def test_pull_raises_validation_error_on_dirty_tree(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """pull() raises ValidationError(DIRTY_TREE) when staged changes exist.
+    """pull() raises ValidationError(DIRTY_WORKSPACE) when the tree is dirty.
 
-    The pre-flight get_status returns staged files; pull must reject
-    immediately before any network call.
+    The pre-flight ``git status --porcelain`` returns modified files, so pull
+    must reject immediately before any network call.
     """
     monkeypatch.setattr(
         GitService,
-        "get_status",
-        AsyncMock(
-            return_value=("feature/backend/task", True, ["dirty.py"], [], [], 0, 0)
-        ),
+        "_run_git",
+        AsyncMock(return_value=_result(stdout=" M dirty.py\n")),
     )
     svc = _git_service()
-    with pytest.raises(ValidationError, match="DIRTY_TREE"):
+    with pytest.raises(ValidationError, match="DIRTY_WORKSPACE"):
         await svc.pull(_WORKSPACE)
 
 
@@ -326,15 +325,27 @@ async def test_pull_raises_validation_error_on_dirty_tree(
 async def test_pull_raises_validation_error_on_diverged_branch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """pull() raises ValidationError(DIVERGED_BRANCH) when ahead > 0 and behind > 0.
+    """pull() raises ValidationError(DIVERGED_BRANCH) when --ff-only fails.
 
-    A branch with local commits (ahead=2) and remote-only commits (behind=3)
-    has diverged; a plain git pull would produce an unwanted merge commit.
+    The pre-flight status is clean, but ``git pull --ff-only`` exits non-zero
+    with a "not possible to fast-forward" message because the branch has
+    diverged from origin.
     """
     monkeypatch.setattr(
         GitService,
-        "get_status",
-        AsyncMock(return_value=("feature/backend/task", False, [], [], [], 2, 3)),
+        "_run_git",
+        AsyncMock(
+            side_effect=[
+                _result(stdout=""),  # status --porcelain → clean
+                _result(  # pull --ff-only → diverged
+                    returncode=1,
+                    stderr="fatal: Not possible to fast-forward, aborting.",
+                ),
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        GitService, "_token_for_workspace", AsyncMock(return_value=None)
     )
     svc = _git_service()
     with pytest.raises(ValidationError, match="DIVERGED_BRANCH"):
@@ -345,21 +356,11 @@ async def test_pull_raises_validation_error_on_diverged_branch(
 async def test_pull_success_returns_post_pull_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """pull() returns the post-pull status on a clean, non-diverged branch.
+    """pull() returns the post-pull status on a clean, fast-forwardable branch.
 
-    A branch that is only *behind* (ahead=0, behind=2) passes the pre-flight
-    check and can be fast-forwarded.  Two get_status calls are expected:
-    the pre-flight check and the post-pull status.
+    The pre-flight ``git status --porcelain`` is clean and ``git pull --ff-only``
+    succeeds, so pull() returns the post-pull ``get_status`` tuple.
     """
-    _pre_flight: tuple[str, bool, list[str], list[str], list[str], int, int] = (
-        "feature/backend/task",
-        False,
-        [],
-        [],
-        [],
-        0,
-        2,
-    )
     _post_pull: tuple[str, bool, list[str], list[str], list[str], int, int] = (
         "feature/backend/task",
         False,
@@ -371,13 +372,13 @@ async def test_pull_success_returns_post_pull_status(
     )
     monkeypatch.setattr(
         GitService,
-        "get_status",
-        AsyncMock(side_effect=[_pre_flight, _post_pull]),
+        "_run_git",
+        AsyncMock(side_effect=[_result(stdout=""), _result(returncode=0)]),
     )
     monkeypatch.setattr(
         GitService, "_token_for_workspace", AsyncMock(return_value=None)
     )
-    monkeypatch.setattr(GitService, "_run_git", AsyncMock(return_value=_result()))
+    monkeypatch.setattr(GitService, "get_status", AsyncMock(return_value=_post_pull))
 
     svc = _git_service()
     result = await svc.pull(_WORKSPACE)
@@ -396,10 +397,9 @@ def test_rebase_request_target_branch_dash_prefix_rejected() -> None:
     Branch names beginning with '-' are not valid git ref names and look
     like CLI flags, so the schema validator rejects them with a clear error.
     """
-    with pytest.raises(pydantic.ValidationError, match="INVALID_BRANCH_NAME"):
+    with pytest.raises(pydantic.ValidationError, match="INVALID_TARGET_BRANCH"):
         GitRebaseRequest(
             project_slug="roboco",
-            agent_id="be-pm",
             target_branch="-bad-branch",
         )
 
@@ -409,7 +409,6 @@ def test_rebase_request_target_branch_protected_name_rejected() -> None:
     with pytest.raises(pydantic.ValidationError, match="PROTECTED_BRANCH"):
         GitRebaseRequest(
             project_slug="roboco",
-            agent_id="be-pm",
             target_branch="main",
         )
 
@@ -419,7 +418,6 @@ def test_rebase_request_target_branch_master_rejected() -> None:
     with pytest.raises(pydantic.ValidationError, match="PROTECTED_BRANCH"):
         GitRebaseRequest(
             project_slug="roboco",
-            agent_id="be-pm",
             target_branch="master",
         )
 
@@ -428,7 +426,6 @@ def test_rebase_request_valid_target_branch_accepted() -> None:
     """GitRebaseRequest accepts a valid, non-protected target_branch."""
     req = GitRebaseRequest(
         project_slug="roboco",
-        agent_id="be-pm",
         target_branch="feature/backend/some-task",
     )
     assert req.target_branch == "feature/backend/some-task"
@@ -474,7 +471,6 @@ async def test_rebase_endpoint_developer_gets_403() -> None:
             "/git/rebase",
             json={
                 "project_slug": "roboco",
-                "agent_id": "be-dev-1",
                 "target_branch": "feature/backend/some-task",
             },
         )
@@ -518,7 +514,6 @@ async def test_rebase_endpoint_pm_gets_200() -> None:
                 "/git/rebase",
                 json={
                     "project_slug": "roboco",
-                    "agent_id": "be-pm",
                     "target_branch": "feature/backend/some-task",
                 },
             )

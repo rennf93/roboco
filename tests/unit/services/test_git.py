@@ -550,7 +550,6 @@ async def test_create_branch_idempotent_when_branch_already_exists() -> None:
                 project_slug="roboco-api",
                 task_id=uuid4(),
                 branch_type="feature",
-                agent_id=str(uuid4()),
                 parent_branch=None,
             ),
         )
@@ -601,7 +600,6 @@ async def _run_create_branch_with_existing_branch(
                 project_slug="roboco-panel",
                 task_id=uuid4(),
                 branch_type="feature",
-                agent_id=str(uuid4()),
                 parent_branch=None,
             ),
         )

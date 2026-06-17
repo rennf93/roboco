@@ -1157,45 +1157,62 @@ class GitService(BaseService):
     ) -> tuple[str, bool, list[str], list[str], list[str], int, int]:
         """Pull latest changes from origin and return post-pull status.
 
-        Uses _network_git_timeout() because the operation talks to origin.
+        Safety gates (both raise :class:`ValidationError`):
 
-        Pre-flight safety gates (raise ValidationError before touching origin):
-        * DIRTY_TREE — uncommitted staged or unstaged changes are present.
-          A pull on a dirty tree can produce surprise merge conflicts or
-          silently overwrite local edits.  The caller must commit or stash
-          first.
-        * DIVERGED_BRANCH — local branch has both ahead *and* behind commits
-          relative to origin.  A plain ``git pull`` in this state either
-          refuses or creates a merge commit; the caller should rebase instead.
+        1. **Dirty workspace** — refuses to pull when there are any
+           uncommitted changes (staged, unstaged, or untracked).  A pull
+           onto a dirty tree can produce unexpected merge conflicts or
+           silently clobber un-staged edits.
+
+        2. **Diverged branch** — uses ``--ff-only`` so a diverged branch
+           is rejected rather than creating a merge commit.  The agent
+           must rebase or reset before pulling.
+
+        Uses _network_git_timeout() because the operation talks to origin.
 
         Returns: (current_branch, has_changes, staged, unstaged, untracked,
                   ahead, behind)
         """
-        # Pre-flight: check for dirty tree and diverged branch before pulling.
-        (
-            _pre_branch,
-            _has,
-            staged,
-            unstaged,
-            _untracked,
-            ahead,
-            behind,
-        ) = await self.get_status(workspace)
-        if staged or unstaged:
-            raise ValidationError(
-                "DIRTY_TREE: Workspace has uncommitted changes (staged or "
-                "unstaged). Commit or stash your changes before pulling."
-            )
-        if ahead > 0 and behind > 0:
-            raise ValidationError(
-                "DIVERGED_BRANCH: Local branch has diverged from origin "
-                f"(ahead={ahead}, behind={behind}). Use rebase instead of pull "
-                "to reconcile diverged histories."
-            )
-        token = await self._token_for_workspace(workspace)
-        await self._run_git(
-            workspace, ["pull"], token=token, timeout=_network_git_timeout()
+        # Gate 1: dirty workspace check
+        status_result = await self._run_git(
+            workspace, ["status", "--porcelain"], check=False
         )
+        if status_result.stdout.strip():
+            raise ValidationError(
+                "DIRTY_WORKSPACE: Cannot pull with uncommitted changes. "
+                "Stage and commit (or stash) your changes before pulling."
+            )
+
+        token = await self._token_for_workspace(workspace)
+        # Gate 2: fast-forward only — raises if branches have diverged
+        pull_result = await self._run_git(
+            workspace,
+            ["pull", "--ff-only"],
+            token=token,
+            timeout=_network_git_timeout(),
+            check=False,
+        )
+        if pull_result.returncode != 0:
+            stderr = (pull_result.stderr or "").lower()
+            if any(
+                kw in stderr
+                for kw in (
+                    "not possible to fast-forward",
+                    "diverged",
+                    "fatal: not possible to fast",
+                    "fast-forward",
+                )
+            ):
+                raise ValidationError(
+                    "DIVERGED_BRANCH: Branch has diverged from remote; "
+                    "cannot fast-forward. Rebase your local commits onto "
+                    "the remote tip with `git rebase origin/<branch>` "
+                    "before pulling."
+                )
+            raise ValidationError(
+                f"PULL_FAILED: git pull --ff-only exited non-zero. "
+                f"stderr: {pull_result.stderr or '(none)'}"
+            )
         return await self.get_status(workspace)
 
     async def fetch(
@@ -1222,17 +1239,17 @@ class GitService(BaseService):
     ) -> tuple[bool, list[str]]:
         """Rebase the current branch onto target_branch.
 
+        Safety gate: raises :class:`ValidationError` if the HEAD branch or
+        ``target_branch`` is ``master`` or ``main`` — rebasing a protected
+        integration branch is never safe in automation.
+
         On conflict (non-zero exit): captures unmerged files via
         ``git diff --name-only --diff-filter=U``, aborts the rebase to
         restore a clean workspace, and returns ``(True, conflicted_files)``.
 
         On success: returns ``(False, [])``.
-
-        Raises ``ValidationError`` when ``target_branch`` or the current
-        HEAD branch is ``master`` or ``main``; rebasing onto or from a
-        protected branch is not allowed in automation.
         """
-        _PROTECTED: frozenset[str] = frozenset({"master", "main"})
+        _PROTECTED = frozenset({"master", "main"})
         if target_branch in _PROTECTED:
             raise ValidationError(
                 f"REBASE_FORBIDDEN: Cannot rebase onto '{target_branch}'. "

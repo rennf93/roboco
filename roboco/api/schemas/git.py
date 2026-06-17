@@ -78,7 +78,6 @@ class GitCreateBranchRequest(BaseModel):
     project_slug: str
     task_id: UUID
     branch_type: str = Field(..., pattern=r"^(feature|bug|chore|docs|hotfix)$")
-    agent_id: str
     parent_branch: str | None = None
 
 
@@ -95,7 +94,6 @@ class GitCheckoutRequest(BaseModel):
 
     project_slug: str
     branch: str
-    agent_id: str
 
 
 class GitCheckoutResponse(BaseModel):
@@ -130,7 +128,6 @@ class GitCommitRequest(BaseModel):
 
     project_slug: str
     task_id: UUID
-    agent_id: str
     # Commit message fields
     message: str = Field(
         ...,
@@ -169,7 +166,6 @@ class GitPushRequest(BaseModel):
 
     project_slug: str
     task_id: UUID
-    agent_id: str
     force: bool = False
 
 
@@ -192,7 +188,6 @@ class GitCreatePRRequest(BaseModel):
 
     project_slug: str
     task_id: UUID
-    agent_id: str
     # PR content (auto-generated from templates if not provided)
     title: str | None = Field(None, description="PR title (auto-generated if not set)")
     body: str | None = Field(None, description="PR body (auto-generated if not set)")
@@ -220,7 +215,6 @@ class GitMergePRRequest(BaseModel):
     pr_number: int
     task_id: UUID
     merge_method: str = Field(default="squash", pattern=r"^(merge|squash|rebase)$")
-    agent_id: str
 
 
 class GitMergePRResponse(BaseModel):
@@ -241,8 +235,7 @@ class GitPullRequest(BaseModel):
     """Request to pull latest changes from origin."""
 
     project_slug: str
-    task_id: UUID
-    agent_id: str
+    task_id: UUID | None = None
 
 
 class GitPullResponse(BaseModel):
@@ -267,8 +260,7 @@ class GitFetchRequest(BaseModel):
     """Request to fetch changes from origin without merging."""
 
     project_slug: str
-    task_id: UUID
-    agent_id: str
+    task_id: UUID | None = None
 
 
 class GitFetchResponse(BaseModel):
@@ -289,37 +281,24 @@ class GitFetchResponse(BaseModel):
 # =============================================================================
 
 
-_PROTECTED_BRANCH_NAMES: frozenset[str] = frozenset({"main", "master", "develop"})
-
-
 class GitRebaseRequest(BaseModel):
     """Request to rebase the current branch onto a target branch."""
 
     project_slug: str
     task_id: UUID | None = None
-    agent_id: str
     target_branch: str
 
     @field_validator("target_branch")
     @classmethod
-    def validate_target_branch(cls, v: str) -> str:
-        """Reject branch names that start with '-' or match protected names.
-
-        A branch name starting with '-' is ambiguous on the git CLI (it looks
-        like a flag) and is never a valid ref name.  Protected branch names
-        (main, master, develop) must not be used as rebase targets — the
-        service layer guards against this too, but an early schema-level
-        rejection produces a cleaner 422 instead of a 400 from the service.
-        """
+    def _validate_target_branch(cls, v: str) -> str:
         if v.startswith("-"):
             raise ValueError(
-                f"INVALID_BRANCH_NAME: target_branch '{v}' starts with '-', "
-                "which is not a valid git branch name."
+                "INVALID_TARGET_BRANCH: target_branch must not start with '-'"
             )
-        if v in _PROTECTED_BRANCH_NAMES:
+        if v in ("master", "main"):
             raise ValueError(
-                f"PROTECTED_BRANCH: target_branch '{v}' is a protected branch "
-                "name and cannot be used as a rebase target."
+                f"PROTECTED_BRANCH: Cannot rebase onto '{v}'; "
+                "target_branch must not be 'master' or 'main'"
             )
         return v
 
@@ -335,3 +314,52 @@ class GitRebaseResponse(BaseModel):
     project_slug: str
     conflict: bool = False
     conflicted_files: list[str] = []
+
+
+# =============================================================================
+# GATEWAY-LAYER LIGHTWEIGHT SCHEMAS
+#
+# These simpler schemas are used by the MCP gateway layer and services that
+# don't need the full Git* request payload. All fields beyond project_slug
+# are optional to allow callers that don't yet carry task context.
+# =============================================================================
+
+
+class PullRequest(BaseModel):
+    """Lightweight pull request used by the gateway / MCP layer."""
+
+    project_slug: str
+    task_id: UUID | None = None
+
+
+class FetchRequest(BaseModel):
+    """Lightweight fetch request used by the gateway / MCP layer."""
+
+    project_slug: str
+    task_id: UUID | None = None
+
+
+class RebaseRequest(BaseModel):
+    """Lightweight rebase request used by the gateway / MCP layer.
+
+    Validates ``target_branch`` to prevent accidental rebases onto
+    protected branches or shell-injection via leading ``-``.
+    """
+
+    project_slug: str
+    task_id: UUID | None = None
+    target_branch: str
+
+    @field_validator("target_branch")
+    @classmethod
+    def _validate_target_branch(cls, v: str) -> str:
+        if v.startswith("-"):
+            raise ValueError(
+                "INVALID_TARGET_BRANCH: target_branch must not start with '-'"
+            )
+        if v in ("master", "main"):
+            raise ValueError(
+                f"PROTECTED_BRANCH: Cannot rebase onto '{v}'; "
+                "target_branch must not be 'master' or 'main'"
+            )
+        return v
