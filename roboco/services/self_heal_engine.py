@@ -25,14 +25,25 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from roboco.config import settings
+from roboco.foundation import identity as _foundation
+from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
 from roboco.services.base import BaseService
 from roboco.services.notification import NotificationService
+from roboco.services.project import get_project_service
+from roboco.services.task import (
+    SELF_HEAL_SOURCE,
+    TaskCreateRequest,
+    extract_self_heal_fingerprint,
+    get_task_service,
+)
 from roboco.services.telemetry import get_ci_telemetry_source
 
 if TYPE_CHECKING:
+    from uuid import UUID
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from roboco.services.telemetry import TelemetrySource
@@ -86,9 +97,13 @@ class SelfHealEngine(BaseService):
         return observations
 
     async def run_cycle(self) -> list[RegressionObservation]:
-        """Assess and notify the CEO. No-op unless self-healing is enabled.
+        """Assess, notify the CEO, and (if originate is on) open fix tasks.
 
-        Detect + notify only; never starts, merges, or deploys anything.
+        No-op unless ``self_heal_enabled``. It always NOTIFIES on a regression;
+        when ``self_heal_originate_enabled`` it also opens a PENDING fix task per
+        new regression and STOPS. It never starts, approves, merges, or deploys.
+        Writes (any opened task) are flushed here; the caller (the orchestrator
+        loop) owns the commit.
         """
         if not settings.self_heal_enabled:
             return []
@@ -103,7 +118,89 @@ class SelfHealEngine(BaseService):
             await notifier.send_ack_notification(
                 from_agent="system", to_agent="ceo", body=body
             )
+        if settings.self_heal_originate_enabled:
+            await self._originate(observations)
         return observations
+
+    async def _originate(self, observations: list[RegressionObservation]) -> int:
+        """Open a PENDING fix task per NEW regression, then STOP. Returns count.
+
+        Bounded + deduped: skips a regression that already has an open self-heal
+        task (by fingerprint), honors the per-cycle and rolling open-task caps,
+        and resolves the repo to RoboCo's own project. Each task is created
+        PENDING + UNASSIGNED + ``confirmed_by_human=False`` so it sits inert until
+        the CEO Approve-&-Starts it — origination is the loop's last act. It NEVER
+        calls start / approve / merge / deploy. Flushes; the caller commits.
+        """
+        task_svc = get_task_service(self.session)
+        project_svc = get_project_service(self.session)
+        open_tasks = await task_svc.list_open_self_heal_tasks()
+        open_fps: set[str] = set()
+        for existing in open_tasks:
+            fp = extract_self_heal_fingerprint(existing.quick_context)
+            if fp:
+                open_fps.add(fp)
+        open_count = len(open_tasks)
+        created = 0
+        for obs in observations:
+            if created >= settings.self_heal_max_per_cycle:
+                break
+            if open_count >= settings.self_heal_max_open_tasks:
+                self.log.info(
+                    "self-heal open-task cap reached; not originating",
+                    cap=settings.self_heal_max_open_tasks,
+                )
+                break
+            if obs.fingerprint in open_fps:
+                continue
+            project = await project_svc.get_by_slug(obs.repo_hint)
+            if project is None or project.id is None:
+                self.log.warning(
+                    "self-heal could not resolve project; notify-only",
+                    repo=obs.repo_hint,
+                )
+                continue
+            task = await task_svc.create(
+                TaskCreateRequest(
+                    title=f"Self-heal: fix the CI regression on {obs.repo_hint}",
+                    description=(
+                        f"RoboCo's own CI regressed.\n\n{obs.detail}\n\n"
+                        f"Evidence: {obs.raw_ref}\n\n"
+                        "Investigate and fix the regression at its root so CI "
+                        "returns to green. This task was opened automatically by "
+                        "the self-heal loop and is PENDING your Approve-&-Start; "
+                        "nothing runs until you approve it."
+                    ),
+                    acceptance_criteria=[
+                        f"CI on {obs.repo_hint}'s default branch is green again",
+                        "The cause of the failing run is fixed at its root, not "
+                        "masked or skipped",
+                    ],
+                    team=Team.MAIN_PM,
+                    created_by=_foundation.AGENTS["system"].uuid,
+                    task_type=TaskType.CODE,
+                    nature=TaskNature.TECHNICAL,
+                    estimated_complexity=Complexity.MEDIUM,
+                    project_id=cast("UUID", project.id),
+                    status=TaskStatus.PENDING,
+                    source=SELF_HEAL_SOURCE,
+                    confirmed_by_human=False,
+                )
+            )
+            # Carry the fingerprint so a later cycle sees this regression already
+            # has an open fix task (parsed by extract_self_heal_fingerprint).
+            task.quick_context = f"self_heal_fp={obs.fingerprint}"
+            await self.session.flush()
+            open_fps.add(obs.fingerprint)
+            open_count += 1
+            created += 1
+            self.log.info(
+                "self-heal fix task opened (PENDING; awaiting CEO)",
+                task_id=str(task.id),
+                repo=obs.repo_hint,
+                fingerprint=obs.fingerprint,
+            )
+        return created
 
 
 def get_self_heal_engine(

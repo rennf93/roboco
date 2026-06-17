@@ -372,6 +372,26 @@ def extract_required_cells(quick_context: str | None) -> list[str]:
 PR_REVIEW_SOURCES = ("external_pr", "internal_pr")
 
 
+# Source tag for a self-healing fix task: a PENDING task the self-heal loop opens
+# when RoboCo's own CI regresses. It rides the normal lifecycle once the CEO
+# Approve-&-Starts it; the loop itself never starts/approves/merges it.
+SELF_HEAL_SOURCE = "self_heal"
+
+_SELF_HEAL_FP_PREFIX = "self_heal_fp="
+
+
+def extract_self_heal_fingerprint(quick_context: str | None) -> str | None:
+    """The ``self_heal_fp=<fp>`` marker from quick_context, or None.
+
+    The per-signal dedupe key carried on a self-heal task, so the loop can tell
+    a regression already has an open fix task without a schema change.
+    """
+    for token in (quick_context or "").split():
+        if token.startswith(_SELF_HEAL_FP_PREFIX):
+            return token[len(_SELF_HEAL_FP_PREFIX) :] or None
+    return None
+
+
 _SUPERSEDE_MARKER_PREFIX = "external_pr_supersede"
 
 
@@ -788,6 +808,21 @@ class TaskService(BaseService):
             )
         )
         return result.first() is not None
+
+    async def list_open_self_heal_tasks(self) -> list[TaskTable]:
+        """Non-terminal self-heal fix tasks — the dedupe + open-cap basis.
+
+        A self-heal task is "open" until it reaches a terminal state. While one
+        exists for a regression's fingerprint the loop must not originate a
+        second, and the rolling open-task cap counts these.
+        """
+        result = await self.session.execute(
+            select(TaskTable).where(
+                TaskTable.source == SELF_HEAL_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+        )
+        return list(result.scalars().all())
 
     async def list_external_pr_reviews_awaiting_decision(self) -> list[TaskTable]:
         """Completed external-PR reviews still awaiting the CEO's decision.
