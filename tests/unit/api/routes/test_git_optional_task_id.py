@@ -10,8 +10,7 @@ All tests run without a real database or git process.
 
 from __future__ import annotations
 
-import uuid
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
@@ -46,17 +45,17 @@ _TASK_ID = uuid4()
 
 
 @pytest_asyncio.fixture
-async def client() -> AsyncIterator[AsyncClient]:  # type: ignore[type-arg]
+async def client() -> AsyncIterator[AsyncClient]:
     """FastAPI test client with mocked auth + DB; no Postgres needed."""
     app = FastAPI()
     app.include_router(git_router, prefix="/api/git")
 
-    async def _mock_db() -> AsyncGenerator:  # type: ignore[type-arg]
+    async def _mock_db() -> AsyncGenerator:
         yield AsyncMock()  # DB session is never touched in these tests
 
     async def _mock_agent() -> AgentContext:
         return AgentContext(
-            agent_id=cast("uuid.UUID", _AGENT_ID),
+            agent_id=_AGENT_ID,
             role=AgentRole.DEVELOPER,
             team=Team.BACKEND,
         )
@@ -81,7 +80,6 @@ def test_commit_request_task_id_optional() -> None:
     """GitCommitRequest accepts a missing task_id (defaults to None)."""
     req = GitCommitRequest(
         project_slug="roboco",
-        agent_id=str(_AGENT_ID),
         message="add something new here",
         commit_type="feat",
     )
@@ -93,7 +91,6 @@ def test_commit_request_task_id_present() -> None:
     req = GitCommitRequest(
         project_slug="roboco",
         task_id=_TASK_ID,
-        agent_id=str(_AGENT_ID),
         message="add something new here",
         commit_type="feat",
     )
