@@ -120,7 +120,7 @@ Choose the registry and version with two env vars (defaults shown):
 
 ```bash
 ROBOCO_REGISTRY=ghcr.io/rennf93   # or docker.io/renzof93
-ROBOCO_VERSION=latest             # or a pinned release, e.g. 0.5.0
+ROBOCO_VERSION=latest             # or a pinned release, e.g. 0.6.0
 ```
 
 The orchestrator spawns the matching pre-built agent images on demand — no build toolchain or source compile on your host.

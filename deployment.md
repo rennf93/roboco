@@ -41,7 +41,7 @@ docker compose -f docker-compose.registry.yml up -d
 docker compose -f docker-compose.registry.yml logs -f orchestrator
 ```
 
-Choose the registry and version with `ROBOCO_REGISTRY` (`ghcr.io/rennf93` or `docker.io/renzof93`) and `ROBOCO_VERSION` (`latest` or a pinned release such as `0.5.0`). The orchestrator pulls and spawns the matching pre-built agent images on demand.
+Choose the registry and version with `ROBOCO_REGISTRY` (`ghcr.io/rennf93` or `docker.io/renzof93`) and `ROBOCO_VERSION` (`latest` or a pinned release such as `0.6.0`). The orchestrator pulls and spawns the matching pre-built agent images on demand.
 
 ### Option B — Build from source
 
