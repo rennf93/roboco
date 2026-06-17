@@ -623,6 +623,7 @@ class AgentOrchestrator:
         self._rate_limit_probe_task: asyncio.Task | None = None
         self._strategy_engine_task: asyncio.Task | None = None
         self._external_pr_poll_task: asyncio.Task | None = None
+        self._self_heal_task: asyncio.Task | None = None
         # Tracks which providers have already received a CEO notification
         # during the current rate-limit episode.  Cleared when the probe
         # succeeds and the rate limit is lifted (tracker.clear() path).
@@ -707,6 +708,7 @@ class AgentOrchestrator:
         self._rate_limit_probe_task = asyncio.create_task(self._rate_limit_probe_loop())
         self._strategy_engine_task = asyncio.create_task(self._strategy_engine_loop())
         self._external_pr_poll_task = asyncio.create_task(self._external_pr_poll_loop())
+        self._self_heal_task = asyncio.create_task(self._self_heal_loop())
 
         logger.info(
             "Orchestrator started",
@@ -748,6 +750,11 @@ class AgentOrchestrator:
             self._external_pr_poll_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._external_pr_poll_task
+
+        if self._self_heal_task:
+            self._self_heal_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._self_heal_task
 
         # Stop all agents
         for agent_id in list(self._instances.keys()):
@@ -4660,6 +4667,32 @@ Start by:
                 break
             except Exception:
                 logger.exception("external-PR poll cycle failed")
+
+    async def _self_heal_loop(self) -> None:
+        """Engine 4: watch RoboCo's OWN CI, surface regressions, open fix tasks.
+
+        Dormant by default — returns immediately unless ``self_heal_enabled``, so
+        a standard deployment makes no CI call and adds zero behaviour. It only
+        NOTIFIES the CEO and (behind ``self_heal_originate_enabled``) opens a
+        PENDING fix task into RoboCo's own lifecycle; it never starts, merges, or
+        deploys. The per-cycle session commits any opened task here.
+        """
+        if not settings.self_heal_enabled:
+            return
+        from roboco.db import get_db_context
+        from roboco.services.self_heal_engine import get_self_heal_engine
+
+        interval = settings.self_heal_interval_seconds
+        while self._running:
+            try:
+                await asyncio.sleep(interval)
+                async with get_db_context() as db:
+                    await get_self_heal_engine(db).run_cycle()
+                    await db.commit()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("self-heal cycle failed")
 
     @staticmethod
     def _repo_key(git_url: str) -> str:
