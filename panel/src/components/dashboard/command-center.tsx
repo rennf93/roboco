@@ -9,6 +9,7 @@ import { ActiveBlockersPanel } from "./active-blockers-panel";
 import { RecentActivityFeed } from "./recent-activity-feed";
 import { QuickActionsBar } from "./quick-actions-bar";
 import { CeoApprovalQueue } from "./ceo-approval-queue";
+import { PrReviewQueue } from "./pr-review-queue";
 import { StrategySignalsPanel } from "./strategy-signals-panel";
 import type { Activity } from "./activity-item";
 import { Button } from "@/components/ui/button";
@@ -76,6 +77,9 @@ export function CommandCenter() {
         <CeoApprovalQueue />
         <StrategySignalsPanel />
       </div>
+
+      {/* External-PR review decision queue (hidden when empty) */}
+      <PrReviewQueue />
 
       {/* Metrics, Alerts, and Usage Row */}
       <div className="grid grid-cols-1 lg:grid-cols-3 xl:grid-cols-3 2xl:grid-cols-3 gap-6">
