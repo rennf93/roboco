@@ -3,13 +3,15 @@
 The Grok analogue of ``intake_main``: the same in-container ``POST /turn``
 receiver and the same relay sink to ``/api/prompter/live/{id}/events``, but the
 held-open session is an :class:`OpencodeServeSession` (``opencode serve``)
-instead of a ``ClaudeSDKClient``. ``opencode.json`` (xAI provider + system
-prompt) is rendered first. Intake is a human-only interviewer (no gateway verbs);
-its one action tool, ``propose_draft``, is registered by the ``intake-tools.js``
-opencode plugin (baked into the grok-prompter image, wired via
-``ROBOCO_OPENCODE_EXTRA_PLUGINS``) and the driver turns that tool call into the
-panel's draft card. The ``IntakeDriver`` loop, message source, and relay are
-reused unchanged — only the ``SessionFactory`` differs.
+instead of a ``ClaudeSDKClient``. ``opencode.json`` (model + system prompt) is
+rendered first. Intake is a human-only interviewer (no gateway verbs); its one
+action tool, ``propose_draft``, is registered by the ``intake-tools.js`` opencode
+plugin (baked into the grok-prompter image's plugin auto-discovery dir). Because
+opencode's synchronous serve reply does NOT carry tool-call parts, that plugin
+POSTs the draft straight to the prompter-live relay (the same
+``/api/prompter/live/{id}/events`` endpoint) so the panel renders the draft card.
+The ``IntakeDriver`` loop, message source, and relay are reused unchanged — only
+the ``SessionFactory`` differs.
 """
 
 from __future__ import annotations

@@ -7,12 +7,10 @@ sets (``OPENAI_*`` + ``ROBOCO_*``) plus the mounted Claude Code
 as importable Python (not a shell heredoc) makes the translation unit-testable.
 
 Config shape per opencode docs (https://opencode.ai/docs/config):
-  * NO ``provider`` block. opencode's BUILT-IN xai provider drives
-    grok-build-0.1; ANY custom ``provider.xai`` block (even just ``options``)
-    breaks plugin-tool registration, and a ``npm`` override additionally breaks
-    model resolution (ProviderModelNotFoundError) — all verified live on opencode
-    1.17.8. The key + base URL reach the provider via the ``XAI_API_KEY`` /
-    ``XAI_BASE_URL`` env vars; ``model`` selects ``xai/<model>``.
+  * NO ``provider`` block — opencode's BUILT-IN xai provider already drives
+    grok-build-0.1 (model resolution + tool-calls verified live), so a custom
+    block is unnecessary. The key + base URL reach the provider via the
+    ``XAI_API_KEY`` / ``XAI_BASE_URL`` env vars; ``model`` selects ``xai/<model>``.
   * ``mcp.<name>`` — ``{type:"local", command:[...], environment:{...}}``; this
     is where RoboCo's gateway servers (roboco-flow / roboco-do / ...) are wired,
     translated from Claude Code's ``mcpServers`` (``command`` + ``args`` + ``env``).
@@ -25,12 +23,14 @@ Config shape per opencode docs (https://opencode.ai/docs/config):
     review). This is the primary idle-stream defence (the orchestrator reaper is
     the backstop).
 
-There is NO ``plugin`` key: opencode 1.17.8 does not register a plugin's
-hooks/tools from a config ``plugin:``-array absolute path — only from the plugin
-AUTO-DISCOVERY dir (``~/.config/opencode/plugin/``). The plugins are baked there
-in the images instead (secret-scrub + budget-feed in the base grok image; the
-Secretary's directive tools and the Intake's propose_draft in their interactive
-images).
+There is NO ``plugin`` key: the plugins are baked into opencode's plugin
+AUTO-DISCOVERY dir (``~/.config/opencode/plugin/``, i.e.
+``/home/agent/.config/opencode/plugin/`` in the image), so the generated config
+doesn't need to reference them by path (secret-scrub + budget-feed in the base
+grok image; the Secretary's directive tools and the Intake's propose_draft in
+their interactive images). Each uses a NAMED export (opencode's documented
+plugin convention). The model writes this config to the GLOBAL location (see
+``main`` — ``~/.config/opencode/opencode.json``), which is what opencode reads.
 
 GUARDRAIL PARITY: the bash-guard (PAT-scrub) is ported via ``secret-scrub.js``
 (``tool.execute.before``); the per-session budget / loop / terminal-verb
@@ -57,19 +57,16 @@ from typing import Any
 
 _OPENCODE_SCHEMA = "https://opencode.ai/config.json"
 _PROVIDER_ID = "xai"
-# We do NOT override provider.<id>.npm. opencode's BUILT-IN xai provider already
-# drives grok-build-0.1 with working tool-calls (verified live); a custom `npm`
-# (e.g. @ai-sdk/openai) is not resolvable from opencode's module path and makes
-# the model fail to resolve (ProviderModelNotFoundError). The xAI key is injected
-# via the XAI_API_KEY env var the built-in provider reads (set by GrokProvider /
-# the orchestrator) — provider.options.apiKey alone does NOT authenticate it.
+# No provider block at all: opencode's BUILT-IN xai provider already drives
+# grok-build-0.1 with working tool-calls (verified live), so no custom `npm` /
+# `models` override is needed. The xAI key is injected via the XAI_API_KEY env
+# var the built-in provider reads (set by GrokProvider / the orchestrator).
 #
-# Plugins (secret-scrub / budget-feed / the per-role tool plugins) are NOT listed
-# in the config `plugin:` array — opencode 1.17.8 does not register a plugin's
-# hooks/tools when it is referenced by absolute path there. They are baked into
+# Plugins (secret-scrub / budget-feed / the per-role tool plugins) are baked into
 # the plugin AUTO-DISCOVERY dir (~/.config/opencode/plugin/, i.e.
-# /home/agent/.config/opencode/plugin/ in the image) instead, which registers
-# both tools and hooks (verified live against grok-build-0.1).
+# /home/agent/.config/opencode/plugin/ in the image) rather than referenced by a
+# config `plugin:` path — the dir is the simplest registration route and keeps
+# the generated config path-free (registration verified live against grok-build-0.1).
 
 
 # opencode's built-in subagent-spawning tool. Hard-disabled in the generated
@@ -77,8 +74,8 @@ _PROVIDER_ID = "xai"
 # subagents, and one that does can wedge the parent run on an idle stream. This
 # is the primary defence against the idle-stream hang; the orchestrator's
 # reaper watchdog (_maybe_kill_wedged_grok) is the backstop. (Per-provider
-# request/stream timeouts can't be set without a custom provider.npm, which
-# breaks model resolution — see the module docstring — so they are not used.)
+# request/stream timeouts would need a custom provider block, which we don't
+# emit; the reaper + disabled subagents cover the idle-stream risk instead.)
 _SUBAGENT_TOOL = "task"
 
 
@@ -134,13 +131,11 @@ def build_opencode_config(
 ) -> dict[str, Any]:
     """Build the ``opencode.json`` dict for a Grok agent.
 
-    Emits NO ``provider`` block: opencode's BUILT-IN xai provider drives
-    grok-build-0.1, and ANY custom ``provider.xai`` block breaks plugin-tool
-    registration AND (without ``XAI_API_KEY``) model resolution — all verified
-    live on opencode 1.17.8. The key + base URL are injected via the
-    ``XAI_API_KEY`` / ``XAI_BASE_URL`` env vars (set by GrokProvider / the
-    orchestrator). No ``plugin`` array either — plugins live in the
-    auto-discovery dir baked into the images.
+    Emits NO ``provider`` block — opencode's BUILT-IN xai provider drives
+    grok-build-0.1 (verified live), so a custom block is unnecessary; the key +
+    base URL are injected via the ``XAI_API_KEY`` / ``XAI_BASE_URL`` env vars
+    (set by GrokProvider / the orchestrator). No ``plugin`` array either —
+    plugins live in the auto-discovery dir baked into the images.
     """
     guards = guards or OpencodeGuards()
     config: dict[str, Any] = {

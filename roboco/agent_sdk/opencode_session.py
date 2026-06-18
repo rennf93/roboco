@@ -105,11 +105,15 @@ def normalize_opencode_message(message: dict[str, Any]) -> list[StreamChunk]:
 
     Unlike the Claude path (which streams text deltas live and so drops the final
     TextBlock to avoid double-render), the synchronous opencode reply carries the
-    text only here, so text parts ARE emitted. A ``propose_draft`` tool part — or
-    a fenced ```roboco-draft``` block in the assembled text — becomes a ``draft``
-    chunk, matching the Claude intake's two draft paths. A turn-level
-    ``info.error`` is surfaced as an ``error`` chunk so a failed turn is never
-    silently blank.
+    text only here, so text parts ARE emitted. A turn-level ``info.error`` is
+    surfaced as an ``error`` chunk so a failed turn is never silently blank.
+
+    Draft note: opencode's synchronous serve reply does NOT include tool-call
+    parts, so the intake draft is delivered by the ``intake-tools.js``
+    propose_draft tool POSTing to the prompter-live relay directly (not from
+    here). The ``propose_draft`` tool-part and fenced ```roboco-draft``` handling
+    below is a tolerant fallback for any opencode version that DOES surface the
+    tool call in parts; it is normally a no-op on the serve path.
     """
     parts = message.get("parts") or []
     chunks: list[StreamChunk] = []

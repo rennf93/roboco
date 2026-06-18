@@ -66,11 +66,10 @@ async function callBackend(method, path, body) {
 
 const asText = (data) => JSON.stringify(data);
 
-// Named export + loaded from the plugin auto-discovery dir
-// (~/.config/opencode/plugin/) — opencode 1.17.8 does NOT register tools from a
-// config `plugin:`-array absolute path; only directory auto-discovery + a named
-// export registers Hooks.tool (verified live: the model called the tool and the
-// backend received the request).
+// Named export (opencode's plugin convention) + baked into the plugin
+// auto-discovery dir (~/.config/opencode/plugin/) at image build. Verified live
+// against grok-build-0.1: the model called read_company_state + submit_directive
+// and the backend received both requests with the X-Agent-Token.
 export const RobocoSecretaryTools = async () => ({
   tool: {
     read_company_state: tool({

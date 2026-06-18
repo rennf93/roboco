@@ -77,9 +77,9 @@ function bareVerb(tool) {
   return tool;
 }
 
-// Named export + loaded from the plugin auto-discovery dir
-// (~/.config/opencode/plugin/) — opencode 1.17.8 ignores config `plugin:`-array
-// absolute paths for hook/tool registration (verified live).
+// Named export (opencode's plugin convention) + baked into the plugin
+// auto-discovery dir (~/.config/opencode/plugin/) at image build — the simplest
+// registration route (no config `plugin:` path needed).
 export const RobocoBudgetFeed = async () => {
   return {
     "tool.execute.before": async (input) => {

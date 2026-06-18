@@ -3443,8 +3443,8 @@ class AgentOrchestrator:
             cmd.extend(
                 [
                     # Built-in xai provider authenticates from XAI_API_KEY and
-                    # reads XAI_BASE_URL; opencode_config emits no provider block
-                    # (any provider.xai block breaks plugin-tool registration).
+                    # reads XAI_BASE_URL; opencode_config emits no provider block,
+                    # so these envs are the only LLM wiring needed.
                     "-e",
                     f"XAI_API_KEY={auth_token or ''}",
                     "-e",

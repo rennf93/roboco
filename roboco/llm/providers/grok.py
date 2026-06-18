@@ -70,13 +70,16 @@ _SYSTEM_PROMPT_IN_CONTAINER = "/app/system-prompt.md"
 _OPENCODE_DATA_DIR_IN_CONTAINER = "/home/agent/.local/share/opencode"
 
 # Reasoning effort by role. grok-build-0.1 reasons heavily by default, and
-# reasoning bills at the output rate — it dominates cost (a live "say ok" call
-# emitted ~300 reasoning tokens). Code-quality roles (developer, qa, pr_reviewer)
-# keep full reasoning; coordination / docs / board roles run "minimal" (a live
-# test cut reasoning ~54% with no quality cost for that work). opencode applies
-# this via its `--variant` flag. Operators can force one effort for ALL grok
-# agents with the ROBOCO_GROK_REASONING_EFFORT env on the orchestrator
-# (value "minimal" | "high" | "max", or "default"/"full" to use full reasoning).
+# reasoning bills at the output rate, so it dominates cost. Code-quality roles
+# (developer, qa, pr_reviewer) keep full reasoning; coordination / docs / board
+# roles request "minimal". opencode receives this via its `--variant` flag (and
+# the serve message `variant` field). NOTE: whether opencode actually applies a
+# named reasoning variant to grok-build-0.1 without a provider-defined `variants`
+# block is UNVERIFIED — passing the flag does not error, but the reasoning-cost
+# reduction must be measured on the NAS; treat the saving as best-effort, not
+# guaranteed. Operators can force one effort for ALL grok agents with the
+# ROBOCO_GROK_REASONING_EFFORT env on the orchestrator (value "minimal" | "high"
+# | "max", or "default"/"full" to use full reasoning).
 _MINIMAL_REASONING_ROLES = frozenset(
     {
         "cell_pm",
@@ -262,8 +265,7 @@ class GrokProvider(AgentProvider):
             [
                 # opencode's BUILT-IN xai provider authenticates from XAI_API_KEY
                 # and reads XAI_BASE_URL for the endpoint — opencode_config emits
-                # no provider block (any provider.xai block breaks plugin-tool
-                # registration), so these envs are the only LLM wiring.
+                # no provider block, so these envs are the only LLM wiring needed.
                 "-e",
                 f"XAI_API_KEY={config.provider_auth_token}",
                 "-e",
