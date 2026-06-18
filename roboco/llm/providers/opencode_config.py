@@ -20,15 +20,16 @@ Config shape per opencode docs (https://opencode.ai/docs/config):
     idle stream hangs the parent run with no recovery (observed live on a PR
     review). The request/stream timeouts below are the defence-in-depth backstop.
 
-GUARDRAIL PARITY: the bash-guard (PAT-scrub) deny rules ARE ported to opencode
-via the ``secret-scrub.js`` plugin (``tool.execute.before``), and token
-usage/cost IS captured from opencode's SQLite store at finalize. The remaining
-gap vs Claude Code is the budget / loop-detector / stop-guard / prompt-injection
-hooks — they fire against the SDK ``:9000`` server and have no opencode
-equivalent yet; closing them needs an opencode plugin that POSTs to a sidecar
-(a tracked follow-up / open decision). ``bash`` permission stays operator-tunable
-(``ROBOCO_GROK_BASH_PERMISSION``) so a deployment can fail closed
-(``deny``/``ask``) meanwhile.
+GUARDRAIL PARITY: the bash-guard (PAT-scrub) is ported via ``secret-scrub.js``
+(``tool.execute.before``); usage/cost is captured from opencode's SQLite store at
+finalize and bounded by the orchestrator cost watchdog
+(``ROBOCO_GROK_MAX_COST_USD``, which also catches runaway-loop burn); and the
+prompt-injection guard is recreated at RoboCo's input boundary
+(``roboco.agent_sdk.prompt_guard`` — the driver scans interactive turns, the
+entrypoint scans the one-shot task prompt). The only Claude hook without an
+opencode equivalent is the stop-guard (terminal-verb enforcement; opencode's
+stop events are observe-only) — a workflow nicety, not a security control.
+``bash`` permission stays operator-tunable (``ROBOCO_GROK_BASH_PERMISSION``).
 """
 
 from __future__ import annotations

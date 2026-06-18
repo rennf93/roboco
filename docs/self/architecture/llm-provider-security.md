@@ -1,6 +1,6 @@
 # LLM provider security posture
 
-RoboCo routes each agent to one of several LLM providers (the **Routing** card in the control panel). This note states — truthfully — what protections an agent gets on each provider, so the choice is made knowingly. The short version: **Grok agents do not have full guardrail parity with the rest, but they are still usable.** Use them for trusted work; prefer a Claude-Code-runtime provider for agents that ingest untrusted or cross-agent content.
+RoboCo routes each agent to one of several LLM providers (the **Routing** card in the control panel). This note states — truthfully — what protections an agent gets on each provider. The short version: **Grok now reaches effective security parity** — the command/secret-exfiltration guard, the budget/cost cap, and the prompt-injection guard all apply to Grok agents. The only Claude hook without an opencode equivalent is the stop-guard (terminal-verb enforcement), which is a workflow nicety, not a safety control. Any agent — including the delivery roles — can be routed to Grok.
 
 ## Two runtimes, not five
 
@@ -22,17 +22,13 @@ Anthropic, Ollama, and Self-Hosted all run on **Claude Code** and therefore keep
 | MCP gateway + role tool-manifest | yes | yes (mounted by construction) |
 | Command / secret-exfiltration guard (bash, credential files, internal-host calls, PAT exfil) | yes (`bash-guard-hook.sh`, PreToolUse) | **yes** — ported to opencode as the `secret-scrub.js` plugin (`tool.execute.before`) |
 | Budget / runaway-cost kill-switch | yes (`post-tool-budget` hook against the SDK server) | **yes** — orchestrator-side cost watchdog (`ROBOCO_GROK_MAX_COST_USD`) reading the opencode store |
-| Prompt-injection guard (rejects "ignore previous instructions", role-override, fake escalations in incoming A2A / task / notification content) | yes (`user-prompt-hook.sh`, UserPromptSubmit, denies the turn) | **no** — opencode's incoming-message hook (`message.updated`) is observe-only and cannot block a turn before the model reads it |
-| Stop-guard (terminal-verb enforcement before a run ends) | yes (`stop-hook.sh`, Stop) | **no** — opencode's stop/idle hooks are observe-only |
+| Prompt-injection guard (rejects "ignore previous instructions", role-override, fake escalations in incoming A2A / task / notification content) | yes (`user-prompt-hook.sh`, UserPromptSubmit, denies the turn) | **yes** — recreated at RoboCo's input boundary (`prompt_guard.detect_injection`): the interactive driver scans every turn, the one-shot grok entrypoint scans the task prompt. Same patterns as the bash hook, kept in sync. opencode's lack of a blocking pre-prompt hook is irrelevant — we deny in our own code before calling the model |
+| Stop-guard (terminal-verb enforcement before a run ends) | yes (`stop-hook.sh`, Stop) | **no** — opencode's stop/idle hooks are observe-only (workflow nicety, not a security control) |
 
-## Why the two gaps exist (not a defer — a runtime limitation)
+## The remaining gap: the stop-guard
 
-opencode's plugin API exposes only observe-only events for incoming messages and session-stop, and **no token/usage hook at all**. So the prompt-injection and stop-guard hooks — both of which must *block* an action — have no faithful opencode equivalent today. Closing them would require an upstream opencode feature (a blocking message/stop hook). The budget guard was movable to the orchestrator (it reads the opencode cost store), which is why Grok keeps budget parity but not injection/stop parity.
+Every *security-relevant* Claude guard now applies to Grok — command/secret-exfiltration (`secret-scrub.js`), budget/runaway-cost (orchestrator cost watchdog), and prompt-injection (`prompt_guard`, recreated at the input boundary). The one Claude hook without an opencode equivalent is the **stop-guard** (it enforces that an agent calls a terminal MCP verb before a run ends), because opencode's session-stop events are observe-only. This is a workflow-completion guard, not a safety control: a Grok agent that ends without a terminal verb is recovered by the orchestrator reaper / idle watchdog, not left in a dangerous state.
 
 ## What this means for routing
 
-- **Grok is safe for trusted, self-contained work** — and for the interactive intake/secretary roles, whose input comes directly from the CEO (a small injection surface).
-- **The real injection exposure is the delivery roles** (developer / qa / pm / documenter), which routinely ingest *other agents'* and external content as data. The prompt-injection guard is what stops a poisoned A2A message or task description from steering them off-task; on Grok that guard is absent.
-- **Recommendation:** route delivery agents that handle untrusted or cross-agent content to a Claude-Code-runtime provider (Anthropic / Ollama / Self-Hosted). Route Grok where the content is trusted, or accept the reduced posture knowingly. The command/secret-exfiltration guard — the one that prevents actual credential leakage — *is* present on Grok, so the gap is about being socially-engineered off-task, not about secret exfiltration.
-
-This is the honest claim: **not full parity, still usable.** The control panel's Routing card surfaces a short version of this when Grok or Mix mode is selected.
+Grok is safe to route any agent to, **including the delivery roles** that ingest cross-agent / external content: the prompt-injection guard rejects a poisoned A2A message or task prompt before the model sees it (interactive turns in the driver, the one-shot task prompt in the entrypoint), and the secret-exfiltration guard blocks credential reads / internal-host calls. The only behavioural difference from a Claude-Code-runtime provider is the stop-guard noted above. So security parity is effectively reached; the remaining difference is non-security.
