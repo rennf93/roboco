@@ -3963,6 +3963,15 @@ class AgentOrchestrator:
                 )
                 continue
             self._instances.pop(agent_id, None)
+            # Interactive roles (intake/secretary) have an open panel relay; a
+            # raw kill would leave the SSE hanging (frozen chat). Close it with a
+            # reason so the panel reports why the chat ended.
+            if agent_id in (INTAKE_AGENT_ID, SECRETARY_AGENT_ID):
+                from roboco.services.prompter_live import get_live_registry
+
+                get_live_registry().close_by_agent(
+                    agent_id, error="Chat ended: the Grok cost cap was exceeded."
+                )
             logger.warning(
                 "grok container killed: cost ceiling exceeded",
                 agent_id=agent_id,

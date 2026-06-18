@@ -22,6 +22,20 @@ def test_open_get_close() -> None:
     assert reg.get("s1") is None
 
 
+def test_close_by_agent_closes_matching_sessions_with_error() -> None:
+    reg = PrompterLiveRegistry()
+    reg.open("s1", "intake-1")
+    reg.open("s2", "secretary-1")  # different agent — must survive
+    closed = reg.close_by_agent("intake-1", error="cost cap")
+    assert closed == ["s1"]
+    assert reg.get("s1") is None  # closed + popped
+    assert reg.is_alive("s2")  # untouched
+    # The error event is queued before the close sentinel so the panel sees it.
+    sess = reg.open("s3", "intake-1")
+    reg.close_by_agent("intake-1", error="boom")
+    assert sess.queue.get_nowait() == {"kind": "error", "text": "boom"}
+
+
 def test_park_and_find_by_task() -> None:
     """A parked session is discoverable by task id for board-feedback injection."""
     reg = PrompterLiveRegistry()

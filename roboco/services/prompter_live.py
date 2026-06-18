@@ -101,6 +101,25 @@ class PrompterLiveRegistry:
         session.queue.put_nowait(_CLOSE)
         self.log.info("Live intake session closed", session_id=session_id)
 
+    def close_by_agent(self, agent_id: str, *, error: str | None = None) -> list[str]:
+        """Close every live session bound to ``agent_id`` (e.g. on a forced kill).
+
+        When the orchestrator kills an interactive container out-of-band (the
+        Grok cost-cap watchdog), the relay would otherwise stay open and the
+        panel SSE would hang forever. This pushes an optional final ``error``
+        event so the panel shows WHY the chat ended, then closes the stream.
+        Returns the closed session ids.
+        """
+        closed: list[str] = []
+        for session_id, session in list(self._sessions.items()):
+            if session.agent_id != agent_id or session.closed:
+                continue
+            if error:
+                session.queue.put_nowait({"kind": "error", "text": error})
+            self.close(session_id)
+            closed.append(session_id)
+        return closed
+
     def park(self, session_id: str, task_id: str) -> bool:
         """Mark a session as parked awaiting board review of ``task_id``.
 
