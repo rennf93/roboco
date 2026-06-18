@@ -76,6 +76,7 @@ class _FakeHost:
             if config.mcp_config_path
             else None,
             "settings": str(agent_settings_path) if agent_settings_path else None,
+            "opencode": f"/host/opencode/{config.agent_id}",
         }
 
     def _build_mount_args(
@@ -200,6 +201,9 @@ async def test_grok_spawn_wires_gateway_and_image_last() -> None:
     # Tool restriction lives in the rendered opencode.json (opencode `tools`),
     # not a spawn env var — no ROBOCO_AGENT_TOOLS is injected.
     assert not any(c.startswith("ROBOCO_AGENT_TOOLS=") for c in cmd)
+    # The opencode store is mounted so the orchestrator can read usage/cost
+    # back at finalize.
+    assert "/host/opencode/be-dev-1:/home/agent/.local/share/opencode" in cmd
     # Identity wiring from the shared host helpers is present.
     assert "ROBOCO_AGENT_TOKEN=hmac-be-dev-1" in cmd
     # The image is the final docker-run argument.

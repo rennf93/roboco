@@ -163,6 +163,11 @@ CLAUDE_AUTH_HOST_PATH = os.environ.get(
 )
 PROJECT_HOST_PATH = os.environ.get("ROBOCO_HOST_PROJECT_DIR", "")
 DATA_HOST_PATH = os.environ.get("ROBOCO_HOST_DATA_DIR", "")
+# In-orchestrator path where each GROK agent's opencode store is visible. The
+# agent writes <DATA_HOST_PATH>/opencode/<agent_id>; the compose file mounts the
+# same host dir here so the finalizer can read opencode.db back (mirrors how the
+# Claude transcript is read from the mounted ~/.claude). Override for local runs.
+OPENCODE_DATA_DIR = os.environ.get("ROBOCO_OPENCODE_DATA_DIR", "/data/opencode")
 
 
 # =============================================================================
@@ -1692,6 +1697,9 @@ class AgentOrchestrator:
                 "workspaces": f"{DATA_HOST_PATH}/workspaces",
                 "claude": CLAUDE_AUTH_HOST_PATH,
                 "mcp_config": f"{DATA_HOST_PATH}/mcp-configs/{mcp_name}",
+                # Per-agent opencode store (GROK only); the orchestrator reads it
+                # back at finalize via the shared data volume (see OPENCODE_DATA_DIR).
+                "opencode": f"{DATA_HOST_PATH}/opencode/{config.agent_id}",
                 "prompt": (
                     f"{DATA_HOST_PATH}/prompts-generated/{config.agent_id}-prompt.md"
                 ),
@@ -1711,6 +1719,9 @@ class AgentOrchestrator:
             "workspaces": str(Path(settings.workspaces_root)),
             "claude": CLAUDE_AUTH_HOST_PATH,
             "mcp_config": str(config.mcp_config_path),
+            "opencode": str(
+                Path(tempfile.gettempdir()) / "roboco-opencode" / config.agent_id
+            ),
             "prompt": str(
                 Path(tempfile.gettempdir())
                 / "roboco-prompts"
@@ -3671,17 +3682,61 @@ class AgentOrchestrator:
         except OSError:
             return (0, 0, 0, 0)
 
+    def _opencode_db_path(self, agent_id: str) -> str:
+        """In-orchestrator path to a GROK agent's opencode SQLite store.
+
+        The agent writes opencode.db under the shared data volume; the compose
+        file mounts that host dir at ``OPENCODE_DATA_DIR`` here, so finalize can
+        read it back — the opencode analogue of the mounted Claude transcript.
+        """
+        return str(Path(OPENCODE_DATA_DIR) / agent_id / "opencode.db")
+
+    def _grok_usage_from_opencode(self, agent_id: str) -> tuple[int, int, int, int]:
+        """Sum a GROK agent's token usage from its opencode SQLite store.
+
+        A GROK agent runs opencode — no SDK ``/usage/status`` server and no
+        Claude transcript — so its usage lands in opencode.db. Reasoning is
+        folded into output (it bills at the output rate, matching
+        ``calculate_cost``). A WARNING is logged on a 0-token read because a
+        silent mount/uid failure is otherwise indistinguishable from a genuine
+        zero-cost run. Returns ``(input, output, cache_read, cache_write)``.
+        """
+        from roboco.llm.providers.opencode_usage import read_session_usage
+
+        db_path = self._opencode_db_path(agent_id)
+        usage = read_session_usage(db_path)
+        if usage is None:
+            logger.warning(
+                "GROK agent finalized with no readable opencode usage "
+                "(0 tokens / $0) — check the opencode db mount",
+                agent_id=agent_id,
+                db_path=db_path,
+            )
+            return (0, 0, 0, 0)
+        return (
+            usage.tokens_input,
+            usage.tokens_output + usage.tokens_reasoning,
+            usage.tokens_cache_read,
+            usage.tokens_cache_write,
+        )
+
     async def _resolve_final_token_usage(
         self, agent_id: str
     ) -> tuple[int, int, int, int]:
         """Resolve final token counts for a stopping agent.
 
-        Tries the live SDK ``/usage/status`` first; if that misses — the SDK's
-        in-memory counts race container teardown for short-lived agents — it
-        falls back to the agent's Claude Code transcript, which is durable and
-        mounted into this container. Returns
+        For a GROK agent, reads the opencode SQLite store (no SDK server / Claude
+        transcript exists). Otherwise tries the live SDK ``/usage/status`` first;
+        if that misses — the SDK's in-memory counts race container teardown for
+        short-lived agents — it falls back to the agent's Claude Code transcript,
+        which is durable and mounted into this container. Returns
         ``(input, output, cache_read, cache_write)``.
         """
+        from roboco.models.base import ModelProvider
+
+        if self.get_provider_for_agent(agent_id) == ModelProvider.GROK.value:
+            return self._grok_usage_from_opencode(agent_id)
+
         tokens = (0, 0, 0, 0)
         sdk_url = f"http://roboco-agent-{agent_id}:{SDK_PORT}/usage/status"
         try:

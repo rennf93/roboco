@@ -231,6 +231,8 @@ services:
       - ${ROBOCO_DATA_DIR:-./data}/prompts-generated:/app/prompts-generated
       - ${ROBOCO_DATA_DIR:-./data}/agent-settings:/app/agent-settings
       - ${ROBOCO_DATA_DIR:-./data}/workspaces:/data/workspaces
+      # Per-agent opencode stores (GROK usage/cost capture).
+      - ${ROBOCO_DATA_DIR:-./data}/opencode:/data/opencode
       - ${ROBOCO_DATA_DIR:-./data}/logs:/data/logs
       - ${ROBOCO_DATA_DIR:-./data}/briefings:/app/briefings
       - ${ROBOCO_DATA_DIR:-./data}/manifests:/app/manifests

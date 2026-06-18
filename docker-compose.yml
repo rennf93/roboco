@@ -330,6 +330,9 @@ services:
       - ${ROBOCO_DATA_DIR:-./data}/agent-settings:/app/agent-settings
       # Agent workspaces (git clones) - persisted across restarts
       - ${ROBOCO_DATA_DIR:-./data}/workspaces:/data/workspaces
+      # Per-agent opencode stores (GROK usage/cost capture): each Grok agent
+      # writes opencode.db under <agent_id>/; the finalizer reads it back here.
+      - ${ROBOCO_DATA_DIR:-./data}/opencode:/data/opencode
       # Persistent logs — survive `docker compose down/up`. Orchestrator and
       # each spawned agent write structured logs here so we can audit past
       # runs instead of relying on ephemeral `docker logs`.

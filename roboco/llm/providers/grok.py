@@ -63,6 +63,10 @@ _DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1"
 # In-container paths mounted by the orchestrator's `_build_mount_args`.
 _MCP_CONFIG_IN_CONTAINER = "/app/mcp-config.json"
 _SYSTEM_PROMPT_IN_CONTAINER = "/app/system-prompt.md"
+# opencode's data dir inside the agent (HOME=/home/agent); opencode.db lands
+# here. Mounted to a per-agent host dir so the orchestrator can read usage back
+# (mirror of roboco.llm.providers.opencode_usage.DEFAULT_DB_PATH's parent).
+_OPENCODE_DATA_DIR_IN_CONTAINER = "/home/agent/.local/share/opencode"
 
 # Reasoning effort by role. grok-build-0.1 reasons heavily by default, and
 # reasoning bills at the output rate — it dominates cost (a live "say ok" call
@@ -168,6 +172,7 @@ class GrokProvider(AgentProvider):
         cmd = self._host._build_mount_args(container_name, mount_config, hosts)
         self._host._append_agent_auth_env(cmd, config)
         self._host._append_git_context_env(cmd, config)
+        self._append_opencode_data_mount(cmd, hosts)
         self._append_grok_env(cmd, config, initial_prompt)
         cmd.append(self._image)
 
@@ -186,6 +191,21 @@ class GrokProvider(AgentProvider):
             instance_id=container_name,
             extra={"container_id": stdout.decode().strip(), "model": config.model},
         )
+
+    def _append_opencode_data_mount(
+        self, cmd: list[str], hosts: dict[str, str | None]
+    ) -> None:
+        """Mount the per-agent opencode data dir so the orchestrator can read it.
+
+        opencode persists token usage to ``opencode.db`` under its data dir
+        (``$HOME/.local/share/opencode``). Binding a per-agent host dir there
+        lets the finalizer read the store back over the shared data volume —
+        the opencode analogue of the mounted Claude transcript. Without this a
+        Grok agent finalizes at 0 tokens / $0.
+        """
+        opencode_host = hosts.get("opencode")
+        if opencode_host:
+            cmd.extend(["-v", f"{opencode_host}:{_OPENCODE_DATA_DIR_IN_CONTAINER}"])
 
     def _append_grok_env(
         self, cmd: list[str], config: AgentConfig, initial_prompt: str | None
