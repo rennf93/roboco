@@ -242,6 +242,28 @@ services:
     depends_on:
       - agent-base-image
 
+  # Interactive Grok roles (intake/secretary) — opencode-serve sessions; built
+  # FROM roboco-agent-grok, so they depend on the Grok runtime image.
+  agent-grok-prompter-image:
+    build:
+      context: .
+      dockerfile: docker/agent-grok-prompter.Dockerfile
+    image: roboco-agent-grok-prompter
+    entrypoint: ["/bin/sh", "-c", 'echo "Agent Grok Prompter image built"']
+    restart: "no"
+    depends_on:
+      - agent-grok-image
+
+  agent-grok-secretary-image:
+    build:
+      context: .
+      dockerfile: docker/agent-grok-secretary.Dockerfile
+    image: roboco-agent-grok-secretary
+    entrypoint: ["/bin/sh", "-c", 'echo "Agent Grok Secretary image built"']
+    restart: "no"
+    depends_on:
+      - agent-grok-image
+
   # ==========================================================================
   # Orchestrator - API Server + Agent Spawner
   # ==========================================================================

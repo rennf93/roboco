@@ -165,6 +165,16 @@ services:
     entrypoint: ["/bin/sh", "-c", "echo 'agent-grok image present'"]
     restart: "no"
 
+  agent-grok-prompter-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-grok-prompter:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-grok-prompter image present'"]
+    restart: "no"
+
+  agent-grok-secretary-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-grok-secretary:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-grok-secretary image present'"]
+    restart: "no"
+
   # --------------------------------------------------------------------------
   # Orchestrator — API server + agent spawner
   # --------------------------------------------------------------------------
