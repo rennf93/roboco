@@ -662,6 +662,22 @@ class Settings(BaseSettings):
             "override via ROBOCO_STALE_CLAIM_REAP_SECONDS"
         ),
     )
+    # A GROK (opencode) agent that wedges — an idle model call / stream with no
+    # gateway verb — is ACTIVE-yet-silent, so the heartbeat reaper's live-
+    # container skip would shield its task forever (opencode emits no SDK budget
+    # signal and advances no heartbeat while parked, unlike a Claude agent that
+    # at least reports). After this longer window the orchestrator kills + evicts
+    # the container so the reaper releases the task. Longer than
+    # stale_claim_reap_seconds so only a truly-dead run trips it, never a
+    # slow-but-working agent.
+    grok_idle_kill_seconds: int = Field(
+        default=900,
+        ge=120,
+        description=(
+            "Idle-container kill threshold for GROK agents (seconds); "
+            "override via ROBOCO_GROK_IDLE_KILL_SECONDS"
+        ),
+    )
     # A task left CLAIMED/IN_PROGRESS with an assignee but no running container
     # (e.g. a reassignment that didn't spawn) is invisibly stuck — the heartbeat
     # reaper can't see it because its heartbeat was seeded fresh at claim time.

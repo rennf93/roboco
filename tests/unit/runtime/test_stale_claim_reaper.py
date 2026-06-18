@@ -140,3 +140,121 @@ async def test_reap_spares_claims_whose_assignee_container_is_alive() -> None:
 
     # The live-assignee task is spared; only the dead one is reaped.
     svc.unclaim_for_reaper.assert_awaited_once_with(dead_id)
+
+
+def _grok_instance() -> AgentInstance:
+    cfg = type("C", (), {"provider_type": "grok"})()
+    return AgentInstance(agent_id="be-dev-1", state=AgentState.ACTIVE, config=cfg)
+
+
+@pytest.mark.asyncio
+async def test_reaper_kills_and_releases_wedged_grok_container() -> None:
+    """A GROK container idle past the kill TTL is killed, evicted, and released.
+
+    Unlike a Claude agent, a wedged opencode container is ACTIVE yet fires no
+    verb, so the live-instance skip would shield it forever. Past the longer
+    grok-idle TTL the watchdog removes the container and drops it from
+    `_instances`, so the same reap pass then unclaims the task.
+    """
+    now = datetime.now(UTC)
+    task_id = uuid4()
+    wedged = type(
+        "T",
+        (),
+        {
+            "id": task_id,
+            "last_heartbeat_at": now - timedelta(seconds=1200),
+            "assigned_to": AGENT_UUIDS["be-dev-1"],
+            "claimed_by": None,
+        },
+    )()
+
+    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    orch._claim_heartbeat_ttl = 300
+    orch._grok_idle_kill_ttl = 900
+    orch._instances = {"be-dev-1": _grok_instance()}
+    orch._remove_container = AsyncMock()
+    svc = AsyncMock()
+    svc.list_in_progress_or_claimed.return_value = [wedged]
+    svc.unclaim_for_reaper = AsyncMock()
+
+    await orch._reap_with_service(svc)
+
+    orch._remove_container.assert_awaited_once_with("roboco-agent-be-dev-1")
+    assert "be-dev-1" not in orch._instances  # evicted
+    svc.unclaim_for_reaper.assert_awaited_once_with(task_id)  # released
+
+
+@pytest.mark.asyncio
+async def test_reaper_spares_grok_container_within_kill_ttl() -> None:
+    """A GROK container stale past the claim TTL but within the kill TTL lives.
+
+    Only a truly-dead run (idle past the longer grok-idle TTL) is killed — a
+    slow-but-working agent is left alone.
+    """
+    now = datetime.now(UTC)
+    recent = type(
+        "T",
+        (),
+        {
+            "id": uuid4(),
+            "last_heartbeat_at": now - timedelta(seconds=600),
+            "assigned_to": AGENT_UUIDS["be-dev-1"],
+            "claimed_by": None,
+        },
+    )()
+
+    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    orch._claim_heartbeat_ttl = 300
+    orch._grok_idle_kill_ttl = 900
+    orch._instances = {"be-dev-1": _grok_instance()}
+    orch._remove_container = AsyncMock()
+    svc = AsyncMock()
+    svc.list_in_progress_or_claimed.return_value = [recent]
+    svc.unclaim_for_reaper = AsyncMock()
+
+    await orch._reap_with_service(svc)
+
+    orch._remove_container.assert_not_awaited()
+    assert "be-dev-1" in orch._instances
+    svc.unclaim_for_reaper.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reaper_never_kills_non_grok_container() -> None:
+    """A non-GROK (Claude) container idle past the kill TTL is still spared.
+
+    The watchdog only kills GROK runtimes; a quiet Claude agent keeps the
+    heartbeat-skip protection regardless of how long it has been silent.
+    """
+    now = datetime.now(UTC)
+    claude_task = type(
+        "T",
+        (),
+        {
+            "id": uuid4(),
+            "last_heartbeat_at": now - timedelta(seconds=1200),
+            "assigned_to": AGENT_UUIDS["be-dev-1"],
+            "claimed_by": None,
+        },
+    )()
+    claude_cfg = type("C", (), {"provider_type": "anthropic"})()
+
+    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    orch._claim_heartbeat_ttl = 300
+    orch._grok_idle_kill_ttl = 900
+    orch._instances = {
+        "be-dev-1": AgentInstance(
+            agent_id="be-dev-1", state=AgentState.ACTIVE, config=claude_cfg
+        )
+    }
+    orch._remove_container = AsyncMock()
+    svc = AsyncMock()
+    svc.list_in_progress_or_claimed.return_value = [claude_task]
+    svc.unclaim_for_reaper = AsyncMock()
+
+    await orch._reap_with_service(svc)
+
+    orch._remove_container.assert_not_awaited()
+    assert "be-dev-1" in orch._instances
+    svc.unclaim_for_reaper.assert_not_awaited()

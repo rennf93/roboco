@@ -682,6 +682,10 @@ class AgentOrchestrator:
         # Tests bypass `__init__` via `__new__` and set _claim_heartbeat_ttl
         # directly; production never uses _task_svc from __init__.
         self._claim_heartbeat_ttl: int = settings.stale_claim_reap_seconds
+        # Longer threshold before a wedged (ACTIVE-yet-idle) GROK container is
+        # killed + evicted so the reaper can release its task; see
+        # _maybe_kill_wedged_grok.
+        self._grok_idle_kill_ttl: int = settings.grok_idle_kill_seconds
 
     # =========================================================================
     # LIFECYCLE
@@ -6245,6 +6249,56 @@ Start now: evidence(task_id="{task_id}")
         instance = instances.get(self._resolve_agent_slug(str(owner)))
         return instance is not None and instance.state == AgentState.ACTIVE
 
+    async def _maybe_kill_wedged_grok(
+        self, task: Any, last_heartbeat: "datetime | None"
+    ) -> bool:
+        """Kill + evict a GROK container that is ACTIVE but idle past the kill TTL.
+
+        ``_assignee_has_active_instance`` shields a live container from the
+        reaper — correct for a Claude agent that goes quiet during a long
+        edit/test cycle. A wedged opencode container is the one case that breaks:
+        it is ACTIVE *and* silent (an idle model call/stream fires no gateway
+        verb), so its heartbeat never advances and the skip would protect it
+        forever. Only a GROK instance idle past the longer grok-kill TTL is
+        eligible here — a Claude agent is never touched. On a kill the container
+        is removed (its logs dumped to disk first) and dropped from
+        ``_instances`` so this tick's reaper then releases the task. Returns True
+        only when a container was actually killed.
+        """
+        from roboco.models.base import ModelProvider
+
+        kill_ttl = getattr(self, "_grok_idle_kill_ttl", 900)
+        cutoff = datetime.now(UTC) - timedelta(seconds=kill_ttl)
+        if last_heartbeat is not None and last_heartbeat >= cutoff:
+            return False
+        owner = getattr(task, "assigned_to", None) or getattr(task, "claimed_by", None)
+        if not owner:
+            return False
+        slug = self._resolve_agent_slug(str(owner))
+        instance = (getattr(self, "_instances", None) or {}).get(slug)
+        if instance is None or instance.state != AgentState.ACTIVE:
+            return False
+        config = instance.config
+        if config is None or config.provider_type != ModelProvider.GROK.value:
+            return False
+        try:
+            await self._remove_container(f"roboco-agent-{slug}")
+        except Exception as exc:
+            logger.error(
+                "wedged-grok kill failed; will retry next tick",
+                agent_id=slug,
+                error=str(exc),
+            )
+            return False
+        self._instances.pop(slug, None)
+        logger.warning(
+            "wedged grok container killed and evicted",
+            agent_id=slug,
+            task_id=str(getattr(task, "id", "")),
+            idle_kill_ttl_s=kill_ttl,
+        )
+        return True
+
     async def _reap_with_service(self, svc: "TaskService") -> None:
         """Inner reap loop, parameterized by the TaskService to use.
 
@@ -6261,7 +6315,14 @@ Start now: evidence(task_id="{task_id}")
         for t in candidates:
             ts = t.last_heartbeat_at
             if ts is None or ts < cutoff:
-                if self._assignee_has_active_instance(t):
+                # A live container normally protects its task. The sole exception
+                # is a wedged GROK (opencode) container — ACTIVE yet firing no
+                # verb — which the live-instance skip would shield forever. Kill +
+                # evict it past the grok-idle TTL (then fall through to release);
+                # a live non-grok agent, or a grok within the TTL, is skipped.
+                if self._assignee_has_active_instance(
+                    t
+                ) and not await self._maybe_kill_wedged_grok(t, ts):
                     continue
                 task_id = require_uuid(t.id)
                 try:
