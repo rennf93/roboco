@@ -5,6 +5,14 @@ import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
 import { ThemeProvider } from "next-themes";
 import { useState } from "react";
 import { Toaster } from "@/components/ui/sonner";
+import { useAgentRosterSync } from "@/hooks/use-agents";
+
+// Keeps the agent display-name resolver (agent-utils) in sync with the live
+// `/api/agents` roster. Must live inside QueryClientProvider. Renders nothing.
+function AgentRosterSync() {
+  useAgentRosterSync();
+  return null;
+}
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const [queryClient] = useState(
@@ -35,6 +43,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
       disableTransitionOnChange
     >
       <QueryClientProvider client={queryClient}>
+        <AgentRosterSync />
         {children}
         <Toaster position="top-right" />
         <ReactQueryDevtools initialIsOpen={false} />

@@ -1,11 +1,51 @@
 /**
  * Agent Display Utilities
  *
- * Utilities for resolving agent IDs (slugs or UUIDs) to human-readable names.
+ * Resolve agent IDs (slugs or UUIDs) to human-readable names.
+ *
+ * The source of truth is the LIVE roster fetched from `/api/agents` and
+ * registered via `registerAgentRoster` (see `useAgentRosterSync`). That roster
+ * always matches the backend seed, so it can never drift as agents are added.
+ * The static maps below are only an offline / first-paint fallback (and the
+ * canonical fixture for tests); they are NOT the authority and may lag the
+ * backend until the live roster loads.
  */
 
-// Static UUID → slug mapping (from backend seeds/initial_data.py)
-// NEVER change these after initial deployment
+// ---------------------------------------------------------------------------
+// Live roster — populated at runtime from /api/agents. Keyed by BOTH the
+// backend UUID and the slug, so resolution works whichever identifier a caller
+// holds (task.assigned_to is a UUID; many UI props pass a slug).
+// ---------------------------------------------------------------------------
+interface AgentRecord {
+  slug: string;
+  name: string;
+}
+
+const liveByKey = new Map<string, AgentRecord>();
+
+/**
+ * Register the live agent roster (from `/api/agents`). Idempotent; later calls
+ * overwrite earlier entries so a roster change is reflected immediately.
+ */
+export function registerAgentRoster(
+  agents: ReadonlyArray<{
+    uuid?: string | null;
+    slug?: string | null;
+    name?: string | null;
+  }>,
+): void {
+  for (const agent of agents) {
+    const slug = agent.slug ?? undefined;
+    if (!slug) continue;
+    const record: AgentRecord = { slug, name: agent.name ?? slug };
+    liveByKey.set(slug, record);
+    if (agent.uuid) liveByKey.set(agent.uuid, record);
+  }
+}
+
+// Static UUID → slug mapping (from backend seeds/initial_data.py).
+// Offline fallback only — the live roster is authoritative. NEVER change a
+// UUID here after initial deployment; only add new agents.
 const AGENT_UUIDS: Record<string, string> = {
   // CEO (Human)
   "00000000-0000-0000-0000-000000000001": "ceo",
@@ -32,6 +72,10 @@ const AGENT_UUIDS: Record<string, string> = {
   "00000000-0000-0000-0004-000000000002": "product-owner",
   "00000000-0000-0000-0004-000000000003": "head-marketing",
   "00000000-0000-0000-0004-000000000004": "auditor",
+  // Board-adjacent singletons (CEO-facing / read-only)
+  "00000000-0000-0000-0004-000000000005": "intake-1",
+  "00000000-0000-0000-0004-000000000006": "secretary-1",
+  "00000000-0000-0000-0004-000000000007": "pr-reviewer-1",
 };
 
 // Static agent name mapping (slug -> display name)
@@ -63,6 +107,10 @@ const AGENT_NAMES: Record<string, string> = {
   // CEO (human)
   "ceo": "CEO",
   "CEO": "CEO",
+  // Board-adjacent singletons
+  "intake-1": "Intake",
+  "secretary-1": "Secretary",
+  "pr-reviewer-1": "PR Reviewer",
 };
 
 /**
@@ -70,7 +118,10 @@ const AGENT_NAMES: Record<string, string> = {
  */
 export function resolveToSlug(agentId: string | null | undefined): string {
   if (!agentId) return "";
-  // If it's a known UUID, return the slug
+  // Live roster first (covers any agent the backend knows about)...
+  const live = liveByKey.get(agentId);
+  if (live) return live.slug;
+  // ...then the static UUID → slug fallback.
   if (AGENT_UUIDS[agentId]) {
     return AGENT_UUIDS[agentId];
   }
@@ -88,17 +139,24 @@ export function resolveToSlug(agentId: string | null | undefined): string {
 export function getAgentDisplayName(agentId: string | null | undefined): string {
   if (!agentId) return "Unassigned";
 
-  // First resolve UUID to slug if applicable
-  const slug = resolveToSlug(agentId);
+  // Live roster first — keyed by both UUID and slug, so a direct hit gives the
+  // real name regardless of which identifier the caller passed.
+  const liveDirect = liveByKey.get(agentId);
+  if (liveDirect) return liveDirect.name;
 
-  // Check if it's a known slug
+  // Resolve UUID → slug (live-aware), then try the live roster by slug.
+  const slug = resolveToSlug(agentId);
+  const liveBySlug = liveByKey.get(slug);
+  if (liveBySlug) return liveBySlug.name;
+
+  // Static fallback for known slugs.
   if (AGENT_NAMES[slug]) {
     return AGENT_NAMES[slug];
   }
 
-  // Check if the original was a UUID that we couldn't resolve
+  // Unresolved UUID (roster not loaded yet and not in the static map) —
+  // show the first 8 chars rather than the full 36.
   if (agentId.length === 36 && agentId.includes("-")) {
-    // Unknown UUID - show first 8 chars
     return agentId.slice(0, 8);
   }
 
@@ -134,6 +192,10 @@ const AGENT_CODES: Record<string, string> = {
   // CEO
   "ceo": "CEO",
   "CEO": "CEO",
+  // Board-adjacent singletons
+  "intake-1": "INT",
+  "secretary-1": "SEC",
+  "pr-reviewer-1": "PRR",
 };
 
 /**
@@ -163,5 +225,5 @@ export function getAgentInitials(agentId: string | null | undefined): string {
  */
 export function isKnownAgent(agentId: string | null | undefined): boolean {
   if (!agentId) return false;
-  return agentId in AGENT_NAMES;
+  return liveByKey.has(agentId) || agentId in AGENT_NAMES;
 }
