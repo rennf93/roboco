@@ -39,8 +39,10 @@ class CockpitService(BaseService):
     service_name = "cockpit"
 
     async def summary(self) -> dict[str, Any]:
+        task_svc = get_task_service(self.session)
         goals = await get_company_goals_service(self.session).get()
-        counts = await get_task_service(self.session).count_by_status()
+        counts = await task_svc.count_by_status()
+        delivery_stats = await task_svc.get_delivery_stats_30d()
         usage_svc = get_usage_service(self.session)
         spend = await usage_svc.get_summary("30d")
         projection = await usage_svc.get_projection()
@@ -60,6 +62,8 @@ class CockpitService(BaseService):
                 "in_flight": counts.get("in_progress", 0) + counts.get("claimed", 0),
                 "blocked": counts.get("blocked", 0),
                 "awaiting_ceo": counts.get("awaiting_ceo_approval", 0),
+                "completed_30d": delivery_stats["completed_30d"],
+                "median_lead_time_hours": delivery_stats["median_lead_time_hours"],
             },
             "spend": {
                 "spend_30d_usd": round(spend_30d, 2),
