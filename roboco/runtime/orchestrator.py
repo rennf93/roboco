@@ -6500,37 +6500,51 @@ Start now: evidence(task_id="{task_id}")
         instance = instances.get(self._resolve_agent_slug(str(owner)))
         return instance is not None and instance.state == AgentState.ACTIVE
 
-    async def _maybe_kill_wedged_grok(
+    def _wedged_grok_slug(
         self, task: Any, last_heartbeat: "datetime | None"
-    ) -> bool:
-        """Kill + evict a GROK container that is ACTIVE but idle past the kill TTL.
+    ) -> str | None:
+        """Slug of an ACTIVE GROK container holding ``task`` and idle past the kill TTL.
 
         ``_assignee_has_active_instance`` shields a live container from the
-        reaper — correct for a Claude agent that goes quiet during a long
-        edit/test cycle. A wedged opencode container is the one case that breaks:
-        it is ACTIVE *and* silent (an idle model call/stream fires no gateway
-        verb), so its heartbeat never advances and the skip would protect it
-        forever. Only a GROK instance idle past the longer grok-kill TTL is
-        eligible here — a Claude agent is never touched. On a kill the container
-        is removed (its logs dumped to disk first) and dropped from
-        ``_instances`` so this tick's reaper then releases the task. Returns True
-        only when a container was actually killed.
+        reaper — correct for a Claude agent quiet during a long edit/test cycle.
+        A wedged opencode container is the one case that breaks: ACTIVE *and*
+        silent (an idle model call fires no gateway verb), so its heartbeat never
+        advances and the skip would protect it forever. Returns the slug only for
+        a GROK instance idle past the grok-kill TTL — a recent heartbeat, no
+        owner, a non-GROK provider, or a non-ACTIVE instance all yield ``None``.
         """
         from roboco.models.base import ModelProvider
 
-        kill_ttl = getattr(self, "_grok_idle_kill_ttl", 900)
-        cutoff = datetime.now(UTC) - timedelta(seconds=kill_ttl)
+        cutoff = datetime.now(UTC) - timedelta(
+            seconds=getattr(self, "_grok_idle_kill_ttl", 900)
+        )
         if last_heartbeat is not None and last_heartbeat >= cutoff:
-            return False
+            return None
         owner = getattr(task, "assigned_to", None) or getattr(task, "claimed_by", None)
         if not owner:
-            return False
+            return None
         slug = self._resolve_agent_slug(str(owner))
         instance = (getattr(self, "_instances", None) or {}).get(slug)
-        if instance is None or instance.state != AgentState.ACTIVE:
-            return False
-        config = instance.config
-        if config is None or config.provider_type != ModelProvider.GROK.value:
+        config = getattr(instance, "config", None)
+        is_active_grok = (
+            instance is not None
+            and instance.state == AgentState.ACTIVE
+            and config is not None
+            and config.provider_type == ModelProvider.GROK.value
+        )
+        return slug if is_active_grok else None
+
+    async def _maybe_kill_wedged_grok(
+        self, task: Any, last_heartbeat: "datetime | None"
+    ) -> bool:
+        """Kill + evict a wedged GROK container so this tick's reaper frees its task.
+
+        On a kill the container is removed (its logs dumped to disk first) and
+        dropped from ``_instances``. Returns True only when a container was
+        actually killed; see :meth:`_wedged_grok_slug` for the eligibility rule.
+        """
+        slug = self._wedged_grok_slug(task, last_heartbeat)
+        if slug is None:
             return False
         try:
             await self._remove_container(f"roboco-agent-{slug}")
@@ -6546,7 +6560,6 @@ Start now: evidence(task_id="{task_id}")
             "wedged grok container killed and evicted",
             agent_id=slug,
             task_id=str(getattr(task, "id", "")),
-            idle_kill_ttl_s=kill_ttl,
         )
         return True
 
