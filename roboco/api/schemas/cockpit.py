@@ -10,6 +10,8 @@ class DeliverySummary(BaseModel):
     in_flight: int
     blocked: int
     awaiting_ceo: int
+    completed_30d: int = 0
+    median_lead_time_hours: float | None = None
 
 
 class SpendSummary(BaseModel):
