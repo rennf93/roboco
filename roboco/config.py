@@ -678,6 +678,19 @@ class Settings(BaseSettings):
             "override via ROBOCO_GROK_IDLE_KILL_SECONDS"
         ),
     )
+    # Budget kill-switch parity for GROK. Claude Code's per-agent token-budget
+    # hook fires against the SDK :9000 server; opencode exposes no usage hook to
+    # a plugin, so the orchestrator enforces the cap by reading each live GROK
+    # container's cumulative cost from its opencode store and killing it when it
+    # crosses this ceiling (also catches runaway-loop token burn). USD; 0 = off.
+    grok_max_cost_usd: float = Field(
+        default=0.0,
+        ge=0,
+        description=(
+            "Per-agent GROK cost ceiling (USD) before the container is killed; "
+            "0 disables. Override via ROBOCO_GROK_MAX_COST_USD"
+        ),
+    )
     # A task left CLAIMED/IN_PROGRESS with an assignee but no running container
     # (e.g. a reassignment that didn't spawn) is invisibly stuck — the heartbeat
     # reaper can't see it because its heartbeat was seeded fresh at claim time.

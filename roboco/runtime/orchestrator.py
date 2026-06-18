@@ -705,6 +705,10 @@ class AgentOrchestrator:
         # killed + evicted so the reaper can release its task; see
         # _maybe_kill_wedged_grok.
         self._grok_idle_kill_ttl: int = settings.grok_idle_kill_seconds
+        # Cost ceiling (USD) before a live GROK container is killed — the budget
+        # kill-switch parity (opencode exposes no usage hook). 0 disables. See
+        # _enforce_grok_cost_budget.
+        self._grok_max_cost_usd: float = settings.grok_max_cost_usd
 
     # =========================================================================
     # LIFECYCLE
@@ -3822,6 +3826,52 @@ class AgentOrchestrator:
             usage.tokens_cache_write,
         )
 
+    async def _enforce_grok_cost_budget(self) -> None:
+        """Kill a live GROK container whose cumulative opencode cost exceeds the cap.
+
+        opencode exposes no token/budget hook to a plugin, so the budget
+        kill-switch (Claude Code parity for runaway token burn — a loop that
+        keeps firing verbs evades the idle watchdog but still burns cost) lives
+        here: read each ACTIVE GROK container's cumulative cost from its opencode
+        store and kill + evict it past ``ROBOCO_GROK_MAX_COST_USD``. The reaper
+        then releases the freed task. Disabled (no-op) when the cap is <= 0.
+        """
+        cap = getattr(self, "_grok_max_cost_usd", 0.0)
+        if cap <= 0:
+            return
+        from roboco.llm.providers.opencode_usage import cost_for_session
+        from roboco.models.base import ModelProvider
+
+        for agent_id, instance in list(self._instances.items()):
+            config = instance.config
+            if (
+                config is None
+                or config.provider_type != ModelProvider.GROK.value
+                or instance.state != AgentState.ACTIVE
+            ):
+                continue
+            _, cost = cost_for_session(
+                config.model or "", self._opencode_db_path(agent_id)
+            )
+            if cost <= cap:
+                continue
+            try:
+                await self._remove_container(f"roboco-agent-{agent_id}")
+            except Exception as exc:
+                logger.error(
+                    "grok cost-cap kill failed; will retry next tick",
+                    agent_id=agent_id,
+                    error=str(exc),
+                )
+                continue
+            self._instances.pop(agent_id, None)
+            logger.warning(
+                "grok container killed: cost ceiling exceeded",
+                agent_id=agent_id,
+                cost_usd=round(cost, 4),
+                cap_usd=cap,
+            )
+
     async def _resolve_final_token_usage(
         self, agent_id: str
     ) -> tuple[int, int, int, int]:
@@ -6524,6 +6574,13 @@ Start now: evidence(task_id="{task_id}")
             await self._reap_stale_claims()
         except Exception as e:
             logger.error("Stale-claim reaper failed; continuing tick", error=str(e))
+
+        # Enforce the GROK cost ceiling (budget kill-switch parity). Wrapped so a
+        # failure never blocks dispatch; the next tick retries.
+        try:
+            await self._enforce_grok_cost_budget()
+        except Exception as e:
+            logger.error("Grok cost-budget sweep failed; continuing tick", error=str(e))
 
         # Orchestrator uses SYSTEM role for internal API calls
         # Using a well-known UUID for the orchestrator identity
