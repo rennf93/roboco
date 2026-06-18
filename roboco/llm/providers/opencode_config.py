@@ -20,11 +20,15 @@ Config shape per opencode docs (https://opencode.ai/docs/config):
     idle stream hangs the parent run with no recovery (observed live on a PR
     review). The request/stream timeouts below are the defence-in-depth backstop.
 
-KNOWN PARITY GAP (tracked for the opencode-plugin follow-up with xAI): RoboCo's
-bash-guard (PAT-scrub) and transcript-based usage/cost capture are Claude Code
-hooks; they do not transfer to the opencode runtime. ``bash`` permission is
-operator-tunable (``ROBOCO_GROK_BASH_PERMISSION``) so a deployment can fail
-closed (``deny``/``ask``) until a security-parity opencode plugin lands.
+GUARDRAIL PARITY: the bash-guard (PAT-scrub) deny rules ARE ported to opencode
+via the ``secret-scrub.js`` plugin (``tool.execute.before``), and token
+usage/cost IS captured from opencode's SQLite store at finalize. The remaining
+gap vs Claude Code is the budget / loop-detector / stop-guard / prompt-injection
+hooks — they fire against the SDK ``:9000`` server and have no opencode
+equivalent yet; closing them needs an opencode plugin that POSTs to a sidecar
+(a tracked follow-up / open decision). ``bash`` permission stays operator-tunable
+(``ROBOCO_GROK_BASH_PERMISSION``) so a deployment can fail closed
+(``deny``/``ask``) meanwhile.
 """
 
 from __future__ import annotations
