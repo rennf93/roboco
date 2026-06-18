@@ -206,6 +206,22 @@ class OpencodeServeSession:
         """Run one turn (synchronous message) and yield its normalized chunks."""
         if self._client is None or self._session_id is None:
             raise RuntimeError("OpencodeServeSession used outside its context")
+        # If the serve subprocess has died, the session is gone — every turn
+        # would otherwise fail with an opaque httpx connection error while the
+        # container lingers as a zombie. Surface it clearly (the panel shows a
+        # real message) and end the turn; the idle watchdog / a human reap tears
+        # the container down.
+        if self._proc is not None and self._proc.returncode is not None:
+            logger.error("opencode serve exited", returncode=self._proc.returncode)
+            yield StreamChunk(
+                kind="error",
+                text=(
+                    f"opencode serve exited (rc={self._proc.returncode}); this "
+                    "chat session ended — please start a new chat."
+                ),
+            )
+            yield StreamChunk(kind="turn_end", data={})
+            return
         body: dict[str, Any] = {"parts": [{"type": "text", "text": text}]}
         # Per-role reasoning effort: the orchestrator sets ROBOCO_GROK_VARIANT on
         # the container; the serve message endpoint accepts a `variant` field

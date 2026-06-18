@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import pytest
 from roboco.agent_sdk.opencode_session import (
+    OpencodeServeSession,
     _extract_session_id,
     _message_error,
     normalize_opencode_message,
@@ -49,6 +51,21 @@ def test_fenced_draft_in_text_becomes_draft_chunk() -> None:
     chunks = normalize_opencode_message({"parts": [{"type": "text", "text": fenced}]})
     draft = next(c for c in chunks if c.kind == "draft")
     assert draft.data["title"] == "Add login"
+
+
+@pytest.mark.asyncio
+async def test_send_on_dead_serve_yields_clear_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A crashed `opencode serve` must surface a clear error + end the turn, not
+    # hang the chat with opaque connection errors while the container zombies.
+    sess = OpencodeServeSession()
+    monkeypatch.setattr(sess, "_session_id", "ses-1")
+    monkeypatch.setattr(sess, "_client", object())  # unused: dead-proc guard wins
+    monkeypatch.setattr(sess, "_proc", type("P", (), {"returncode": 1})())
+    chunks = [c async for c in sess.send("hi")]
+    assert [c.kind for c in chunks] == ["error", "turn_end"]
+    assert "exited" in chunks[0].text
 
 
 def test_propose_draft_tool_part_becomes_draft_chunk() -> None:
