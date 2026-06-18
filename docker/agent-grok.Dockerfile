@@ -29,6 +29,15 @@ COPY docker/grok/secret-scrub.js /app/opencode-plugins/secret-scrub.js
 COPY docker/scripts/grok-agent-entrypoint.sh /app/scripts/grok-agent-entrypoint.sh
 RUN chmod 0755 /app/scripts/grok-agent-entrypoint.sh
 
+# opencode persists data under ~/.local/share and state under ~/.local/state.
+# When the orchestrator bind-mounts the opencode store at
+# ~/.local/share/opencode, docker creates the intermediate ~/.local AS ROOT, so
+# the non-root agent can no longer create its sibling ~/.local/state and opencode
+# EACCESes at boot. Pre-create the tree agent-owned so the mount leaves the
+# parents writable (complements the orchestrator's 0777 host-source pre-create).
+RUN mkdir -p /home/agent/.local/share/opencode /home/agent/.local/state \
+    && chown -R agent:agent /home/agent/.local
+
 USER agent
 
 LABEL role="grok-runtime"
