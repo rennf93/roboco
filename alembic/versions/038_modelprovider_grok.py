@@ -22,9 +22,15 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # Unguarded (renders in offline --sql so the enum-migration-parity test
-    # sees it) and idempotent. PG 16 permits ADD VALUE inside a transaction.
-    op.execute("ALTER TYPE modelprovider ADD VALUE IF NOT EXISTS 'grok'")
+    # The new value must be COMMITTED before migration 039 inserts a row using
+    # it: alembic runs the whole upgrade in a single transaction, and Postgres
+    # forbids using a freshly added enum value in the same transaction that
+    # added it (UnsafeNewEnumValueUsageError). autocommit_block commits the
+    # ALTER on its own so 'grok' is usable downstream. Still renders the ALTER
+    # TYPE in offline --sql, so the enum-migration-parity test sees it.
+    # Idempotent via IF NOT EXISTS.
+    with op.get_context().autocommit_block():
+        op.execute("ALTER TYPE modelprovider ADD VALUE IF NOT EXISTS 'grok'")
 
 
 def downgrade() -> None:
