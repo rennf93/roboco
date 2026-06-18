@@ -3,11 +3,12 @@
 The Grok analogue of ``secretary_main``: the same in-container ``POST /turn``
 receiver and the same relay sink to ``/api/secretary/live/{id}/events``, but the
 held-open session is an :class:`OpencodeServeSession` (``opencode serve``) rather
-than a ``ClaudeSDKClient``. ``opencode.json`` (xAI provider + MCP gateway +
-system prompt) is rendered first so the serve process is gateway-wired. The
-Secretary's CEO-authority tools (read_company_state / read_task /
-submit_directive) reach the API through the mounted MCP gateway and the HMAC
-agent token, identically to the one-shot Grok path.
+than a ``ClaudeSDKClient``. ``opencode.json`` (xAI provider + system prompt) is
+rendered first. The Secretary's CEO-authority tools (read_company_state /
+read_task / submit_directive) are registered as opencode tools by the
+``secretary-tools.js`` plugin (baked into the grok-secretary image and wired in
+via ``ROBOCO_OPENCODE_EXTRA_PLUGINS``); they call ``/api/secretary/*`` with the
+container's HMAC agent token, the same auth the one-shot Grok path uses.
 """
 
 from __future__ import annotations
