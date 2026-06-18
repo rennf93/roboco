@@ -491,6 +491,20 @@ export function AIRoutingCard() {
               saved — those agents will fall back to Anthropic at spawn.
             </p>
           ) : null}
+          {currentMode === "grok" || currentMode === "mix" ? (
+            <p className="text-xs text-amber-600 flex items-start gap-1">
+              <AlertTriangle className="h-3 w-3 shrink-0 mt-0.5" />
+              <span>
+                Grok agents run on the opencode runtime, not Claude Code: the
+                command / secret-exfiltration guard and the cost cap apply, but
+                the prompt-injection guard does not (opencode cannot block a
+                turn before the model reads it). Anthropic, Ollama and
+                Self-Hosted all run through Claude Code with the full guard set
+                — prefer them for agents that ingest untrusted or cross-agent
+                content. Grok is safe for trusted work.
+              </span>
+            </p>
+          ) : null}
         </section>
 
         {/* -------- Self-Hosted model picker (when self_hosted mode active) -------- */}
