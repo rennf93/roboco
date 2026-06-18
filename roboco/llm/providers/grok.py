@@ -64,10 +64,6 @@ _DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1"
 _MCP_CONFIG_IN_CONTAINER = "/app/mcp-config.json"
 _SYSTEM_PROMPT_IN_CONTAINER = "/app/system-prompt.md"
 
-# Mirrors the Claude Code tool set. The grok image entrypoint applies this to
-# the OpenAI-protocol CLI via the recognised `--tools` flag (not --allowed-tools).
-_DEFAULT_TOOLS = "Read,Write,Edit,Bash,Grep,Glob,TodoWrite"
-
 # Reasoning effort by role. grok-build-0.1 reasons heavily by default, and
 # reasoning bills at the output rate — it dominates cost (a live "say ok" call
 # emitted ~300 reasoning tokens). Code-quality roles (developer, qa, pr_reviewer)
@@ -214,8 +210,6 @@ class GrokProvider(AgentProvider):
                 f"ROBOCO_MCP_CONFIG={_MCP_CONFIG_IN_CONTAINER}",
                 "-e",
                 f"ROBOCO_SYSTEM_PROMPT={_SYSTEM_PROMPT_IN_CONTAINER}",
-                "-e",
-                f"ROBOCO_AGENT_TOOLS={_DEFAULT_TOOLS}",
                 "-e",
                 f"ROBOCO_INITIAL_PROMPT={initial_prompt or ''}",
             ]

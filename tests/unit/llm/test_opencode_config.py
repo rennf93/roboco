@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
+import os
+from unittest.mock import patch
+
 from roboco.llm.providers.opencode_config import (
+    _DEFAULT_CHUNK_TIMEOUT_MS,
+    _DEFAULT_REQUEST_TIMEOUT_MS,
+    OpencodeGuards,
     XaiTarget,
+    _env_int,
     build_opencode_config,
     translate_mcp_servers,
 )
@@ -90,7 +97,60 @@ def test_build_opencode_config_bash_permission_is_tunable() -> None:
         {},
         _TARGET,
         instruction_paths=[],
-        bash_permission="deny",
+        guards=OpencodeGuards(bash_permission="deny"),
     )
     assert cfg["permission"]["bash"] == "deny"
     assert cfg["permission"]["edit"] == "allow"
+
+
+def test_build_opencode_config_disables_subagent_task_tool_by_default() -> None:
+    # The subagent `task` tool must be hard-disabled: a RoboCo role never uses
+    # opencode-internal subagents, and one spawned on grok-build-0.1 hung the run.
+    cfg = build_opencode_config(_MCP, _TARGET, instruction_paths=[])
+    assert cfg["tools"] == {"task": False}
+
+
+def test_build_opencode_config_subagents_can_be_re_enabled() -> None:
+    cfg = build_opencode_config(
+        _MCP,
+        _TARGET,
+        instruction_paths=[],
+        guards=OpencodeGuards(disable_subagents=False),
+    )
+    assert "tools" not in cfg
+
+
+def test_build_opencode_config_sets_default_timeouts() -> None:
+    # Both timeouts land under provider.<id>.options so opencode aborts a stalled
+    # request / idle stream instead of hanging the parent run forever.
+    opts = build_opencode_config(_MCP, _TARGET, instruction_paths=[])["provider"][
+        "xai"
+    ]["options"]
+    assert opts["timeout"] == _DEFAULT_REQUEST_TIMEOUT_MS
+    assert opts["chunkTimeout"] == _DEFAULT_CHUNK_TIMEOUT_MS
+
+
+def test_build_opencode_config_timeouts_are_tunable() -> None:
+    req_ms, chunk_ms = 111_000, 22_000
+    opts = build_opencode_config(
+        _MCP,
+        _TARGET,
+        instruction_paths=[],
+        guards=OpencodeGuards(request_timeout_ms=req_ms, chunk_timeout_ms=chunk_ms),
+    )["provider"]["xai"]["options"]
+    assert opts["timeout"] == req_ms
+    assert opts["chunkTimeout"] == chunk_ms
+
+
+def test_env_int_parses_and_falls_back() -> None:
+    fallback = 999
+    parsed = 45_000
+    with patch.dict(os.environ, {"X_MS": str(parsed)}):
+        assert _env_int("X_MS", fallback) == parsed
+    # Missing, blank, non-integer, and non-positive all fall back to the default
+    # so a bad operator override can never disable the timeout entirely.
+    with patch.dict(os.environ, {}, clear=True):
+        assert _env_int("X_MS", fallback) == fallback
+    for bad in ("", "  ", "abc", "0", "-5"):
+        with patch.dict(os.environ, {"X_MS": bad}):
+            assert _env_int("X_MS", fallback) == fallback

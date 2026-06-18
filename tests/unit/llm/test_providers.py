@@ -197,7 +197,9 @@ async def test_grok_spawn_wires_gateway_and_image_last() -> None:
     # Gateway + operational env the grok image entrypoint consumes.
     assert "ROBOCO_MCP_CONFIG=/app/mcp-config.json" in cmd
     assert "ROBOCO_SYSTEM_PROMPT=/app/system-prompt.md" in cmd
-    assert "ROBOCO_AGENT_TOOLS=Read,Write,Edit,Bash,Grep,Glob,TodoWrite" in cmd
+    # Tool restriction lives in the rendered opencode.json (opencode `tools`),
+    # not a spawn env var — no ROBOCO_AGENT_TOOLS is injected.
+    assert not any(c.startswith("ROBOCO_AGENT_TOOLS=") for c in cmd)
     # Identity wiring from the shared host helpers is present.
     assert "ROBOCO_AGENT_TOKEN=hmac-be-dev-1" in cmd
     # The image is the final docker-run argument.

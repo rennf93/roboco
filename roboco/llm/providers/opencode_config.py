@@ -7,12 +7,18 @@ sets (``OPENAI_*`` + ``ROBOCO_*``) plus the mounted Claude Code
 as importable Python (not a shell heredoc) makes the translation unit-testable.
 
 Config shape per opencode docs (https://opencode.ai/docs/config):
-  * ``provider.<id>`` — ``@ai-sdk/openai-compatible`` with ``options.baseURL`` /
-    ``options.apiKey``; ``model`` selects ``<id>/<model>``.
+  * ``provider.<id>`` — ``@ai-sdk/openai`` (the Responses API; see ``_PROVIDER_NPM``)
+    with ``options.baseURL`` / ``options.apiKey`` / ``options.timeout`` /
+    ``options.chunkTimeout``; ``model`` selects ``<id>/<model>``.
   * ``mcp.<name>`` — ``{type:"local", command:[...], environment:{...}}``; this
     is where RoboCo's gateway servers (roboco-flow / roboco-do / ...) are wired,
     translated from Claude Code's ``mcpServers`` (``command`` + ``args`` + ``env``).
   * ``permission.{bash,edit}`` and ``instructions`` (system prompt + briefing).
+  * ``tools`` — opencode's subagent ``task`` tool is hard-disabled. No RoboCo role
+    uses opencode-internal subagents (work is driven through the gateway verbs),
+    and a ``task``-spawned subagent on ``grok-build-0.1`` whose model call opens an
+    idle stream hangs the parent run with no recovery (observed live on a PR
+    review). The request/stream timeouts below are the defence-in-depth backstop.
 
 KNOWN PARITY GAP (tracked for the opencode-plugin follow-up with xAI): RoboCo's
 bash-guard (PAT-scrub) and transcript-based usage/cost capture are Claude Code
@@ -41,6 +47,34 @@ _PROVIDER_NPM = "@ai-sdk/openai"
 # secret-scrub ports the bash-guard deny rules to opencode's tool.execute.before.
 _PLUGINS = ["/app/opencode-plugins/secret-scrub.js"]
 
+# opencode's built-in subagent-spawning tool. Hard-disabled in the generated
+# config (see the module docstring): a RoboCo agent never spawns opencode's own
+# subagents, and one that does can wedge the parent run on an idle stream.
+_SUBAGENT_TOOL = "task"
+
+# Request / stream timeouts (ms) written into ``provider.xai.options``. ``timeout``
+# bounds a single model call; ``chunkTimeout`` aborts a stream that goes idle for
+# this long (no chunk arrives) — the backstop for the idle-SSE hang. Both are
+# operator-tunable via env (see ``main``).
+_DEFAULT_REQUEST_TIMEOUT_MS = 300_000
+_DEFAULT_CHUNK_TIMEOUT_MS = 120_000
+
+
+def _env_int(name: str, default: int) -> int:
+    """Read a positive int from env ``name``; fall back to ``default``.
+
+    A missing, blank, non-integer, or non-positive value yields ``default`` so a
+    typo in an operator override can never disable the timeout entirely.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
 
 @dataclass(frozen=True)
 class XaiTarget:
@@ -49,6 +83,22 @@ class XaiTarget:
     base_url: str
     api_key: str
     model: str
+
+
+@dataclass(frozen=True)
+class OpencodeGuards:
+    """Tunable runtime guards baked into a Grok ``opencode.json``.
+
+    ``bash``/``edit`` gate the command/file tools; the timeouts bound a single
+    model call and abort an idle stream; ``disable_subagents`` removes the
+    subagent ``task`` tool entirely.
+    """
+
+    bash_permission: str = "allow"
+    edit_permission: str = "allow"
+    request_timeout_ms: int = _DEFAULT_REQUEST_TIMEOUT_MS
+    chunk_timeout_ms: int = _DEFAULT_CHUNK_TIMEOUT_MS
+    disable_subagents: bool = True
 
 
 def translate_mcp_servers(mcp_config: dict[str, Any]) -> dict[str, Any]:
@@ -81,27 +131,39 @@ def build_opencode_config(
     target: XaiTarget,
     *,
     instruction_paths: list[str],
-    bash_permission: str = "allow",
-    edit_permission: str = "allow",
+    guards: OpencodeGuards | None = None,
 ) -> dict[str, Any]:
     """Build the full ``opencode.json`` dict for a Grok agent."""
-    return {
+    guards = guards or OpencodeGuards()
+    config: dict[str, Any] = {
         "$schema": _OPENCODE_SCHEMA,
         "provider": {
             _PROVIDER_ID: {
                 "npm": _PROVIDER_NPM,
                 "name": "xAI",
-                "options": {"baseURL": target.base_url, "apiKey": target.api_key},
+                "options": {
+                    "baseURL": target.base_url,
+                    "apiKey": target.api_key,
+                    "timeout": guards.request_timeout_ms,
+                    "chunkTimeout": guards.chunk_timeout_ms,
+                },
                 "models": {target.model: {"name": target.model}},
             }
         },
         "model": f"{_PROVIDER_ID}/{target.model}",
         "mcp": translate_mcp_servers(mcp_config),
-        "permission": {"bash": bash_permission, "edit": edit_permission},
+        "permission": {
+            "bash": guards.bash_permission,
+            "edit": guards.edit_permission,
+        },
         "instructions": instruction_paths,
         # Command guard / secret-scrub (bash-guard parity). Baked into the image.
         "plugin": list(_PLUGINS),
     }
+    if guards.disable_subagents:
+        # Remove the subagent tool entirely so the model can never invoke it.
+        config["tools"] = {_SUBAGENT_TOOL: False}
+    return config
 
 
 def _load_mcp_config(path: str) -> dict[str, Any]:
@@ -129,7 +191,15 @@ def main() -> int:
         "ROBOCO_OPENCODE_CONFIG",
         str(Path.home() / ".config" / "opencode" / "opencode.json"),
     )
-    bash_perm = os.environ.get("ROBOCO_GROK_BASH_PERMISSION", "allow")
+    guards = OpencodeGuards(
+        bash_permission=os.environ.get("ROBOCO_GROK_BASH_PERMISSION", "allow"),
+        request_timeout_ms=_env_int(
+            "ROBOCO_GROK_REQUEST_TIMEOUT_MS", _DEFAULT_REQUEST_TIMEOUT_MS
+        ),
+        chunk_timeout_ms=_env_int(
+            "ROBOCO_GROK_CHUNK_TIMEOUT_MS", _DEFAULT_CHUNK_TIMEOUT_MS
+        ),
+    )
 
     # Instructions = system prompt + the SessionStart briefing when mounted.
     candidates = [system_prompt, "/app/briefing.md"]
@@ -139,7 +209,7 @@ def main() -> int:
         _load_mcp_config(mcp_path),
         target,
         instruction_paths=instructions,
-        bash_permission=bash_perm,
+        guards=guards,
     )
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
