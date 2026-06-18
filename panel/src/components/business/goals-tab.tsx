@@ -22,6 +22,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { OfflineState } from "@/components/ui/offline-state";
+import { CompanyScorecardCard } from "@/components/business/company-scorecard-card";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -358,17 +359,20 @@ export function GoalsTab() {
     queryFn: companyGoalsApi.get,
   });
 
-  if (isLoading) return <GoalsTabSkeleton />;
-
-  if (isError || !data) {
-    return (
-      <OfflineState
-        title="Failed to load company goals"
-        description="Could not reach the orchestrator API. Check the backend is running."
-        onRetry={() => void refetch()}
-      />
-    );
-  }
-
-  return <GoalsForm goals={data} refetch={() => void refetch()} />;
+  return (
+    <div className="space-y-6">
+      {isLoading ? (
+        <GoalsTabSkeleton />
+      ) : isError || !data ? (
+        <OfflineState
+          title="Failed to load company goals"
+          description="Could not reach the orchestrator API. Check the backend is running."
+          onRetry={() => void refetch()}
+        />
+      ) : (
+        <GoalsForm goals={data} refetch={() => void refetch()} />
+      )}
+      <CompanyScorecardCard />
+    </div>
+  );
 }
