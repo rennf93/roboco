@@ -58,21 +58,30 @@ fi
 # the post-mortem + silent-exit substitute below (the Claude SessionEnd / Stop
 # hooks have no opencode equivalent, so the boundary handles them). `set +e`
 # around the run so a non-zero opencode exit doesn't abort before the post-run
-# hooks; PIPESTATUS preserves opencode's real code through the `tee`.
+# hooks; tee captures the output for rate-limit detection and PIPESTATUS
+# preserves opencode's real exit code through the pipe.
+RUN_LOG="/tmp/opencode-run.log"
 set +e
 opencode run \
   --model "xai/${ROBOCO_AGENT_MODEL:-grok-build-0.1}" \
   "${variant_arg[@]}" \
-  -- "${ROBOCO_INITIAL_PROMPT:-}" < /dev/null
-run_rc=$?
+  -- "${ROBOCO_INITIAL_PROMPT:-}" < /dev/null 2>&1 | tee "$RUN_LOG"
+run_rc=${PIPESTATUS[0]}
 set -e
 
-# --- Post-run hooks (Claude SessionEnd + Stop parity) ----------------------
-# Read terminal state once, then (a) write a post-mortem journal entry and
-# (b) if the agent exited WITHOUT a terminal verb (i_am_idle / i_am_done /
-# pass / fail / ...), auto-substitute the task so it is not left stuck in
-# claimed/in_progress for a human to hand-unstick. Best-effort; never change
-# the exit code the orchestrator observes.
+# --- Rate-limit detection (B4) ---------------------------------------------
+# A 429 from xAI ends the one-shot run without the agent ever calling a terminal
+# verb. Detect it from the run output and exit 75 (EX_TEMPFAIL) so the
+# orchestrator PARKS the grok provider instead of the dispatcher re-spawning the
+# same task every tick (429 -> exit -> respawn -> 429, a cost/token loop). A
+# rate-limited task is NOT substituted — it must be retried once the limit lifts.
+RATE_LIMITED=0
+if grep -qiE '(\b429\b|too many requests|rate.?limit|quota exceeded|rate_limit_exceeded)' \
+    "$RUN_LOG" 2>/dev/null; then
+  RATE_LIMITED=1
+fi
+
+# --- Post-mortem (Claude SessionEnd parity) — always -----------------------
 terminal=$(curl -sf -m 2 "${SDK_URL}/terminal/status" 2>/dev/null || echo "")
 last_tool="null"
 had_terminal="false"
@@ -86,6 +95,16 @@ curl -sf -m 3 -X POST "${SDK_URL}/journal/post_mortem" \
   -d "{\"terminal_tool\":\"${last_tool}\",\"reason\":\"session_end\"}" \
   >/dev/null 2>&1 || true
 
+if [ "$RATE_LIMITED" = "1" ]; then
+  echo "[grok] xAI rate-limited — exiting 75 so the orchestrator parks the" \
+    "provider; the task is retried when the limit lifts (not substituted)." >&2
+  exit 75
+fi
+
+# --- Silent-exit substitute (Claude Stop parity) ---------------------------
+# Only when NOT rate-limited: if the agent exited WITHOUT a terminal verb
+# (i_am_idle / i_am_done / pass / fail / ...), auto-substitute the task so it is
+# not left stuck in claimed/in_progress for a human to hand-unstick.
 if [ "$had_terminal" != "true" ]; then
   curl -sf -m 3 -X POST "${SDK_URL}/terminal/force_substitute" >/dev/null 2>&1 || true
   echo "[grok] exited without a terminal verb (last tool: ${last_tool}) — auto-substituted." >&2

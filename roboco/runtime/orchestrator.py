@@ -179,6 +179,14 @@ _GROK_INTERACTIVE_DOCKERFILES = {
     GROK_SECRETARY_IMAGE: "agent-grok-secretary.Dockerfile",
 }
 
+# A one-shot Grok container exits with this code (EX_TEMPFAIL) when the run hit
+# an xAI 429 (grok-agent-entrypoint.sh detects it). The orchestrator parks the
+# grok provider rate-limited instead of crash-retrying, breaking the
+# 429 -> exit -> respawn cost loop. The probe-resume loop clears the park after
+# the retry window (unknown-provider time-expiry fallback in _probe_target).
+_GROK_RATE_LIMIT_EXIT_CODE = 75
+_GROK_RATE_LIMIT_RETRY_AFTER_S = 60.0
+
 
 # =============================================================================
 # ORCHESTRATOR
@@ -1744,6 +1752,21 @@ class AgentOrchestrator:
             config, instance, agent_settings_path = await self._prepare_agent_spawn(
                 agent_id, task_id, model, git_context
             )
+        # Grok 429 loop-breaker (B4): while the xAI provider is parked
+        # rate-limited, do NOT launch another grok container — the dispatcher
+        # would otherwise re-spawn the same task every tick, 429, and burn
+        # cost. The probe-resume loop clears the park after the retry window and
+        # the next tick spawns normally. Grok-only; the Claude path is untouched.
+        # Fail-open: a tracker read error must never block spawning.
+        if await self._grok_spawn_parked(config.provider_type):
+            self._mark_task_handled(task_id)
+            instance.state = AgentState.OFFLINE
+            logger.info(
+                "Grok spawn skipped: provider rate-limited (parked)",
+                agent_id=agent_id,
+                task_id=task_id,
+            )
+            return instance
         # Record the task as handled so later dispatchers in the same
         # tick don't act on it again. Safe even if _launch_spawn fails
         # — the next tick starts fresh.
@@ -4798,6 +4821,13 @@ Start by:
         do nothing; non-zero exits keep the existing crash-retry behaviour.
         """
         cid = instance.container_id[:12] if instance.container_id else None
+        # Grok 429 parking (B4): a one-shot grok run that hit an xAI 429 exits
+        # 75 (set by grok-agent-entrypoint.sh). Park the provider instead of
+        # crash-retrying so the spawn guard suppresses the respawn loop; the
+        # probe-resume loop revives the task when the limit lifts.
+        if self._is_grok_rate_limit_exit(instance, exit_code):
+            await self._park_grok_rate_limited(agent_id, instance)
+            return
         graceful = exit_code == 0
         if graceful:
             logger.info(
@@ -5339,6 +5369,65 @@ Start by:
         from roboco.services.gateway.rate_limit_tracker import RateLimitStateTracker
 
         return RateLimitStateTracker(provider)
+
+    async def _grok_spawn_parked(self, provider_type: str | None) -> bool:
+        """True when *provider_type* is GROK and the provider is parked rate-limited.
+
+        The grok 429 loop-breaker consults this before launching a grok
+        container. Grok-only and fail-open: any error reading the tracker
+        returns False so a Redis hiccup can never block spawning.
+        """
+        from roboco.models.base import ModelProvider
+
+        if provider_type != ModelProvider.GROK.value:
+            return False
+        try:
+            tracker = self._make_tracker(ModelProvider.GROK.value)
+            return bool(await tracker.is_rate_limited())
+        except Exception as exc:
+            logger.warning(
+                "grok rate-limit check failed; allowing spawn", error=str(exc)
+            )
+            return False
+
+    @staticmethod
+    def _is_grok_rate_limit_exit(instance: Any, exit_code: int | None) -> bool:
+        """True for a one-shot grok container that exited 75 (xAI 429)."""
+        from roboco.models.base import ModelProvider
+
+        return (
+            exit_code == _GROK_RATE_LIMIT_EXIT_CODE
+            and instance.config is not None
+            and instance.config.provider_type == ModelProvider.GROK.value
+        )
+
+    async def _park_grok_rate_limited(self, agent_id: str, instance: Any) -> None:
+        """Park a grok agent whose run hit an xAI 429 (entrypoint exit 75).
+
+        Finalize the session for usage capture, mark the instance OFFLINE
+        WITHOUT counting a crash (so it isn't escalated as stranded), and
+        activate the grok rate-limit tracker so the spawn guard suppresses
+        re-spawns until the probe-resume loop clears it after the retry window.
+        The task stays claimed/in_progress and is retried when the limit lifts.
+        """
+        from roboco.models.base import ModelProvider
+
+        await self._finalize_spawn_session(agent_id, exit_reason="rate_limited")
+        instance.state = AgentState.OFFLINE
+        instance.container_id = None
+        instance.error_count = 0  # a 429 is not a crash — don't escalate as stranded
+        try:
+            await self._make_tracker(ModelProvider.GROK.value).activate(
+                retry_after=_GROK_RATE_LIMIT_RETRY_AFTER_S,
+                affected_agents=[agent_id],
+            )
+        except Exception as exc:
+            logger.warning("failed to park grok rate-limit state", error=str(exc))
+        logger.warning(
+            "Grok provider rate-limited; parked (task retried when the limit lifts)",
+            agent_id=agent_id,
+            task_id=instance.current_task_id,
+        )
 
     @staticmethod
     def _too_early_to_probe(state: dict[str, Any]) -> bool:
