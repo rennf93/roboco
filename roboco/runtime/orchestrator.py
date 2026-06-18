@@ -169,6 +169,16 @@ DATA_HOST_PATH = os.environ.get("ROBOCO_HOST_DATA_DIR", "")
 # Claude transcript is read from the mounted ~/.claude). Override for local runs.
 OPENCODE_DATA_DIR = os.environ.get("ROBOCO_OPENCODE_DATA_DIR", "/data/opencode")
 
+# Interactive Grok images (opencode-serve drivers) — selected for the intake /
+# secretary roles when their route resolves to GROK, instead of the Claude
+# prompter/secretary images. Their dockerfiles build FROM roboco-agent-grok.
+GROK_PROMPTER_IMAGE = "roboco-agent-grok-prompter"
+GROK_SECRETARY_IMAGE = "roboco-agent-grok-secretary"
+_GROK_INTERACTIVE_DOCKERFILES = {
+    GROK_PROMPTER_IMAGE: "agent-grok-prompter.Dockerfile",
+    GROK_SECRETARY_IMAGE: "agent-grok-secretary.Dockerfile",
+}
+
 
 # =============================================================================
 # ORCHESTRATOR
@@ -199,6 +209,8 @@ class _IntakeRunSpec:
     api_url: str
     provider_base_url: str | None
     provider_auth_token: str | None
+    provider_type: str = "anthropic"
+    model: str = ""
 
 
 @dataclass
@@ -220,6 +232,8 @@ class _SecretaryRunSpec:
     agent_token: str
     provider_base_url: str | None
     provider_auth_token: str | None
+    provider_type: str = "anthropic"
+    model: str = ""
 
 
 def _read_project_slug(task: dict[str, Any]) -> str | None:
@@ -825,6 +839,30 @@ class AgentOrchestrator:
                         f"{docker_dir}/{dockerfile}",
                         build_context,
                     )
+
+    async def _ensure_grok_interactive_image(self, image: str) -> None:
+        """Ensure a Grok interactive image and its base→runtime chain exist.
+
+        The grok-prompter / grok-secretary images build FROM roboco-agent-grok,
+        which builds FROM the agent base, so the whole chain must be present
+        before a local build of the interactive image can succeed (on the
+        registry path each is already pulled and this just verifies presence).
+        """
+        if PROJECT_HOST_PATH:
+            build_context = PROJECT_HOST_PATH
+            docker_dir = f"{PROJECT_HOST_PATH}/docker"
+        else:
+            build_context = str(self.project_root)
+            docker_dir = str(self.project_root / "docker")
+        chain = [
+            (AGENT_BASE_IMAGE, "agent-base.Dockerfile"),
+            ("roboco-agent-grok", "agent-grok.Dockerfile"),
+            (image, _GROK_INTERACTIVE_DOCKERFILES[image]),
+        ]
+        for img, dockerfile in chain:
+            await self._ensure_image_present(
+                img, f"{docker_dir}/{dockerfile}", build_context
+            )
 
     async def _ensure_image_present(
         self, bare_image: str, dockerfile_path: str, build_context: str
@@ -2914,6 +2952,8 @@ class AgentOrchestrator:
         if INTAKE_AGENT_ID in self._instances:
             await self.stop_agent(INTAKE_AGENT_ID, graceful=False)
 
+        from roboco.models.base import ModelProvider
+
         cwd, cloned = await self._clone_intake_scope(project_slug, product_id)
 
         prompt_path = self._generate_composed_prompt(INTAKE_AGENT_ID)
@@ -2927,14 +2967,21 @@ class AgentOrchestrator:
             else f"http://127.0.0.1:{settings.port}"
         )
 
-        await self._ensure_agent_image(INTAKE_AGENT_ID)
+        # GROK runs the interactive driver on its own opencode-serve image; every
+        # other provider uses the Claude SDK-driver prompter image.
+        is_grok = route.provider_type == ModelProvider.GROK
+        image = GROK_PROMPTER_IMAGE if is_grok else get_agent_image(INTAKE_AGENT_ID)
+        if is_grok:
+            await self._ensure_grok_interactive_image(image)
+        else:
+            await self._ensure_agent_image(INTAKE_AGENT_ID)
         container_name = f"roboco-agent-{INTAKE_AGENT_ID}"
         await self._remove_container(container_name)
 
         cmd = self._build_intake_run_cmd(
             _IntakeRunSpec(
                 container_name=container_name,
-                image=get_agent_image(INTAKE_AGENT_ID),
+                image=image,
                 hosts=self._resolve_intake_host_paths(),
                 session_id=session_id,
                 cwd=cwd,
@@ -2942,6 +2989,8 @@ class AgentOrchestrator:
                 api_url=api_url,
                 provider_base_url=route.base_url,
                 provider_auth_token=route.auth_token,
+                provider_type=route.provider_type.value,
+                model=route.model_name,
             )
         )
         container_id = await self._run_container_cmd(cmd)
@@ -2951,6 +3000,7 @@ class AgentOrchestrator:
             blueprint_path=prompt_path,
             model=route.model_name,
             git_context=None,
+            provider_type=route.provider_type.value,
         )
         instance = AgentInstance(
             agent_id=INTAKE_AGENT_ID,
@@ -3057,6 +3107,7 @@ class AgentOrchestrator:
         """
         from roboco.agents_config import issue_agent_token
         from roboco.foundation.identity import AGENTS
+        from roboco.models.base import ModelProvider
 
         if SECRETARY_AGENT_ID in self._instances:
             await self.stop_agent(SECRETARY_AGENT_ID, graceful=False)
@@ -3072,7 +3123,12 @@ class AgentOrchestrator:
             else f"http://127.0.0.1:{settings.port}"
         )
 
-        await self._ensure_agent_image(SECRETARY_AGENT_ID)
+        is_grok = route.provider_type == ModelProvider.GROK
+        image = GROK_SECRETARY_IMAGE if is_grok else get_agent_image(SECRETARY_AGENT_ID)
+        if is_grok:
+            await self._ensure_grok_interactive_image(image)
+        else:
+            await self._ensure_agent_image(SECRETARY_AGENT_ID)
         container_name = f"roboco-agent-{SECRETARY_AGENT_ID}"
         await self._remove_container(container_name)
 
@@ -3080,7 +3136,7 @@ class AgentOrchestrator:
         cmd = self._build_secretary_run_cmd(
             _SecretaryRunSpec(
                 container_name=container_name,
-                image=get_agent_image(SECRETARY_AGENT_ID),
+                image=image,
                 hosts=self._resolve_secretary_host_paths(),
                 session_id=session_id,
                 cwd="/app",
@@ -3090,6 +3146,8 @@ class AgentOrchestrator:
                 agent_token=issue_agent_token(agent_uuid, "secretary", ""),
                 provider_base_url=route.base_url,
                 provider_auth_token=route.auth_token,
+                provider_type=route.provider_type.value,
+                model=route.model_name,
             )
         )
         container_id = await self._run_container_cmd(cmd)
@@ -3099,6 +3157,7 @@ class AgentOrchestrator:
             blueprint_path=prompt_path,
             model=route.model_name,
             git_context=None,
+            provider_type=route.provider_type.value,
         )
         instance = AgentInstance(
             agent_id=SECRETARY_AGENT_ID,
@@ -3145,6 +3204,7 @@ class AgentOrchestrator:
                 "prompt": (
                     f"{DATA_HOST_PATH}/prompts-generated/{SECRETARY_AGENT_ID}-prompt.md"
                 ),
+                "opencode": f"{DATA_HOST_PATH}/opencode/{SECRETARY_AGENT_ID}",
             }
         return {
             "claude": CLAUDE_AUTH_HOST_PATH,
@@ -3152,6 +3212,9 @@ class AgentOrchestrator:
                 Path(tempfile.gettempdir())
                 / "roboco-prompts"
                 / f"{SECRETARY_AGENT_ID}-prompt.md"
+            ),
+            "opencode": str(
+                Path(tempfile.gettempdir()) / "roboco-opencode" / SECRETARY_AGENT_ID
             ),
         }
 
@@ -3190,10 +3253,7 @@ class AgentOrchestrator:
                 f"CLAUDE_CODE_SUBAGENT_MODEL={spec.cli_model}",
             ]
         )
-        if spec.provider_base_url:
-            cmd.extend(["-e", f"ANTHROPIC_BASE_URL={spec.provider_base_url}"])
-        if spec.provider_auth_token:
-            cmd.extend(["-e", f"ANTHROPIC_AUTH_TOKEN={spec.provider_auth_token}"])
+        AgentOrchestrator._append_interactive_provider_env(cmd, spec)
         cmd.append(spec.image)
         return cmd
 
@@ -3261,6 +3321,7 @@ class AgentOrchestrator:
                     f"{DATA_HOST_PATH}/prompts-generated/{INTAKE_AGENT_ID}-prompt.md"
                 ),
                 "workspaces": f"{DATA_HOST_PATH}/workspaces",
+                "opencode": f"{DATA_HOST_PATH}/opencode/{INTAKE_AGENT_ID}",
             }
         return {
             "claude": CLAUDE_AUTH_HOST_PATH,
@@ -3270,7 +3331,51 @@ class AgentOrchestrator:
                 / f"{INTAKE_AGENT_ID}-prompt.md"
             ),
             "workspaces": str(Path(settings.workspaces_root)),
+            "opencode": str(
+                Path(tempfile.gettempdir()) / "roboco-opencode" / INTAKE_AGENT_ID
+            ),
         }
+
+    @staticmethod
+    def _append_interactive_provider_env(
+        cmd: list[str], spec: "_IntakeRunSpec | _SecretaryRunSpec"
+    ) -> None:
+        """Inject the per-provider LLM env for an interactive container.
+
+        GROK runs natively on opencode: ``OPENAI_*`` (xAI) + ``ROBOCO_AGENT_MODEL``
+        + the mounted system prompt the driver renders ``opencode.json`` from,
+        plus the per-agent opencode store mount so finalize can read usage back.
+        Every other provider uses the Claude path's ``ANTHROPIC_*`` injection (or
+        the mounted ``~/.claude`` default when the route carries no creds).
+        """
+        from roboco.models.base import ModelProvider
+
+        base_url = spec.provider_base_url
+        auth_token = spec.provider_auth_token
+        if spec.provider_type == ModelProvider.GROK.value:
+            opencode_host = spec.hosts.get("opencode")
+            if opencode_host:
+                # opencode persists usage to opencode.db under its data dir; the
+                # per-agent host mount lets the finalizer read it (same in-
+                # container path as the one-shot Grok store).
+                cmd.extend(["-v", f"{opencode_host}:/home/agent/.local/share/opencode"])
+            cmd.extend(
+                [
+                    "-e",
+                    f"OPENAI_BASE_URL={base_url or 'https://api.x.ai/v1'}",
+                    "-e",
+                    f"OPENAI_API_KEY={auth_token or ''}",
+                    "-e",
+                    f"ROBOCO_AGENT_MODEL={spec.model}",
+                    "-e",
+                    "ROBOCO_SYSTEM_PROMPT=/app/system-prompt.md",
+                ]
+            )
+            return
+        if base_url:
+            cmd.extend(["-e", f"ANTHROPIC_BASE_URL={base_url}"])
+        if auth_token:
+            cmd.extend(["-e", f"ANTHROPIC_AUTH_TOKEN={auth_token}"])
 
     @staticmethod
     def _build_intake_run_cmd(spec: _IntakeRunSpec) -> list[str]:
@@ -3312,12 +3417,9 @@ class AgentOrchestrator:
                 f"CLAUDE_CODE_SUBAGENT_MODEL={spec.cli_model}",
             ]
         )
-        # Non-Anthropic providers need explicit endpoint/token; the Anthropic
-        # default uses the mounted ~/.claude login (same as every agent).
-        if spec.provider_base_url:
-            cmd.extend(["-e", f"ANTHROPIC_BASE_URL={spec.provider_base_url}"])
-        if spec.provider_auth_token:
-            cmd.extend(["-e", f"ANTHROPIC_AUTH_TOKEN={spec.provider_auth_token}"])
+        # GROK runs opencode (OPENAI_* + opencode store); other providers use the
+        # ANTHROPIC_* injection or the mounted ~/.claude default.
+        AgentOrchestrator._append_interactive_provider_env(cmd, spec)
         cmd.append(spec.image)
         return cmd
 

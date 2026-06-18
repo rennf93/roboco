@@ -170,8 +170,6 @@ select = [
 # signature for keyword-argument compatibility (mypy override check), but the
 # stub bodies are empty — ARG002 would require renaming them, which breaks mypy.
 "tests/unit/services/test_optimal_grounding.py" = ["ARG002"]
-# Minimal AgentProvider stub exercising the interactive default — same reason.
-"tests/unit/llm/test_provider_base.py" = ["ARG002"]
 
 # =============================================================================
 # MyPy Configuration
