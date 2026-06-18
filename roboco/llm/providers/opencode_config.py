@@ -33,6 +33,10 @@ _OPENCODE_SCHEMA = "https://opencode.ai/config.json"
 _PROVIDER_ID = "xai"
 _OPENAI_COMPAT_NPM = "@ai-sdk/openai-compatible"
 
+# Plugins baked into the roboco-agent-grok image (see docker/agent-grok.Dockerfile).
+# secret-scrub ports the bash-guard deny rules to opencode's tool.execute.before.
+_PLUGINS = ["/app/opencode-plugins/secret-scrub.js"]
+
 
 @dataclass(frozen=True)
 class XaiTarget:
@@ -91,6 +95,8 @@ def build_opencode_config(
         "mcp": translate_mcp_servers(mcp_config),
         "permission": {"bash": bash_permission, "edit": edit_permission},
         "instructions": instruction_paths,
+        # Command guard / secret-scrub (bash-guard parity). Baked into the image.
+        "plugin": list(_PLUGINS),
     }
 
 

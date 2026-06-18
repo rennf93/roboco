@@ -20,6 +20,10 @@ RUN npm install -g opencode-ai @ai-sdk/openai-compatible \
     && npm cache clean --force \
     && rm -rf /root/.npm /tmp/*
 
+# Command guard / secret-scrub plugin (bash-guard parity for the opencode runtime).
+# Referenced from the generated opencode.json `plugin:` array.
+COPY docker/grok/secret-scrub.js /app/opencode-plugins/secret-scrub.js
+
 # Entrypoint: render opencode.json, then run opencode (overrides base's `claude`).
 COPY docker/scripts/grok-agent-entrypoint.sh /app/scripts/grok-agent-entrypoint.sh
 RUN chmod 0755 /app/scripts/grok-agent-entrypoint.sh

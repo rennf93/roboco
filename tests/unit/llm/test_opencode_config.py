@@ -80,6 +80,8 @@ def test_build_opencode_config_provider_and_model() -> None:
     # Gateway servers carried through.
     assert "roboco-flow" in cfg["mcp"]
     assert cfg["instructions"] == ["/app/system-prompt.md"]
+    # The secret-scrub command guard is wired in by default.
+    assert cfg["plugin"] == ["/app/opencode-plugins/secret-scrub.js"]
 
 
 def test_build_opencode_config_bash_permission_is_tunable() -> None:

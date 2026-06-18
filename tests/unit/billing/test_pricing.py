@@ -39,6 +39,12 @@ _HAIKU_CACHE_WRITE = 1.25
 
 _HAIKU3_INPUT = 0.25  # claude-haiku-3 is cheaper than haiku-3-5 / haiku-4
 
+# xAI Grok — priced non-Anthropic (per the xAI API)
+_GROK_INPUT = 1.00
+_GROK_OUTPUT = 2.00
+_GROK_CACHE_READ = 0.20
+_GROK_CACHE_WRITE = 1.00
+
 # Tolerance for floating-point comparisons
 _TOL = 1e-4
 
@@ -212,6 +218,46 @@ class TestHaikuTier:
         """claude-haiku-3 has lower pricing than haiku-3-5."""
         cost = calculate_cost("claude-haiku-3", tokens_input=_M, tokens_output=0)
         assert abs(cost - _HAIKU3_INPUT) < _TOL
+
+
+# ---------------------------------------------------------------------------
+# Grok tier (xAI — priced non-Anthropic)
+# ---------------------------------------------------------------------------
+
+
+class TestGrokTier:
+    """grok-build-0.1 pricing — a non-Anthropic model that IS billed per token."""
+
+    def test_input_only(self) -> None:
+        cost = calculate_cost("grok-build-0.1", tokens_input=_M, tokens_output=0)
+        assert abs(cost - _GROK_INPUT) < _TOL
+
+    def test_output_only(self) -> None:
+        cost = calculate_cost("grok-build-0.1", tokens_input=0, tokens_output=_M)
+        assert abs(cost - _GROK_OUTPUT) < _TOL
+
+    def test_cached_input(self) -> None:
+        cost = calculate_cost(
+            "grok-build-0.1", tokens_input=0, tokens_output=0, tokens_cache_read=_M
+        )
+        assert abs(cost - _GROK_CACHE_READ) < _TOL
+
+    def test_all_token_types(self) -> None:
+        cost = calculate_cost(
+            "grok-build-0.1",
+            tokens_input=_M,
+            tokens_output=_M,
+            tokens_cache_read=_M,
+            tokens_cache_write=_M,
+        )
+        expected = _GROK_INPUT + _GROK_OUTPUT + _GROK_CACHE_READ + _GROK_CACHE_WRITE
+        assert abs(cost - expected) < _TOL
+
+    def test_grok_is_not_treated_as_anthropic(self) -> None:
+        """Priced, but not an Anthropic model (no warn-on-unpriced path)."""
+        assert _is_anthropic_model("grok-build-0.1") is False
+        # Still resolves to a real (non-zero) per-token cost.
+        assert calculate_cost("grok-build-0.1", tokens_input=_M, tokens_output=0) > 0.0
 
 
 # ---------------------------------------------------------------------------
