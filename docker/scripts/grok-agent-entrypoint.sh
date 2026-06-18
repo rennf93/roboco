@@ -29,6 +29,14 @@ if [ -n "${ROBOCO_GROK_VARIANT:-}" ]; then
   variant_arg=(--variant "$ROBOCO_GROK_VARIANT")
 fi
 
+# Prompt-injection guard (parity with the Claude UserPromptSubmit hook): the
+# task prompt is DATA, not instructions — refuse a poisoned one before it
+# reaches the model. Same patterns as docker/scripts/user-prompt-hook.sh.
+if ! python -m roboco.agent_sdk.prompt_guard "${ROBOCO_INITIAL_PROMPT:-}"; then
+  echo "Refusing to run: task prompt matched a prompt-injection pattern." >&2
+  exit 1
+fi
+
 exec opencode run \
   --model "xai/${ROBOCO_AGENT_MODEL:-grok-build-0.1}" \
   "${variant_arg[@]}" \
