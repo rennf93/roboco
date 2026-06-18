@@ -55,6 +55,7 @@ class _FakeHost:
         self.removed: list[str] = []
         self.spawn_args: tuple[object, ...] | None = None
         self.mount_config: OrchestratorAgentConfig | None = None
+        self.opencode_dirs_ensured: list[str] = []
 
     async def _spawn_container(
         self,
@@ -67,6 +68,9 @@ class _FakeHost:
 
     async def _remove_container(self, container_name: str) -> None:
         self.removed.append(container_name)
+
+    def _ensure_opencode_data_dir(self, agent_id: str) -> None:
+        self.opencode_dirs_ensured.append(agent_id)
 
     def _resolve_host_paths(
         self, config: OrchestratorAgentConfig, agent_settings_path: Path | None

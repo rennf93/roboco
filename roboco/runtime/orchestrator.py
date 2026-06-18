@@ -211,6 +211,7 @@ class _IntakeRunSpec:
     provider_auth_token: str | None
     provider_type: str = "anthropic"
     model: str = ""
+    grok_variant: str | None = None
 
 
 @dataclass
@@ -234,6 +235,7 @@ class _SecretaryRunSpec:
     provider_auth_token: str | None
     provider_type: str = "anthropic"
     model: str = ""
+    grok_variant: str | None = None
 
 
 def _read_project_slug(task: dict[str, Any]) -> str | None:
@@ -866,6 +868,32 @@ class AgentOrchestrator:
         for img, dockerfile in chain:
             await self._ensure_image_present(
                 img, f"{docker_dir}/{dockerfile}", build_context
+            )
+
+    def _ensure_opencode_data_dir(self, agent_id: str) -> None:
+        """Pre-create the agent's opencode store dir (world-writable) before the mount.
+
+        On Linux, ``docker run -v`` auto-creates a MISSING bind source as
+        ``root:root``, so the non-root ``agent`` user EACCESes on opencode's
+        first write (``repos/``, ``opencode.db``) and ``opencode serve``/``run``
+        dies at boot — the live intake crash. Creating the dir ``0777`` first
+        makes the mounted store writable regardless of the agent uid; the
+        orchestrator (root) can still read it back at finalize. Mirrors the
+        container-vs-local split in ``_resolve_host_paths``.
+        """
+        if PROJECT_HOST_PATH:
+            target = Path(OPENCODE_DATA_DIR) / agent_id
+        else:
+            target = Path(tempfile.gettempdir()) / "roboco-opencode" / agent_id
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            target.chmod(0o777)
+        except OSError as exc:
+            logger.warning(
+                "could not pre-create opencode data dir; grok agent may EACCES",
+                agent_id=agent_id,
+                path=str(target),
+                error=str(exc),
             )
 
     async def _ensure_image_present(
@@ -2975,8 +3003,13 @@ class AgentOrchestrator:
         # other provider uses the Claude SDK-driver prompter image.
         is_grok = route.provider_type == ModelProvider.GROK
         image = GROK_PROMPTER_IMAGE if is_grok else get_agent_image(INTAKE_AGENT_ID)
+        grok_variant: str | None = None
         if is_grok:
+            from roboco.llm.providers.grok import _reasoning_effort_for
+
+            grok_variant = _reasoning_effort_for(INTAKE_AGENT_ID)
             await self._ensure_grok_interactive_image(image)
+            self._ensure_opencode_data_dir(INTAKE_AGENT_ID)
         else:
             await self._ensure_agent_image(INTAKE_AGENT_ID)
         container_name = f"roboco-agent-{INTAKE_AGENT_ID}"
@@ -2995,6 +3028,7 @@ class AgentOrchestrator:
                 provider_auth_token=route.auth_token,
                 provider_type=route.provider_type.value,
                 model=route.model_name,
+                grok_variant=grok_variant,
             )
         )
         container_id = await self._run_container_cmd(cmd)
@@ -3129,8 +3163,13 @@ class AgentOrchestrator:
 
         is_grok = route.provider_type == ModelProvider.GROK
         image = GROK_SECRETARY_IMAGE if is_grok else get_agent_image(SECRETARY_AGENT_ID)
+        grok_variant: str | None = None
         if is_grok:
+            from roboco.llm.providers.grok import _reasoning_effort_for
+
+            grok_variant = _reasoning_effort_for(SECRETARY_AGENT_ID)
             await self._ensure_grok_interactive_image(image)
+            self._ensure_opencode_data_dir(SECRETARY_AGENT_ID)
         else:
             await self._ensure_agent_image(SECRETARY_AGENT_ID)
         container_name = f"roboco-agent-{SECRETARY_AGENT_ID}"
@@ -3152,6 +3191,7 @@ class AgentOrchestrator:
                 provider_auth_token=route.auth_token,
                 provider_type=route.provider_type.value,
                 model=route.model_name,
+                grok_variant=grok_variant,
             )
         )
         container_id = await self._run_container_cmd(cmd)
@@ -3375,6 +3415,10 @@ class AgentOrchestrator:
                     "ROBOCO_SYSTEM_PROMPT=/app/system-prompt.md",
                 ]
             )
+            # Per-role reasoning effort: the opencode-serve driver passes this as
+            # the message `variant` (same lever as the one-shot --variant).
+            if spec.grok_variant:
+                cmd.extend(["-e", f"ROBOCO_GROK_VARIANT={spec.grok_variant}"])
             return
         if base_url:
             cmd.extend(["-e", f"ANTHROPIC_BASE_URL={base_url}"])

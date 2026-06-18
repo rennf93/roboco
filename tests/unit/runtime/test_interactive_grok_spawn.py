@@ -24,7 +24,11 @@ _HOSTS: dict[str, str | None] = {
 
 
 def _intake_spec(
-    provider_type: str, *, base_url: str | None, token: str | None
+    provider_type: str,
+    *,
+    base_url: str | None,
+    token: str | None,
+    grok_variant: str | None = None,
 ) -> _IntakeRunSpec:
     return _IntakeRunSpec(
         container_name="roboco-agent-intake-1",
@@ -40,21 +44,36 @@ def _intake_spec(
         provider_auth_token=token,
         provider_type=provider_type,
         model="grok-build-0.1",
+        grok_variant=grok_variant,
     )
 
 
 def test_intake_grok_uses_openai_env_and_opencode_mount() -> None:
     cmd = AgentOrchestrator._build_intake_run_cmd(
-        _intake_spec("grok", base_url="https://api.x.ai/v1", token="xai-key")
+        _intake_spec(
+            "grok",
+            base_url="https://api.x.ai/v1",
+            token="xai-key",
+            grok_variant="minimal",
+        )
     )
     assert "OPENAI_BASE_URL=https://api.x.ai/v1" in cmd
     assert "OPENAI_API_KEY=xai-key" in cmd
     assert "ROBOCO_AGENT_MODEL=grok-build-0.1" in cmd
     assert "ROBOCO_SYSTEM_PROMPT=/app/system-prompt.md" in cmd
     assert "/h/oc/intake-1:/home/agent/.local/share/opencode" in cmd
+    # Per-role reasoning effort reaches the container for the serve driver.
+    assert "ROBOCO_GROK_VARIANT=minimal" in cmd
     assert cmd[-1] == GROK_PROMPTER_IMAGE
     # The xAI endpoint is never mislabelled as Anthropic.
     assert not any(c.startswith("ANTHROPIC_") for c in cmd)
+
+
+def test_intake_grok_omits_variant_when_unset() -> None:
+    cmd = AgentOrchestrator._build_intake_run_cmd(
+        _intake_spec("grok", base_url="https://api.x.ai/v1", token="xai-key")
+    )
+    assert not any(c.startswith("ROBOCO_GROK_VARIANT=") for c in cmd)
 
 
 def test_intake_anthropic_keeps_anthropic_env() -> None:

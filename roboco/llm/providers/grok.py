@@ -117,6 +117,8 @@ class _GrokHost(Protocol):
 
     async def _remove_container(self, container_name: str) -> None: ...
 
+    def _ensure_opencode_data_dir(self, agent_id: str) -> None: ...
+
     def _resolve_host_paths(
         self, config: AgentConfig, agent_settings_path: Path | None
     ) -> dict[str, str | None]: ...
@@ -160,6 +162,9 @@ class GrokProvider(AgentProvider):
 
         container_name = _container_name(config.agent_id)
         await self._host._remove_container(container_name)
+        # Pre-create the opencode store dir (world-writable) before the bind mount
+        # so the non-root agent user can write opencode.db / repos (else EACCES).
+        self._host._ensure_opencode_data_dir(config.agent_id)
 
         # Reuse the orchestrator's mount/auth/git assembly so the agent gets the
         # full MCP gateway + identity wiring. Blank the provider routing fields
