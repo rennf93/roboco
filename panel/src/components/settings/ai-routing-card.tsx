@@ -4,8 +4,10 @@ import { useEffect, useMemo, useState, useCallback } from "react";
 import {
   useApplyMode,
   useCatalog,
+  useGrokKey,
   useOllamaKey,
   useRoutingMode,
+  useSetGrokKey,
   useSetOllamaKey,
   useSelfHostedModels,
 } from "@/hooks/use-providers";
@@ -119,6 +121,33 @@ export function AIRoutingCard() {
       }
       setApiKey("");
       setClearKey(false);
+    } catch (e) {
+      toast.error("Save failed: " + errMsg(e));
+    }
+  };
+
+  // --- Grok (xAI) API key ---
+  const { data: grokKeyStatus } = useGrokKey();
+  const setGrokKeyMut = useSetGrokKey();
+  const hasGrokKey = !!grokKeyStatus?.has_key;
+  const [grokKey, setGrokKey] = useState("");
+  const [clearGrokKey, setClearGrokKey] = useState(false);
+
+  const saveGrokKey = async () => {
+    try {
+      if (clearGrokKey) {
+        await setGrokKeyMut.mutateAsync("");
+        toast.success("Grok key cleared");
+      } else {
+        if (!grokKey.trim()) {
+          toast.error("Enter a key first");
+          return;
+        }
+        await setGrokKeyMut.mutateAsync(grokKey);
+        toast.success("Grok key saved");
+      }
+      setGrokKey("");
+      setClearGrokKey(false);
     } catch (e) {
       toast.error("Save failed: " + errMsg(e));
     }
@@ -294,6 +323,56 @@ export function AIRoutingCard() {
           ) : (
             <p className="text-xs text-muted-foreground">
               Stored Fernet-encrypted server-side; never returned by the API.
+            </p>
+          )}
+        </section>
+
+        <Separator />
+
+        {/* -------- Grok (xAI) key -------- */}
+        <section className="space-y-2">
+          <div className="flex items-center justify-between">
+            <Label className="text-sm font-medium">Grok (xAI) API key</Label>
+            {hasGrokKey ? (
+              <Badge className="bg-emerald-500/10 text-emerald-600 border-0">
+                <KeyRound className="h-3 w-3" /> key set
+              </Badge>
+            ) : (
+              <Badge className="bg-amber-500/10 text-amber-600 border-0">
+                <Key className="h-3 w-3" /> not set
+              </Badge>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <Input
+              type="password"
+              value={grokKey}
+              onChange={(e) => setGrokKey(e.target.value)}
+              placeholder={
+                hasGrokKey ? "•••••••••••• (leave blank to keep)" : "xai-…"
+              }
+              disabled={clearGrokKey}
+            />
+            <Button onClick={saveGrokKey} disabled={setGrokKeyMut.isPending}>
+              {setGrokKeyMut.isPending ? "Saving…" : "Save"}
+            </Button>
+          </div>
+          {hasGrokKey ? (
+            <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+              <Checkbox
+                checked={clearGrokKey}
+                onCheckedChange={(checked) => {
+                  const next = checked === true;
+                  setClearGrokKey(next);
+                  if (next) setGrokKey("");
+                }}
+              />
+              Clear the stored key
+            </label>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              Used for grok-build-0.1 at api.x.ai/v1. Stored Fernet-encrypted
+              server-side; never returned by the API.
             </p>
           )}
         </section>

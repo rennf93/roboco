@@ -230,6 +230,19 @@ services:
       - agent-base-image
 
   # ==========================================================================
+  # Agent Grok Image Builder (xAI grok-build-0.1 via opencode, OpenAI protocol)
+  # ==========================================================================
+  agent-grok-image:
+    build:
+      context: .
+      dockerfile: docker/agent-grok.Dockerfile
+    image: roboco-agent-grok
+    entrypoint: ["/bin/sh", "-c", 'echo "Agent Grok image built"']
+    restart: "no"
+    depends_on:
+      - agent-base-image
+
+  # ==========================================================================
   # Orchestrator - API Server + Agent Spawner
   # ==========================================================================
   orchestrator:

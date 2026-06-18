@@ -16,6 +16,11 @@ export interface OllamaKeyStatus {
   enabled: boolean;
 }
 
+export interface GrokKeyStatus {
+  has_key: boolean;
+  enabled: boolean;
+}
+
 export interface ModelAssignment {
   id: string;
   scope: AssignmentScope;
@@ -81,6 +86,18 @@ export const providersApi = {
 
   setOllamaKey: async (apiKey: string): Promise<OllamaKeyStatus> => {
     const { data } = await api.put<OllamaKeyStatus>("/providers/ollama-key", {
+      api_key: apiKey,
+    });
+    return data;
+  },
+
+  getGrokKey: async (): Promise<GrokKeyStatus> => {
+    const { data } = await api.get<GrokKeyStatus>("/providers/grok-key");
+    return data;
+  },
+
+  setGrokKey: async (apiKey: string): Promise<GrokKeyStatus> => {
+    const { data } = await api.put<GrokKeyStatus>("/providers/grok-key", {
       api_key: apiKey,
     });
     return data;

@@ -1972,7 +1972,13 @@ class AgentOrchestrator:
             from roboco.models.base import ModelProvider
 
             registry = ProviderRegistry()
-            registry.register(ModelProvider.GROK, GrokProvider(self))
+            # Qualify the grok image with the registry namespace + tag so it
+            # resolves in both local-build and registry deploys (parity with
+            # get_agent_image for the Claude path).
+            registry.register(
+                ModelProvider.GROK,
+                GrokProvider(self, image=_qualify_agent_image("roboco-agent-grok")),
+            )
             self._provider_registry = registry
         return self._provider_registry
 

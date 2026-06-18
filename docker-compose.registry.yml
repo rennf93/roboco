@@ -160,6 +160,11 @@ services:
     entrypoint: ["/bin/sh", "-c", "echo 'agent-pr-reviewer image present'"]
     restart: "no"
 
+  agent-grok-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-grok:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-grok image present'"]
+    restart: "no"
+
   # --------------------------------------------------------------------------
   # Orchestrator — API server + agent spawner
   # --------------------------------------------------------------------------
