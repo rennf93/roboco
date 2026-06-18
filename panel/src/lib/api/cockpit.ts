@@ -9,6 +9,7 @@ export interface CockpitSummary {
     in_flight: number;
     blocked: number;
     awaiting_ceo: number;
+    completed_30d?: number;
   };
   spend: {
     spend_30d_usd: number;
@@ -18,6 +19,7 @@ export interface CockpitSummary {
   };
   pending_pitches: number;
   signals: CockpitSignal[];
+  median_lead_time_hours?: number | null;
 }
 
 export interface CockpitSignal {
