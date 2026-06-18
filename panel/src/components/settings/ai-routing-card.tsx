@@ -310,54 +310,6 @@ export function AIRoutingCard() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
-        {/* -------- Ollama key -------- */}
-        <section className="space-y-2">
-          <div className="flex items-center justify-between">
-            <Label className="text-sm font-medium">Ollama Cloud API key</Label>
-            {hasOllamaKey ? (
-              <Badge className="bg-emerald-500/10 text-emerald-600 border-0">
-                <KeyRound className="h-3 w-3" /> key set
-              </Badge>
-            ) : (
-              <Badge className="bg-amber-500/10 text-amber-600 border-0">
-                <Key className="h-3 w-3" /> not set
-              </Badge>
-            )}
-          </div>
-          <div className="flex gap-2">
-            <Input
-              type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder={
-                hasOllamaKey ? "•••••••••••• (leave blank to keep)" : "ollama_xxx…"
-              }
-              disabled={clearKey}
-            />
-            <Button onClick={saveKey} disabled={setKey.isPending}>
-              {setKey.isPending ? "Saving…" : "Save"}
-            </Button>
-          </div>
-          {hasOllamaKey ? (
-            <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
-              <Checkbox
-                checked={clearKey}
-                onCheckedChange={(checked) => {
-                  const next = checked === true;
-                  setClearKey(next);
-                  if (next) setApiKey("");
-                }}
-              />
-              Clear the stored key
-            </label>
-          ) : (
-            <p className="text-xs text-muted-foreground">
-              Stored Fernet-encrypted server-side; never returned by the API.
-            </p>
-          )}
-        </section>
-
-        <Separator />
 
         {/* -------- Grok (xAI) key -------- */}
         <section className="space-y-2">
@@ -403,6 +355,55 @@ export function AIRoutingCard() {
             <p className="text-xs text-muted-foreground">
               Used for grok-build-0.1 at api.x.ai/v1. Stored Fernet-encrypted
               server-side; never returned by the API.
+            </p>
+          )}
+        </section>
+
+        <Separator />
+
+        {/* -------- Ollama key -------- */}
+        <section className="space-y-2">
+          <div className="flex items-center justify-between">
+            <Label className="text-sm font-medium">Ollama Cloud API key</Label>
+            {hasOllamaKey ? (
+              <Badge className="bg-emerald-500/10 text-emerald-600 border-0">
+                <KeyRound className="h-3 w-3" /> key set
+              </Badge>
+            ) : (
+              <Badge className="bg-amber-500/10 text-amber-600 border-0">
+                <Key className="h-3 w-3" /> not set
+              </Badge>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <Input
+              type="password"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder={
+                hasOllamaKey ? "•••••••••••• (leave blank to keep)" : "ollama_xxx…"
+              }
+              disabled={clearKey}
+            />
+            <Button onClick={saveKey} disabled={setKey.isPending}>
+              {setKey.isPending ? "Saving…" : "Save"}
+            </Button>
+          </div>
+          {hasOllamaKey ? (
+            <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+              <Checkbox
+                checked={clearKey}
+                onCheckedChange={(checked) => {
+                  const next = checked === true;
+                  setClearKey(next);
+                  if (next) setApiKey("");
+                }}
+              />
+              Clear the stored key
+            </label>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              Stored Fernet-encrypted server-side; never returned by the API.
             </p>
           )}
         </section>
