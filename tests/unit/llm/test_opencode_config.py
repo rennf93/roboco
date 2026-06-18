@@ -11,6 +11,7 @@ from roboco.llm.providers.opencode_config import (
     OpencodeGuards,
     XaiTarget,
     _env_int,
+    _extra_plugins,
     build_opencode_config,
     translate_mcp_servers,
 )
@@ -88,8 +89,52 @@ def test_build_opencode_config_provider_and_model() -> None:
     # Gateway servers carried through.
     assert "roboco-flow" in cfg["mcp"]
     assert cfg["instructions"] == ["/app/system-prompt.md"]
-    # The secret-scrub command guard is wired in by default.
-    assert cfg["plugin"] == ["/app/opencode-plugins/secret-scrub.js"]
+    # The secret-scrub command guard + the SDK budget-feed are wired in by default.
+    assert cfg["plugin"] == [
+        "/app/opencode-plugins/secret-scrub.js",
+        "/app/opencode-plugins/budget-feed.js",
+    ]
+
+
+def test_build_opencode_config_appends_extra_plugins() -> None:
+    # Per-image role tool plugins (secretary directive tools, intake propose_draft)
+    # append AFTER the baked defaults so the role-scoped tools load too.
+    cfg = build_opencode_config(
+        _MCP,
+        _TARGET,
+        instruction_paths=[],
+        extra_plugins=["/app/opencode-plugins/secretary-tools.js"],
+    )
+    assert cfg["plugin"] == [
+        "/app/opencode-plugins/secret-scrub.js",
+        "/app/opencode-plugins/budget-feed.js",
+        "/app/opencode-plugins/secretary-tools.js",
+    ]
+
+
+def test_extra_plugins_reads_pathsep_env() -> None:
+    with patch.dict(os.environ, {}, clear=True):
+        assert _extra_plugins() == []
+    joined = os.pathsep.join(["/a/one.js", "/b/two.js"])
+    with patch.dict(os.environ, {"ROBOCO_OPENCODE_EXTRA_PLUGINS": joined}):
+        assert _extra_plugins() == ["/a/one.js", "/b/two.js"]
+    # Blank entries are dropped (a trailing pathsep or empty override is benign).
+    with patch.dict(
+        os.environ, {"ROBOCO_OPENCODE_EXTRA_PLUGINS": f"/a/one.js{os.pathsep}  "}
+    ):
+        assert _extra_plugins() == ["/a/one.js"]
+
+
+def test_build_opencode_config_edit_permission_is_tunable() -> None:
+    # Read-only roles (qa / pr_reviewer / auditor / PMs / board) get edit=deny so
+    # a Grok agent can't write code on a role that must never touch the tree.
+    cfg = build_opencode_config(
+        {},
+        _TARGET,
+        instruction_paths=[],
+        guards=OpencodeGuards(edit_permission="deny"),
+    )
+    assert cfg["permission"]["edit"] == "deny"
 
 
 def test_build_opencode_config_bash_permission_is_tunable() -> None:

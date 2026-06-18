@@ -21,9 +21,13 @@ RUN npm install -g opencode-ai @ai-sdk/openai \
     && npm cache clean --force \
     && rm -rf /root/.npm /tmp/*
 
-# Command guard / secret-scrub plugin (bash-guard parity for the opencode runtime).
-# Referenced from the generated opencode.json `plugin:` array.
+# opencode plugins (referenced from the generated opencode.json `plugin:` array):
+#   secret-scrub — bash-guard parity (PAT/credential deny on tool.execute.before)
+#   budget-feed  — POSTs budget/loop/terminal counters to the in-container SDK
+#                  server (tool.execute.{before,after}); the entrypoint starts
+#                  that server (roboco.agent_sdk.server) for Claude-parity.
 COPY docker/grok/secret-scrub.js /app/opencode-plugins/secret-scrub.js
+COPY docker/grok/budget-feed.js /app/opencode-plugins/budget-feed.js
 
 # Entrypoint: render opencode.json, then run opencode (overrides base's `claude`).
 COPY docker/scripts/grok-agent-entrypoint.sh /app/scripts/grok-agent-entrypoint.sh

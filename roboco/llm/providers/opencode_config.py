@@ -21,15 +21,23 @@ Config shape per opencode docs (https://opencode.ai/docs/config):
     review). The request/stream timeouts below are the defence-in-depth backstop.
 
 GUARDRAIL PARITY: the bash-guard (PAT-scrub) is ported via ``secret-scrub.js``
-(``tool.execute.before``); usage/cost is captured from opencode's SQLite store at
-finalize and bounded by the orchestrator cost watchdog
-(``ROBOCO_GROK_MAX_COST_USD``, which also catches runaway-loop burn); and the
-prompt-injection guard is recreated at RoboCo's input boundary
-(``roboco.agent_sdk.prompt_guard`` — the driver scans interactive turns, the
-entrypoint scans the one-shot task prompt). The only Claude hook without an
-opencode equivalent is the stop-guard (terminal-verb enforcement; opencode's
-stop events are observe-only) — a workflow nicety, not a security control.
-``bash`` permission stays operator-tunable (``ROBOCO_GROK_BASH_PERMISSION``).
+(``tool.execute.before``); the per-session budget / loop / terminal-verb
+counters and the per-verb circuit breaker are restored by starting the same
+in-container SDK server the Claude path runs (the grok entrypoint launches
+``roboco.agent_sdk.server``) and feeding it from ``budget-feed.js``
+(``tool.execute.{before,after}``); usage/cost is captured from opencode's SQLite
+store at finalize and bounded by the orchestrator cost watchdog
+(``ROBOCO_GROK_MAX_COST_USD``); the prompt-injection guard is recreated at
+RoboCo's input boundary (``roboco.agent_sdk.prompt_guard``); and the SessionEnd
+post-mortem + Stop silent-exit substitute run at the entrypoint boundary after
+``opencode run`` returns. ``bash`` / ``edit`` permissions are scoped per role
+(read-only roles get ``edit=deny``; only delivery roles get ``bash``) and stay
+operator-tunable (``ROBOCO_GROK_BASH_PERMISSION`` / ``ROBOCO_GROK_EDIT_PERMISSION``).
+
+Per-image extra plugins (the Secretary's directive tools, the Intake's
+``propose_draft``) are appended via ``ROBOCO_OPENCODE_EXTRA_PLUGINS`` (a
+``os.pathsep``-separated list), set in those images' Dockerfiles so the tools
+are scoped to the one role that should have them.
 """
 
 from __future__ import annotations
@@ -49,8 +57,29 @@ _PROVIDER_ID = "xai"
 _PROVIDER_NPM = "@ai-sdk/openai"
 
 # Plugins baked into the roboco-agent-grok image (see docker/agent-grok.Dockerfile).
-# secret-scrub ports the bash-guard deny rules to opencode's tool.execute.before.
-_PLUGINS = ["/app/opencode-plugins/secret-scrub.js"]
+# secret-scrub ports the bash-guard deny rules to opencode's tool.execute.before;
+# budget-feed POSTs the budget/loop/terminal counters to the in-container SDK
+# server (tool.execute.{before,after}). Per-image extras (secretary / intake
+# tools) are appended from ROBOCO_OPENCODE_EXTRA_PLUGINS (see _extra_plugins).
+_PLUGINS = [
+    "/app/opencode-plugins/secret-scrub.js",
+    "/app/opencode-plugins/budget-feed.js",
+]
+
+
+def _extra_plugins() -> list[str]:
+    """Image-scoped plugin paths from ``ROBOCO_OPENCODE_EXTRA_PLUGINS``.
+
+    An ``os.pathsep``-separated list set in an interactive image's Dockerfile so
+    a role-specific tool plugin (the Secretary's directive tools, the Intake's
+    ``propose_draft``) is loaded only for that one role. Blank/missing yields no
+    extras. Mirrors the way the manifest scopes verbs per role.
+    """
+    raw = os.environ.get("ROBOCO_OPENCODE_EXTRA_PLUGINS", "").strip()
+    if not raw:
+        return []
+    return [p for p in raw.split(os.pathsep) if p.strip()]
+
 
 # opencode's built-in subagent-spawning tool. Hard-disabled in the generated
 # config (see the module docstring): a RoboCo agent never spawns opencode's own
@@ -141,9 +170,11 @@ def build_opencode_config(
     *,
     instruction_paths: list[str],
     guards: OpencodeGuards | None = None,
+    extra_plugins: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build the full ``opencode.json`` dict for a Grok agent."""
     guards = guards or OpencodeGuards()
+    plugins = [*_PLUGINS, *(extra_plugins or [])]
     config: dict[str, Any] = {
         "$schema": _OPENCODE_SCHEMA,
         "provider": {
@@ -171,8 +202,9 @@ def build_opencode_config(
             "external_directory": guards.external_directory_permission,
         },
         "instructions": instruction_paths,
-        # Command guard / secret-scrub (bash-guard parity). Baked into the image.
-        "plugin": list(_PLUGINS),
+        # secret-scrub (bash-guard parity) + budget-feed (SDK budget/loop feed),
+        # baked into the runtime image, plus any image-scoped role tool plugins.
+        "plugin": plugins,
     }
     if guards.disable_subagents:
         # Remove the subagent tool entirely so the model can never invoke it.
@@ -207,6 +239,7 @@ def main() -> int:
     )
     guards = OpencodeGuards(
         bash_permission=os.environ.get("ROBOCO_GROK_BASH_PERMISSION", "allow"),
+        edit_permission=os.environ.get("ROBOCO_GROK_EDIT_PERMISSION", "allow"),
         external_directory_permission=os.environ.get(
             "ROBOCO_GROK_EXTERNAL_DIR_PERMISSION", "allow"
         ),
@@ -227,6 +260,7 @@ def main() -> int:
         target,
         instruction_paths=instructions,
         guards=guards,
+        extra_plugins=_extra_plugins(),
     )
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
