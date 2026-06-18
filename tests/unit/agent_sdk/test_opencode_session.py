@@ -51,6 +51,27 @@ def test_fenced_draft_in_text_becomes_draft_chunk() -> None:
     assert draft.data["title"] == "Add login"
 
 
+def test_propose_draft_tool_part_becomes_draft_chunk() -> None:
+    # The intake-tools.js propose_draft tool call (its input nested under
+    # `draft`) is intercepted into a draft chunk — NOT rendered as a tool_use —
+    # so the panel shows the draft card. This is the primary Grok-intake path.
+    chunks = normalize_opencode_message(
+        {
+            "parts": [
+                {
+                    "type": "tool",
+                    "tool": "propose_draft",
+                    "input": {"draft": {"title": "Add login", "team": "backend"}},
+                }
+            ]
+        }
+    )
+    assert "tool_use" not in _kinds(chunks)
+    draft = next(c for c in chunks if c.kind == "draft")
+    assert draft.data["title"] == "Add login"
+    assert draft.data["team"] == "backend"
+
+
 def test_unknown_part_skipped_but_turn_still_ends() -> None:
     chunks = normalize_opencode_message({"parts": [{"type": "mystery", "x": 1}]})
     assert _kinds(chunks) == ["turn_end"]

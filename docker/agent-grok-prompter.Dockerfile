@@ -10,6 +10,14 @@
 
 FROM roboco-agent-grok
 
+USER root
+
+# The intake propose_draft tool plugin (the model calls it; the driver turns the
+# call into the panel's draft card). Scoped to THIS image via
+# ROBOCO_OPENCODE_EXTRA_PLUGINS so only the intake role carries it.
+COPY docker/grok/intake-tools.js /app/opencode-plugins/intake-tools.js
+ENV ROBOCO_OPENCODE_EXTRA_PLUGINS=/app/opencode-plugins/intake-tools.js
+
 USER agent
 
 LABEL role="grok-prompter"
