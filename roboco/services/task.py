@@ -5404,6 +5404,44 @@ class TaskService(BaseService):
         result = await self.session.execute(query)
         return {row[0].value: row[1] for row in result.all()}
 
+    async def get_delivery_stats_30d(self) -> dict[str, Any]:
+        """Return completed-task count and median lead time for the last 30 days.
+
+        Queries tasks WHERE status=completed AND completed_at IS NOT NULL AND
+        completed_at >= now()-30d.  Lead time is ``completed_at - created_at``
+        expressed in hours; the median is computed with :func:`statistics.median`.
+
+        Returns::
+
+            {
+                "completed_30d": int,
+                "median_lead_time_hours": float | None,  # None when no tasks
+            }
+        """
+        import statistics
+
+        cutoff = datetime.now(UTC) - timedelta(days=30)
+        result = await self.session.execute(
+            select(TaskTable.created_at, TaskTable.completed_at).where(
+                TaskTable.status == TaskStatus.COMPLETED,
+                TaskTable.completed_at.is_not(None),
+                TaskTable.completed_at >= cutoff,
+            )
+        )
+        rows = result.all()
+        completed_30d = len(rows)
+        median_lead_time_hours: float | None = None
+        if rows:
+            lead_times = [
+                (row.completed_at - row.created_at).total_seconds() / 3600
+                for row in rows
+            ]
+            median_lead_time_hours = float(statistics.median(lead_times))
+        return {
+            "completed_30d": completed_30d,
+            "median_lead_time_hours": median_lead_time_hours,
+        }
+
     async def count_by_team(self) -> dict[str, int]:
         """Count tasks by team."""
         result = await self.session.execute(
