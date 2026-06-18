@@ -6,7 +6,7 @@ Minimal surface that backs the Settings UI:
  - set / clear / check the single Ollama Cloud API key
  - configure / test / discover the self-hosted (LOCAL) Ollama server
  - read current routing assignments (so the UI renders Mix mode)
- - apply a routing mode (anthropic | ollama | mix | self_hosted)
+ - apply a routing mode (anthropic | grok | ollama | mix | self_hosted)
 """
 
 from __future__ import annotations
@@ -189,7 +189,7 @@ class ApplyModeRequest(BaseModel):
       set GLOBAL default to `default_model` (a self-hosted model name).
     """
 
-    mode: Literal["anthropic", "ollama", "mix", "self_hosted"]
+    mode: Literal["anthropic", "grok", "ollama", "mix", "self_hosted"]
     default_model: str | None = None
     per_agent: dict[str, str] | None = None
 
@@ -197,5 +197,5 @@ class ApplyModeRequest(BaseModel):
 class ModeResponse(BaseModel):
     """Server-side view of the current mode + a snapshot of active rules."""
 
-    mode: Literal["anthropic", "ollama", "mix", "self_hosted"]
+    mode: Literal["anthropic", "grok", "ollama", "mix", "self_hosted"]
     assignments: list[AssignmentResponse]

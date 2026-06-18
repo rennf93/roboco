@@ -37,13 +37,19 @@ async def llm_setup(
         type=ModelProvider.ANTHROPIC,
         enabled=True,
     )
+    grok = ProviderConfigTable(
+        name="grok-test",
+        type=ModelProvider.GROK,
+        enabled=True,
+        base_url="https://api.x.ai/v1",
+    )
     ollama = ProviderConfigTable(
         name="ollama-test",
         type=ModelProvider.OLLAMA_CLOUD,
         enabled=True,
         base_url="https://ollama.example.com",
     )
-    db_session.add_all([anthropic, ollama])
+    db_session.add_all([anthropic, grok, ollama])
     await db_session.flush()
     yield {"svc": ModelRoutingService(db_session)}
 
@@ -178,6 +184,16 @@ async def test_derive_mode_ollama_when_only_ollama_global(llm_setup: dict) -> No
 
 
 @pytest.mark.asyncio
+async def test_derive_mode_grok_when_only_grok_global(llm_setup: dict) -> None:
+    svc = llm_setup["svc"]
+    grok_model = _first_model_for_type(ModelProvider.GROK)
+    await svc.upsert_assignment(
+        scope=AssignmentScope.GLOBAL, scope_value=None, model_name=grok_model
+    )
+    assert await svc.derive_mode() == "grok"
+
+
+@pytest.mark.asyncio
 async def test_derive_mode_mix_with_per_agent(llm_setup: dict) -> None:
     svc = llm_setup["svc"]
     model = _first_model_for_type(ModelProvider.ANTHROPIC)
@@ -213,6 +229,16 @@ async def test_apply_mode_ollama_sets_global(llm_setup: dict) -> None:
     assignments = await svc.list_assignments()
     assert len(assignments) == 1
     assert assignments[0].scope == AssignmentScope.GLOBAL
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_grok_sets_global(llm_setup: dict) -> None:
+    svc = llm_setup["svc"]
+    await svc.apply_mode(mode="grok")
+    assignments = await svc.list_assignments()
+    assert len(assignments) == 1
+    assert assignments[0].scope == AssignmentScope.GLOBAL
+    assert assignments[0].provider.type == ModelProvider.GROK
 
 
 @pytest.mark.asyncio

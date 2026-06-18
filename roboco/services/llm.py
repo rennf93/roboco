@@ -311,7 +311,9 @@ class ModelRoutingService(BaseService):
         )
         return row
 
-    async def derive_mode(self) -> Literal["anthropic", "ollama", "mix", "self_hosted"]:
+    async def derive_mode(
+        self,
+    ) -> Literal["anthropic", "grok", "ollama", "mix", "self_hosted"]:
         """Return the current "mode" label for the Settings UI.
 
         Decision tree matches what `apply_mode` writes:
@@ -327,6 +329,8 @@ class ModelRoutingService(BaseService):
             len(assignments) == 1 and assignments[0].scope == AssignmentScope.GLOBAL
         )
         if only_global:
+            if assignments[0].provider.type == ModelProvider.GROK:
+                return "grok"
             if assignments[0].provider.type == ModelProvider.OLLAMA_CLOUD:
                 return "ollama"
             if assignments[0].provider.type == ModelProvider.LOCAL:
@@ -429,6 +433,8 @@ class ModelRoutingService(BaseService):
           - "self_hosted": wipe all assignments, enable the LOCAL provider,
             and set the GLOBAL default to `default_model` (a self-hosted
             model name — not validated against the static catalog).
+          - "grok":        wipe all assignments, set the GLOBAL default to a
+            Grok (xAI) model (default grok-build-0.1). Requires the xAI key.
           - "mix":         apply per-agent map verbatim. Any agent not in the
             map falls through to the GLOBAL default — which is whatever it
             was (preserves prior state). Self-hosted model names (not in the
@@ -436,6 +442,8 @@ class ModelRoutingService(BaseService):
         """
         if mode == "anthropic":
             await self._apply_anthropic()
+        elif mode == "grok":
+            await self._apply_grok(default_model)
         elif mode == "ollama":
             await self._apply_ollama(default_model)
         elif mode == "self_hosted":
@@ -445,7 +453,7 @@ class ModelRoutingService(BaseService):
         else:
             raise ValueError(
                 f"Unknown mode '{mode}'."
-                " Use 'anthropic', 'ollama', 'self_hosted', or 'mix'."
+                " Use 'anthropic', 'grok', 'ollama', 'self_hosted', or 'mix'."
             )
 
     async def _apply_anthropic(self) -> None:
@@ -453,6 +461,24 @@ class ModelRoutingService(BaseService):
         await self.session.execute(sa_delete(ModelAssignmentTable))
         await self.session.flush()
         self.log.info("Mode applied: anthropic (all assignments cleared)")
+
+    async def _apply_grok(self, default_model: str | None) -> None:
+        """Wipe assignments, set the GLOBAL default to a Grok (xAI) model.
+
+        ``grok-build-0.1`` is in the catalog under the GROK provider, so the
+        upsert resolves to the seeded Grok provider row. Routing to Grok needs
+        the xAI key set (which enables the provider); without it, agents fall
+        back to the Anthropic path at spawn — same contract as Ollama.
+        """
+        await self.session.execute(sa_delete(ModelAssignmentTable))
+        await self.session.flush()
+        model_name = default_model or "grok-build-0.1"
+        await self.upsert_assignment(
+            scope=AssignmentScope.GLOBAL,
+            scope_value=None,
+            model_name=model_name,
+        )
+        self.log.info("Mode applied: grok", default_model=model_name)
 
     async def _apply_ollama(self, default_model: str | None) -> None:
         """Wipe assignments, set the GLOBAL default to an Ollama Cloud model."""

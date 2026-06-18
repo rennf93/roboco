@@ -29,7 +29,12 @@ export interface ModelAssignment {
   model_name: string;
 }
 
-export type RoutingMode = "anthropic" | "ollama" | "self_hosted" | "mix";
+export type RoutingMode =
+  | "anthropic"
+  | "grok"
+  | "ollama"
+  | "self_hosted"
+  | "mix";
 
 export interface ModeSnapshot {
   mode: RoutingMode;

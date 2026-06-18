@@ -39,6 +39,7 @@ import {
   Server,
   ShieldCheck,
   Sparkles,
+  Zap,
 } from "lucide-react";
 import { toast } from "sonner";
 import { AssignmentScope, ModelProvider } from "@/types";
@@ -175,6 +176,9 @@ export function AIRoutingCard() {
   const catalogOllamaOnly = catalog.filter(
     (c: { provider_type: ModelProvider }) => c.provider_type === ModelProvider.OLLAMA_CLOUD,
   );
+  const catalogGrokOnly = catalog.filter(
+    (c: { provider_type: ModelProvider }) => c.provider_type === ModelProvider.GROK,
+  );
   const catalogAnthropicOnly = catalog.filter(
     (c: { provider_type: ModelProvider }) => c.provider_type === ModelProvider.ANTHROPIC,
   );
@@ -185,6 +189,20 @@ export function AIRoutingCard() {
     try {
       await applyMode.mutateAsync({ mode: "anthropic" });
       toast.success("All agents now on Anthropic");
+    } catch (e) {
+      toast.error("Switch failed: " + errMsg(e));
+    }
+  };
+
+  const flipToGrok = async () => {
+    if (!hasGrokKey) {
+      toast.error("Save the Grok (xAI) API key first");
+      return;
+    }
+    if (!confirm("Switch every agent to Grok? Clears any overrides.")) return;
+    try {
+      await applyMode.mutateAsync({ mode: "grok" });
+      toast.success("All agents now on Grok");
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
     }
@@ -236,6 +254,18 @@ export function AIRoutingCard() {
       toast.error("Pick a model for at least one agent");
       return;
     }
+    const needsGrok = Object.values(per_agent).some((m) =>
+      catalog.find(
+        (c: { model_name: string; provider_type: ModelProvider }) =>
+          c.model_name === m && c.provider_type === ModelProvider.GROK,
+      ),
+    );
+    if (needsGrok && !hasGrokKey) {
+      toast.error(
+        "At least one agent is routed to a Grok model but no key is saved",
+      );
+      return;
+    }
     const needsKey = Object.values(per_agent).some((m) =>
       catalog.find(
         (c: { model_name: string; provider_type: ModelProvider }) =>
@@ -274,9 +304,9 @@ export function AIRoutingCard() {
         </CardTitle>
         <CardDescription>
           Decide which model backs each agent. Anthropic uses the mounted
-          <code className="px-1"> ~/.claude </code> auth; Ollama Cloud uses
-          the API key you save below; Self-Hosted connects to any OpenAI-compatible
-          endpoint you run locally.
+          <code className="px-1"> ~/.claude </code> auth; Grok (xAI) and Ollama
+          Cloud use the API keys you save below; Self-Hosted connects to any
+          OpenAI-compatible endpoint you run locally.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -391,7 +421,7 @@ export function AIRoutingCard() {
         {/* -------- Mode toggle -------- */}
         <section className="space-y-3">
           <Label className="text-sm font-medium">Routing mode</Label>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2">
             <ModeButton
               icon={<ShieldCheck className="h-4 w-4" />}
               label="Anthropic"
@@ -399,6 +429,18 @@ export function AIRoutingCard() {
               active={currentMode === "anthropic"}
               onClick={flipToAnthropic}
               disabled={applyMode.isPending}
+            />
+            <ModeButton
+              icon={<Zap className="h-4 w-4" />}
+              label="Grok"
+              description={
+                hasGrokKey
+                  ? "Every agent uses Grok (grok-build-0.1)."
+                  : "Save the Grok (xAI) key first."
+              }
+              active={currentMode === "grok"}
+              onClick={flipToGrok}
+              disabled={applyMode.isPending || !hasGrokKey}
             />
             <ModeButton
               icon={<Sparkles className="h-4 w-4" />}
@@ -545,6 +587,23 @@ export function AIRoutingCard() {
                       </SelectGroup>
                     )}
 
+                    {/* Grok (xAI) models */}
+                    {catalogGrokOnly.length > 0 && (
+                      <SelectGroup>
+                        <SelectLabel>
+                          <ProviderBadge variant="grok" />
+                          Grok (xAI)
+                        </SelectLabel>
+                        {catalogGrokOnly.map(
+                          (c: { model_name: string; display_name: string }) => (
+                            <SelectItem key={c.model_name} value={c.model_name}>
+                              {c.display_name}
+                            </SelectItem>
+                          ),
+                        )}
+                      </SelectGroup>
+                    )}
+
                     {/* Ollama Cloud models */}
                     {catalogOllamaOnly.length > 0 && (
                       <SelectGroup>
@@ -659,17 +718,19 @@ function errMsg(e: unknown): string {
 function ProviderBadge({
   variant,
 }: {
-  variant: "anthropic" | "ollama" | "self-hosted";
+  variant: "anthropic" | "grok" | "ollama" | "self-hosted";
 }) {
   const styles: Record<string, string> = {
     anthropic: "bg-blue-500/20 text-blue-700 dark:text-blue-400",
     ollama: "bg-violet-500/20 text-violet-700 dark:text-violet-400",
     "self-hosted": "bg-purple-500/20 text-purple-700 dark:text-purple-400",
+    grok: "bg-teal-500/20 text-teal-700 dark:text-teal-400",
   };
   const labels: Record<string, string> = {
     anthropic: "A",
     ollama: "O",
     "self-hosted": "S",
+    grok: "G",
   };
   return (
     <span
