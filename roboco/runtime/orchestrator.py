@@ -3074,6 +3074,14 @@ class AgentOrchestrator:
         instance.last_activity = datetime.now(UTC)
         self._instances[INTAKE_AGENT_ID] = instance
 
+        # Record a usage session (task_id=None) and pin its id on the instance so
+        # the reap finalizer can look up token usage — without this an interactive
+        # session finalizes at 0 tokens / $0 (the GROK path reads opencode.db by
+        # this id; the Claude path reads the transcript). Mirrors _launch_spawn.
+        usage_session_id = await self._record_spawn_session(config, None)
+        if usage_session_id is not None:
+            instance.usage_session_id = usage_session_id
+
         # The relay was already opened on the request path (start_intake_session /
         # spawn_intake_session) BEFORE the panel connected its SSE stream. Do NOT
         # re-open here: a second open would swap in a fresh queue and orphan that
@@ -3236,6 +3244,12 @@ class AgentOrchestrator:
         instance.started_at = datetime.now(UTC)
         instance.last_activity = datetime.now(UTC)
         self._instances[SECRETARY_AGENT_ID] = instance
+
+        # Pin a usage session id so the reap finalizer can attribute token usage
+        # (else $0); see the matching note in _spawn_intake_container.
+        usage_session_id = await self._record_spawn_session(config, None)
+        if usage_session_id is not None:
+            instance.usage_session_id = usage_session_id
 
         logger.info(
             "Secretary session spawned",
