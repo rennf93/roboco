@@ -38,6 +38,27 @@ class SpawnResult:
     extra: dict[str, object] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class InteractiveSpawnSpec:
+    """Inputs to spawn a long-lived **interactive** agent (intake / secretary).
+
+    Interactive roles run a held-open chat session the human types into, rather
+    than a one-shot task. This bundles everything a provider's
+    :meth:`AgentProvider.spawn_interactive` needs so it never imports
+    orchestrator internals: the resolved :class:`AgentConfig` (carries the
+    provider routing creds, model, mcp config, agent id), the per-session id the
+    relay/SSE keys on, the role-specific interactive image, and — for the
+    secretary, whose directive tools authenticate to the API — the HMAC token.
+    """
+
+    config: AgentConfig
+    image: str
+    session_id: str
+    role: str  # "prompter" | "secretary"
+    agent_token: str | None = None
+    agent_settings_path: Path | None = None
+
+
 class ProviderError(Exception):
     """Raised when an agent-lifecycle operation fails inside a provider.
 
@@ -62,9 +83,17 @@ class ProviderError(Exception):
 class AgentProvider(ABC):
     """Abstract base for an agent-lifecycle backend.
 
-    Every concrete provider implements the full lifecycle so the orchestrator
-    can drive any backend through one interface.
+    Every concrete provider implements the full one-shot lifecycle so the
+    orchestrator can drive any backend through one interface. Interactive
+    (held-open chat) spawns are opt-in: a provider that serves the human-facing
+    intake/secretary roles sets ``supports_interactive = True`` and overrides
+    :meth:`spawn_interactive`. One-shot-only providers inherit the default,
+    which declines — so adding the interactive surface breaks no existing
+    provider.
     """
+
+    #: Whether this backend can spawn long-lived interactive (chat) agents.
+    supports_interactive: bool = False
 
     @abstractmethod
     async def spawn(
@@ -75,6 +104,17 @@ class AgentProvider(ABC):
     ) -> SpawnResult:
         """Spawn an agent instance and return a handle to it."""
         ...
+
+    async def spawn_interactive(self, spec: InteractiveSpawnSpec) -> SpawnResult:
+        """Spawn a long-lived interactive agent (intake / secretary).
+
+        Non-abstract: the default declines so one-shot-only providers need no
+        change. Providers that set ``supports_interactive = True`` override this.
+        """
+        raise ProviderError(
+            f"{type(self).__name__} does not support interactive spawns",
+            agent_id=spec.config.agent_id,
+        )
 
     @abstractmethod
     async def stop(self, instance_id: str, graceful: bool = True) -> None:
