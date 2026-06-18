@@ -28,6 +28,11 @@ _S2_IN, _S2_OUT, _S2_CREAD = 200, 70, 10
 # grok-build-0.1: 1M input ($1.00) + 1M output ($2.00) = $3.00.
 _GROK_COST_1M_1M = 3.00
 
+# A REAL grok-build-0.1 session row observed from a live opencode run. Our
+# pricing must reproduce opencode's own stored `cost` (= xAI authoritative).
+_REAL_IN, _REAL_OUT, _REAL_REASON, _REAL_CREAD = 6120, 1, 226, 1856
+_REAL_COST = 0.0069452
+
 
 def _make_db(
     path: Path, rows: list[tuple[str, int, int, int, int, int, float]]
@@ -109,3 +114,21 @@ def test_cost_for_session_missing_db(tmp_path: Path) -> None:
     usage, cost = cost_for_session("grok-build-0.1", tmp_path / "nope.db")
     assert usage is None
     assert cost == _ZERO_COST
+
+
+def test_cost_reproduces_opencode_authoritative_cost(tmp_path: Path) -> None:
+    """Real observed row: our pricing must match opencode's stored USD cost.
+
+    Proves the column semantics (non-cached input disjoint from cache_read;
+    reasoning separate, billed at output rate).
+    """
+    db = tmp_path / "opencode.db"
+    # (id, input, output, reasoning, cache_read, cache_write, cost)
+    _make_db(
+        db,
+        [("real", _REAL_IN, _REAL_OUT, _REAL_REASON, _REAL_CREAD, 0, _REAL_COST)],
+    )
+    usage, cost = cost_for_session("grok-build-0.1", db, session_id="real")
+    assert usage is not None
+    assert abs(cost - _REAL_COST) < _TOL
+    assert abs(cost - usage.opencode_cost) < _TOL

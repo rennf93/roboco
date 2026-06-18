@@ -31,7 +31,11 @@ from typing import Any
 
 _OPENCODE_SCHEMA = "https://opencode.ai/config.json"
 _PROVIDER_ID = "xai"
-_OPENAI_COMPAT_NPM = "@ai-sdk/openai-compatible"
+# grok-build-0.1 is driven through the OpenAI **Responses** API (opencode calls
+# model.responses()). Only @ai-sdk/openai implements that — @ai-sdk/openai-compatible
+# is chat/completions only and errors with "responses is not a function".
+# Confirmed via a live opencode run against api.x.ai/v1.
+_PROVIDER_NPM = "@ai-sdk/openai"
 
 # Plugins baked into the roboco-agent-grok image (see docker/agent-grok.Dockerfile).
 # secret-scrub ports the bash-guard deny rules to opencode's tool.execute.before.
@@ -85,7 +89,7 @@ def build_opencode_config(
         "$schema": _OPENCODE_SCHEMA,
         "provider": {
             _PROVIDER_ID: {
-                "npm": _OPENAI_COMPAT_NPM,
+                "npm": _PROVIDER_NPM,
                 "name": "xAI",
                 "options": {"baseURL": target.base_url, "apiKey": target.api_key},
                 "models": {target.model: {"name": target.model}},

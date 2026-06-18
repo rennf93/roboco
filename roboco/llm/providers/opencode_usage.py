@@ -106,10 +106,15 @@ def cost_for_session(
     usage = read_session_usage(db_path, session_id)
     if usage is None:
         return None, 0.0
+    # opencode stores tokens_input as non-cached input (disjoint from
+    # tokens_cache_read) and tokens_output EXCLUDING reasoning, with reasoning
+    # in its own column. Reasoning bills at the output rate, so fold it into
+    # output. Verified against a live run: this reproduces opencode's own `cost`
+    # column (= xAI's authoritative cost) to the cent.
     cost = calculate_cost(
         model,
         tokens_input=usage.tokens_input,
-        tokens_output=usage.tokens_output,
+        tokens_output=usage.tokens_output + usage.tokens_reasoning,
         tokens_cache_read=usage.tokens_cache_read,
         tokens_cache_write=usage.tokens_cache_write,
     )

@@ -12,11 +12,12 @@ FROM roboco-agent-base
 
 USER root
 
-# opencode — the OpenAI-protocol agent runtime. The @ai-sdk/openai-compatible
-# package backs the custom xAI provider declared in the generated opencode.json;
-# opencode also resolves it at runtime, but pre-installing keeps first spawn off
-# the network.
-RUN npm install -g opencode-ai @ai-sdk/openai-compatible \
+# opencode — the OpenAI-protocol agent runtime. grok-build-0.1 is driven via the
+# OpenAI Responses API, so the provider package is @ai-sdk/openai (NOT
+# @ai-sdk/openai-compatible, which is chat/completions only and errors with
+# "responses is not a function"). opencode resolves it at runtime, but
+# pre-installing keeps first spawn off the network.
+RUN npm install -g opencode-ai @ai-sdk/openai \
     && npm cache clean --force \
     && rm -rf /root/.npm /tmp/*
 

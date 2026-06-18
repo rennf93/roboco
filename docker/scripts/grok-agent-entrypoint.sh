@@ -16,6 +16,10 @@ python -m roboco.llm.providers.opencode_config
 # positional); `--` separates it from flags so a prompt starting with `--`
 # cannot be parsed as CLI options. The model also comes from the rendered
 # config; --model is passed explicitly as belt-and-suspenders.
+#
+# `< /dev/null` is REQUIRED: without a closed stdin, `opencode run` hangs after
+# init in a headless / no-TTY environment (it blocks waiting on stdin). Verified
+# live — closing stdin lets the run proceed to the model call and exit cleanly.
 exec opencode run \
   --model "xai/${ROBOCO_AGENT_MODEL:-grok-build-0.1}" \
-  -- "${ROBOCO_INITIAL_PROMPT:-}"
+  -- "${ROBOCO_INITIAL_PROMPT:-}" < /dev/null

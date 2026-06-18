@@ -71,7 +71,8 @@ def test_build_opencode_config_provider_and_model() -> None:
         instruction_paths=["/app/system-prompt.md"],
     )
     provider = cfg["provider"]["xai"]
-    assert provider["npm"] == "@ai-sdk/openai-compatible"
+    # grok-build-0.1 needs the Responses API → @ai-sdk/openai, not -compatible.
+    assert provider["npm"] == "@ai-sdk/openai"
     assert provider["options"]["baseURL"] == "https://api.x.ai/v1"
     assert provider["options"]["apiKey"] == "xai-key"
     assert "grok-build-0.1" in provider["models"]
