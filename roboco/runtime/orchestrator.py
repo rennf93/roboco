@@ -3273,6 +3273,40 @@ class AgentOrchestrator:
         await self.stop_agent(SECRETARY_AGENT_ID, graceful=True)
         logger.info("Secretary session reaped", session_id=session_id)
 
+    async def _reap_idle_interactive_sessions(self) -> None:
+        """Retire live intake/secretary chats idle past the configured threshold.
+
+        An abandoned chat (the human closed the tab without confirming or
+        stopping) otherwise leaks its container until the orchestrator restarts.
+        Idle is measured by time-since-last-turn (push/deliver), NOT connection
+        state, so an active or page-reloaded chat that keeps exchanging turns is
+        never reaped; board-review-parked sessions are exempt. Provider-agnostic
+        (Claude + Grok interactive). Disabled when the threshold is 0.
+        """
+        from roboco.services.prompter_live import get_live_registry
+
+        threshold = float(settings.interactive_idle_reap_seconds)
+        for session_id, agent_id in get_live_registry().idle_session_ids(threshold):
+            try:
+                if agent_id == INTAKE_AGENT_ID:
+                    await self.reap_intake_session(session_id)
+                elif agent_id == SECRETARY_AGENT_ID:
+                    await self.reap_secretary_session(session_id)
+                else:
+                    continue
+                logger.info(
+                    "Reaped idle interactive session",
+                    session_id=session_id,
+                    agent_id=agent_id,
+                    idle_threshold_s=threshold,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Idle interactive reap failed",
+                    session_id=session_id,
+                    error=str(exc),
+                )
+
     def _resolve_secretary_host_paths(self) -> dict[str, str | None]:
         """Host paths for the Secretary container's mounts (claude + prompt).
 
@@ -4637,6 +4671,10 @@ Start by:
             except Exception as e:
                 await db.rollback()
                 logger.warning("Notification sweep failed", error=str(e))
+
+        # Retire abandoned live intake/secretary chats (idle past the threshold)
+        # so a closed-tab session doesn't leak its container until restart.
+        await self._reap_idle_interactive_sessions()
 
         # Budget kill-switch — runs every sweep. Any agent whose SDK reports
         # halt=true has breached its per-session tool-call cap; terminate the

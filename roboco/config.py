@@ -691,6 +691,21 @@ class Settings(BaseSettings):
             "0 disables. Override via ROBOCO_GROK_MAX_COST_USD"
         ),
     )
+    # An interactive intake/secretary chat the human abandoned (closed the tab
+    # without confirming/stopping) otherwise leaks its container until the
+    # orchestrator restarts. The sweeper reaps a live session whose
+    # time-since-last-turn (push/deliver) exceeds this; measured on activity, NOT
+    # connection state, so an active or page-reloaded chat that keeps exchanging
+    # turns is never reaped (board-review-parked sessions are also exempt).
+    # Seconds; 0 disables. Provider-agnostic (Claude + Grok interactive).
+    interactive_idle_reap_seconds: int = Field(
+        default=1800,
+        ge=0,
+        description=(
+            "Idle-reap threshold for live intake/secretary chats (seconds); "
+            "0 disables. Override via ROBOCO_INTERACTIVE_IDLE_REAP_SECONDS"
+        ),
+    )
     # A task left CLAIMED/IN_PROGRESS with an assignee but no running container
     # (e.g. a reassignment that didn't spawn) is invisibly stuck — the heartbeat
     # reaper can't see it because its heartbeat was seeded fresh at claim time.
