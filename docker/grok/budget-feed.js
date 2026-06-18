@@ -77,7 +77,10 @@ function bareVerb(tool) {
   return tool;
 }
 
-export default async () => {
+// Named export + loaded from the plugin auto-discovery dir
+// (~/.config/opencode/plugin/) — opencode 1.17.8 ignores config `plugin:`-array
+// absolute paths for hook/tool registration (verified live).
+export const RobocoBudgetFeed = async () => {
   return {
     "tool.execute.before": async (input) => {
       const status = await sdk("GET", "/budget/status", null);

@@ -5,7 +5,7 @@ GrokProvider (xAI / OpenAI protocol) — especially the safety properties an
 OpenAI-protocol agent provider must hold:
 
   * the agent gets the MCP gateway wiring (reuses the orchestrator mount path);
-  * the xAI endpoint is injected as OPENAI_* and never mislabelled ANTHROPIC_*;
+  * the xAI endpoint is injected as XAI_* and never mislabelled ANTHROPIC_*;
   * the prompt travels via env, so a leading ``--`` cannot become a CLI flag.
 """
 
@@ -177,7 +177,7 @@ async def test_grok_spawn_requires_mcp_config() -> None:
         await provider.spawn(_config(mcp_config_path=None))
 
 
-async def test_grok_spawn_injects_openai_env_and_no_anthropic_leak() -> None:
+async def test_grok_spawn_injects_xai_env_and_no_anthropic_leak() -> None:
     host = _FakeHost()
     provider = GrokProvider(host, image="roboco-agent-grok:test")
     with patch(
@@ -185,8 +185,10 @@ async def test_grok_spawn_injects_openai_env_and_no_anthropic_leak() -> None:
     ) as exec_mock:
         await provider.spawn(_config(), initial_prompt="do the work")
     cmd = list(exec_mock.call_args.args)
-    assert "OPENAI_BASE_URL=https://api.x.ai/v1" in cmd
-    assert "OPENAI_API_KEY=xai-secret-key" in cmd
+    # opencode's built-in xai provider reads XAI_API_KEY / XAI_BASE_URL (no
+    # provider block in the rendered config — that breaks plugin-tool reg).
+    assert "XAI_API_KEY=xai-secret-key" in cmd
+    assert "XAI_BASE_URL=https://api.x.ai/v1" in cmd
     # The xAI endpoint must NOT be injected as an Anthropic var.
     assert not any(c.startswith("ANTHROPIC_BASE_URL=") for c in cmd)
     assert not any(c.startswith("ANTHROPIC_AUTH_TOKEN=") for c in cmd)
@@ -245,7 +247,7 @@ async def test_grok_spawn_defaults_base_url_when_route_blank() -> None:
     ) as exec_mock:
         await provider.spawn(_config(provider_base_url=None))
     cmd = list(exec_mock.call_args.args)
-    assert "OPENAI_BASE_URL=https://api.x.ai/v1" in cmd
+    assert "XAI_BASE_URL=https://api.x.ai/v1" in cmd
 
 
 async def test_grok_spawn_raises_on_docker_failure() -> None:

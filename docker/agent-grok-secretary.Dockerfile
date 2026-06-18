@@ -13,11 +13,12 @@ FROM roboco-agent-grok
 
 USER root
 
-# The CEO-authority tool plugin (read_company_state / read_task / submit_directive).
-# Scoped to THIS image via ROBOCO_OPENCODE_EXTRA_PLUGINS so only the Secretary
-# carries CEO authority; opencode_config appends it to the plugin array.
-COPY docker/grok/secretary-tools.js /app/opencode-plugins/secretary-tools.js
-ENV ROBOCO_OPENCODE_EXTRA_PLUGINS=/app/opencode-plugins/secretary-tools.js
+# The CEO-authority tool plugin (read_company_state / read_task / submit_directive),
+# baked into the auto-discovery dir so ONLY the Secretary image carries it (no
+# other role gets CEO authority). opencode registers it from this directory; a
+# config `plugin:`-array path would not register its tools (verified live).
+COPY docker/grok/secretary-tools.js /home/agent/.config/opencode/plugin/secretary-tools.js
+RUN chown agent:agent /home/agent/.config/opencode/plugin/secretary-tools.js
 
 USER agent
 

@@ -164,7 +164,11 @@ function denyBash(command) {
   return null;
 }
 
-export default async () => {
+// Named export + loaded from opencode's plugin auto-discovery dir
+// (~/.config/opencode/plugin/). opencode 1.17.8 does NOT register a plugin's
+// hooks/tools when it's listed by absolute path in the config `plugin:` array —
+// only directory auto-discovery works (verified live against grok-build-0.1).
+export const RobocoSecretScrub = async () => {
   return {
     "tool.execute.before": async (input, output) => {
       const tool = input?.tool;

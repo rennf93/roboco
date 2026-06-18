@@ -3442,10 +3442,13 @@ class AgentOrchestrator:
                 cmd.extend(["-v", f"{opencode_host}:/home/agent/.local/share/opencode"])
             cmd.extend(
                 [
+                    # Built-in xai provider authenticates from XAI_API_KEY and
+                    # reads XAI_BASE_URL; opencode_config emits no provider block
+                    # (any provider.xai block breaks plugin-tool registration).
                     "-e",
-                    f"OPENAI_BASE_URL={base_url or 'https://api.x.ai/v1'}",
+                    f"XAI_API_KEY={auth_token or ''}",
                     "-e",
-                    f"OPENAI_API_KEY={auth_token or ''}",
+                    f"XAI_BASE_URL={base_url or 'https://api.x.ai/v1'}",
                     "-e",
                     f"ROBOCO_AGENT_MODEL={spec.model}",
                     "-e",

@@ -66,7 +66,12 @@ async function callBackend(method, path, body) {
 
 const asText = (data) => JSON.stringify(data);
 
-export default async () => ({
+// Named export + loaded from the plugin auto-discovery dir
+// (~/.config/opencode/plugin/) — opencode 1.17.8 does NOT register tools from a
+// config `plugin:`-array absolute path; only directory auto-discovery + a named
+// export registers Hooks.tool (verified live: the model called the tool and the
+// backend received the request).
+export const RobocoSecretaryTools = async () => ({
   tool: {
     read_company_state: tool({
       description:

@@ -260,11 +260,14 @@ class GrokProvider(AgentProvider):
         base_url = config.provider_base_url or _DEFAULT_XAI_BASE_URL
         cmd.extend(
             [
-                # OpenAI-compatible client config (standard env the CLI reads).
+                # opencode's BUILT-IN xai provider authenticates from XAI_API_KEY
+                # and reads XAI_BASE_URL for the endpoint — opencode_config emits
+                # no provider block (any provider.xai block breaks plugin-tool
+                # registration), so these envs are the only LLM wiring.
                 "-e",
-                f"OPENAI_BASE_URL={base_url}",
+                f"XAI_API_KEY={config.provider_auth_token}",
                 "-e",
-                f"OPENAI_API_KEY={config.provider_auth_token}",
+                f"XAI_BASE_URL={base_url}",
                 # Operational inputs for the grok image entrypoint.
                 "-e",
                 f"ROBOCO_AGENT_MODEL={config.model}",

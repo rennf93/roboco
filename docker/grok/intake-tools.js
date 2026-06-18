@@ -20,7 +20,11 @@
 
 import { tool } from "@opencode-ai/plugin";
 
-export default async () => ({
+// Named export + loaded from the plugin auto-discovery dir
+// (~/.config/opencode/plugin/) — opencode 1.17.8 only registers Hooks.tool from
+// directory auto-discovery, not a config `plugin:`-array absolute path
+// (verified live).
+export const RobocoIntakeTools = async () => ({
   tool: {
     propose_draft: tool({
       description:

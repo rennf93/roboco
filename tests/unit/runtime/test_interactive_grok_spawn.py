@@ -1,7 +1,7 @@
 """Interactive intake/secretary builders fork a GROK route onto opencode.
 
 A GROK route swaps the Claude SDK-driver image for the opencode-serve image and
-the ANTHROPIC_* env for OPENAI_* + the opencode store mount; every other
+the ANTHROPIC_* env for XAI_* + the opencode store mount; every other
 provider keeps the Claude path's ANTHROPIC_* behaviour.
 """
 
@@ -48,7 +48,7 @@ def _intake_spec(
     )
 
 
-def test_intake_grok_uses_openai_env_and_opencode_mount() -> None:
+def test_intake_grok_uses_xai_env_and_opencode_mount() -> None:
     cmd = AgentOrchestrator._build_intake_run_cmd(
         _intake_spec(
             "grok",
@@ -57,8 +57,8 @@ def test_intake_grok_uses_openai_env_and_opencode_mount() -> None:
             grok_variant="minimal",
         )
     )
-    assert "OPENAI_BASE_URL=https://api.x.ai/v1" in cmd
-    assert "OPENAI_API_KEY=xai-key" in cmd
+    assert "XAI_API_KEY=xai-key" in cmd
+    assert "XAI_BASE_URL=https://api.x.ai/v1" in cmd
     assert "ROBOCO_AGENT_MODEL=grok-build-0.1" in cmd
     assert "ROBOCO_SYSTEM_PROMPT=/app/system-prompt.md" in cmd
     assert "/h/oc/intake-1:/home/agent/.local/share/opencode" in cmd
@@ -97,7 +97,7 @@ def test_intake_anthropic_keeps_anthropic_env() -> None:
     )
     assert "ANTHROPIC_BASE_URL=https://api.anthropic.com" in cmd
     assert "ANTHROPIC_AUTH_TOKEN=sk-ant" in cmd
-    assert not any(c.startswith("OPENAI_") for c in cmd)
+    assert not any(c.startswith("XAI_") for c in cmd)
     assert cmd[-1] == "roboco-agent-prompter"
 
 
@@ -118,7 +118,7 @@ def test_secretary_grok_uses_openai_env_and_grok_image() -> None:
         model="grok-build-0.1",
     )
     cmd = AgentOrchestrator._build_secretary_run_cmd(spec)
-    assert "OPENAI_API_KEY=xai-key" in cmd
+    assert "XAI_API_KEY=xai-key" in cmd
     assert "/h/oc/sec-1:/home/agent/.local/share/opencode" in cmd
     # The HMAC identity the directive tools authenticate with survives.
     assert "ROBOCO_AGENT_TOKEN=hmac-secretary" in cmd

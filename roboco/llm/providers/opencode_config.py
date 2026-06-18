@@ -7,18 +7,30 @@ sets (``OPENAI_*`` + ``ROBOCO_*``) plus the mounted Claude Code
 as importable Python (not a shell heredoc) makes the translation unit-testable.
 
 Config shape per opencode docs (https://opencode.ai/docs/config):
-  * ``provider.<id>`` — ``@ai-sdk/openai`` (the Responses API; see ``_PROVIDER_NPM``)
-    with ``options.baseURL`` / ``options.apiKey`` / ``options.timeout`` /
-    ``options.chunkTimeout``; ``model`` selects ``<id>/<model>``.
+  * NO ``provider`` block. opencode's BUILT-IN xai provider drives
+    grok-build-0.1; ANY custom ``provider.xai`` block (even just ``options``)
+    breaks plugin-tool registration, and a ``npm`` override additionally breaks
+    model resolution (ProviderModelNotFoundError) — all verified live on opencode
+    1.17.8. The key + base URL reach the provider via the ``XAI_API_KEY`` /
+    ``XAI_BASE_URL`` env vars; ``model`` selects ``xai/<model>``.
   * ``mcp.<name>`` — ``{type:"local", command:[...], environment:{...}}``; this
     is where RoboCo's gateway servers (roboco-flow / roboco-do / ...) are wired,
     translated from Claude Code's ``mcpServers`` (``command`` + ``args`` + ``env``).
-  * ``permission.{bash,edit}`` and ``instructions`` (system prompt + briefing).
+  * ``permission.{bash,edit,external_directory}`` and ``instructions`` (system
+    prompt + briefing).
   * ``tools`` — opencode's subagent ``task`` tool is hard-disabled. No RoboCo role
     uses opencode-internal subagents (work is driven through the gateway verbs),
     and a ``task``-spawned subagent on ``grok-build-0.1`` whose model call opens an
     idle stream hangs the parent run with no recovery (observed live on a PR
-    review). The request/stream timeouts below are the defence-in-depth backstop.
+    review). This is the primary idle-stream defence (the orchestrator reaper is
+    the backstop).
+
+There is NO ``plugin`` key: opencode 1.17.8 does not register a plugin's
+hooks/tools from a config ``plugin:``-array absolute path — only from the plugin
+AUTO-DISCOVERY dir (``~/.config/opencode/plugin/``). The plugins are baked there
+in the images instead (secret-scrub + budget-feed in the base grok image; the
+Secretary's directive tools and the Intake's propose_draft in their interactive
+images).
 
 GUARDRAIL PARITY: the bash-guard (PAT-scrub) is ported via ``secret-scrub.js``
 (``tool.execute.before``); the per-session budget / loop / terminal-verb
@@ -33,11 +45,6 @@ post-mortem + Stop silent-exit substitute run at the entrypoint boundary after
 ``opencode run`` returns. ``bash`` / ``edit`` permissions are scoped per role
 (read-only roles get ``edit=deny``; only delivery roles get ``bash``) and stay
 operator-tunable (``ROBOCO_GROK_BASH_PERMISSION`` / ``ROBOCO_GROK_EDIT_PERMISSION``).
-
-Per-image extra plugins (the Secretary's directive tools, the Intake's
-``propose_draft``) are appended via ``ROBOCO_OPENCODE_EXTRA_PLUGINS`` (a
-``os.pathsep``-separated list), set in those images' Dockerfiles so the tools
-are scoped to the one role that should have them.
 """
 
 from __future__ import annotations
@@ -50,73 +57,29 @@ from typing import Any
 
 _OPENCODE_SCHEMA = "https://opencode.ai/config.json"
 _PROVIDER_ID = "xai"
-# grok-build-0.1 is driven through the OpenAI **Responses** API (opencode calls
-# model.responses()). Only @ai-sdk/openai implements that — @ai-sdk/openai-compatible
-# is chat/completions only and errors with "responses is not a function".
-# Confirmed via a live opencode run against api.x.ai/v1.
-_PROVIDER_NPM = "@ai-sdk/openai"
-
-# Plugins baked into the roboco-agent-grok image (see docker/agent-grok.Dockerfile).
-# secret-scrub ports the bash-guard deny rules to opencode's tool.execute.before;
-# budget-feed POSTs the budget/loop/terminal counters to the in-container SDK
-# server (tool.execute.{before,after}). Per-image extras (secretary / intake
-# tools) are appended from ROBOCO_OPENCODE_EXTRA_PLUGINS (see _extra_plugins).
-_PLUGINS = [
-    "/app/opencode-plugins/secret-scrub.js",
-    "/app/opencode-plugins/budget-feed.js",
-]
-
-
-def _extra_plugins() -> list[str]:
-    """Image-scoped plugin paths from ``ROBOCO_OPENCODE_EXTRA_PLUGINS``.
-
-    An ``os.pathsep``-separated list set in an interactive image's Dockerfile so
-    a role-specific tool plugin (the Secretary's directive tools, the Intake's
-    ``propose_draft``) is loaded only for that one role. Blank/missing yields no
-    extras. Mirrors the way the manifest scopes verbs per role.
-    """
-    raw = os.environ.get("ROBOCO_OPENCODE_EXTRA_PLUGINS", "").strip()
-    if not raw:
-        return []
-    return [p for p in raw.split(os.pathsep) if p.strip()]
+# We do NOT override provider.<id>.npm. opencode's BUILT-IN xai provider already
+# drives grok-build-0.1 with working tool-calls (verified live); a custom `npm`
+# (e.g. @ai-sdk/openai) is not resolvable from opencode's module path and makes
+# the model fail to resolve (ProviderModelNotFoundError). The xAI key is injected
+# via the XAI_API_KEY env var the built-in provider reads (set by GrokProvider /
+# the orchestrator) — provider.options.apiKey alone does NOT authenticate it.
+#
+# Plugins (secret-scrub / budget-feed / the per-role tool plugins) are NOT listed
+# in the config `plugin:` array — opencode 1.17.8 does not register a plugin's
+# hooks/tools when it is referenced by absolute path there. They are baked into
+# the plugin AUTO-DISCOVERY dir (~/.config/opencode/plugin/, i.e.
+# /home/agent/.config/opencode/plugin/ in the image) instead, which registers
+# both tools and hooks (verified live against grok-build-0.1).
 
 
 # opencode's built-in subagent-spawning tool. Hard-disabled in the generated
 # config (see the module docstring): a RoboCo agent never spawns opencode's own
-# subagents, and one that does can wedge the parent run on an idle stream.
+# subagents, and one that does can wedge the parent run on an idle stream. This
+# is the primary defence against the idle-stream hang; the orchestrator's
+# reaper watchdog (_maybe_kill_wedged_grok) is the backstop. (Per-provider
+# request/stream timeouts can't be set without a custom provider.npm, which
+# breaks model resolution — see the module docstring — so they are not used.)
 _SUBAGENT_TOOL = "task"
-
-# Request / stream timeouts (ms) written into ``provider.xai.options``. ``timeout``
-# bounds a single model call; ``chunkTimeout`` aborts a stream that goes idle for
-# this long (no chunk arrives) — the backstop for the idle-SSE hang. Both are
-# operator-tunable via env (see ``main``).
-_DEFAULT_REQUEST_TIMEOUT_MS = 300_000
-_DEFAULT_CHUNK_TIMEOUT_MS = 120_000
-
-
-def _env_int(name: str, default: int) -> int:
-    """Read a positive int from env ``name``; fall back to ``default``.
-
-    A missing, blank, non-integer, or non-positive value yields ``default`` so a
-    typo in an operator override can never disable the timeout entirely.
-    """
-    raw = os.environ.get(name, "").strip()
-    if not raw:
-        return default
-    try:
-        value = int(raw)
-    except ValueError:
-        return default
-    return value if value > 0 else default
-
-
-@dataclass(frozen=True)
-class XaiTarget:
-    """The xAI endpoint a Grok agent talks to."""
-
-    base_url: str
-    api_key: str
-    model: str
 
 
 @dataclass(frozen=True)
@@ -127,15 +90,13 @@ class OpencodeGuards:
     reading paths outside the project cwd (opencode auto-DENIES an ``ask`` in
     headless mode, which blocked the pr-reviewer from reading a diff it wrote to
     /tmp — so default ``allow``: the container is the sandbox and secret-scrub
-    still blocks credential files); the timeouts bound a single model call and
-    abort an idle stream; ``disable_subagents`` removes the subagent ``task`` tool.
+    still blocks credential files); ``disable_subagents`` removes the subagent
+    ``task`` tool.
     """
 
     bash_permission: str = "allow"
     edit_permission: str = "allow"
     external_directory_permission: str = "allow"
-    request_timeout_ms: int = _DEFAULT_REQUEST_TIMEOUT_MS
-    chunk_timeout_ms: int = _DEFAULT_CHUNK_TIMEOUT_MS
     disable_subagents: bool = True
 
 
@@ -166,31 +127,25 @@ def translate_mcp_servers(mcp_config: dict[str, Any]) -> dict[str, Any]:
 
 def build_opencode_config(
     mcp_config: dict[str, Any],
-    target: XaiTarget,
+    model: str,
     *,
     instruction_paths: list[str],
     guards: OpencodeGuards | None = None,
-    extra_plugins: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Build the full ``opencode.json`` dict for a Grok agent."""
+    """Build the ``opencode.json`` dict for a Grok agent.
+
+    Emits NO ``provider`` block: opencode's BUILT-IN xai provider drives
+    grok-build-0.1, and ANY custom ``provider.xai`` block breaks plugin-tool
+    registration AND (without ``XAI_API_KEY``) model resolution — all verified
+    live on opencode 1.17.8. The key + base URL are injected via the
+    ``XAI_API_KEY`` / ``XAI_BASE_URL`` env vars (set by GrokProvider / the
+    orchestrator). No ``plugin`` array either — plugins live in the
+    auto-discovery dir baked into the images.
+    """
     guards = guards or OpencodeGuards()
-    plugins = [*_PLUGINS, *(extra_plugins or [])]
     config: dict[str, Any] = {
         "$schema": _OPENCODE_SCHEMA,
-        "provider": {
-            _PROVIDER_ID: {
-                "npm": _PROVIDER_NPM,
-                "name": "xAI",
-                "options": {
-                    "baseURL": target.base_url,
-                    "apiKey": target.api_key,
-                    "timeout": guards.request_timeout_ms,
-                    "chunkTimeout": guards.chunk_timeout_ms,
-                },
-                "models": {target.model: {"name": target.model}},
-            }
-        },
-        "model": f"{_PROVIDER_ID}/{target.model}",
+        "model": f"{_PROVIDER_ID}/{model}",
         "mcp": translate_mcp_servers(mcp_config),
         "permission": {
             "bash": guards.bash_permission,
@@ -202,9 +157,6 @@ def build_opencode_config(
             "external_directory": guards.external_directory_permission,
         },
         "instructions": instruction_paths,
-        # secret-scrub (bash-guard parity) + budget-feed (SDK budget/loop feed),
-        # baked into the runtime image, plus any image-scoped role tool plugins.
-        "plugin": plugins,
     }
     if guards.disable_subagents:
         # Remove the subagent tool entirely so the model can never invoke it.
@@ -223,12 +175,12 @@ def _load_mcp_config(path: str) -> dict[str, Any]:
 
 
 def main() -> int:
-    """Entrypoint: read env + mounted mcp-config.json, write opencode.json."""
-    target = XaiTarget(
-        base_url=os.environ.get("OPENAI_BASE_URL", "https://api.x.ai/v1"),
-        api_key=os.environ.get("OPENAI_API_KEY", ""),
-        model=os.environ.get("ROBOCO_AGENT_MODEL", "grok-build-0.1"),
-    )
+    """Entrypoint: read env + mounted mcp-config.json, write opencode.json.
+
+    The xAI key + base URL are NOT read here — they reach opencode's built-in
+    xai provider via the ``XAI_API_KEY`` / ``XAI_BASE_URL`` env vars.
+    """
+    model = os.environ.get("ROBOCO_AGENT_MODEL", "grok-build-0.1")
     mcp_path = os.environ.get("ROBOCO_MCP_CONFIG", "/app/mcp-config.json")
     system_prompt = os.environ.get("ROBOCO_SYSTEM_PROMPT", "/app/system-prompt.md")
     # Default to opencode's global config location so it is found regardless of
@@ -243,12 +195,6 @@ def main() -> int:
         external_directory_permission=os.environ.get(
             "ROBOCO_GROK_EXTERNAL_DIR_PERMISSION", "allow"
         ),
-        request_timeout_ms=_env_int(
-            "ROBOCO_GROK_REQUEST_TIMEOUT_MS", _DEFAULT_REQUEST_TIMEOUT_MS
-        ),
-        chunk_timeout_ms=_env_int(
-            "ROBOCO_GROK_CHUNK_TIMEOUT_MS", _DEFAULT_CHUNK_TIMEOUT_MS
-        ),
     )
 
     # Instructions = system prompt + the SessionStart briefing when mounted.
@@ -257,10 +203,9 @@ def main() -> int:
 
     config = build_opencode_config(
         _load_mcp_config(mcp_path),
-        target,
+        model,
         instruction_paths=instructions,
         guards=guards,
-        extra_plugins=_extra_plugins(),
     )
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)

@@ -2,23 +2,13 @@
 
 from __future__ import annotations
 
-import os
-from unittest.mock import patch
-
 from roboco.llm.providers.opencode_config import (
-    _DEFAULT_CHUNK_TIMEOUT_MS,
-    _DEFAULT_REQUEST_TIMEOUT_MS,
     OpencodeGuards,
-    XaiTarget,
-    _env_int,
-    _extra_plugins,
     build_opencode_config,
     translate_mcp_servers,
 )
 
-_TARGET = XaiTarget(
-    base_url="https://api.x.ai/v1", api_key="xai-key", model="grok-build-0.1"
-)
+_MODEL = "grok-build-0.1"
 
 _MCP = {
     "mcpServers": {
@@ -72,57 +62,28 @@ def test_translate_mcp_servers_omits_environment_when_no_env() -> None:
     assert out["x"]["command"] == ["uv", "run"]
 
 
-def test_build_opencode_config_provider_and_model() -> None:
+def test_build_opencode_config_emits_no_provider_block() -> None:
     cfg = build_opencode_config(
         _MCP,
-        _TARGET,
+        _MODEL,
         instruction_paths=["/app/system-prompt.md"],
     )
-    provider = cfg["provider"]["xai"]
-    # grok-build-0.1 needs the Responses API → @ai-sdk/openai, not -compatible.
-    assert provider["npm"] == "@ai-sdk/openai"
-    assert provider["options"]["baseURL"] == "https://api.x.ai/v1"
-    assert provider["options"]["apiKey"] == "xai-key"
-    assert "grok-build-0.1" in provider["models"]
+    # CRITICAL: NO provider block. ANY provider.xai block breaks plugin-tool
+    # registration on opencode 1.17.8 (verified live). The built-in xai provider
+    # drives the model; the key reaches it via the XAI_API_KEY env var.
+    assert "provider" not in cfg
     # Top-level model selector is "<provider>/<model>".
     assert cfg["model"] == "xai/grok-build-0.1"
     # Gateway servers carried through.
     assert "roboco-flow" in cfg["mcp"]
     assert cfg["instructions"] == ["/app/system-prompt.md"]
-    # The secret-scrub command guard + the SDK budget-feed are wired in by default.
-    assert cfg["plugin"] == [
-        "/app/opencode-plugins/secret-scrub.js",
-        "/app/opencode-plugins/budget-feed.js",
-    ]
 
 
-def test_build_opencode_config_appends_extra_plugins() -> None:
-    # Per-image role tool plugins (secretary directive tools, intake propose_draft)
-    # append AFTER the baked defaults so the role-scoped tools load too.
-    cfg = build_opencode_config(
-        _MCP,
-        _TARGET,
-        instruction_paths=[],
-        extra_plugins=["/app/opencode-plugins/secretary-tools.js"],
-    )
-    assert cfg["plugin"] == [
-        "/app/opencode-plugins/secret-scrub.js",
-        "/app/opencode-plugins/budget-feed.js",
-        "/app/opencode-plugins/secretary-tools.js",
-    ]
-
-
-def test_extra_plugins_reads_pathsep_env() -> None:
-    with patch.dict(os.environ, {}, clear=True):
-        assert _extra_plugins() == []
-    joined = os.pathsep.join(["/a/one.js", "/b/two.js"])
-    with patch.dict(os.environ, {"ROBOCO_OPENCODE_EXTRA_PLUGINS": joined}):
-        assert _extra_plugins() == ["/a/one.js", "/b/two.js"]
-    # Blank entries are dropped (a trailing pathsep or empty override is benign).
-    with patch.dict(
-        os.environ, {"ROBOCO_OPENCODE_EXTRA_PLUGINS": f"/a/one.js{os.pathsep}  "}
-    ):
-        assert _extra_plugins() == ["/a/one.js"]
+def test_build_opencode_config_has_no_plugin_array() -> None:
+    # opencode 1.17.8 ignores config `plugin:`-array absolute paths for
+    # registration; plugins live in the auto-discovery dir, baked into the images.
+    cfg = build_opencode_config(_MCP, _MODEL, instruction_paths=[])
+    assert "plugin" not in cfg
 
 
 def test_build_opencode_config_edit_permission_is_tunable() -> None:
@@ -130,7 +91,7 @@ def test_build_opencode_config_edit_permission_is_tunable() -> None:
     # a Grok agent can't write code on a role that must never touch the tree.
     cfg = build_opencode_config(
         {},
-        _TARGET,
+        _MODEL,
         instruction_paths=[],
         guards=OpencodeGuards(edit_permission="deny"),
     )
@@ -140,7 +101,7 @@ def test_build_opencode_config_edit_permission_is_tunable() -> None:
 def test_build_opencode_config_bash_permission_is_tunable() -> None:
     cfg = build_opencode_config(
         {},
-        _TARGET,
+        _MODEL,
         instruction_paths=[],
         guards=OpencodeGuards(bash_permission="deny"),
     )
@@ -151,68 +112,32 @@ def test_build_opencode_config_bash_permission_is_tunable() -> None:
 def test_build_opencode_config_allows_external_directory_by_default() -> None:
     # opencode auto-denies an "ask" external-dir read in headless mode (the
     # pr-reviewer couldn't read a diff it wrote to /tmp); default "allow".
-    cfg = build_opencode_config(_MCP, _TARGET, instruction_paths=[])
+    cfg = build_opencode_config(_MCP, _MODEL, instruction_paths=[])
     assert cfg["permission"]["external_directory"] == "allow"
 
 
 def test_build_opencode_config_external_directory_is_tunable() -> None:
     cfg = build_opencode_config(
         {},
-        _TARGET,
+        _MODEL,
         instruction_paths=[],
-        guards=OpencodeGuards(external_directory_permission="ask"),
+        guards=OpencodeGuards(external_directory_permission="deny"),
     )
-    assert cfg["permission"]["external_directory"] == "ask"
+    assert cfg["permission"]["external_directory"] == "deny"
 
 
 def test_build_opencode_config_disables_subagent_task_tool_by_default() -> None:
     # The subagent `task` tool must be hard-disabled: a RoboCo role never uses
     # opencode-internal subagents, and one spawned on grok-build-0.1 hung the run.
-    cfg = build_opencode_config(_MCP, _TARGET, instruction_paths=[])
+    cfg = build_opencode_config(_MCP, _MODEL, instruction_paths=[])
     assert cfg["tools"] == {"task": False}
 
 
 def test_build_opencode_config_subagents_can_be_re_enabled() -> None:
     cfg = build_opencode_config(
         _MCP,
-        _TARGET,
+        _MODEL,
         instruction_paths=[],
         guards=OpencodeGuards(disable_subagents=False),
     )
     assert "tools" not in cfg
-
-
-def test_build_opencode_config_sets_default_timeouts() -> None:
-    # Both timeouts land under provider.<id>.options so opencode aborts a stalled
-    # request / idle stream instead of hanging the parent run forever.
-    opts = build_opencode_config(_MCP, _TARGET, instruction_paths=[])["provider"][
-        "xai"
-    ]["options"]
-    assert opts["timeout"] == _DEFAULT_REQUEST_TIMEOUT_MS
-    assert opts["chunkTimeout"] == _DEFAULT_CHUNK_TIMEOUT_MS
-
-
-def test_build_opencode_config_timeouts_are_tunable() -> None:
-    req_ms, chunk_ms = 111_000, 22_000
-    opts = build_opencode_config(
-        _MCP,
-        _TARGET,
-        instruction_paths=[],
-        guards=OpencodeGuards(request_timeout_ms=req_ms, chunk_timeout_ms=chunk_ms),
-    )["provider"]["xai"]["options"]
-    assert opts["timeout"] == req_ms
-    assert opts["chunkTimeout"] == chunk_ms
-
-
-def test_env_int_parses_and_falls_back() -> None:
-    fallback = 999
-    parsed = 45_000
-    with patch.dict(os.environ, {"X_MS": str(parsed)}):
-        assert _env_int("X_MS", fallback) == parsed
-    # Missing, blank, non-integer, and non-positive all fall back to the default
-    # so a bad operator override can never disable the timeout entirely.
-    with patch.dict(os.environ, {}, clear=True):
-        assert _env_int("X_MS", fallback) == fallback
-    for bad in ("", "  ", "abc", "0", "-5"):
-        with patch.dict(os.environ, {"X_MS": bad}):
-            assert _env_int("X_MS", fallback) == fallback
