@@ -22,6 +22,20 @@
 const CREDENTIAL_FILE =
   /(\.git\/config|\.gitconfig|\.git-credentials|\.netrc|\.ssh\/|id_rsa|id_ed25519|id_ecdsa|known_hosts)/;
 
+// Secret-bearing files for the source / encode / interpreter rules. Wider than
+// CREDENTIAL_FILE (which also gates Read/Edit *paths*, so it must NOT include
+// .env lest it block reading .env.example): a bash command that READS these is
+// exfiltration. Mirrors the file set in bash-guard-hook.sh's source/interpreter
+// rules.
+const SECRET_FILE =
+  /(\.env\b|\/etc\/environment|\.git-credentials|\.netrc|\.git\/config|\.gitconfig|\/proc\/[^\s]*environ|\.profile|\.bashrc|\.zshrc|id_rsa|id_ed25519|id_ecdsa|\.ssh\/)/;
+
+// git network/auth/branch-mutating ops — run against the SKELETONIZED command
+// (see gitSkeleton) so a heredoc/echo that merely documents `git push` is not
+// mistaken for invoking it. Mirrors bash-guard-hook.sh's git-ops rule.
+const GIT_OPS =
+  /(^|[\s;&|])git\s+(fetch|pull|push|clone|remote|ls-remote|checkout|commit|merge|rebase|reset|cherry-pick|revert|tag\s+-d|update-ref|reflog\s+delete)/;
+
 const INTERNAL_HOST =
   /((https?|wss?):\/\/)?\/?(roboco-[a-z0-9_-]+|localhost|127\.0\.0\.1|0\.0\.0\.0)[:/]/;
 
@@ -31,15 +45,19 @@ const HTTP_CLIENT_LIB =
 // Each check takes the lowercased bash command and returns a deny reason, or
 // null to allow. Mirrors the categories in bash-guard-hook.sh.
 const BASH_CHECKS = [
-  (low) =>
-    /(^|[\s;&|])git\s+(fetch|pull|push|clone|remote|ls-remote|checkout|commit|merge|rebase|reset|cherry-pick|revert|tag\s+-d|update-ref)/.test(
-      low,
-    )
-      ? "shell git for network/auth/branch-mutating ops is blocked — use your role's MCP verb (commit, complete, i_am_done, ...)."
-      : null,
+  // (git-ops is checked first in denyBash, on the skeletonized command.)
   (low) =>
     CREDENTIAL_FILE.test(low)
       ? "command references a credential file or SSH key — the PAT is injected subprocess-side by the MCP layer, never read from these files."
+      : null,
+  (low) =>
+    /(^|[\s;&|])(source|\.)\s+[^|;&]*/.test(low) && SECRET_FILE.test(low)
+      ? "sourcing a credential-bearing file (.env / .git-credentials / .netrc / ...) exposes secrets in the current shell."
+      : null,
+  (low) =>
+    /(^|[\s;&|])(python3?|perl|node|ruby|awk|sed)\s+[^|;&]*-[ce]\s/.test(low) &&
+    SECRET_FILE.test(low)
+      ? "interpreter one-liner reads a credential file — ask for the value you need via the task description."
       : null,
   (low) =>
     /\/proc\/(self|\d+|\$\$)\/(environ|cmdline|cwd|exe)/.test(low)
@@ -100,9 +118,45 @@ const BASH_CHECKS = [
 // Tools that take a file path we must keep away from credential files.
 const PATH_TOOLS = new Set(["read", "edit", "write"]);
 
+// Strip heredoc bodies and echo/printf literal args BEFORE the git-ops check —
+// those are data the shell writes to a file, not commands it runs, so a
+// README/heredoc that documents `git push` must not be mistaken for invoking
+// it. Quoted args to an interpreter (`bash -c "... && git fetch"`) ARE executed
+// and are not echo/printf/heredoc bodies, so they survive. Mirrors the
+// git_skel logic in bash-guard-hook.sh; every other rule sees the full command.
+function gitSkeleton(command) {
+  const lines = String(command || "").split("\n");
+  const opener = /<<-?\s*[^\sA-Za-z_]*([A-Za-z_]\w*)/;
+  const kept = [];
+  for (let i = 0; i < lines.length; i++) {
+    kept.push(lines[i]);
+    const m = opener.exec(lines[i]);
+    if (m) {
+      const delim = m[1];
+      const dash = lines[i].includes("<<-");
+      i++;
+      while (i < lines.length) {
+        const body = lines[i];
+        const cand = dash ? body.trim() : body;
+        if (cand === delim) {
+          kept.push(body);
+          break;
+        }
+        i++;
+      }
+    }
+  }
+  return kept
+    .join("\n")
+    .replace(/(^|[\n;&|]|&&|\|\|)\s*(echo|printf)\b[^\n;&|]*/g, "$1");
+}
+
 function denyBash(command) {
   const low = String(command || "").toLowerCase();
   if (!low) return null;
+  if (GIT_OPS.test(gitSkeleton(command).toLowerCase())) {
+    return "shell git for network/auth/branch-mutating ops is blocked — use your role's MCP verb (commit, complete, i_am_done, ...).";
+  }
   for (const check of BASH_CHECKS) {
     const reason = check(low);
     if (reason) return reason;
