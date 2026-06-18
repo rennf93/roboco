@@ -15,7 +15,10 @@ USER root
 # opencode — the OpenAI-protocol agent runtime. grok-build-0.1 runs on opencode's
 # BUILT-IN xai provider (no custom provider block / npm needed), so only
 # opencode-ai is installed; it resolves the provider SDK at runtime.
-RUN npm install -g opencode-ai \
+# Pinned: this version is the live-verified runtime (grok-build-0.1 on the NAS).
+# Untrusted model output runs under it, so bump the pin deliberately, never float.
+ARG OPENCODE_VERSION=1.17.8
+RUN npm install -g "opencode-ai@${OPENCODE_VERSION}" \
     && npm cache clean --force \
     && rm -rf /root/.npm /tmp/*
 

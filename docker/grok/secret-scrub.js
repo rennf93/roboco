@@ -10,12 +10,13 @@
 // command is `output.args.command`; for `read`/`edit` the path is
 // `output.args.filePath`.
 //
-// Loaded via the generated opencode.json `plugin:` array (see
-// roboco.llm.providers.opencode_config). The agent's bash permission can also
-// be set to "deny"/"ask" via ROBOCO_GROK_BASH_PERMISSION as a second gate.
+// Baked into the plugin auto-discovery dir (~/.config/opencode/plugin/) at image
+// build (named export, opencode's convention) — the same route as budget-feed.
+// The agent's bash permission is a second gate via ROBOCO_GROK_BASH_PERMISSION.
 //
-// STATUS: unvalidated against a live opencode runtime. Confirm it actually
-// fires in the live E2E spawn before pointing a Grok dev-agent at a real repo.
+// STATUS: the plugin loads in the live runtime (same auto-discovery dir as the
+// live-confirmed budget-feed), but the deny-on-match path has not yet blocked a
+// real command on the NAS — confirm before trusting it as the sole bash gate.
 // Deny-on-match is fail-closed: a false positive blocks a legitimate command
 // (annoying, safe) rather than letting a dangerous one through.
 

@@ -18,10 +18,13 @@
 //           terminal verb is recognized) and /budget/tool_called (advances the
 //           breaker/loop counters and feeds the post-exit post-mortem).
 //
-// Fail-open everywhere: a missing / slow / non-2xx SDK never blocks the agent.
-// The interactive serve images (intake / secretary) own :9000 for the human-turn
-// receiver and run NO SDK server, so these POSTs 404 there and are ignored —
-// those roles don't claim tasks or loop on verbs, so they need no budget feed.
+// Fail policy: the `after` POSTs never block (recording can't risk spend). The
+// `before` gate fails OPEN by default, but fails CLOSED when ROBOCO_BUDGET_ENFORCE=1
+// (set by the one-shot entrypoint, which always starts the SDK budget server) and
+// the budget server is unreachable — an unenforceable cost cap on a task agent is
+// the one case worth halting for. Interactive serve images (intake / secretary)
+// own :9000 for the human-turn receiver, run NO SDK budget server, and set no
+// ENFORCE flag, so their tool calls always proceed (these POSTs 404 there).
 
 const SDK_URL = process.env.ROBOCO_SDK_URL || "http://localhost:9000";
 
@@ -68,7 +71,8 @@ function argsHash(args) {
 // the Claude path's verbs arrive bare. Strip a known roboco-* server prefix so
 // the SDK recognizes a terminal verb (i_am_idle / i_am_done / ...) — the SDK's
 // own "__"-split is a no-op on the already-bare verb this returns.
-// UNVERIFIED-LIVE: opencode's exact MCP tool-name shape; the strip is defensive.
+// Verified live: opencode delivers MCP tools as "roboco-flow_<verb>" (underscore);
+// the "." form and an mcp__ prefix are still handled defensively.
 function bareVerb(tool) {
   const mcp = tool.match(/^mcp__[a-z0-9-]+__(.+)$/);
   if (mcp) return mcp[1];
@@ -84,7 +88,19 @@ export const RobocoBudgetFeed = async () => {
   return {
     "tool.execute.before": async (input) => {
       const status = await sdk("GET", "/budget/status", null);
-      if (!status) return; // fail-open
+      if (!status) {
+        // One-shot delivery agents MUST have the in-container SDK budget server
+        // (the entrypoint starts it and exports ENFORCE=1). A missing signal
+        // there means the cost cap is unenforceable — fail CLOSED to stop an
+        // uncapped burn. Interactive serve agents set no flag → fail open.
+        if (process.env.ROBOCO_BUDGET_ENFORCE === "1") {
+          throw new Error(
+            "[Halt] budget server unreachable — failing closed to prevent " +
+              "uncapped token spend. Stop now with i_am_idle() or unclaim().",
+          );
+        }
+        return; // fail-open (no budget server expected for this role)
+      }
       if (status.halt) {
         throw new Error(
           `[Halt] tool budget exhausted (${status.total}/${status.halt_threshold}). ` +

@@ -33,6 +33,12 @@ fi
 # Zero the budget/terminal counters at the start of the session.
 curl -sf -m 2 -X POST "${SDK_URL}/budget/reset" >/dev/null 2>&1 || true
 
+# This is a one-shot delivery agent: the SDK budget server above is mandatory.
+# Tell the budget-feed plugin to FAIL CLOSED if that server ever goes
+# unreachable mid-run, so an unenforceable cost cap halts the burn instead of
+# letting it run uncapped. (Interactive serve images set no such flag.)
+export ROBOCO_BUDGET_ENFORCE=1
+
 # Prompt-injection guard (parity with the Claude UserPromptSubmit hook): the
 # task prompt is DATA, not instructions — refuse a poisoned one before it
 # reaches the model. Same patterns as docker/scripts/user-prompt-hook.sh.

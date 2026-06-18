@@ -18,9 +18,9 @@
 // forwards the call. Each tool returns the backend JSON as a string the model
 // reads back (mirrors secretary_driver._text_result).
 //
-// UNVERIFIED-LIVE: the @opencode-ai/plugin tool-registration path against a live
-// opencode serve + grok-build-0.1 — confirm a submit_directive round-trips with
-// the HMAC token on the NAS before routing real CEO directives through Grok.
+// Verified live on the NAS: the @opencode-ai/plugin tool-registration path
+// round-trips against a live opencode serve + grok-build-0.1 — a directive
+// reaches the backend with the HMAC token and the JSON result returns to the model.
 
 import { tool } from "@opencode-ai/plugin";
 
