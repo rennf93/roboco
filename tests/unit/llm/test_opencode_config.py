@@ -103,6 +103,23 @@ def test_build_opencode_config_bash_permission_is_tunable() -> None:
     assert cfg["permission"]["edit"] == "allow"
 
 
+def test_build_opencode_config_allows_external_directory_by_default() -> None:
+    # opencode auto-denies an "ask" external-dir read in headless mode (the
+    # pr-reviewer couldn't read a diff it wrote to /tmp); default "allow".
+    cfg = build_opencode_config(_MCP, _TARGET, instruction_paths=[])
+    assert cfg["permission"]["external_directory"] == "allow"
+
+
+def test_build_opencode_config_external_directory_is_tunable() -> None:
+    cfg = build_opencode_config(
+        {},
+        _TARGET,
+        instruction_paths=[],
+        guards=OpencodeGuards(external_directory_permission="ask"),
+    )
+    assert cfg["permission"]["external_directory"] == "ask"
+
+
 def test_build_opencode_config_disables_subagent_task_tool_by_default() -> None:
     # The subagent `task` tool must be hard-disabled: a RoboCo role never uses
     # opencode-internal subagents, and one spawned on grok-build-0.1 hung the run.

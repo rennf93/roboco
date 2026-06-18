@@ -94,13 +94,17 @@ class XaiTarget:
 class OpencodeGuards:
     """Tunable runtime guards baked into a Grok ``opencode.json``.
 
-    ``bash``/``edit`` gate the command/file tools; the timeouts bound a single
-    model call and abort an idle stream; ``disable_subagents`` removes the
-    subagent ``task`` tool entirely.
+    ``bash``/``edit`` gate the command/file tools; ``external_directory`` gates
+    reading paths outside the project cwd (opencode auto-DENIES an ``ask`` in
+    headless mode, which blocked the pr-reviewer from reading a diff it wrote to
+    /tmp — so default ``allow``: the container is the sandbox and secret-scrub
+    still blocks credential files); the timeouts bound a single model call and
+    abort an idle stream; ``disable_subagents`` removes the subagent ``task`` tool.
     """
 
     bash_permission: str = "allow"
     edit_permission: str = "allow"
+    external_directory_permission: str = "allow"
     request_timeout_ms: int = _DEFAULT_REQUEST_TIMEOUT_MS
     chunk_timeout_ms: int = _DEFAULT_CHUNK_TIMEOUT_MS
     disable_subagents: bool = True
@@ -160,6 +164,11 @@ def build_opencode_config(
         "permission": {
             "bash": guards.bash_permission,
             "edit": guards.edit_permission,
+            # Reading paths outside the project cwd (e.g. /tmp scratch). opencode
+            # auto-denies an "ask" in headless mode, which blocked the pr-reviewer
+            # from reading a diff it wrote to /tmp; "allow" since the container is
+            # the sandbox and secret-scrub still blocks credential files.
+            "external_directory": guards.external_directory_permission,
         },
         "instructions": instruction_paths,
         # Command guard / secret-scrub (bash-guard parity). Baked into the image.
@@ -198,6 +207,9 @@ def main() -> int:
     )
     guards = OpencodeGuards(
         bash_permission=os.environ.get("ROBOCO_GROK_BASH_PERMISSION", "allow"),
+        external_directory_permission=os.environ.get(
+            "ROBOCO_GROK_EXTERNAL_DIR_PERMISSION", "allow"
+        ),
         request_timeout_ms=_env_int(
             "ROBOCO_GROK_REQUEST_TIMEOUT_MS", _DEFAULT_REQUEST_TIMEOUT_MS
         ),
