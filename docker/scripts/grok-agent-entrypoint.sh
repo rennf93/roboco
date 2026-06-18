@@ -20,6 +20,16 @@ python -m roboco.llm.providers.opencode_config
 # `< /dev/null` is REQUIRED: without a closed stdin, `opencode run` hangs after
 # init in a headless / no-TTY environment (it blocks waiting on stdin). Verified
 # live — closing stdin lets the run proceed to the model call and exit cleanly.
+#
+# Reasoning effort: GrokProvider sets ROBOCO_GROK_VARIANT per role (e.g.
+# "minimal" for coordination/docs roles to cut reasoning cost). Absent =
+# opencode default (full reasoning).
+variant_arg=()
+if [ -n "${ROBOCO_GROK_VARIANT:-}" ]; then
+  variant_arg=(--variant "$ROBOCO_GROK_VARIANT")
+fi
+
 exec opencode run \
   --model "xai/${ROBOCO_AGENT_MODEL:-grok-build-0.1}" \
+  "${variant_arg[@]}" \
   -- "${ROBOCO_INITIAL_PROMPT:-}" < /dev/null

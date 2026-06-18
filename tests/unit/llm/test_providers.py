@@ -23,19 +23,21 @@ from roboco.llm.providers import (
     ProviderRegistry,
     SpawnResult,
 )
+from roboco.llm.providers.grok import _reasoning_effort_for
 from roboco.models.base import ModelProvider
 from roboco.models.runtime import OrchestratorAgentConfig
 
 
 def _config(
     *,
+    agent_id: str = "be-dev-1",
     provider_type: str = "grok",
     provider_base_url: str | None = "https://api.x.ai/v1",
     provider_auth_token: str | None = "xai-secret-key",
     mcp_config_path: Path | None = Path("/host/mcp-configs/be-dev-1.json"),
 ) -> OrchestratorAgentConfig:
     return OrchestratorAgentConfig(
-        agent_id="be-dev-1",
+        agent_id=agent_id,
         blueprint_path=Path("/app/system-prompt.md"),
         model="grok-build-0.1",
         mcp_config_path=mcp_config_path,
@@ -241,6 +243,52 @@ async def test_grok_spawn_raises_on_docker_failure() -> None:
         pytest.raises(ProviderError, match="boom"),
     ):
         await provider.spawn(_config())
+
+
+# ---------------------------------------------------------------------------
+# Reasoning effort by role
+# ---------------------------------------------------------------------------
+
+
+def test_reasoning_effort_full_for_code_roles() -> None:
+    # developer / qa / pr_reviewer keep full reasoning (no variant).
+    assert _reasoning_effort_for("be-dev-1") is None
+    assert _reasoning_effort_for("be-qa") is None
+    assert _reasoning_effort_for("pr-reviewer-1") is None
+
+
+def test_reasoning_effort_minimal_for_coordination_roles() -> None:
+    for slug in ("be-pm", "main-pm", "be-doc", "auditor", "product-owner"):
+        assert _reasoning_effort_for(slug) == "minimal", slug
+
+
+def test_reasoning_effort_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ROBOCO_GROK_REASONING_EFFORT", "max")
+    assert _reasoning_effort_for("be-dev-1") == "max"  # override wins over role
+    monkeypatch.setenv("ROBOCO_GROK_REASONING_EFFORT", "default")
+    assert _reasoning_effort_for("be-pm") is None  # "default" => full reasoning
+
+
+async def test_grok_spawn_sets_variant_for_minimal_role() -> None:
+    host = _FakeHost()
+    provider = GrokProvider(host)
+    with patch(
+        "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
+    ) as exec_mock:
+        await provider.spawn(_config(agent_id="be-pm"))  # cell_pm -> minimal
+    cmd = list(exec_mock.call_args.args)
+    assert "ROBOCO_GROK_VARIANT=minimal" in cmd
+
+
+async def test_grok_spawn_no_variant_for_dev_role() -> None:
+    host = _FakeHost()
+    provider = GrokProvider(host)
+    with patch(
+        "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
+    ) as exec_mock:
+        await provider.spawn(_config(agent_id="be-dev-1"))  # developer -> full
+    cmd = list(exec_mock.call_args.args)
+    assert not any(c.startswith("ROBOCO_GROK_VARIANT=") for c in cmd)
 
 
 # ---------------------------------------------------------------------------

@@ -41,6 +41,7 @@ import dataclasses
 import os
 from typing import TYPE_CHECKING, Protocol
 
+from roboco.agents_config import get_agent_role
 from roboco.llm.providers._docker import container_running, stop_container
 from roboco.llm.providers.base import AgentProvider, ProviderError, SpawnResult
 
@@ -66,6 +67,41 @@ _SYSTEM_PROMPT_IN_CONTAINER = "/app/system-prompt.md"
 # Mirrors the Claude Code tool set. The grok image entrypoint applies this to
 # the OpenAI-protocol CLI via the recognised `--tools` flag (not --allowed-tools).
 _DEFAULT_TOOLS = "Read,Write,Edit,Bash,Grep,Glob,TodoWrite"
+
+# Reasoning effort by role. grok-build-0.1 reasons heavily by default, and
+# reasoning bills at the output rate — it dominates cost (a live "say ok" call
+# emitted ~300 reasoning tokens). Code-quality roles (developer, qa, pr_reviewer)
+# keep full reasoning; coordination / docs / board roles run "minimal" (a live
+# test cut reasoning ~54% with no quality cost for that work). opencode applies
+# this via its `--variant` flag. Operators can force one effort for ALL grok
+# agents with the ROBOCO_GROK_REASONING_EFFORT env on the orchestrator
+# (value "minimal" | "high" | "max", or "default"/"full" to use full reasoning).
+_MINIMAL_REASONING_ROLES = frozenset(
+    {
+        "cell_pm",
+        "main_pm",
+        "documenter",
+        "product_owner",
+        "head_marketing",
+        "auditor",
+        "prompter",
+        "secretary",
+    }
+)
+_FULL_REASONING_OVERRIDES = frozenset({"default", "full", "none", ""})
+
+
+def _reasoning_effort_for(agent_id: str) -> str | None:
+    """Resolve the opencode --variant reasoning effort for an agent.
+
+    Returns ``None`` to use opencode's default (full) reasoning. A global
+    override env wins over the per-role default.
+    """
+    override = os.environ.get("ROBOCO_GROK_REASONING_EFFORT", "").strip()
+    if override:
+        return None if override.lower() in _FULL_REASONING_OVERRIDES else override
+    role = get_agent_role(agent_id) or ""
+    return "minimal" if role in _MINIMAL_REASONING_ROLES else None
 
 
 def _container_name(agent_id: str) -> str:
@@ -188,6 +224,10 @@ class GrokProvider(AgentProvider):
             # Reused as the generic agent session id so the transcript stays
             # locatable at finalize, exactly as on the Claude Code path.
             cmd.extend(["-e", f"ROBOCO_AGENT_SESSION_ID={config.claude_session_id}"])
+        # Reasoning effort (opencode --variant) by role; omitted = full reasoning.
+        variant = _reasoning_effort_for(config.agent_id)
+        if variant:
+            cmd.extend(["-e", f"ROBOCO_GROK_VARIANT={variant}"])
 
     async def stop(self, instance_id: str, graceful: bool = True) -> None:
         await stop_container(instance_id, graceful)
