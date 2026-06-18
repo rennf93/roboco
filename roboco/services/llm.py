@@ -353,6 +353,27 @@ class ModelRoutingService(BaseService):
         # Re-fetch for the caller.
         return await self._get_seeded_provider(ModelProvider.OLLAMA_CLOUD)
 
+    async def set_grok_api_key(self, api_key: str) -> ProviderConfigTable:
+        """Set / clear the Grok (xAI) provider's API key.
+
+        Empty string clears + disables; a real key encrypts + enables.
+        Operates on the single pre-seeded Grok row — no provider creation
+        happens here. The key is the standard xAI key used against
+        https://api.x.ai/v1.
+        """
+        provider = await self._get_seeded_provider(ModelProvider.GROK)
+        provider_svc = ProviderService(self.session)
+        await provider_svc.update_provider(
+            require_uuid(provider.id),
+            ProviderUpdate(
+                auth_token=api_key if api_key else None,
+                clear_auth_token=not api_key,
+                enabled=bool(api_key),
+            ),
+        )
+        # Re-fetch for the caller.
+        return await self._get_seeded_provider(ModelProvider.GROK)
+
     async def _get_seeded_provider(
         self, provider_type: ModelProvider
     ) -> ProviderConfigTable:

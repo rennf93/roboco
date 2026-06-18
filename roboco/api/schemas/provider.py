@@ -59,6 +59,29 @@ class SetOllamaKeyRequest(BaseModel):
 
 
 # =============================================================================
+# GROK (xAI) API KEY
+# =============================================================================
+
+
+class GrokKeyStatus(BaseModel):
+    """Whether the Grok (xAI) provider has a stored key."""
+
+    has_key: bool
+    enabled: bool
+
+
+class SetGrokKeyRequest(BaseModel):
+    """Set or clear the Grok (xAI) API key.
+
+    Pass an empty string to clear. Pass a non-empty string to save
+    (encrypted with Fernet) and mark the Grok provider enabled. This is the
+    standard xAI key used against https://api.x.ai/v1.
+    """
+
+    api_key: str = Field(default="")
+
+
+# =============================================================================
 # SELF-HOSTED (LOCAL) OLLAMA SERVER
 # =============================================================================
 

@@ -31,6 +31,7 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from roboco.llm.providers import AgentProvider, ProviderRegistry
     from roboco.services.llm import AgentRoute
     from roboco.services.task import TaskService
 import structlog
@@ -624,6 +625,12 @@ class AgentOrchestrator:
         self._strategy_engine_task: asyncio.Task | None = None
         self._external_pr_poll_task: asyncio.Task | None = None
         self._self_heal_task: asyncio.Task | None = None
+        # Provider registry: maps a ModelProvider to a dedicated AgentProvider
+        # backend. Only providers needing a non-Claude-Code runtime are
+        # registered (currently GROK, which speaks the OpenAI protocol). Agents
+        # on unregistered providers (Anthropic / Ollama Cloud / self-hosted) use
+        # the built-in _spawn_container path unchanged. Built lazily.
+        self._provider_registry: ProviderRegistry | None = None
         # Tracks which providers have already received a CEO notification
         # during the current rate-limit episode.  Cleared when the probe
         # succeeds and the rate limit is lifted (tracker.clear() path).
@@ -1954,6 +1961,36 @@ class AgentOrchestrator:
         """Return the string to pass to `claude --model`."""
         return _resolve_agent_cli_model(config.provider_type, config.model)
 
+    def _ensure_provider_registry(self) -> "ProviderRegistry":
+        """Build (once) the registry of dedicated provider backends.
+
+        Only providers that need a runtime other than the built-in Claude Code
+        container are registered. Today that is GROK (xAI, OpenAI protocol).
+        """
+        if self._provider_registry is None:
+            from roboco.llm.providers import GrokProvider, ProviderRegistry
+            from roboco.models.base import ModelProvider
+
+            registry = ProviderRegistry()
+            registry.register(ModelProvider.GROK, GrokProvider(self))
+            self._provider_registry = registry
+        return self._provider_registry
+
+    def _provider_for(self, provider_type: str) -> "AgentProvider | None":
+        """Resolve a dedicated provider for a route's ``provider_type`` string.
+
+        Returns ``None`` for providers that use the built-in Claude Code spawn
+        (Anthropic / Ollama Cloud / self-hosted) or any unrecognised value — the
+        caller then runs the existing container path unchanged.
+        """
+        from roboco.models.base import ModelProvider
+
+        try:
+            model_provider = ModelProvider(provider_type)
+        except ValueError:
+            return None
+        return self._ensure_provider_registry().get_or_none(model_provider)
+
     async def _spawn_container(
         self,
         config: AgentConfig,
@@ -1967,6 +2004,15 @@ class AgentOrchestrator:
             initial_prompt: Optional initial prompt for the agent
             agent_settings_path: Path to per-agent Claude settings file
         """
+        # A dedicated provider backend (e.g. GROK / OpenAI protocol) handles its
+        # own spawn. Anthropic / Ollama Cloud / self-hosted have no dedicated
+        # provider registered and fall through to the Claude Code body below,
+        # byte-for-byte unchanged.
+        provider = self._provider_for(config.provider_type)
+        if provider is not None:
+            result = await provider.spawn(config, initial_prompt, agent_settings_path)
+            return result.instance_id
+
         container_name = f"roboco-agent-{config.agent_id}"
         await self._remove_container(container_name)
 
