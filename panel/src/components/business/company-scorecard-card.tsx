@@ -24,7 +24,7 @@ function ScorecardSkeleton() {
         <Skeleton className="h-4 w-64" />
       </CardHeader>
       <CardContent className="space-y-6">
-        {/* Group 1: Delivery */}
+        {/* Group 1: Delivery + Spend */}
         <div className="space-y-3">
           <Skeleton className="h-4 w-20" />
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
