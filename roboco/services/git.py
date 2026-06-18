@@ -2005,6 +2005,13 @@ class GitService(BaseService):
         identity. Raises ``GitError`` on any GitHub failure so the calling
         side-effect can surface it (and stays idempotent — it runs once, after
         the DB commit).
+
+        Self-review fallback: GitHub forbids ``APPROVE`` / ``REQUEST_CHANGES`` on
+        a PR authored by the token's own account (422 "...on your own pull
+        request"). The org's internal PRs — and any PR the PAT owner opened —
+        hit this, so the review would otherwise never land. A plain ``COMMENT``
+        review IS allowed on your own PR, so this retries once as ``COMMENT``
+        (the verdict is already stated in ``body``).
         """
         details = {"project": project_slug, "pr": pr_number}
         project = await get_project_service(self.session).get_by_slug(project_slug)
@@ -2033,6 +2040,22 @@ class GitService(BaseService):
             ) from e
         if resp.status_code == _HTTP_NOT_FOUND:
             raise GitError(f"PR not found: #{pr_number} on {owner}/{repo}", details)
+        if (
+            resp.status_code == _GH_UNPROCESSABLE
+            and event != "COMMENT"
+            and "own pull request" in resp.text.lower()
+        ):
+            # Self-review: downgrade to a COMMENT review (allowed on your own PR)
+            # so the review actually posts instead of being silently dropped.
+            self.log.warning(
+                "post_pr_review: self-review forbidden, retrying as COMMENT",
+                project=project_slug,
+                pr=pr_number,
+                requested_event=event,
+            )
+            return await self.post_pr_review(
+                project_slug, pr_number, body, event="COMMENT"
+            )
         if not resp.is_success:
             raise GitError(
                 f"GitHub API refused PR review ({resp.status_code}): {resp.text[:200]}",
