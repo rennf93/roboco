@@ -23,7 +23,12 @@ from roboco.llm.providers import (
     ProviderRegistry,
     SpawnResult,
 )
-from roboco.llm.providers.grok import _reasoning_effort_for
+from roboco.llm.providers.grok import (
+    _bash_permission_for,
+    _edit_permission_for,
+    _external_dir_permission_for,
+    _reasoning_effort_for,
+)
 from roboco.models.base import ModelProvider
 from roboco.models.runtime import OrchestratorAgentConfig
 
@@ -277,6 +282,59 @@ def test_reasoning_effort_override(monkeypatch: pytest.MonkeyPatch) -> None:
     assert _reasoning_effort_for("be-dev-1") == "max"  # override wins over role
     monkeypatch.setenv("ROBOCO_GROK_REASONING_EFFORT", "default")
     assert _reasoning_effort_for("be-pm") is None  # "default" => full reasoning
+
+
+# ---------------------------------------------------------------------------
+# Per-role opencode permissions (Claude-parity)
+# ---------------------------------------------------------------------------
+
+
+def test_edit_permission_allows_only_writer_roles() -> None:
+    assert _edit_permission_for("be-dev-1") == "allow"
+    assert _edit_permission_for("be-doc") == "allow"
+    for slug in ("be-qa", "pr-reviewer-1", "be-pm", "main-pm", "auditor"):
+        assert _edit_permission_for(slug) == "deny", slug
+
+
+def test_bash_permission_allows_only_shell_roles() -> None:
+    for slug in ("be-dev-1", "be-doc", "be-pm", "main-pm"):
+        assert _bash_permission_for(slug) == "allow", slug
+    for slug in ("be-qa", "pr-reviewer-1", "auditor", "product-owner"):
+        assert _bash_permission_for(slug) == "deny", slug
+
+
+def test_external_dir_permission_only_pr_reviewer() -> None:
+    assert _external_dir_permission_for("pr-reviewer-1") == "allow"
+    for slug in ("be-dev-1", "be-qa", "be-pm", "auditor"):
+        assert _external_dir_permission_for(slug) == "deny", slug
+
+
+async def test_grok_spawn_sets_readonly_permissions_for_reviewer() -> None:
+    # A read-only reviewer (qa) gets edit=deny + bash=deny + external_dir=deny.
+    host = _FakeHost()
+    provider = GrokProvider(host)
+    with patch(
+        "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
+    ) as exec_mock:
+        await provider.spawn(_config(agent_id="be-qa"))
+    cmd = list(exec_mock.call_args.args)
+    assert "ROBOCO_GROK_EDIT_PERMISSION=deny" in cmd
+    assert "ROBOCO_GROK_BASH_PERMISSION=deny" in cmd
+    assert "ROBOCO_GROK_EXTERNAL_DIR_PERMISSION=deny" in cmd
+
+
+async def test_grok_spawn_pr_reviewer_is_read_only_but_reads_scratch() -> None:
+    # The pr-reviewer never writes code (edit=deny) but reads its /tmp diff
+    # (external_directory=allow) — the one role that needs it.
+    host = _FakeHost()
+    provider = GrokProvider(host)
+    with patch(
+        "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
+    ) as exec_mock:
+        await provider.spawn(_config(agent_id="pr-reviewer-1"))
+    cmd = list(exec_mock.call_args.args)
+    assert "ROBOCO_GROK_EDIT_PERMISSION=deny" in cmd
+    assert "ROBOCO_GROK_EXTERNAL_DIR_PERMISSION=allow" in cmd
 
 
 async def test_grok_spawn_sets_variant_for_minimal_role() -> None:

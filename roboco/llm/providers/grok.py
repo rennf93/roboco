@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Protocol
 from roboco.agents_config import get_agent_role
 from roboco.llm.providers._docker import container_running, stop_container
 from roboco.llm.providers.base import AgentProvider, ProviderError, SpawnResult
+from roboco.services.gateway.role_config import get_role_config
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -89,6 +90,42 @@ _MINIMAL_REASONING_ROLES = frozenset(
     }
 )
 _FULL_REASONING_OVERRIDES = frozenset({"default", "full", "none", ""})
+
+# Per-role opencode permission policy (Claude-parity with
+# orchestrator._get_role_permissions). Claude denies Write/Edit for the read-only
+# roles and Bash(git commit/push) for PMs; opencode's permission is coarser
+# (allow/deny per tool class), so:
+#   * edit  — allow only roles that write code (role_config.allows_write:
+#     developer / documenter). Everyone else edit=deny.
+#   * bash  — allow only roles that legitimately run a shell; the read-only
+#     reviewers (qa / pr_reviewer / auditor) and the board never do. secret-scrub
+#     still guards bash (git-mutate / cred files) for the roles that keep it.
+#   * external_directory — only the pr_reviewer reads scratch outside its cwd
+#     (a diff it writes to /tmp). Delivery roles work inside their workspace, so
+#     external_directory=deny (the headless-ask auto-deny that blocked the
+#     pr-reviewer is moot once that one role is explicitly allowed).
+_BASH_ROLES = frozenset({"developer", "documenter", "cell_pm", "main_pm"})
+_EXTERNAL_DIR_ROLES = frozenset({"pr_reviewer"})
+
+
+def _edit_permission_for(agent_id: str) -> str:
+    """opencode ``edit`` permission for an agent's role (allow iff it writes code)."""
+    role = get_agent_role(agent_id) or ""
+    try:
+        return "allow" if get_role_config(role).allows_write else "deny"
+    except KeyError:
+        return "deny"  # unknown role → safest
+
+
+def _bash_permission_for(agent_id: str) -> str:
+    """opencode ``bash`` permission for an agent's role."""
+    return "allow" if (get_agent_role(agent_id) or "") in _BASH_ROLES else "deny"
+
+
+def _external_dir_permission_for(agent_id: str) -> str:
+    """opencode ``external_directory`` permission for an agent's role."""
+    role = get_agent_role(agent_id) or ""
+    return "allow" if role in _EXTERNAL_DIR_ROLES else "deny"
 
 
 def _reasoning_effort_for(agent_id: str) -> str | None:
@@ -243,6 +280,20 @@ class GrokProvider(AgentProvider):
             # Reused as the generic agent session id so the transcript stays
             # locatable at finalize, exactly as on the Claude Code path.
             cmd.extend(["-e", f"ROBOCO_AGENT_SESSION_ID={config.claude_session_id}"])
+        # Per-role opencode permissions (Claude-parity): read-only roles get
+        # edit=deny, only delivery roles get bash, only the pr-reviewer gets
+        # external-directory reads. opencode_config.main() reads these.
+        cmd.extend(
+            [
+                "-e",
+                f"ROBOCO_GROK_EDIT_PERMISSION={_edit_permission_for(config.agent_id)}",
+                "-e",
+                f"ROBOCO_GROK_BASH_PERMISSION={_bash_permission_for(config.agent_id)}",
+                "-e",
+                "ROBOCO_GROK_EXTERNAL_DIR_PERMISSION="
+                f"{_external_dir_permission_for(config.agent_id)}",
+            ]
+        )
         # Reasoning effort (opencode --variant) by role; omitted = full reasoning.
         variant = _reasoning_effort_for(config.agent_id)
         if variant:

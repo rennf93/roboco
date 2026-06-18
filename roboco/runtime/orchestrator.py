@@ -3415,6 +3415,23 @@ class AgentOrchestrator:
                     "ROBOCO_SYSTEM_PROMPT=/app/system-prompt.md",
                 ]
             )
+            # Both interactive roles are read-only conversational agents: no code
+            # edits, no shell (Claude-parity — the SDK gates deny everything but
+            # Read/Grep/Glob + their tools). Intake reads sibling product repos
+            # that sit OUTSIDE its cwd, so it keeps external-directory reads; the
+            # Secretary only reads /app + the API, so it doesn't.
+            is_intake = isinstance(spec, _IntakeRunSpec)
+            cmd.extend(
+                [
+                    "-e",
+                    "ROBOCO_GROK_EDIT_PERMISSION=deny",
+                    "-e",
+                    "ROBOCO_GROK_BASH_PERMISSION=deny",
+                    "-e",
+                    "ROBOCO_GROK_EXTERNAL_DIR_PERMISSION="
+                    f"{'allow' if is_intake else 'deny'}",
+                ]
+            )
             # Per-role reasoning effort: the opencode-serve driver passes this as
             # the message `variant` (same lever as the one-shot --variant).
             if spec.grok_variant:

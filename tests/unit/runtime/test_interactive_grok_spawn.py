@@ -67,6 +67,21 @@ def test_intake_grok_uses_openai_env_and_opencode_mount() -> None:
     assert cmd[-1] == GROK_PROMPTER_IMAGE
     # The xAI endpoint is never mislabelled as Anthropic.
     assert not any(c.startswith("ANTHROPIC_") for c in cmd)
+    # Intake is read-only (no code edits, no shell) but reads sibling product
+    # repos OUTSIDE its cwd, so it keeps external-directory reads.
+    assert "ROBOCO_GROK_EDIT_PERMISSION=deny" in cmd
+    assert "ROBOCO_GROK_BASH_PERMISSION=deny" in cmd
+    assert "ROBOCO_GROK_EXTERNAL_DIR_PERMISSION=allow" in cmd
+
+
+def test_intake_anthropic_omits_grok_permission_env() -> None:
+    # The opencode permission env is a GROK-only contract; the Claude path never
+    # sets it (it gates tools via the SDK can_use_tool allowlist instead).
+    cmd = AgentOrchestrator._build_intake_run_cmd(
+        _intake_spec("anthropic", base_url="https://api.anthropic.com", token="sk-ant")
+    )
+    assert not any(c.startswith("ROBOCO_GROK_EDIT_PERMISSION=") for c in cmd)
+    assert not any(c.startswith("ROBOCO_GROK_BASH_PERMISSION=") for c in cmd)
 
 
 def test_intake_grok_omits_variant_when_unset() -> None:
@@ -109,3 +124,8 @@ def test_secretary_grok_uses_openai_env_and_grok_image() -> None:
     assert "ROBOCO_AGENT_TOKEN=hmac-secretary" in cmd
     assert cmd[-1] == GROK_SECRETARY_IMAGE
     assert not any(c.startswith("ANTHROPIC_") for c in cmd)
+    # The Secretary is read-only and reads only /app + the API, so edit/bash
+    # are denied and it gets NO external-directory reads (unlike intake).
+    assert "ROBOCO_GROK_EDIT_PERMISSION=deny" in cmd
+    assert "ROBOCO_GROK_BASH_PERMISSION=deny" in cmd
+    assert "ROBOCO_GROK_EXTERNAL_DIR_PERMISSION=deny" in cmd
