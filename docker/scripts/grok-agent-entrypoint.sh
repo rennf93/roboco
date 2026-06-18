@@ -15,7 +15,12 @@ SDK_URL="http://localhost:${SDK_PORT}"
 
 # Generate opencode.json (provider + model + MCP gateway + permissions +
 # instructions). Writes to opencode's global config dir by default.
-python -m roboco.llm.providers.opencode_config
+# Run from /app so `python -m` resolves the INSTALLED roboco package. Dev/doc/qa
+# agents run at their workspace-clone cwd, which has its own `roboco/` dir on the
+# sys.path front (python -m prepends cwd); on a branch without the grok code that
+# clone lacks roboco.llm.providers and shadows /app → ModuleNotFoundError. The
+# config render has no cwd dependency (writes global, reads ROBOCO_MCP_CONFIG).
+( cd /app && python -m roboco.llm.providers.opencode_config )
 
 # --- SDK server bring-up (Claude-parity) ----------------------------------
 # The flow/do MCP servers POST /verb/attempted here for the per-verb circuit

@@ -81,12 +81,21 @@ function bareVerb(tool) {
   return tool;
 }
 
+// Release/escape verbs must ALWAYS be allowed through the before-gate. A halt
+// (budget, loop, or fail-closed) that also blocks these traps the agent: it can
+// neither continue nor stop, so it flails — and every blocked retry is another
+// billed model turn. Letting i_am_idle / unclaim / i_am_blocked through is the
+// only way a halted agent can exit cleanly.
+const RELEASE_VERBS = new Set(["i_am_idle", "unclaim", "i_am_blocked"]);
+
 // Named export (opencode's plugin convention) + baked into the plugin
 // auto-discovery dir (~/.config/opencode/plugin/) at image build — the simplest
 // registration route (no config `plugin:` path needed).
 export const RobocoBudgetFeed = async () => {
   return {
     "tool.execute.before": async (input) => {
+      // Escape hatches always pass — a halted agent must be able to stop.
+      if (RELEASE_VERBS.has(bareVerb(String(input?.tool || "")))) return;
       const status = await sdk("GET", "/budget/status", null);
       if (!status) {
         // One-shot delivery agents MUST have the in-container SDK budget server

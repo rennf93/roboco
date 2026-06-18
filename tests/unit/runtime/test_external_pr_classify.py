@@ -196,3 +196,24 @@ async def test_skip_internal_when_disabled(monkeypatch: pytest.MonkeyPatch) -> N
     )
     assert ok is False
     svc.ingest_external_pr.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_skip_owner_authored_pr(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The org's own account opened the PR → self-review, never ingest (even with
+    # both review modes on). The reviewer reviews PRs the org did NOT author.
+    monkeypatch.setattr(orch_mod.settings, "external_pr_enabled", True)
+    monkeypatch.setattr(orch_mod.settings, "internal_pr_enabled", True)
+    svc = _svc()
+    pr = {
+        "number": 213,
+        "is_fork": False,
+        "author_is_owner": True,
+        "author_association": "OWNER",
+        "head_ref": "feat/grok-provider-seam",
+    }
+    ok = await _orch()._ingest_pr_if_reviewable(
+        svc, SimpleNamespace(id=uuid4()), pr, uuid4(), set()
+    )
+    assert ok is False
+    svc.ingest_external_pr.assert_not_awaited()

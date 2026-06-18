@@ -5198,6 +5198,11 @@ Start by:
         """
         if pr.get("number") is None:
             return False
+        # The reviewer reviews PRs the org did NOT author. Skip PRs opened by the
+        # repo-owner account: a self-review can't post REQUEST_CHANGES (GitHub
+        # 422), and re-reviewing the org's own in-flight PRs every poll is noise.
+        if pr.get("author_is_owner"):
+            return False
         if self._is_external_pr(pr):
             if not settings.external_pr_enabled or not self._pr_author_allowed(
                 pr, allowlist

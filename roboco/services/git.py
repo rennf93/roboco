@@ -1630,6 +1630,8 @@ class GitService(BaseService):
         head = pr.get("head") or {}
         head_repo = head.get("repo") or {}
         head_full = head_repo.get("full_name")
+        login = (pr.get("user") or {}).get("login")
+        base_owner = (base_full or "").split("/")[0]
         return {
             "number": pr.get("number"),
             "url": pr.get("html_url") or "",
@@ -1637,7 +1639,14 @@ class GitService(BaseService):
             "head_ref": head.get("ref"),
             "head_sha": head.get("sha"),
             "is_fork": bool(head_full and head_full != base_full),
-            "user_login": (pr.get("user") or {}).get("login"),
+            "user_login": login,
+            # The reviewer reviews PRs the org did NOT author. A PR opened by the
+            # repo-owner account is a self-review (GitHub 422s REQUEST_CHANGES on
+            # your own PR) and re-reviewing the org's own in-flight work is noise —
+            # ingestion skips these.
+            "author_is_owner": bool(
+                login and base_owner and login.lower() == base_owner.lower()
+            ),
             "author_association": pr.get("author_association"),
         }
 
