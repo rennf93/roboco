@@ -15,7 +15,7 @@ from roboco.runtime.orchestrator import (
     _SecretaryRunSpec,
 )
 
-_HOSTS = {
+_HOSTS: dict[str, str | None] = {
     "claude": "/h/.claude",
     "prompt": "/h/p.md",
     "workspaces": "/h/ws",

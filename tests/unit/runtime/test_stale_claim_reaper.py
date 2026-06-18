@@ -148,7 +148,9 @@ def _grok_instance() -> AgentInstance:
 
 
 @pytest.mark.asyncio
-async def test_reaper_kills_and_releases_wedged_grok_container() -> None:
+async def test_reaper_kills_and_releases_wedged_grok_container(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A GROK container idle past the kill TTL is killed, evicted, and released.
 
     Unlike a Claude agent, a wedged opencode container is ACTIVE yet fires no
@@ -173,20 +175,23 @@ async def test_reaper_kills_and_releases_wedged_grok_container() -> None:
     orch._claim_heartbeat_ttl = 300
     orch._grok_idle_kill_ttl = 900
     orch._instances = {"be-dev-1": _grok_instance()}
-    orch._remove_container = AsyncMock()
+    remove_mock = AsyncMock()
+    monkeypatch.setattr(orch, "_remove_container", remove_mock)
     svc = AsyncMock()
     svc.list_in_progress_or_claimed.return_value = [wedged]
     svc.unclaim_for_reaper = AsyncMock()
 
     await orch._reap_with_service(svc)
 
-    orch._remove_container.assert_awaited_once_with("roboco-agent-be-dev-1")
+    remove_mock.assert_awaited_once_with("roboco-agent-be-dev-1")
     assert "be-dev-1" not in orch._instances  # evicted
     svc.unclaim_for_reaper.assert_awaited_once_with(task_id)  # released
 
 
 @pytest.mark.asyncio
-async def test_reaper_spares_grok_container_within_kill_ttl() -> None:
+async def test_reaper_spares_grok_container_within_kill_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A GROK container stale past the claim TTL but within the kill TTL lives.
 
     Only a truly-dead run (idle past the longer grok-idle TTL) is killed — a
@@ -208,20 +213,23 @@ async def test_reaper_spares_grok_container_within_kill_ttl() -> None:
     orch._claim_heartbeat_ttl = 300
     orch._grok_idle_kill_ttl = 900
     orch._instances = {"be-dev-1": _grok_instance()}
-    orch._remove_container = AsyncMock()
+    remove_mock = AsyncMock()
+    monkeypatch.setattr(orch, "_remove_container", remove_mock)
     svc = AsyncMock()
     svc.list_in_progress_or_claimed.return_value = [recent]
     svc.unclaim_for_reaper = AsyncMock()
 
     await orch._reap_with_service(svc)
 
-    orch._remove_container.assert_not_awaited()
+    remove_mock.assert_not_awaited()
     assert "be-dev-1" in orch._instances
     svc.unclaim_for_reaper.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_reaper_never_kills_non_grok_container() -> None:
+async def test_reaper_never_kills_non_grok_container(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A non-GROK (Claude) container idle past the kill TTL is still spared.
 
     The watchdog only kills GROK runtimes; a quiet Claude agent keeps the
@@ -248,13 +256,14 @@ async def test_reaper_never_kills_non_grok_container() -> None:
             agent_id="be-dev-1", state=AgentState.ACTIVE, config=claude_cfg
         )
     }
-    orch._remove_container = AsyncMock()
+    remove_mock = AsyncMock()
+    monkeypatch.setattr(orch, "_remove_container", remove_mock)
     svc = AsyncMock()
     svc.list_in_progress_or_claimed.return_value = [claude_task]
     svc.unclaim_for_reaper = AsyncMock()
 
     await orch._reap_with_service(svc)
 
-    orch._remove_container.assert_not_awaited()
+    remove_mock.assert_not_awaited()
     assert "be-dev-1" in orch._instances
     svc.unclaim_for_reaper.assert_not_awaited()
