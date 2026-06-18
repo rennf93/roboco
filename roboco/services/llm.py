@@ -116,6 +116,12 @@ class _ResolvedAssignment:
     model_name: str
 
 
+# The two human-facing interactive roles (held-open chat sessions). Kept as a
+# literal here — not imported from runtime.orchestrator — to avoid a service →
+# orchestrator import cycle; the slugs are stable seed identities.
+_INTERACTIVE_AGENT_SLUGS = frozenset({"intake-1", "secretary-1"})
+
+
 class ModelRoutingService(BaseService):
     """Resolves per-agent routes from `model_assignments` + legacy fallback."""
 
@@ -134,8 +140,33 @@ class ModelRoutingService(BaseService):
         if resolved is not None and resolved.provider.enabled:
             route = await self._route_from_resolved(resolved, agent_slug)
             if route is not None:
-                return route
+                return self._guard_interactive(route, agent_slug, role)
         return self._legacy_route(role)
+
+    def _guard_interactive(
+        self, route: AgentRoute, agent_slug: str, role: str
+    ) -> AgentRoute:
+        """Keep the human-facing interactive roles off GROK for now.
+
+        intake (prompter) and secretary run a held-open chat the human types
+        into, driven by the Claude Agent SDK. GROK has no interactive runtime
+        yet, and the interactive spawn injects the route's creds as
+        ``ANTHROPIC_*`` against ``api.x.ai/v1`` — the wrong protocol — yielding a
+        silent, empty reply. Until the opencode interactive driver lands,
+        downgrade a GROK route for these slugs to the Anthropic default. (The
+        one-shot delivery roles route to GROK unchanged.)
+        """
+        if (
+            route.provider_type == ModelProvider.GROK
+            and agent_slug in _INTERACTIVE_AGENT_SLUGS
+        ):
+            self.log.warning(
+                "GROK route for an interactive role downgraded to Anthropic "
+                "(no Grok interactive runtime yet)",
+                agent_slug=agent_slug,
+            )
+            return self._legacy_route(role)
+        return route
 
     async def _resolve_assignment(
         self, agent_slug: str, role: str
