@@ -242,27 +242,39 @@ def test_report_additive_deltas(client: TestClient) -> None:
 
     r2 = client.post(
         "/usage/report",
-        json={"tokens_input": 40, "tokens_output": 15, "tokens_cache_read": 0, "tokens_cache_write": 0},
+        json={
+            "tokens_input": 40,
+            "tokens_output": 15,
+            "tokens_cache_read": 0,
+            "tokens_cache_write": 0,
+        },
     )
     assert r2.status_code == _OK
+    total_in = 160
+    total_out = 45
     assert r2.json() == {
-        "tokens_input": 160,
-        "tokens_output": 45,
+        "tokens_input": total_in,
+        "tokens_output": total_out,
         "tokens_cache_read": 10,
         "tokens_cache_write": 2,
     }
 
     status = client.get("/usage/status").json()
-    assert status["tokens_input"] == 160
-    assert status["tokens_output"] == 45
+    assert status["tokens_input"] == total_in
+    assert status["tokens_output"] == total_out
 
 
 def test_report_defaults_to_zero_and_accumulates(client: TestClient) -> None:
     """Missing fields default 0; report remains additive."""
-    client.post("/usage/report", json={"tokens_input": 50, "tokens_output": 10})
-    client.post("/usage/report", json={"tokens_output": 5, "tokens_cache_read": 3})
+    d1_in, d1_out = 50, 10
+    d2_out, d2_cr = 5, 3
+    exp_in, exp_out, exp_cr, exp_cw = 50, 15, 3, 0
+    client.post("/usage/report", json={"tokens_input": d1_in, "tokens_output": d1_out})
+    client.post(
+        "/usage/report", json={"tokens_output": d2_out, "tokens_cache_read": d2_cr}
+    )
     status = client.get("/usage/status").json()
-    assert status["tokens_input"] == 50
-    assert status["tokens_output"] == 15
-    assert status["tokens_cache_read"] == 3
-    assert status["tokens_cache_write"] == 0
+    assert status["tokens_input"] == exp_in
+    assert status["tokens_output"] == exp_out
+    assert status["tokens_cache_read"] == exp_cr
+    assert status["tokens_cache_write"] == exp_cw
