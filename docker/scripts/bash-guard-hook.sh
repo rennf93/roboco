@@ -100,6 +100,64 @@ if [[ "${ROBOCO_GUARD_SKIP_GIT:-}" != "1" ]] && \
     exit 2
 fi
 
+# --- git verbs hidden in command substitutions ($(...) / backticks) ----------
+# The skeletonizer above strips echo/printf/heredoc DATA, but a command
+# substitution inside that data is EXPANDED by the shell before the wrapping
+# command runs — so `echo $(git push)` would slip past the git check above.
+# Detect a denied git verb inside an EXPANDABLE substitution. Single-quoted
+# strings (literal) and heredoc bodies (treated as data, matching the
+# skeletonizer above) are excluded so a README that merely documents git verbs
+# is not a false positive — this targets the echo/printf substitution class
+# (`echo $(git push)`). Same SKIP_GIT guard as the check above — on grok this
+# stays the native --deny's job, never a run-cancelling hook deny.
+if [[ "${ROBOCO_GUARD_SKIP_GIT:-}" != "1" ]]; then
+    subst_git=$(printf '%s' "$cmd" | python3 -c '
+import sys, re
+src = sys.stdin.read()
+q = chr(39)
+lines = src.split(chr(10))
+opener = re.compile(r"<<-?\s*[^\sA-Za-z_]*([A-Za-z_]\w*)")
+kept = []
+i = 0
+n = len(lines)
+while i < n:
+    line = lines[i]
+    kept.append(line)
+    m = opener.search(line)
+    if m:
+        delim = m.group(1)
+        dash = "<<-" in line
+        i += 1
+        while i < n:
+            cand = lines[i].strip() if dash else lines[i]
+            if cand == delim:
+                kept.append(lines[i])
+                break
+            i += 1
+    i += 1
+text = chr(10).join(kept)
+text = re.sub(q + "[^" + q + "]*" + q, " ", text)
+bt = chr(96)
+verbs = r"(fetch|pull|push|clone|remote|ls-remote|checkout|commit|merge|rebase|reset|cherry-pick|revert|tag\s+-d|update-ref|reflog\s+delete)"
+gitre = re.compile(r"(^|[\s;&|()$" + bt + r"])git\s+" + verbs, re.IGNORECASE)
+subst = re.compile(r"\$\(([^()]*(?:\([^()]*\)[^()]*)*)\)|" + bt + r"([^" + bt + r"]*)" + bt, re.DOTALL)
+deny = "no"
+for m in subst.finditer(text):
+    inner = m.group(1) or m.group(2) or ""
+    if gitre.search(inner):
+        deny = "yes"
+        break
+sys.stdout.write("__OK__" + deny)
+' 2>/dev/null)
+    # Fail closed: anything other than the clean sentinel (incl. a python
+    # failure that yields an empty string) is treated as a deny.
+    if [[ "$subst_git" != "__OK__no" ]]; then
+        echo "Denied: a git verb inside a command substitution (\$(...) or backticks) is evaluated by the shell before the wrapping echo/printf/heredoc runs." >&2
+        echo "Use the verb listed in your role's State→Verb table (e.g. commit, complete, i_am_done)." >&2
+        exit 2
+    fi
+fi
+
 # --- credential / secret exfil ------------------------------------------------
 # Block ANY bash command that references a credential file path — catches
 # `cat .git/config`, `python -c "open('.git/config')..."`, `grep token .git/

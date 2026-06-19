@@ -8,6 +8,7 @@ code 2 to deny, 0 to allow. Tests wrap each command in that envelope.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -202,6 +203,46 @@ def test_allows_unquoted_heredoc_documenting_git() -> None:
         "EOF"
     )
     assert _run(cmd) == _ALLOWED
+
+
+def _run_skip_git(cmd: str) -> int:
+    """Run the hook the way grok does — ROBOCO_GUARD_SKIP_GIT=1."""
+    payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": cmd}})
+    result = subprocess.run(
+        [str(GUARD)],
+        input=payload,
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "ROBOCO_GUARD_SKIP_GIT": "1"},
+    )
+    return result.returncode
+
+
+# Command-substitution bypass: a git verb inside $(...) / `...` is expanded by
+# the shell before the wrapping echo/printf runs, so the skeletonizer's strip
+# would otherwise hide it from the git check.
+def test_denies_git_verb_in_dollar_substitution() -> None:
+    assert _run("echo $(git fetch origin)") == _DENIED
+
+
+def test_denies_git_verb_in_double_quoted_substitution() -> None:
+    assert _run('printf "%s" "$(git push)"') == _DENIED
+
+
+def test_denies_git_verb_in_backtick_substitution() -> None:
+    assert _run("echo `git push origin main`") == _DENIED
+
+
+def test_allows_single_quoted_literal_substitution() -> None:
+    # Single-quoted: the shell does NOT expand it — a literal, not a run.
+    assert _run("echo '$(git push)'") == _ALLOWED
+
+
+def test_substitution_check_skipped_on_grok() -> None:
+    # On grok (SKIP_GIT=1) git is the native --deny's job; the hook must NOT
+    # hard-cancel the run on a substitution.
+    assert _run_skip_git("echo $(git push)") == _ALLOWED
 
 
 def test_allows_dash_heredoc_documenting_git() -> None:
