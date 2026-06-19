@@ -113,6 +113,13 @@ def test_web_search_disabled_for_every_role() -> None:
         assert "--disable-web-search" in gc.grok_cli_args_for_role(role)
 
 
+def test_every_role_auto_approves_tools() -> None:
+    # Headless `grok -p` cannot approve a tool call without this; without it the
+    # run ends Cancelled the moment the agent calls a gateway verb / MCP tool.
+    for role in ("developer", "prompter", "secretary", "main_pm", "pr_reviewer", "qa"):
+        assert "--always-approve" in gc.grok_cli_args_for_role(role)
+
+
 def test_effort_is_fleet_override_only(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ROBOCO_GROK_REASONING_EFFORT", "high")
     args = gc.grok_cli_args("be-dev-1")

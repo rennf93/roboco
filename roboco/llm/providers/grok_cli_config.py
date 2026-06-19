@@ -184,10 +184,18 @@ def grok_cli_args_for_role(
 ) -> list[str]:
     """The per-role ``grok -p`` flag tokens (excludes ``-p``/model/cwd).
 
-    Order: tool removal, web off, turn cap, deny rules, then effort. Each token is
-    a separate list element so callers can splice them without shell quoting.
+    Order: auto-approve, tool removal, web off, turn cap, deny rules, then effort.
+    Each token is a separate list element so callers can splice them without shell
+    quoting.
     """
-    args: list[str] = ["--disallowed-tools", _disallowed_tools(role)]
+    # Auto-approve tool execution — REQUIRED for headless/unattended runs. Without
+    # it, grok cannot approve any tool call in `grok -p` (no human to confirm) and
+    # the run ends `Cancelled` the instant the agent reaches for a tool — every
+    # gateway verb, edit, and MCP call. Safety still holds: `--disallowed-tools`
+    # removes tools entirely and `--deny` hard-blocks command patterns regardless
+    # of approval (a denied command returns a permission error, verified live).
+    args: list[str] = ["--always-approve"]
+    args += ["--disallowed-tools", _disallowed_tools(role)]
     # No direct web for any role (parity with the Claude path's tool set); the
     # roles that get web reach it through the gated roboco-search MCP server.
     args += ["--disable-web-search"]
