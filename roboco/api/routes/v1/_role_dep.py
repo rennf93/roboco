@@ -21,8 +21,22 @@ if TYPE_CHECKING:
 
 def _require_roles(allowed: frozenset[Role]) -> params.Depends:
     def _check(
+        x_agent_id: Annotated[str, Header(alias="X-Agent-ID")],
         x_agent_role: Annotated[str, Header(alias="X-Agent-Role")],
+        x_agent_team: Annotated[str | None, Header(alias="X-Agent-Team")] = None,
+        x_agent_token: Annotated[str | None, Header(alias="X-Agent-Token")] = None,
     ) -> None:
+        # Bind the role header to a verified token BEFORE trusting it. These v1
+        # flow guards are the sole gate for the /api/v1/flow/* endpoints, but
+        # previously checked only the role string — unlike get_agent_context,
+        # which already verifies the token. So a forged X-Agent-Role passed, and
+        # in strict mode (ROBOCO_AGENT_AUTH_REQUIRED) the token was never
+        # required here. In header-trust (dev) mode a missing token stays a
+        # no-op; any presented token is still verified. Deferred import avoids
+        # an import cycle with routers that import both this module and deps.
+        from roboco.api.deps import _check_agent_auth_token
+
+        _check_agent_auth_token(x_agent_id, x_agent_role, x_agent_team, x_agent_token)
         # `Role` is a StrEnum, so the lowercase header string compares equal
         # to its matching member.
         if x_agent_role.lower() not in allowed:
