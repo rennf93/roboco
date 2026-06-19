@@ -239,6 +239,10 @@ async def test_pr_review_claim_and_complete(db_session: AsyncSession) -> None:
     assert claimed.status == TaskStatus.IN_PROGRESS
     assert UUID(str(claimed.claimed_by)) == reviewer_id
     assert claimed.branch_name in (None, "")
+    # Heartbeat MUST be seeded at claim — a NULL heartbeat reads as a stale
+    # claim to the reaper and, for a GROK reviewer, trips the idle-kill
+    # watchdog before the review is posted (the wedge/respawn loop).
+    assert claimed.last_heartbeat_at is not None
 
     # Re-claiming a non-pending task is a no-op.
     assert await svc.pr_review_claim(reviewer_id, task_id) is None
