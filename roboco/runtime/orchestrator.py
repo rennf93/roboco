@@ -881,8 +881,8 @@ class AgentOrchestrator:
         notify, message), both granted to every role via ``base_allow``.
         Role-specific configuration here only governs file IO (Write/Edit
         scoping) plus a small handful of legacy native-tool denies that
-        remain meaningful for weak models. Read-only git lives in
-        ``mcp__roboco-git-readonly__*``.
+        remain meaningful for weak models. Read-only git uses
+        ``mcp__roboco-git-readonly__*``; KB/RAG uses ``mcp__roboco-optimal__*``.
 
         Args:
             role: Agent role (developer, qa, documenter, cell_pm, main_pm, etc.)
@@ -2054,8 +2054,8 @@ class AgentOrchestrator:
     ) -> Path:
         """Generate MCP config for an agent.
 
-        Post-gateway: every state-changing tool routes through one of two
-        servers, and read-only views go through two more:
+        Post-gateway: every state-changing tool routes through roboco-flow
+        or roboco-do; read-only git and KB/RAG go through the other two:
 
         - roboco-flow         intent verbs (lifecycle transitions)
         - roboco-do           content tools (commit, push, PR, journal,
