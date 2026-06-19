@@ -31,6 +31,7 @@ dependencies = [
     "python-toon",  # Token-efficient LLM serialization
     # MCP (Model Context Protocol)
     "mcp",
+    "tomli-w",  # grok_cli_config renders ~/.grok/config.toml in the agent image
     # Utilities
     "httpx",
     "python-multipart",

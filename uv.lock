@@ -3008,6 +3008,7 @@ dependencies = [
     { name = "structlog" },
     { name = "tenacity" },
     { name = "tiktoken" },
+    { name = "tomli-w" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "websockets" },
 ]
@@ -3092,6 +3093,7 @@ requires-dist = [
     { name = "structlog" },
     { name = "tenacity" },
     { name = "tiktoken" },
+    { name = "tomli-w" },
     { name = "types-passlib", marker = "extra == 'dev'" },
     { name = "types-python-jose", marker = "extra == 'dev'" },
     { name = "uvicorn", extras = ["standard"] },
