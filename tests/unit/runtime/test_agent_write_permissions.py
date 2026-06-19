@@ -108,3 +108,50 @@ def test_non_writer_generated_settings_block_write() -> None:
     deny = json.loads(Path(path).read_text())["permissions"]["deny"]
     assert "Write(*)" in deny, deny
     assert "Edit(*)" in deny, deny
+
+
+def test_grok_xai_settings_has_full_hooks_only() -> None:
+    """Grok (xai provider) must receive the *full* set of runtime hooks via
+    top-level 'hooks' in its user-settings.json equivalent. No permissions
+    block (grok uses different mechanism); all 9 hook scripts registered
+    under the Claude-compatible event names for parity.
+    """
+    orch = _orch()
+    path = orch._generate_agent_settings(
+        agent_id="be-dev-1",
+        role="developer",
+        workspace_path=_WS,
+        cell_workspace_path=_CELL,
+        provider_type="xai",
+    )
+    data = json.loads(Path(path).read_text())
+    assert "hooks" in data, "grok settings must have hooks"
+    assert "permissions" not in data, (
+        "grok settings must omit permissions (claude-only)"
+    )
+    hooks = data["hooks"]
+    # Full set of lifecycle hooks
+    for key in [
+        "SessionStart",
+        "PreToolUse",
+        "PostToolUse",
+        "Stop",
+        "UserPromptSubmit",
+        "PreCompact",
+        "SessionEnd",
+    ]:
+        assert key in hooks, f"missing hook event for full set: {key}"
+    # Verify concrete scripts are wired (all hook scripts)
+    flat = str(hooks)
+    for script in [
+        "sdk-startup-hook.sh",
+        "bash-guard-hook.sh",
+        "a2a-check-hook.sh",
+        "post-tool-budget-hook.sh",
+        "usage-report-hook.sh",
+        "stop-hook.sh",
+        "user-prompt-hook.sh",
+        "pre-compact-hook.sh",
+        "session-end-hook.sh",
+    ]:
+        assert script in flat, f"full set requires {script} registered for Grok"

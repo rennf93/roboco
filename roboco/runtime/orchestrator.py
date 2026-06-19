@@ -787,7 +787,10 @@ class AgentOrchestrator:
 
         # Ensure the role-specialized image if this agent uses one
         if agent_id:
-            bare = AGENT_IMAGES.get(agent_id, AGENT_BASE_IMAGE)
+            if agent_id == "grok":
+                bare = "roboco-agent-grok"
+            else:
+                bare = AGENT_IMAGES.get(agent_id, AGENT_BASE_IMAGE)
             if bare != AGENT_BASE_IMAGE:
                 # Map the bare image name to its dockerfile
                 dockerfile_map = {
@@ -801,6 +804,7 @@ class AgentOrchestrator:
                     "roboco-agent-prompter": "agent-prompter.Dockerfile",
                     "roboco-agent-secretary": "agent-secretary.Dockerfile",
                     "roboco-agent-pr-reviewer": "agent-pr-reviewer.Dockerfile",
+                    "roboco-agent-grok": "agent-grok.Dockerfile",
                 }
                 dockerfile = dockerfile_map.get(bare)
                 if dockerfile:
@@ -1000,20 +1004,19 @@ class AgentOrchestrator:
         role: str,
         workspace_path: str,
         cell_workspace_path: str,
+        provider_type: str = "anthropic",
     ) -> Path:
-        """Generate per-agent Claude Code settings file with role-specific permissions.
+        """Generate per-agent settings (Claude or Grok) with full hooks.
 
-        This replaces the shared settings approach. Each agent gets their own
-        settings.json with:
-        - Base MCP tools allowed for all agents
-        - Role-specific tool permissions
-        - Explicit deny list blocking native git/file operations
+        'xai' provider writes grok user-settings.json (hooks); else claude
+        settings. Hooks give guard parity for bash/a2a/budget/usage/stop/etc.
 
         Args:
             agent_id: Agent identifier (e.g., "be-dev-1")
             role: Agent role (e.g., "developer")
             workspace_path: Path to agent's own workspace directory
             cell_workspace_path: Path to cell's workspace root (for QA/Docs)
+            provider_type: 'anthropic' | 'ollama_cloud' | 'xai' | ...
 
         Returns:
             Path to the generated settings file
@@ -1072,143 +1075,152 @@ class AgentOrchestrator:
             "Bash(printenv:*)",
         ]
 
-        # Get role-specific permissions
-        role_config = self._get_role_permissions(
-            role, workspace_path, cell_workspace_path
-        )
-
         # Combine base + role-specific.
         # defaultMode=bypassPermissions lets unlisted operations proceed
         # without an interactive prompt (which would hang a non-TTY agent
         # container). Explicit deny rules still apply.
-        settings: dict[str, Any] = {
-            "permissions": {
-                "defaultMode": "bypassPermissions",
-                "allow": base_allow + role_config["allow"],
-                "deny": base_deny + role_config["deny"],
-            },
-            "hooks": {
-                # Start SDK server on session start (for A2A communication)
-                "SessionStart": [
-                    {
-                        "hooks": [
-                            {
-                                "type": "command",
-                                "command": "/app/scripts/sdk-startup-hook.sh",
-                            }
-                        ]
-                    }
-                ],
-                # Guard Bash: block shell-level git/curl/wget/env patterns
-                # that the matcher-based `permissions.deny` can't catch
-                # (e.g. `cd X && git fetch`). Redirects agents to the MCP
-                # equivalents instead of bloating prompts with rules.
-                "PreToolUse": [
-                    {
-                        "matcher": "Bash",
-                        "hooks": [
-                            {
-                                "type": "command",
-                                "command": "/app/scripts/bash-guard-hook.sh",
-                            }
-                        ],
-                    },
-                ],
-                "PostToolUse": [
-                    # Check for incoming A2A messages after each tool use
-                    {
-                        "matcher": "*",
-                        "hooks": [
-                            {
-                                "type": "command",
-                                "command": "/app/scripts/a2a-check-hook.sh",
-                            }
-                        ],
-                    },
-                    # Per-session budget counter + loop detector. Shared SDK
-                    # state lets this hook emit [Budget]/[Loop]/[Halt]
-                    # reminders that the orchestrator's kill-switch corroborates.
-                    {
-                        "matcher": "*",
-                        "hooks": [
-                            {
-                                "type": "command",
-                                "command": "/app/scripts/post-tool-budget-hook.sh",
-                            }
-                        ],
-                    },
-                    # Sync token usage from the transcript so /usage/status
-                    # (and the cost dashboard) reflect real spend. Idempotent
-                    # absolute set — running it per tool keeps mid-run
-                    # snapshots and reaped-agent sessions accurate.
-                    {
-                        "matcher": "*",
-                        "hooks": [
-                            {
-                                "type": "command",
-                                "command": "/app/scripts/usage-report-hook.sh",
-                            }
-                        ],
-                    },
-                ],
-                # Stop guard: refuse silent exits unless a terminal tool was
-                # just called (idle/substitute/escalate/pause/...). Second
-                # attempt auto-substitutes via SDK so the task doesn't rot.
-                "Stop": [
-                    {
-                        "hooks": [
-                            {
-                                "type": "command",
-                                "command": "/app/scripts/stop-hook.sh",
-                            },
-                            # Final token-usage sync at turn end — guarantees
-                            # the session total is captured before the agent
-                            # idles and the orchestrator finalizes the row.
-                            {
-                                "type": "command",
-                                "command": "/app/scripts/usage-report-hook.sh",
-                            },
-                        ]
-                    }
-                ],
-                # Prompt-injection guard — rejects turns that look like
-                # another agent's content trying to override our rules.
-                "UserPromptSubmit": [
-                    {
-                        "hooks": [
-                            {
-                                "type": "command",
-                                "command": "/app/scripts/user-prompt-hook.sh",
-                            }
-                        ]
-                    }
-                ],
-                # Snapshot budget / terminal state before compact so the
-                # next session resumes with continuity.
-                "PreCompact": [
-                    {
-                        "hooks": [
-                            {
-                                "type": "command",
-                                "command": "/app/scripts/pre-compact-hook.sh",
-                            }
-                        ]
-                    }
-                ],
-                # Post-mortem: write a reflect-journal entry summarising the
-                # session (tools called, halt/loop triggered, last tool).
-                "SessionEnd": [
-                    {
-                        "hooks": [
-                            {
-                                "type": "command",
-                                "command": "/app/scripts/session-end-hook.sh",
-                            }
-                        ]
-                    }
-                ],
-            },
+        hooks_section = {
+            # Start SDK server on session start (for A2A communication)
+            "SessionStart": [
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "/app/scripts/sdk-startup-hook.sh",
+                        }
+                    ]
+                }
+            ],
+            # Guard Bash: block shell-level git/curl/wget/env patterns
+            # that the matcher-based `permissions.deny` can't catch
+            # (e.g. `cd X && git fetch`). Redirects agents to the MCP
+            # equivalents instead of bloating prompts with rules.
+            "PreToolUse": [
+                {
+                    "matcher": "Bash",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "/app/scripts/bash-guard-hook.sh",
+                        }
+                    ],
+                },
+            ],
+            "PostToolUse": [
+                # Check for incoming A2A messages after each tool use
+                {
+                    "matcher": "*",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "/app/scripts/a2a-check-hook.sh",
+                        }
+                    ],
+                },
+                # Per-session budget counter + loop detector. Shared SDK
+                # state lets this hook emit [Budget]/[Loop]/[Halt]
+                # reminders that the orchestrator's kill-switch corroborates.
+                {
+                    "matcher": "*",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "/app/scripts/post-tool-budget-hook.sh",
+                        }
+                    ],
+                },
+                # Sync token usage from the transcript so /usage/status
+                # (and the cost dashboard) reflect real spend. Idempotent
+                # absolute set — running it per tool keeps mid-run
+                # snapshots and reaped-agent sessions accurate.
+                {
+                    "matcher": "*",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "/app/scripts/usage-report-hook.sh",
+                        }
+                    ],
+                },
+            ],
+            # Stop guard: refuse silent exits unless a terminal tool was
+            # just called (idle/substitute/escalate/pause/...). Second
+            # attempt auto-substitutes via SDK so the task doesn't rot.
+            "Stop": [
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "/app/scripts/stop-hook.sh",
+                        },
+                        # Final token-usage sync at turn end — guarantees
+                        # the session total is captured before the agent
+                        # idles and the orchestrator finalizes the row.
+                        {
+                            "type": "command",
+                            "command": "/app/scripts/usage-report-hook.sh",
+                        },
+                    ]
+                }
+            ],
+            # Prompt-injection guard — rejects turns that look like
+            # another agent's content trying to override our rules.
+            "UserPromptSubmit": [
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "/app/scripts/user-prompt-hook.sh",
+                        }
+                    ]
+                }
+            ],
+            # Snapshot budget / terminal state before compact so the
+            # next session resumes with continuity.
+            "PreCompact": [
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "/app/scripts/pre-compact-hook.sh",
+                        }
+                    ]
+                }
+            ],
+            # Post-mortem: write a reflect-journal entry summarising the
+            # session (tools called, halt/loop triggered, last tool).
+            "SessionEnd": [
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "/app/scripts/session-end-hook.sh",
+                        }
+                    ]
+                }
+            ],
         }
+
+        settings: dict[str, Any]
+        if provider_type == "xai":
+            # Grok uses ~/.grok/user-settings.json with at minimum the hooks
+            # section. Reuse the exact same hook registrations (CLI-agnostic
+            # scripts). Grok CLI will invoke them at the matching lifecycle
+            # events, giving full parity on guards/instrumentation.
+            settings = {"hooks": hooks_section}
+        else:
+            # Claude (ollama_cloud proxy too): full permissions + hooks
+            role_config = self._get_role_permissions(
+                role, workspace_path, cell_workspace_path
+            )
+            settings = {
+                "permissions": {
+                    "defaultMode": "bypassPermissions",
+                    "allow": base_allow + role_config["allow"],
+                    "deny": base_deny + role_config["deny"],
+                },
+                "hooks": hooks_section,
+            }
 
         # Write to per-agent settings file
         # When running in container: write to /app/agent-settings (mounted to host)
@@ -1219,7 +1231,8 @@ class AgentOrchestrator:
             settings_dir = Path(tempfile.gettempdir()) / "roboco-agent-settings"
 
         settings_dir.mkdir(parents=True, exist_ok=True)
-        settings_path = settings_dir / f"{agent_id}-settings.json"
+        suffix = "grok-settings.json" if provider_type == "xai" else "settings.json"
+        settings_path = settings_dir / f"{agent_id}-{suffix}"
 
         # Handle case where Docker auto-created a directory instead of a file
         if settings_path.is_dir():
@@ -1227,14 +1240,23 @@ class AgentOrchestrator:
 
         settings_path.write_text(json.dumps(settings, indent=2))
 
-        logger.debug(
-            "Generated per-agent settings",
-            agent_id=agent_id,
-            role=role,
-            settings_path=str(settings_path),
-            allow_count=len(settings["permissions"]["allow"]),
-            deny_count=len(settings["permissions"]["deny"]),
-        )
+        if provider_type == "xai":
+            logger.debug(
+                "Generated per-agent Grok settings",
+                agent_id=agent_id,
+                role=role,
+                settings_path=str(settings_path),
+                hooks_count=len(settings.get("hooks", {})),
+            )
+        else:
+            logger.debug(
+                "Generated per-agent settings",
+                agent_id=agent_id,
+                role=role,
+                settings_path=str(settings_path),
+                allow_count=len(settings.get("permissions", {}).get("allow", [])),
+                deny_count=len(settings.get("permissions", {}).get("deny", [])),
+            )
 
         return settings_path
 
@@ -1507,7 +1529,11 @@ class AgentOrchestrator:
         cell_workspace_path = _cell_workspace_path(project_slug, team)
 
         agent_settings_path = self._generate_agent_settings(
-            agent_id, canonical_role, workspace_path, cell_workspace_path
+            agent_id,
+            canonical_role,
+            workspace_path,
+            cell_workspace_path,
+            provider_type=route.provider_type.value,
         )
 
         briefing_path = await self._write_agent_briefing(
@@ -1515,6 +1541,10 @@ class AgentOrchestrator:
         )
 
         await self._ensure_agent_image(agent_id)
+        if route.provider_type.value == "xai":
+            await self._ensure_agent_image(
+                "grok"
+            )  # triggers grok image via map extension below
         mcp_config_path = await self._generate_mcp_config(agent_id, git_context)
 
         from uuid import uuid4
@@ -1676,6 +1706,15 @@ class AgentOrchestrator:
         """Compute host mount paths for both containerized and host runtime."""
         mcp_name = config.mcp_config_path.name if config.mcp_config_path else ""
         if PROJECT_HOST_PATH:
+            settings_host_path = None
+            if agent_settings_path:
+                # Use the actual filename returned by _generate (claude or grok variant)
+                fname = (
+                    agent_settings_path.name
+                    if hasattr(agent_settings_path, "name")
+                    else Path(str(agent_settings_path)).name
+                )
+                settings_host_path = f"{DATA_HOST_PATH}/agent-settings/{fname}"
             return {
                 "docs": f"{PROJECT_HOST_PATH}/docs",
                 "workspaces": f"{DATA_HOST_PATH}/workspaces",
@@ -1684,11 +1723,7 @@ class AgentOrchestrator:
                 "prompt": (
                     f"{DATA_HOST_PATH}/prompts-generated/{config.agent_id}-prompt.md"
                 ),
-                "settings": (
-                    f"{DATA_HOST_PATH}/agent-settings/{config.agent_id}-settings.json"
-                    if agent_settings_path
-                    else None
-                ),
+                "settings": settings_host_path,
                 "briefing": (
                     f"{DATA_HOST_PATH}/briefings/{config.agent_id}.md"
                     if config.briefing_path
@@ -1727,7 +1762,7 @@ class AgentOrchestrator:
             f"{hosts['claude']}:/home/agent/.claude",
         ]
         AgentOrchestrator._append_claude_json_mount(cmd, hosts)
-        AgentOrchestrator._append_optional_host_mounts(cmd, hosts)
+        AgentOrchestrator._append_optional_host_mounts(cmd, hosts, config.provider_type)
         role = get_agent_role(config.agent_id) or "developer"
         cmd.extend(AgentOrchestrator._core_volume_and_env_args(config, hosts, role))
         AgentOrchestrator._append_provider_env(cmd, config)
@@ -1749,12 +1784,21 @@ class AgentOrchestrator:
 
     @staticmethod
     def _append_optional_host_mounts(
-        cmd: list[str], hosts: dict[str, str | None]
+        cmd: list[str], hosts: dict[str, str | None], provider_type: str = "anthropic"
     ) -> None:
-        """Mount agent settings.json and briefing.md when their hosts exist."""
+        """Mount agent settings (claude or grok) + briefing when hosts exist."""
         settings_host = hosts.get("settings")
         if settings_host:
-            cmd.extend(["-v", f"{settings_host}:/home/agent/.claude/settings.json:ro"])
+            if provider_type == "xai":
+                # Grok discovers hooks/ config from ~/.grok/user-settings.json
+                # (matches research on opencode/grok cli user-settings shape)
+                cmd.extend(
+                    ["-v", f"{settings_host}:/home/agent/.grok/user-settings.json:ro"]
+                )
+            else:
+                cmd.extend(
+                    ["-v", f"{settings_host}:/home/agent/.claude/settings.json:ro"]
+                )
         briefing_host = hosts.get("briefing")
         if briefing_host:
             cmd.extend(["-v", f"{briefing_host}:/app/briefing.md:ro"])
@@ -1798,7 +1842,7 @@ class AgentOrchestrator:
 
     @staticmethod
     def _append_provider_env(cmd: list[str], config: AgentConfig) -> None:
-        """Inject ANTHROPIC_* env only on non-Anthropic providers."""
+        """Inject provider-specific env (ANTHROPIC_* for ollama etc, XAI_* for grok)."""
         # Provider routing: only inject ANTHROPIC_* env vars when the
         # resolved provider is non-Anthropic (i.e. Ollama Cloud). For the
         # Anthropic default path both fields are None and Claude Code
@@ -1808,6 +1852,10 @@ class AgentOrchestrator:
             cmd.extend(["-e", f"ANTHROPIC_BASE_URL={config.provider_base_url}"])
         if config.provider_auth_token:
             cmd.extend(["-e", f"ANTHROPIC_AUTH_TOKEN={config.provider_auth_token}"])
+
+        # xAI / Grok path: the grok CLI and its SDK use XAI_API_KEY.
+        if config.provider_type == "xai" and config.provider_auth_token:
+            cmd.extend(["-e", f"XAI_API_KEY={config.provider_auth_token}"])
 
     @staticmethod
     def _append_manifest_args(
@@ -1907,25 +1955,27 @@ class AgentOrchestrator:
         )
 
     @classmethod
-    def _append_image_and_claude_args(
+    def _append_image_and_cli_args(
         cls, cmd: list[str], config: AgentConfig, initial_prompt: str | None
     ) -> None:
-        """Append the image + Claude Code CLI args to the docker run cmd.
+        """Append the image + CLI (claude or grok) args to the docker run cmd.
 
-        `--tools` explicitly enumerates the built-in tools loaded at session
-        start. Without it, Claude CLI's default behavior leaves Edit/Write
-        in the deferred pool, so an agent that doesn't reliably call
-        ToolSearch (e.g. weaker non-Anthropic models routed via
-        Ollama-cloud) ends up unable to modify any file. The set below is
-        the minimum every agent role needs:
-          - Read/Write/Edit  : file IO inside the workspace
-          - Bash             : shell commands (gated by bash-guard hook)
-          - Grep/Glob        : code navigation
-          - TodoWrite        : per-session planning
-        Permissions still gate *which* paths Edit/Write can touch (see
-        `_get_role_permissions`), so this is purely about loading vs
-        denying.
+        For provider_type=='xai' we use the grok image (with its entrypoint wrapper
+        that starts SDK + full hooks via user-settings.json). We pass the prompt
+        via ROBOCO_INITIAL_PROMPT env so the wrapper builds a clean `grok` argv
+        (no duplicated flags). Other providers keep the Claude Code invocation.
         """
+        if config.provider_type == "xai":
+            image = _qualify_agent_image("roboco-agent-grok")
+            # Pass prompt via env (entrypoint uses it for -p); just the image
+            # (its ENTRYPOINT script will run full hooks bootstrap then exec grok).
+            # Model is already injected as CLAUDE_CODE_SUBAGENT_MODEL by caller.
+            prompt = initial_prompt or cls._default_spawn_prompt()
+            cmd.extend(["-e", f"ROBOCO_INITIAL_PROMPT={prompt}"])
+            cmd.extend([image])
+            return
+
+        # Claude (or proxy) path
         claude_args = [
             get_agent_image(config.agent_id),
             "--model",
@@ -1963,9 +2013,9 @@ class AgentOrchestrator:
         """Spawn a Docker container for the agent.
 
         Args:
-            config: Agent configuration
+            config: Agent configuration (provider_type selects claude/grok + mount)
             initial_prompt: Optional initial prompt for the agent
-            agent_settings_path: Path to per-agent Claude settings file
+            agent_settings_path: Path to per-agent settings (claude or grok)
         """
         container_name = f"roboco-agent-{config.agent_id}"
         await self._remove_container(container_name)
@@ -1977,7 +2027,7 @@ class AgentOrchestrator:
         cmd = self._build_mount_args(container_name, config, hosts)
         self._append_agent_auth_env(cmd, config)
         self._append_git_context_env(cmd, config)
-        self._append_image_and_claude_args(cmd, config, initial_prompt)
+        self._append_image_and_cli_args(cmd, config, initial_prompt)
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,

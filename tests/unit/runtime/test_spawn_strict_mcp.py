@@ -35,13 +35,13 @@ def _make_dev_config() -> OrchestratorAgentConfig:
 
 
 def _build_image_args(config: OrchestratorAgentConfig) -> list[str]:
-    """Invoke _append_image_and_claude_args against an empty cmd."""
+    """Invoke _append_image_and_cli_args against an empty cmd."""
     cmd: list[str] = []
     with patch(
         "roboco.runtime.orchestrator._resolve_agent_cli_model",
         return_value="claude-sonnet-4-6",
     ):
-        AgentOrchestrator._append_image_and_claude_args(cmd, config, None)
+        AgentOrchestrator._append_image_and_cli_args(cmd, config, None)
     return cmd
 
 
