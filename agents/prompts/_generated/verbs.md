@@ -153,6 +153,7 @@ real tools live in their agent_sdk drivers, not role_config.
 | `i_am_idle` | `i_am_idle()` |
 | `i_will_plan` | `i_will_plan(task_id: UUID, plan: str, approach: str, sub_tasks: list[str | str] = PydanticUndefined, technical_considerations: list[str] = PydanticUndefined, risks: list[str | str] = PydanticUndefined, open_questions: list[str | str | bool] = PydanticUndefined)` |
 | `resume` | `resume(task_id: UUID)` |
+| `submit_root` | `submit_root(unknown — no Pydantic schema)` |
 | `triage` | `triage()` |
 | `triage_all` | `triage_all()` |
 | `unblock` | `unblock(task_id: UUID, restore: bool = True)` |
@@ -255,10 +256,13 @@ real tools live in their agent_sdk drivers, not role_config.
 
 | Verb | Body schema |
 |------|-------------|
+| `claim_gate_review` | `claim_gate_review(unknown — no Pydantic schema)` |
 | `claim_pr_review` | `claim_pr_review(task_id: UUID)` |
 | `give_me_work` | `give_me_work()` |
 | `i_am_idle` | `i_am_idle()` |
 | `post_pr_review` | `post_pr_review(task_id: UUID, body: str, event: str = 'REQUEST_CHANGES')` |
+| `pr_fail` | `pr_fail(unknown — no Pydantic schema)` |
+| `pr_pass` | `pr_pass(unknown — no Pydantic schema)` |
 
 ### Content (do) tools
 
