@@ -29,14 +29,10 @@ from roboco.models.runtime import OrchestratorAgentConfig
 
 
 @pytest.fixture(autouse=True)
-def _isolate_grok_auth(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> Path:
+def _isolate_grok_auth(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Point GROK_AUTH_HOST_PATH at a fresh tmp dir so tests never mount the real
     ~/.grok. Tests that exercise the auth mount create ``auth.json`` themselves."""
-    monkeypatch.setattr(
-        "roboco.llm.providers.grok.GROK_AUTH_HOST_PATH", str(tmp_path)
-    )
+    monkeypatch.setattr("roboco.llm.providers.grok.GROK_AUTH_HOST_PATH", str(tmp_path))
     return tmp_path
 
 
@@ -81,7 +77,7 @@ class _FakeHost:
     async def _remove_container(self, container_name: str) -> None:
         self.removed.append(container_name)
 
-    def _ensure_opencode_data_dir(self, agent_id: str) -> None:
+    def _ensure_grok_usage_dir(self, agent_id: str) -> None:
         self.data_dirs_ensured.append(agent_id)
 
     def _resolve_host_paths(
@@ -92,7 +88,7 @@ class _FakeHost:
             if config.mcp_config_path
             else None,
             "settings": str(agent_settings_path) if agent_settings_path else None,
-            "opencode": f"/host/data/opencode/{config.agent_id}",
+            "grok_usage": f"/host/data/grok-usage/{config.agent_id}",
         }
 
     def _build_mount_args(
@@ -218,11 +214,12 @@ async def test_grok_spawn_wires_gateway_env_and_image_last() -> None:
     assert "ROBOCO_MCP_CONFIG=/app/mcp-config.json" in cmd
     assert "ROBOCO_AGENT_ID=be-dev-1" in cmd  # renderer computes per-role flags
     assert "ROBOCO_AGENT_MODEL=grok-build" in cmd
-    # Fixed session id so usage capture can locate the run's session store.
-    assert "ROBOCO_AGENT_SESSION_ID=sess-1" in cmd
+    # No session id is injected: grok ignores a requested id, so the entrypoint
+    # reads the real one back from the run log for usage capture.
+    assert not any(c.startswith("ROBOCO_AGENT_SESSION_ID=") for c in cmd)
     # Usage capture: per-agent data dir mounted + the entrypoint's usage file.
     assert host.data_dirs_ensured == ["be-dev-1"]
-    assert "/host/data/opencode/be-dev-1:/home/agent/.grok-usage" in cmd
+    assert "/host/data/grok-usage/be-dev-1:/home/agent/.grok-usage" in cmd
     assert "ROBOCO_GROK_USAGE_FILE=/home/agent/.grok-usage/usage.json" in cmd
     # Identity wiring from the shared host helpers is present.
     assert "ROBOCO_AGENT_TOKEN=hmac-be-dev-1" in cmd

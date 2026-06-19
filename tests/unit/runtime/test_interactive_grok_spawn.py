@@ -1,12 +1,16 @@
-"""Interactive intake/secretary builders fork a GROK route onto opencode.
+"""Interactive intake/secretary builders fork a GROK route onto the grok CLI.
 
-A GROK route swaps the Claude SDK-driver image for the opencode-serve image and
-the ANTHROPIC_* env for XAI_* + the opencode store mount; every other
-provider keeps the Claude path's ANTHROPIC_* behaviour.
+A GROK route swaps the Claude SDK-driver image for the grok-CLI prompter/secretary
+image and the ANTHROPIC_* env for the subscription auth mount + the per-agent
+usage mount (no metered xAI key, no permission env — the driver computes the grok
+permission flags). Every other provider keeps the Claude path's ANTHROPIC_*.
 """
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+from roboco.llm.providers import grok as grok_provider
 from roboco.runtime.orchestrator import (
     GROK_PROMPTER_IMAGE,
     GROK_SECRETARY_IMAGE,
@@ -15,20 +19,21 @@ from roboco.runtime.orchestrator import (
     _SecretaryRunSpec,
 )
 
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    import pytest
+
 _HOSTS: dict[str, str | None] = {
     "claude": "/h/.claude",
     "prompt": "/h/p.md",
     "workspaces": "/h/ws",
-    "opencode": "/h/oc/intake-1",
+    "grok_usage": "/h/gu/intake-1",
 }
 
 
 def _intake_spec(
-    provider_type: str,
-    *,
-    base_url: str | None,
-    token: str | None,
-    grok_variant: str | None = None,
+    provider_type: str, *, base_url: str | None, token: str | None
 ) -> _IntakeRunSpec:
     return _IntakeRunSpec(
         container_name="roboco-agent-intake-1",
@@ -38,57 +43,46 @@ def _intake_spec(
         hosts=_HOSTS,
         session_id="sess-1",
         cwd="/data/workspace",
-        cli_model="grok-build-0.1",
+        cli_model="grok-build",
         api_url="http://roboco-orchestrator:8000",
         provider_base_url=base_url,
         provider_auth_token=token,
         provider_type=provider_type,
-        model="grok-build-0.1",
-        grok_variant=grok_variant,
+        model="grok-build",
     )
 
 
-def test_intake_grok_uses_xai_env_and_opencode_mount() -> None:
-    cmd = AgentOrchestrator._build_intake_run_cmd(
-        _intake_spec(
-            "grok",
-            base_url="https://api.x.ai/v1",
-            token="xai-key",
-            grok_variant="minimal",
-        )
-    )
-    assert "XAI_API_KEY=xai-key" in cmd
-    assert "XAI_BASE_URL=https://api.x.ai/v1" in cmd
-    assert "ROBOCO_AGENT_MODEL=grok-build-0.1" in cmd
-    assert "ROBOCO_SYSTEM_PROMPT=/app/system-prompt.md" in cmd
-    assert "/h/oc/intake-1:/home/agent/.local/share/opencode" in cmd
-    # Per-role reasoning effort reaches the container for the serve driver.
-    assert "ROBOCO_GROK_VARIANT=minimal" in cmd
-    assert cmd[-1] == GROK_PROMPTER_IMAGE
-    # The xAI endpoint is never mislabelled as Anthropic.
-    assert not any(c.startswith("ANTHROPIC_") for c in cmd)
-    # Intake is read-only (no code edits, no shell) but reads sibling product
-    # repos OUTSIDE its cwd, so it keeps external-directory reads.
-    assert "ROBOCO_GROK_EDIT_PERMISSION=deny" in cmd
-    assert "ROBOCO_GROK_BASH_PERMISSION=deny" in cmd
-    assert "ROBOCO_GROK_EXTERNAL_DIR_PERMISSION=allow" in cmd
-
-
-def test_intake_anthropic_omits_grok_permission_env() -> None:
-    # The opencode permission env is a GROK-only contract; the Claude path never
-    # sets it (it gates tools via the SDK can_use_tool allowlist instead).
-    cmd = AgentOrchestrator._build_intake_run_cmd(
-        _intake_spec("anthropic", base_url="https://api.anthropic.com", token="sk-ant")
-    )
-    assert not any(c.startswith("ROBOCO_GROK_EDIT_PERMISSION=") for c in cmd)
-    assert not any(c.startswith("ROBOCO_GROK_BASH_PERMISSION=") for c in cmd)
-
-
-def test_intake_grok_omits_variant_when_unset() -> None:
+def test_intake_grok_uses_grok_cli_usage_mount_and_env() -> None:
     cmd = AgentOrchestrator._build_intake_run_cmd(
         _intake_spec("grok", base_url="https://api.x.ai/v1", token="xai-key")
     )
-    assert not any(c.startswith("ROBOCO_GROK_VARIANT=") for c in cmd)
+    # The per-agent usage dir is mounted so finalize reads usage.json back.
+    assert "/h/gu/intake-1:/home/agent/.grok-usage" in cmd
+    assert "ROBOCO_AGENT_MODEL=grok-build" in cmd
+    assert "ROBOCO_GROK_USAGE_FILE=/home/agent/.grok-usage/usage.json" in cmd
+    assert cmd[-1] == GROK_PROMPTER_IMAGE
+    # No metered xAI key, no Anthropic mislabelling, no stale opencode contract.
+    assert not any(c.startswith("XAI_") for c in cmd)
+    assert not any(c.startswith("ANTHROPIC_") for c in cmd)
+    assert not any(c.startswith("ROBOCO_GROK_VARIANT") for c in cmd)
+    assert not any(c.startswith("ROBOCO_GROK_EDIT_PERMISSION") for c in cmd)
+    assert "/home/agent/.local/share/opencode" not in " ".join(cmd)
+
+
+def test_intake_grok_mounts_subscription_auth_when_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The auth mount is .exists()-guarded; point the host dir at a tmp ~/.grok
+    # holding an auth.json so the mount is emitted.
+    grok_dir = tmp_path / ".grok"
+    grok_dir.mkdir()
+    (grok_dir / "auth.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(grok_provider, "GROK_AUTH_HOST_PATH", str(grok_dir))
+
+    cmd = AgentOrchestrator._build_intake_run_cmd(
+        _intake_spec("grok", base_url="https://api.x.ai/v1", token="xai-key")
+    )
+    assert f"{grok_dir / 'auth.json'}:/home/agent/.grok/auth.json:ro" in cmd
 
 
 def test_intake_anthropic_keeps_anthropic_env() -> None:
@@ -98,34 +92,35 @@ def test_intake_anthropic_keeps_anthropic_env() -> None:
     assert "ANTHROPIC_BASE_URL=https://api.anthropic.com" in cmd
     assert "ANTHROPIC_AUTH_TOKEN=sk-ant" in cmd
     assert not any(c.startswith("XAI_") for c in cmd)
+    assert not any(c.startswith("ROBOCO_GROK_USAGE_FILE") for c in cmd)
     assert cmd[-1] == "roboco-agent-prompter"
 
 
-def test_secretary_grok_uses_openai_env_and_grok_image() -> None:
+def test_secretary_grok_uses_grok_cli_env_and_keeps_hmac() -> None:
     spec = _SecretaryRunSpec(
         container_name="roboco-agent-secretary-1",
         image=GROK_SECRETARY_IMAGE,
-        hosts={"claude": "/h/.claude", "prompt": "/h/p.md", "opencode": "/h/oc/sec-1"},
+        hosts={
+            "claude": "/h/.claude",
+            "prompt": "/h/p.md",
+            "grok_usage": "/h/gu/sec-1",
+        },
         session_id="sess-2",
         cwd="/app",
-        cli_model="grok-build-0.1",
+        cli_model="grok-build",
         api_url="http://roboco-orchestrator:8000",
         agent_uuid="uuid-sec",
         agent_token="hmac-secretary",
         provider_base_url="https://api.x.ai/v1",
         provider_auth_token="xai-key",
         provider_type="grok",
-        model="grok-build-0.1",
+        model="grok-build",
     )
     cmd = AgentOrchestrator._build_secretary_run_cmd(spec)
-    assert "XAI_API_KEY=xai-key" in cmd
-    assert "/h/oc/sec-1:/home/agent/.local/share/opencode" in cmd
+    assert "/h/gu/sec-1:/home/agent/.grok-usage" in cmd
+    assert "ROBOCO_AGENT_MODEL=grok-build" in cmd
     # The HMAC identity the directive tools authenticate with survives.
     assert "ROBOCO_AGENT_TOKEN=hmac-secretary" in cmd
     assert cmd[-1] == GROK_SECRETARY_IMAGE
+    assert not any(c.startswith("XAI_") for c in cmd)
     assert not any(c.startswith("ANTHROPIC_") for c in cmd)
-    # The Secretary is read-only and reads only /app + the API, so edit/bash
-    # are denied and it gets NO external-directory reads (unlike intake).
-    assert "ROBOCO_GROK_EDIT_PERMISSION=deny" in cmd
-    assert "ROBOCO_GROK_BASH_PERMISSION=deny" in cmd
-    assert "ROBOCO_GROK_EXTERNAL_DIR_PERMISSION=deny" in cmd

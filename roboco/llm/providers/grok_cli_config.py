@@ -9,7 +9,7 @@ command. Keeping the translation in importable Python (not a shell heredoc)
 makes it unit-testable.
 
 Parity with ``ClaudeCodeProvider``'s per-role permissions, expressed as native
-grok flags instead of an opencode permission block + a JS guard plugin:
+grok flags (built-in tool removal + ``--deny`` rules):
 
   * **subagents** — every role gets ``--disallowed-tools Agent``: no RoboCo agent
     spawns the CLI's own subagents (work is driven through the gateway verbs).
@@ -19,7 +19,7 @@ grok flags instead of an opencode permission block + a JS guard plugin:
     (``--disallowed-tools run_terminal_cmd``).
   * **git mutation** — bash-capable roles keep a shell, but raw git mutation is
     denied (``--deny "Bash(git push*)"`` ...): agents commit / push through the
-    gateway verbs, never raw git (the opencode secret-scrub git-ops rule, ported).
+    gateway verbs, never raw git.
   * **destructive** — ``--deny "Bash(rm -rf*)"`` for every bash-capable role.
   * **reasoning** — ``--effort`` by role (``low`` for coordination / docs / board;
     full for the code-quality roles). A global ``ROBOCO_GROK_REASONING_EFFORT``
@@ -44,8 +44,7 @@ GROK_CONFIG_PATH = Path.home() / ".grok" / "config.toml"
 # The entrypoint reads the computed flags (one token per line) from this file.
 GROK_ARGS_PATH = Path(os.environ.get("ROBOCO_GROK_ARGS_FILE", "/tmp/roboco-grok-args"))
 
-# Hard ceiling on agentic turns (loop guard; replaces the opencode budget-feed
-# loop cap). Operator-tunable.
+# Hard ceiling on agentic turns (loop guard). Operator-tunable.
 _DEFAULT_MAX_TURNS = 200
 
 # Roles that request reduced reasoning (grok bills reasoning at the output rate,
@@ -146,13 +145,14 @@ def _effort_for(role: str) -> str | None:
     return "low" if role in _MINIMAL_REASONING_ROLES else None
 
 
-def grok_cli_args(agent_id: str, *, max_turns: int = _DEFAULT_MAX_TURNS) -> list[str]:
-    """The per-role ``grok -p`` flag tokens for an agent (excludes ``-p``/model/cwd).
+def grok_cli_args_for_role(
+    role: str, *, max_turns: int = _DEFAULT_MAX_TURNS
+) -> list[str]:
+    """The per-role ``grok -p`` flag tokens (excludes ``-p``/model/cwd).
 
     Order: tool removal, turn cap, deny rules, then effort. Each token is a
-    separate list element so the entrypoint can splice them without shell quoting.
+    separate list element so callers can splice them without shell quoting.
     """
-    role = get_agent_role(agent_id) or ""
     args: list[str] = ["--disallowed-tools", _disallowed_tools(role)]
     args += ["--max-turns", str(max_turns)]
     for rule in _deny_rules(role):
@@ -161,6 +161,11 @@ def grok_cli_args(agent_id: str, *, max_turns: int = _DEFAULT_MAX_TURNS) -> list
     if effort:
         args += ["--effort", effort]
     return args
+
+
+def grok_cli_args(agent_id: str, *, max_turns: int = _DEFAULT_MAX_TURNS) -> list[str]:
+    """The per-role grok flags for an agent, resolving its role from the id."""
+    return grok_cli_args_for_role(get_agent_role(agent_id) or "", max_turns=max_turns)
 
 
 def _load_mcp_config(path: str) -> dict[str, Any]:

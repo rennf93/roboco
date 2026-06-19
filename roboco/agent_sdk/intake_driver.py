@@ -263,7 +263,7 @@ class IntakeDriver:
         """
         # Prompt-injection guard at the input boundary (our own guard, runtime-
         # agnostic): deny a poisoned turn before the model ever sees it. Covers
-        # the Grok (opencode) session and the Claude SDK session — the latter
+        # the Grok (grok-CLI) session and the Claude SDK session — the latter
         # runs with setting_sources=[] and so never loads the bash UserPromptSubmit
         # hook, so this is the only injection guard either interactive path has.
         injection = detect_injection(text)

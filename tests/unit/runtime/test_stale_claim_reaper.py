@@ -153,7 +153,7 @@ async def test_reaper_kills_and_releases_wedged_grok_container(
 ) -> None:
     """A GROK container idle past the kill TTL is killed, evicted, and released.
 
-    Unlike a Claude agent, a wedged opencode container is ACTIVE yet fires no
+    Unlike a Claude agent, a wedged grok container is ACTIVE yet fires no
     verb, so the live-instance skip would shield it forever. Past the longer
     grok-idle TTL the watchdog removes the container and drops it from
     `_instances`, so the same reap pass then unclaims the task.

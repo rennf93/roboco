@@ -163,15 +163,16 @@ CLAUDE_AUTH_HOST_PATH = os.environ.get(
 )
 PROJECT_HOST_PATH = os.environ.get("ROBOCO_HOST_PROJECT_DIR", "")
 DATA_HOST_PATH = os.environ.get("ROBOCO_HOST_DATA_DIR", "")
-# In-orchestrator path where each GROK agent's opencode store is visible. The
-# agent writes <DATA_HOST_PATH>/opencode/<agent_id>; the compose file mounts the
-# same host dir here so the finalizer can read opencode.db back (mirrors how the
-# Claude transcript is read from the mounted ~/.claude). Override for local runs.
-OPENCODE_DATA_DIR = os.environ.get("ROBOCO_OPENCODE_DATA_DIR", "/data/opencode")
+# In-orchestrator path where each GROK agent's usage capture is visible. The
+# agent writes <DATA_HOST_PATH>/grok-usage/<agent_id>/usage.json; the compose file
+# mounts the same host dir here so the finalizer can read the captured tokens back
+# (the grok analogue of reading the Claude transcript from the mounted ~/.claude).
+# Override for local runs.
+GROK_USAGE_DATA_DIR = os.environ.get("ROBOCO_GROK_USAGE_DIR", "/data/grok-usage")
 
-# Interactive Grok images (opencode-serve drivers) — selected for the intake /
-# secretary roles when their route resolves to GROK, instead of the Claude
-# prompter/secretary images. Their dockerfiles build FROM roboco-agent-grok.
+# Interactive Grok images (grok-CLI conversation drivers) — selected for the
+# intake / secretary roles when their route resolves to GROK, instead of the
+# Claude prompter/secretary images. Their dockerfiles build FROM roboco-agent-grok.
 GROK_PROMPTER_IMAGE = "roboco-agent-grok-prompter"
 GROK_SECRETARY_IMAGE = "roboco-agent-grok-secretary"
 _GROK_INTERACTIVE_DOCKERFILES = {
@@ -219,7 +220,6 @@ class _IntakeRunSpec:
     provider_auth_token: str | None
     provider_type: str = "anthropic"
     model: str = ""
-    grok_variant: str | None = None
 
 
 @dataclass
@@ -243,7 +243,6 @@ class _SecretaryRunSpec:
     provider_auth_token: str | None
     provider_type: str = "anthropic"
     model: str = ""
-    grok_variant: str | None = None
 
 
 def _read_project_slug(task: dict[str, Any]) -> str | None:
@@ -716,8 +715,8 @@ class AgentOrchestrator:
         # _maybe_kill_wedged_grok.
         self._grok_idle_kill_ttl: int = settings.grok_idle_kill_seconds
         # Cost ceiling (USD) before a live GROK container is killed — the budget
-        # kill-switch parity (opencode exposes no usage hook). 0 disables. See
-        # _enforce_grok_cost_budget.
+        # kill-switch parity (the grok CLI exposes no live usage hook). 0 disables.
+        # See _enforce_grok_cost_budget.
         self._grok_max_cost_usd: float = settings.grok_max_cost_usd
 
     # =========================================================================
@@ -878,27 +877,26 @@ class AgentOrchestrator:
                 img, f"{docker_dir}/{dockerfile}", build_context
             )
 
-    def _ensure_opencode_data_dir(self, agent_id: str) -> None:
-        """Pre-create the agent's opencode store dir (world-writable) before the mount.
+    def _ensure_grok_usage_dir(self, agent_id: str) -> None:
+        """Pre-create the agent's grok usage dir (world-writable) before the mount.
 
         On Linux, ``docker run -v`` auto-creates a MISSING bind source as
-        ``root:root``, so the non-root ``agent`` user EACCESes on opencode's
-        first write (``repos/``, ``opencode.db``) and ``opencode serve``/``run``
-        dies at boot — the live intake crash. Creating the dir ``0777`` first
-        makes the mounted store writable regardless of the agent uid; the
-        orchestrator (root) can still read it back at finalize. Mirrors the
-        container-vs-local split in ``_resolve_host_paths``.
+        ``root:root``, so the non-root ``agent`` user EACCESes when the grok
+        entrypoint / interactive driver writes ``usage.json`` there. Creating the
+        dir ``0777`` first makes the mounted dir writable regardless of the agent
+        uid; the orchestrator (root) can still read it back at finalize. Mirrors
+        the container-vs-local split in ``_resolve_host_paths``.
         """
         if PROJECT_HOST_PATH:
-            target = Path(OPENCODE_DATA_DIR) / agent_id
+            target = Path(GROK_USAGE_DATA_DIR) / agent_id
         else:
-            target = Path(tempfile.gettempdir()) / "roboco-opencode" / agent_id
+            target = Path(tempfile.gettempdir()) / "roboco-grok-usage" / agent_id
         try:
             target.mkdir(parents=True, exist_ok=True)
             target.chmod(0o777)
         except OSError as exc:
             logger.warning(
-                "could not pre-create opencode data dir; grok agent may EACCES",
+                "could not pre-create grok usage dir; grok agent may EACCES",
                 agent_id=agent_id,
                 path=str(target),
                 error=str(exc),
@@ -1790,9 +1788,10 @@ class AgentOrchestrator:
                 "workspaces": f"{DATA_HOST_PATH}/workspaces",
                 "claude": CLAUDE_AUTH_HOST_PATH,
                 "mcp_config": f"{DATA_HOST_PATH}/mcp-configs/{mcp_name}",
-                # Per-agent opencode store (GROK only); the orchestrator reads it
-                # back at finalize via the shared data volume (see OPENCODE_DATA_DIR).
-                "opencode": f"{DATA_HOST_PATH}/opencode/{config.agent_id}",
+                # Per-agent grok usage dir (GROK only); the orchestrator reads the
+                # captured tokens back at finalize via the shared data volume
+                # (see GROK_USAGE_DATA_DIR).
+                "grok_usage": f"{DATA_HOST_PATH}/grok-usage/{config.agent_id}",
                 "prompt": (
                     f"{DATA_HOST_PATH}/prompts-generated/{config.agent_id}-prompt.md"
                 ),
@@ -1812,8 +1811,8 @@ class AgentOrchestrator:
             "workspaces": str(Path(settings.workspaces_root)),
             "claude": CLAUDE_AUTH_HOST_PATH,
             "mcp_config": str(config.mcp_config_path),
-            "opencode": str(
-                Path(tempfile.gettempdir()) / "roboco-opencode" / config.agent_id
+            "grok_usage": str(
+                Path(tempfile.gettempdir()) / "roboco-grok-usage" / config.agent_id
             ),
             "prompt": str(
                 Path(tempfile.gettempdir())
@@ -3022,17 +3021,13 @@ class AgentOrchestrator:
             else f"http://127.0.0.1:{settings.port}"
         )
 
-        # GROK runs the interactive driver on its own opencode-serve image; every
-        # other provider uses the Claude SDK-driver prompter image.
+        # GROK runs the interactive driver on its own grok-CLI prompter image;
+        # every other provider uses the Claude SDK-driver prompter image.
         is_grok = route.provider_type == ModelProvider.GROK
         image = GROK_PROMPTER_IMAGE if is_grok else get_agent_image(INTAKE_AGENT_ID)
-        grok_variant: str | None = None
         if is_grok:
-            from roboco.llm.providers.grok import _reasoning_effort_for
-
-            grok_variant = _reasoning_effort_for(INTAKE_AGENT_ID)
             await self._ensure_grok_interactive_image(image)
-            self._ensure_opencode_data_dir(INTAKE_AGENT_ID)
+            self._ensure_grok_usage_dir(INTAKE_AGENT_ID)
         else:
             await self._ensure_agent_image(INTAKE_AGENT_ID)
         container_name = f"roboco-agent-{INTAKE_AGENT_ID}"
@@ -3051,7 +3046,6 @@ class AgentOrchestrator:
                 provider_auth_token=route.auth_token,
                 provider_type=route.provider_type.value,
                 model=route.model_name,
-                grok_variant=grok_variant,
             )
         )
         container_id = await self._run_container_cmd(cmd)
@@ -3076,8 +3070,8 @@ class AgentOrchestrator:
 
         # Record a usage session (task_id=None) and pin its id on the instance so
         # the reap finalizer can look up token usage — without this an interactive
-        # session finalizes at 0 tokens / $0 (the GROK path reads opencode.db by
-        # this id; the Claude path reads the transcript). Mirrors _launch_spawn.
+        # session finalizes at 0 tokens / $0 (the GROK path reads the captured
+        # usage.json; the Claude path reads the transcript). Mirrors _launch_spawn.
         usage_session_id = await self._record_spawn_session(config, None)
         if usage_session_id is not None:
             instance.usage_session_id = usage_session_id
@@ -3194,13 +3188,9 @@ class AgentOrchestrator:
 
         is_grok = route.provider_type == ModelProvider.GROK
         image = GROK_SECRETARY_IMAGE if is_grok else get_agent_image(SECRETARY_AGENT_ID)
-        grok_variant: str | None = None
         if is_grok:
-            from roboco.llm.providers.grok import _reasoning_effort_for
-
-            grok_variant = _reasoning_effort_for(SECRETARY_AGENT_ID)
             await self._ensure_grok_interactive_image(image)
-            self._ensure_opencode_data_dir(SECRETARY_AGENT_ID)
+            self._ensure_grok_usage_dir(SECRETARY_AGENT_ID)
         else:
             await self._ensure_agent_image(SECRETARY_AGENT_ID)
         container_name = f"roboco-agent-{SECRETARY_AGENT_ID}"
@@ -3222,7 +3212,6 @@ class AgentOrchestrator:
                 provider_auth_token=route.auth_token,
                 provider_type=route.provider_type.value,
                 model=route.model_name,
-                grok_variant=grok_variant,
             )
         )
         container_id = await self._run_container_cmd(cmd)
@@ -3319,7 +3308,7 @@ class AgentOrchestrator:
                 "prompt": (
                     f"{DATA_HOST_PATH}/prompts-generated/{SECRETARY_AGENT_ID}-prompt.md"
                 ),
-                "opencode": f"{DATA_HOST_PATH}/opencode/{SECRETARY_AGENT_ID}",
+                "grok_usage": f"{DATA_HOST_PATH}/grok-usage/{SECRETARY_AGENT_ID}",
             }
         return {
             "claude": CLAUDE_AUTH_HOST_PATH,
@@ -3328,8 +3317,8 @@ class AgentOrchestrator:
                 / "roboco-prompts"
                 / f"{SECRETARY_AGENT_ID}-prompt.md"
             ),
-            "opencode": str(
-                Path(tempfile.gettempdir()) / "roboco-opencode" / SECRETARY_AGENT_ID
+            "grok_usage": str(
+                Path(tempfile.gettempdir()) / "roboco-grok-usage" / SECRETARY_AGENT_ID
             ),
         }
 
@@ -3436,7 +3425,7 @@ class AgentOrchestrator:
                     f"{DATA_HOST_PATH}/prompts-generated/{INTAKE_AGENT_ID}-prompt.md"
                 ),
                 "workspaces": f"{DATA_HOST_PATH}/workspaces",
-                "opencode": f"{DATA_HOST_PATH}/opencode/{INTAKE_AGENT_ID}",
+                "grok_usage": f"{DATA_HOST_PATH}/grok-usage/{INTAKE_AGENT_ID}",
             }
         return {
             "claude": CLAUDE_AUTH_HOST_PATH,
@@ -3446,8 +3435,8 @@ class AgentOrchestrator:
                 / f"{INTAKE_AGENT_ID}-prompt.md"
             ),
             "workspaces": str(Path(settings.workspaces_root)),
-            "opencode": str(
-                Path(tempfile.gettempdir()) / "roboco-opencode" / INTAKE_AGENT_ID
+            "grok_usage": str(
+                Path(tempfile.gettempdir()) / "roboco-grok-usage" / INTAKE_AGENT_ID
             ),
         }
 
@@ -3457,59 +3446,31 @@ class AgentOrchestrator:
     ) -> None:
         """Inject the per-provider LLM env for an interactive container.
 
-        GROK runs natively on opencode: ``OPENAI_*`` (xAI) + ``ROBOCO_AGENT_MODEL``
-        + the mounted system prompt the driver renders ``opencode.json`` from,
-        plus the per-agent opencode store mount so finalize can read usage back.
-        Every other provider uses the Claude path's ``ANTHROPIC_*`` injection (or
-        the mounted ``~/.claude`` default when the route carries no creds).
+        GROK runs on the official ``grok`` CLI, exactly like the one-shot path:
+        the subscription auth (``~/.grok/auth.json``) is mounted read-only, no
+        metered xAI key is used, the per-agent data dir is mounted so the driver's
+        per-turn usage capture lands a ``usage.json`` the finalizer reads back, and
+        the per-role permissions / reasoning come from the grok flags the driver
+        computes (``grok_cli_config``) — not env. Every other provider uses the
+        Claude path's ``ANTHROPIC_*`` injection (or the mounted ``~/.claude``
+        default when the route carries no creds).
         """
+        from roboco.llm.providers.grok import GrokCliProvider
         from roboco.models.base import ModelProvider
 
         base_url = spec.provider_base_url
         auth_token = spec.provider_auth_token
         if spec.provider_type == ModelProvider.GROK.value:
-            opencode_host = spec.hosts.get("opencode")
-            if opencode_host:
-                # opencode persists usage to opencode.db under its data dir; the
-                # per-agent host mount lets the finalizer read it (same in-
-                # container path as the one-shot Grok store).
-                cmd.extend(["-v", f"{opencode_host}:/home/agent/.local/share/opencode"])
-            cmd.extend(
-                [
-                    # Built-in xai provider authenticates from XAI_API_KEY and
-                    # reads XAI_BASE_URL; opencode_config emits no provider block,
-                    # so these envs are the only LLM wiring needed.
-                    "-e",
-                    f"XAI_API_KEY={auth_token or ''}",
-                    "-e",
-                    f"XAI_BASE_URL={base_url or 'https://api.x.ai/v1'}",
-                    "-e",
-                    f"ROBOCO_AGENT_MODEL={spec.model}",
-                    "-e",
-                    "ROBOCO_SYSTEM_PROMPT=/app/system-prompt.md",
-                ]
-            )
-            # Both interactive roles are read-only conversational agents: no code
-            # edits, no shell (Claude-parity — the SDK gates deny everything but
-            # Read/Grep/Glob + their tools). Intake reads sibling product repos
-            # that sit OUTSIDE its cwd, so it keeps external-directory reads; the
-            # Secretary only reads /app + the API, so it doesn't.
-            is_intake = isinstance(spec, _IntakeRunSpec)
+            GrokCliProvider._append_grok_auth_mount(cmd)
+            GrokCliProvider._append_usage_mount(cmd, spec.hosts)
             cmd.extend(
                 [
                     "-e",
-                    "ROBOCO_GROK_EDIT_PERMISSION=deny",
+                    "ROBOCO_AGENT_MODEL=grok-build",
                     "-e",
-                    "ROBOCO_GROK_BASH_PERMISSION=deny",
-                    "-e",
-                    "ROBOCO_GROK_EXTERNAL_DIR_PERMISSION="
-                    f"{'allow' if is_intake else 'deny'}",
+                    "ROBOCO_GROK_USAGE_FILE=/home/agent/.grok-usage/usage.json",
                 ]
             )
-            # Per-role reasoning effort: the opencode-serve driver passes this as
-            # the message `variant` (same lever as the one-shot --variant).
-            if spec.grok_variant:
-                cmd.extend(["-e", f"ROBOCO_GROK_VARIANT={spec.grok_variant}"])
             return
         if base_url:
             cmd.extend(["-e", f"ANTHROPIC_BASE_URL={base_url}"])
@@ -3556,7 +3517,7 @@ class AgentOrchestrator:
                 f"CLAUDE_CODE_SUBAGENT_MODEL={spec.cli_model}",
             ]
         )
-        # GROK runs opencode (OPENAI_* + opencode store); other providers use the
+        # GROK mounts the subscription auth + usage dir; other providers use the
         # ANTHROPIC_* injection or the mounted ~/.claude default.
         AgentOrchestrator._append_interactive_provider_env(cmd, spec)
         cmd.append(spec.image)
@@ -3923,77 +3884,70 @@ class AgentOrchestrator:
         except OSError:
             return (0, 0, 0, 0)
 
-    def _opencode_db_path(self, agent_id: str) -> str:
-        """In-orchestrator path to a GROK agent's opencode SQLite store.
+    def _grok_usage_json(self, agent_id: str) -> dict[str, Any] | None:
+        """Read a GROK agent's ``usage.json`` (``{model, total_tokens, cost_usd}``).
 
-        The agent writes opencode.db under the shared data volume; the compose
-        file mounts that host dir at ``OPENCODE_DATA_DIR`` here, so finalize can
-        read it back — the opencode analogue of the mounted Claude transcript.
+        Written to the per-agent data dir by the grok-CLI entrypoint (one-shot,
+        post-run) and the interactive driver (per-turn); the orchestrator sees it
+        at ``GROK_USAGE_DATA_DIR``. Returns ``None`` when absent / unreadable.
         """
-        return str(Path(OPENCODE_DATA_DIR) / agent_id / "opencode.db")
+        usage_json = Path(GROK_USAGE_DATA_DIR) / agent_id / "usage.json"
+        try:
+            data = json.loads(usage_json.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return data if isinstance(data, dict) else None
 
-    def _grok_usage_from_opencode(self, agent_id: str) -> tuple[int, int, int, int]:
-        """Sum a GROK agent's token usage from its per-agent data dir.
+    def _grok_usage_tokens(self, agent_id: str) -> tuple[int, int, int, int]:
+        """A GROK agent's token usage from its ``usage.json``.
 
-        The grok-CLI one-shot path writes a ``usage.json`` (``total_tokens``)
-        there post-run — read that first. The interactive opencode-serve path
-        still lands its usage in ``opencode.db``, so fall back to it. The grok
-        total folds into output (it bills at the output rate, matching
-        ``calculate_cost``). A WARNING is logged on a 0-token read because a
+        grok reports a single cumulative total with no input/output split, so it
+        folds into output (it bills at the output rate, matching
+        ``calculate_cost``). A WARNING is logged on a missing/zero read because a
         silent mount/uid failure is otherwise indistinguishable from a genuine
         zero-cost run. Returns ``(input, output, cache_read, cache_write)``.
         """
-        cli_tokens = self._grok_cli_total_tokens(agent_id)
-        if cli_tokens is not None:
-            return (0, cli_tokens, 0, 0)
-
-        from roboco.llm.providers.opencode_usage import read_session_usage
-
-        db_path = self._opencode_db_path(agent_id)
-        usage = read_session_usage(db_path)
-        if usage is None:
+        data = self._grok_usage_json(agent_id)
+        total = 0
+        if data:
+            try:
+                total = int(data.get("total_tokens", 0))
+            except (TypeError, ValueError):
+                total = 0
+        if not total:
             logger.warning(
                 "GROK agent finalized with no readable usage "
                 "(0 tokens / $0) — check the data dir mount",
                 agent_id=agent_id,
-                db_path=db_path,
             )
-            return (0, 0, 0, 0)
-        return (
-            usage.tokens_input,
-            usage.tokens_output + usage.tokens_reasoning,
-            usage.tokens_cache_read,
-            usage.tokens_cache_write,
-        )
+        return (0, total, 0, 0)
 
-    @staticmethod
-    def _grok_cli_total_tokens(agent_id: str) -> int | None:
-        """Total tokens from a grok-CLI ``usage.json``, or None if absent.
-
-        The grok-cli entrypoint writes ``{model, total_tokens, cost_usd}`` to the
-        per-agent data dir; the orchestrator sees it at ``OPENCODE_DATA_DIR``.
-        """
-        usage_json = Path(OPENCODE_DATA_DIR) / agent_id / "usage.json"
+    def _grok_cost_usd(self, agent_id: str) -> float:
+        """A GROK agent's captured notional cost from its ``usage.json`` (0 if none)."""
+        data = self._grok_usage_json(agent_id)
+        if not data:
+            return 0.0
         try:
-            data = json.loads(usage_json.read_text(encoding="utf-8"))
-            return int(data.get("total_tokens", 0))
-        except (OSError, json.JSONDecodeError, ValueError, TypeError):
-            return None
+            return float(data.get("cost_usd", 0.0))
+        except (TypeError, ValueError):
+            return 0.0
 
     async def _enforce_grok_cost_budget(self) -> None:
-        """Kill a live GROK container whose cumulative opencode cost exceeds the cap.
+        """Kill a live GROK container whose captured cost exceeds the cap.
 
-        opencode exposes no token/budget hook to a plugin, so the budget
-        kill-switch (Claude Code parity for runaway token burn — a loop that
-        keeps firing verbs evades the idle watchdog but still burns cost) lives
-        here: read each ACTIVE GROK container's cumulative cost from its opencode
-        store and kill + evict it past ``ROBOCO_GROK_MAX_COST_USD``. The reaper
-        then releases the freed task. Disabled (no-op) when the cap is <= 0.
+        The grok CLI exposes no live token/budget hook, so the budget kill-switch
+        (Claude Code parity for runaway token burn — a loop that keeps firing
+        verbs evades the idle watchdog but still burns cost) reads each ACTIVE
+        GROK container's captured cost from its ``usage.json`` and kills + evicts
+        it past ``ROBOCO_GROK_MAX_COST_USD``. The reaper then releases the freed
+        task. This bites on the interactive sessions (the driver rewrites
+        usage.json every turn, so a runaway chat is caught between turns); a
+        one-shot ``grok -p`` writes usage.json only post-run and is bounded by its
+        ``--max-turns`` cap instead. Disabled (no-op) when the cap is <= 0.
         """
         cap = getattr(self, "_grok_max_cost_usd", 0.0)
         if cap <= 0:
             return
-        from roboco.llm.providers.opencode_usage import cost_for_session
         from roboco.models.base import ModelProvider
 
         for agent_id, instance in list(self._instances.items()):
@@ -4004,9 +3958,7 @@ class AgentOrchestrator:
                 or instance.state != AgentState.ACTIVE
             ):
                 continue
-            _, cost = cost_for_session(
-                config.model or "", self._opencode_db_path(agent_id)
-            )
+            cost = self._grok_cost_usd(agent_id)
             if cost <= cap:
                 continue
             try:
@@ -4040,17 +3992,17 @@ class AgentOrchestrator:
     ) -> tuple[int, int, int, int]:
         """Resolve final token counts for a stopping agent.
 
-        For a GROK agent, reads the opencode SQLite store (no SDK server / Claude
-        transcript exists). Otherwise tries the live SDK ``/usage/status`` first;
-        if that misses — the SDK's in-memory counts race container teardown for
-        short-lived agents — it falls back to the agent's Claude Code transcript,
-        which is durable and mounted into this container. Returns
+        For a GROK agent, reads the captured ``usage.json`` (no SDK server /
+        Claude transcript exists). Otherwise tries the live SDK ``/usage/status``
+        first; if that misses — the SDK's in-memory counts race container teardown
+        for short-lived agents — it falls back to the agent's Claude Code
+        transcript, which is durable and mounted into this container. Returns
         ``(input, output, cache_read, cache_write)``.
         """
         from roboco.models.base import ModelProvider
 
         if self.get_provider_for_agent(agent_id) == ModelProvider.GROK.value:
-            return self._grok_usage_from_opencode(agent_id)
+            return self._grok_usage_tokens(agent_id)
 
         tokens = (0, 0, 0, 0)
         sdk_url = f"http://roboco-agent-{agent_id}:{SDK_PORT}/usage/status"
@@ -6701,7 +6653,7 @@ Start now: evidence(task_id="{task_id}")
 
         ``_assignee_has_active_instance`` shields a live container from the
         reaper — correct for a Claude agent quiet during a long edit/test cycle.
-        A wedged opencode container is the one case that breaks: ACTIVE *and*
+        A wedged GROK container is the one case that breaks: ACTIVE *and*
         silent (an idle model call fires no gateway verb), so its heartbeat never
         advances and the skip would protect it forever. Returns the slug only for
         a GROK instance idle past the grok-kill TTL — a recent heartbeat, no
@@ -6774,8 +6726,8 @@ Start now: evidence(task_id="{task_id}")
             ts = t.last_heartbeat_at
             if ts is None or ts < cutoff:
                 # A live container normally protects its task. The sole exception
-                # is a wedged GROK (opencode) container — ACTIVE yet firing no
-                # verb — which the live-instance skip would shield forever. Kill +
+                # is a wedged GROK container — ACTIVE yet firing no verb — which
+                # the live-instance skip would shield forever. Kill +
                 # evict it past the grok-idle TTL (then fall through to release);
                 # a live non-grok agent, or a grok within the TTL, is skipped.
                 if self._assignee_has_active_instance(

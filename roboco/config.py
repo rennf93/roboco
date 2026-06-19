@@ -662,12 +662,12 @@ class Settings(BaseSettings):
             "override via ROBOCO_STALE_CLAIM_REAP_SECONDS"
         ),
     )
-    # A GROK (opencode) agent that wedges — an idle model call / stream with no
-    # gateway verb — is ACTIVE-yet-silent, so the heartbeat reaper's live-
-    # container skip would shield its task forever (opencode emits no SDK budget
-    # signal and advances no heartbeat while parked, unlike a Claude agent that
-    # at least reports). After this longer window the orchestrator kills + evicts
-    # the container so the reaper releases the task. Longer than
+    # A GROK agent that wedges — an idle model call / stream with no gateway
+    # verb — is ACTIVE-yet-silent, so the heartbeat reaper's live-container skip
+    # would shield its task forever (the grok CLI emits no SDK budget signal and
+    # advances no heartbeat while parked, unlike a Claude agent that at least
+    # reports). After this longer window the orchestrator kills + evicts the
+    # container so the reaper releases the task. Longer than
     # stale_claim_reap_seconds so only a truly-dead run trips it, never a
     # slow-but-working agent.
     grok_idle_kill_seconds: int = Field(
@@ -679,10 +679,10 @@ class Settings(BaseSettings):
         ),
     )
     # Budget kill-switch parity for GROK. Claude Code's per-agent token-budget
-    # hook fires against the SDK :9000 server; opencode exposes no usage hook to
-    # a plugin, so the orchestrator enforces the cap by reading each live GROK
-    # container's cumulative cost from its opencode store and killing it when it
-    # crosses this ceiling (also catches runaway-loop token burn). USD; 0 = off.
+    # hook fires against the SDK :9000 server; the grok CLI exposes no live usage
+    # hook, so the orchestrator enforces the cap by reading each live GROK
+    # container's captured cost from its usage.json and killing it when it crosses
+    # this ceiling (also catches runaway-loop token burn). USD; 0 = off.
     grok_max_cost_usd: float = Field(
         default=0.0,
         ge=0,

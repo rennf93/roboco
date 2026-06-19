@@ -36,16 +36,14 @@ fi
 RUN_LOG="/tmp/grok-run.json"
 ERR_LOG="/tmp/grok-run.err"
 WORKSPACE="${ROBOCO_WORKSPACE:-$PWD}"
-# A fixed session id (set by the provider) makes the run's session store
-# locatable for usage capture below; absent, grok generates its own.
-SESSION_ARGS=()
-[ -n "${ROBOCO_AGENT_SESSION_ID:-}" ] && SESSION_ARGS=(-s "${ROBOCO_AGENT_SESSION_ID}")
+# NOTE: grok generates its own session id and ignores a requested one (`-s` does
+# not pin it), so we do NOT pass a session id in; usage capture below reads the
+# real id back out of the JSON run log instead.
 set +e
 grok -p "${ROBOCO_INITIAL_PROMPT:-}" \
   -m "${ROBOCO_AGENT_MODEL:-grok-build}" \
   --cwd "$WORKSPACE" \
   --output-format json \
-  "${SESSION_ARGS[@]}" \
   "${GROK_ARGS[@]}" \
   < /dev/null > "$RUN_LOG" 2> "$ERR_LOG"
 run_rc=$?
@@ -54,18 +52,19 @@ set -e
 cat "$RUN_LOG"
 [ -s "$ERR_LOG" ] && cat "$ERR_LOG" >&2
 
-# Capture token usage from the grok session store (~/.grok/sessions). The
-# orchestrator reads the written usage file back at finalize — the grok analogue
-# of the Claude transcript. Best-effort; never fails the run. Run from /app for
-# the same module-resolution reason as the render above.
-( cd /app && ROBOCO_GROK_RUN_CWD="$WORKSPACE" \
+# Capture token usage from the grok session store (~/.grok/sessions). The reader
+# reads the run's real session id out of $ROBOCO_GROK_RUN_LOG, locates the store,
+# and writes a usage.json the orchestrator reads back at finalize — the grok
+# analogue of the Claude transcript. Best-effort; never fails the run. Run from
+# /app for the same module-resolution reason as the render above.
+( cd /app && ROBOCO_GROK_RUN_CWD="$WORKSPACE" ROBOCO_GROK_RUN_LOG="$RUN_LOG" \
     python -m roboco.llm.providers.grok_cli_usage ) || true
 
-# Rate-limit detection (parity with the opencode B4 path): an xAI 429 / quota
-# error ends the run without a terminal verb. Detect it from the run output and
-# exit 75 (EX_TEMPFAIL) so the orchestrator PARKS the grok provider instead of
-# the dispatcher respawning the same task every tick (429 -> exit -> respawn, a
-# token loop). A rate-limited task is retried once the limit lifts, not dropped.
+# Rate-limit detection: an xAI 429 / quota error ends the run without a terminal
+# verb. Detect it from the run output and exit 75 (EX_TEMPFAIL) so the
+# orchestrator PARKS the grok provider instead of the dispatcher respawning the
+# same task every tick (429 -> exit -> respawn, a token loop). A rate-limited task
+# is retried once the limit lifts, not dropped.
 if grep -qiE '(\b429\b|rate.?limit|too many requests|quota|insufficient_quota)' \
     "$RUN_LOG" "$ERR_LOG" 2>/dev/null; then
   echo "[grok] rate-limited — exiting 75 so the orchestrator parks the provider;" \

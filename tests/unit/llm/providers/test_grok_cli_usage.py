@@ -10,6 +10,8 @@ from roboco.llm.providers import grok_cli_usage as gu
 if TYPE_CHECKING:
     from pathlib import Path
 
+    import pytest
+
 
 def _write_updates(path: Path, totals: list[int]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -79,7 +81,9 @@ def test_usage_and_cost_prices_total_at_output_rate() -> None:
     assert abs(cost - 2.00) < 1e-6  # noqa: PLR2004
 
 
-def test_main_writes_usage_file(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_main_writes_usage_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     home = tmp_path / ".grok"
     cwd = "/ws/be-dev-1"
     sid = "sid-1"
@@ -89,6 +93,7 @@ def test_main_writes_usage_file(tmp_path: Path, monkeypatch) -> None:  # type: i
     monkeypatch.setattr(gu, "USAGE_OUT_PATH", out)
     monkeypatch.setenv("GROK_HOME", str(home))
     monkeypatch.setenv("ROBOCO_GROK_RUN_CWD", cwd)
+    monkeypatch.delenv("ROBOCO_GROK_RUN_LOG", raising=False)
     monkeypatch.setenv("ROBOCO_AGENT_SESSION_ID", sid)
     monkeypatch.setenv("ROBOCO_AGENT_MODEL", "grok-build")
     assert gu.main() == 0
@@ -96,3 +101,76 @@ def test_main_writes_usage_file(tmp_path: Path, monkeypatch) -> None:  # type: i
     assert data["total_tokens"] == 1234  # noqa: PLR2004
     assert data["model"] == "grok-build"
     assert data["cost_usd"] > 0.0
+
+
+def test_capture_session_usage_writes_running_total(tmp_path: Path) -> None:
+    home = tmp_path / ".grok"
+    cwd = "/ws/intake-1"
+    sid = "sid-x"
+    target = home / "sessions" / "%2Fws%2Fintake-1" / sid
+    _write_updates(target / "updates.jsonl", [100, 900, 500])
+    out = tmp_path / "usage.json"
+    tokens = gu.capture_session_usage(
+        cwd=cwd, session_id=sid, model="grok-build", out_path=out, grok_home=home
+    )
+    assert tokens == 900  # noqa: PLR2004 — the running max is the chat total
+    data = json.loads(out.read_text())
+    assert data["total_tokens"] == 900  # noqa: PLR2004
+    assert data["cost_usd"] > 0.0
+
+
+def test_capture_session_usage_zero_when_session_absent(tmp_path: Path) -> None:
+    out = tmp_path / "usage.json"
+    tokens = gu.capture_session_usage(
+        cwd="/ws/x",
+        session_id="missing",
+        model="grok-build",
+        out_path=out,
+        grok_home=tmp_path / ".grok",
+    )
+    assert tokens == 0
+    # A zero session still writes a usage file (a real zero-cost run).
+    assert json.loads(out.read_text())["total_tokens"] == 0
+
+
+def test_session_id_from_run_log_reads_the_real_id(tmp_path: Path) -> None:
+    log = tmp_path / "run.json"
+    log.write_text(
+        json.dumps({"text": "ok", "sessionId": "019edd9d-real", "stopReason": "End"}),
+        encoding="utf-8",
+    )
+    assert gu.session_id_from_run_log(log) == "019edd9d-real"
+
+
+def test_session_id_from_run_log_none_for_bad_log(tmp_path: Path) -> None:
+    assert gu.session_id_from_run_log(tmp_path / "absent.json") is None
+    bad = tmp_path / "bad.json"
+    bad.write_text("not json", encoding="utf-8")
+    assert gu.session_id_from_run_log(bad) is None
+    idless = tmp_path / "idless.json"
+    idless.write_text(json.dumps({"text": "ok"}), encoding="utf-8")
+    assert gu.session_id_from_run_log(idless) is None
+
+
+def test_main_prefers_run_log_session_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # grok ignores a requested id, so the real id comes from the run log — it must
+    # win over the ROBOCO_AGENT_SESSION_ID fallback (which points at no store).
+    home = tmp_path / ".grok"
+    cwd = "/ws/be-dev-1"
+    real_sid = "real-sid"
+    _write_updates(
+        home / "sessions" / "%2Fws%2Fbe-dev-1" / real_sid / "updates.jsonl", [777]
+    )
+    run_log = tmp_path / "run.json"
+    run_log.write_text(json.dumps({"sessionId": real_sid}), encoding="utf-8")
+    out = tmp_path / "usage.json"
+    monkeypatch.setattr(gu, "USAGE_OUT_PATH", out)
+    monkeypatch.setenv("GROK_HOME", str(home))
+    monkeypatch.setenv("ROBOCO_GROK_RUN_CWD", cwd)
+    monkeypatch.setenv("ROBOCO_GROK_RUN_LOG", str(run_log))
+    monkeypatch.setenv("ROBOCO_AGENT_SESSION_ID", "ignored-fallback")
+    monkeypatch.setenv("ROBOCO_AGENT_MODEL", "grok-build")
+    assert gu.main() == 0
+    assert json.loads(out.read_text())["total_tokens"] == 777  # noqa: PLR2004

@@ -1,17 +1,14 @@
-"""Container entrypoint for the GROK intake (prompter) agent — opencode serve.
+"""Container entrypoint for the GROK intake (prompter) agent — grok CLI.
 
 The Grok analogue of ``intake_main``: the same in-container ``POST /turn``
 receiver and the same relay sink to ``/api/prompter/live/{id}/events``, but the
-held-open session is an :class:`OpencodeServeSession` (``opencode serve``)
-instead of a ``ClaudeSDKClient``. ``opencode.json`` (model + system prompt) is
-rendered first. Intake is a human-only interviewer (no gateway verbs); its one
-action tool, ``propose_draft``, is registered by the ``intake-tools.js`` opencode
-plugin (baked into the grok-prompter image's plugin auto-discovery dir). Because
-opencode's synchronous serve reply does NOT carry tool-call parts, that plugin
-POSTs the draft straight to the prompter-live relay (the same
-``/api/prompter/live/{id}/events`` endpoint) so the panel renders the draft card.
-The ``IntakeDriver`` loop, message source, and relay are reused unchanged — only
-the ``SessionFactory`` differs.
+held-open session is a :class:`GrokCliSession` (per-turn headless ``grok -p``,
+resuming one session id) instead of a ``ClaudeSDKClient``. ``~/.grok/config.toml``
+is rendered first to wire the intake agent's one action tool, ``propose_draft``,
+as the ``roboco-intake`` MCP server. Intake is a human-only interviewer with no
+gateway verbs; its only MCP server is ``roboco-intake``. The ``IntakeDriver``
+loop, message source, and relay are reused unchanged — only the
+``SessionFactory`` differs.
 """
 
 from __future__ import annotations
@@ -24,14 +21,14 @@ from typing import TYPE_CHECKING
 import httpx
 import structlog
 
+from roboco.agent_sdk.grok_cli_session import GrokCliSession
 from roboco.agent_sdk.intake_driver import IntakeDriver
 from roboco.agent_sdk.intake_main import (
     build_receiver,
     make_message_source,
     make_relay_sink,
 )
-from roboco.agent_sdk.opencode_session import OpencodeServeSession, serve_port
-from roboco.llm.providers import opencode_config
+from roboco.llm.providers.grok_cli_config import GROK_CONFIG_PATH, render_config_toml
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -41,24 +38,63 @@ logger = structlog.get_logger()
 _RECEIVER_PORT = 9000  # ROBOCO_SDK_PORT — the orchestrator delivers messages here
 
 
-async def main() -> None:  # pragma: no cover - needs the live container + opencode
-    """Render opencode.json, then run the receiver + driver for the chat's life."""
-    import uvicorn
+def _render_grok_config(base_url: str, session_id: str) -> None:
+    """Write ``~/.grok/config.toml`` wiring the ``roboco-intake`` MCP server.
 
-    # Render opencode.json (provider/model/MCP gateway/instructions) from the
-    # spawn env so `opencode serve` is gateway-wired before it starts.
-    opencode_config.main()
+    ``uv run --directory /app`` pins both the project env (the baked
+    ``/app/.venv``) and the working directory to ``/app`` so ``-m
+    roboco.mcp.intake_server`` resolves the INSTALLED package, never a workspace
+    clone that might shadow it (the ModuleNotFound lesson).
+    """
+    mcp_servers = {
+        "roboco-intake": {
+            "command": "uv",
+            "args": [
+                "run",
+                "--directory",
+                "/app",
+                "--no-sync",
+                "python",
+                "-m",
+                "roboco.mcp.intake_server",
+            ],
+            "env": {
+                "ROBOCO_API_URL": base_url,
+                "ROBOCO_PROMPTER_SESSION_ID": session_id,
+                "UV_PROJECT_ENVIRONMENT": "/app/.venv",
+            },
+        }
+    }
+    GROK_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    GROK_CONFIG_PATH.write_text(
+        render_config_toml({"mcpServers": mcp_servers}), encoding="utf-8"
+    )
+
+
+async def main() -> None:  # pragma: no cover - needs the live container + grok
+    """Render config.toml, then run the receiver + driver for the chat's life."""
+    import uvicorn
 
     session_id = os.environ["ROBOCO_PROMPTER_SESSION_ID"]
     base_url = os.environ.get("ROBOCO_API_URL", "http://roboco-orchestrator:8000")
     cwd = os.environ.get("ROBOCO_WORKSPACE", "/data/workspace")
 
+    _render_grok_config(base_url, session_id)
+
     queue: asyncio.Queue[str | None] = asyncio.Queue()
     client = httpx.AsyncClient(timeout=30.0)
 
     @asynccontextmanager
-    async def session_factory() -> AsyncIterator[OpencodeServeSession]:
-        async with OpencodeServeSession(port=serve_port(), cwd=cwd) as session:
+    async def session_factory() -> AsyncIterator[GrokCliSession]:
+        async with GrokCliSession(
+            cwd=cwd,
+            agent_id=os.environ.get("ROBOCO_AGENT_ID", ""),
+            model=os.environ.get("ROBOCO_AGENT_MODEL", "grok-build"),
+            usage_file=os.environ.get("ROBOCO_GROK_USAGE_FILE"),
+            # Intake reads sibling product repos that sit outside its cwd under
+            # the mounted workspaces tree — keep those reads allowed.
+            extra_args=["--allow", "Read(/data/workspaces/**)"],
+        ) as session:
             yield session
 
     driver = IntakeDriver(

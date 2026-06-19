@@ -115,7 +115,7 @@ def calculate_cost(
             Reasoning/thinking tokens that a provider reports *separately* from
             output (e.g. xAI grok-build-*) are billed at the output rate by the
             caller folding them into ``tokens_output`` (see
-            ``opencode_usage.cost_for_session``).
+            ``grok_cli_usage.usage_and_cost``).
 
     Returns:
         Estimated cost in USD as a float. Returns 0.0 for unpriced models

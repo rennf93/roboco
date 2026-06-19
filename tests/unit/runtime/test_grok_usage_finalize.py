@@ -1,13 +1,15 @@
-"""GROK agents capture token usage/cost from their opencode SQLite store.
+"""GROK agents capture token usage/cost from their captured ``usage.json``.
 
-A Grok agent runs opencode — no SDK /usage/status server and no Claude
-transcript — so finalize must read opencode.db (mounted into the orchestrator)
-instead. Reasoning folds into output (it bills at the output rate).
+A Grok agent runs the grok CLI — no SDK /usage/status server and no Claude
+transcript — so finalize reads the ``usage.json`` the entrypoint / interactive
+driver wrote to the per-agent data dir (mounted into the orchestrator). grok
+reports a single cumulative total with no input/output split, so it folds into
+output (it bills at the output rate).
 """
 
 from __future__ import annotations
 
-import sqlite3
+import json
 from typing import TYPE_CHECKING
 
 import pytest
@@ -18,82 +20,58 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-def _make_db(path: Path, cols: dict[str, float]) -> None:
-    con = sqlite3.connect(path)
-    con.execute(
-        "CREATE TABLE session (id TEXT, tokens_input INT, tokens_output INT, "
-        "tokens_cache_read INT, tokens_cache_write INT, tokens_reasoning INT, "
-        "cost REAL)"
-    )
-    con.execute(
-        "INSERT INTO session (id, tokens_input, tokens_output, tokens_cache_read, "
-        "tokens_cache_write, tokens_reasoning, cost) VALUES (?,?,?,?,?,?,?)",
-        (
-            "s1",
-            cols["tokens_input"],
-            cols["tokens_output"],
-            cols["tokens_cache_read"],
-            cols["tokens_cache_write"],
-            cols["tokens_reasoning"],
-            cols["cost"],
+def _write_usage(path: Path, total_tokens: int, cost_usd: float) -> None:
+    path.write_text(
+        json.dumps(
+            {"model": "grok-build", "total_tokens": total_tokens, "cost_usd": cost_usd}
         ),
+        encoding="utf-8",
     )
-    con.commit()
-    con.close()
 
 
-def test_grok_usage_folds_reasoning_into_output(
+def test_grok_usage_folds_total_into_output(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    db = tmp_path / "opencode.db"
-    _make_db(
-        db,
-        {
-            "tokens_input": 100,
-            "tokens_output": 50,
-            "tokens_reasoning": 30,
-            "tokens_cache_read": 10,
-            "tokens_cache_write": 5,
-            "cost": 0.02,
-        },
-    )
-    orch = AgentOrchestrator.__new__(AgentOrchestrator)
-    monkeypatch.setattr(orch, "_opencode_db_path", lambda _aid: str(db))
-
-    # reasoning (30) folded into output (50) → 80; bills at the output rate.
-    assert orch._grok_usage_from_opencode("be-dev-1") == (100, 80, 10, 5)
-
-
-def test_grok_usage_zero_when_store_missing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+    usage = tmp_path / "usage.json"
+    _write_usage(usage, total_tokens=180, cost_usd=0.02)
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
     monkeypatch.setattr(
-        orch, "_opencode_db_path", lambda _aid: str(tmp_path / "absent.db")
+        orch, "_grok_usage_json", lambda _aid: json.loads(usage.read_text())
     )
-    assert orch._grok_usage_from_opencode("be-dev-1") == (0, 0, 0, 0)
+
+    # The whole total folds into output (no input/output split from the CLI).
+    assert orch._grok_usage_tokens("be-dev-1") == (0, 180, 0, 0)
+
+
+def test_grok_usage_zero_when_store_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    monkeypatch.setattr(orch, "_grok_usage_json", lambda _aid: None)
+    assert orch._grok_usage_tokens("be-dev-1") == (0, 0, 0, 0)
+
+
+def test_grok_cost_read_from_usage_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured_cost = 3.25
+    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    monkeypatch.setattr(
+        orch,
+        "_grok_usage_json",
+        lambda _aid: {"cost_usd": captured_cost, "total_tokens": 9},
+    )
+    assert orch._grok_cost_usd("be-dev-1") == captured_cost
+    monkeypatch.setattr(orch, "_grok_usage_json", lambda _aid: None)
+    assert orch._grok_cost_usd("be-dev-1") == 0.0
 
 
 @pytest.mark.asyncio
-async def test_resolve_final_usage_routes_grok_to_opencode(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+async def test_resolve_final_usage_routes_grok_to_usage_json(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    db = tmp_path / "opencode.db"
-    _make_db(
-        db,
-        {
-            "tokens_input": 7,
-            "tokens_output": 3,
-            "tokens_reasoning": 2,
-            "tokens_cache_read": 0,
-            "tokens_cache_write": 0,
-            "cost": 0.01,
-        },
-    )
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
-    monkeypatch.setattr(orch, "_opencode_db_path", lambda _aid: str(db))
+    monkeypatch.setattr(
+        orch, "_grok_usage_json", lambda _aid: {"total_tokens": 12, "cost_usd": 0.01}
+    )
     cfg = type("C", (), {"provider_type": "grok"})()
     orch._instances = {"be-dev-1": AgentInstance(agent_id="be-dev-1", config=cfg)}
 
-    # No SDK fetch / transcript read for GROK — usage comes from opencode.db.
-    assert await orch._resolve_final_token_usage("be-dev-1") == (7, 5, 0, 0)
+    # No SDK fetch / transcript read for GROK — usage comes from usage.json.
+    assert await orch._resolve_final_token_usage("be-dev-1") == (0, 12, 0, 0)

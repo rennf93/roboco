@@ -1,15 +1,14 @@
 """Prompt-injection guard — shared detector for incoming agent turns.
 
 RoboCo's prompt-injection guard is its OWN hook (``docker/scripts/user-prompt-hook.sh``,
-a Claude Code UserPromptSubmit hook), not a runtime built-in. opencode has no
-blocking pre-prompt hook, but it doesn't need one: the guard belongs at RoboCo's
-input boundary, in our own code, regardless of runtime. This ports the deny
-patterns to reusable Python so the same guard applies to:
+a Claude Code UserPromptSubmit hook), not a runtime built-in. The guard belongs
+at RoboCo's input boundary, in our own code, regardless of runtime. This ports
+the deny patterns to reusable Python so the same guard applies to:
 
   * interactive sessions (intake / secretary) — the ``IntakeDriver`` scans each
     turn before sending it to the model, covering BOTH Claude (whose SDK session
     runs with ``setting_sources=[]`` and so never loads the bash hook) and Grok
-    (opencode, no blocking pre-prompt hook);
+    (the grok CLI, scanned at the same boundary);
   * one-shot Grok agents — the grok entrypoint scans ``ROBOCO_INITIAL_PROMPT``.
 
 Content delivered to an agent (an A2A skill request, a PM's task description, an
