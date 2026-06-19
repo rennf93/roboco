@@ -38,6 +38,16 @@ def test_is_agent_owned_dir_matches_app_and_workspaces() -> None:
     assert is_agent_owned_dir("-home-renzof-code", WORKSPACES) is False
 
 
+def test_is_agent_owned_dir_rejects_sibling_root_prefixes() -> None:
+    # A sibling workspace root that merely shares the encoded prefix without a
+    # "-" boundary must NOT be treated as agent-owned, else operator transcripts
+    # under it get pruned. Encoded root here is "-data-workspaces".
+    assert is_agent_owned_dir("-data-workspaces", WORKSPACES) is True  # exact
+    assert is_agent_owned_dir("-data-workspaces2", WORKSPACES) is False
+    assert is_agent_owned_dir("-data-workspaces2-project", WORKSPACES) is False
+    assert is_agent_owned_dir("-data-workspacesBackup-x", WORKSPACES) is False
+
+
 def test_is_agent_owned_dir_handles_root_slash_safely() -> None:
     # A pathological "/" workspaces root must not make every dir agent-owned.
     assert is_agent_owned_dir("-Users-renzof-secret", "/") is False
