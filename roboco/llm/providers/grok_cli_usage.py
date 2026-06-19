@@ -25,6 +25,7 @@ falling back to ``ROBOCO_AGENT_SESSION_ID`` only when no log is given.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -42,10 +43,11 @@ USAGE_OUT_PATH = Path(
 def total_tokens_from_updates(updates_path: Path) -> int:
     """Return the max cumulative ``totalTokens`` in a grok ``updates.jsonl``.
 
-    Each line is a ``session/update`` JSON-RPC event whose ``params._meta`` (or a
-    top-level field on older formats) carries a cumulative ``totalTokens``. The
-    maximum is the session total. Returns 0 for a missing / empty / unparseable
-    file (best-effort — usage capture never fails a run).
+    Each line is a ``session/update`` JSON-RPC event. grok carries the cumulative
+    ``totalTokens`` on the inner ``params.update._meta`` (the per-chunk metadata);
+    older / alternate shapes put it on ``params._meta`` or the top level. The
+    maximum across the file is the session total. Returns 0 for a missing / empty
+    / unparseable file (best-effort — usage capture never fails a run).
     """
     best = 0
     try:
@@ -65,9 +67,21 @@ def total_tokens_from_updates(updates_path: Path) -> int:
 
 
 def _extract_total_tokens(event: dict[str, Any]) -> int:
-    """Pull ``totalTokens`` from an update event (nested ``_meta`` or top-level)."""
-    meta = (event.get("params") or {}).get("_meta") or {}
-    value = meta.get("totalTokens", event.get("totalTokens", 0))
+    """Pull the cumulative ``totalTokens`` from a grok ``session/update`` event.
+
+    grok nests the counter on ``params.update._meta`` (the per-chunk metadata);
+    ``params._meta`` there only carries event/timing ids. Fall back to
+    ``params._meta`` and a top-level field for older / alternate shapes. Returns 0
+    when no recognised field is present.
+    """
+    params = event.get("params") or {}
+    update_meta = (params.get("update") or {}).get("_meta") or {}
+    params_meta = params.get("_meta") or {}
+    for meta in (update_meta, params_meta):
+        if isinstance(meta, dict) and "totalTokens" in meta:
+            value = meta["totalTokens"]
+            return int(value) if isinstance(value, (int, float)) else 0
+    value = event.get("totalTokens", 0)
     return int(value) if isinstance(value, (int, float)) else 0
 
 
@@ -125,21 +139,41 @@ def capture_session_usage(
         return 0
 
 
-def session_id_from_run_log(run_log: Path) -> str | None:
-    """Read the ``sessionId`` grok generated from its ``--output-format json`` log.
+def _sid_from_obj(obj: object) -> str | None:
+    """A non-empty ``sessionId`` / ``session_id`` from a parsed event, else None."""
+    if not isinstance(obj, dict):
+        return None
+    sid = obj.get("sessionId") or obj.get("session_id")
+    return sid if isinstance(sid, str) and sid else None
 
-    ``grok -p`` does not honour a requested session id, so the entrypoint hands
-    us the run's JSON output and we read the real id back. Returns ``None`` for a
-    missing / non-JSON / id-less log.
+
+def session_id_from_run_log(run_log: Path) -> str | None:
+    """Read the ``sessionId`` grok generated from the run's output log.
+
+    ``grok -p`` does not honour a requested session id, so the entrypoint hands us
+    the run's output and we read the real id back. Handles BOTH the single-object
+    ``--output-format json`` log and the NDJSON ``--output-format streaming-json``
+    log (the id rides on the terminal ``end`` event). Returns ``None`` for a
+    missing / id-less log.
     """
     try:
-        payload = json.loads(run_log.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        text = run_log.read_text(encoding="utf-8")
+    except OSError:
         return None
-    if not isinstance(payload, dict):
-        return None
-    sid = payload.get("sessionId") or payload.get("session_id")
-    return sid if isinstance(sid, str) and sid else None
+    # A single (possibly pretty-printed multi-line) JSON object first.
+    with contextlib.suppress(json.JSONDecodeError):
+        sid = _sid_from_obj(json.loads(text))
+        if sid:
+            return sid
+    # Else scan NDJSON lines (streaming-json); the last sessionId wins.
+    found: str | None = None
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        with contextlib.suppress(json.JSONDecodeError):
+            found = _sid_from_obj(json.loads(stripped)) or found
+    return found
 
 
 def main() -> int:

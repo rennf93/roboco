@@ -42,18 +42,24 @@ WORKSPACE="${ROBOCO_WORKSPACE:-$PWD}"
 # render step above (grok_cli_config) wrote it from the mounted system prompt.
 # NOTE: grok generates its own session id and ignores a requested one (`-s` does
 # not pin it), so we do NOT pass a session id in; usage capture below reads the
-# real id back out of the JSON run log instead.
+# real id back out of the run log instead.
+#
+# `--output-format streaming-json` + `tee` streams the run to the container's
+# stdout LIVE (so `docker logs` shows the agent reasoning/answering in real time,
+# parity with the Claude path's stream-json) while ALSO capturing it to RUN_LOG
+# for the session-id / usage read below. Without this the run is invisible until
+# it ends (the buffered-to-a-file black box). stderr (grok's tool calls /
+# diagnostics) goes to ERR_LOG and is surfaced after the run.
 set +e
 grok -p "${ROBOCO_INITIAL_PROMPT:-}" \
   -m "${ROBOCO_AGENT_MODEL:-grok-build}" \
   --cwd "$WORKSPACE" \
-  --output-format json \
+  --output-format streaming-json \
   "${GROK_ARGS[@]}" \
-  < /dev/null > "$RUN_LOG" 2> "$ERR_LOG"
-run_rc=$?
+  < /dev/null 2> "$ERR_LOG" | tee "$RUN_LOG"
+run_rc=${PIPESTATUS[0]}
 set -e
-# Surface the run output + any stderr into the agent log.
-cat "$RUN_LOG"
+# stdout already streamed live via tee; surface stderr (tool calls / errors) too.
 [ -s "$ERR_LOG" ] && cat "$ERR_LOG" >&2
 
 # Capture token usage from the grok session store (~/.grok/sessions). The reader

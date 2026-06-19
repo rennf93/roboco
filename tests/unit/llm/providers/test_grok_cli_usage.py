@@ -17,14 +17,19 @@ def _write_updates(path: Path, totals: list[int]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = []
     for i, t in enumerate(totals):
+        # Real grok shape: the cumulative totalTokens rides on the INNER
+        # params.update._meta, not params._meta (which only holds event ids).
         lines.append(
             json.dumps(
                 {
                     "method": "session/update",
                     "params": {
                         "sessionId": "s1",
-                        "update": {"sessionUpdate": "agent_message_chunk"},
-                        "_meta": {"totalTokens": t, "chunkId": i},
+                        "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "_meta": {"totalTokens": t, "chunkId": i},
+                        },
+                        "_meta": {"eventId": f"s1-{i}"},
                     },
                 }
             )
@@ -140,6 +145,18 @@ def test_session_id_from_run_log_reads_the_real_id(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert gu.session_id_from_run_log(log) == "019edd9d-real"
+
+
+def test_session_id_from_run_log_reads_streaming_ndjson(tmp_path: Path) -> None:
+    # streaming-json: the id rides on the terminal `end` event line.
+    log = tmp_path / "run.ndjson"
+    log.write_text(
+        '{"type":"thought","data":"hm"}\n'
+        '{"type":"text","data":"ok"}\n'
+        '{"type":"end","stopReason":"EndTurn","sessionId":"019stream-real"}\n',
+        encoding="utf-8",
+    )
+    assert gu.session_id_from_run_log(log) == "019stream-real"
 
 
 def test_session_id_from_run_log_none_for_bad_log(tmp_path: Path) -> None:
