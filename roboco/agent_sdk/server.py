@@ -426,9 +426,9 @@ class _SessionState:
         self.verb_attempts: dict[tuple[str, str | None], deque[float]] = defaultdict(
             deque
         )
-        # Cumulative token usage for this session. Populated by /usage/sync,
-        # which parses the Claude Code transcript and *sets* these absolutely
-        # (the additive /usage/report path remains for explicit deltas).
+        # Cumulative token usage for this session. Populated by /usage/sync
+        # (Claude transcript absolute set) or /usage/report (Grok direct deltas).
+        # The report path is additive; sync is absolute+idempotent.
         self.tokens_input: int = 0
         self.tokens_output: int = 0
         self.tokens_cache_read: int = 0
@@ -705,9 +705,11 @@ def _terminal_snapshot() -> TerminalStatus:
 async def usage_report(req: TokenReportRequest) -> TokenUsageStatus:
     """Accumulate token usage counts for the current session.
 
-    Called by Claude Code hooks (e.g. PostToolUse) after each API call
-    to report the tokens consumed by that invocation. Counts are additive
-    — multiple calls sum up correctly across the session lifetime.
+    Called by Grok Build hooks (and future providers) via the usage-report-hook
+    after each model turn when the provider supplies deltas directly. Counts are
+    additive — multiple calls sum up correctly across the session lifetime.
+    Claude Code path continues to use /usage/sync (transcript) because it never
+    emits deltas in the hook envelope.
     """
     _state.tokens_input += req.tokens_input
     _state.tokens_output += req.tokens_output
@@ -748,12 +750,10 @@ def _token_usage_snapshot() -> TokenUsageStatus:
 async def usage_sync(req: TranscriptSyncRequest) -> TokenUsageStatus:
     """Parse the Claude Code transcript and *set* cumulative token totals.
 
-    Claude Code does not pass token usage to hooks, so the usage-report hook
-    hands us the transcript path and we derive the totals ourselves. The set
-    is absolute and idempotent: re-syncing the same or a grown transcript
-    overwrites rather than accumulates, so it is safe to call after every
-    tool use and again at Stop. An unchanged transcript (same size + mtime)
-    short-circuits without re-parsing.
+    Claude Code does not pass token usage to hooks, so the usage-report-hook
+    hands us the transcript_path and we derive totals. Absolute + idempotent
+    set (re-sync safe). Grok and other providers that emit deltas use the
+    /usage/report path instead; this sync remains Claude-only.
     """
     path = Path(req.transcript_path)
     try:

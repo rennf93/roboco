@@ -1,12 +1,10 @@
 """Token-usage capture — /usage/sync parses the transcript and sets totals.
 
-The agent SDK exposes /usage/report (additive) and /usage/status (read),
-but nothing ever fed token counts in, so every session reported zero and the
-cost dashboard rendered all-zeros. The fix: the usage-report hook hands the
-SDK the Claude Code transcript path; /usage/sync parses the per-message
-``usage`` blocks and *sets* the cumulative totals absolutely. These tests pin
-that contract — correct summation, idempotency (no double-count on re-sync),
-graceful handling of a missing/partial transcript, and growth on re-sync.
+The agent SDK exposes /usage/report (additive, used by Grok via usage-report-hook)
+and /usage/status (read). Claude Code never emits deltas in hooks, so the
+usage-report-hook falls back to transcript_path + /usage/sync which parses
+per-message ``usage`` blocks and *sets* totals absolutely (idempotent). These
+tests pin the sync contract. Grok path exercises /report directly.
 
 Expected totals are derived from the input rows (no magic literals), so the
 assertions track whatever the fixtures declare.
@@ -216,3 +214,55 @@ def test_parser_dedupes_repeated_message_id(tmp_path: Path) -> None:
         exp["tokens_cache_read"],
         exp["tokens_cache_write"],
     )
+
+
+# =============================================================================
+# Grok /usage/report additive path (direct deltas from usage-report-hook)
+# =============================================================================
+
+
+def test_report_additive_deltas(client: TestClient) -> None:
+    """/usage/report sums deltas across calls (Grok hook path)."""
+    r1 = client.post(
+        "/usage/report",
+        json={
+            "tokens_input": 120,
+            "tokens_output": 30,
+            "tokens_cache_read": 10,
+            "tokens_cache_write": 2,
+        },
+    )
+    assert r1.status_code == _OK
+    assert r1.json() == {
+        "tokens_input": 120,
+        "tokens_output": 30,
+        "tokens_cache_read": 10,
+        "tokens_cache_write": 2,
+    }
+
+    r2 = client.post(
+        "/usage/report",
+        json={"tokens_input": 40, "tokens_output": 15, "tokens_cache_read": 0, "tokens_cache_write": 0},
+    )
+    assert r2.status_code == _OK
+    assert r2.json() == {
+        "tokens_input": 160,
+        "tokens_output": 45,
+        "tokens_cache_read": 10,
+        "tokens_cache_write": 2,
+    }
+
+    status = client.get("/usage/status").json()
+    assert status["tokens_input"] == 160
+    assert status["tokens_output"] == 45
+
+
+def test_report_defaults_to_zero_and_accumulates(client: TestClient) -> None:
+    """Missing fields default 0; report remains additive."""
+    client.post("/usage/report", json={"tokens_input": 50, "tokens_output": 10})
+    client.post("/usage/report", json={"tokens_output": 5, "tokens_cache_read": 3})
+    status = client.get("/usage/status").json()
+    assert status["tokens_input"] == 50
+    assert status["tokens_output"] == 15
+    assert status["tokens_cache_read"] == 3
+    assert status["tokens_cache_write"] == 0
