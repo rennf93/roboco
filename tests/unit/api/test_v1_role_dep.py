@@ -82,3 +82,53 @@ def test_dev_route_rejects_missing_role_header() -> None:
     # Missing X-Agent-Role => FastAPI 422 from header validation.
     # We just need it not to silently pass as 200.
     assert r.status_code != _HTTP_200
+
+
+_HTTP_401 = 401
+
+
+def test_dev_route_requires_token_when_auth_enabled(monkeypatch: object) -> None:
+    """When ROBOCO_AGENT_AUTH_REQUIRED=true, the role header alone is not
+    enough — a caller cannot pick an allowed role with just X-Agent-Role.
+    The HMAC token must be presented and verified against X-Agent-ID +
+    role + team. This is the regression for the auth bypass where the v1
+    role dep trusted the role header without authenticating the token."""
+    from pytest import MonkeyPatch  # noqa: PLC0415 — type-only import
+
+    assert isinstance(monkeypatch, MonkeyPatch)
+    monkeypatch.setenv("ROBOCO_AGENT_AUTH_REQUIRED", "true")
+
+    client = TestClient(_build_app())
+    r = client.post(
+        "/api/v1/flow/developer/give_me_work",
+        json={},
+        headers={
+            "X-Agent-ID": "00000000-0000-0000-0000-000000000001",
+            "X-Agent-Role": "developer",
+        },
+    )
+    # Missing X-Agent-Token + auth required => 401, not 200.
+    assert r.status_code == _HTTP_401
+
+
+def test_dev_route_rejects_invalid_token_even_in_dev(monkeypatch: object) -> None:
+    """Even with auth not strictly required, a presented token that does
+    not verify must be rejected — you can't bypass HMAC by supplying an
+    arbitrary string in the header."""
+    from pytest import MonkeyPatch  # noqa: PLC0415
+
+    assert isinstance(monkeypatch, MonkeyPatch)
+    monkeypatch.delenv("ROBOCO_AGENT_AUTH_REQUIRED", raising=False)
+    monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", "test-secret-not-used")
+
+    client = TestClient(_build_app())
+    r = client.post(
+        "/api/v1/flow/developer/give_me_work",
+        json={},
+        headers={
+            "X-Agent-ID": "00000000-0000-0000-0000-000000000001",
+            "X-Agent-Role": "developer",
+            "X-Agent-Token": "obviously-not-a-valid-hmac",
+        },
+    )
+    assert r.status_code == _HTTP_401

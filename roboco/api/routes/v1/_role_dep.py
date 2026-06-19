@@ -20,9 +20,30 @@ if TYPE_CHECKING:
 
 
 def _require_roles(allowed: frozenset[Role]) -> params.Depends:
+    # Deferred import to keep this dependency loadable from the router
+    # registration path without dragging the full deps module in at
+    # import time (avoids circular imports with routers that this module
+    # is imported from).
+    from roboco.api.deps import _check_agent_auth_token
+
     def _check(
+        x_agent_id: Annotated[str, Header(alias="X-Agent-ID")],
         x_agent_role: Annotated[str, Header(alias="X-Agent-Role")],
+        x_agent_team: Annotated[str | None, Header(alias="X-Agent-Team")] = None,
+        x_agent_token: Annotated[str | None, Header(alias="X-Agent-Token")] = None,
     ) -> None:
+        # Bind the role header to the agent's HMAC token BEFORE comparing
+        # against the allowed set. Without this, a caller could pass any
+        # X-Agent-Role and pass the role check by supplying only the header
+        # — the route-level dep is the only gate on these endpoints. Reuses
+        # the same token-validation primitive as get_agent_context so the
+        # HMAC contract stays centralized in roboco.api.deps. In dev mode
+        # (ROBOCO_AGENT_AUTH_REQUIRED unset), the token check is a no-op
+        # and the legacy header-only behavior is preserved; in prod mode
+        # the role header must be cryptographically bound to X-Agent-ID +
+        # X-Agent-Team via the orchestrator-issued token.
+        _check_agent_auth_token(x_agent_id, x_agent_role, x_agent_team, x_agent_token)
+
         # `Role` is a StrEnum, so the lowercase header string compares equal
         # to its matching member.
         if x_agent_role.lower() not in allowed:
