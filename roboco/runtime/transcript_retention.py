@@ -34,7 +34,13 @@ def is_agent_owned_dir(dir_name: str, workspaces_root: str) -> bool:
     if dir_name == "-app":
         return True
     encoded_root = workspaces_root.rstrip("/").replace("/", "-")
-    return bool(encoded_root) and dir_name.startswith(encoded_root)
+    if not encoded_root:
+        return False
+    # Match the encoded root exactly or at a path boundary (next component
+    # separated by "-"), so a sibling root like "-data-workspaces2" is NOT
+    # mistaken for a descendant of "-data-workspaces" and its operator-owned
+    # transcripts pruned.
+    return dir_name == encoded_root or dir_name.startswith(encoded_root + "-")
 
 
 def _is_old_transcript(path: Path, cutoff_epoch: float) -> bool:
