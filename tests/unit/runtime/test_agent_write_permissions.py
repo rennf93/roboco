@@ -25,9 +25,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 from roboco.runtime.orchestrator import AgentOrchestrator
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def _orch() -> AgentOrchestrator:
@@ -160,7 +164,7 @@ def test_grok_xai_settings_has_full_hooks_only() -> None:
 # New coverage for AC2/AC4: grok_cli_config (not just orchestrator) writes the
 # full set of hook JSONs when invoked on container start.
 def test_grok_cli_config_writes_full_hooks_and_artifacts(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """grok_cli_config.write_grok_hooks (and main) emit hook JSONs for every
     required event (AC2) + AGENTS.md + config.toml (MCP) + role args (denies).
