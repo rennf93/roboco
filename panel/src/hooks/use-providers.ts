@@ -9,6 +9,7 @@ export const providerKeys = {
   all: ["providers"] as const,
   catalog: () => [...providerKeys.all, "catalog"] as const,
   ollamaKey: () => [...providerKeys.all, "ollama-key"] as const,
+  grokKey: () => [...providerKeys.all, "grok-key"] as const,
   mode: () => [...providerKeys.all, "mode"] as const,
   selfHostedConfig: () => [...providerKeys.all, "self-hosted-config"] as const,
   selfHostedModels: () => [...providerKeys.all, "self-hosted-models"] as const,
@@ -38,6 +39,25 @@ export function useSetOllamaKey() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: providerKeys.ollamaKey() });
       // Applying a mode also reads this so refresh it too.
+      qc.invalidateQueries({ queryKey: providerKeys.mode() });
+    },
+  });
+}
+
+export function useGrokKey() {
+  return useQuery({
+    queryKey: providerKeys.grokKey(),
+    queryFn: () => providersApi.getGrokKey(),
+    staleTime: 60_000,
+  });
+}
+
+export function useSetGrokKey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (apiKey: string) => providersApi.setGrokKey(apiKey),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: providerKeys.grokKey() });
       qc.invalidateQueries({ queryKey: providerKeys.mode() });
     },
   });

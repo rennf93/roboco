@@ -94,11 +94,31 @@ async def test_list_open_prs_normalizes_and_flags_fork() -> None:
         "head_sha": "deadbeef",
         "is_fork": True,
         "user_login": "corey",
+        "author_is_owner": False,
         "author_association": "CONTRIBUTOR",
     }
     # Same-repo head → not a fork.
     assert internal["is_fork"] is False
     assert internal["author_association"] == "MEMBER"
+    # A contributor (not the repo owner) is not flagged as the owner.
+    assert internal["author_is_owner"] is False
+
+
+@pytest.mark.asyncio
+async def test_list_open_prs_flags_owner_authored_pr() -> None:
+    """A PR opened by the repo-owner account is flagged author_is_owner."""
+    svc = _service()
+    payload = [
+        # Author login == repo owner ("acme") → the org's own PR.
+        _pr(number=9, head_full="acme/repo", login="acme", assoc="OWNER"),
+    ]
+    client = _client(_resp(200, json_payload=payload))
+    with (
+        _patch_project(),
+        patch("roboco.services.git.httpx.AsyncClient", return_value=client),
+    ):
+        out = await svc.list_open_prs("roboco")
+    assert out[0]["author_is_owner"] is True
 
 
 @pytest.mark.asyncio

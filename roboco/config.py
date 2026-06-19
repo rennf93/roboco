@@ -662,6 +662,50 @@ class Settings(BaseSettings):
             "override via ROBOCO_STALE_CLAIM_REAP_SECONDS"
         ),
     )
+    # A GROK agent that wedges — an idle model call / stream with no gateway
+    # verb — is ACTIVE-yet-silent, so the heartbeat reaper's live-container skip
+    # would shield its task forever (the grok CLI emits no SDK budget signal and
+    # advances no heartbeat while parked, unlike a Claude agent that at least
+    # reports). After this longer window the orchestrator kills + evicts the
+    # container so the reaper releases the task. Longer than
+    # stale_claim_reap_seconds so only a truly-dead run trips it, never a
+    # slow-but-working agent.
+    grok_idle_kill_seconds: int = Field(
+        default=900,
+        ge=120,
+        description=(
+            "Idle-container kill threshold for GROK agents (seconds); "
+            "override via ROBOCO_GROK_IDLE_KILL_SECONDS"
+        ),
+    )
+    # Budget kill-switch parity for GROK. Claude Code's per-agent token-budget
+    # hook fires against the SDK :9000 server; the grok CLI exposes no live usage
+    # hook, so the orchestrator enforces the cap by reading each live GROK
+    # container's captured cost from its usage.json and killing it when it crosses
+    # this ceiling (also catches runaway-loop token burn). USD; 0 = off.
+    grok_max_cost_usd: float = Field(
+        default=0.0,
+        ge=0,
+        description=(
+            "Per-agent GROK cost ceiling (USD) before the container is killed; "
+            "0 disables. Override via ROBOCO_GROK_MAX_COST_USD"
+        ),
+    )
+    # An interactive intake/secretary chat the human abandoned (closed the tab
+    # without confirming/stopping) otherwise leaks its container until the
+    # orchestrator restarts. The sweeper reaps a live session whose
+    # time-since-last-turn (push/deliver) exceeds this; measured on activity, NOT
+    # connection state, so an active or page-reloaded chat that keeps exchanging
+    # turns is never reaped (board-review-parked sessions are also exempt).
+    # Seconds; 0 disables. Provider-agnostic (Claude + Grok interactive).
+    interactive_idle_reap_seconds: int = Field(
+        default=1800,
+        ge=0,
+        description=(
+            "Idle-reap threshold for live intake/secretary chats (seconds); "
+            "0 disables. Override via ROBOCO_INTERACTIVE_IDLE_REAP_SECONDS"
+        ),
+    )
     # A task left CLAIMED/IN_PROGRESS with an assignee but no running container
     # (e.g. a reassignment that didn't spawn) is invisibly stuck — the heartbeat
     # reaper can't see it because its heartbeat was seeded fresh at claim time.

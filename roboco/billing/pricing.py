@@ -4,11 +4,13 @@ Token pricing for Claude API models.
 Implements per-model USD cost calculation based on Anthropic's published
 pricing. All prices are in USD per 1 million tokens.
 
-Pricing is provider-aware. A model name resolves to one of three cases:
+Pricing is provider-aware. A model name resolves to one of four cases:
 
 * **Anthropic** — priced from the table below by substring match.
-* **Non-Anthropic** — local self-hosted Ollama models (``ollama/`` prefix or
-  bare model tags) and Ollama Cloud models (``:cloud`` tag). These have **no
+* **Priced non-Anthropic** — xAI Grok (``grok-build-*``, billed per token via
+  the xAI API) is priced from the table too. Match by substring like the rest.
+* **Free non-Anthropic** — local self-hosted Ollama models (``ollama/`` prefix
+  or bare model tags) and Ollama Cloud models (``:cloud`` tag). These have **no
   per-token cost**: local inference runs on owned hardware, and Ollama Cloud
   is billed by flat subscription / GPU-time rather than per token. Both return
   an intentional ``0.0`` — not an error condition, so they are not warned on.
@@ -55,6 +57,10 @@ _PRICING: list[tuple[str, float, float, float, float]] = [
     ("claude-haiku-3-5", 1.00, 5.00, 0.10, 1.25),
     ("claude-3-5-haiku", 1.00, 5.00, 0.10, 1.25),
     ("claude-haiku-3", 0.25, 1.25, 0.025, 0.0625),
+    # xAI Grok — priced non-Anthropic (per-token via the xAI API). Cached-input
+    # read is $0.20/1M; xAI publishes no cache-write premium, so cache_write is
+    # the normal input rate. https://docs.x.ai/developers/models
+    ("grok-build", 1.00, 2.00, 0.20, 1.00),
     # Short aliases used in ROLE_MODEL_MAP / MODEL_MAP
     ("opus", 5.00, 25.00, 0.50, 6.25),
     ("sonnet", 3.00, 15.00, 0.30, 0.75),
@@ -106,6 +112,10 @@ def calculate_cost(
         tokens_output: Number of output tokens (completion).
         tokens_cache_read: Prompt-cache read tokens (charged at reduced rate).
         tokens_cache_write: Prompt-cache write tokens (charged at reduced rate).
+            Reasoning/thinking tokens that a provider reports *separately* from
+            output (e.g. xAI grok-build-*) are billed at the output rate by the
+            caller folding them into ``tokens_output`` (see
+            ``grok_cli_usage.usage_and_cost``).
 
     Returns:
         Estimated cost in USD as a float. Returns 0.0 for unpriced models

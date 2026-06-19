@@ -92,3 +92,58 @@ async def test_post_pr_review_raises_on_github_error() -> None:
         pytest.raises(GitError),
     ):
         await svc.post_pr_review("roboco", _PR, "body")
+
+
+@pytest.mark.asyncio
+async def test_post_pr_review_self_review_falls_back_to_comment() -> None:
+    """A 422 'own pull request' downgrades REQUEST_CHANGES to a COMMENT review."""
+    svc = _service()
+    _bind(svc, "_token_for_project", AsyncMock(return_value="tok"))
+    client = MagicMock()
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+    # First POST (REQUEST_CHANGES) 422s as a self-review; the COMMENT retry wins.
+    client.post = AsyncMock(
+        side_effect=[
+            _resp(
+                status_code=422,
+                text='{"errors":["Review Can not request changes on your own '
+                'pull request"]}',
+            ),
+            _resp(status_code=200, json_payload={"id": 9, "state": "COMMENTED"}),
+        ]
+    )
+    with (
+        _patch_project(),
+        patch("roboco.services.git.httpx.AsyncClient", return_value=client),
+    ):
+        out = await svc.post_pr_review("roboco", _PR, "Please fix X.")
+    assert client.post.await_count == 2  # noqa: PLR2004
+    first, second = client.post.await_args_list
+    assert first.kwargs["json"]["event"] == "REQUEST_CHANGES"
+    assert second.kwargs["json"]["event"] == "COMMENT"
+    assert second.kwargs["json"]["body"] == "Please fix X."
+    assert out["state"] == "COMMENTED"
+
+
+@pytest.mark.asyncio
+async def test_post_pr_review_self_review_comment_failure_raises() -> None:
+    """If the COMMENT retry also fails, the error surfaces (no infinite loop)."""
+    svc = _service()
+    _bind(svc, "_token_for_project", AsyncMock(return_value="tok"))
+    client = MagicMock()
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+    client.post = AsyncMock(
+        side_effect=[
+            _resp(status_code=422, text='["...on your own pull request"]'),
+            _resp(status_code=500, text="boom"),
+        ]
+    )
+    with (
+        _patch_project(),
+        patch("roboco.services.git.httpx.AsyncClient", return_value=client),
+        pytest.raises(GitError),
+    ):
+        await svc.post_pr_review("roboco", _PR, "body")
+    assert client.post.await_count == 2  # noqa: PLR2004

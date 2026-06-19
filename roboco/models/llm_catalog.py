@@ -72,6 +72,10 @@ MODEL_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("glm-5.1:cloud", ModelProvider.OLLAMA_CLOUD, "GLM 5.1"),
     CatalogEntry("kimi-k2.6:cloud", ModelProvider.OLLAMA_CLOUD, "Kimi K2.6"),
     CatalogEntry("minimax-m3:cloud", ModelProvider.OLLAMA_CLOUD, "Minimax M3"),
+    # --- Grok (xAI, OpenAI protocol) ---
+    # Routes to the GROK provider → GrokCliProvider spawn (api.x.ai/v1). The xAI
+    # key is set via PUT /api/providers/grok/key.
+    CatalogEntry("grok-build-0.1", ModelProvider.GROK, "Grok Build 0.1"),
 )
 
 

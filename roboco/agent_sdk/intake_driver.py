@@ -24,6 +24,8 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 import structlog
 
+from roboco.agent_sdk.prompt_guard import detect_injection, refusal_message
+
 if TYPE_CHECKING:
     from contextlib import AbstractAsyncContextManager
 
@@ -259,6 +261,17 @@ class IntakeDriver:
         text deltas are intentionally NOT logged (they'd spam). A failure ends as
         an error chunk.
         """
+        # Prompt-injection guard at the input boundary (our own guard, runtime-
+        # agnostic): deny a poisoned turn before the model ever sees it. Covers
+        # the Grok (grok-CLI) session and the Claude SDK session — the latter
+        # runs with setting_sources=[] and so never loads the bash UserPromptSubmit
+        # hook, so this is the only injection guard either interactive path has.
+        injection = detect_injection(text)
+        if injection is not None:
+            self.log.warning("Intake turn denied: prompt-injection", reason=injection)
+            await self._emit(StreamChunk(kind="error", text=refusal_message(injection)))
+            return
+
         chunks = 0
         tools = 0
         drafted = False

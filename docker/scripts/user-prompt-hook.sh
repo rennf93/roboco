@@ -33,7 +33,7 @@ low=$(printf '%s' "$prompt" | tr "[:upper:]" "[:lower:]")
 # Classic injection patterns. Anchored loosely — any paragraph start is fair
 # game since these appear mid-message when pasted into A2A content.
 denied=""
-if echo "$low" | grep -qE '(^|[[:space:]>])(ignore|disregard|forget)[[:space:]]+(previous|above|all|prior)[[:space:]]+(instructions|rules|guidelines|context)'; then
+if echo "$low" | grep -qE '(^|[[:space:]>])(ignore|disregard|forget)[[:space:]]+((the|all|any|those|these|previous|above|prior|earlier|original|initial|system)[[:space:]]+)+(instructions|rules|guidelines|context|prompt|directives)'; then
     denied="ignore/disregard/forget previous instructions"
 elif echo "$low" | grep -qE '(^|[[:space:]>])you[[:space:]]+are[[:space:]]+now([[:space:]]+a|[[:space:]]+an|[[:space:]]+the|:)'; then
     denied="role override attempt (you are now ...)"

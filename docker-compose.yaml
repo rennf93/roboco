@@ -230,6 +230,41 @@ services:
       - agent-base-image
 
   # ==========================================================================
+  # Agent Grok Image Builder (xAI Grok Build via the official grok CLI)
+  # ==========================================================================
+  agent-grok-image:
+    build:
+      context: .
+      dockerfile: docker/agent-grok.Dockerfile
+    image: roboco-agent-grok
+    entrypoint: ["/bin/sh", "-c", 'echo "Agent Grok image built"']
+    restart: "no"
+    depends_on:
+      - agent-base-image
+
+  # Interactive Grok roles (intake/secretary) — panel-driven grok-CLI sessions;
+  # built FROM roboco-agent-grok, so they depend on the Grok runtime image.
+  agent-grok-prompter-image:
+    build:
+      context: .
+      dockerfile: docker/agent-grok-prompter.Dockerfile
+    image: roboco-agent-grok-prompter
+    entrypoint: ["/bin/sh", "-c", 'echo "Agent Grok Prompter image built"']
+    restart: "no"
+    depends_on:
+      - agent-grok-image
+
+  agent-grok-secretary-image:
+    build:
+      context: .
+      dockerfile: docker/agent-grok-secretary.Dockerfile
+    image: roboco-agent-grok-secretary
+    entrypoint: ["/bin/sh", "-c", 'echo "Agent Grok Secretary image built"']
+    restart: "no"
+    depends_on:
+      - agent-grok-image
+
+  # ==========================================================================
   # Orchestrator - API Server + Agent Spawner
   # ==========================================================================
   orchestrator:
@@ -271,6 +306,9 @@ services:
       # IMPORTANT: These must be ABSOLUTE paths on the host filesystem
       ROBOCO_HOST_PROJECT_DIR: ${ROBOCO_HOST_PROJECT_DIR:-/volume1/roboco}
       ROBOCO_HOST_CLAUDE_DIR: ${ROBOCO_HOST_CLAUDE_DIR:-/home/renzof/.claude}
+      # SuperGrok auth (host ~/.grok) for Grok-CLI agents — the orchestrator
+      # mounts <dir>/auth.json into each Grok agent. Run `grok login` on the host.
+      ROBOCO_HOST_GROK_DIR: ${ROBOCO_HOST_GROK_DIR:-/home/renzof/.grok}
       ROBOCO_HOST_DATA_DIR: ${ROBOCO_HOST_DATA_DIR:-/volume1/roboco/data}
       # Public base URL for commit-trailer links. Default 127.0.0.1 produces
       # unusable links in commit message bodies; set to NAS LAN IP so
@@ -309,6 +347,12 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       # Claude Code auth - mount your ~/.claude directory
       - ${CLAUDE_AUTH_DIR:-/home/renzof/.claude}:/root/.claude
+      # SuperGrok auth — mount the host ~/.grok at the SAME host path the
+      # orchestrator passes to each Grok agent's `-v`, so its auth.json exists()
+      # check passes here AND the agent bind resolves on the host. One canonical
+      # var for source AND target (they must be equal in docker-in-docker); `grok
+      # login` on the host writes auth.json (auto-refreshing). Read-only.
+      - ${ROBOCO_HOST_GROK_DIR:-/home/renzof/.grok}:${ROBOCO_HOST_GROK_DIR:-/home/renzof/.grok}:ro
       # Shared config directory for MCP configs (writable)
       - ${ROBOCO_DATA_DIR:-./data}/mcp-configs:/app/mcp-configs
       # Generated prompts directory - composed at runtime from layers
@@ -317,6 +361,9 @@ services:
       - ${ROBOCO_DATA_DIR:-./data}/agent-settings:/app/agent-settings
       # Agent workspaces (git clones) - persisted across restarts
       - ${ROBOCO_DATA_DIR:-./data}/workspaces:/data/workspaces
+      # Per-agent GROK usage capture: each Grok agent writes usage.json under
+      # <agent_id>/; the finalizer reads the captured tokens/cost back here.
+      - ${ROBOCO_DATA_DIR:-./data}/grok-usage:/data/grok-usage
       # Persistent logs — survive `docker compose down/up`. Orchestrator and
       # each spawned agent write structured logs here so we can audit past
       # runs instead of relying on ephemeral `docker logs`.

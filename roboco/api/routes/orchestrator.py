@@ -23,6 +23,31 @@ router = APIRouter()
 __all__ = ["router", "set_orchestrator"]
 
 
+def _validated_agent_id(agent_id: str) -> str:
+    """Reject an ``agent_id`` that could traverse a filesystem path downstream.
+
+    ``agent_id`` is an opaque slug / uuid the orchestrator assigns, but it is a
+    request path parameter and flows into per-agent paths (e.g. the grok usage
+    dir). Reject every traversal vector — empty, ``.`` / ``..``, a ``/`` or
+    ``\\`` separator, or an embedded NUL — at the HTTP boundary with 422 before
+    it reaches any path. Explicit guards (not a regex) so CodeQL models this as a
+    path-injection barrier; the runtime ``_grok_usage_dir`` repeats the check as
+    defense in depth for non-HTTP callers.
+    """
+    if (
+        not agent_id
+        or agent_id in {".", ".."}
+        or "/" in agent_id
+        or "\\" in agent_id
+        or "\x00" in agent_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid agent_id",
+        )
+    return agent_id
+
+
 # =============================================================================
 # Routes
 # =============================================================================
@@ -75,6 +100,7 @@ async def get_status() -> OrchestratorStatusResponse:
 )
 async def get_agent_status(agent_id: str) -> AgentStatusResponse:
     """Get status of a specific agent."""
+    agent_id = _validated_agent_id(agent_id)
     orchestrator = get_orchestrator()
     instance = orchestrator.get_instance(agent_id)
 
@@ -132,6 +158,7 @@ async def spawn_agent(
     data: SpawnAgentRequest | None = None,
 ) -> AgentStatusResponse:
     """Spawn an agent."""
+    agent_id = _validated_agent_id(agent_id)
     orchestrator = get_orchestrator()
 
     try:
@@ -170,6 +197,7 @@ async def spawn_agent(
 )
 async def stop_agent(agent_id: str, graceful: bool = True) -> None:
     """Stop an agent."""
+    agent_id = _validated_agent_id(agent_id)
     orchestrator = get_orchestrator()
     await orchestrator.stop_agent(agent_id, graceful=graceful)
 
@@ -185,6 +213,7 @@ async def resolve_wait(
     data: ResolveWaitRequest,
 ) -> AgentStatusResponse:
     """Resolve a wait condition."""
+    agent_id = _validated_agent_id(agent_id)
     orchestrator = get_orchestrator()
 
     instance = await orchestrator.resolve_wait(agent_id, data.resolution)
@@ -217,6 +246,7 @@ async def mark_waiting(
     task_id: str | None = None,
 ) -> None:
     """Mark an agent as waiting long."""
+    agent_id = _validated_agent_id(agent_id)
     orchestrator = get_orchestrator()
     await orchestrator.mark_waiting_long(
         agent_id=agent_id,

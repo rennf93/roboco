@@ -1,17 +1,25 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useEffect } from "react";
 import { orchestratorApi, type SpawnAgentRequest } from "@/lib/api/orchestrator";
-import { agentsApi } from "@/lib/api/agents";
+import { agentsApi, type AgentDefinition } from "@/lib/api/agents";
+import { registerAgentRoster } from "@/lib/agent-utils";
 import type { Agent, AgentRole, Team, AgentState } from "@/types";
 
 export type { AgentDefinition } from "@/lib/api/agents";
 
-// Static agent roster for RoboCo (18 agents)
+// Offline / first-paint fallback only — the live `/api/agents` roster
+// (useAgentDefinitions) is authoritative. Keep this list in sync when adding
+// agents, but it is not the source of truth and may lag the backend.
 const AGENT_ROSTER: Agent[] = [
   // Board / Management
   { id: "1", agent_id: "main-pm", name: "Main PM", role: "main_pm" as AgentRole, team: null, cell: null, status: "idle" as AgentState },
   { id: "2", agent_id: "product-owner", name: "Product Owner", role: "product_owner" as AgentRole, team: "board" as Team, cell: null, status: "idle" as AgentState },
   { id: "3", agent_id: "head-marketing", name: "Head of Marketing", role: "head_marketing" as AgentRole, team: "board" as Team, cell: null, status: "idle" as AgentState },
   { id: "4", agent_id: "auditor", name: "Auditor", role: "auditor" as AgentRole, team: null, cell: null, status: "idle" as AgentState },
+  // Board-adjacent singletons
+  { id: "20", agent_id: "intake-1", name: "Intake", role: "prompter" as AgentRole, team: "board" as Team, cell: null, status: "idle" as AgentState },
+  { id: "21", agent_id: "secretary-1", name: "Secretary", role: "secretary" as AgentRole, team: "board" as Team, cell: null, status: "idle" as AgentState },
+  { id: "22", agent_id: "pr-reviewer-1", name: "PR Reviewer", role: "pr_reviewer" as AgentRole, team: "board" as Team, cell: null, status: "idle" as AgentState },
   // Backend Cell
   { id: "5", agent_id: "be-dev-1", name: "Backend Dev 1", role: "developer" as AgentRole, team: "backend" as Team, cell: "backend", status: "idle" as AgentState },
   { id: "6", agent_id: "be-dev-2", name: "Backend Dev 2", role: "developer" as AgentRole, team: "backend" as Team, cell: "backend", status: "idle" as AgentState },
@@ -51,16 +59,55 @@ export function useAgentDefinitions() {
   });
 }
 
+/**
+ * Register the live `/api/agents` roster into the display-name resolver
+ * (agent-utils). Mount once near the app root so every surface that resolves an
+ * assignee (task table, task detail, journals, communications, commits) shows
+ * the real agent name instead of a raw UUID, and never drifts as agents are
+ * added backend-side. Returns nothing — it's a side-effecting sync.
+ */
+export function useAgentRosterSync(): void {
+  const { data: definitions } = useAgentDefinitions();
+  useEffect(() => {
+    if (definitions && definitions.length > 0) {
+      registerAgentRoster(
+        definitions.map((d) => ({ uuid: d.uuid, slug: d.id, name: d.name })),
+      );
+    }
+  }, [definitions]);
+}
+
+// Map team → cell (cells carry a cell name; board/management agents have none).
+const TEAM_CELLS: ReadonlyArray<Team> = ["backend", "frontend", "ux_ui"] as Team[];
+
+function definitionToAgent(def: AgentDefinition): Agent {
+  return {
+    id: def.uuid,
+    agent_id: def.id,
+    name: def.name,
+    role: (def.role ?? "developer") as AgentRole,
+    team: def.team,
+    cell: def.team && TEAM_CELLS.includes(def.team) ? def.team : null,
+    status: "idle" as AgentState,
+  };
+}
+
 // Hooks
 
-// Returns the static agent roster (optionally enriched with live status)
+// Returns the agent roster (live definitions when loaded, static fallback
+// otherwise), enriched with live orchestrator status.
 export function useAgents() {
+  const { data: definitions } = useAgentDefinitions();
   const { data: orchestratorStatus } = useOrchestratorStatus();
 
+  // A stable signature so the derived roster refetches when the live set
+  // changes (react-query keys on this, not on the closure).
+  const rosterKey = definitions?.map((d) => d.id).join(",") ?? "static";
+
   return useQuery({
-    queryKey: [...agentKeys.all, "roster"],
+    queryKey: [...agentKeys.all, "roster", rosterKey],
     queryFn: async (): Promise<Agent[]> => {
-      // Build a map of agent statuses from the agents array
+      // Build a map of agent statuses from the orchestrator status array
       const statusMap = new Map<string, string>();
       if (orchestratorStatus?.agents) {
         for (const agentStatus of orchestratorStatus.agents) {
@@ -68,8 +115,13 @@ export function useAgents() {
         }
       }
 
-      // Enrich static roster with live status from orchestrator
-      return AGENT_ROSTER.map((agent) => {
+      const base: Agent[] =
+        definitions && definitions.length > 0
+          ? definitions.map(definitionToAgent)
+          : AGENT_ROSTER;
+
+      // Enrich with live status from orchestrator
+      return base.map((agent) => {
         const liveState = statusMap.get(agent.agent_id);
         return {
           ...agent,

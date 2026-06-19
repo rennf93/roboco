@@ -18,6 +18,7 @@ This module owns no SDK or Claude code — it's pure plumbing, fully unit-tested
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -47,6 +48,11 @@ class LiveIntakeSession:
     # session stays alive (not reaped) so the board's feedback can be injected
     # in-context for an in-place re-draft. ``None`` for a normal live chat.
     task_id: str | None = None
+    # Monotonic timestamp of the last turn (agent->panel push or panel->agent
+    # deliver). The idle-reap sweep uses this to retire an ABANDONED chat without
+    # touching an active or page-reloaded one (reload reconnects + keeps
+    # exchanging turns, so activity stays fresh). Seeded at open.
+    last_activity: float = field(default_factory=time.monotonic)
 
 
 class PrompterLiveRegistry:
@@ -101,6 +107,25 @@ class PrompterLiveRegistry:
         session.queue.put_nowait(_CLOSE)
         self.log.info("Live intake session closed", session_id=session_id)
 
+    def close_by_agent(self, agent_id: str, *, error: str | None = None) -> list[str]:
+        """Close every live session bound to ``agent_id`` (e.g. on a forced kill).
+
+        When the orchestrator kills an interactive container out-of-band (the
+        Grok cost-cap watchdog), the relay would otherwise stay open and the
+        panel SSE would hang forever. This pushes an optional final ``error``
+        event so the panel shows WHY the chat ended, then closes the stream.
+        Returns the closed session ids.
+        """
+        closed: list[str] = []
+        for session_id, session in list(self._sessions.items()):
+            if session.agent_id != agent_id or session.closed:
+                continue
+            if error:
+                session.queue.put_nowait({"kind": "error", "text": error})
+            self.close(session_id)
+            closed.append(session_id)
+        return closed
+
     def park(self, session_id: str, task_id: str) -> bool:
         """Mark a session as parked awaiting board review of ``task_id``.
 
@@ -134,8 +159,28 @@ class PrompterLiveRegistry:
         session = self._sessions.get(session_id)
         if session is None or session.closed:
             return False
+        session.last_activity = time.monotonic()
         session.queue.put_nowait(event)
         return True
+
+    def idle_session_ids(self, threshold_seconds: float) -> list[tuple[str, str]]:
+        """Return ``(session_id, agent_id)`` for live chats idle past the threshold.
+
+        Idle = ``threshold_seconds`` with no turn (push/deliver). Closed and
+        board-review-parked (``task_id`` set) sessions are excluded — the latter
+        are intentionally kept alive while the board reviews. ``threshold <= 0``
+        yields nothing (the caller treats that as "disabled").
+        """
+        if threshold_seconds <= 0:
+            return []
+        now = time.monotonic()
+        return [
+            (sid, s.agent_id)
+            for sid, s in self._sessions.items()
+            if not s.closed
+            and s.task_id is None
+            and now - s.last_activity > threshold_seconds
+        ]
 
     async def stream(self, session_id: str) -> AsyncIterator[dict[str, Any]]:
         """Yield queued agent events until the session is closed."""
@@ -155,6 +200,7 @@ class PrompterLiveRegistry:
         session = self._sessions.get(session_id)
         if session is None or session.closed:
             return False
+        session.last_activity = time.monotonic()  # human turn = activity
         url = f"http://roboco-agent-{session.agent_id}:{SDK_PORT}/turn"
         client = self._client or httpx.AsyncClient(timeout=10.0)
         try:

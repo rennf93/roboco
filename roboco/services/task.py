@@ -918,6 +918,13 @@ class TaskService(BaseService):
             "pr_reviewer",
             audit_agent_id=reviewer_agent_id,
         )
+        # Seed the heartbeat at claim time — same invariant as _finalize_claim
+        # and the QA/Doc claims. The reaper treats last_heartbeat_at IS NULL as
+        # a stale claim, and for a GROK reviewer the idle-kill watchdog bypasses
+        # the live-container skip on a NULL heartbeat: without this seed the
+        # container is killed before the reviewer can post_pr_review, churning
+        # the task back to pending on a respawn loop.
+        task.last_heartbeat_at = datetime.now(UTC)
         await self.session.flush()
         self.log.info("External PR review claimed", task_id=str(task_id))
         return task

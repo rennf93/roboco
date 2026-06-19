@@ -4,8 +4,10 @@ import { useEffect, useMemo, useState, useCallback } from "react";
 import {
   useApplyMode,
   useCatalog,
+  useGrokKey,
   useOllamaKey,
   useRoutingMode,
+  useSetGrokKey,
   useSetOllamaKey,
   useSelfHostedModels,
 } from "@/hooks/use-providers";
@@ -37,6 +39,7 @@ import {
   Server,
   ShieldCheck,
   Sparkles,
+  Zap,
 } from "lucide-react";
 import { toast } from "sonner";
 import { AssignmentScope, ModelProvider } from "@/types";
@@ -71,6 +74,11 @@ const AGENTS: { slug: string; label: string }[] = [
   { slug: "ux-dev-1", label: "UX/UI Dev" },
   { slug: "ux-qa", label: "UX/UI QA" },
   { slug: "ux-doc", label: "UX/UI Documenter" },
+  // Interactive (held-open chat) roles. Claude (SDK driver) and Grok (grok CLI)
+  // are the supported runtimes; assigning a Grok model routes them to
+  // the grok-prompter / grok-secretary image.
+  { slug: "intake-1", label: "Intake (Prompter)" },
+  { slug: "secretary-1", label: "Secretary" },
 ];
 
 export function AIRoutingCard() {
@@ -124,6 +132,33 @@ export function AIRoutingCard() {
     }
   };
 
+  // --- Grok (xAI) API key ---
+  const { data: grokKeyStatus } = useGrokKey();
+  const setGrokKeyMut = useSetGrokKey();
+  const hasGrokKey = !!grokKeyStatus?.has_key;
+  const [grokKey, setGrokKey] = useState("");
+  const [clearGrokKey, setClearGrokKey] = useState(false);
+
+  const saveGrokKey = async () => {
+    try {
+      if (clearGrokKey) {
+        await setGrokKeyMut.mutateAsync("");
+        toast.success("Grok key cleared");
+      } else {
+        if (!grokKey.trim()) {
+          toast.error("Enter a key first");
+          return;
+        }
+        await setGrokKeyMut.mutateAsync(grokKey);
+        toast.success("Grok key saved");
+      }
+      setGrokKey("");
+      setClearGrokKey(false);
+    } catch (e) {
+      toast.error("Save failed: " + errMsg(e));
+    }
+  };
+
   // --- Mix mode state: agent_slug → model_name ---
   const initialMix = useMemo(() => {
     const map: Record<string, string> = {};
@@ -146,6 +181,9 @@ export function AIRoutingCard() {
   const catalogOllamaOnly = catalog.filter(
     (c: { provider_type: ModelProvider }) => c.provider_type === ModelProvider.OLLAMA_CLOUD,
   );
+  const catalogGrokOnly = catalog.filter(
+    (c: { provider_type: ModelProvider }) => c.provider_type === ModelProvider.GROK,
+  );
   const catalogAnthropicOnly = catalog.filter(
     (c: { provider_type: ModelProvider }) => c.provider_type === ModelProvider.ANTHROPIC,
   );
@@ -156,6 +194,20 @@ export function AIRoutingCard() {
     try {
       await applyMode.mutateAsync({ mode: "anthropic" });
       toast.success("All agents now on Anthropic");
+    } catch (e) {
+      toast.error("Switch failed: " + errMsg(e));
+    }
+  };
+
+  const flipToGrok = async () => {
+    if (!hasGrokKey) {
+      toast.error("Save the Grok (xAI) API key first");
+      return;
+    }
+    if (!confirm("Switch every agent to Grok? Clears any overrides.")) return;
+    try {
+      await applyMode.mutateAsync({ mode: "grok" });
+      toast.success("All agents now on Grok");
     } catch (e) {
       toast.error("Switch failed: " + errMsg(e));
     }
@@ -207,6 +259,18 @@ export function AIRoutingCard() {
       toast.error("Pick a model for at least one agent");
       return;
     }
+    const needsGrok = Object.values(per_agent).some((m) =>
+      catalog.find(
+        (c: { model_name: string; provider_type: ModelProvider }) =>
+          c.model_name === m && c.provider_type === ModelProvider.GROK,
+      ),
+    );
+    if (needsGrok && !hasGrokKey) {
+      toast.error(
+        "At least one agent is routed to a Grok model but no key is saved",
+      );
+      return;
+    }
     const needsKey = Object.values(per_agent).some((m) =>
       catalog.find(
         (c: { model_name: string; provider_type: ModelProvider }) =>
@@ -245,12 +309,63 @@ export function AIRoutingCard() {
         </CardTitle>
         <CardDescription>
           Decide which model backs each agent. Anthropic uses the mounted
-          <code className="px-1"> ~/.claude </code> auth; Ollama Cloud uses
-          the API key you save below; Self-Hosted connects to any OpenAI-compatible
-          endpoint you run locally.
+          <code className="px-1"> ~/.claude </code> auth; Grok (xAI) and Ollama
+          Cloud use the API keys you save below; Self-Hosted connects to any
+          OpenAI-compatible endpoint you run locally.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
+
+        {/* -------- Grok (xAI) key -------- */}
+        <section className="space-y-2">
+          <div className="flex items-center justify-between">
+            <Label className="text-sm font-medium">Grok (xAI) API key</Label>
+            {hasGrokKey ? (
+              <Badge className="bg-emerald-500/10 text-emerald-600 border-0">
+                <KeyRound className="h-3 w-3" /> key set
+              </Badge>
+            ) : (
+              <Badge className="bg-amber-500/10 text-amber-600 border-0">
+                <Key className="h-3 w-3" /> not set
+              </Badge>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <Input
+              type="password"
+              value={grokKey}
+              onChange={(e) => setGrokKey(e.target.value)}
+              placeholder={
+                hasGrokKey ? "•••••••••••• (leave blank to keep)" : "xai-…"
+              }
+              disabled={clearGrokKey}
+            />
+            <Button onClick={saveGrokKey} disabled={setGrokKeyMut.isPending}>
+              {setGrokKeyMut.isPending ? "Saving…" : "Save"}
+            </Button>
+          </div>
+          {hasGrokKey ? (
+            <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+              <Checkbox
+                checked={clearGrokKey}
+                onCheckedChange={(checked) => {
+                  const next = checked === true;
+                  setClearGrokKey(next);
+                  if (next) setGrokKey("");
+                }}
+              />
+              Clear the stored key
+            </label>
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              Used for grok-build-0.1 at api.x.ai/v1. Stored Fernet-encrypted
+              server-side; never returned by the API.
+            </p>
+          )}
+        </section>
+
+        <Separator />
+
         {/* -------- Ollama key -------- */}
         <section className="space-y-2">
           <div className="flex items-center justify-between">
@@ -312,7 +427,7 @@ export function AIRoutingCard() {
         {/* -------- Mode toggle -------- */}
         <section className="space-y-3">
           <Label className="text-sm font-medium">Routing mode</Label>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2">
             <ModeButton
               icon={<ShieldCheck className="h-4 w-4" />}
               label="Anthropic"
@@ -320,6 +435,18 @@ export function AIRoutingCard() {
               active={currentMode === "anthropic"}
               onClick={flipToAnthropic}
               disabled={applyMode.isPending}
+            />
+            <ModeButton
+              icon={<Zap className="h-4 w-4" />}
+              label="Grok"
+              description={
+                hasGrokKey
+                  ? "Every agent uses Grok (grok-build-0.1)."
+                  : "Save the Grok (xAI) key first."
+              }
+              active={currentMode === "grok"}
+              onClick={flipToGrok}
+              disabled={applyMode.isPending || !hasGrokKey}
             />
             <ModeButton
               icon={<Sparkles className="h-4 w-4" />}
@@ -362,6 +489,13 @@ export function AIRoutingCard() {
               <AlertTriangle className="h-3 w-3" />
               Some agents may already be routed to Ollama but no key is
               saved — those agents will fall back to Anthropic at spawn.
+            </p>
+          ) : null}
+          {currentMode === "grok" || currentMode === "mix" ? (
+            <p className="text-xs text-muted-foreground">
+              Grok agents run on xAI&apos;s official grok CLI; the command /
+              secret-exfiltration guard, the prompt-injection guard, and the
+              per-agent cost cap all apply.
             </p>
           ) : null}
         </section>
@@ -457,6 +591,23 @@ export function AIRoutingCard() {
                           Anthropic
                         </SelectLabel>
                         {catalogAnthropicOnly.map(
+                          (c: { model_name: string; display_name: string }) => (
+                            <SelectItem key={c.model_name} value={c.model_name}>
+                              {c.display_name}
+                            </SelectItem>
+                          ),
+                        )}
+                      </SelectGroup>
+                    )}
+
+                    {/* Grok (xAI) models */}
+                    {catalogGrokOnly.length > 0 && (
+                      <SelectGroup>
+                        <SelectLabel>
+                          <ProviderBadge variant="grok" />
+                          Grok (xAI)
+                        </SelectLabel>
+                        {catalogGrokOnly.map(
                           (c: { model_name: string; display_name: string }) => (
                             <SelectItem key={c.model_name} value={c.model_name}>
                               {c.display_name}
@@ -580,17 +731,19 @@ function errMsg(e: unknown): string {
 function ProviderBadge({
   variant,
 }: {
-  variant: "anthropic" | "ollama" | "self-hosted";
+  variant: "anthropic" | "grok" | "ollama" | "self-hosted";
 }) {
   const styles: Record<string, string> = {
     anthropic: "bg-blue-500/20 text-blue-700 dark:text-blue-400",
     ollama: "bg-violet-500/20 text-violet-700 dark:text-violet-400",
     "self-hosted": "bg-purple-500/20 text-purple-700 dark:text-purple-400",
+    grok: "bg-teal-500/20 text-teal-700 dark:text-teal-400",
   };
   const labels: Record<string, string> = {
     anthropic: "A",
     ollama: "O",
     "self-hosted": "S",
+    grok: "G",
   };
   return (
     <span

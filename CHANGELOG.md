@@ -4,6 +4,12 @@ All notable changes to RoboCo are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Pluggable agent providers + a Grok (xAI) backend.** A new `roboco/llm/providers/` seam (an `AgentProvider` lifecycle ABC + a `ProviderRegistry` keyed by `ModelProvider`) lets the orchestrator drive agent backends other than Claude Code. The first is `GrokProvider` for xAI's `grok-build-0.1`: xAI is OpenAI-compatible only (no Anthropic-Messages endpoint), so a Grok agent runs an OpenAI-protocol runtime pointed at `https://api.x.ai/v1` rather than the `ANTHROPIC_BASE_URL` injection the other providers use — and it reuses the orchestrator's existing mount/auth assembly, so it gets the same MCP gateway + tool-manifest wiring as every other agent by construction (and passes its prompt via env, never an argv positional). The change is purely additive: only `GROK` routes through the registry; Anthropic / Ollama Cloud / self-hosted spawns are untouched. Includes the `grok` enum value (migration 038), a seeded Grok provider row (migration 039), a `grok-build-0.1` catalog entry, and `GET/PUT /api/providers/grok-key` + a Settings panel card to store the xAI key (Fernet-encrypted, reusing the existing provider-key machinery). Ships the full native runtime: a first-class `roboco-agent-grok` image (built `FROM` agent-base, adds opencode; wired into both compose files, the registry compose, and the release workflow) whose entrypoint renders an `opencode.json` at spawn — translating RoboCo's MCP gateway servers into opencode's config and declaring the xAI provider — then runs opencode. KNOWN PARITY GAP: RoboCo's bash-guard (PAT-scrub) and transcript-based usage/cost capture are Claude Code hooks that do not transfer to the opencode runtime; the `bash` permission is operator-tunable so a deployment can fail closed until a security/usage-parity opencode plugin lands. That plugin and live end-to-end validation are the remaining work to finalize with xAI.
+
 ## [0.6.0] - 2026-06-17
 
 ### Added

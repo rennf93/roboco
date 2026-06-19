@@ -31,6 +31,7 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from roboco.llm.providers import AgentProvider, ProviderRegistry
     from roboco.services.llm import AgentRoute
     from roboco.services.task import TaskService
 import structlog
@@ -162,6 +163,30 @@ CLAUDE_AUTH_HOST_PATH = os.environ.get(
 )
 PROJECT_HOST_PATH = os.environ.get("ROBOCO_HOST_PROJECT_DIR", "")
 DATA_HOST_PATH = os.environ.get("ROBOCO_HOST_DATA_DIR", "")
+# In-orchestrator path where each GROK agent's usage capture is visible. The
+# agent writes <DATA_HOST_PATH>/grok-usage/<agent_id>/usage.json; the compose file
+# mounts the same host dir here so the finalizer can read the captured tokens back
+# (the grok analogue of reading the Claude transcript from the mounted ~/.claude).
+# Override for local runs.
+GROK_USAGE_DATA_DIR = os.environ.get("ROBOCO_GROK_USAGE_DIR", "/data/grok-usage")
+
+# Interactive Grok images (grok-CLI conversation drivers) — selected for the
+# intake / secretary roles when their route resolves to GROK, instead of the
+# Claude prompter/secretary images. Their dockerfiles build FROM roboco-agent-grok.
+GROK_PROMPTER_IMAGE = "roboco-agent-grok-prompter"
+GROK_SECRETARY_IMAGE = "roboco-agent-grok-secretary"
+_GROK_INTERACTIVE_DOCKERFILES = {
+    GROK_PROMPTER_IMAGE: "agent-grok-prompter.Dockerfile",
+    GROK_SECRETARY_IMAGE: "agent-grok-secretary.Dockerfile",
+}
+
+# A one-shot Grok container exits with this code (EX_TEMPFAIL) when the run hit
+# an xAI 429 (grok-cli-agent-entrypoint.sh detects it). The orchestrator parks the
+# grok provider rate-limited instead of crash-retrying, breaking the
+# 429 -> exit -> respawn cost loop. The probe-resume loop clears the park after
+# the retry window (unknown-provider time-expiry fallback in _probe_target).
+_GROK_RATE_LIMIT_EXIT_CODE = 75
+_GROK_RATE_LIMIT_RETRY_AFTER_S = 60.0
 
 
 # =============================================================================
@@ -193,6 +218,8 @@ class _IntakeRunSpec:
     api_url: str
     provider_base_url: str | None
     provider_auth_token: str | None
+    provider_type: str = "anthropic"
+    model: str = ""
 
 
 @dataclass
@@ -214,6 +241,8 @@ class _SecretaryRunSpec:
     agent_token: str
     provider_base_url: str | None
     provider_auth_token: str | None
+    provider_type: str = "anthropic"
+    model: str = ""
 
 
 def _read_project_slug(task: dict[str, Any]) -> str | None:
@@ -624,6 +653,12 @@ class AgentOrchestrator:
         self._strategy_engine_task: asyncio.Task | None = None
         self._external_pr_poll_task: asyncio.Task | None = None
         self._self_heal_task: asyncio.Task | None = None
+        # Provider registry: maps a ModelProvider to a dedicated AgentProvider
+        # backend. Only providers needing a non-Claude-Code runtime are
+        # registered (currently GROK, which speaks the OpenAI protocol). Agents
+        # on unregistered providers (Anthropic / Ollama Cloud / self-hosted) use
+        # the built-in _spawn_container path unchanged. Built lazily.
+        self._provider_registry: ProviderRegistry | None = None
         # Tracks which providers have already received a CEO notification
         # during the current rate-limit episode.  Cleared when the probe
         # succeeds and the rate limit is lifted (tracker.clear() path).
@@ -675,6 +710,14 @@ class AgentOrchestrator:
         # Tests bypass `__init__` via `__new__` and set _claim_heartbeat_ttl
         # directly; production never uses _task_svc from __init__.
         self._claim_heartbeat_ttl: int = settings.stale_claim_reap_seconds
+        # Longer threshold before a wedged (ACTIVE-yet-idle) GROK container is
+        # killed + evicted so the reaper can release its task; see
+        # _maybe_kill_wedged_grok.
+        self._grok_idle_kill_ttl: int = settings.grok_idle_kill_seconds
+        # Cost ceiling (USD) before a live GROK container is killed — the budget
+        # kill-switch parity (the grok CLI exposes no live usage hook). 0 disables.
+        # See _enforce_grok_cost_budget.
+        self._grok_max_cost_usd: float = settings.grok_max_cost_usd
 
     # =========================================================================
     # LIFECYCLE
@@ -809,6 +852,101 @@ class AgentOrchestrator:
                         f"{docker_dir}/{dockerfile}",
                         build_context,
                     )
+
+    async def _ensure_grok_interactive_image(self, image: str) -> None:
+        """Ensure a Grok interactive image and its base→runtime chain exist.
+
+        The grok-prompter / grok-secretary images build FROM roboco-agent-grok,
+        which builds FROM the agent base, so the whole chain must be present
+        before a local build of the interactive image can succeed (on the
+        registry path each is already pulled and this just verifies presence).
+        """
+        if PROJECT_HOST_PATH:
+            build_context = PROJECT_HOST_PATH
+            docker_dir = f"{PROJECT_HOST_PATH}/docker"
+        else:
+            build_context = str(self.project_root)
+            docker_dir = str(self.project_root / "docker")
+        chain = [
+            (AGENT_BASE_IMAGE, "agent-base.Dockerfile"),
+            ("roboco-agent-grok", "agent-grok.Dockerfile"),
+            (image, _GROK_INTERACTIVE_DOCKERFILES[image]),
+        ]
+        for img, dockerfile in chain:
+            await self._ensure_image_present(
+                img, f"{docker_dir}/{dockerfile}", build_context
+            )
+
+    @staticmethod
+    def _safe_agent_path_segment(agent_id: str) -> str:
+        """Return ``agent_id`` if it is safe as a single path segment, else raise.
+
+        ``agent_id`` reaches the grok usage dir from request-facing call sites, so
+        it must not be able to traverse the path. Reject every traversal vector —
+        empty, ``.`` / ``..``, a ``/`` or ``\\`` separator, or an embedded NUL —
+        rather than stripping it; the orchestrator only ever assigns plain
+        slug / uuid ids, none of which contain these.
+        """
+        if (
+            not agent_id
+            or agent_id in {".", ".."}
+            or "/" in agent_id
+            or "\\" in agent_id
+            or "\x00" in agent_id
+        ):
+            raise ValueError(f"unsafe agent id for a filesystem path: {agent_id!r}")
+        return agent_id
+
+    @staticmethod
+    def _grok_usage_root() -> Path:
+        """The base dir all per-agent grok usage dirs live under (no agent id).
+
+        Branched compose-vs-local: in compose the orchestrator sees the mounted
+        host dir at ``GROK_USAGE_DATA_DIR``; in local mode usage.json lands under
+        the shared tempdir. The single fixed anchor the per-agent dir hangs off,
+        and the safe root a finalize read is checked to stay within.
+        """
+        if PROJECT_HOST_PATH:
+            return Path(GROK_USAGE_DATA_DIR)
+        return Path(tempfile.gettempdir()) / "roboco-grok-usage"
+
+    @staticmethod
+    def _grok_usage_dir(agent_id: str) -> Path:
+        """Per-agent grok usage dir under :meth:`_grok_usage_root`.
+
+        Single source of truth for BOTH the pre-create/mount side
+        (``_ensure_grok_usage_dir``) and the finalize read side
+        (``_grok_usage_json``) so they can never drift. ``agent_id`` is validated
+        as a single safe path segment first — ``_safe_agent_path_segment`` rejects
+        ``.`` / ``..`` / separators / NUL so a bad id raises rather than silently
+        remapping or traversing. The read side additionally reduces the id to its
+        final path component (``os.path.basename``) — the CodeQL-recognized
+        path-injection barrier.
+        """
+        return AgentOrchestrator._grok_usage_root() / (
+            AgentOrchestrator._safe_agent_path_segment(agent_id)
+        )
+
+    def _ensure_grok_usage_dir(self, agent_id: str) -> None:
+        """Pre-create the agent's grok usage dir (world-writable) before the mount.
+
+        On Linux, ``docker run -v`` auto-creates a MISSING bind source as
+        ``root:root``, so the non-root ``agent`` user EACCESes when the grok
+        entrypoint / interactive driver writes ``usage.json`` there. Creating the
+        dir ``0777`` first makes the mounted dir writable regardless of the agent
+        uid; the orchestrator (root) can still read it back at finalize.
+        """
+        target = self._grok_usage_dir(agent_id)
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            target.chmod(0o777)
+        except OSError as exc:
+            logger.warning(
+                "could not pre-create grok usage dir; grok agent may EACCES",
+                agent_id=agent_id,
+                path=str(target),
+                error=str(exc),
+            )
 
     async def _ensure_image_present(
         self, bare_image: str, dockerfile_path: str, build_context: str
@@ -1658,6 +1796,21 @@ class AgentOrchestrator:
             config, instance, agent_settings_path = await self._prepare_agent_spawn(
                 agent_id, task_id, model, git_context
             )
+        # Grok 429 loop-breaker (B4): while the xAI provider is parked
+        # rate-limited, do NOT launch another grok container — the dispatcher
+        # would otherwise re-spawn the same task every tick, 429, and burn
+        # cost. The probe-resume loop clears the park after the retry window and
+        # the next tick spawns normally. Grok-only; the Claude path is untouched.
+        # Fail-open: a tracker read error must never block spawning.
+        if await self._grok_spawn_parked(config.provider_type):
+            self._mark_task_handled(task_id)
+            instance.state = AgentState.OFFLINE
+            logger.info(
+                "Grok spawn skipped: provider rate-limited (parked)",
+                agent_id=agent_id,
+                task_id=task_id,
+            )
+            return instance
         # Record the task as handled so later dispatchers in the same
         # tick don't act on it again. Safe even if _launch_spawn fails
         # — the next tick starts fresh.
@@ -1681,6 +1834,10 @@ class AgentOrchestrator:
                 "workspaces": f"{DATA_HOST_PATH}/workspaces",
                 "claude": CLAUDE_AUTH_HOST_PATH,
                 "mcp_config": f"{DATA_HOST_PATH}/mcp-configs/{mcp_name}",
+                # Per-agent grok usage dir (GROK only); the orchestrator reads the
+                # captured tokens back at finalize via the shared data volume
+                # (see GROK_USAGE_DATA_DIR).
+                "grok_usage": f"{DATA_HOST_PATH}/grok-usage/{config.agent_id}",
                 "prompt": (
                     f"{DATA_HOST_PATH}/prompts-generated/{config.agent_id}-prompt.md"
                 ),
@@ -1700,6 +1857,9 @@ class AgentOrchestrator:
             "workspaces": str(Path(settings.workspaces_root)),
             "claude": CLAUDE_AUTH_HOST_PATH,
             "mcp_config": str(config.mcp_config_path),
+            "grok_usage": str(
+                Path(tempfile.gettempdir()) / "roboco-grok-usage" / config.agent_id
+            ),
             "prompt": str(
                 Path(tempfile.gettempdir())
                 / "roboco-prompts"
@@ -1954,6 +2114,42 @@ class AgentOrchestrator:
         """Return the string to pass to `claude --model`."""
         return _resolve_agent_cli_model(config.provider_type, config.model)
 
+    def _ensure_provider_registry(self) -> "ProviderRegistry":
+        """Build (once) the registry of dedicated provider backends.
+
+        Only providers that need a runtime other than the built-in Claude Code
+        container are registered. Today that is GROK (xAI, OpenAI protocol).
+        """
+        if self._provider_registry is None:
+            from roboco.llm.providers import GrokCliProvider, ProviderRegistry
+            from roboco.models.base import ModelProvider
+
+            registry = ProviderRegistry()
+            # Qualify the grok image with the registry namespace + tag so it
+            # resolves in both local-build and registry deploys (parity with
+            # get_agent_image for the Claude path).
+            registry.register(
+                ModelProvider.GROK,
+                GrokCliProvider(self, image=_qualify_agent_image("roboco-agent-grok")),
+            )
+            self._provider_registry = registry
+        return self._provider_registry
+
+    def _provider_for(self, provider_type: str) -> "AgentProvider | None":
+        """Resolve a dedicated provider for a route's ``provider_type`` string.
+
+        Returns ``None`` for providers that use the built-in Claude Code spawn
+        (Anthropic / Ollama Cloud / self-hosted) or any unrecognised value — the
+        caller then runs the existing container path unchanged.
+        """
+        from roboco.models.base import ModelProvider
+
+        try:
+            model_provider = ModelProvider(provider_type)
+        except ValueError:
+            return None
+        return self._ensure_provider_registry().get_or_none(model_provider)
+
     async def _spawn_container(
         self,
         config: AgentConfig,
@@ -1967,6 +2163,22 @@ class AgentOrchestrator:
             initial_prompt: Optional initial prompt for the agent
             agent_settings_path: Path to per-agent Claude settings file
         """
+        # Every spawn gets a non-empty user prompt. A prompt-less spawn (e.g. the
+        # crash auto-restart, which passes no initial_prompt) must still direct the
+        # agent to scan for work. The Claude body re-applies the same default; doing
+        # it here single-sources it so dedicated providers (GROK) get it too —
+        # otherwise grok would launch with an empty `grok -p ""`.
+        if not initial_prompt:
+            initial_prompt = self._default_spawn_prompt()
+        # A dedicated provider backend (e.g. GROK / OpenAI protocol) handles its
+        # own spawn. Anthropic / Ollama Cloud / self-hosted have no dedicated
+        # provider registered and fall through to the Claude Code body below,
+        # byte-for-byte unchanged.
+        provider = self._provider_for(config.provider_type)
+        if provider is not None:
+            result = await provider.spawn(config, initial_prompt, agent_settings_path)
+            return result.instance_id
+
         container_name = f"roboco-agent-{config.agent_id}"
         await self._remove_container(container_name)
 
@@ -2847,6 +3059,8 @@ class AgentOrchestrator:
         if INTAKE_AGENT_ID in self._instances:
             await self.stop_agent(INTAKE_AGENT_ID, graceful=False)
 
+        from roboco.models.base import ModelProvider
+
         cwd, cloned = await self._clone_intake_scope(project_slug, product_id)
 
         prompt_path = self._generate_composed_prompt(INTAKE_AGENT_ID)
@@ -2860,14 +3074,22 @@ class AgentOrchestrator:
             else f"http://127.0.0.1:{settings.port}"
         )
 
-        await self._ensure_agent_image(INTAKE_AGENT_ID)
+        # GROK runs the interactive driver on its own grok-CLI prompter image;
+        # every other provider uses the Claude SDK-driver prompter image.
+        is_grok = route.provider_type == ModelProvider.GROK
+        image = GROK_PROMPTER_IMAGE if is_grok else get_agent_image(INTAKE_AGENT_ID)
+        if is_grok:
+            await self._ensure_grok_interactive_image(image)
+            self._ensure_grok_usage_dir(INTAKE_AGENT_ID)
+        else:
+            await self._ensure_agent_image(INTAKE_AGENT_ID)
         container_name = f"roboco-agent-{INTAKE_AGENT_ID}"
         await self._remove_container(container_name)
 
         cmd = self._build_intake_run_cmd(
             _IntakeRunSpec(
                 container_name=container_name,
-                image=get_agent_image(INTAKE_AGENT_ID),
+                image=image,
                 hosts=self._resolve_intake_host_paths(),
                 session_id=session_id,
                 cwd=cwd,
@@ -2875,6 +3097,8 @@ class AgentOrchestrator:
                 api_url=api_url,
                 provider_base_url=route.base_url,
                 provider_auth_token=route.auth_token,
+                provider_type=route.provider_type.value,
+                model=route.model_name,
             )
         )
         container_id = await self._run_container_cmd(cmd)
@@ -2884,6 +3108,7 @@ class AgentOrchestrator:
             blueprint_path=prompt_path,
             model=route.model_name,
             git_context=None,
+            provider_type=route.provider_type.value,
         )
         instance = AgentInstance(
             agent_id=INTAKE_AGENT_ID,
@@ -2895,6 +3120,14 @@ class AgentOrchestrator:
         instance.started_at = datetime.now(UTC)
         instance.last_activity = datetime.now(UTC)
         self._instances[INTAKE_AGENT_ID] = instance
+
+        # Record a usage session (task_id=None) and pin its id on the instance so
+        # the reap finalizer can look up token usage — without this an interactive
+        # session finalizes at 0 tokens / $0 (the GROK path reads the captured
+        # usage.json; the Claude path reads the transcript). Mirrors _launch_spawn.
+        usage_session_id = await self._record_spawn_session(config, None)
+        if usage_session_id is not None:
+            instance.usage_session_id = usage_session_id
 
         # The relay was already opened on the request path (start_intake_session /
         # spawn_intake_session) BEFORE the panel connected its SSE stream. Do NOT
@@ -2990,6 +3223,7 @@ class AgentOrchestrator:
         """
         from roboco.agents_config import issue_agent_token
         from roboco.foundation.identity import AGENTS
+        from roboco.models.base import ModelProvider
 
         if SECRETARY_AGENT_ID in self._instances:
             await self.stop_agent(SECRETARY_AGENT_ID, graceful=False)
@@ -3005,7 +3239,13 @@ class AgentOrchestrator:
             else f"http://127.0.0.1:{settings.port}"
         )
 
-        await self._ensure_agent_image(SECRETARY_AGENT_ID)
+        is_grok = route.provider_type == ModelProvider.GROK
+        image = GROK_SECRETARY_IMAGE if is_grok else get_agent_image(SECRETARY_AGENT_ID)
+        if is_grok:
+            await self._ensure_grok_interactive_image(image)
+            self._ensure_grok_usage_dir(SECRETARY_AGENT_ID)
+        else:
+            await self._ensure_agent_image(SECRETARY_AGENT_ID)
         container_name = f"roboco-agent-{SECRETARY_AGENT_ID}"
         await self._remove_container(container_name)
 
@@ -3013,7 +3253,7 @@ class AgentOrchestrator:
         cmd = self._build_secretary_run_cmd(
             _SecretaryRunSpec(
                 container_name=container_name,
-                image=get_agent_image(SECRETARY_AGENT_ID),
+                image=image,
                 hosts=self._resolve_secretary_host_paths(),
                 session_id=session_id,
                 cwd="/app",
@@ -3023,6 +3263,8 @@ class AgentOrchestrator:
                 agent_token=issue_agent_token(agent_uuid, "secretary", ""),
                 provider_base_url=route.base_url,
                 provider_auth_token=route.auth_token,
+                provider_type=route.provider_type.value,
+                model=route.model_name,
             )
         )
         container_id = await self._run_container_cmd(cmd)
@@ -3032,6 +3274,7 @@ class AgentOrchestrator:
             blueprint_path=prompt_path,
             model=route.model_name,
             git_context=None,
+            provider_type=route.provider_type.value,
         )
         instance = AgentInstance(
             agent_id=SECRETARY_AGENT_ID,
@@ -3043,6 +3286,12 @@ class AgentOrchestrator:
         instance.started_at = datetime.now(UTC)
         instance.last_activity = datetime.now(UTC)
         self._instances[SECRETARY_AGENT_ID] = instance
+
+        # Pin a usage session id so the reap finalizer can attribute token usage
+        # (else $0); see the matching note in _spawn_intake_container.
+        usage_session_id = await self._record_spawn_session(config, None)
+        if usage_session_id is not None:
+            instance.usage_session_id = usage_session_id
 
         logger.info(
             "Secretary session spawned",
@@ -3066,6 +3315,40 @@ class AgentOrchestrator:
         await self.stop_agent(SECRETARY_AGENT_ID, graceful=True)
         logger.info("Secretary session reaped", session_id=session_id)
 
+    async def _reap_idle_interactive_sessions(self) -> None:
+        """Retire live intake/secretary chats idle past the configured threshold.
+
+        An abandoned chat (the human closed the tab without confirming or
+        stopping) otherwise leaks its container until the orchestrator restarts.
+        Idle is measured by time-since-last-turn (push/deliver), NOT connection
+        state, so an active or page-reloaded chat that keeps exchanging turns is
+        never reaped; board-review-parked sessions are exempt. Provider-agnostic
+        (Claude + Grok interactive). Disabled when the threshold is 0.
+        """
+        from roboco.services.prompter_live import get_live_registry
+
+        threshold = float(settings.interactive_idle_reap_seconds)
+        for session_id, agent_id in get_live_registry().idle_session_ids(threshold):
+            try:
+                if agent_id == INTAKE_AGENT_ID:
+                    await self.reap_intake_session(session_id)
+                elif agent_id == SECRETARY_AGENT_ID:
+                    await self.reap_secretary_session(session_id)
+                else:
+                    continue
+                logger.info(
+                    "Reaped idle interactive session",
+                    session_id=session_id,
+                    agent_id=agent_id,
+                    idle_threshold_s=threshold,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Idle interactive reap failed",
+                    session_id=session_id,
+                    error=str(exc),
+                )
+
     def _resolve_secretary_host_paths(self) -> dict[str, str | None]:
         """Host paths for the Secretary container's mounts (claude + prompt).
 
@@ -3078,6 +3361,7 @@ class AgentOrchestrator:
                 "prompt": (
                     f"{DATA_HOST_PATH}/prompts-generated/{SECRETARY_AGENT_ID}-prompt.md"
                 ),
+                "grok_usage": f"{DATA_HOST_PATH}/grok-usage/{SECRETARY_AGENT_ID}",
             }
         return {
             "claude": CLAUDE_AUTH_HOST_PATH,
@@ -3085,6 +3369,9 @@ class AgentOrchestrator:
                 Path(tempfile.gettempdir())
                 / "roboco-prompts"
                 / f"{SECRETARY_AGENT_ID}-prompt.md"
+            ),
+            "grok_usage": str(
+                Path(tempfile.gettempdir()) / "roboco-grok-usage" / SECRETARY_AGENT_ID
             ),
         }
 
@@ -3123,10 +3410,7 @@ class AgentOrchestrator:
                 f"CLAUDE_CODE_SUBAGENT_MODEL={spec.cli_model}",
             ]
         )
-        if spec.provider_base_url:
-            cmd.extend(["-e", f"ANTHROPIC_BASE_URL={spec.provider_base_url}"])
-        if spec.provider_auth_token:
-            cmd.extend(["-e", f"ANTHROPIC_AUTH_TOKEN={spec.provider_auth_token}"])
+        AgentOrchestrator._append_interactive_provider_env(cmd, spec)
         cmd.append(spec.image)
         return cmd
 
@@ -3194,6 +3478,7 @@ class AgentOrchestrator:
                     f"{DATA_HOST_PATH}/prompts-generated/{INTAKE_AGENT_ID}-prompt.md"
                 ),
                 "workspaces": f"{DATA_HOST_PATH}/workspaces",
+                "grok_usage": f"{DATA_HOST_PATH}/grok-usage/{INTAKE_AGENT_ID}",
             }
         return {
             "claude": CLAUDE_AUTH_HOST_PATH,
@@ -3203,7 +3488,47 @@ class AgentOrchestrator:
                 / f"{INTAKE_AGENT_ID}-prompt.md"
             ),
             "workspaces": str(Path(settings.workspaces_root)),
+            "grok_usage": str(
+                Path(tempfile.gettempdir()) / "roboco-grok-usage" / INTAKE_AGENT_ID
+            ),
         }
+
+    @staticmethod
+    def _append_interactive_provider_env(
+        cmd: list[str], spec: "_IntakeRunSpec | _SecretaryRunSpec"
+    ) -> None:
+        """Inject the per-provider LLM env for an interactive container.
+
+        GROK runs on the official ``grok`` CLI, exactly like the one-shot path:
+        the subscription auth (``~/.grok/auth.json``) is mounted read-only, no
+        metered xAI key is used, the per-agent data dir is mounted so the driver's
+        per-turn usage capture lands a ``usage.json`` the finalizer reads back, and
+        the per-role permissions / reasoning come from the grok flags the driver
+        computes (``grok_cli_config``) — not env. Every other provider uses the
+        Claude path's ``ANTHROPIC_*`` injection (or the mounted ``~/.claude``
+        default when the route carries no creds).
+        """
+        from roboco.llm.providers.grok import GrokCliProvider
+        from roboco.models.base import ModelProvider
+
+        base_url = spec.provider_base_url
+        auth_token = spec.provider_auth_token
+        if spec.provider_type == ModelProvider.GROK.value:
+            GrokCliProvider._append_grok_auth_mount(cmd)
+            GrokCliProvider._append_usage_mount(cmd, spec.hosts)
+            cmd.extend(
+                [
+                    "-e",
+                    "ROBOCO_AGENT_MODEL=grok-build",
+                    "-e",
+                    "ROBOCO_GROK_USAGE_FILE=/home/agent/.grok-usage/usage.json",
+                ]
+            )
+            return
+        if base_url:
+            cmd.extend(["-e", f"ANTHROPIC_BASE_URL={base_url}"])
+        if auth_token:
+            cmd.extend(["-e", f"ANTHROPIC_AUTH_TOKEN={auth_token}"])
 
     @staticmethod
     def _build_intake_run_cmd(spec: _IntakeRunSpec) -> list[str]:
@@ -3245,12 +3570,9 @@ class AgentOrchestrator:
                 f"CLAUDE_CODE_SUBAGENT_MODEL={spec.cli_model}",
             ]
         )
-        # Non-Anthropic providers need explicit endpoint/token; the Anthropic
-        # default uses the mounted ~/.claude login (same as every agent).
-        if spec.provider_base_url:
-            cmd.extend(["-e", f"ANTHROPIC_BASE_URL={spec.provider_base_url}"])
-        if spec.provider_auth_token:
-            cmd.extend(["-e", f"ANTHROPIC_AUTH_TOKEN={spec.provider_auth_token}"])
+        # GROK mounts the subscription auth + usage dir; other providers use the
+        # ANTHROPIC_* injection or the mounted ~/.claude default.
+        AgentOrchestrator._append_interactive_provider_env(cmd, spec)
         cmd.append(spec.image)
         return cmd
 
@@ -3615,17 +3937,131 @@ class AgentOrchestrator:
         except OSError:
             return (0, 0, 0, 0)
 
+    def _grok_usage_json(self, agent_id: str) -> dict[str, Any] | None:
+        """Read a GROK agent's ``usage.json`` (``{model, total_tokens, cost_usd}``).
+
+        Written to the per-agent data dir by the grok-CLI entrypoint (one-shot,
+        post-run) and the interactive driver (per-turn); read back from the same
+        branched dir the writers mount (``_grok_usage_dir``). Returns ``None`` when
+        absent / unreadable.
+        """
+        # os.path.basename keeps only the final path component of the agent id
+        # before the path is built — the path-injection sanitizer CodeQL models,
+        # applied here in the read's own scope. _grok_usage_dir's guard rejects
+        # '.' / '..' / separators / NUL upstream (a bad id raises -> None here).
+        try:
+            usage_json = self._grok_usage_dir(os.path.basename(agent_id)) / "usage.json"
+            data = json.loads(usage_json.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _grok_usage_tokens(self, agent_id: str) -> tuple[int, int, int, int]:
+        """A GROK agent's token usage from its ``usage.json``.
+
+        grok reports a single cumulative total with no input/output split, so it
+        folds into output (it bills at the output rate, matching
+        ``calculate_cost``). A WARNING is logged on a missing/zero read because a
+        silent mount/uid failure is otherwise indistinguishable from a genuine
+        zero-cost run. Returns ``(input, output, cache_read, cache_write)``.
+        """
+        data = self._grok_usage_json(agent_id)
+        total = 0
+        if data:
+            try:
+                total = int(data.get("total_tokens", 0))
+            except (TypeError, ValueError):
+                total = 0
+        if not total:
+            logger.warning(
+                "GROK agent finalized with no readable usage "
+                "(0 tokens / $0) — check the data dir mount",
+                agent_id=agent_id,
+            )
+        return (0, total, 0, 0)
+
+    def _grok_cost_usd(self, agent_id: str) -> float:
+        """A GROK agent's captured notional cost from its ``usage.json`` (0 if none)."""
+        data = self._grok_usage_json(agent_id)
+        if not data:
+            return 0.0
+        try:
+            return float(data.get("cost_usd", 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    async def _enforce_grok_cost_budget(self) -> None:
+        """Kill a live GROK container whose captured cost exceeds the cap.
+
+        The grok CLI exposes no live token/budget hook, so the budget kill-switch
+        (Claude Code parity for runaway token burn — a loop that keeps firing
+        verbs evades the idle watchdog but still burns cost) reads each ACTIVE
+        GROK container's captured cost from its ``usage.json`` and kills + evicts
+        it past ``ROBOCO_GROK_MAX_COST_USD``. The reaper then releases the freed
+        task. This bites on the interactive sessions (the driver rewrites
+        usage.json every turn, so a runaway chat is caught between turns); a
+        one-shot ``grok -p`` writes usage.json only post-run and is bounded by its
+        ``--max-turns`` cap instead. Disabled (no-op) when the cap is <= 0.
+        """
+        cap = getattr(self, "_grok_max_cost_usd", 0.0)
+        if cap <= 0:
+            return
+        from roboco.models.base import ModelProvider
+
+        for agent_id, instance in list(self._instances.items()):
+            config = instance.config
+            if (
+                config is None
+                or config.provider_type != ModelProvider.GROK.value
+                or instance.state != AgentState.ACTIVE
+            ):
+                continue
+            cost = self._grok_cost_usd(agent_id)
+            if cost <= cap:
+                continue
+            try:
+                await self._remove_container(f"roboco-agent-{agent_id}")
+            except Exception as exc:
+                logger.error(
+                    "grok cost-cap kill failed; will retry next tick",
+                    agent_id=agent_id,
+                    error=str(exc),
+                )
+                continue
+            self._instances.pop(agent_id, None)
+            # Interactive roles (intake/secretary) have an open panel relay; a
+            # raw kill would leave the SSE hanging (frozen chat). Close it with a
+            # reason so the panel reports why the chat ended.
+            if agent_id in (INTAKE_AGENT_ID, SECRETARY_AGENT_ID):
+                from roboco.services.prompter_live import get_live_registry
+
+                get_live_registry().close_by_agent(
+                    agent_id, error="Chat ended: the Grok cost cap was exceeded."
+                )
+            logger.warning(
+                "grok container killed: cost ceiling exceeded",
+                agent_id=agent_id,
+                cost_usd=round(cost, 4),
+                cap_usd=cap,
+            )
+
     async def _resolve_final_token_usage(
         self, agent_id: str
     ) -> tuple[int, int, int, int]:
         """Resolve final token counts for a stopping agent.
 
-        Tries the live SDK ``/usage/status`` first; if that misses — the SDK's
-        in-memory counts race container teardown for short-lived agents — it
-        falls back to the agent's Claude Code transcript, which is durable and
-        mounted into this container. Returns
+        For a GROK agent, reads the captured ``usage.json`` (no SDK server /
+        Claude transcript exists). Otherwise tries the live SDK ``/usage/status``
+        first; if that misses — the SDK's in-memory counts race container teardown
+        for short-lived agents — it falls back to the agent's Claude Code
+        transcript, which is durable and mounted into this container. Returns
         ``(input, output, cache_read, cache_write)``.
         """
+        from roboco.models.base import ModelProvider
+
+        if self.get_provider_for_agent(agent_id) == ModelProvider.GROK.value:
+            return self._grok_usage_tokens(agent_id)
+
         tokens = (0, 0, 0, 0)
         sdk_url = f"http://roboco-agent-{agent_id}:{SDK_PORT}/usage/status"
         try:
@@ -4265,6 +4701,10 @@ Start by:
                 await db.rollback()
                 logger.warning("Notification sweep failed", error=str(e))
 
+        # Retire abandoned live intake/secretary chats (idle past the threshold)
+        # so a closed-tab session doesn't leak its container until restart.
+        await self._reap_idle_interactive_sessions()
+
         # Budget kill-switch — runs every sweep. Any agent whose SDK reports
         # halt=true has breached its per-session tool-call cap; terminate the
         # container so the next dispatcher tick doesn't waste tokens on the
@@ -4474,6 +4914,13 @@ Start by:
         do nothing; non-zero exits keep the existing crash-retry behaviour.
         """
         cid = instance.container_id[:12] if instance.container_id else None
+        # Grok 429 parking (B4): a one-shot grok run that hit an xAI 429 exits
+        # 75 (set by grok-cli-agent-entrypoint.sh). Park the provider instead of
+        # crash-retrying so the spawn guard suppresses the respawn loop; the
+        # probe-resume loop revives the task when the limit lifts.
+        if self._is_grok_rate_limit_exit(instance, exit_code):
+            await self._park_grok_rate_limited(agent_id, instance)
+            return
         graceful = exit_code == 0
         if graceful:
             logger.info(
@@ -4780,6 +5227,11 @@ Start by:
         """
         if pr.get("number") is None:
             return False
+        # The reviewer reviews PRs the org did NOT author. Skip PRs opened by the
+        # repo-owner account: a self-review can't post REQUEST_CHANGES (GitHub
+        # 422), and re-reviewing the org's own in-flight PRs every poll is noise.
+        if pr.get("author_is_owner"):
+            return False
         if self._is_external_pr(pr):
             if not settings.external_pr_enabled or not self._pr_author_allowed(
                 pr, allowlist
@@ -5015,6 +5467,65 @@ Start by:
         from roboco.services.gateway.rate_limit_tracker import RateLimitStateTracker
 
         return RateLimitStateTracker(provider)
+
+    async def _grok_spawn_parked(self, provider_type: str | None) -> bool:
+        """True when *provider_type* is GROK and the provider is parked rate-limited.
+
+        The grok 429 loop-breaker consults this before launching a grok
+        container. Grok-only and fail-open: any error reading the tracker
+        returns False so a Redis hiccup can never block spawning.
+        """
+        from roboco.models.base import ModelProvider
+
+        if provider_type != ModelProvider.GROK.value:
+            return False
+        try:
+            tracker = self._make_tracker(ModelProvider.GROK.value)
+            return bool(await tracker.is_rate_limited())
+        except Exception as exc:
+            logger.warning(
+                "grok rate-limit check failed; allowing spawn", error=str(exc)
+            )
+            return False
+
+    @staticmethod
+    def _is_grok_rate_limit_exit(instance: Any, exit_code: int | None) -> bool:
+        """True for a one-shot grok container that exited 75 (xAI 429)."""
+        from roboco.models.base import ModelProvider
+
+        return (
+            exit_code == _GROK_RATE_LIMIT_EXIT_CODE
+            and instance.config is not None
+            and instance.config.provider_type == ModelProvider.GROK.value
+        )
+
+    async def _park_grok_rate_limited(self, agent_id: str, instance: Any) -> None:
+        """Park a grok agent whose run hit an xAI 429 (entrypoint exit 75).
+
+        Finalize the session for usage capture, mark the instance OFFLINE
+        WITHOUT counting a crash (so it isn't escalated as stranded), and
+        activate the grok rate-limit tracker so the spawn guard suppresses
+        re-spawns until the probe-resume loop clears it after the retry window.
+        The task stays claimed/in_progress and is retried when the limit lifts.
+        """
+        from roboco.models.base import ModelProvider
+
+        await self._finalize_spawn_session(agent_id, exit_reason="rate_limited")
+        instance.state = AgentState.OFFLINE
+        instance.container_id = None
+        instance.error_count = 0  # a 429 is not a crash — don't escalate as stranded
+        try:
+            await self._make_tracker(ModelProvider.GROK.value).activate(
+                retry_after=_GROK_RATE_LIMIT_RETRY_AFTER_S,
+                affected_agents=[agent_id],
+            )
+        except Exception as exc:
+            logger.warning("failed to park grok rate-limit state", error=str(exc))
+        logger.warning(
+            "Grok provider rate-limited; parked (task retried when the limit lifts)",
+            agent_id=agent_id,
+            task_id=instance.current_task_id,
+        )
 
     @staticmethod
     def _too_early_to_probe(state: dict[str, Any]) -> bool:
@@ -6193,6 +6704,69 @@ Start now: evidence(task_id="{task_id}")
         instance = instances.get(self._resolve_agent_slug(str(owner)))
         return instance is not None and instance.state == AgentState.ACTIVE
 
+    def _wedged_grok_slug(
+        self, task: Any, last_heartbeat: "datetime | None"
+    ) -> str | None:
+        """Slug of an ACTIVE GROK container holding ``task`` and idle past the kill TTL.
+
+        ``_assignee_has_active_instance`` shields a live container from the
+        reaper — correct for a Claude agent quiet during a long edit/test cycle.
+        A wedged GROK container is the one case that breaks: ACTIVE *and*
+        silent (an idle model call fires no gateway verb), so its heartbeat never
+        advances and the skip would protect it forever. Returns the slug only for
+        a GROK instance idle past the grok-kill TTL — a recent heartbeat, no
+        owner, a non-GROK provider, or a non-ACTIVE instance all yield ``None``.
+        """
+        from roboco.models.base import ModelProvider
+
+        cutoff = datetime.now(UTC) - timedelta(
+            seconds=getattr(self, "_grok_idle_kill_ttl", 900)
+        )
+        if last_heartbeat is not None and last_heartbeat >= cutoff:
+            return None
+        owner = getattr(task, "assigned_to", None) or getattr(task, "claimed_by", None)
+        if not owner:
+            return None
+        slug = self._resolve_agent_slug(str(owner))
+        instance = (getattr(self, "_instances", None) or {}).get(slug)
+        config = getattr(instance, "config", None)
+        is_active_grok = (
+            instance is not None
+            and instance.state == AgentState.ACTIVE
+            and config is not None
+            and config.provider_type == ModelProvider.GROK.value
+        )
+        return slug if is_active_grok else None
+
+    async def _maybe_kill_wedged_grok(
+        self, task: Any, last_heartbeat: "datetime | None"
+    ) -> bool:
+        """Kill + evict a wedged GROK container so this tick's reaper frees its task.
+
+        On a kill the container is removed (its logs dumped to disk first) and
+        dropped from ``_instances``. Returns True only when a container was
+        actually killed; see :meth:`_wedged_grok_slug` for the eligibility rule.
+        """
+        slug = self._wedged_grok_slug(task, last_heartbeat)
+        if slug is None:
+            return False
+        try:
+            await self._remove_container(f"roboco-agent-{slug}")
+        except Exception as exc:
+            logger.error(
+                "wedged-grok kill failed; will retry next tick",
+                agent_id=slug,
+                error=str(exc),
+            )
+            return False
+        self._instances.pop(slug, None)
+        logger.warning(
+            "wedged grok container killed and evicted",
+            agent_id=slug,
+            task_id=str(getattr(task, "id", "")),
+        )
+        return True
+
     async def _reap_with_service(self, svc: "TaskService") -> None:
         """Inner reap loop, parameterized by the TaskService to use.
 
@@ -6209,7 +6783,14 @@ Start now: evidence(task_id="{task_id}")
         for t in candidates:
             ts = t.last_heartbeat_at
             if ts is None or ts < cutoff:
-                if self._assignee_has_active_instance(t):
+                # A live container normally protects its task. The sole exception
+                # is a wedged GROK container — ACTIVE yet firing no verb — which
+                # the live-instance skip would shield forever. Kill +
+                # evict it past the grok-idle TTL (then fall through to release);
+                # a live non-grok agent, or a grok within the TTL, is skipped.
+                if self._assignee_has_active_instance(
+                    t
+                ) and not await self._maybe_kill_wedged_grok(t, ts):
                     continue
                 task_id = require_uuid(t.id)
                 try:
@@ -6254,6 +6835,13 @@ Start now: evidence(task_id="{task_id}")
             await self._reap_stale_claims()
         except Exception as e:
             logger.error("Stale-claim reaper failed; continuing tick", error=str(e))
+
+        # Enforce the GROK cost ceiling (budget kill-switch parity). Wrapped so a
+        # failure never blocks dispatch; the next tick retries.
+        try:
+            await self._enforce_grok_cost_budget()
+        except Exception as e:
+            logger.error("Grok cost-budget sweep failed; continuing tick", error=str(e))
 
         # Orchestrator uses SYSTEM role for internal API calls
         # Using a well-known UUID for the orchestrator identity

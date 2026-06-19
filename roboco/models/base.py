@@ -194,6 +194,11 @@ class ModelProvider(StrEnum):
     `LOCAL` is the self-hosted Ollama provider: the operator configures its
     base URL via PUT /api/providers/self-hosted (seeded by migration 028).
     Agents assigned to LOCAL are routed to that server at spawn time.
+    `GROK` is xAI's OpenAI-compatible provider (grok-build-0.1 at
+    https://api.x.ai/v1). Unlike the others it does NOT speak the Anthropic
+    Messages API, so GROK agents run through a dedicated OpenAI-protocol
+    provider (roboco.llm.providers.grok), not ANTHROPIC_BASE_URL injection.
+    The xAI key is set via PUT /api/providers/grok/key.
     `OPENAI` is reserved for future use.
     """
 
@@ -201,6 +206,7 @@ class ModelProvider(StrEnum):
     OLLAMA_CLOUD = "ollama_cloud"
     OPENAI = "openai"
     LOCAL = "local"
+    GROK = "grok"
 
 
 class AssignmentScope(StrEnum):

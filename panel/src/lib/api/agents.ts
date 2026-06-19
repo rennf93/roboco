@@ -10,6 +10,7 @@ import { isMockMode, mockAgents } from "@/lib/mock-data";
 
 export interface AgentDefinition {
   id: string; // slug from backend (e.g., "be-dev-1")
+  uuid: string; // stable backend UUID (assigned_to / claimed_by reference this)
   name: string;
   role: AgentRole | null;
   team: Team | null;
@@ -31,6 +32,7 @@ export const agentsApi = {
     if (isMockMode()) {
       return mockAgents.map((a) => ({
         id: a.slug || a.id,
+        uuid: a.id,
         name: a.name,
         role: a.role,
         team: a.team,
@@ -48,6 +50,7 @@ export const agentsApi = {
 
     return data.map((a) => ({
       id: a.slug || a.id, // Use slug as ID, fallback to UUID
+      uuid: a.id, // raw backend UUID (tasks reference agents by this)
       name: a.name || "Unknown",
       role: (a.role as AgentRole) || null,
       team: (a.team as Team) || null,
@@ -62,6 +65,7 @@ export const agentsApi = {
     const a = response.data;
     return {
       id: a.slug,
+      uuid: a.id,
       name: a.name,
       role: a.role as AgentRole,
       team: a.team as Team | null,

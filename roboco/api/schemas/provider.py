@@ -6,7 +6,7 @@ Minimal surface that backs the Settings UI:
  - set / clear / check the single Ollama Cloud API key
  - configure / test / discover the self-hosted (LOCAL) Ollama server
  - read current routing assignments (so the UI renders Mix mode)
- - apply a routing mode (anthropic | ollama | mix | self_hosted)
+ - apply a routing mode (anthropic | grok | ollama | mix | self_hosted)
 """
 
 from __future__ import annotations
@@ -53,6 +53,29 @@ class SetOllamaKeyRequest(BaseModel):
 
     Pass an empty string to clear. Pass a non-empty string to save
     (encrypted with Fernet) and mark the Ollama provider enabled.
+    """
+
+    api_key: str = Field(default="")
+
+
+# =============================================================================
+# GROK (xAI) API KEY
+# =============================================================================
+
+
+class GrokKeyStatus(BaseModel):
+    """Whether the Grok (xAI) provider has a stored key."""
+
+    has_key: bool
+    enabled: bool
+
+
+class SetGrokKeyRequest(BaseModel):
+    """Set or clear the Grok (xAI) API key.
+
+    Pass an empty string to clear. Pass a non-empty string to save
+    (encrypted with Fernet) and mark the Grok provider enabled. This is the
+    standard xAI key used against https://api.x.ai/v1.
     """
 
     api_key: str = Field(default="")
@@ -166,7 +189,7 @@ class ApplyModeRequest(BaseModel):
       set GLOBAL default to `default_model` (a self-hosted model name).
     """
 
-    mode: Literal["anthropic", "ollama", "mix", "self_hosted"]
+    mode: Literal["anthropic", "grok", "ollama", "mix", "self_hosted"]
     default_model: str | None = None
     per_agent: dict[str, str] | None = None
 
@@ -174,5 +197,5 @@ class ApplyModeRequest(BaseModel):
 class ModeResponse(BaseModel):
     """Server-side view of the current mode + a snapshot of active rules."""
 
-    mode: Literal["anthropic", "ollama", "mix", "self_hosted"]
+    mode: Literal["anthropic", "grok", "ollama", "mix", "self_hosted"]
     assignments: list[AssignmentResponse]

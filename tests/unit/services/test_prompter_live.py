@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 
 import httpx
 import pytest
@@ -20,6 +21,49 @@ def test_open_get_close() -> None:
     assert reg.get("s1") is session
     reg.close("s1")
     assert reg.get("s1") is None
+
+
+def test_idle_session_ids_reaps_only_abandoned_chats() -> None:
+    reg = PrompterLiveRegistry()
+    old = reg.open("idle", "intake-1")
+    old.last_activity = time.monotonic() - 4000  # silent for >1h
+    reg.open("fresh", "intake-1")  # just opened — active
+    parked = reg.open("parked", "intake-1")  # board-review parked
+    parked.last_activity = time.monotonic() - 4000
+    parked.task_id = "task-9"
+    reg.open("done", "secretary-1")
+    reg.close("done")  # closed sessions excluded
+
+    idle = dict(reg.idle_session_ids(1800))
+    assert "idle" in idle and idle["idle"] == "intake-1"  # abandoned -> reaped
+    assert "fresh" not in idle  # active -> kept
+    assert "parked" not in idle  # board-review parked -> exempt
+    assert "done" not in idle  # closed -> excluded
+    # Disabled when threshold <= 0.
+    assert reg.idle_session_ids(0) == []
+
+
+def test_activity_bump_keeps_session_alive() -> None:
+    reg = PrompterLiveRegistry()
+    s = reg.open("s1", "intake-1")
+    s.last_activity = time.monotonic() - 4000
+    assert ("s1", "intake-1") in reg.idle_session_ids(1800)
+    reg.push("s1", {"kind": "text", "text": "hi"})  # an agent turn = activity
+    assert reg.idle_session_ids(1800) == []  # no longer idle
+
+
+def test_close_by_agent_closes_matching_sessions_with_error() -> None:
+    reg = PrompterLiveRegistry()
+    reg.open("s1", "intake-1")
+    reg.open("s2", "secretary-1")  # different agent — must survive
+    closed = reg.close_by_agent("intake-1", error="cost cap")
+    assert closed == ["s1"]
+    assert reg.get("s1") is None  # closed + popped
+    assert reg.is_alive("s2")  # untouched
+    # The error event is queued before the close sentinel so the panel sees it.
+    sess = reg.open("s3", "intake-1")
+    reg.close_by_agent("intake-1", error="boom")
+    assert sess.queue.get_nowait() == {"kind": "error", "text": "boom"}
 
 
 def test_park_and_find_by_task() -> None:

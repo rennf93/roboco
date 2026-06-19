@@ -160,6 +160,21 @@ services:
     entrypoint: ["/bin/sh", "-c", "echo 'agent-pr-reviewer image present'"]
     restart: "no"
 
+  agent-grok-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-grok:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-grok image present'"]
+    restart: "no"
+
+  agent-grok-prompter-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-grok-prompter:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-grok-prompter image present'"]
+    restart: "no"
+
+  agent-grok-secretary-image:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-agent-grok-secretary:${ROBOCO_VERSION:-latest}
+    entrypoint: ["/bin/sh", "-c", "echo 'agent-grok-secretary image present'"]
+    restart: "no"
+
   # --------------------------------------------------------------------------
   # Orchestrator — API server + agent spawner
   # --------------------------------------------------------------------------
@@ -194,6 +209,9 @@ services:
       # absolute paths on the host. Default to this compose project's ./data.
       ROBOCO_HOST_PROJECT_DIR: ${ROBOCO_HOST_PROJECT_DIR:-/opt/roboco}
       ROBOCO_HOST_CLAUDE_DIR: ${ROBOCO_HOST_CLAUDE_DIR:-${HOME}/.claude}
+      # SuperGrok auth (host ~/.grok) for Grok-CLI agents — the orchestrator
+      # mounts <dir>/auth.json into each Grok agent. Run `grok login` on the host.
+      ROBOCO_HOST_GROK_DIR: ${ROBOCO_HOST_GROK_DIR:-${HOME}/.grok}
       ROBOCO_HOST_DATA_DIR: ${ROBOCO_HOST_DATA_DIR:-/opt/roboco/data}
       # Reachable base URL for commit-trailer links — set to your host's LAN
       # address or domain so the links in commit bodies resolve.
@@ -222,10 +240,16 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${CLAUDE_AUTH_DIR:-${HOME}/.claude}:/root/.claude
+      # SuperGrok auth — mount host ~/.grok at the SAME host path the orchestrator
+      # hands each Grok agent's `-v`, so its auth.json exists() check passes here
+      # AND the agent bind resolves on the host. `grok login` on the host. RO.
+      - ${ROBOCO_HOST_GROK_DIR:-${HOME}/.grok}:${ROBOCO_HOST_GROK_DIR:-${HOME}/.grok}:ro
       - ${ROBOCO_DATA_DIR:-./data}/mcp-configs:/app/mcp-configs
       - ${ROBOCO_DATA_DIR:-./data}/prompts-generated:/app/prompts-generated
       - ${ROBOCO_DATA_DIR:-./data}/agent-settings:/app/agent-settings
       - ${ROBOCO_DATA_DIR:-./data}/workspaces:/data/workspaces
+      # Per-agent GROK usage capture (usage.json -> finalizer).
+      - ${ROBOCO_DATA_DIR:-./data}/grok-usage:/data/grok-usage
       - ${ROBOCO_DATA_DIR:-./data}/logs:/data/logs
       - ${ROBOCO_DATA_DIR:-./data}/briefings:/app/briefings
       - ${ROBOCO_DATA_DIR:-./data}/manifests:/app/manifests

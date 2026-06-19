@@ -15,12 +15,14 @@ from roboco.api.deps import CurrentAgentContext, DbSession, require_pm_or_above
 from roboco.api.schemas.provider import (
     ApplyModeRequest,
     CatalogEntryResponse,
+    GrokKeyStatus,
     ModeResponse,
     OllamaKeyStatus,
     SelfHostedConfigRequest,
     SelfHostedConfigResponse,
     SelfHostedModelEntry,
     SelfHostedTestResponse,
+    SetGrokKeyRequest,
     SetOllamaKeyRequest,
     assignment_to_response,
 )
@@ -108,6 +110,56 @@ async def set_ollama_key(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
     await db.commit()
     return OllamaKeyStatus(
+        has_key=bool(provider.auth_token_encrypted),
+        enabled=provider.enabled,
+    )
+
+
+# =============================================================================
+# GROK (xAI) API KEY
+# =============================================================================
+
+
+@router.get("/grok-key", response_model=GrokKeyStatus)
+async def get_grok_key_status(
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> GrokKeyStatus:
+    """Return whether the Grok (xAI) key is set + enabled."""
+    require_pm_or_above(agent.role, "view the Grok key status")
+    provider_svc = get_provider_service(db)
+    providers = await provider_svc.list_providers(include_disabled=True)
+    grok = next((p for p in providers if p.type == ModelProvider.GROK), None)
+    if grok is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Grok provider not seeded. Run alembic upgrade head.",
+        )
+    return GrokKeyStatus(
+        has_key=bool(grok.auth_token_encrypted),
+        enabled=grok.enabled,
+    )
+
+
+@router.put("/grok-key", response_model=GrokKeyStatus)
+async def set_grok_key(
+    data: SetGrokKeyRequest,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> GrokKeyStatus:
+    """Set or clear the Grok (xAI) API key.
+
+    Empty string → clears and disables the provider. Any other value →
+    Fernet-encrypts + marks enabled. Used against https://api.x.ai/v1.
+    """
+    require_pm_or_above(agent.role, "set the Grok key")
+    routing = get_model_routing_service(db)
+    try:
+        provider = await routing.set_grok_api_key(data.api_key)
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    await db.commit()
+    return GrokKeyStatus(
         has_key=bool(provider.auth_token_encrypted),
         enabled=provider.enabled,
     )

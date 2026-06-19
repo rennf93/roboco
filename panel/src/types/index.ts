@@ -104,6 +104,7 @@ export enum ModelProvider {
   OLLAMA_CLOUD = "ollama_cloud",
   OPENAI = "openai",
   LOCAL = "local",
+  GROK = "grok",
 }
 
 export enum AssignmentScope {

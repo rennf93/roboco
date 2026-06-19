@@ -106,6 +106,29 @@ run_case "allow declare -a arr"         0 "declare -a arr=(a b c)"
 run_case "allow cat README"             0 "cat README.md"
 run_case "allow curl non-github"        0 "curl https://example.com/info"
 
+# ---------- grok variant: camelCase input + ROBOCO_GUARD_SKIP_GIT ----------
+# The grok CLI sends `toolInput` (camelCase) and the grok hook runs with
+# ROBOCO_GUARD_SKIP_GIT=1 (git is handled by graceful native --deny). Exfil
+# categories must STILL deny; git must now pass through to --deny.
+run_case_grok() {
+    local label="$1" expected="$2" cmd="$3" json actual
+    # shellcheck disable=SC2016
+    json=$(python3 -c 'import json, sys; print(json.dumps({"toolName":"run_terminal_command","toolInput":{"command":sys.argv[1]}}))' "$cmd")
+    echo "$json" | ROBOCO_GUARD_SKIP_GIT=1 $HOOK >/dev/null 2>&1
+    actual=$?
+    if [[ "$actual" == "$expected" ]]; then
+        PASS=$((PASS + 1))
+    else
+        FAIL=$((FAIL + 1))
+        FAILS+=("[$label] expected $expected, got $actual | cmd: $cmd")
+    fi
+}
+run_case_grok "grok skip-git: git push allowed"   0 "git push origin main"
+run_case_grok "grok camelCase: netrc denied"       2 "cat ~/.netrc"
+run_case_grok "grok camelCase: env denied"         2 "env"
+run_case_grok "grok camelCase: identity forgery"   2 "export ROBOCO_AGENT_ID=other"
+run_case_grok "grok camelCase: allow ls"           0 "ls -la /workspace"
+
 # ---------- Report ----------
 echo
 echo "===== bash-guard-hook tests ====="
