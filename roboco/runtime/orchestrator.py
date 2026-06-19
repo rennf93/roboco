@@ -16,7 +16,6 @@ import asyncio
 import contextlib
 import json
 import os
-import re
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -883,14 +882,20 @@ class AgentOrchestrator:
         """Return ``agent_id`` if it is safe as a single path segment, else raise.
 
         ``agent_id`` reaches the grok usage dir from request-facing call sites, so
-        it must not be able to traverse the path. Allow only the slug / uuid
-        charset the orchestrator actually assigns (alphanumerics, hyphen,
-        underscore); a value with a separator, ``..``, or any other character is
-        rejected rather than stripped.
+        it must not be able to traverse the path. Reject every traversal vector —
+        empty, ``.`` / ``..``, a ``/`` or ``\\`` separator, or an embedded NUL —
+        rather than stripping it; the orchestrator only ever assigns plain
+        slug / uuid ids, none of which contain these.
         """
-        if re.fullmatch(r"[A-Za-z0-9_-]+", agent_id):
-            return agent_id
-        raise ValueError(f"unsafe agent id for a filesystem path: {agent_id!r}")
+        if (
+            not agent_id
+            or agent_id in {".", ".."}
+            or "/" in agent_id
+            or "\\" in agent_id
+            or "\x00" in agent_id
+        ):
+            raise ValueError(f"unsafe agent id for a filesystem path: {agent_id!r}")
+        return agent_id
 
     @staticmethod
     def _grok_usage_dir(agent_id: str) -> Path:
