@@ -1,11 +1,12 @@
 """Tests for the LLM agent provider seam.
 
 Covers the ProviderRegistry, the ClaudeCodeProvider adapter, and the
-GrokProvider (xAI / OpenAI protocol) — especially the safety properties an
-OpenAI-protocol agent provider must hold:
+GrokCliProvider (xAI Grok Build via the official ``grok`` CLI) — especially the
+safety properties the Grok provider must hold:
 
   * the agent gets the MCP gateway wiring (reuses the orchestrator mount path);
-  * the xAI endpoint is injected as XAI_* and never mislabelled ANTHROPIC_*;
+  * the subscription auth (~/.grok) is mounted, and the provider routing fields
+    are blanked so the grok endpoint is never mislabelled ANTHROPIC_*;
   * the prompt travels via env, so a leading ``--`` cannot become a CLI flag.
 """
 
@@ -17,20 +18,26 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from roboco.llm.providers import (
     ClaudeCodeProvider,
-    GrokProvider,
+    GrokCliProvider,
     ProviderError,
     ProviderNotRegisteredError,
     ProviderRegistry,
     SpawnResult,
 )
-from roboco.llm.providers.grok import (
-    _bash_permission_for,
-    _edit_permission_for,
-    _external_dir_permission_for,
-    _reasoning_effort_for,
-)
 from roboco.models.base import ModelProvider
 from roboco.models.runtime import OrchestratorAgentConfig
+
+
+@pytest.fixture(autouse=True)
+def _isolate_grok_auth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """Point GROK_AUTH_HOST_PATH at a fresh tmp dir so tests never mount the real
+    ~/.grok. Tests that exercise the auth mount create ``auth.json`` themselves."""
+    monkeypatch.setattr(
+        "roboco.llm.providers.grok.GROK_AUTH_HOST_PATH", str(tmp_path)
+    )
+    return tmp_path
 
 
 def _config(
@@ -60,7 +67,6 @@ class _FakeHost:
         self.removed: list[str] = []
         self.spawn_args: tuple[object, ...] | None = None
         self.mount_config: OrchestratorAgentConfig | None = None
-        self.opencode_dirs_ensured: list[str] = []
 
     async def _spawn_container(
         self,
@@ -74,9 +80,6 @@ class _FakeHost:
     async def _remove_container(self, container_name: str) -> None:
         self.removed.append(container_name)
 
-    def _ensure_opencode_data_dir(self, agent_id: str) -> None:
-        self.opencode_dirs_ensured.append(agent_id)
-
     def _resolve_host_paths(
         self, config: OrchestratorAgentConfig, agent_settings_path: Path | None
     ) -> dict[str, str | None]:
@@ -85,7 +88,6 @@ class _FakeHost:
             if config.mcp_config_path
             else None,
             "settings": str(agent_settings_path) if agent_settings_path else None,
-            "opencode": f"/host/opencode/{config.agent_id}",
         }
 
     def _build_mount_args(
@@ -134,7 +136,7 @@ def _proc(
 
 def test_registry_register_and_get() -> None:
     registry = ProviderRegistry()
-    provider = GrokProvider(_FakeHost())
+    provider = GrokCliProvider(_FakeHost())
     registry.register(ModelProvider.GROK, provider)
     assert registry.get(ModelProvider.GROK) is provider
     assert registry.is_registered(ModelProvider.GROK)
@@ -154,42 +156,43 @@ def test_registry_get_or_none_returns_none_when_absent() -> None:
 
 def test_registry_unregister() -> None:
     registry = ProviderRegistry()
-    registry.register(ModelProvider.GROK, GrokProvider(_FakeHost()))
+    registry.register(ModelProvider.GROK, GrokCliProvider(_FakeHost()))
     registry.unregister(ModelProvider.GROK)
     assert not registry.is_registered(ModelProvider.GROK)
     registry.unregister(ModelProvider.GROK)  # idempotent
 
 
 # ---------------------------------------------------------------------------
-# GrokProvider
+# GrokCliProvider
 # ---------------------------------------------------------------------------
 
 
-async def test_grok_spawn_requires_api_key() -> None:
-    provider = GrokProvider(_FakeHost())
-    with pytest.raises(ProviderError, match="xAI API key"):
-        await provider.spawn(_config(provider_auth_token=None))
-
-
 async def test_grok_spawn_requires_mcp_config() -> None:
-    provider = GrokProvider(_FakeHost())
+    provider = GrokCliProvider(_FakeHost())
     with pytest.raises(ProviderError, match="MCP config"):
         await provider.spawn(_config(mcp_config_path=None))
 
 
-async def test_grok_spawn_injects_xai_env_and_no_anthropic_leak() -> None:
+async def test_grok_spawn_does_not_require_api_key() -> None:
+    # Subscription auth (mounted ~/.grok) — a missing provider key is fine.
     host = _FakeHost()
-    provider = GrokProvider(host, image="roboco-agent-grok:test")
+    provider = GrokCliProvider(host)
+    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())):
+        result = await provider.spawn(_config(provider_auth_token=None))
+    assert result.instance_id == "roboco-agent-be-dev-1"
+
+
+async def test_grok_spawn_no_xai_key_and_no_anthropic_leak() -> None:
+    host = _FakeHost()
+    provider = GrokCliProvider(host, image="roboco-agent-grok:test")
     with patch(
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         await provider.spawn(_config(), initial_prompt="do the work")
     cmd = list(exec_mock.call_args.args)
-    # opencode's built-in xai provider reads XAI_API_KEY / XAI_BASE_URL (no
-    # provider block in the rendered config — that breaks plugin-tool reg).
-    assert "XAI_API_KEY=xai-secret-key" in cmd
-    assert "XAI_BASE_URL=https://api.x.ai/v1" in cmd
-    # The xAI endpoint must NOT be injected as an Anthropic var.
+    # The CLI authenticates from the mounted ~/.grok — the xAI key is never used.
+    assert not any(c.startswith("XAI_API_KEY=") for c in cmd)
+    # The provider endpoint must NOT be injected as an Anthropic var.
     assert not any(c.startswith("ANTHROPIC_BASE_URL=") for c in cmd)
     assert not any(c.startswith("ANTHROPIC_AUTH_TOKEN=") for c in cmd)
     # Provider fields were blanked before the shared mount step.
@@ -198,23 +201,18 @@ async def test_grok_spawn_injects_xai_env_and_no_anthropic_leak() -> None:
     assert host.mount_config.provider_auth_token is None
 
 
-async def test_grok_spawn_wires_gateway_and_image_last() -> None:
+async def test_grok_spawn_wires_gateway_env_and_image_last() -> None:
     host = _FakeHost()
-    provider = GrokProvider(host, image="roboco-agent-grok:test")
+    provider = GrokCliProvider(host, image="roboco-agent-grok:test")
     with patch(
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         result = await provider.spawn(_config())
     cmd = list(exec_mock.call_args.args)
-    # Gateway + operational env the grok image entrypoint consumes.
+    # Gateway + operational env the grok-cli entrypoint + renderer consume.
     assert "ROBOCO_MCP_CONFIG=/app/mcp-config.json" in cmd
-    assert "ROBOCO_SYSTEM_PROMPT=/app/system-prompt.md" in cmd
-    # Tool restriction lives in the rendered opencode.json (opencode `tools`),
-    # not a spawn env var — no ROBOCO_AGENT_TOOLS is injected.
-    assert not any(c.startswith("ROBOCO_AGENT_TOOLS=") for c in cmd)
-    # The opencode store is mounted so the orchestrator can read usage/cost
-    # back at finalize.
-    assert "/host/opencode/be-dev-1:/home/agent/.local/share/opencode" in cmd
+    assert "ROBOCO_AGENT_ID=be-dev-1" in cmd  # renderer computes per-role flags
+    assert "ROBOCO_AGENT_MODEL=grok-build" in cmd
     # Identity wiring from the shared host helpers is present.
     assert "ROBOCO_AGENT_TOKEN=hmac-be-dev-1" in cmd
     # The image is the final docker-run argument.
@@ -222,13 +220,38 @@ async def test_grok_spawn_wires_gateway_and_image_last() -> None:
     assert host.removed == ["roboco-agent-be-dev-1"]
     assert result == SpawnResult(
         instance_id="roboco-agent-be-dev-1",
-        extra={"container_id": "cid", "model": "grok-build-0.1"},
+        extra={"container_id": "cid", "model": "grok-build"},
     )
+
+
+async def test_grok_spawn_mounts_auth_when_present(_isolate_grok_auth: Path) -> None:
+    (_isolate_grok_auth / "auth.json").write_text("{}", encoding="utf-8")
+    host = _FakeHost()
+    provider = GrokCliProvider(host)
+    with patch(
+        "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
+    ) as exec_mock:
+        await provider.spawn(_config())
+    cmd = list(exec_mock.call_args.args)
+    expected = f"{_isolate_grok_auth / 'auth.json'}:/home/agent/.grok/auth.json:ro"
+    assert expected in cmd
+
+
+async def test_grok_spawn_omits_auth_mount_when_absent() -> None:
+    # No auth.json in the (tmp) GROK_AUTH_HOST_PATH → no mount, no crash.
+    host = _FakeHost()
+    provider = GrokCliProvider(host)
+    with patch(
+        "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
+    ) as exec_mock:
+        await provider.spawn(_config())
+    cmd = list(exec_mock.call_args.args)
+    assert not any("/home/agent/.grok/auth.json" in c for c in cmd)
 
 
 async def test_grok_spawn_prompt_is_injection_safe() -> None:
     host = _FakeHost()
-    provider = GrokProvider(host)
+    provider = GrokCliProvider(host)
     nasty = "--model evil --session-id pwned"
     with patch(
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
@@ -240,18 +263,8 @@ async def test_grok_spawn_prompt_is_injection_safe() -> None:
     assert nasty not in cmd
 
 
-async def test_grok_spawn_defaults_base_url_when_route_blank() -> None:
-    provider = GrokProvider(_FakeHost())
-    with patch(
-        "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
-    ) as exec_mock:
-        await provider.spawn(_config(provider_base_url=None))
-    cmd = list(exec_mock.call_args.args)
-    assert "XAI_BASE_URL=https://api.x.ai/v1" in cmd
-
-
 async def test_grok_spawn_raises_on_docker_failure() -> None:
-    provider = GrokProvider(_FakeHost())
+    provider = GrokCliProvider(_FakeHost())
     with (
         patch(
             "asyncio.create_subprocess_exec",
@@ -260,105 +273,6 @@ async def test_grok_spawn_raises_on_docker_failure() -> None:
         pytest.raises(ProviderError, match="boom"),
     ):
         await provider.spawn(_config())
-
-
-# ---------------------------------------------------------------------------
-# Reasoning effort by role
-# ---------------------------------------------------------------------------
-
-
-def test_reasoning_effort_full_for_code_roles() -> None:
-    # developer / qa / pr_reviewer keep full reasoning (no variant).
-    assert _reasoning_effort_for("be-dev-1") is None
-    assert _reasoning_effort_for("be-qa") is None
-    assert _reasoning_effort_for("pr-reviewer-1") is None
-
-
-def test_reasoning_effort_minimal_for_coordination_roles() -> None:
-    for slug in ("be-pm", "main-pm", "be-doc", "auditor", "product-owner"):
-        assert _reasoning_effort_for(slug) == "minimal", slug
-
-
-def test_reasoning_effort_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ROBOCO_GROK_REASONING_EFFORT", "max")
-    assert _reasoning_effort_for("be-dev-1") == "max"  # override wins over role
-    monkeypatch.setenv("ROBOCO_GROK_REASONING_EFFORT", "default")
-    assert _reasoning_effort_for("be-pm") is None  # "default" => full reasoning
-
-
-# ---------------------------------------------------------------------------
-# Per-role opencode permissions (Claude-parity)
-# ---------------------------------------------------------------------------
-
-
-def test_edit_permission_allows_only_writer_roles() -> None:
-    assert _edit_permission_for("be-dev-1") == "allow"
-    assert _edit_permission_for("be-doc") == "allow"
-    for slug in ("be-qa", "pr-reviewer-1", "be-pm", "main-pm", "auditor"):
-        assert _edit_permission_for(slug) == "deny", slug
-
-
-def test_bash_permission_allows_only_shell_roles() -> None:
-    for slug in ("be-dev-1", "be-doc", "be-pm", "main-pm"):
-        assert _bash_permission_for(slug) == "allow", slug
-    for slug in ("be-qa", "pr-reviewer-1", "auditor", "product-owner"):
-        assert _bash_permission_for(slug) == "deny", slug
-
-
-def test_external_dir_permission_only_pr_reviewer() -> None:
-    assert _external_dir_permission_for("pr-reviewer-1") == "allow"
-    for slug in ("be-dev-1", "be-qa", "be-pm", "auditor"):
-        assert _external_dir_permission_for(slug) == "deny", slug
-
-
-async def test_grok_spawn_sets_readonly_permissions_for_reviewer() -> None:
-    # A read-only reviewer (qa) gets edit=deny + bash=deny + external_dir=deny.
-    host = _FakeHost()
-    provider = GrokProvider(host)
-    with patch(
-        "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
-    ) as exec_mock:
-        await provider.spawn(_config(agent_id="be-qa"))
-    cmd = list(exec_mock.call_args.args)
-    assert "ROBOCO_GROK_EDIT_PERMISSION=deny" in cmd
-    assert "ROBOCO_GROK_BASH_PERMISSION=deny" in cmd
-    assert "ROBOCO_GROK_EXTERNAL_DIR_PERMISSION=deny" in cmd
-
-
-async def test_grok_spawn_pr_reviewer_is_read_only_but_reads_scratch() -> None:
-    # The pr-reviewer never writes code (edit=deny) but reads its /tmp diff
-    # (external_directory=allow) — the one role that needs it.
-    host = _FakeHost()
-    provider = GrokProvider(host)
-    with patch(
-        "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
-    ) as exec_mock:
-        await provider.spawn(_config(agent_id="pr-reviewer-1"))
-    cmd = list(exec_mock.call_args.args)
-    assert "ROBOCO_GROK_EDIT_PERMISSION=deny" in cmd
-    assert "ROBOCO_GROK_EXTERNAL_DIR_PERMISSION=allow" in cmd
-
-
-async def test_grok_spawn_sets_variant_for_minimal_role() -> None:
-    host = _FakeHost()
-    provider = GrokProvider(host)
-    with patch(
-        "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
-    ) as exec_mock:
-        await provider.spawn(_config(agent_id="be-pm"))  # cell_pm -> minimal
-    cmd = list(exec_mock.call_args.args)
-    assert "ROBOCO_GROK_VARIANT=minimal" in cmd
-
-
-async def test_grok_spawn_no_variant_for_dev_role() -> None:
-    host = _FakeHost()
-    provider = GrokProvider(host)
-    with patch(
-        "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
-    ) as exec_mock:
-        await provider.spawn(_config(agent_id="be-dev-1"))  # developer -> full
-    cmd = list(exec_mock.call_args.args)
-    assert not any(c.startswith("ROBOCO_GROK_VARIANT=") for c in cmd)
 
 
 # ---------------------------------------------------------------------------

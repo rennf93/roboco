@@ -2076,7 +2076,7 @@ class AgentOrchestrator:
         container are registered. Today that is GROK (xAI, OpenAI protocol).
         """
         if self._provider_registry is None:
-            from roboco.llm.providers import GrokProvider, ProviderRegistry
+            from roboco.llm.providers import GrokCliProvider, ProviderRegistry
             from roboco.models.base import ModelProvider
 
             registry = ProviderRegistry()
@@ -2085,7 +2085,7 @@ class AgentOrchestrator:
             # get_agent_image for the Claude path).
             registry.register(
                 ModelProvider.GROK,
-                GrokProvider(self, image=_qualify_agent_image("roboco-agent-grok")),
+                GrokCliProvider(self, image=_qualify_agent_image("roboco-agent-grok")),
             )
             self._provider_registry = registry
         return self._provider_registry

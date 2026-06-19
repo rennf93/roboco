@@ -8,18 +8,19 @@ and falls back to its built-in Claude Code spawn when none is registered.
 Backends:
 - :class:`ClaudeCodeProvider` — Anthropic-protocol Claude Code container (default;
   also serves Ollama Cloud / self-hosted via ``ANTHROPIC_BASE_URL`` injection).
-- :class:`GrokProvider` — xAI ``grok-build-0.1`` over the OpenAI protocol.
+- :class:`GrokCliProvider` — xAI Grok Build via the official ``grok`` CLI on the
+  SuperGrok subscription (mounted ``~/.grok`` auth, parity with the Claude path).
 """
 
 from roboco.llm.providers.base import AgentProvider, ProviderError, SpawnResult
 from roboco.llm.providers.claude_code import ClaudeCodeProvider
-from roboco.llm.providers.grok import GrokProvider
+from roboco.llm.providers.grok import GrokCliProvider
 from roboco.llm.providers.registry import ProviderNotRegisteredError, ProviderRegistry
 
 __all__ = [
     "AgentProvider",
     "ClaudeCodeProvider",
-    "GrokProvider",
+    "GrokCliProvider",
     "ProviderError",
     "ProviderNotRegisteredError",
     "ProviderRegistry",

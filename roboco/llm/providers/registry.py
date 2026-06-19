@@ -3,7 +3,7 @@
 Usage::
 
     registry = ProviderRegistry()
-    registry.register(ModelProvider.GROK, GrokProvider(...))
+    registry.register(ModelProvider.GROK, GrokCliProvider(...))
     provider = registry.get(ModelProvider.GROK)
     result = await provider.spawn(config, initial_prompt)
 
