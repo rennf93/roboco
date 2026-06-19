@@ -26,15 +26,24 @@ def is_agent_owned_dir(dir_name: str, workspaces_root: str) -> bool:
     Agents run either at the image WORKDIR ``/app`` (review/coordinate roles →
     the shared ``-app`` dir) or in a per-agent clone under the workspaces root
     (authoring roles). Claude Code encodes the cwd into the dir name by replacing
-    ``/`` with ``-``, so those dirs are ``-app`` and anything starting with the
-    encoded workspaces root (e.g. ``-data-workspaces``). The operator's own
-    sessions live under their real cwd (``-Users-…``, ``-home-…``) and are never
-    matched.
+    ``/`` with ``-``, so those dirs are ``-app`` and either the encoded
+    workspaces root (e.g. ``-data-workspaces``) or one of its descendants
+    (``-data-workspaces-<agent>``). Sibling cwds like ``/data/workspaces-old``
+    or ``/data/workspaces2`` encode to ``-data-workspaces-old`` and
+    ``-data-workspaces2``; a raw ``startswith(encoded_root)`` would treat those
+    as agent-owned and prune unrelated operator transcripts.
+
+    We require either an exact match against the encoded root or a path-boundary
+    prefix (``encoded_root + "-"``) — that boundary character comes from the
+    original ``/`` separator and is the encoding's only signal that the next
+    component is a descendant rather than a sibling.
     """
     if dir_name == "-app":
         return True
     encoded_root = workspaces_root.rstrip("/").replace("/", "-")
-    return bool(encoded_root) and dir_name.startswith(encoded_root)
+    if not encoded_root:
+        return False
+    return dir_name == encoded_root or dir_name.startswith(encoded_root + "-")
 
 
 def _is_old_transcript(path: Path, cutoff_epoch: float) -> bool:

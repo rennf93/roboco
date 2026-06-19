@@ -44,6 +44,46 @@ def test_is_agent_owned_dir_handles_root_slash_safely() -> None:
     assert is_agent_owned_dir("-app", "/") is True
 
 
+def test_is_agent_owned_dir_rejects_non_separator_sibling_prefixes() -> None:
+    # Sibling cwds whose encoded form continues with a non-separator char must
+    # not be matched. /data/workspaces2 encodes to -data-workspaces2 and was
+    # caught by the previous raw prefix check; the path-boundary check rejects
+    # it because the next char after the encoded root is '2', not '-'.
+    assert is_agent_owned_dir("-data-workspaces", WORKSPACES) is True
+    assert is_agent_owned_dir("-data-workspaces2", WORKSPACES) is False
+    assert is_agent_owned_dir("-data-workspaces2-project", WORKSPACES) is False
+    assert is_agent_owned_dir("-data-workspacesBackup", WORKSPACES) is False
+    # NOTE: -data-workspaces-old-project is fundamentally ambiguous — it could
+    # encode either /data/workspaces/old-project (descendant, agent-owned) OR
+    # /data/workspaces-old/project (sibling, operator-owned). The encoding is
+    # lossy and cannot distinguish these from the dir name alone. The path-
+    # boundary fix narrows the false-positive surface but does not eliminate
+    # it for sibling roots whose name itself contains '-'. A complete fix
+    # would require a spawn-time marker file inside the agent's project dir.
+
+
+def test_select_ignores_non_separator_sibling_prefix_dirs(tmp_path: Path) -> None:
+    projects = tmp_path / "projects"
+    old_agent = _touch(
+        projects / "-data-workspaces-roboco-be-dev-1" / "old.jsonl", age_days=30
+    )
+    # Sibling roots whose encoded form continues with a non-separator char —
+    # these were the easy false positives the raw startswith check made.
+    sibling2 = _touch(
+        projects / "-data-workspaces2-project" / "old.jsonl", age_days=99
+    )
+    sibling_backup = _touch(
+        projects / "-data-workspacesBackup-project" / "old.jsonl", age_days=99
+    )
+
+    cutoff = time.time() - 14 * _DAY
+    prunable = set(select_prunable_transcripts(projects, WORKSPACES, cutoff))
+
+    assert old_agent in prunable
+    assert sibling2 not in prunable
+    assert sibling_backup not in prunable
+
+
 def test_select_prunes_only_old_agent_transcripts(tmp_path: Path) -> None:
     projects = tmp_path / "projects"
     old_app = _touch(projects / "-app" / "old.jsonl", age_days=30)
