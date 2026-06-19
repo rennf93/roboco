@@ -10,10 +10,12 @@ output (it bills at the output rate).
 from __future__ import annotations
 
 import json
+import tempfile
 from typing import TYPE_CHECKING
 
 import pytest
 from roboco.models.runtime import AgentInstance
+from roboco.runtime import orchestrator as orch_mod
 from roboco.runtime.orchestrator import AgentOrchestrator
 
 if TYPE_CHECKING:
@@ -75,3 +77,35 @@ async def test_resolve_final_usage_routes_grok_to_usage_json(
 
     # No SDK fetch / transcript read for GROK — usage comes from usage.json.
     assert await orch._resolve_final_token_usage("be-dev-1") == (0, 12, 0, 0)
+
+
+def test_grok_usage_dir_branches_compose_vs_local(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(orch_mod, "PROJECT_HOST_PATH", "")
+    local = AgentOrchestrator._grok_usage_dir("be-dev-1")
+    assert "roboco-grok-usage" in str(local)
+    assert local.name == "be-dev-1"
+
+    monkeypatch.setattr(orch_mod, "PROJECT_HOST_PATH", "/volume1/roboco")
+    monkeypatch.setattr(orch_mod, "GROK_USAGE_DATA_DIR", "/data/grok-usage")
+    assert str(AgentOrchestrator._grok_usage_dir("be-dev-1")) == (
+        "/data/grok-usage/be-dev-1"
+    )
+
+
+def test_grok_usage_json_reads_the_real_local_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The un-mocked read path must find usage.json in the SAME branched dir the
+    # writer mounts (the local-mode fix: read side mirrors the write side).
+    monkeypatch.setattr(orch_mod, "PROJECT_HOST_PATH", "")
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    udir = tmp_path / "roboco-grok-usage" / "be-dev-1"
+    udir.mkdir(parents=True)
+    (udir / "usage.json").write_text(
+        json.dumps({"total_tokens": 55, "cost_usd": 0.1}), encoding="utf-8"
+    )
+    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    assert orch._grok_usage_tokens("be-dev-1") == (0, 55, 0, 0)
+    assert orch._grok_cost_usd("be-dev-1") == 0.1  # noqa: PLR2004

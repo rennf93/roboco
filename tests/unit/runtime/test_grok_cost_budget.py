@@ -14,12 +14,18 @@ from unittest.mock import AsyncMock
 
 import pytest
 from roboco.models.runtime import AgentInstance
-from roboco.runtime.orchestrator import AgentOrchestrator, AgentState
+from roboco.runtime.orchestrator import (
+    INTAKE_AGENT_ID,
+    AgentOrchestrator,
+    AgentState,
+)
 
 
-def _grok_instance(provider_type: str = "grok") -> AgentInstance:
+def _grok_instance(
+    provider_type: str = "grok", agent_id: str = "be-dev-1"
+) -> AgentInstance:
     cfg = type("C", (), {"provider_type": provider_type, "model": "grok-build"})()
-    return AgentInstance(agent_id="be-dev-1", state=AgentState.ACTIVE, config=cfg)
+    return AgentInstance(agent_id=agent_id, state=AgentState.ACTIVE, config=cfg)
 
 
 def _orch(
@@ -28,11 +34,12 @@ def _orch(
     cap: float,
     cost: float,
     provider_type: str = "grok",
+    agent_id: str = "be-dev-1",
 ) -> tuple[AgentOrchestrator, AsyncMock]:
     """A bare orchestrator with the cost reader + container removal stubbed."""
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
     orch._grok_max_cost_usd = cap
-    orch._instances = {"be-dev-1": _grok_instance(provider_type)}
+    orch._instances = {agent_id: _grok_instance(provider_type, agent_id)}
     monkeypatch.setattr(orch, "_grok_cost_usd", lambda _agent_id: cost)
     remove_mock = AsyncMock()
     monkeypatch.setattr(orch, "_remove_container", remove_mock)
@@ -79,3 +86,42 @@ async def test_non_grok_container_is_ignored(monkeypatch: pytest.MonkeyPatch) ->
 
     remove_mock.assert_not_awaited()
     assert "be-dev-1" in orch._instances
+
+
+@pytest.mark.asyncio
+async def test_kill_failure_keeps_instance_for_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # If `docker rm` raises, the over-budget container must STAY registered so the
+    # sweep retries next tick (the except `continue` resilience contract).
+    orch, remove_mock = _orch(monkeypatch, cap=5.0, cost=7.5)
+    remove_mock.side_effect = RuntimeError("docker rm failed")
+
+    await orch._enforce_grok_cost_budget()
+
+    remove_mock.assert_awaited_once()
+    assert "be-dev-1" in orch._instances  # not evicted -> retried next tick
+
+
+@pytest.mark.asyncio
+async def test_interactive_kill_closes_the_relay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Killing an interactive (intake/secretary) container over budget must close
+    # its panel relay with a reason so the chat ends cleanly, not a frozen SSE.
+    orch, remove_mock = _orch(monkeypatch, cap=5.0, cost=9.0, agent_id=INTAKE_AGENT_ID)
+    registry = type("R", (), {"calls": []})()
+    registry.close_by_agent = lambda agent_id, error: registry.calls.append(
+        (agent_id, error)
+    )
+    monkeypatch.setattr(
+        "roboco.services.prompter_live.get_live_registry", lambda: registry
+    )
+
+    await orch._enforce_grok_cost_budget()
+
+    remove_mock.assert_awaited_once_with(f"roboco-agent-{INTAKE_AGENT_ID}")
+    assert INTAKE_AGENT_ID not in orch._instances
+    assert len(registry.calls) == 1
+    assert registry.calls[0][0] == INTAKE_AGENT_ID
+    assert "cost" in registry.calls[0][1].lower()

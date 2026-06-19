@@ -181,7 +181,7 @@ _GROK_INTERACTIVE_DOCKERFILES = {
 }
 
 # A one-shot Grok container exits with this code (EX_TEMPFAIL) when the run hit
-# an xAI 429 (grok-agent-entrypoint.sh detects it). The orchestrator parks the
+# an xAI 429 (grok-cli-agent-entrypoint.sh detects it). The orchestrator parks the
 # grok provider rate-limited instead of crash-retrying, breaking the
 # 429 -> exit -> respawn cost loop. The probe-resume loop clears the park after
 # the retry window (unknown-provider time-expiry fallback in _probe_target).
@@ -877,6 +877,20 @@ class AgentOrchestrator:
                 img, f"{docker_dir}/{dockerfile}", build_context
             )
 
+    @staticmethod
+    def _grok_usage_dir(agent_id: str) -> Path:
+        """Per-agent grok usage dir, branched compose-vs-local.
+
+        Single source of truth for BOTH the pre-create/mount side
+        (``_ensure_grok_usage_dir``) and the finalize read side
+        (``_grok_usage_json``) so they can never drift: in compose the orchestrator
+        sees the mounted host dir at ``GROK_USAGE_DATA_DIR``; in local mode the
+        container's usage.json lands under the shared tempdir.
+        """
+        if PROJECT_HOST_PATH:
+            return Path(GROK_USAGE_DATA_DIR) / agent_id
+        return Path(tempfile.gettempdir()) / "roboco-grok-usage" / agent_id
+
     def _ensure_grok_usage_dir(self, agent_id: str) -> None:
         """Pre-create the agent's grok usage dir (world-writable) before the mount.
 
@@ -884,13 +898,9 @@ class AgentOrchestrator:
         ``root:root``, so the non-root ``agent`` user EACCESes when the grok
         entrypoint / interactive driver writes ``usage.json`` there. Creating the
         dir ``0777`` first makes the mounted dir writable regardless of the agent
-        uid; the orchestrator (root) can still read it back at finalize. Mirrors
-        the container-vs-local split in ``_resolve_host_paths``.
+        uid; the orchestrator (root) can still read it back at finalize.
         """
-        if PROJECT_HOST_PATH:
-            target = Path(GROK_USAGE_DATA_DIR) / agent_id
-        else:
-            target = Path(tempfile.gettempdir()) / "roboco-grok-usage" / agent_id
+        target = self._grok_usage_dir(agent_id)
         try:
             target.mkdir(parents=True, exist_ok=True)
             target.chmod(0o777)
@@ -2117,6 +2127,13 @@ class AgentOrchestrator:
             initial_prompt: Optional initial prompt for the agent
             agent_settings_path: Path to per-agent Claude settings file
         """
+        # Every spawn gets a non-empty user prompt. A prompt-less spawn (e.g. the
+        # crash auto-restart, which passes no initial_prompt) must still direct the
+        # agent to scan for work. The Claude body re-applies the same default; doing
+        # it here single-sources it so dedicated providers (GROK) get it too —
+        # otherwise grok would launch with an empty `grok -p ""`.
+        if not initial_prompt:
+            initial_prompt = self._default_spawn_prompt()
         # A dedicated provider backend (e.g. GROK / OpenAI protocol) handles its
         # own spawn. Anthropic / Ollama Cloud / self-hosted have no dedicated
         # provider registered and fall through to the Claude Code body below,
@@ -3888,10 +3905,11 @@ class AgentOrchestrator:
         """Read a GROK agent's ``usage.json`` (``{model, total_tokens, cost_usd}``).
 
         Written to the per-agent data dir by the grok-CLI entrypoint (one-shot,
-        post-run) and the interactive driver (per-turn); the orchestrator sees it
-        at ``GROK_USAGE_DATA_DIR``. Returns ``None`` when absent / unreadable.
+        post-run) and the interactive driver (per-turn); read back from the same
+        branched dir the writers mount (``_grok_usage_dir``). Returns ``None`` when
+        absent / unreadable.
         """
-        usage_json = Path(GROK_USAGE_DATA_DIR) / agent_id / "usage.json"
+        usage_json = self._grok_usage_dir(agent_id) / "usage.json"
         try:
             data = json.loads(usage_json.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -4857,7 +4875,7 @@ Start by:
         """
         cid = instance.container_id[:12] if instance.container_id else None
         # Grok 429 parking (B4): a one-shot grok run that hit an xAI 429 exits
-        # 75 (set by grok-agent-entrypoint.sh). Park the provider instead of
+        # 75 (set by grok-cli-agent-entrypoint.sh). Park the provider instead of
         # crash-retrying so the spawn guard suppresses the respawn loop; the
         # probe-resume loop revives the task when the limit lifts.
         if self._is_grok_rate_limit_exit(instance, exit_code):

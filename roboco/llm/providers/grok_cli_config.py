@@ -113,6 +113,8 @@ _GIT_MUTATE_DENY = (
     "Bash(git cherry-pick*)",
     "Bash(git revert*)",
     "Bash(git update-ref*)",
+    "Bash(git tag -d*)",
+    "Bash(git reflog delete*)",
 )
 _DESTRUCTIVE_DENY = ("Bash(rm -rf*)",)
 

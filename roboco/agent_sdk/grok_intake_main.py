@@ -32,6 +32,7 @@ from roboco.llm.providers.grok_cli_config import (
     GROK_CONFIG_PATH,
     render_config_toml,
     write_agents_md,
+    write_grok_hooks,
 )
 
 if TYPE_CHECKING:
@@ -84,8 +85,11 @@ async def main() -> None:  # pragma: no cover - needs the live container + grok
     cwd = os.environ.get("ROBOCO_WORKSPACE", "/data/workspace")
 
     _render_grok_config(base_url, session_id)
-    # Install the role blueprint as grok's global system prompt (~/.grok/AGENTS.md).
+    # Install the role blueprint as grok's global system prompt (~/.grok/AGENTS.md)
+    # and the bash-guard PreToolUse hook (defense-in-depth: a no-op while shell is
+    # disallowed, but survives any future shell re-enable, matching the one-shot path).
     write_agents_md()
+    write_grok_hooks()
 
     queue: asyncio.Queue[str | None] = asyncio.Queue()
     client = httpx.AsyncClient(timeout=30.0)

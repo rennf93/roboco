@@ -130,18 +130,21 @@ def test_max_turns_is_emitted() -> None:
 
 
 def test_bash_roles_deny_the_full_git_mutation_set() -> None:
-    # Graceful native --deny rules (the agent recovers) covering the same git
-    # network / branch / history ops the Claude bash-guard blocks.
+    # Graceful native --deny rules (the agent recovers) covering the SAME git
+    # network / branch / history ops the Claude bash-guard blocks — including the
+    # tag-deletion / reflog-deletion the hook matches.
     args = gc.grok_cli_args_for_role("developer")
     for op in ("push", "fetch", "clone", "checkout", "merge", "rebase", "revert"):
         assert f"Bash(git {op}*)" in args
+    assert "Bash(git tag -d*)" in args
+    assert "Bash(git reflog delete*)" in args
     assert "Bash(rm -rf*)" in args
 
 
 def test_bash_guard_hook_config_skips_git() -> None:
-    handler = gc.bash_guard_hook_config("/app/scripts/bash-guard-hook.sh")[
-        "hooks"
-    ]["PreToolUse"][0]
+    handler = gc.bash_guard_hook_config("/app/scripts/bash-guard-hook.sh")["hooks"][
+        "PreToolUse"
+    ][0]
     assert handler["matcher"] == "Bash"
     inner = handler["hooks"][0]
     assert inner["command"] == "/app/scripts/bash-guard-hook.sh"

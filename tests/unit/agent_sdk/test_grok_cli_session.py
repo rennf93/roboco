@@ -1,19 +1,27 @@
 """grok_cli_session — the pure streaming-json → StreamChunk mapper.
 
-The subprocess runner (``GrokCliSession``) needs the live grok binary, so it is
-not gate-covered; the turn-mapping logic lives in the pure ``_StreamAssembler``
-and is fully exercised here by feeding it parsed events.
+The subprocess runner (``GrokCliSession.send``) needs the live grok binary, so it
+is not gate-covered; the turn-mapping logic lives in the pure ``_StreamAssembler``
+and is fully exercised here by feeding it parsed events. The synchronous
+``__init__`` (role resolution, per-role flags, timeout) IS pure and tested.
 """
 
 from __future__ import annotations
 
 import json
+from typing import TYPE_CHECKING
 
 from roboco.agent_sdk.grok_cli_session import (
+    GrokCliSession,
     _classify_failure,
     _parse_event,
     _StreamAssembler,
+    _turn_timeout_seconds,
 )
+from roboco.llm.providers.grok_cli_config import grok_cli_args_for_role
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def _kinds(chunks: list) -> list[str]:
@@ -93,3 +101,40 @@ def test_classify_failure_generic_uses_last_stderr_line() -> None:
     assert "boom: the model exploded" in msg
     # With no stderr, the exit code is surfaced.
     assert "exit code 2" in _classify_failure(2, "")
+
+
+def test_session_resolves_role_from_env_when_id_is_a_uuid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The secretary's ROBOCO_AGENT_ID is a UUID; get_agent_role returns the
+    # "unknown" sentinel for it, so the role must fall back to ROBOCO_AGENT_ROLE
+    # (not silently use "unknown").
+    monkeypatch.setenv("ROBOCO_AGENT_ROLE", "secretary")
+    monkeypatch.delenv("ROBOCO_GROK_REASONING_EFFORT", raising=False)
+    session = GrokCliSession(cwd="/app", agent_id="0192-uuid-not-a-slug")
+    assert session._role_args == grok_cli_args_for_role("secretary")
+
+
+def test_session_uses_slug_role_when_id_maps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ROBOCO_AGENT_ROLE", raising=False)
+    monkeypatch.delenv("ROBOCO_GROK_REASONING_EFFORT", raising=False)
+    # intake-1 maps to the prompter role -> subagents allowed (not disallowed).
+    session = GrokCliSession(cwd="/ws", agent_id="intake-1")
+    dis = session._role_args[session._role_args.index("--disallowed-tools") + 1]
+    assert "Agent" not in dis
+
+
+def test_turn_timeout_seconds_env_and_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ROBOCO_GROK_TURN_TIMEOUT_SECONDS", raising=False)
+    assert _turn_timeout_seconds() == 600.0  # noqa: PLR2004
+    monkeypatch.setenv("ROBOCO_GROK_TURN_TIMEOUT_SECONDS", "120")
+    assert _turn_timeout_seconds() == 120.0  # noqa: PLR2004
+    # Garbage / non-positive falls back to the default.
+    monkeypatch.setenv("ROBOCO_GROK_TURN_TIMEOUT_SECONDS", "nope")
+    assert _turn_timeout_seconds() == 600.0  # noqa: PLR2004
+    monkeypatch.setenv("ROBOCO_GROK_TURN_TIMEOUT_SECONDS", "0")
+    assert _turn_timeout_seconds() == 600.0  # noqa: PLR2004

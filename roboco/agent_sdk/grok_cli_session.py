@@ -28,6 +28,7 @@ write to ``usage.json`` wins (the orchestrator reads it back at reap).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -46,6 +47,21 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 _DEFAULT_MODEL = os.environ.get("ROBOCO_AGENT_MODEL", "grok-build")
+# Per-turn watchdog default (seconds). A grok turn reasons + may call tools, so
+# this is generous; it only exists to recover a truly wedged process.
+_DEFAULT_TURN_TIMEOUT_SECONDS = 600.0
+
+
+def _turn_timeout_seconds() -> float:
+    """Per-turn grok watchdog timeout (ROBOCO_GROK_TURN_TIMEOUT_SECONDS)."""
+    raw = os.environ.get("ROBOCO_GROK_TURN_TIMEOUT_SECONDS", "").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return _DEFAULT_TURN_TIMEOUT_SECONDS
+    return value if value > 0 else _DEFAULT_TURN_TIMEOUT_SECONDS
+
+
 # A rate-limit / quota end to a turn leaves no terminal verb on the one-shot path
 # and must read clearly on the interactive one; detected from the run's stderr.
 _RATE_LIMIT_MARKERS = (
@@ -167,11 +183,22 @@ class GrokCliSession:  # pragma: no cover - needs the live grok binary
         self._model = model
         self._usage_file = usage_file or os.environ.get("ROBOCO_GROK_USAGE_FILE")
         # The secretary's ROBOCO_AGENT_ID is its UUID (not a slug), so resolve the
-        # role from the id when possible, else the container's ROBOCO_AGENT_ROLE.
-        role = get_agent_role(agent_id) or os.environ.get("ROBOCO_AGENT_ROLE", "")
+        # role from the id when it maps to a real one, else the container's
+        # ROBOCO_AGENT_ROLE. get_agent_role returns the sentinel "unknown" (not
+        # None) for an unmapped id, so treat that as a miss.
+        resolved = get_agent_role(agent_id)
+        role = (
+            resolved
+            if resolved and resolved != "unknown"
+            else os.environ.get("ROBOCO_AGENT_ROLE", "")
+        )
         self._role_args = grok_cli_args_for_role(role)
         self._extra_args = list(extra_args or [])
         self._session_id: str | None = None
+        # Per-turn watchdog: a wedged grok process must not hang the whole chat
+        # (the panel spinner only clears on turn_end). On expiry the turn is
+        # killed and an error + turn_end are emitted.
+        self._turn_timeout = _turn_timeout_seconds()
 
     async def __aenter__(self) -> GrokCliSession:
         return self
@@ -204,8 +231,8 @@ class GrokCliSession:  # pragma: no cover - needs the live grok binary
         """Run one turn (one ``grok -p`` invocation) and yield its chunks.
 
         A turn always ends with a ``turn_end`` chunk; a failure (spawn error,
-        non-zero exit, or no ``end`` event) yields an ``error`` chunk first so the
-        panel never renders a blank turn.
+        timeout, non-zero exit, or no ``end`` event) yields an ``error`` chunk
+        first so the panel never renders a blank turn.
         """
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -219,33 +246,84 @@ class GrokCliSession:  # pragma: no cover - needs the live grok binary
             yield StreamChunk(kind="turn_end", data={})
             return
 
-        assembler = _StreamAssembler()
         assert proc.stdout is not None
-        async for raw in proc.stdout:
+        assert proc.stderr is not None
+        # Drain stderr CONCURRENTLY: if grok writes more than the OS pipe buffer
+        # (~64KB) to stderr while its stdout is still open, a sequential
+        # drain-stdout-then-stderr would deadlock (grok blocks on the stderr
+        # write, its stdout never reaches EOF, the turn hangs forever).
+        stderr_task = asyncio.create_task(proc.stderr.read())
+
+        assembler = _StreamAssembler()
+        timed_out = False
+        try:
+            async for chunk in self._drain(proc.stdout, assembler):
+                yield chunk
+        except TimeoutError:
+            timed_out = True
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+
+        stderr = (await stderr_task).decode("utf-8", "replace")
+        await proc.wait()
+        if assembler.session_id:
+            self._session_id = assembler.session_id
+        self._capture_usage()
+
+        for chunk in self._finalize(timed_out, assembler, proc.returncode, stderr):
+            yield chunk
+
+    async def _drain(
+        self, stdout: asyncio.StreamReader, assembler: _StreamAssembler
+    ) -> AsyncIterator[StreamChunk]:
+        """Yield chunks from grok's stdout until EOF; raise on the turn deadline."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._turn_timeout
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise TimeoutError
+            raw = await asyncio.wait_for(stdout.readline(), timeout=remaining)
+            if not raw:  # EOF
+                return
             event = _parse_event(raw.decode("utf-8", "replace").strip())
             if event is None:
                 continue
             for chunk in assembler.feed(event):
                 yield chunk
 
-        stderr_bytes = await proc.stderr.read() if proc.stderr else b""
-        stderr = stderr_bytes.decode("utf-8", "replace")
-        await proc.wait()
-
-        if assembler.session_id:
-            self._session_id = assembler.session_id
-        self._capture_usage()
-
+    def _finalize(
+        self,
+        timed_out: bool,
+        assembler: _StreamAssembler,
+        returncode: int | None,
+        stderr: str,
+    ) -> list[StreamChunk]:
+        """The error + turn_end chunks for an abnormal turn (empty if clean)."""
+        if timed_out:
+            logger.error(
+                "grok turn timed out",
+                agent_id=self._agent_id,
+                timeout_s=self._turn_timeout,
+            )
+            return [
+                StreamChunk(
+                    kind="error",
+                    text="The Grok turn timed out — please send your message again.",
+                ),
+                StreamChunk(kind="turn_end", data={}),
+            ]
         if not assembler.saw_end:
             logger.error(
                 "grok turn ended without a result",
-                returncode=proc.returncode,
+                returncode=returncode,
                 stderr=stderr.strip()[:500],
             )
-            yield StreamChunk(
-                kind="error", text=_classify_failure(proc.returncode, stderr)
-            )
-            yield StreamChunk(kind="turn_end", data={})
+            return [
+                StreamChunk(kind="error", text=_classify_failure(returncode, stderr)),
+                StreamChunk(kind="turn_end", data={}),
+            ]
+        return []
 
     def _capture_usage(self) -> None:
         """Best-effort: rewrite usage.json with the chat's cumulative total."""

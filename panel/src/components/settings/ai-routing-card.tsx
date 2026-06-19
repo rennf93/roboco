@@ -74,8 +74,8 @@ const AGENTS: { slug: string; label: string }[] = [
   { slug: "ux-dev-1", label: "UX/UI Dev" },
   { slug: "ux-qa", label: "UX/UI QA" },
   { slug: "ux-doc", label: "UX/UI Documenter" },
-  // Interactive (held-open chat) roles. Claude (SDK driver) and Grok (opencode
-  // serve) are the supported runtimes; assigning a Grok model routes them to
+  // Interactive (held-open chat) roles. Claude (SDK driver) and Grok (grok CLI)
+  // are the supported runtimes; assigning a Grok model routes them to
   // the grok-prompter / grok-secretary image.
   { slug: "intake-1", label: "Intake (Prompter)" },
   { slug: "secretary-1", label: "Secretary" },
@@ -493,7 +493,7 @@ export function AIRoutingCard() {
           ) : null}
           {currentMode === "grok" || currentMode === "mix" ? (
             <p className="text-xs text-muted-foreground">
-              Grok agents run on the opencode runtime; the command /
+              Grok agents run on xAI&apos;s official grok CLI; the command /
               secret-exfiltration guard, the prompt-injection guard, and the
               per-agent cost cap all apply.
             </p>

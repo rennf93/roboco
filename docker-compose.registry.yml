@@ -243,7 +243,7 @@ services:
       # SuperGrok auth — mount host ~/.grok at the SAME host path the orchestrator
       # hands each Grok agent's `-v`, so its auth.json exists() check passes here
       # AND the agent bind resolves on the host. `grok login` on the host. RO.
-      - ${GROK_AUTH_DIR:-${HOME}/.grok}:${ROBOCO_HOST_GROK_DIR:-${HOME}/.grok}:ro
+      - ${ROBOCO_HOST_GROK_DIR:-${HOME}/.grok}:${ROBOCO_HOST_GROK_DIR:-${HOME}/.grok}:ro
       - ${ROBOCO_DATA_DIR:-./data}/mcp-configs:/app/mcp-configs
       - ${ROBOCO_DATA_DIR:-./data}/prompts-generated:/app/prompts-generated
       - ${ROBOCO_DATA_DIR:-./data}/agent-settings:/app/agent-settings
