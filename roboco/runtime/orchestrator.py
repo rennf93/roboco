@@ -905,11 +905,17 @@ class AgentOrchestrator:
         (``_ensure_grok_usage_dir``) and the finalize read side
         (``_grok_usage_json``) so they can never drift: in compose the orchestrator
         sees the mounted host dir at ``GROK_USAGE_DATA_DIR``; in local mode the
-        container's usage.json lands under the shared tempdir. ``agent_id`` is
-        validated as a single safe path segment first (path-injection barrier for
-        both the mount and the finalize read).
+        container's usage.json lands under the shared tempdir.
+
+        ``agent_id`` is sanitized to a single path segment first — the
+        path-injection barrier for both the mount and the finalize read.
+        ``_safe_agent_path_segment`` rejects ``.`` / ``..`` / separators / NUL (so
+        a bad id raises rather than silently remapping), and ``Path(...).name``
+        keeps only the final component: CodeQL models that as a data-flow
+        sanitizer and propagates it through this return, where it does not
+        recognize the guard alone.
         """
-        safe_agent_id = AgentOrchestrator._safe_agent_path_segment(agent_id)
+        safe_agent_id = Path(AgentOrchestrator._safe_agent_path_segment(agent_id)).name
         if PROJECT_HOST_PATH:
             return Path(GROK_USAGE_DATA_DIR) / safe_agent_id
         return Path(tempfile.gettempdir()) / "roboco-grok-usage" / safe_agent_id
