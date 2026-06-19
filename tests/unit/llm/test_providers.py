@@ -67,6 +67,7 @@ class _FakeHost:
         self.removed: list[str] = []
         self.spawn_args: tuple[object, ...] | None = None
         self.mount_config: OrchestratorAgentConfig | None = None
+        self.data_dirs_ensured: list[str] = []
 
     async def _spawn_container(
         self,
@@ -80,6 +81,9 @@ class _FakeHost:
     async def _remove_container(self, container_name: str) -> None:
         self.removed.append(container_name)
 
+    def _ensure_opencode_data_dir(self, agent_id: str) -> None:
+        self.data_dirs_ensured.append(agent_id)
+
     def _resolve_host_paths(
         self, config: OrchestratorAgentConfig, agent_settings_path: Path | None
     ) -> dict[str, str | None]:
@@ -88,6 +92,7 @@ class _FakeHost:
             if config.mcp_config_path
             else None,
             "settings": str(agent_settings_path) if agent_settings_path else None,
+            "opencode": f"/host/data/opencode/{config.agent_id}",
         }
 
     def _build_mount_args(
@@ -215,6 +220,10 @@ async def test_grok_spawn_wires_gateway_env_and_image_last() -> None:
     assert "ROBOCO_AGENT_MODEL=grok-build" in cmd
     # Fixed session id so usage capture can locate the run's session store.
     assert "ROBOCO_AGENT_SESSION_ID=sess-1" in cmd
+    # Usage capture: per-agent data dir mounted + the entrypoint's usage file.
+    assert host.data_dirs_ensured == ["be-dev-1"]
+    assert "/host/data/opencode/be-dev-1:/home/agent/.grok-usage" in cmd
+    assert "ROBOCO_GROK_USAGE_FILE=/home/agent/.grok-usage/usage.json" in cmd
     # Identity wiring from the shared host helpers is present.
     assert "ROBOCO_AGENT_TOKEN=hmac-be-dev-1" in cmd
     # The image is the final docker-run argument.

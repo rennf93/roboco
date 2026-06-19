@@ -3933,23 +3933,28 @@ class AgentOrchestrator:
         return str(Path(OPENCODE_DATA_DIR) / agent_id / "opencode.db")
 
     def _grok_usage_from_opencode(self, agent_id: str) -> tuple[int, int, int, int]:
-        """Sum a GROK agent's token usage from its opencode SQLite store.
+        """Sum a GROK agent's token usage from its per-agent data dir.
 
-        A GROK agent runs opencode — no SDK ``/usage/status`` server and no
-        Claude transcript — so its usage lands in opencode.db. Reasoning is
-        folded into output (it bills at the output rate, matching
+        The grok-CLI one-shot path writes a ``usage.json`` (``total_tokens``)
+        there post-run — read that first. The interactive opencode-serve path
+        still lands its usage in ``opencode.db``, so fall back to it. The grok
+        total folds into output (it bills at the output rate, matching
         ``calculate_cost``). A WARNING is logged on a 0-token read because a
         silent mount/uid failure is otherwise indistinguishable from a genuine
         zero-cost run. Returns ``(input, output, cache_read, cache_write)``.
         """
+        cli_tokens = self._grok_cli_total_tokens(agent_id)
+        if cli_tokens is not None:
+            return (0, cli_tokens, 0, 0)
+
         from roboco.llm.providers.opencode_usage import read_session_usage
 
         db_path = self._opencode_db_path(agent_id)
         usage = read_session_usage(db_path)
         if usage is None:
             logger.warning(
-                "GROK agent finalized with no readable opencode usage "
-                "(0 tokens / $0) — check the opencode db mount",
+                "GROK agent finalized with no readable usage "
+                "(0 tokens / $0) — check the data dir mount",
                 agent_id=agent_id,
                 db_path=db_path,
             )
@@ -3960,6 +3965,20 @@ class AgentOrchestrator:
             usage.tokens_cache_read,
             usage.tokens_cache_write,
         )
+
+    @staticmethod
+    def _grok_cli_total_tokens(agent_id: str) -> int | None:
+        """Total tokens from a grok-CLI ``usage.json``, or None if absent.
+
+        The grok-cli entrypoint writes ``{model, total_tokens, cost_usd}`` to the
+        per-agent data dir; the orchestrator sees it at ``OPENCODE_DATA_DIR``.
+        """
+        usage_json = Path(OPENCODE_DATA_DIR) / agent_id / "usage.json"
+        try:
+            data = json.loads(usage_json.read_text(encoding="utf-8"))
+            return int(data.get("total_tokens", 0))
+        except (OSError, json.JSONDecodeError, ValueError, TypeError):
+            return None
 
     async def _enforce_grok_cost_budget(self) -> None:
         """Kill a live GROK container whose cumulative opencode cost exceeds the cap.

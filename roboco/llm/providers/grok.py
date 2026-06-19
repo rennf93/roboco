@@ -31,6 +31,7 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
+from roboco.agents_config import get_agent_role
 from roboco.llm.providers._docker import container_running, stop_container
 from roboco.llm.providers.base import AgentProvider, ProviderError, SpawnResult
 
@@ -56,10 +57,53 @@ GROK_AUTH_HOST_PATH = os.environ.get(
 # In-container paths.
 _MCP_CONFIG_IN_CONTAINER = "/app/mcp-config.json"
 _GROK_AUTH_IN_CONTAINER = "/home/agent/.grok/auth.json"
+# Per-agent data dir (the host side is reused from the shared assembly): the
+# entrypoint writes the captured token usage here so the orchestrator reads it
+# back at finalize, the grok analogue of the mounted Claude transcript.
+_GROK_USAGE_DIR_IN_CONTAINER = "/home/agent/.grok-usage"
+_GROK_USAGE_FILE_IN_CONTAINER = f"{_GROK_USAGE_DIR_IN_CONTAINER}/usage.json"
 
 
 def _container_name(agent_id: str) -> str:
     return f"roboco-agent-{agent_id}"
+
+
+# --- interactive (opencode-serve) shim — PENDING conversion to the grok CLI ---
+# The intake / secretary roles still run on the opencode-serve interactive path,
+# which needs the opencode ``--variant`` reasoning effort ("minimal") — distinct
+# from the one-shot CLI's ``--effort`` ("low") computed in grok_cli_config. Kept
+# here until the interactive path is moved onto the grok CLI too; the orchestrator
+# interactive-spawn methods import it.
+_MINIMAL_REASONING_ROLES = frozenset(
+    {
+        "cell_pm",
+        "main_pm",
+        "documenter",
+        "product_owner",
+        "head_marketing",
+        "auditor",
+        "prompter",
+        "secretary",
+    }
+)
+_FULL_REASONING_OVERRIDES = frozenset({"default", "full", "none", ""})
+
+
+def _reasoning_effort_for(agent_id: str) -> str | None:
+    """opencode ``--variant`` for the interactive serve path (pending conversion).
+
+    Returns ``None`` (opencode default / full reasoning) for code-quality roles;
+    ``"minimal"`` for coordination / docs / board roles. A global
+    ``ROBOCO_GROK_REASONING_EFFORT`` override wins.
+    """
+    override = os.environ.get("ROBOCO_GROK_REASONING_EFFORT", "").strip()
+    if override:
+        return None if override.lower() in _FULL_REASONING_OVERRIDES else override
+    return (
+        "minimal"
+        if (get_agent_role(agent_id) or "") in _MINIMAL_REASONING_ROLES
+        else None
+    )
 
 
 class _GrokHost(Protocol):
@@ -70,6 +114,8 @@ class _GrokHost(Protocol):
     """
 
     async def _remove_container(self, container_name: str) -> None: ...
+
+    def _ensure_opencode_data_dir(self, agent_id: str) -> None: ...
 
     def _resolve_host_paths(
         self, config: AgentConfig, agent_settings_path: Path | None
@@ -108,6 +154,9 @@ class GrokCliProvider(AgentProvider):
 
         container_name = _container_name(config.agent_id)
         await self._host._remove_container(container_name)
+        # Pre-create the per-agent data dir (world-writable) before the bind
+        # mount so the non-root agent can write the usage file (else EACCES).
+        self._host._ensure_opencode_data_dir(config.agent_id)
 
         # Reuse the orchestrator's mount/auth/git assembly so the agent gets the
         # full MCP gateway + identity wiring. Blank the provider routing fields
@@ -122,6 +171,7 @@ class GrokCliProvider(AgentProvider):
         self._host._append_agent_auth_env(cmd, config)
         self._host._append_git_context_env(cmd, config)
         self._append_grok_auth_mount(cmd)
+        self._append_usage_mount(cmd, hosts)
         self._append_grok_env(cmd, config, initial_prompt)
         cmd.append(self._image)
 
@@ -154,6 +204,18 @@ class GrokCliProvider(AgentProvider):
         if auth_json.exists():
             cmd.extend(["-v", f"{auth_json}:{_GROK_AUTH_IN_CONTAINER}:ro"])
 
+    @staticmethod
+    def _append_usage_mount(cmd: list[str], hosts: dict[str, str | None]) -> None:
+        """Mount the per-agent data dir so the orchestrator reads usage back.
+
+        Reuses the shared per-agent host dir (``hosts["opencode"]``); the
+        entrypoint writes ``usage.json`` here after the run and the orchestrator
+        reads it at finalize. Without it a Grok agent finalizes at 0 tokens / $0.
+        """
+        data_host = hosts.get("opencode")
+        if data_host:
+            cmd.extend(["-v", f"{data_host}:{_GROK_USAGE_DIR_IN_CONTAINER}"])
+
     def _append_grok_env(
         self, cmd: list[str], config: AgentConfig, initial_prompt: str | None
     ) -> None:
@@ -173,6 +235,8 @@ class GrokCliProvider(AgentProvider):
                 f"ROBOCO_MCP_CONFIG={_MCP_CONFIG_IN_CONTAINER}",
                 "-e",
                 f"ROBOCO_INITIAL_PROMPT={initial_prompt or ''}",
+                "-e",
+                f"ROBOCO_GROK_USAGE_FILE={_GROK_USAGE_FILE_IN_CONTAINER}",
             ]
         )
         if config.claude_session_id:
