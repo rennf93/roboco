@@ -253,6 +253,42 @@ def test_still_denies_printf_piped_into_git_apply_path() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Command-substitution bypass: the skeletonizer strips echo/printf/heredoc
+# wrappers, but the shell evaluates $(...) and `...` BEFORE the wrapping
+# command runs. A git op nested in a substitution slips past the deny rule
+# unless we detect it explicitly up front.
+# ---------------------------------------------------------------------------
+
+
+def test_denies_echo_with_git_in_command_substitution() -> None:
+    assert _run("echo $(git fetch origin)") == _DENIED
+
+
+def test_denies_printf_with_git_in_command_substitution() -> None:
+    assert _run('printf "%s" "$(git push)"') == _DENIED
+
+
+def test_denies_echo_with_git_in_backticks() -> None:
+    assert _run("echo `git push origin main`") == _DENIED
+
+
+def test_denies_unquoted_heredoc_body_with_git_substitution() -> None:
+    cmd = "cat <<EOF\n$(git pull)\nEOF"
+    assert _run(cmd) == _DENIED
+
+
+def test_denies_double_quoted_string_with_git_substitution() -> None:
+    """Inside double quotes, $(...) is still expanded — same risk as bare."""
+    assert _run('echo "starting $(git checkout main)"') == _DENIED
+
+
+def test_allows_substitution_that_is_not_a_git_verb() -> None:
+    """Pre-check must only fire on git verbs, not any $(...)."""
+    assert _run("echo $(date)") == _ALLOWED
+    assert _run('VAR="$(hostname)"') == _ALLOWED
+
+
+# ---------------------------------------------------------------------------
 # Task #175: interpreter/library-driven HTTP to an internal host. The
 # curl/wget rule only fires when the first token is an HTTP CLI; smoke-17
 # reached the orchestrator with forged X-Agent-* headers via a python3

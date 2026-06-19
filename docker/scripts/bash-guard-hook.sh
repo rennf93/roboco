@@ -36,12 +36,47 @@ except Exception:
 
 low=$(printf '%s' "$cmd" | tr "[:upper:]" "[:lower:]")
 
+# Pre-check: command substitutions ($(...) and backticks) are evaluated by
+# the shell BEFORE the wrapping command runs, regardless of whether they
+# appear inside echo, printf, or an unquoted heredoc body. The skeletonizer
+# below strips those wrappers and would otherwise hide a denied git op
+# nested in a substitution. Detect those nested ops up front and deny.
+#
+# Known trade-off: literal documentation that contains the exact string
+# "$(git ...)" inside a heredoc body (even a single-quoted one) is also
+# denied. Agents writing such a doc can split the string to avoid the
+# match, or use a non-substitution literal like "\$( git push )". The
+# security gain outweighs the rare doc collision.
+subst_git_deny=$(printf '%s' "$cmd" | python3 -c '
+import sys, re
+src = sys.stdin.read()
+verbs = r"(fetch|pull|push|clone|remote|ls-remote|checkout|commit|merge|rebase|reset|cherry-pick|revert|tag\s+-d|update-ref|reflog\s+delete)"
+git_re = re.compile(rf"(^|[\s;&|()])git\s+{verbs}", re.IGNORECASE)
+# $(...) with one level of nested parens tolerated.
+subst_re = re.compile(r"\$\(([^()]*(?:\([^()]*\)[^()]*)*)\)", re.DOTALL)
+# Backticks: simple, non-nested.
+backtick_re = re.compile(r"`([^`]*)`", re.DOTALL)
+for pat in (subst_re, backtick_re):
+    for m in pat.finditer(src):
+        if git_re.search(m.group(1)):
+            sys.stdout.write("yes")
+            sys.exit(0)
+sys.stdout.write("no")
+' 2>/dev/null)
+
+if [[ "$subst_git_deny" == "yes" ]]; then
+    echo "Denied: shell git verb inside a command substitution (\$(...) or backticks) is evaluated by the shell before the wrapping echo/printf/heredoc runs. Use the verb listed in your role's State→Verb table (e.g. commit, complete, i_am_done)." >&2
+    exit 2
+fi
+
 # Skeletonize the command for the git-ops check ONLY (#165): strip heredoc
 # bodies and echo/printf literal arguments. Those are data the shell writes
 # to a file, never commands the shell executes — so a README/heredoc that
 # merely documents `git commit` must not be mistaken for invoking git.
 # Quoted args to a shell interpreter (`bash -c "... && git fetch"`) ARE
 # executed, are not echo/printf/heredoc bodies, and so survive untouched.
+# Command substitutions inside these stripped regions are caught by the
+# pre-check above before we reach this stage.
 # Every other rule below still inspects the full command ($low).
 git_skel=$(printf '%s' "$cmd" | python3 -c '
 import sys, re
