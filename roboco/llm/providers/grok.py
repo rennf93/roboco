@@ -175,6 +175,11 @@ class GrokCliProvider(AgentProvider):
                 f"ROBOCO_INITIAL_PROMPT={initial_prompt or ''}",
             ]
         )
+        if config.claude_session_id:
+            # A fixed session id (reused as the generic agent session id, as on
+            # the Claude path) lets the entrypoint pin `grok -p -s <id>` so the
+            # run's session store is locatable for token-usage capture.
+            cmd.extend(["-e", f"ROBOCO_AGENT_SESSION_ID={config.claude_session_id}"])
 
     async def stop(self, instance_id: str, graceful: bool = True) -> None:
         await stop_container(instance_id, graceful)

@@ -36,11 +36,16 @@ fi
 RUN_LOG="/tmp/grok-run.json"
 ERR_LOG="/tmp/grok-run.err"
 WORKSPACE="${ROBOCO_WORKSPACE:-$PWD}"
+# A fixed session id (set by the provider) makes the run's session store
+# locatable for usage capture below; absent, grok generates its own.
+SESSION_ARGS=()
+[ -n "${ROBOCO_AGENT_SESSION_ID:-}" ] && SESSION_ARGS=(-s "${ROBOCO_AGENT_SESSION_ID}")
 set +e
 grok -p "${ROBOCO_INITIAL_PROMPT:-}" \
   -m "${ROBOCO_AGENT_MODEL:-grok-build}" \
   --cwd "$WORKSPACE" \
   --output-format json \
+  "${SESSION_ARGS[@]}" \
   "${GROK_ARGS[@]}" \
   < /dev/null > "$RUN_LOG" 2> "$ERR_LOG"
 run_rc=$?
@@ -48,6 +53,13 @@ set -e
 # Surface the run output + any stderr into the agent log.
 cat "$RUN_LOG"
 [ -s "$ERR_LOG" ] && cat "$ERR_LOG" >&2
+
+# Capture token usage from the grok session store (~/.grok/sessions). The
+# orchestrator reads the written usage file back at finalize — the grok analogue
+# of the Claude transcript. Best-effort; never fails the run. Run from /app for
+# the same module-resolution reason as the render above.
+( cd /app && ROBOCO_GROK_RUN_CWD="$WORKSPACE" \
+    python -m roboco.llm.providers.grok_cli_usage ) || true
 
 # Rate-limit detection (parity with the opencode B4 path): an xAI 429 / quota
 # error ends the run without a terminal verb. Detect it from the run output and

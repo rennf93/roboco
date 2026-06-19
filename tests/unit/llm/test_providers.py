@@ -213,6 +213,8 @@ async def test_grok_spawn_wires_gateway_env_and_image_last() -> None:
     assert "ROBOCO_MCP_CONFIG=/app/mcp-config.json" in cmd
     assert "ROBOCO_AGENT_ID=be-dev-1" in cmd  # renderer computes per-role flags
     assert "ROBOCO_AGENT_MODEL=grok-build" in cmd
+    # Fixed session id so usage capture can locate the run's session store.
+    assert "ROBOCO_AGENT_SESSION_ID=sess-1" in cmd
     # Identity wiring from the shared host helpers is present.
     assert "ROBOCO_AGENT_TOKEN=hmac-be-dev-1" in cmd
     # The image is the final docker-run argument.
