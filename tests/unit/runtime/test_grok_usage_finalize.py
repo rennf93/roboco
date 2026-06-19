@@ -125,24 +125,3 @@ def test_grok_usage_json_reads_the_real_local_dir(
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
     assert orch._grok_usage_tokens("be-dev-1") == (0, 55, 0, 0)
     assert orch._grok_cost_usd("be-dev-1") == 0.1  # noqa: PLR2004
-
-
-def test_grok_usage_json_refuses_path_outside_root(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # Containment barrier: a usage.json that resolves outside the usage root is
-    # refused at the read even though the file exists (the _safe_agent_path_segment
-    # guard blocks a traversal id upstream, so force the dir outside the root).
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    (outside / "usage.json").write_text(
-        json.dumps({"total_tokens": 9}), encoding="utf-8"
-    )
-    monkeypatch.setattr(
-        AgentOrchestrator, "_grok_usage_root", staticmethod(lambda: tmp_path / "root")
-    )
-    monkeypatch.setattr(
-        AgentOrchestrator, "_grok_usage_dir", staticmethod(lambda _agent_id: outside)
-    )
-    orch = AgentOrchestrator.__new__(AgentOrchestrator)
-    assert orch._grok_usage_json("anything") is None

@@ -919,8 +919,9 @@ class AgentOrchestrator:
         (``_grok_usage_json``) so they can never drift. ``agent_id`` is validated
         as a single safe path segment first — ``_safe_agent_path_segment`` rejects
         ``.`` / ``..`` / separators / NUL so a bad id raises rather than silently
-        remapping or traversing. The read side additionally checks containment
-        against the root (the CodeQL-recognized path-injection barrier).
+        remapping or traversing. The read side additionally reduces the id to its
+        final path component (``os.path.basename``) — the CodeQL-recognized
+        path-injection barrier.
         """
         return AgentOrchestrator._grok_usage_root() / (
             AgentOrchestrator._safe_agent_path_segment(agent_id)
@@ -3944,15 +3945,14 @@ class AgentOrchestrator:
         branched dir the writers mount (``_grok_usage_dir``). Returns ``None`` when
         absent / unreadable.
         """
-        usage_json = (self._grok_usage_dir(agent_id) / "usage.json").resolve()
-        # Path-injection barrier: refuse to read anything the agent id resolved
-        # outside the usage root. _grok_usage_dir already rejects a traversal id;
-        # this is the containment check CodeQL recognizes at the read sink.
-        if not usage_json.is_relative_to(self._grok_usage_root().resolve()):
-            return None
+        # os.path.basename keeps only the final path component of the agent id
+        # before the path is built — the path-injection sanitizer CodeQL models,
+        # applied here in the read's own scope. _grok_usage_dir's guard rejects
+        # '.' / '..' / separators / NUL upstream (a bad id raises -> None here).
         try:
+            usage_json = self._grok_usage_dir(os.path.basename(agent_id)) / "usage.json"
             data = json.loads(usage_json.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, ValueError, json.JSONDecodeError):
             return None
         return data if isinstance(data, dict) else None
 
