@@ -43,7 +43,7 @@ dependencies = [
     "sse-starlette",  # Server-Sent Events for A2A streaming
     # Direct imports (promoted from transitive)
     "cryptography",  # utils/crypto.py — Fernet-encrypted project git tokens
-    "claude-agent-sdk>=0.2.101",
+    "claude-agent-sdk>=0.2.105",
 ]
 
 [project.optional-dependencies]
