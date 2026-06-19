@@ -155,3 +155,98 @@ def test_grok_xai_settings_has_full_hooks_only() -> None:
         "session-end-hook.sh",
     ]:
         assert script in flat, f"full set requires {script} registered for Grok"
+
+
+# New coverage for AC2/AC4: grok_cli_config (not just orchestrator) writes the
+# full set of hook JSONs when invoked on container start.
+def test_grok_cli_config_writes_full_hooks_and_artifacts(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """grok_cli_config.write_grok_hooks (and main) emit hook JSONs for every
+    required event (AC2) + AGENTS.md + config.toml (MCP) + role args (denies).
+    """
+    # Import inside after Path.home patch: module level constants eval Path.home
+    import roboco.llm.providers.grok_cli_config as gcc  # noqa: PLC0415
+
+    fake_home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", lambda: fake_home, raising=False)
+    # Override module globals used by writers
+    monkeypatch.setattr(gcc, "GROK_HOOKS_DIR", fake_home / ".grok" / "hooks")
+    monkeypatch.setattr(gcc, "GROK_AGENTS_PATH", fake_home / ".grok" / "AGENTS.md")
+    monkeypatch.setattr(
+        gcc, "GROK_USER_SETTINGS_PATH", fake_home / ".grok" / "user-settings.json"
+    )
+    monkeypatch.setattr(gcc, "GROK_CONFIG_PATH", fake_home / ".grok" / "config.toml")
+    monkeypatch.setattr(gcc, "GROK_ARGS_PATH", tmp_path / "grok-args")
+
+    # Provide minimal system prompt and mcp for writers
+    (tmp_path / "system.md").write_text(
+        "# test blueprint for grok\nYou are a test agent."
+    )
+    monkeypatch.setattr(gcc, "SYSTEM_PROMPT_PATH", tmp_path / "system.md")
+    mcp = tmp_path / "mcp.json"
+    mcp.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "flow": {
+                        "command": "uv",
+                        "args": [
+                            "run",
+                            "--no-sync",
+                            "python",
+                            "-m",
+                            "roboco.mcp.flow_server",
+                        ],
+                    }
+                }
+            }
+        )
+    )
+
+    monkeypatch.setenv("ROBOCO_MCP_CONFIG", str(mcp))
+    monkeypatch.setenv("ROBOCO_AGENT_ID", "be-dev-1")
+
+    # Call writer directly (what grok entrypoint invokes on start)
+    hooks_dir = gcc.GROK_HOOKS_DIR
+    gcc.write_grok_hooks(hooks_dir=hooks_dir, hook_path="/nonexistent/guard.sh")
+    # guard file absent is tolerated (write_grok_hooks proceeds)
+
+    # Verify full event JSONs exist (written by grok_cli_config = AC2)
+    assert hooks_dir.exists()
+    event_map = {
+        "sessionstart": "SessionStart",
+        "pretooluse": "PreToolUse",
+        "posttooluse": "PostToolUse",
+        "stop": "Stop",
+        "userpromptsubmit": "UserPromptSubmit",
+        "precompact": "PreCompact",
+        "sessionend": "SessionEnd",
+    }
+    for event, cap in event_map.items():
+        p = hooks_dir / f"roboco-{event}.json"
+        assert p.exists(), f"missing hook json for {event}"
+        data = json.loads(p.read_text())
+        assert "hooks" in data, "hook json must contain hooks root"
+        hooksec = data.get("hooks", {})
+        assert cap in hooksec or cap in str(data), f"missing event {cap}"
+
+    # user-settings also has full hooks
+    us = gcc.GROK_USER_SETTINGS_PATH
+    assert us.exists()
+    usdata = json.loads(us.read_text())
+    assert "hooks" in usdata
+    for key in ["SessionStart", "PreToolUse", "Stop", "SessionEnd"]:
+        assert key in usdata["hooks"]
+
+    # AGENTS + config + role args (with --deny) written by main()
+    gcc.main()
+    assert gcc.GROK_AGENTS_PATH.exists()
+    assert "test blueprint" in gcc.GROK_AGENTS_PATH.read_text()
+    cfg = gcc.GROK_CONFIG_PATH
+    assert cfg.exists()
+    assert "mcp_servers" in cfg.read_text() or "flow" in cfg.read_text()
+    assert gcc.GROK_ARGS_PATH.exists()
+    args = gcc.GROK_ARGS_PATH.read_text()
+    assert "--always-approve" in args
+    assert "--disallowed-tools" in args or "--deny" in args

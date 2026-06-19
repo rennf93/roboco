@@ -1528,13 +1528,20 @@ class AgentOrchestrator:
         workspace_path = _agent_workspace_path(project_slug, team, agent_id)
         cell_workspace_path = _cell_workspace_path(project_slug, team)
 
-        agent_settings_path = self._generate_agent_settings(
-            agent_id,
-            canonical_role,
-            workspace_path,
-            cell_workspace_path,
-            provider_type=route.provider_type.value,
-        )
+        # For xai/grok the hooks + AGENTS + config.toml + role args are written
+        # inside the container by grok_cli_config.main (called from entrypoint
+        # at container start). Skip pre-generation of settings for xai so that
+        # path owns the "hook JSONs written by grok_cli_config" contract.
+        if route.provider_type.value == "xai":
+            agent_settings_path = None
+        else:
+            agent_settings_path = self._generate_agent_settings(
+                agent_id,
+                canonical_role,
+                workspace_path,
+                cell_workspace_path,
+                provider_type=route.provider_type.value,
+            )
 
         briefing_path = await self._write_agent_briefing(
             agent_id, task_id, workspace_path
@@ -1786,19 +1793,16 @@ class AgentOrchestrator:
     def _append_optional_host_mounts(
         cmd: list[str], hosts: dict[str, str | None], provider_type: str = "anthropic"
     ) -> None:
-        """Mount agent settings (claude or grok) + briefing when hosts exist."""
+        """Mount agent settings (claude) + briefing when hosts exist.
+
+        For xai/grok the grok_cli_config module (invoked by entrypoint on
+        container start) writes ~/.grok/config.toml, AGENTS.md, full hook JSONs
+        and per-role args. We deliberately do NOT ro-mount a pre-generated
+        settings for xai so the inside write (AC2) can succeed.
+        """
         settings_host = hosts.get("settings")
-        if settings_host:
-            if provider_type == "xai":
-                # Grok discovers hooks/ config from ~/.grok/user-settings.json
-                # (matches research on opencode/grok cli user-settings shape)
-                cmd.extend(
-                    ["-v", f"{settings_host}:/home/agent/.grok/user-settings.json:ro"]
-                )
-            else:
-                cmd.extend(
-                    ["-v", f"{settings_host}:/home/agent/.claude/settings.json:ro"]
-                )
+        if settings_host and provider_type != "xai":
+            cmd.extend(["-v", f"{settings_host}:/home/agent/.claude/settings.json:ro"])
         briefing_host = hosts.get("briefing")
         if briefing_host:
             cmd.extend(["-v", f"{briefing_host}:/app/briefing.md:ro"])

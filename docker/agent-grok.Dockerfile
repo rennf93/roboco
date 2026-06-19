@@ -17,15 +17,15 @@ RUN npm install -g @xai-official/grok 2>/dev/null || \
      bash /tmp/grok-install.sh) || \
     echo "Grok CLI install attempted; verify grok binary in PATH at runtime"
 
-# Grok entrypoint wrapper (provides SDK startup + briefing + full hooks activation via settings)
+# Grok entrypoint wrapper (invokes grok_cli_config at start to write
+# config.toml + AGENTS.md + full hooks JSONs + role args; then execs grok).
 COPY docker/scripts/grok-cli-agent-entrypoint.sh /app/scripts/grok-cli-agent-entrypoint.sh
 RUN chmod 0755 /app/scripts/grok-cli-agent-entrypoint.sh
 
-# Prepare ~/.grok so that the mounted user-settings.json is discoverable
-# even before the first grok run (grok inspect / hooks loader expects it).
+# Prepare ~/.grok dir (grok_cli_config writes user-settings/hooks inside).
 RUN mkdir -p /home/agent/.grok && chown -R agent:agent /home/agent || true
 
 USER agent
 
-# Entrypoint runs sdk hooks then exec grok with orchestrator-supplied flags.
+# Entrypoint: grok_cli_config (AC2) then exec grok (hooks fire on events).
 ENTRYPOINT ["/app/scripts/grok-cli-agent-entrypoint.sh"]
