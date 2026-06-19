@@ -11,9 +11,10 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 from roboco.api.deps import _ServiceHolder, set_orchestrator
+from roboco.api.routes.orchestrator import _validated_agent_id
 from roboco.api.routes.orchestrator import router as orch_router
 
 if TYPE_CHECKING:
@@ -36,6 +37,22 @@ async def orch_client() -> AsyncIterator[tuple[AsyncClient, MagicMock]]:
 
 
 _HDR = {"X-Agent-ID": str(uuid4()), "X-Agent-Role": "ceo"}
+
+
+@pytest.mark.parametrize(
+    "bad", ["..", ".", "../x", "a/b", "a\\b", "", "be-dev-1/../x", "x\x00y"]
+)
+def test_validated_agent_id_rejects_path_traversal(bad: str) -> None:
+    # agent_id is a request path param that flows into per-agent filesystem
+    # paths; a traversal vector must be rejected at the HTTP boundary with 422.
+    with pytest.raises(HTTPException) as exc:
+        _validated_agent_id(bad)
+    assert exc.value.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+
+def test_validated_agent_id_accepts_real_slugs() -> None:
+    for slug in ("be-dev-1", "pr-reviewer-1", "main-pm", "intake", "secretary"):
+        assert _validated_agent_id(slug) == slug
 
 
 # ---------------------------------------------------------------------------
