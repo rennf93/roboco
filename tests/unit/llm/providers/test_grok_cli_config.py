@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 from roboco.llm.providers import grok_cli_config as gc
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     import pytest
 
 _SAMPLE_MCP = {
@@ -40,6 +42,20 @@ def test_render_config_toml_is_valid_toml_and_injects_env() -> None:
 def test_render_config_toml_empty_when_no_servers() -> None:
     assert gc.render_config_toml({}) == ""
     assert gc.render_config_toml({"mcpServers": {}}) == ""
+
+
+def test_write_agents_md_installs_the_blueprint(tmp_path: Path) -> None:
+    src = tmp_path / "system-prompt.md"
+    src.write_text("You are the RoboCo intake interviewer.", encoding="utf-8")
+    dest = tmp_path / ".grok" / "AGENTS.md"
+    assert gc.write_agents_md(source=src, dest=dest) is True
+    assert dest.read_text(encoding="utf-8") == "You are the RoboCo intake interviewer."
+
+
+def test_write_agents_md_noops_when_source_absent(tmp_path: Path) -> None:
+    dest = tmp_path / ".grok" / "AGENTS.md"
+    assert gc.write_agents_md(source=tmp_path / "absent.md", dest=dest) is False
+    assert not dest.exists()
 
 
 def test_developer_flags(monkeypatch: pytest.MonkeyPatch) -> None:

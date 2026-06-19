@@ -24,7 +24,11 @@ from roboco.agent_sdk.grok_cli_session import GrokCliSession
 from roboco.agent_sdk.intake_driver import IntakeDriver
 from roboco.agent_sdk.intake_main import build_receiver, make_message_source
 from roboco.agent_sdk.secretary_main import make_relay_sink
-from roboco.llm.providers.grok_cli_config import GROK_CONFIG_PATH, render_config_toml
+from roboco.llm.providers.grok_cli_config import (
+    GROK_CONFIG_PATH,
+    render_config_toml,
+    write_agents_md,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -78,6 +82,8 @@ async def main() -> None:  # pragma: no cover - needs the live container + grok
     cwd = os.environ.get("ROBOCO_WORKSPACE", "/app")
 
     _render_grok_config(base_url)
+    # Install the role blueprint as grok's global system prompt (~/.grok/AGENTS.md).
+    write_agents_md()
 
     queue: asyncio.Queue[str | None] = asyncio.Queue()
     client = httpx.AsyncClient(timeout=30.0)

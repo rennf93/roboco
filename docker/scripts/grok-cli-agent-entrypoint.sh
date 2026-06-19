@@ -36,6 +36,10 @@ fi
 RUN_LOG="/tmp/grok-run.json"
 ERR_LOG="/tmp/grok-run.err"
 WORKSPACE="${ROBOCO_WORKSPACE:-$PWD}"
+# The role blueprint reaches grok as its system prompt via ~/.grok/AGENTS.md (a
+# global instruction file grok loads regardless of --cwd, verified live — the
+# `--system-prompt-override`/`--rules` flags are ignored in headless mode). The
+# render step above (grok_cli_config) wrote it from the mounted system prompt.
 # NOTE: grok generates its own session id and ignores a requested one (`-s` does
 # not pin it), so we do NOT pass a session id in; usage capture below reads the
 # real id back out of the JSON run log instead.

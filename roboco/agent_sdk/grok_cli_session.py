@@ -193,6 +193,9 @@ class GrokCliSession:  # pragma: no cover - needs the live grok binary
             *self._role_args,
             *self._extra_args,
         ]
+        # The role blueprint reaches grok as its system prompt via the global
+        # ~/.grok/AGENTS.md the main writes (not a per-turn flag — the headless
+        # --system-prompt-override is ignored).
         if self._session_id:
             argv += ["-r", self._session_id]
         return argv

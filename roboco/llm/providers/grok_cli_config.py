@@ -41,6 +41,16 @@ from roboco.services.gateway.role_config import get_role_config
 # grok reads its global config from ``$HOME/.grok/config.toml`` (the agent's HOME
 # is ``/home/agent``; the host ``auth.json`` is mounted alongside it).
 GROK_CONFIG_PATH = Path.home() / ".grok" / "config.toml"
+# grok loads ``$HOME/.grok/AGENTS.md`` as a GLOBAL instruction file regardless of
+# --cwd (verified live; the --system-prompt-override / --rules flags are ignored
+# in headless mode). This is how the RoboCo role blueprint becomes grok's system
+# prompt — the parity analogue of the Claude path's --system-prompt-file — without
+# writing into (and polluting) the agent's git workspace.
+GROK_AGENTS_PATH = Path.home() / ".grok" / "AGENTS.md"
+# The composed role blueprint the orchestrator mounts into every agent container.
+SYSTEM_PROMPT_PATH = Path(
+    os.environ.get("ROBOCO_SYSTEM_PROMPT", "/app/system-prompt.md")
+)
 # The entrypoint reads the computed flags (one token per line) from this file.
 GROK_ARGS_PATH = Path(os.environ.get("ROBOCO_GROK_ARGS_FILE", "/tmp/roboco-grok-args"))
 
@@ -178,8 +188,27 @@ def _load_mcp_config(path: str) -> dict[str, Any]:
         return {}
 
 
+def write_agents_md(
+    *, source: Path = SYSTEM_PROMPT_PATH, dest: Path = GROK_AGENTS_PATH
+) -> bool:
+    """Install the mounted role blueprint as grok's global system prompt.
+
+    Copies the composed prompt to ``~/.grok/AGENTS.md`` (the global instruction
+    file grok honours in headless mode). Best-effort: returns False and writes
+    nothing if the source is absent / unreadable, so a missing prompt never fails
+    the render.
+    """
+    try:
+        blueprint = source.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(blueprint, encoding="utf-8")
+    return True
+
+
 def main() -> int:
-    """Entrypoint: write ``~/.grok/config.toml`` + the per-role args file."""
+    """Entrypoint: write ``~/.grok/config.toml`` + AGENTS.md + the per-role args."""
     agent_id = os.environ.get("ROBOCO_AGENT_ID", "")
     mcp_path = os.environ.get("ROBOCO_MCP_CONFIG", "/app/mcp-config.json")
     try:
@@ -193,6 +222,7 @@ def main() -> int:
     GROK_CONFIG_PATH.write_text(
         render_config_toml(_load_mcp_config(mcp_path)), encoding="utf-8"
     )
+    write_agents_md()
     GROK_ARGS_PATH.write_text(
         "\n".join(grok_cli_args(agent_id, max_turns=max_turns)) + "\n", encoding="utf-8"
     )
