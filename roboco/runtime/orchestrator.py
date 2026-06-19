@@ -898,27 +898,33 @@ class AgentOrchestrator:
         return agent_id
 
     @staticmethod
+    def _grok_usage_root() -> Path:
+        """The base dir all per-agent grok usage dirs live under (no agent id).
+
+        Branched compose-vs-local: in compose the orchestrator sees the mounted
+        host dir at ``GROK_USAGE_DATA_DIR``; in local mode usage.json lands under
+        the shared tempdir. The single fixed anchor the per-agent dir hangs off,
+        and the safe root a finalize read is checked to stay within.
+        """
+        if PROJECT_HOST_PATH:
+            return Path(GROK_USAGE_DATA_DIR)
+        return Path(tempfile.gettempdir()) / "roboco-grok-usage"
+
+    @staticmethod
     def _grok_usage_dir(agent_id: str) -> Path:
-        """Per-agent grok usage dir, branched compose-vs-local.
+        """Per-agent grok usage dir under :meth:`_grok_usage_root`.
 
         Single source of truth for BOTH the pre-create/mount side
         (``_ensure_grok_usage_dir``) and the finalize read side
-        (``_grok_usage_json``) so they can never drift: in compose the orchestrator
-        sees the mounted host dir at ``GROK_USAGE_DATA_DIR``; in local mode the
-        container's usage.json lands under the shared tempdir.
-
-        ``agent_id`` is sanitized to a single path segment first — the
-        path-injection barrier for both the mount and the finalize read.
-        ``_safe_agent_path_segment`` rejects ``.`` / ``..`` / separators / NUL (so
-        a bad id raises rather than silently remapping), and ``Path(...).name``
-        keeps only the final component: CodeQL models that as a data-flow
-        sanitizer and propagates it through this return, where it does not
-        recognize the guard alone.
+        (``_grok_usage_json``) so they can never drift. ``agent_id`` is validated
+        as a single safe path segment first — ``_safe_agent_path_segment`` rejects
+        ``.`` / ``..`` / separators / NUL so a bad id raises rather than silently
+        remapping or traversing. The read side additionally checks containment
+        against the root (the CodeQL-recognized path-injection barrier).
         """
-        safe_agent_id = Path(AgentOrchestrator._safe_agent_path_segment(agent_id)).name
-        if PROJECT_HOST_PATH:
-            return Path(GROK_USAGE_DATA_DIR) / safe_agent_id
-        return Path(tempfile.gettempdir()) / "roboco-grok-usage" / safe_agent_id
+        return AgentOrchestrator._grok_usage_root() / (
+            AgentOrchestrator._safe_agent_path_segment(agent_id)
+        )
 
     def _ensure_grok_usage_dir(self, agent_id: str) -> None:
         """Pre-create the agent's grok usage dir (world-writable) before the mount.
@@ -3938,7 +3944,12 @@ class AgentOrchestrator:
         branched dir the writers mount (``_grok_usage_dir``). Returns ``None`` when
         absent / unreadable.
         """
-        usage_json = self._grok_usage_dir(agent_id) / "usage.json"
+        usage_json = (self._grok_usage_dir(agent_id) / "usage.json").resolve()
+        # Path-injection barrier: refuse to read anything the agent id resolved
+        # outside the usage root. _grok_usage_dir already rejects a traversal id;
+        # this is the containment check CodeQL recognizes at the read sink.
+        if not usage_json.is_relative_to(self._grok_usage_root().resolve()):
+            return None
         try:
             data = json.loads(usage_json.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
