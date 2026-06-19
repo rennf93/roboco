@@ -94,6 +94,22 @@ def test_grok_usage_dir_branches_compose_vs_local(
     )
 
 
+@pytest.mark.parametrize(
+    "bad",
+    ["..", ".", "../etc", "a/b", "a\\b", "", "be-dev-1/../x", "x\x00y"],
+)
+def test_grok_usage_dir_rejects_path_traversal(bad: str) -> None:
+    # agent_id reaches the usage dir from request-facing call sites; a value that
+    # could traverse the path must be rejected, not used to build a Path.
+    with pytest.raises(ValueError, match="unsafe agent id"):
+        AgentOrchestrator._grok_usage_dir(bad)
+
+
+def test_safe_agent_path_segment_accepts_real_slugs() -> None:
+    for slug in ("be-dev-1", "pr-reviewer-1", "main-pm", "intake", "secretary"):
+        assert AgentOrchestrator._safe_agent_path_segment(slug) == slug
+
+
 def test_grok_usage_json_reads_the_real_local_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

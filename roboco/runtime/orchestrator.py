@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -878,6 +879,20 @@ class AgentOrchestrator:
             )
 
     @staticmethod
+    def _safe_agent_path_segment(agent_id: str) -> str:
+        """Return ``agent_id`` if it is safe as a single path segment, else raise.
+
+        ``agent_id`` reaches the grok usage dir from request-facing call sites, so
+        it must not be able to traverse the path. Allow only the slug / uuid
+        charset the orchestrator actually assigns (alphanumerics, hyphen,
+        underscore); a value with a separator, ``..``, or any other character is
+        rejected rather than stripped.
+        """
+        if re.fullmatch(r"[A-Za-z0-9_-]+", agent_id):
+            return agent_id
+        raise ValueError(f"unsafe agent id for a filesystem path: {agent_id!r}")
+
+    @staticmethod
     def _grok_usage_dir(agent_id: str) -> Path:
         """Per-agent grok usage dir, branched compose-vs-local.
 
@@ -885,11 +900,14 @@ class AgentOrchestrator:
         (``_ensure_grok_usage_dir``) and the finalize read side
         (``_grok_usage_json``) so they can never drift: in compose the orchestrator
         sees the mounted host dir at ``GROK_USAGE_DATA_DIR``; in local mode the
-        container's usage.json lands under the shared tempdir.
+        container's usage.json lands under the shared tempdir. ``agent_id`` is
+        validated as a single safe path segment first (path-injection barrier for
+        both the mount and the finalize read).
         """
+        safe_agent_id = AgentOrchestrator._safe_agent_path_segment(agent_id)
         if PROJECT_HOST_PATH:
-            return Path(GROK_USAGE_DATA_DIR) / agent_id
-        return Path(tempfile.gettempdir()) / "roboco-grok-usage" / agent_id
+            return Path(GROK_USAGE_DATA_DIR) / safe_agent_id
+        return Path(tempfile.gettempdir()) / "roboco-grok-usage" / safe_agent_id
 
     def _ensure_grok_usage_dir(self, agent_id: str) -> None:
         """Pre-create the agent's grok usage dir (world-writable) before the mount.
