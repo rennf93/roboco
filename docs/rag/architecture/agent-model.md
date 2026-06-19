@@ -24,6 +24,9 @@
 | `developer` | Writes code |
 | `qa` | Reviews and tests |
 | `documenter` | Writes documentation |
+| `pr_reviewer` | Read-only reviewer of inbound external/fork + internal PRs (agent `pr-reviewer-1`) |
+| `prompter` | On-demand intake interviewer, human-only (agent `intake-1`) |
+| `secretary` | On-demand chief-of-staff, human-only (agent `secretary-1`) |
 | `system` | Internal orchestrator |
 
 ## Teams
@@ -60,6 +63,8 @@ Stored in `model_config` JSON:
 - Model name
 - Temperature
 - Other settings
+
+The **provider** selects the agent backend, resolved through the `ProviderRegistry` (`roboco/llm/providers/`). `ModelProvider` is `ANTHROPIC` (default — Claude Code), `GROK` (xAI's official `grok` CLI, model `grok-build`, on a SuperGrok subscription), `LOCAL`, `OLLAMA_CLOUD`, or `OPENAI` (reserved). An agent with no dedicated provider falls back to the built-in Claude Code spawn. Grok auth is the host `~/.grok` subscription mount (auto-refreshed by the orchestrator), not a metered API key.
 
 ## Agent-Specific Fields
 

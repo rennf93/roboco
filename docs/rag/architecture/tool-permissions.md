@@ -2,13 +2,15 @@
 
 ## Overview
 
-Agents call gateway verbs through three MCP servers, scoped per role:
+Agents call gateway verbs through up to five MCP servers, scoped per role:
 
 | MCP server | Provides |
 |------------|----------|
 | `roboco-flow` | Lifecycle verbs (give_me_work, i_will_work_on, open_pr, complete, …) |
 | `roboco-do` | Content/write verbs (commit, note, say, dm, notify, evidence) |
 | `roboco-git-readonly` | Read-only git inspection (status, log, diff, branch_list) |
+| `roboco-optimal` | RAG (`roboco_ask_mentor`, `roboco_kb_search`) |
+| `roboco-docs` | Project docs file management (selected roles) |
 
 Native shell git is blocked by the bash-guard hook for everyone. There is **no** `roboco_git_commit / _push / _create_pr / _merge_pr / _checkout` tool — write operations happen through the lifecycle verbs and the choreographer handles git as a side-effect.
 
@@ -79,6 +81,26 @@ The canonical source of role → verb mapping is `roboco/services/gateway/role_c
 **Content verbs:** `note` (scope=reflect), `evidence`  (no `say` / `dm` — Auditor observes silently)
 
 **Read-only git:** none.
+
+## PR Reviewer
+
+**Flow verbs:** `give_me_work`, `claim_pr_review`, `post_pr_review`, `i_am_idle`  (read-only)
+
+**Content verbs:** `note`, `evidence`, plus notification reads (`notify_list`, `notify_get`) and channel discovery — no `say` / `dm`: the change-request is posted server-side on the PR itself.
+
+**Read-only git:** none.
+
+**Workspace writes:** none — reviews inbound external/fork + internal PRs only.
+
+## Prompter (Intake) & Secretary
+
+Both are human-only roles — they chat with the CEO, not other agents.
+
+**Flow verbs:** `i_am_idle` only.
+
+**Content verbs:** `note`, `evidence` only (no `say` / `dm` / `notify`).
+
+**Read-only git / workspace writes:** none.
 
 ## Tool Permissions Summary
 

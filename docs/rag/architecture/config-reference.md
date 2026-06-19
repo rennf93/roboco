@@ -62,6 +62,33 @@ Environment variables for RoboCo (prefix: `ROBOCO_`).
 | `ROBOCO_LOCAL_LLM_BASE_URL` | `http://roboco-ollama:11434/v1` | OpenAI-compat API |
 | `ROBOCO_OLLAMA_BASE_URL` | `http://roboco-ollama:11434` | Native Ollama API |
 
+## Grok provider (xAI)
+
+Agents whose provider is `GROK` run xAI's official `grok` CLI. Auth is the host SuperGrok subscription (mounted `~/.grok`), not a metered API key.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ROBOCO_HOST_GROK_DIR` | `~/.grok` | Host dir holding `auth.json`, mounted into Grok agents; the orchestrator auto-refreshes the ~6h token in place. Set up once with `grok login`. |
+| `ROBOCO_GROK_CLI_MODEL` | `grok-build` | Grok CLI model id |
+| `ROBOCO_GROK_AGENT_IMAGE` | `roboco-agent-grok:latest` | Image for Grok delivery agents |
+| `ROBOCO_GROK_REASONING_EFFORT` | (blank) | Per-run reasoning-effort override; blank = the grok CLI default |
+| `ROBOCO_GROK_IDLE_KILL_SECONDS` | `900` | Kill + evict a Grok container that has been ACTIVE-yet-idle (no gateway verb) this long |
+| `ROBOCO_GROK_MAX_COST_USD` | `0.0` | Per-agent Grok cost ceiling (USD); `0` disables |
+
+## Self-Healing CI loop
+
+RoboCo watching its own repo's CI. All default-off / dormant.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ROBOCO_SELF_HEAL_ENABLED` | `false` | Master switch (detect + notify the CEO); off = the loop never runs and no CI is fetched |
+| `ROBOCO_SELF_HEAL_ORIGINATE_ENABLED` | `false` | Second opt-in: also open a PENDING fix task on a regression — CEO-gated, never auto-started/merged/deployed |
+| `ROBOCO_SELF_HEAL_PROJECT_SLUG` | (empty) | The registered project that IS RoboCo itself — the only repo it watches and fixes; empty = no-op |
+| `ROBOCO_SELF_HEAL_CI_WORKFLOW` | (empty) | GitHub Actions workflow to scope the CI signal to (e.g. `ci.yml`); empty = latest across all workflows |
+| `ROBOCO_SELF_HEAL_INTERVAL_SECONDS` | `1800` | Seconds between assessment passes |
+| `ROBOCO_SELF_HEAL_MAX_OPEN_TASKS` | `3` | Rolling cap on concurrently-open self-heal tasks |
+| `ROBOCO_SELF_HEAL_MAX_PER_CYCLE` | `1` | Max fix tasks originated per cycle |
+
 ## Security
 
 | Variable | Default | Description |

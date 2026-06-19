@@ -101,6 +101,17 @@ i_am_idle()
 
 The Auditor is a silent observer: read-only `triage`, no `say`/`dm`/ `notify`, no claim/complete/cancel.
 
+## PR Reviewer flow
+
+```python
+give_me_work()                  # returns an inbound-PR review task
+claim_pr_review(task_id)        # claim it (planless, branchless — read-only)
+post_pr_review(task_id, ...)    # posts one change-request on the PR; task -> completed
+i_am_idle()
+```
+
+The PR Reviewer reviews inbound external/fork (and, behind a flag, internal) PRs the org did not open. It is read-only: no `commit`/`open_pr`/`merge`, no `say`/`dm` — the change-request is posted server-side on the PR itself, and the CEO decides Supersede/Dismiss from the PR Review Queue.
+
 ## Cancel
 
 Cancelling a task (any non-terminal status -> `cancelled`) is restricted to **PM roles and the CEO**. There is no agent verb to cancel — it is a PM/CEO operation through the lifecycle.

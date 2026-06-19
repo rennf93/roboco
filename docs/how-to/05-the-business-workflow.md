@@ -14,6 +14,10 @@ Where the charter says what the company *should* be doing, the Cockpit shows wha
 
 <!-- Screenshot to capture: the Cockpit with spend-vs-budget and the signals panel. -->
 
+## The Company Scorecard
+
+On the Business tab's Goals view sits the Company Scorecard — live performance against the charter in one card. Where the Cockpit surfaces signals to act on, the Scorecard is the one-glance answer to "how is the company actually doing?": what's been delivered, spend against budget, the median lead time from task to merge, and progress on the objectives you set. It is the company's vital signs, read off the same work the rest of the panel tracks.
+
 ## The Secretary
 
 The Secretary is your conversational chief-of-staff. You chat with it the way you'd brief a human one — ask it where things stand, or dictate a change to the charter. What it never does is act on its own: every directive it derives from your instruction is **gated**, landing in a queue for your explicit confirmation before anything happens. It reads the whole company's state to advise you, but it spends nothing, builds nothing, and approves nothing until you say the word. It is leverage with a safety catch — your intent, executed, but only after you confirm it.
@@ -31,6 +35,10 @@ Flip **Web research** on in Settings → Feature Flags (or set `ROBOCO_RESEARCH_
 ### The strategy engine
 
 Flip **the strategy engine** on in Settings → Feature Flags (or set `ROBOCO_STRATEGY_ENGINE_ENABLED=true`) and a background loop begins watching the company against its charter. When it spots drift from the objectives, agents gone idle, or work blocked for too long, it tells you. It is **notify-only by design**: it never spends, never builds, never approves — it raises the flag and leaves the decision where every decision belongs, with you. Off, it is fully dormant.
+
+### The self-healing CI loop
+
+The same shape, pointed inward: flip **self-healing** on in Settings → Feature Flags (or set `ROBOCO_SELF_HEAL_ENABLED=true`) and RoboCo begins watching its **own** repository's CI. When a run regresses it tells you. Turn on the second switch (`ROBOCO_SELF_HEAL_ORIGINATE_ENABLED=true`) and it goes one step further — it opens a fix task for the regression, but only as far as **PENDING, awaiting your approval**. It never starts, merges, or deploys that work itself: the company can notice it broke its own build and queue the repair, but the call to run it stays yours. Both switches are off by default, and it watches only the one repo you name as RoboCo itself.
 
 ## Feel the whole thing
 

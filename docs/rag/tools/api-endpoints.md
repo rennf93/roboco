@@ -90,7 +90,7 @@ Base URL: `http://{host}:{port}/api/v1`
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/system/rate-limits` | Active per-provider rate-limit state (`{ entries: [...] }`) |
-| WS | `/ws/system` | Operator stream — rate-limit lifecycle (`RATE_LIMIT_HIT` / `RATE_LIMIT_LIFTED`) and live usage (`USAGE_UPDATE` / `USAGE_SNAPSHOT`) pushed to the usage dashboard |
+| WS | `/ws/system` | Operator stream — rate-limit lifecycle (`RATE_LIMIT_HIT` / `RATE_LIMIT_LIFTED`) and live usage (`USAGE_SNAPSHOT`) pushed to the usage dashboard |
 | WS | `/ws/agents/{id}`, `/ws/channels/{id}`, `/ws/sessions/{id}`, `/ws/notifications/{id}` | Per-resource live streams |
 
 ## Documentation

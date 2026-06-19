@@ -24,6 +24,10 @@ The cells' work is folded up, the Main PM opens the **final pull request** into 
 
 *Your two words. **Approve & Merge** and it ships to `master`; **Request Changes** and it goes around for another lap. The last call has the same shape as the first — one decision, yours alone.*
 
+## The other queue: PRs you didn't open
+
+Not every pull request comes from inside the company. When someone opens a PR against your repo — an external contributor, a fork — the read-only **PR Reviewer** picks it up, reads the diff against your standards, and posts a single change-request directly on the PR (it never chats, never merges, never decides). The PR then surfaces in the **PR Review Queue** on the Command Center — your second decision surface. There you **Supersede** it: the company cuts its own branch from the contributor's commits, hardens the work to your standards, opens its own PR, and — once that replacement merges — closes and links the original. Or you **Dismiss** it. Either way the call is yours, and the org never pushes to anyone else's fork.
+
 ---
 
 ## And round it goes

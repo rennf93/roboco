@@ -12,6 +12,10 @@ What each role can do in the system.
 | MAIN_PM | main_pm |
 | CELL_PM | cell_pm |
 | CELL_MEMBER | developer, qa, documenter |
+| (read-only reviewer) | pr_reviewer |
+| (human-only) | prompter, secretary |
+
+`pr_reviewer` is a board-adjacent, read-only role (QA level): it claims and posts inbound-PR reviews (`claim_pr_review` / `post_pr_review`) but creates, assigns, completes, and notifies nothing. `prompter` (intake) and `secretary` are **human-only** — they chat with the CEO and have only `note` + `evidence`, with no task or notification permissions; they don't appear in the action tables below.
 
 ## Task Permissions
 
