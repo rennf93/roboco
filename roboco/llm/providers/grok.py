@@ -156,8 +156,11 @@ class GrokCliProvider(AgentProvider):
 
         Read-only so concurrent containers can't corrupt the shared subscription
         credential; grok writes its per-run state (the rendered ``config.toml``,
-        ``sessions/``) into the image's own ``~/.grok``. One-shot delivery runs
-        are short, so the token needs no mid-run refresh.
+        ``sessions/``) into the image's own ``~/.grok``. The ~6h token is kept
+        live host-side by the orchestrator (``_refresh_grok_auth`` ->
+        :func:`roboco.llm.providers.grok_auth.refresh_if_stale`), so a fresh
+        credential is always what gets mounted; the entrypoint fails fast if it
+        somehow still finds an expired one rather than hanging at grok's login.
         """
         auth_json = Path(GROK_AUTH_HOST_PATH) / "auth.json"
         if auth_json.exists():

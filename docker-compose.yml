@@ -350,9 +350,11 @@ services:
       # SuperGrok auth — mount the host ~/.grok at the SAME host path the
       # orchestrator passes to each Grok agent's `-v`, so its auth.json exists()
       # check passes here AND the agent bind resolves on the host. One canonical
-      # var for source AND target (they must be equal in docker-in-docker); `grok
-      # login` on the host writes auth.json (auto-refreshing). Read-only.
-      - ${ROBOCO_HOST_GROK_DIR:-/home/renzof/.grok}:${ROBOCO_HOST_GROK_DIR:-/home/renzof/.grok}:ro
+      # var for source AND target (they must be equal in docker-in-docker).
+      # Read-WRITE: the orchestrator auto-refreshes the ~6h token in place
+      # (grok_auth.refresh_if_stale) so agents never mount a dead credential;
+      # each agent's own auth.json mount stays read-only.
+      - ${ROBOCO_HOST_GROK_DIR:-/home/renzof/.grok}:${ROBOCO_HOST_GROK_DIR:-/home/renzof/.grok}
       # Shared config directory for MCP configs (writable)
       - ${ROBOCO_DATA_DIR:-./data}/mcp-configs:/app/mcp-configs
       # Generated prompts directory - composed at runtime from layers

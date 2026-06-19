@@ -27,6 +27,19 @@ if ! ( cd /app && python -m roboco.agent_sdk.prompt_guard "${ROBOCO_INITIAL_PROM
   exit 1
 fi
 
+# Auth fail-fast guard. The SuperGrok token (~/.grok/auth.json, mounted read-only)
+# has a ~6h TTL; on an expired/missing token headless grok does NOT refresh — it
+# hangs forever at an interactive "Waiting for authorization..." prompt, which
+# reads as a silent zombie container. The orchestrator refreshes the host token
+# on a loop; this is the in-container backstop: exit 78 (EX_CONFIG) immediately
+# so _handle_stopped_container surfaces it, instead of hanging for hours.
+if ! ( cd /app && python -m roboco.llm.providers.grok_auth --check ); then
+  echo "[grok] auth token missing or expired — refusing to run (would hang at" \
+    "the login prompt). Refresh ~/.grok/auth.json (orchestrator auto-refresh or" \
+    "'grok login' on the host)." >&2
+  exit 78
+fi
+
 # Run the agent. The prompt comes from an env var (never an untrusted argv
 # positional). `< /dev/null` keeps the headless run from blocking on stdin. We
 # do NOT `exec`: the script regains control to inspect the result + exit code.

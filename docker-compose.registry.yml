@@ -242,8 +242,10 @@ services:
       - ${CLAUDE_AUTH_DIR:-${HOME}/.claude}:/root/.claude
       # SuperGrok auth — mount host ~/.grok at the SAME host path the orchestrator
       # hands each Grok agent's `-v`, so its auth.json exists() check passes here
-      # AND the agent bind resolves on the host. `grok login` on the host. RO.
-      - ${ROBOCO_HOST_GROK_DIR:-${HOME}/.grok}:${ROBOCO_HOST_GROK_DIR:-${HOME}/.grok}:ro
+      # AND the agent bind resolves on the host. Read-WRITE: the orchestrator
+      # auto-refreshes the ~6h token in place (grok_auth.refresh_if_stale) so
+      # agents never mount a dead credential; the agent's own mount stays RO.
+      - ${ROBOCO_HOST_GROK_DIR:-${HOME}/.grok}:${ROBOCO_HOST_GROK_DIR:-${HOME}/.grok}
       - ${ROBOCO_DATA_DIR:-./data}/mcp-configs:/app/mcp-configs
       - ${ROBOCO_DATA_DIR:-./data}/prompts-generated:/app/prompts-generated
       - ${ROBOCO_DATA_DIR:-./data}/agent-settings:/app/agent-settings

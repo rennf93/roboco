@@ -6596,11 +6596,43 @@ Start now: evidence(task_id="{task_id}")
                         timeout=self.dispatcher_interval,
                     )
                 self._dispatch_wake.clear()
+                await self._refresh_grok_auth()
                 await self._dispatch_all_work()
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error("Dispatcher loop error", error=str(e))
+
+    async def _refresh_grok_auth(self) -> None:
+        """Keep the host SuperGrok token live so grok agents never mount a dead one.
+
+        The grok access token has a ~6h server-set TTL and headless grok cannot
+        self-refresh — on an expired token it hangs at an interactive login
+        prompt. The per-agent mount is read-only, so the orchestrator refreshes
+        the host ``auth.json`` itself (refresh-token grant) before expiry; agents
+        then mount a fresh credential. Best-effort, throttled, and serial (run
+        once per dispatch tick) so concurrent refreshes can't rotate the
+        refresh-token out from under each other. Never breaks the loop.
+        """
+        now = datetime.now(UTC)
+        next_check = getattr(self, "_grok_auth_next_check", None)
+        if next_check is not None and now < next_check:
+            return
+        self._grok_auth_next_check = now + timedelta(seconds=60)
+        try:
+            from roboco.llm.providers import grok_auth
+            from roboco.llm.providers.grok import GROK_AUTH_HOST_PATH
+
+            auth_path = Path(GROK_AUTH_HOST_PATH) / "auth.json"
+            status = await asyncio.to_thread(grok_auth.refresh_if_stale, auth_path)
+            if status == "refreshed":
+                logger.info("grok auth token refreshed")
+            elif status == "failed":
+                logger.warning(
+                    "grok auth refresh failed; agents may hit an expired token"
+                )
+        except Exception as exc:
+            logger.error("grok auth refresh hook error", error=str(exc))
 
     async def _reconcile_orphan_claims_on_startup(self) -> None:
         """Roll back tasks left in CLAIMED/IN_PROGRESS without a branch.
