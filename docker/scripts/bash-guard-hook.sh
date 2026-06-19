@@ -10,7 +10,16 @@
 #
 # Claude Code passes the PreToolUse event on stdin as JSON:
 #   { "tool_name": "Bash", "tool_input": { "command": "...", "description": "..." } }
-# Exit 0 = allow. Exit 2 = deny with message on stdout.
+# The grok CLI passes the same event with camelCase keys (toolName / toolInput);
+# the extractor accepts either, so the one tested script guards both runtimes.
+# Exit 0 = allow. Exit 2 = deny.
+#
+# ROBOCO_GUARD_SKIP_GIT=1 skips the git-ops category. The grok path sets it because
+# grok handles git via NATIVE --deny rules, which deny GRACEFULLY (the agent gets
+# a permission error and recovers) — whereas a grok hook deny CANCELS the whole
+# run. So grok keeps git on --deny (operational reflex → recoverable) and uses
+# this hook only for the exfil categories (no legit use → a hard cancel is the
+# right response). Claude has no such --deny, so it keeps the git block here.
 #
 # Deny categories:
 #   - Network git ops (require token injection only done by the MCP layer)
@@ -27,7 +36,7 @@ cmd=$(printf '%s' "$input" | python3 -c '
 import json, sys
 try:
     d = json.loads(sys.stdin.read())
-    ti = d.get("tool_input", {}) or {}
+    ti = d.get("tool_input") or d.get("toolInput") or {}
     print(ti.get("command", ""))
 except Exception:
     print("")
@@ -36,7 +45,7 @@ except Exception:
 
 low=$(printf '%s' "$cmd" | tr "[:upper:]" "[:lower:]")
 
-# Skeletonize the command for the git-ops check ONLY (#165): strip heredoc
+# Skeletonize the command for the git-ops check ONLY: strip heredoc
 # bodies and echo/printf literal arguments. Those are data the shell writes
 # to a file, never commands the shell executes — so a README/heredoc that
 # merely documents `git commit` must not be mistaken for invoking git.
@@ -82,7 +91,10 @@ fi
 git_skel_low=$(printf '%s' "$git_skel" | tr "[:upper:]" "[:lower:]")
 
 # --- git network / auth ops ---------------------------------------------------
-if echo "$git_skel_low" | grep -qE '(^|[[:space:];&|])git[[:space:]]+(fetch|pull|push|clone|remote|ls-remote|checkout|commit|merge|rebase|reset|cherry-pick|revert|tag[[:space:]]+-d|update-ref|reflog[[:space:]]+delete)'; then
+# Skipped on grok (handled by native --deny so a blocked git op is recoverable,
+# not a run-cancelling hook deny). See the header.
+if [[ "${ROBOCO_GUARD_SKIP_GIT:-}" != "1" ]] && \
+   echo "$git_skel_low" | grep -qE '(^|[[:space:];&|])git[[:space:]]+(fetch|pull|push|clone|remote|ls-remote|checkout|commit|merge|rebase|reset|cherry-pick|revert|tag[[:space:]]+-d|update-ref|reflog[[:space:]]+delete)'; then
     echo "Denied: shell git for network / auth / branch-mutating ops is blocked." >&2
     echo "Use the verb listed in your role's State→Verb table (e.g. commit, complete, i_am_done)." >&2
     exit 2
@@ -119,20 +131,20 @@ fi
 #   - scheme-less:        `curl roboco-orchestrator:8000/api`
 #   - protocol-relative:  `curl //roboco-orchestrator:8000/api`
 #   - any flag ordering:  `curl -s -X POST http://localhost:8000/x -d ...`
-# Interpreter / library-driven HTTP is handled by the #175 rule below.
+# Interpreter / library-driven HTTP is handled by the rule below.
 # KNOWN GAP (still out of scope here):
 #   - Variable expansion: `URL=http://orchestrator/x; curl $URL` — the guard
 #     sees `curl $URL`, not the expanded URL, so this slips through. The
-#     X-Agent-Role check (task 4) is the second gate.
+#     server-side X-Agent-Role check is the second gate.
 if echo "$low" | grep -qE '(^|[[:space:];&|])(curl|wget|http|https|httpie)[[:space:]]' && \
    echo "$low" | grep -qE '((http|https)://)?/?(roboco-[a-z0-9_-]+|localhost|127\.0\.0\.1|0\.0\.0\.0)[:/]'; then
     echo "Denied: internal API calls bypass the gateway. Use the MCP verbs (roboco-flow / roboco-do / roboco-git-readonly / roboco-optimal / roboco-docs) — they route through the orchestrator with the right auth and tracing." >&2
     exit 2
 fi
 
-# --- interpreter/library HTTP to an internal host (task #175) -----------------
+# --- interpreter/library HTTP to an internal host ----------------------------
 # The curl/wget rule above only fires when the FIRST token is an HTTP CLI.
-# smoke-17 showed an agent reach the orchestrator with forged X-Agent-*
+# A live run showed an agent reach the orchestrator with forged X-Agent-*
 # identity headers via:
 #   python3 << 'EOF'
 #   import httpx
@@ -140,7 +152,7 @@ fi
 #              headers={"X-Agent-ID": "<self>", "X-Agent-Role": "developer"})
 #   EOF
 # The binary is python3 (slips the CLI check) and it imports httpx, not
-# roboco.* (slips the #164 import check). Close it language-agnostically:
+# roboco.* (slips the roboco-internals import check). Close it language-agnostically:
 # deny when the command pairs an HTTP-client token with a forbidden
 # internal host. The whole command (heredoc body included) is in $low,
 # consistent with the curl/wget sibling above. Legitimate shell work does
@@ -200,7 +212,7 @@ if echo "$low" | grep -qE '(^|[[:space:];&|])(python3?|perl|node|ruby|awk|sed)[[
     exit 2
 fi
 
-# --- gateway-internals import bypass (task #164) ------------------------------
+# --- gateway-internals import bypass ------------------------------------------
 # An agent must reach the orchestrator ONLY through its manifest-bound MCP
 # verbs. Importing the server package directly
 #   uv run python3 -c "from roboco.mcp.flow_server import open_pr; open_pr(...)"
@@ -217,7 +229,7 @@ if echo "$low" | grep -qE '(python3?|uv[[:space:]]+run|poetry[[:space:]]+run|pip
     exit 2
 fi
 
-# --- agent-identity forgery (task #164) --------------------------------------
+# --- agent-identity forgery --------------------------------------------------
 # ROBOCO_AGENT_ID is the agent's identity. It is injected by the orchestrator
 # at spawn and the agent process must never rewrite it — doing so lets one
 # agent act as another (forged audit trail, bypassed ownership checks). No

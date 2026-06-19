@@ -51,39 +51,53 @@ GROK_AGENTS_PATH = Path.home() / ".grok" / "AGENTS.md"
 SYSTEM_PROMPT_PATH = Path(
     os.environ.get("ROBOCO_SYSTEM_PROMPT", "/app/system-prompt.md")
 )
+# grok loads blocking ``PreToolUse`` hooks from ``$HOME/.grok/hooks/*.json``
+# (always trusted). We install the SAME bash-guard the Claude path runs as a
+# PreToolUse hook to get its full exfil-pattern analysis (credential files,
+# /proc/environ, internal-API forgery, identity forgery, …) — far beyond the
+# glob ``--deny`` rules. It runs with ``ROBOCO_GUARD_SKIP_GIT=1``: a grok hook
+# deny CANCELS the run, which is the right response for an exfil attempt (no
+# legit use) but wrong for a routine git op, so git stays on the graceful
+# ``--deny`` rules. The script is baked into the agent base image.
+GROK_HOOKS_DIR = Path.home() / ".grok" / "hooks"
+BASH_GUARD_HOOK = os.environ.get(
+    "ROBOCO_BASH_GUARD_HOOK", "/app/scripts/bash-guard-hook.sh"
+)
 # The entrypoint reads the computed flags (one token per line) from this file.
 GROK_ARGS_PATH = Path(os.environ.get("ROBOCO_GROK_ARGS_FILE", "/tmp/roboco-grok-args"))
 
 # Hard ceiling on agentic turns (loop guard). Operator-tunable.
 _DEFAULT_MAX_TURNS = 200
 
-# Roles that request reduced reasoning (grok bills reasoning at the output rate,
-# so it dominates cost). Code-quality roles keep full reasoning; coordination /
-# docs / board roles ask for ``low``.
-_MINIMAL_REASONING_ROLES = frozenset(
-    {
-        "cell_pm",
-        "main_pm",
-        "documenter",
-        "product_owner",
-        "head_marketing",
-        "auditor",
-        "prompter",
-        "secretary",
-    }
-)
+# Reasoning effort is left at grok's model default for every role (parity with
+# the Claude path, which sets no per-role thinking budget). An operator can still
+# trade quality for cost across the fleet with ``ROBOCO_GROK_REASONING_EFFORT``.
 _FULL_REASONING_OVERRIDES = frozenset({"default", "full", "none", ""})
 
 # Roles that legitimately run a shell. Review / board roles never do.
 _BASH_ROLES = frozenset({"developer", "documenter", "cell_pm", "main_pm"})
+
+# The intake interviewer reads the codebase to draft a task and may fan out
+# exploration to subagents (parity with the Claude intake's ``Task`` allowance);
+# every other role drives work through the gateway verbs, never CLI subagents.
+_SUBAGENT_ALLOWED_ROLES = frozenset({"prompter"})
 
 # Grok CLI tool IDs (from the CLI's --tools/--disallowed-tools reference).
 _TOOL_SHELL = "run_terminal_cmd"
 _TOOL_EDIT = "search_replace"
 _TOOL_SUBAGENT = "Agent"
 
-# Raw git mutation is gateway-mediated (the commit / open_pr verbs); agents never
-# push or commit via raw bash. Denied for every bash-capable role.
+# Raw git network / branch / history mutation is gateway-mediated (the commit /
+# open_pr verbs); agents never run these via raw bash. Denied for every
+# bash-capable role — the same set the Claude bash-guard blocks.
+#
+# Git ops are GRACEFUL native ``--deny`` denials (a blocked command returns a
+# permission error to the model, which adapts to the gateway verb — the run
+# continues), deliberately NOT routed through the bash-guard hook: verified live
+# that a grok hook deny CANCELS the whole run, which would turn one reflexive git
+# op into a dropped task. The exfil categories (credential reads, /proc/environ,
+# internal-API forgery, …) DO run through the hook (see GROK_HOOKS_DIR) — there a
+# hard cancel is the right response, since no legitimate agent triggers them.
 _GIT_MUTATE_DENY = (
     "Bash(git push*)",
     "Bash(git fetch*)",
@@ -92,6 +106,13 @@ _GIT_MUTATE_DENY = (
     "Bash(git commit*)",
     "Bash(git remote*)",
     "Bash(git reset*)",
+    "Bash(git ls-remote*)",
+    "Bash(git checkout*)",
+    "Bash(git merge*)",
+    "Bash(git rebase*)",
+    "Bash(git cherry-pick*)",
+    "Bash(git revert*)",
+    "Bash(git update-ref*)",
 )
 _DESTRUCTIVE_DENY = ("Bash(rm -rf*)",)
 
@@ -126,7 +147,9 @@ def _allows_write(role: str) -> bool:
 
 def _disallowed_tools(role: str) -> str:
     """Comma-separated ``--disallowed-tools`` value for a role."""
-    tools = [_TOOL_SUBAGENT]
+    tools: list[str] = []
+    if role not in _SUBAGENT_ALLOWED_ROLES:
+        tools.append(_TOOL_SUBAGENT)
     if role not in _BASH_ROLES:
         tools.append(_TOOL_SHELL)
     if not _allows_write(role):
@@ -141,18 +164,17 @@ def _deny_rules(role: str) -> list[str]:
     return [*_DESTRUCTIVE_DENY, *_GIT_MUTATE_DENY]
 
 
-def _effort_for(role: str) -> str | None:
-    """Resolve ``--effort`` for a role; ``None`` keeps grok's default reasoning.
+def _effort() -> str | None:
+    """Resolve ``--effort`` from the fleet override; ``None`` = grok's default.
 
-    A global ``ROBOCO_GROK_REASONING_EFFORT`` override wins over the per-role
-    default (``default`` / ``full`` / empty disables the reduction).
+    No per-role reduction (parity with Claude). A global
+    ``ROBOCO_GROK_REASONING_EFFORT`` lets an operator dial cost vs quality;
+    ``default`` / ``full`` / empty keeps the model default.
     """
     override = os.environ.get("ROBOCO_GROK_REASONING_EFFORT", "").strip()
-    if override:
-        return (
-            None if override.lower() in _FULL_REASONING_OVERRIDES else override.lower()
-        )
-    return "low" if role in _MINIMAL_REASONING_ROLES else None
+    if override and override.lower() not in _FULL_REASONING_OVERRIDES:
+        return override.lower()
+    return None
 
 
 def grok_cli_args_for_role(
@@ -160,14 +182,17 @@ def grok_cli_args_for_role(
 ) -> list[str]:
     """The per-role ``grok -p`` flag tokens (excludes ``-p``/model/cwd).
 
-    Order: tool removal, turn cap, deny rules, then effort. Each token is a
-    separate list element so callers can splice them without shell quoting.
+    Order: tool removal, web off, turn cap, deny rules, then effort. Each token is
+    a separate list element so callers can splice them without shell quoting.
     """
     args: list[str] = ["--disallowed-tools", _disallowed_tools(role)]
+    # No direct web for any role (parity with the Claude path's tool set); the
+    # roles that get web reach it through the gated roboco-search MCP server.
+    args += ["--disable-web-search"]
     args += ["--max-turns", str(max_turns)]
     for rule in _deny_rules(role):
         args += ["--deny", rule]
-    effort = _effort_for(role)
+    effort = _effort()
     if effort:
         args += ["--effort", effort]
     return args
@@ -207,8 +232,50 @@ def write_agents_md(
     return True
 
 
+def bash_guard_hook_config(hook_path: str = BASH_GUARD_HOOK) -> dict[str, Any]:
+    """The grok hooks JSON installing the bash-guard as a blocking PreToolUse hook.
+
+    Matcher ``Bash`` covers grok's ``run_terminal_command`` alias too. The hook
+    runs with ``ROBOCO_GUARD_SKIP_GIT=1`` so it only blocks the exfil categories
+    (git ops stay on the graceful ``--deny`` rules); it denies via exit 2.
+    """
+    return {
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": "Bash",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": hook_path,
+                            "env": {"ROBOCO_GUARD_SKIP_GIT": "1"},
+                        }
+                    ],
+                }
+            ]
+        }
+    }
+
+
+def write_grok_hooks(
+    *, hooks_dir: Path = GROK_HOOKS_DIR, hook_path: str = BASH_GUARD_HOOK
+) -> bool:
+    """Install the bash-guard PreToolUse hook into ``~/.grok/hooks/`` (best-effort).
+
+    Skips writing (returns False) when the guard script is absent, so a missing
+    hook never fails the render.
+    """
+    if not Path(hook_path).is_file():
+        return False
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    (hooks_dir / "roboco-bash-guard.json").write_text(
+        json.dumps(bash_guard_hook_config(hook_path), indent=2), encoding="utf-8"
+    )
+    return True
+
+
 def main() -> int:
-    """Entrypoint: write ``~/.grok/config.toml`` + AGENTS.md + the per-role args."""
+    """Entrypoint: write ``~/.grok/config.toml`` + AGENTS.md + hooks + per-role args."""
     agent_id = os.environ.get("ROBOCO_AGENT_ID", "")
     mcp_path = os.environ.get("ROBOCO_MCP_CONFIG", "/app/mcp-config.json")
     try:
@@ -223,6 +290,7 @@ def main() -> int:
         render_config_toml(_load_mcp_config(mcp_path)), encoding="utf-8"
     )
     write_agents_md()
+    write_grok_hooks()
     GROK_ARGS_PATH.write_text(
         "\n".join(grok_cli_args(agent_id, max_turns=max_turns)) + "\n", encoding="utf-8"
     )
