@@ -94,8 +94,4 @@ ENV PATH="/app/.venv/bin:$PATH" \
 
 EXPOSE 9000
 
-# Start SDK server (agent_sdk.server) in background for all containers.
-# This covers one-shot paths (including Grok one-shot containers) that do not
-# go through Claude Code's SessionStart hook. The hook script is idempotent
-# (checks /health) and exits quickly; briefing cat is a no-op if absent.
-ENTRYPOINT ["bash", "-c", "/app/scripts/sdk-startup-hook.sh >/tmp/sdk-startup.log 2>&1 & exec claude \"$@\"", "claude"]
+ENTRYPOINT ["claude"]

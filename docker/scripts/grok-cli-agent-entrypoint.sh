@@ -13,50 +13,14 @@
 # Grok one-shot containers (which bypass Claude's SessionStart hook).
 set -euo pipefail
 
-SDK_PORT="${ROBOCO_SDK_PORT:-9000}"
-SDK_URL="http://localhost:${SDK_PORT}"
-
-# --- SDK server bring-up (before grok -p; Claude parity) -------------------
-# Mirrors sdk-startup-hook.sh and the proven opencode-era Grok SDK start.
-# Use bare `python` (from the image venv on PATH) — never `uv run` here:
-# the entrypoint cwd may be the workspace clone; uv run would discover the
-# project and re-sync the drifted lock (stall + 350MB download). The venv
-# python is the baked one with all deps.
-if ! curl -sf -m 2 "${SDK_URL}/health" >/dev/null 2>&1; then
-    echo "[SDK] Starting agent_sdk.server for Grok on ${SDK_PORT}..."
-    nohup python -m roboco.agent_sdk.server > /tmp/sdk-server.log 2>&1 &
-    SDK_PID=$!
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
-        if curl -sf -m 2 "${SDK_URL}/health" >/dev/null 2>&1; then
-            echo "[SDK] Ready (PID: ${SDK_PID})"
-            break
-        fi
-        sleep 0.5
-    done
-    if ! curl -sf -m 2 "${SDK_URL}/health" >/dev/null 2>&1; then
-        echo "[SDK] Still starting in background (PID: ${SDK_PID}, see /tmp/sdk-server.log)" >&2
-    fi
-fi
-
-# Reset budget/terminal counters at start of session (parity with hook).
-curl -sf -m 2 -X POST "${SDK_URL}/budget/reset" >/dev/null 2>&1 || true
-
-# --- Briefing + PreCompact recovery (replicate sdk-startup-hook effects) ---
-# For Grok one-shot (bypasses Claude SessionStart), cat briefing and any
-# precompact recovery file so task context + ACs are visible in logs and
-# any stdout capture (parity for post-mortems / debug; system prompt carries
-# the role blueprint).
-AGENT_ID="${ROBOCO_AGENT_ID:-unknown}"
-PRECOMPACT_FILE="/tmp/roboco-precompact-${AGENT_ID}.md"
-BRIEFING_FILE="/app/briefing.md"
-if [[ -s "$PRECOMPACT_FILE" ]]; then
-    echo "### Resumed from compact"
-    cat "$PRECOMPACT_FILE"
-    echo
-fi
-if [[ -s "$BRIEFING_FILE" ]]; then
-    cat "$BRIEFING_FILE"
-fi
+# Invoke shared sdk-startup-hook.sh early (before any grok -p).
+# - starts agent_sdk.server (background, idempotent /health check) if needed
+# - resets budget counters
+# - prints precompact + briefing to stdout (visible for capture/post-mortems)
+# This triggers the canonical hook script (AC2), ensures /health ready before
+# grok (AC1), and reuses the exact logic without duplication or side-effects
+# on Claude paths (which rely on SessionStart + direct ["claude"] entrypoint).
+/app/scripts/sdk-startup-hook.sh
 
 # Render ~/.grok/config.toml (the MCP gateway) + the per-role grok flags. Run
 # from /app so `python -m` resolves the INSTALLED roboco package: dev/doc/qa
