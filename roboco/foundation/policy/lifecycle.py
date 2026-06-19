@@ -702,6 +702,9 @@ ROLE_TEAM_RULES: dict[str, str | None] = {
     "head-marketing": None,
     "auditor": None,
     "pr-reviewer-1": None,
+    "be-pr-reviewer": "backend",
+    "fe-pr-reviewer": "frontend",
+    "ux-pr-reviewer": "ux_ui",
     "ceo": None,
 }
 

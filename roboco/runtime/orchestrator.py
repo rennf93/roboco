@@ -127,8 +127,13 @@ AGENT_IMAGES: dict[str, str] = {
     "auditor": "roboco-agent-pm",
     # PR Reviewer — read-only reviewer (diff via API, grep, post one
     # change-request; never runs code). Its own image for parity with the other
-    # agents; built FROM the base, no extra toolchain.
+    # agents; built FROM the base, no extra toolchain. The three cell reviewers
+    # are additional instances of the same role and reuse the same image (as
+    # be-dev-1/-2 share one dev image) — the in-path gate adds no new image.
     "pr-reviewer-1": "roboco-agent-pr-reviewer",
+    "be-pr-reviewer": "roboco-agent-pr-reviewer",
+    "fe-pr-reviewer": "roboco-agent-pr-reviewer",
+    "ux-pr-reviewer": "roboco-agent-pr-reviewer",
     # Intake — persistent Agent-SDK driver, not a one-shot `claude -p`.
     INTAKE_AGENT_ID: "roboco-agent-prompter",
     # Secretary — persistent Agent-SDK driver with gated CEO authority.
