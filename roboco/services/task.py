@@ -6688,6 +6688,21 @@ class TaskService(BaseService):
         await self.session.flush()
         return await self.fail_qa(task_id, notes=notes, agent_role="qa")
 
+    async def _revision_pm_for_task(self, task: TaskTable) -> AgentTable | None:
+        """The PM who owns an assembled task's revision.
+
+        Cell PM for a cell team (the cell→root level), else the Main PM (the
+        root→master level). Used by pr_fail so the in-path reviewer's rejection
+        lands on whoever assembles the work.
+        """
+        try:
+            team = Team(task.team) if task.team else None
+        except ValueError:
+            team = None
+        if team in (Team.BACKEND, Team.FRONTEND, Team.UX_UI):
+            return await self.cell_pm_for_team(team)
+        return await self.main_pm_agent()
+
     async def pr_gate_claim(
         self, reviewer_agent_id: UUID, task_id: UUID
     ) -> TaskTable | None:
@@ -6793,8 +6808,12 @@ class TaskService(BaseService):
             task.dev_notes = _append_capped(task.dev_notes, issue_block)
         if notes:
             task.qa_notes = _append_capped(task.qa_notes, "[PR REVIEW]\n" + notes)
-        task.assigned_to = None
-        task.claimed_by = None
+        # Hand the failed assembled task to its PM to revise (cell PM for a cell
+        # team, Main PM for the root); the revision dispatcher re-spawns whoever
+        # owns a needs_revision task. Fall back to unassigned if no PM resolves.
+        pm = await self._revision_pm_for_task(task)
+        task.assigned_to = cast("Any", pm.id) if pm is not None else None
+        task.claimed_by = cast("Any", pm.id) if pm is not None else None
         task.active_claimant_id = cast("Any", None)
         self._validate_and_set_status(
             task,
