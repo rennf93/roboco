@@ -139,3 +139,6 @@ jobs:
 
       - name: Type-check
         run: pnpm exec tsc --noEmit
+
+      - name: Test (vitest + coverage)
+        run: pnpm test
