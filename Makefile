@@ -300,6 +300,18 @@ gate:
 	@uv run mypy roboco/ tests/
 	@uv run xenon --max-absolute B --max-modules A --max-average A roboco/
 
+# Panel (Next.js) fast gate: lint + type-check + vitest.
+# Run locally before submitting panel changes; mirrors the CI panel job exactly.
+.PHONY: panel-gate
+panel-gate:
+	@cd panel && pnpm lint
+	@cd panel && pnpm exec tsc --noEmit
+	@cd panel && pnpm test
+
+# Full CI-equivalent panel gate (alias for panel-gate).
+.PHONY: panel-quality
+panel-quality: panel-gate
+
 # Run all analysis tools
 .PHONY: analysis
 analysis: deptry
