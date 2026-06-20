@@ -715,6 +715,11 @@ class AgentOrchestrator:
         # Tests bypass `__init__` via `__new__` and set _claim_heartbeat_ttl
         # directly; production never uses _task_svc from __init__.
         self._claim_heartbeat_ttl: int = settings.stale_claim_reap_seconds
+        # Short debounce for closure respawn of a recently-paused parent —
+        # NOT the reaper window. See _is_recently_paused.
+        self._closure_recently_paused_ttl: int = (
+            settings.pm_closure_recently_paused_seconds
+        )
         # Longer threshold before a wedged (ACTIVE-yet-idle) GROK container is
         # killed + evicted so the reaper can release its task; see
         # _maybe_kill_wedged_grok.
@@ -7484,24 +7489,35 @@ Start now: evidence(task_id="{task_id}")
         return None
 
     def _is_recently_paused(self, task: dict[str, Any]) -> bool:
-        """A paused task whose heartbeat is fresher than the stale cutoff.
+        """A paused task whose heartbeat is fresher than the closure debounce.
 
         Closes the ``i_am_idle`` vs closure-respawn race:
         ``i_am_idle`` auto-pauses in-flight tasks and then sets the agent
         IDLE. If the dispatcher ticks between those two writes it sees a
         paused parent and would spawn the closure PM against a session
         that is mid-shutdown. A fresh ``last_heartbeat_at`` (newer than
-        ``settings.claim_stale_seconds``) is the signal that the agent
-        was alive moments ago and a respawn now would race the existing
-        session. Genuinely-stale paused tasks (or tasks with no heartbeat
-        recorded) fall through and follow the regular closure path.
+        ``settings.pm_closure_recently_paused_seconds``) is the signal that
+        the agent was alive moments ago and a respawn now would race the
+        existing session. Genuinely-stale paused tasks (or tasks with no
+        heartbeat recorded) fall through and follow the regular closure path.
+
+        This debounce is deliberately SHORT (a few dispatch ticks). It is
+        NOT the reaper window (``_claim_heartbeat_ttl`` /
+        ``stale_claim_reap_seconds``, 600s default and 1800s on the NAS):
+        binding it there delayed every cell/main closure by up to 10-30
+        minutes, because a paused parent's heartbeat reflects when the PM
+        last *worked*, so a PM that worked right up to idle leaves a fresh
+        heartbeat. The live-session case is already covered separately by
+        the ``_is_agent_active`` check in ``_maybe_spawn_pm_closure``.
         """
         if task.get("status") != "paused":
             return False
         last_hb = self._coerce_heartbeat(task.get("last_heartbeat_at"))
         if last_hb is None:
             return False
-        cutoff = datetime.now(UTC) - timedelta(seconds=self._claim_heartbeat_ttl)
+        cutoff = datetime.now(UTC) - timedelta(
+            seconds=self._closure_recently_paused_ttl
+        )
         return last_hb > cutoff
 
     def _closure_pm_for_team(self, team: str | None) -> str:

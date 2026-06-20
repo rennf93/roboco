@@ -16,9 +16,12 @@ container for that PM here would race the in-flight session that just
 called i_am_idle.
 
 The gate: skip closure spawn when the task is paused AND
-``last_heartbeat_at`` is newer than ``settings.claim_stale_seconds``.
-A genuinely-stale paused task (heartbeat older than the cutoff) still
-gets the closure spawn — the gate is about *recency*, not paused-ness.
+``last_heartbeat_at`` is newer than the SHORT closure debounce
+(``settings.pm_closure_recently_paused_seconds``) — NOT the much longer
+reaper window (``stale_claim_reap_seconds``), which would strand closures
+for 10-30 minutes. A genuinely-stale paused task (heartbeat older than the
+debounce) still gets the closure spawn — the gate is about *recency*, not
+paused-ness.
 """
 
 from __future__ import annotations
@@ -34,10 +37,18 @@ from roboco.runtime.orchestrator import AgentOrchestrator
 
 
 def _make_orch() -> AgentOrchestrator:
-    """Bypass __init__ — tests don't need a full DI graph."""
+    """Bypass __init__ — tests don't need a full DI graph.
+
+    Mirror production wiring: the reaper window (``_claim_heartbeat_ttl``) is
+    the long ``stale_claim_reap_seconds``, while the closure debounce is the
+    short, dedicated ``pm_closure_recently_paused_seconds`` — they are NOT the
+    same constant (binding closure to the reaper window stranded closures for
+    up to 10-30 minutes).
+    """
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
     orch._instances = {}
-    orch._claim_heartbeat_ttl = settings.claim_stale_seconds
+    orch._claim_heartbeat_ttl = settings.stale_claim_reap_seconds
+    orch._closure_recently_paused_ttl = settings.pm_closure_recently_paused_seconds
     return orch
 
 
@@ -55,8 +66,9 @@ def _paused_parent(*, last_heartbeat_at: datetime | str | None) -> dict[str, Any
 async def test_skips_spawn_when_paused_and_recently_touched_datetime() -> None:
     """Recent heartbeat + status=paused = agent just called i_am_idle.
 
-    Last heartbeat is 1 second ago, claim_stale_seconds default is 180s.
-    The task is fresh — closure spawn must not fire.
+    Last heartbeat is 1 second ago, well inside the closure debounce
+    (pm_closure_recently_paused_seconds). The task is fresh — closure spawn
+    must not fire (it would race the still-shutting-down session).
     """
     orch = _make_orch()
     fresh = datetime.now(UTC) - timedelta(seconds=1)
@@ -95,13 +107,15 @@ async def test_skips_spawn_when_paused_and_recently_touched_iso_string() -> None
 
 @pytest.mark.asyncio
 async def test_spawns_when_paused_but_heartbeat_is_stale() -> None:
-    """Heartbeat older than claim_stale_seconds = genuinely-stale agent.
+    """Heartbeat older than the closure debounce = genuinely-stale agent.
 
     The closure dispatcher should still spawn here — the i_am_idle race
     window has long since closed.
     """
     orch = _make_orch()
-    stale = datetime.now(UTC) - timedelta(seconds=settings.claim_stale_seconds + 30)
+    stale = datetime.now(UTC) - timedelta(
+        seconds=settings.pm_closure_recently_paused_seconds + 30
+    )
     task = _paused_parent(last_heartbeat_at=stale)
     descendant = {"id": str(uuid4()), "status": "completed"}
 
@@ -120,6 +134,50 @@ async def test_spawns_when_paused_but_heartbeat_is_stale() -> None:
             "_build_pm_closure_prompt",
             return_value="prompt",
         ),
+        patch.object(orch, "_task_git_context", return_value=MagicMock()),
+        patch.object(orch, "spawn_agent", new=AsyncMock()) as spawn,
+    ):
+        await orch._maybe_spawn_pm_closure(client, task)
+
+    spawn.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_spawns_when_paused_past_closure_debounce_but_within_reaper_window() -> (
+    None
+):
+    """Closure must NOT wait the reaper window (600s / 1800s on the NAS).
+
+    A parent paused ~2 min ago — older than the short closure debounce
+    (``pm_closure_recently_paused_seconds``, 45s) but far younger than the
+    reaper window (``stale_claim_reap_seconds``) — must be respawned for
+    closure now. Binding the debounce to the reaper window stranded the
+    whole chain for up to 10-30 minutes after the PM idled.
+    """
+    orch = _make_orch()
+    # Guard against regression: the debounce must be much shorter than the
+    # reaper window, else this scenario can't exist.
+    assert (
+        settings.pm_closure_recently_paused_seconds < settings.stale_claim_reap_seconds
+    )
+    paused_2min = datetime.now(UTC) - timedelta(
+        seconds=settings.pm_closure_recently_paused_seconds + 75
+    )
+    task = _paused_parent(last_heartbeat_at=paused_2min)
+    descendant = {"id": str(uuid4()), "status": "completed"}
+
+    client = AsyncMock()
+
+    with (
+        patch.object(
+            orch,
+            "_fetch_all_descendants",
+            new=AsyncMock(return_value=[descendant]),
+        ),
+        patch.object(orch, "_already_promoted_for_closure", return_value=False),
+        patch.object(orch, "_is_agent_active", return_value=False),
+        patch.object(orch, "_auto_resume_paused_parent", new=AsyncMock()),
+        patch.object(orch, "_build_pm_closure_prompt", return_value="prompt"),
         patch.object(orch, "_task_git_context", return_value=MagicMock()),
         patch.object(orch, "spawn_agent", new=AsyncMock()) as spawn,
     ):
