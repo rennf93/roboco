@@ -10,7 +10,7 @@ Contributions require a signed **Contributor License Agreement** (`CLA.md`), aut
 
 ## Project Overview
 
-**RoboCo** is an AI Agentic Company - a virtual organization of 22 AI agents + 1 human CEO, designed to operate as a complete software development workforce. The system implements a structured organizational hierarchy with formal communication protocols, task management, and quality controls.
+**RoboCo** is an AI Agentic Company - a virtual organization of 25 AI agents + 1 human CEO, designed to operate as a complete software development workforce. The system implements a structured organizational hierarchy with formal communication protocols, task management, and quality controls.
 
 ### Core Architecture
 
@@ -19,7 +19,7 @@ CEO (Renzo - Human)
     |
     +-- Intake (on-demand interviewer: chats only with the CEO to draft a task)
     +-- Secretary (on-demand chief-of-staff: reads company state, runs gated CEO directives)
-    +-- PR Reviewer (read-only: reviews inbound external/fork + internal PRs, posts on the PR itself)
+    +-- PR Reviewer (read-only: the main reviewer — inbound external/fork + internal PRs, and the root→master in-path gate)
     |
     +-- Board (3 agents)
          +-- Product Owner
@@ -28,9 +28,9 @@ CEO (Renzo - Human)
               |
               +-- Main PM (coordinates all cells)
                    |
-                   +-- Backend Cell (5 agents: 2 Devs, 1 QA, 1 PM, 1 Documenter)
-                   +-- Frontend Cell (5 agents: 2 Devs, 1 QA, 1 PM, 1 Documenter)
-                   +-- UX/UI Cell (5 agents: 2 Devs, 1 QA, 1 PM, 1 Documenter)
+                   +-- Backend Cell (6 agents: 2 Devs, 1 QA, 1 PM, 1 Documenter, 1 PR Reviewer)
+                   +-- Frontend Cell (6 agents: 2 Devs, 1 QA, 1 PM, 1 Documenter, 1 PR Reviewer)
+                   +-- UX/UI Cell (6 agents: 2 Devs, 1 QA, 1 PM, 1 Documenter, 1 PR Reviewer)
 ```
 
 ### Hardware Infrastructure
@@ -200,6 +200,8 @@ backlog -> pending -> claimed -> in_progress -> [blocked|paused] -> verifying
                                  completed                              completed
 ```
 
+**In-path PR-review gate** (`awaiting_pr_review`): each assembled PR is reviewed before the PM merges. The cell PM's `submit_up` opens the cell→root PR and the Main PM's `submit_root` opens the root→master PR; both enter `awaiting_pr_review`, where a reviewer `pr_pass`es it on to `awaiting_pm_review` or `pr_fail`s it back to `needs_revision` — the merge-level reject the PM otherwise lacks. Leaf dev tasks and branchless coordination roots skip the gate.
+
 **States:**
 | State | Description |
 |-------|-------------|
@@ -213,6 +215,7 @@ backlog -> pending -> claimed -> in_progress -> [blocked|paused] -> verifying
 | `needs_revision` | QA or CEO requested changes |
 | `awaiting_qa` | Submitted for QA review — PR must already exist |
 | `awaiting_documentation` | Documentation phase — PR already open from pre-QA; doc writes docs |
+| `awaiting_pr_review` | In-path PR-review gate: a reviewer checks the assembled cell→root / root→master PR before the PM merges (assembled, PR-bearing tasks only) |
 | `awaiting_pm_review` | Docs complete, PM reviews + merges |
 | `awaiting_ceo_approval` | Major tasks escalated for CEO final approval |
 | `completed` | Terminal state - work done and merged |
@@ -230,6 +233,9 @@ All status transitions are validated through the enforcement layer. Key restrict
 | `awaiting_qa` → `awaiting_documentation` (pass) | QA only |
 | `awaiting_qa` → `needs_revision` (fail) | QA only |
 | `awaiting_documentation` → `awaiting_pm_review` | Documenter or Developer (parallel completion) |
+| `in_progress` → `awaiting_pr_review` (submit_up / submit_root) | PM roles (opens the assembled cell→root / root→master PR) |
+| `awaiting_pr_review` → `awaiting_pm_review` (pr_pass) | PR reviewer only |
+| `awaiting_pr_review` → `needs_revision` (pr_fail) | PR reviewer only |
 | `awaiting_pm_review` → `completed` | PM roles only |
 | `awaiting_pm_review` → `awaiting_ceo_approval` | PM roles only |
 | `awaiting_ceo_approval` → `completed/needs_revision/cancelled` | CEO only |
@@ -329,8 +335,8 @@ Each agent gets a **spawn manifest** at `/app/tool-manifest.json` listing the ve
 | qa            | `give_me_work`, `claim_review`, `pass_review`, `fail_review`, `i_am_blocked`, `resume`, `unclaim` |
 | documenter    | `give_me_work`, `claim_doc_task`, `i_documented`, `i_am_blocked`, `resume`, `unclaim`             |
 | cell_pm       | `give_me_work`, `i_will_plan`, `delegate`, `complete`, `submit_up`, `triage`, `unblock`, `escalate_up`, `reassign`, `resume`, `unclaim` |
-| main_pm       | `give_me_work`, `i_will_plan`, `delegate`, `complete`, `triage`, `triage_all`, `unblock`, `escalate_up`, `escalate_to_ceo`, `resume`, `unclaim` |
-| pr_reviewer   | `give_me_work`, `claim_pr_review`, `post_pr_review` (read-only reviewer; inbound external/fork PRs first) |
+| main_pm       | `give_me_work`, `i_will_plan`, `delegate`, `complete`, `submit_root`, `triage`, `triage_all`, `unblock`, `escalate_up`, `escalate_to_ceo`, `resume`, `unclaim` |
+| pr_reviewer   | `give_me_work`, `claim_pr_review`, `post_pr_review` (inbound external/fork PRs), `claim_gate_review`, `pr_pass`, `pr_fail` (in-path assembled-PR gate) |
 | product_owner | `triage`, `escalate_to_ceo`                                                                      |
 | head_marketing| `triage`, `escalate_to_ceo`                                                                      |
 | auditor       | `triage` (read-only — no `say`/`dm`)                                                             |

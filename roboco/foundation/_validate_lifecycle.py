@@ -160,17 +160,20 @@ def _check_claim_rules_status_coverage() -> None:
 
 
 def _check_self_review_symmetry() -> None:
-    """qa_pass / qa_fail / docs_complete must agree on self_review_block."""
+    """Review actions must agree on self_review_block.
+
+    qa_pass / qa_fail / docs_complete and the in-path PR-review gate's
+    pr_pass / pr_fail are all reviewer sign-offs — they must all block
+    self-review identically so no path lets an author approve their own work.
+    """
     from roboco.foundation.policy.lifecycle import _ATOMIC_ACTIONS
 
-    qp = _ATOMIC_ACTIONS["qa_pass"].self_review_block
-    qf = _ATOMIC_ACTIONS["qa_fail"].self_review_block
-    dc = _ATOMIC_ACTIONS["docs_complete"].self_review_block
-    if not (qp == qf == dc):
-        raise LifecycleSpecError(
-            f"self_review_block asymmetry:"
-            f" qa_pass={qp}, qa_fail={qf}, docs_complete={dc}"
-        )
+    flags = {
+        name: _ATOMIC_ACTIONS[name].self_review_block
+        for name in ("qa_pass", "qa_fail", "docs_complete", "pr_pass", "pr_fail")
+    }
+    if len(set(flags.values())) != 1:
+        raise LifecycleSpecError(f"self_review_block asymmetry: {flags}")
 
 
 def _check_role_team_rules_slugs() -> None:

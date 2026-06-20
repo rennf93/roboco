@@ -16,6 +16,7 @@ from roboco.api.schemas.v1.flow import (
     IAmIdleRequest,
     IWillPlanRequest,
     ResumeRequest,
+    SubmitRootRequest,
     TriageRequest,
     UnblockRequest,
     UnclaimRequest,
@@ -97,6 +98,17 @@ async def triage_all(
     choreographer: _ChoreographerDep,
 ) -> dict:
     env = await choreographer.triage_all(x_agent_id)
+    return envelope_to_response(env, request)
+
+
+@router.post("/submit_root")
+async def submit_root(
+    request: Request,
+    body: SubmitRootRequest,
+    x_agent_id: _AgentIdHeader,
+    choreographer: _ChoreographerDep,
+) -> dict:
+    env = await choreographer.submit_root(x_agent_id, body.task_id, body.notes)
     return envelope_to_response(env, request)
 
 

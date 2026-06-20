@@ -7,10 +7,13 @@
 
 | Verb | Body schema |
 |------|-------------|
+| `claim_gate_review` | `claim_gate_review(task_id: UUID)` |
 | `claim_pr_review` | `claim_pr_review(task_id: UUID)` |
 | `give_me_work` | `give_me_work()` |
 | `i_am_idle` | `i_am_idle()` |
 | `post_pr_review` | `post_pr_review(task_id: UUID, body: str, event: str = 'REQUEST_CHANGES')` |
+| `pr_fail` | `pr_fail(task_id: UUID, issues: list[str])` |
+| `pr_pass` | `pr_pass(task_id: UUID, notes: str)` |
 
 ### Content (do) tools
 

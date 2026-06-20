@@ -60,7 +60,9 @@ delegate(parent_task_id, title, description, assigned_to, team, task_type,
                                 # it to the parent ACs it is responsible for
 reassign(task_id, assigned_to)  # move a subtask to a different agent
 unblock(task_id)                # blocked -> in_progress (PM only)
-submit_up(task_id, notes)       # open cell->root PR; -> awaiting_pm_review
+submit_up(task_id, notes)       # open cell->root PR; -> awaiting_pr_review
+                                # (the cell PR reviewer gates it; after pr_pass
+                                #  the same Cell PM completes + merges)
 complete(task_id, notes)        # awaiting_pm_review -> completed (merges leaf PR)
 escalate_up(task_id, reason)    # escalate to your escalation target
 ```
@@ -71,16 +73,19 @@ After `i_will_plan` and each `delegate`, the envelope includes a coverage view o
 
 ## Main PM flow
 
-The Main PM shares most Cell PM verbs (`i_will_plan`, `delegate`, `complete`, `unblock`, `triage`, `escalate_up`), **adds** the two below, and — unlike a Cell PM — has **no** `submit_up` or `reassign` (there is no PM above it to submit to; it completes or escalates the root directly):
+The Main PM shares most Cell PM verbs (`i_will_plan`, `delegate`, `complete`, `unblock`, `triage`, `escalate_up`), **adds** the verbs below, and — unlike a Cell PM — has **no** `submit_up` or `reassign`. Its bubble-up verb is `submit_root` (the root analogue of the Cell PM's `submit_up`):
 
 ```python
 triage_all()                    # list actionable tasks across all teams
+submit_root(task_id, notes)     # open root->master PR; -> awaiting_pr_review
+                                # (the main PR reviewer gates it; after pr_pass,
+                                #  complete escalates to the CEO)
 escalate_to_ceo(task_id, reason)
                                 # awaiting_pm_review -> awaiting_ceo_approval
 give_me_work()                  # Main PM may also pull work directly
 ```
 
-`complete` for the Main PM merges the **root** PR. Only the CEO merges to `master`; agents stop at `escalate_to_ceo`.
+For a code root the Main PM **must** `submit_root` first — that opens the root→master PR and enters the in-path gate (`awaiting_pr_review`); only after the main reviewer `pr_pass`es it does `complete` escalate to the CEO. A branchless coordination root (product fan-out, no repo) skips the gate and is completed/escalated directly. The Main PM never merges to `master` — `complete` escalates and only the CEO merges the root→master PR.
 
 ## Board flow (Product Owner / Head of Marketing)
 
@@ -111,6 +116,18 @@ i_am_idle()
 ```
 
 The PR Reviewer reviews inbound external/fork (and, behind a flag, internal) PRs the org did not open. It is read-only: no `commit`/`open_pr`/`merge`, no `say`/`dm` — the change-request is posted server-side on the PR itself, and the CEO decides Supersede/Dismiss from the PR Review Queue.
+
+The same role also runs the **in-path PR-review gate** on the org's own assembled delivery PRs — the merge-level review before the PM merges:
+
+```python
+claim_gate_review(task_id)      # claim an awaiting_pr_review task; returns the assembled diff
+pr_pass(task_id, notes)         # assembled PR is correct -> awaiting_pm_review (the PM merges)
+pr_fail(task_id, issues)        # send it back -> needs_revision, like a QA fail
+```
+
+Both verdicts are also posted on the assembled PR itself as a GitHub review (server-side, bot account) so the decision is visible on the PR the PM merges: `pr_pass` → APPROVE, `pr_fail` → REQUEST_CHANGES — except the root→master PR, which only ever gets a plain COMMENT (only the CEO acts on `master`).
+
+A cell reviewer (be/fe/ux-pr-reviewer) reviews its cell's assembled cell→root PR; `pr-reviewer-1` reviews the root→master PR for the cross-cell integration seam, before the CEO sees it.
 
 ## Cancel
 

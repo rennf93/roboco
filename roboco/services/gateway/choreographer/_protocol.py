@@ -63,6 +63,9 @@ class ChoreographerHelpers:
     ) -> dict[str, Any]:
         raise NotImplementedError
 
+    async def _project_slug_for(self, t: Any) -> str | None:
+        raise NotImplementedError
+
     @staticmethod
     def _with_briefing(
         env: Envelope,

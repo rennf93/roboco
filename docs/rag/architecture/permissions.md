@@ -15,7 +15,7 @@ What each role can do in the system.
 | (read-only reviewer) | pr_reviewer |
 | (human-only) | prompter, secretary |
 
-`pr_reviewer` is a board-adjacent, read-only role (QA level): it claims and posts inbound-PR reviews (`claim_pr_review` / `post_pr_review`) but creates, assigns, completes, and notifies nothing. `prompter` (intake) and `secretary` are **human-only** — they chat with the CEO and have only `note` + `evidence`, with no task or notification permissions; they don't appear in the action tables below.
+`pr_reviewer` is a read-only role (QA level): the main reviewer (`pr-reviewer-1`) is board-adjacent and the three cell reviewers are team-scoped. It claims and posts inbound-PR reviews (`claim_pr_review` / `post_pr_review`) and runs the in-path assembled-PR gate (`claim_gate_review` / `pr_pass` / `pr_fail`), but creates, assigns, merges, and notifies nothing. `prompter` (intake) and `secretary` are **human-only** — they chat with the CEO and have only `note` + `evidence`, with no task or notification permissions; they don't appear in the action tables below.
 
 ## Task Permissions
 

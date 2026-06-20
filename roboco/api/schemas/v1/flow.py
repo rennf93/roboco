@@ -135,6 +135,20 @@ class PostPrReviewRequest(BaseModel):
     event: str = "REQUEST_CHANGES"
 
 
+class ClaimGateReviewRequest(BaseModel):
+    task_id: UUID
+
+
+class PrPassRequest(BaseModel):
+    task_id: UUID
+    notes: str = Field(..., min_length=1)
+
+
+class PrFailRequest(BaseModel):
+    task_id: UUID
+    issues: list[str] = Field(..., min_length=1)
+
+
 class ClaimDocTaskRequest(BaseModel):
     task_id: UUID
 
@@ -281,5 +295,10 @@ class DelegateRequest(BaseModel):
 
 
 class SubmitUpRequest(BaseModel):
+    task_id: UUID
+    notes: str = Field(..., min_length=1)
+
+
+class SubmitRootRequest(BaseModel):
     task_id: UUID
     notes: str = Field(..., min_length=1)

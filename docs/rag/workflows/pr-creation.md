@@ -49,14 +49,14 @@ Task transitions to `awaiting_pm_review` when both are true.
 
 ## PM Merges via `complete`
 
-After `awaiting_pm_review`, the Cell PM calls `complete(task_id, notes)`. The choreographer:
+An assembled parent reaches `awaiting_pm_review` only after the in-path gate: the Cell PM's `submit_up` opens the cell→root PR and enters `awaiting_pr_review`, where the cell PR reviewer `pr_pass`es it. The Cell PM then calls `complete(task_id, notes)`. The choreographer:
 
 1. Verifies all subtasks are in a terminal state
 2. Verifies the PR is reviewable
 3. Merges the leaf PR into the parent branch (squash by default)
 4. Transitions the task to `completed`
 
-For the root parent, **Main PM**'s `complete` opens the master PR and escalates to CEO via `escalate_to_ceo` semantics.
+For the root parent, **Main PM**'s `submit_root` opens the root→master PR and enters the same gate; after the main reviewer `pr_pass`es it, the Main PM's `complete` escalates to the CEO (it does **not** merge). Only the CEO merges the root→master PR.
 
 There is no `roboco_git_merge_pr` MCP tool.
 

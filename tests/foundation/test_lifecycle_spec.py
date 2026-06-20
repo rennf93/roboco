@@ -55,6 +55,7 @@ def test_status_enum_has_every_pre_gateway_status() -> None:
         "awaiting_qa",
         "needs_revision",
         "awaiting_documentation",
+        "awaiting_pr_review",
         "awaiting_pm_review",
         "awaiting_ceo_approval",
         "completed",

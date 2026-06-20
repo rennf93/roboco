@@ -4512,14 +4512,25 @@ class Choreographer:
     async def _submit_up_ownership_guard(
         self, pm_agent_id: UUID, task_id: UUID, t: Any, notes: str
     ) -> Envelope | None:
-        """Role + assignment + notes-length guards for submit_up."""
+        """Role + assignment + notes-length guards shared by submit_up + submit_root.
+
+        Both callers run the spec gate (``can_invoke_intent``) first, which
+        already restricts submit_up→cell_pm and submit_root→main_pm, so this
+        guard must accept either PM role — a hardcoded cell_pm-only check would
+        reject the Main PM's submit_root and deadlock root closure (submit_root
+        and complete then point at each other). The check stays as a
+        defense-in-depth reject of any non-PM actor that reaches here.
+        """
         from roboco.config import settings as roboco_settings
 
         agent = await self.task.agent_for(pm_agent_id)
-        if agent is None or agent.role != "cell_pm":
+        if agent is None or agent.role not in ("cell_pm", "main_pm"):
             return Envelope.not_authorized(
-                message="submit_up is reserved for cell_pm",
-                remediate="main_pm should call complete on root tasks instead",
+                message="submit_up / submit_root are reserved for PM roles",
+                remediate=(
+                    "only a cell PM (submit_up) or main PM (submit_root)"
+                    " may bubble work up"
+                ),
                 context_briefing=await self._briefing_for(pm_agent_id, task_id),
             )
         if t.assigned_to != pm_agent_id:
@@ -4811,13 +4822,25 @@ class Choreographer:
                 context_briefing=await self._briefing_for(pm_agent_id, task_id),
             )
         if str(t.status) != "awaiting_pm_review":
+            # An in_progress cell task must enter the in-path gate first:
+            # submit_up opens the cell→root PR and moves it to
+            # awaiting_pr_review, then the cell reviewer pr_passes it to
+            # awaiting_pm_review where complete merges. Name the verb so the
+            # cell PM isn't left guessing (the parallel of the main PM's
+            # submit_root steer).
+            gate_hint = (
+                "open the cell→root PR and enter review first:"
+                " submit_up(task_id, notes='...'). After the cell reviewer"
+                " pr_passes it, complete merges the cell→root PR."
+                if str(t.status) == "in_progress"
+                else "this task is not ready for completion."
+            )
             return Envelope.invalid_state(
                 message=(
                     f"task {task_id} is in {t.status}, expected awaiting_pm_review"
                 ),
                 remediate=(
-                    "this task is not ready for completion."
-                    + await self._own_review_hint(pm_agent_id, task_id)
+                    gate_hint + await self._own_review_hint(pm_agent_id, task_id)
                 ),
                 context_briefing=await self._briefing_for(pm_agent_id, task_id),
             )
@@ -5049,6 +5072,96 @@ class Choreographer:
             return
         await self.task.reassign(parent_task_id, pm_agent.id)
 
+    async def submit_root(
+        self, main_pm_agent_id: UUID, task_id: UUID, notes: str
+    ) -> Envelope:
+        """Main PM opens the root→master PR and enters the in-path review gate.
+
+        The root analogue of the cell PM's submit_up: the spec gate (main_pm +
+        in_progress) runs first, then the same preflight guard (ownership, notes
+        length, journal:decision, subtasks-terminal, branch present). Then
+        ``VerbRunner.run_intent("submit_root", ...)`` opens the root→master PR
+        (the ``create_root_pr`` pre-side-effect) and transitions in_progress →
+        awaiting_pr_review. The main reviewer then reviews the assembled
+        root→master diff; after pr_pass, ``complete`` escalates to the CEO.
+        """
+        t = await self.task.get(task_id)
+        briefing = await self._briefing_for(
+            main_pm_agent_id, task_id, task=t, include_ac_coverage=True
+        )
+        if t is None:
+            return await self._emit_rejection(
+                Envelope.not_found(message=f"task {task_id} not found"),
+                agent_id=main_pm_agent_id,
+                task_id=task_id,
+                verb="submit_root",
+            )
+        agent = await self.task.agent_for(main_pm_agent_id)
+        role_str = str(agent.role) if agent is not None else "main_pm"
+        try:
+            role = spec_module.Role(role_str)
+        except ValueError:
+            return await self._emit_rejection(
+                Envelope.not_authorized(
+                    message=f"unknown role '{role_str}'",
+                    remediate="role is not declared in the lifecycle spec",
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
+                agent_id=main_pm_agent_id,
+                task_id=task_id,
+                verb="submit_root",
+            )
+        spec_ctx = spec_module.Context(
+            actor_id=main_pm_agent_id,
+            actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            notes=notes,
+        )
+        decision = spec_module.can_invoke_intent(role, "submit_root", t, spec_ctx)
+        if not decision.allowed:
+            return await self._emit_rejection(
+                Envelope.from_decision(decision, briefing=briefing).with_introspection(
+                    task=t, role=role_str
+                ),
+                agent_id=main_pm_agent_id,
+                task_id=task_id,
+                verb="submit_root",
+            )
+        # Same preflight as submit_up — ownership + notes-length +
+        # journal:decision + subtasks-terminal + branch-present. submit_root's
+        # tracing requirements mirror submit_up's, so the shared guard applies.
+        guard = await self._submit_up_guard(main_pm_agent_id, task_id, t, notes)
+        if guard is not None:
+            guard.with_introspection(task=t, role=role_str)
+            return await self._emit_rejection(
+                guard,
+                agent_id=main_pm_agent_id,
+                task_id=task_id,
+                verb="submit_root",
+            )
+        runner = self._verb_runner()
+        try:
+            t = await runner.run_intent("submit_root", t, agent, spec_ctx)
+        except Exception as exc:
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=f"verb runner failed: {exc}",
+                    remediate=(
+                        "ensure all subtasks are terminal + the branch exists,"
+                        " then retry submit_root"
+                    ),
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
+                agent_id=main_pm_agent_id,
+                task_id=task_id,
+                verb="submit_root",
+            )
+        return Envelope.ok(
+            status=str(t.status),
+            task_id=str(task_id),
+            next=spec_module._INTENT_VERBS["submit_root"].next_hint(t),
+            context_briefing=briefing,
+        ).with_introspection(task=t, role=role_str)
+
     async def _main_pm_complete_guard(
         self, main_pm_agent_id: UUID, root_task_id: UUID, t: Any, notes: str
     ) -> Envelope | None:
@@ -5072,19 +5185,35 @@ class Choreographer:
                     main_pm_agent_id, root_task_id
                 ),
             )
-        # Accept in_progress too. A root resumed from paused (its
-        # subtasks all done) sits in in_progress — there is no submit_up for
-        # roots to move it to awaiting_pm_review. main_pm_complete itself
-        # opens the root→master PR and walks it through awaiting_pm_review
-        # before escalating; the CEO is the root's reviewer.
-        if str(t.status) not in ("awaiting_pm_review", "in_progress"):
+        # A code root must pass the in-path PR-review gate first: submit_root
+        # opens the root→master PR and moves it in_progress → awaiting_pr_review,
+        # then the main reviewer pr_passes it to awaiting_pm_review. So complete
+        # accepts only awaiting_pm_review for a code root. A branchless
+        # coordination root (product fan-out, no repo/PR) skips the gate, so it
+        # may still be walked from in_progress here.
+        root_is_branchless = not bool(t.branch_name)
+        allowed_statuses = (
+            ("awaiting_pm_review", "in_progress")
+            if root_is_branchless
+            else ("awaiting_pm_review",)
+        )
+        if str(t.status) not in allowed_statuses:
+            gate_hint = (
+                "this task is not ready for main-PM completion."
+                if root_is_branchless
+                else (
+                    "open the root→master PR and enter review first:"
+                    " submit_root(task_id, notes='...'). After the main reviewer"
+                    " pr_passes it, complete escalates to the CEO."
+                )
+            )
             return Envelope.invalid_state(
                 message=(
                     f"task {root_task_id} is in {t.status}, expected"
-                    " awaiting_pm_review or in_progress"
+                    f" {' or '.join(allowed_statuses)}"
                 ),
                 remediate=(
-                    "this task is not ready for main-PM completion."
+                    gate_hint
                     + await self._own_review_hint(main_pm_agent_id, root_task_id)
                 ),
                 context_briefing=await self._briefing_for(
@@ -5144,44 +5273,36 @@ class Choreographer:
                 verb="main_pm_complete",
             )
 
-        needs_pr = t.pr_number is None
-        if not needs_pr:
-            current_target = await self.git.pr_target(t.pr_number)
-            needs_pr = current_target != "master"
-        if needs_pr:
-            await self.git.create_pr(t.branch_name, parent="master", is_root_pr=True)
-
-        # escalate_to_ceo requires source=awaiting_pm_review, but a root
-        # resumed from paused is in_progress and nothing else moves it there
-        # (submit_up is cell-PM-only). The root→master PR now exists, so walk
-        # the root through awaiting_pm_review here. Uses the TaskService
-        # transition directly (no gateway team-match) — submit_pm_review's
-        # gates (in_progress + branch + pr_created + subtasks terminal) all
-        # hold at this point.
-        refreshed = await self.task.get(root_task_id)
-        if refreshed is not None and str(refreshed.status) == "in_progress":
-            advanced = await self.task.submit_pm_review(
-                main_pm_agent_id, root_task_id, notes
-            )
-            if advanced is None:
-                return await self._emit_rejection(
-                    Envelope.invalid_state(
-                        message=(
-                            "could not move root to awaiting_pm_review for CEO"
-                            " escalation"
-                        ),
-                        remediate=(
-                            "ensure the root→master PR is open and all subtasks"
-                            " are terminal, then retry complete"
-                        ),
-                        context_briefing=await self._briefing_for(
-                            main_pm_agent_id, root_task_id
-                        ),
-                    ).with_introspection(task=refreshed, role="main_pm"),
-                    agent_id=main_pm_agent_id,
-                    task_id=root_task_id,
-                    verb="main_pm_complete",
+        # A branchless coordination root (product fan-out, no repo/PR) skips the
+        # in-path gate: it never went through submit_root / pr_pass, so walk it
+        # in_progress → awaiting_pm_review here, exactly as before. A code root
+        # reaches this point already in awaiting_pm_review — submit_root opened
+        # the root→master PR and the main reviewer pr_passed it — so no PR
+        # creation or status walk is needed.
+        if not bool(t.branch_name):
+            refreshed = await self.task.get(root_task_id)
+            if refreshed is not None and str(refreshed.status) == "in_progress":
+                advanced = await self.task.submit_pm_review(
+                    main_pm_agent_id, root_task_id, notes
                 )
+                if advanced is None:
+                    return await self._emit_rejection(
+                        Envelope.invalid_state(
+                            message=(
+                                "could not move coordination root to"
+                                " awaiting_pm_review for CEO escalation"
+                            ),
+                            remediate=(
+                                "ensure all subtasks are terminal, then retry complete"
+                            ),
+                            context_briefing=await self._briefing_for(
+                                main_pm_agent_id, root_task_id
+                            ),
+                        ).with_introspection(task=refreshed, role="main_pm"),
+                        agent_id=main_pm_agent_id,
+                        task_id=root_task_id,
+                        verb="main_pm_complete",
+                    )
 
         # Use kwargs — service signature is (task_id, agent_role="cell_pm",
         # notes=None). Positional was passing agent_id as task_id and the

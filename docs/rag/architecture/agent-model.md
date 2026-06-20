@@ -24,7 +24,7 @@
 | `developer` | Writes code |
 | `qa` | Reviews and tests |
 | `documenter` | Writes documentation |
-| `pr_reviewer` | Read-only reviewer of inbound external/fork + internal PRs (agent `pr-reviewer-1`) |
+| `pr_reviewer` | Read-only reviewer: inbound external/fork + internal PRs, and the in-path assembled-PR gate (`pr-reviewer-1` main + `be/fe/ux-pr-reviewer` per cell) |
 | `prompter` | On-demand intake interviewer, human-only (agent `intake-1`) |
 | `secretary` | On-demand chief-of-staff, human-only (agent `secretary-1`) |
 | `system` | Internal orchestrator |
@@ -33,9 +33,9 @@
 
 | Team | Agents |
 |------|--------|
-| `backend` | be-pm, be-dev-*, be-qa, be-doc |
-| `frontend` | fe-pm, fe-dev-*, fe-qa, fe-doc |
-| `ux_ui` | ux-pm, ux-dev-*, ux-qa, ux-doc |
+| `backend` | be-pm, be-dev-*, be-qa, be-doc, be-pr-reviewer |
+| `frontend` | fe-pm, fe-dev-*, fe-qa, fe-doc, fe-pr-reviewer |
+| `ux_ui` | ux-pm, ux-dev-*, ux-qa, ux-doc, ux-pr-reviewer |
 | `main_pm` | main-pm |
 | `board` | product-owner, head-marketing, auditor |
 | `marketing` | head-marketing |

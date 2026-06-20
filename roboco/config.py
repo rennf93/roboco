@@ -646,6 +646,24 @@ class Settings(BaseSettings):
         ge=60,
         description="Claim heartbeat staleness threshold (seconds)",
     )
+    # Debounce for respawning a PM to CLOSE a paused parent once its subtasks
+    # are terminal. It guards only the narrow i_am_idle race (the parent
+    # auto-pauses, then the agent is marked IDLE + its container tears down) —
+    # the live-session case is already covered by the `_is_agent_active` check.
+    # It must therefore be SHORT (a few dispatch ticks), NOT the multi-minute
+    # reaper window: a paused parent's heartbeat reflects when the PM last
+    # worked, so a PM that worked right up to idle leaves a fresh heartbeat and
+    # any large window strands the whole chain until it expires. Was wrongly
+    # bound to stale_claim_reap_seconds (600s default, 1800s on the NAS), which
+    # delayed every cell/main closure by up to 10-30 minutes.
+    pm_closure_recently_paused_seconds: int = Field(
+        default=45,
+        ge=5,
+        description=(
+            "Debounce (seconds) before respawning a PM to close a recently "
+            "paused parent; override via ROBOCO_PM_CLOSURE_RECENTLY_PAUSED_SECONDS"
+        ),
+    )
     # Reaper window for stale-claim detection. Dogfooding reaped agents at
     # ~180s while they were actively
     # retrying — LLM inference + retry loops routinely exceed 3 min

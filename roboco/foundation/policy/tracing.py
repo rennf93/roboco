@@ -265,6 +265,10 @@ VERB_REQUIREMENTS: dict[str, frozenset[Requirement]] = {
     ),
     # PR reviewer posts its change-request — must record a learning entry first.
     "post_pr_review": frozenset({Requirement.JOURNAL_LEARNING}),
+    # In-path PR-review gate: the reviewer records a learning entry before
+    # passing or failing the assembled PR (parity with post_pr_review).
+    "pr_pass": frozenset({Requirement.JOURNAL_LEARNING}),
+    "pr_fail": frozenset({Requirement.JOURNAL_LEARNING}),
     # Doc submit.
     "i_documented": frozenset(
         {
@@ -275,6 +279,16 @@ VERB_REQUIREMENTS: dict[str, frozenset[Requirement]] = {
     ),
     # PM submit-up — adds JOURNAL_REFLECT (pre-gateway required decision AND reflect).
     "submit_up": frozenset(
+        {
+            Requirement.SUBTASKS_TERMINAL,
+            Requirement.JOURNAL_DECISION,
+            Requirement.JOURNAL_REFLECT,
+            Requirement.NOTES_MIN_CHARS,
+        }
+    ),
+    # Main PM submit-root — root analogue of submit_up (opens the root→master
+    # PR + enters the gate). Same accountability set.
+    "submit_root": frozenset(
         {
             Requirement.SUBTASKS_TERMINAL,
             Requirement.JOURNAL_DECISION,
@@ -317,6 +331,8 @@ VERBS_WITHOUT_TRACING: frozenset[str] = frozenset(
         "claim_review",
         # claim_pr_review's tracing applies on post_pr_review.
         "claim_pr_review",
+        # claim_gate_review's tracing applies on pr_pass / pr_fail.
+        "claim_gate_review",
         # claim_doc_task's tracing applies on i_documented.
         "claim_doc_task",
         # open_pr is a mechanical push+open; preconditions are inline.

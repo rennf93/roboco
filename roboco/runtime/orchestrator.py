@@ -127,8 +127,13 @@ AGENT_IMAGES: dict[str, str] = {
     "auditor": "roboco-agent-pm",
     # PR Reviewer — read-only reviewer (diff via API, grep, post one
     # change-request; never runs code). Its own image for parity with the other
-    # agents; built FROM the base, no extra toolchain.
+    # agents; built FROM the base, no extra toolchain. The three cell reviewers
+    # are additional instances of the same role and reuse the same image (as
+    # be-dev-1/-2 share one dev image) — the in-path gate adds no new image.
     "pr-reviewer-1": "roboco-agent-pr-reviewer",
+    "be-pr-reviewer": "roboco-agent-pr-reviewer",
+    "fe-pr-reviewer": "roboco-agent-pr-reviewer",
+    "ux-pr-reviewer": "roboco-agent-pr-reviewer",
     # Intake — persistent Agent-SDK driver, not a one-shot `claude -p`.
     INTAKE_AGENT_ID: "roboco-agent-prompter",
     # Secretary — persistent Agent-SDK driver with gated CEO authority.
@@ -710,6 +715,11 @@ class AgentOrchestrator:
         # Tests bypass `__init__` via `__new__` and set _claim_heartbeat_ttl
         # directly; production never uses _task_svc from __init__.
         self._claim_heartbeat_ttl: int = settings.stale_claim_reap_seconds
+        # Short debounce for closure respawn of a recently-paused parent —
+        # NOT the reaper window. See _is_recently_paused.
+        self._closure_recently_paused_ttl: int = (
+            settings.pm_closure_recently_paused_seconds
+        )
         # Longer threshold before a wedged (ACTIVE-yet-idle) GROK container is
         # killed + evicted so the reaper can release its task; see
         # _maybe_kill_wedged_grok.
@@ -2566,6 +2576,7 @@ class AgentOrchestrator:
         role_mismatch: dict[str, str | set[str]] = {
             "awaiting_qa": "qa",
             "awaiting_documentation": "documenter",
+            "awaiting_pr_review": "pr_reviewer",
             "awaiting_pm_review": {"cell_pm", "main_pm"},
             "awaiting_ceo_approval": "ceo",
             # Dev-owned states — only developer/documenter may claim or
@@ -6084,6 +6095,8 @@ Start by:
             candidates = [f"{prefix}-doc"]
         elif role == "pm":
             candidates = [f"{prefix}-pm"]
+        elif role == "pr_reviewer":
+            candidates = [f"{prefix}-pr-reviewer"]
         else:
             return None
 
@@ -6893,6 +6906,7 @@ Start now: evidence(task_id="{task_id}")
                 ("dev_work", self._dispatch_dev_work(client)),
                 ("qa_work", self._dispatch_qa_work(client)),
                 ("pr_review_work", self._dispatch_pr_review_work(client)),
+                ("pr_gate_work", self._dispatch_pr_gate_work(client)),
                 ("doc_work", self._dispatch_doc_work(client)),
                 ("pm_review_work", self._dispatch_pm_review_work(client)),
                 ("marketing_work", self._dispatch_marketing_work(client)),
@@ -7410,20 +7424,21 @@ Start now: evidence(task_id="{task_id}")
     async def _dispatch_revision_coordination_roots(
         self, client: httpx.AsyncClient
     ) -> None:
-        """Re-spawn the owning PM for a CEO-rejected coordination root.
+        """Re-spawn the owning PM for a PM-owned needs_revision task.
 
-        A coordination root (team=main_pm, product-linked, no repo) the CEO sends
-        back lands in ``needs_revision``. The dev dispatcher skips it (not a cell
-        team) and the closure path only handles paused parents, so without this
-        it would sit in needs_revision forever — the deadlock. Respawn its PM so
-        it re-coordinates the revision. Cell/code needs_revision tasks are left
-        to the dev dispatcher; this handles only coordination roots.
+        Two cases land a task in ``needs_revision`` owned by a PM rather than a
+        developer: a CEO-rejected coordination root (team=main_pm, product-linked,
+        no repo), and a gate-failed assembled task (a cell→root or root→master PR
+        the in-path reviewer sent back via pr_fail). The dev dispatcher only
+        spawns developers and the closure path only handles paused parents, so
+        without this such a task would sit in needs_revision forever — the
+        deadlock. The PM-ownership filter below scopes this to exactly those: a
+        leaf dev revision stays owned by its developer and is left to the dev
+        dispatcher.
         """
         tasks = await self._fetch_tasks(client, "needs_revision")
         for task in tasks:
             if self._is_task_handled_this_tick(task.get("id")):
-                continue
-            if not _is_coordination_task(task):
                 continue
             owner = task.get("assigned_to") or task.get("claimed_by")
             agent_slug = self._resolve_agent_slug(owner) if owner else None
@@ -7474,24 +7489,35 @@ Start now: evidence(task_id="{task_id}")
         return None
 
     def _is_recently_paused(self, task: dict[str, Any]) -> bool:
-        """A paused task whose heartbeat is fresher than the stale cutoff.
+        """A paused task whose heartbeat is fresher than the closure debounce.
 
         Closes the ``i_am_idle`` vs closure-respawn race:
         ``i_am_idle`` auto-pauses in-flight tasks and then sets the agent
         IDLE. If the dispatcher ticks between those two writes it sees a
         paused parent and would spawn the closure PM against a session
         that is mid-shutdown. A fresh ``last_heartbeat_at`` (newer than
-        ``settings.claim_stale_seconds``) is the signal that the agent
-        was alive moments ago and a respawn now would race the existing
-        session. Genuinely-stale paused tasks (or tasks with no heartbeat
-        recorded) fall through and follow the regular closure path.
+        ``settings.pm_closure_recently_paused_seconds``) is the signal that
+        the agent was alive moments ago and a respawn now would race the
+        existing session. Genuinely-stale paused tasks (or tasks with no
+        heartbeat recorded) fall through and follow the regular closure path.
+
+        This debounce is deliberately SHORT (a few dispatch ticks). It is
+        NOT the reaper window (``_claim_heartbeat_ttl`` /
+        ``stale_claim_reap_seconds``, 600s default and 1800s on the NAS):
+        binding it there delayed every cell/main closure by up to 10-30
+        minutes, because a paused parent's heartbeat reflects when the PM
+        last *worked*, so a PM that worked right up to idle leaves a fresh
+        heartbeat. The live-session case is already covered separately by
+        the ``_is_agent_active`` check in ``_maybe_spawn_pm_closure``.
         """
         if task.get("status") != "paused":
             return False
         last_hb = self._coerce_heartbeat(task.get("last_heartbeat_at"))
         if last_hb is None:
             return False
-        cutoff = datetime.now(UTC) - timedelta(seconds=self._claim_heartbeat_ttl)
+        cutoff = datetime.now(UTC) - timedelta(
+            seconds=self._closure_recently_paused_ttl
+        )
         return last_hb > cutoff
 
     def _closure_pm_for_team(self, team: str | None) -> str:
@@ -8030,6 +8056,36 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 git_context=self._task_git_context(task),
             )
             break
+
+    async def _dispatch_pr_gate_work(self, client: httpx.AsyncClient) -> None:
+        """Dispatch in-path PR-review-gate tasks (awaiting_pr_review) to reviewers.
+
+        Routes by level: a cell→root task (team backend/frontend/ux_ui) goes to
+        that cell's reviewer (be/fe/ux-pr-reviewer); the root→master task goes to
+        the main reviewer (pr-reviewer-1). The reviewer claims the task itself via
+        ``claim_gate_review`` (no pre-claim — mirrors the external-PR dispatcher);
+        the ``is_agent_active`` guard + one-reviewer-per-cell prevent a
+        double-spawn, and ``spawned`` bounds each reviewer to one task per tick.
+        """
+        tasks = await self._fetch_tasks(client, "awaiting_pr_review")
+        spawned: set[str] = set()
+        for task in tasks:
+            if self._is_task_handled_this_tick(task.get("id")):
+                continue
+            team = task.get("team")
+            if team in ("backend", "frontend", "ux_ui"):
+                reviewer = self._select_agent_for_cell(team, "pr_reviewer")
+            else:
+                reviewer = "pr-reviewer-1"
+            if not reviewer or reviewer in spawned or self._is_agent_active(reviewer):
+                continue
+            spawned.add(reviewer)
+            await self.spawn_agent(
+                agent_id=reviewer,
+                task_id=task["id"],
+                initial_prompt=self._build_pr_gate_prompt(task),
+                git_context=self._task_git_context(task),
+            )
 
     async def _dispatch_doc_work(self, client: httpx.AsyncClient) -> None:
         """
@@ -9061,6 +9117,52 @@ contributor's code. Do not push to their fork. You never merge.
         event="REQUEST_CHANGES")
    — posts ONE complete review to the PR and finishes the task. Use
    event="APPROVE" only if the PR is genuinely ready as-is.
+5. i_am_idle() when done.
+"""
+
+    def _build_pr_gate_prompt(self, task: dict[str, Any]) -> str:
+        """Build the prompt for a reviewer on an in-path assembled-PR gate task."""
+        task_id = task.get("id", "unknown")
+        title = task.get("title", "Untitled")
+        team = task.get("team", "unknown")
+        pr_number = task.get("pr_number", "?")
+        pr_url = task.get("pr_url", "")
+        criteria = task.get("acceptance_criteria") or []
+        crit_block = (
+            "\n".join(f"  - {c}" for c in criteria) if criteria else "  (none recorded)"
+        )
+        return f"""\
+An assembled pull request is ready for review before the PM merges it.
+
+TASK ID: {task_id}
+TITLE: {title}
+TEAM: {team}
+ASSEMBLED PR: #{pr_number}  {pr_url}
+
+== WHAT YOU ARE REVIEWING ==
+This is the gate BEFORE the merge — the merge-level review QA does not do. You
+review the ASSEMBLED diff (the whole cell→root or root→master PR), not a single
+leaf, against the original intent and the contract between cells. The bug class
+this catches lives in the seam (e.g. a frontend that sends a string where the
+backend requires a UUID) — invisible to any single-cell QA. Read-only: you
+never push or merge.
+
+ACCEPTANCE CRITERIA (the assembled work must satisfy ALL of these):
+{crit_block}
+
+== REVIEW WORKFLOW ==
+
+1. claim_gate_review(task_id="{task_id}")
+   — claims the review; returns the assembled diff + acceptance criteria inline.
+2. Review the diff against the objective + every acceptance criterion + the
+   FE↔BE / cross-cell contract. Do not lose scope: the assembled thing must
+   actually do what was asked.
+3. note(scope="learning", task_id="{task_id}", text="<what the review surfaced>")
+   — required before you pass or fail.
+4a. pr_pass(task_id="{task_id}", notes="<how you verified the assembled work>")
+    — if correct and complete: moves it to the PM to merge.
+4b. pr_fail(task_id="{task_id}", issues=["<concrete, actionable gap>", ...])
+    — if anything is wrong: sends it back to the PM for revision, like a QA fail.
 5. i_am_idle() when done.
 """
 

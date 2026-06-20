@@ -110,6 +110,9 @@ _AGENT_PRESENTATION: dict[str, dict[str, Any]] = {
     "intake-1": {"name": "Intake"},
     "secretary-1": {"name": "Secretary"},
     "pr-reviewer-1": {"name": "PR Reviewer"},
+    "be-pr-reviewer": {"name": "Backend PR Reviewer"},
+    "fe-pr-reviewer": {"name": "Frontend PR Reviewer"},
+    "ux-pr-reviewer": {"name": "UX/UI PR Reviewer"},
 }
 
 

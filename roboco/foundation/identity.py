@@ -222,6 +222,28 @@ AGENTS: dict[str, AgentRow] = {
         Team.BOARD,
         _u("00000000-0000-0000-0004-000000000007"),
     ),
+    # In-path PR-review gate reviewers — one per cell, team-scoped so the
+    # dispatcher routes each cell's assembled cell→root PR to its own reviewer.
+    # Same PR_REVIEWER role/image as pr-reviewer-1 (which serves the root→master
+    # gate + inbound external PRs); these only ever review their cell's gate.
+    "be-pr-reviewer": AgentRow(
+        "be-pr-reviewer",
+        Role.PR_REVIEWER,
+        Team.BACKEND,
+        _u("00000000-0000-0000-0001-000000000006"),
+    ),
+    "fe-pr-reviewer": AgentRow(
+        "fe-pr-reviewer",
+        Role.PR_REVIEWER,
+        Team.FRONTEND,
+        _u("00000000-0000-0000-0002-000000000006"),
+    ),
+    "ux-pr-reviewer": AgentRow(
+        "ux-pr-reviewer",
+        Role.PR_REVIEWER,
+        Team.UX_UI,
+        _u("00000000-0000-0000-0003-000000000006"),
+    ),
 }
 
 

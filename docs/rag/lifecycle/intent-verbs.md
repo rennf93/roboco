@@ -9,6 +9,15 @@ Claim awaiting_documentation. Returns evidence inline.
 **Composes:** (no atomic actions)
 
 
+## claim_gate_review
+
+Claim an assembled-PR review task (awaiting_pr_review) WITHOUT transitioning it — mirrors QA's claim_review. The assembled diff and the parent task's acceptance criteria are returned inline.
+
+**Allowed roles:** pr_reviewer
+
+**Composes:** (no atomic actions)
+
+
 ## claim_pr_review
 
 Claim an inbound external-PR review task and start work. pending -> claimed -> in_progress.
@@ -29,7 +38,7 @@ Claim a task in awaiting_qa for review. Returns evidence inline.
 
 ## complete
 
-Cell PM merges leaf PR + transitions to completed; Main PM merges root PR + escalates to CEO.
+Cell PM merges the PR (leaf into the cell branch, or the gated cell→root PR into the root branch) + transitions to completed; Main PM escalates the root to the CEO (who merges root→master).
 
 **Allowed roles:** cell_pm, main_pm
 
@@ -174,6 +183,24 @@ Post one complete change-request to the external PR and finish the review task. 
 **Composes:** pr_review_done
 
 
+## pr_fail
+
+Fail the assembled-PR review with concrete issues. Transitions awaiting_pr_review -> needs_revision, routed back like a QA fail.
+
+**Allowed roles:** pr_reviewer
+
+**Composes:** pr_fail
+
+
+## pr_pass
+
+Pass the assembled-PR review. Transitions awaiting_pr_review -> awaiting_pm_review so the PM can merge.
+
+**Allowed roles:** pr_reviewer
+
+**Composes:** pr_pass
+
+
 ## reassign
 
 Hand a claimed/in_progress task to another developer in your own cell. The branch is keyed to the task (not the agent), so it is preserved — the new developer continues the work-in-progress. No status change.
@@ -192,13 +219,24 @@ Resume a paused task you own. paused -> in_progress.
 **Composes:** resume
 
 
+## submit_root
+
+Main PM opens the root→master PR and moves the root task to awaiting_pr_review for the main reviewer (the root analogue of the cell PM's submit_up). After pr_pass, call complete to escalate to the CEO. Only for code roots; branchless coordination roots skip the gate and complete directly.
+
+**Allowed roles:** main_pm
+
+**Composes:** submit_for_review
+
+**Pre side effects:** create_root_pr
+
+
 ## submit_up
 
-Cell PM opens the cell→root PR and moves the cell task to awaiting_pm_review. The same Cell PM then completes it.
+Cell PM opens the cell→root PR and moves the cell task into the PR-review gate (awaiting_pr_review). The cell reviewer reviews the assembled diff; after pr_pass the same Cell PM completes it.
 
 **Allowed roles:** cell_pm
 
-**Composes:** submit_pm_review
+**Composes:** submit_for_review
 
 **Pre side effects:** create_pr
 

@@ -18,6 +18,7 @@
       "pending"
     ],
     "pr_reviewer": [
+      "awaiting_pr_review",
       "pending"
     ],
     "product_owner": [],
@@ -33,6 +34,16 @@
       "composes": [],
       "description": "Claim awaiting_documentation. Returns evidence inline.",
       "name": "claim_doc_task",
+      "pre_side_effects": [],
+      "side_effects": []
+    },
+    {
+      "allowed_roles": [
+        "pr_reviewer"
+      ],
+      "composes": [],
+      "description": "Claim an assembled-PR review task (awaiting_pr_review) WITHOUT transitioning it \u2014 mirrors QA's claim_review. The assembled diff and the parent task's acceptance criteria are returned inline.",
+      "name": "claim_gate_review",
       "pre_side_effects": [],
       "side_effects": []
     },
@@ -67,7 +78,7 @@
       "composes": [
         "complete"
       ],
-      "description": "Cell PM merges leaf PR + transitions to completed; Main PM merges root PR + escalates to CEO.",
+      "description": "Cell PM merges the PR (leaf into the cell branch, or the gated cell\u2192root PR into the root branch) + transitions to completed; Main PM escalates the root to the CEO (who merges root\u2192master).",
       "name": "complete",
       "pre_side_effects": [],
       "side_effects": [
@@ -266,6 +277,30 @@
     },
     {
       "allowed_roles": [
+        "pr_reviewer"
+      ],
+      "composes": [
+        "pr_fail"
+      ],
+      "description": "Fail the assembled-PR review with concrete issues. Transitions awaiting_pr_review -> needs_revision, routed back like a QA fail.",
+      "name": "pr_fail",
+      "pre_side_effects": [],
+      "side_effects": []
+    },
+    {
+      "allowed_roles": [
+        "pr_reviewer"
+      ],
+      "composes": [
+        "pr_pass"
+      ],
+      "description": "Pass the assembled-PR review. Transitions awaiting_pr_review -> awaiting_pm_review so the PM can merge.",
+      "name": "pr_pass",
+      "pre_side_effects": [],
+      "side_effects": []
+    },
+    {
+      "allowed_roles": [
         "cell_pm"
       ],
       "composes": [],
@@ -292,12 +327,26 @@
     },
     {
       "allowed_roles": [
+        "main_pm"
+      ],
+      "composes": [
+        "submit_for_review"
+      ],
+      "description": "Main PM opens the root\u2192master PR and moves the root task to awaiting_pr_review for the main reviewer (the root analogue of the cell PM's submit_up). After pr_pass, call complete to escalate to the CEO. Only for code roots; branchless coordination roots skip the gate and complete directly.",
+      "name": "submit_root",
+      "pre_side_effects": [
+        "create_root_pr"
+      ],
+      "side_effects": []
+    },
+    {
+      "allowed_roles": [
         "cell_pm"
       ],
       "composes": [
-        "submit_pm_review"
+        "submit_for_review"
       ],
-      "description": "Cell PM opens the cell\u2192root PR and moves the cell task to awaiting_pm_review. The same Cell PM then completes it.",
+      "description": "Cell PM opens the cell\u2192root PR and moves the cell task into the PR-review gate (awaiting_pr_review). The cell reviewer reviews the assembled diff; after pr_pass the same Cell PM completes it.",
       "name": "submit_up",
       "pre_side_effects": [
         "create_pr"
@@ -439,6 +488,40 @@
       "target": "completed"
     },
     {
+      "action": "pr_pass",
+      "roles": [
+        "pr_reviewer"
+      ],
+      "source": "awaiting_pr_review",
+      "target": "awaiting_pm_review"
+    },
+    {
+      "action": "cancel",
+      "roles": [
+        "cell_pm",
+        "ceo",
+        "main_pm"
+      ],
+      "source": "awaiting_pr_review",
+      "target": "cancelled"
+    },
+    {
+      "action": "claim",
+      "roles": [
+        "pr_reviewer"
+      ],
+      "source": "awaiting_pr_review",
+      "target": "claimed"
+    },
+    {
+      "action": "pr_fail",
+      "roles": [
+        "pr_reviewer"
+      ],
+      "source": "awaiting_pr_review",
+      "target": "needs_revision"
+    },
+    {
       "action": "qa_pass",
       "roles": [
         "qa"
@@ -541,6 +624,12 @@
       "roles": null,
       "source": "in_progress",
       "target": "awaiting_pm_review"
+    },
+    {
+      "action": "submit_for_review",
+      "roles": null,
+      "source": "in_progress",
+      "target": "awaiting_pr_review"
     },
     {
       "action": "block",

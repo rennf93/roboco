@@ -47,7 +47,9 @@ There is no separate `push` step and no separate `create_pr` step. Both are side
 
 ```python
 # Cell PM completing a leaf task: merges the leaf PR.
-# Main PM completing a parent task: opens the master PR + escalates to CEO.
+# (Assembled cell→root / root→master PRs are opened by submit_up / submit_root
+#  and gated in awaiting_pr_review first.) After a code root's gate clears,
+# the Main PM's complete escalates to the CEO — the CEO merges root→master.
 complete(task_id="a1b2c3d4-...", notes="QA passed; docs complete; ready to ship.")
 ```
 

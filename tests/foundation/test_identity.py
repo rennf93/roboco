@@ -86,6 +86,9 @@ def test_agents_catalog_has_all_seed_slugs() -> None:
         "intake-1",
         "secretary-1",
         "pr-reviewer-1",
+        "be-pr-reviewer",
+        "fe-pr-reviewer",
+        "ux-pr-reviewer",
     }
     actual = set(identity.AGENTS.keys())
     assert actual == expected_slugs, f"agent catalog drift: {actual ^ expected_slugs}"
@@ -207,7 +210,9 @@ def test_slugs_for_role_system_returns_singleton() -> None:
 
 def test_slugs_for_team_backend() -> None:
     backend = identity.slugs_for_team(identity.Team.BACKEND)
-    assert backend == frozenset({"be-dev-1", "be-dev-2", "be-qa", "be-pm", "be-doc"})
+    assert backend == frozenset(
+        {"be-dev-1", "be-dev-2", "be-qa", "be-pm", "be-doc", "be-pr-reviewer"}
+    )
 
 
 def test_slugs_for_team_marketing_is_empty() -> None:

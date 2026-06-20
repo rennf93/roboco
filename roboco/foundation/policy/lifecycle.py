@@ -48,6 +48,7 @@ class Status(StrEnum):
     AWAITING_QA = "awaiting_qa"
     NEEDS_REVISION = "needs_revision"
     AWAITING_DOCUMENTATION = "awaiting_documentation"
+    AWAITING_PR_REVIEW = "awaiting_pr_review"
     AWAITING_PM_REVIEW = "awaiting_pm_review"
     AWAITING_CEO_APPROVAL = "awaiting_ceo_approval"
     COMPLETED = "completed"
@@ -279,6 +280,37 @@ _STATUS_TRANSITIONS: tuple[StatusTransition, ...] = (
         "docs_complete",
         frozenset({Role.DOCUMENTER}),
     ),
+    # In-path PR-review gate (assembled cell→root + root→master PRs). The
+    # assembled-PR task enters the gate via submit_for_review (composed by the
+    # cell PM's submit_up and the main PM's submit_root); the reviewer claims it
+    # without transitioning (mirrors QA's claim_review), then pr_pass moves it on
+    # to awaiting_pm_review for the PM merge, or pr_fail routes it back exactly
+    # like a QA fail. Leaf tasks and branchless coordination roots never enter
+    # this gate — they reach awaiting_pm_review via docs_complete / submit_pm_review.
+    StatusTransition(
+        Status.IN_PROGRESS,
+        Status.AWAITING_PR_REVIEW,
+        "submit_for_review",
+        None,
+    ),
+    StatusTransition(
+        Status.AWAITING_PR_REVIEW,
+        Status.CLAIMED,
+        "claim",
+        frozenset({Role.PR_REVIEWER}),
+    ),
+    StatusTransition(
+        Status.AWAITING_PR_REVIEW,
+        Status.AWAITING_PM_REVIEW,
+        "pr_pass",
+        frozenset({Role.PR_REVIEWER}),
+    ),
+    StatusTransition(
+        Status.AWAITING_PR_REVIEW,
+        Status.NEEDS_REVISION,
+        "pr_fail",
+        frozenset({Role.PR_REVIEWER}),
+    ),
     # PM completes / escalates
     StatusTransition(
         Status.AWAITING_PM_REVIEW,
@@ -379,6 +411,7 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
                 Status.NEEDS_REVISION,
                 Status.AWAITING_QA,
                 Status.AWAITING_DOCUMENTATION,
+                Status.AWAITING_PR_REVIEW,
             }
         ),
         target_status=Status.CLAIMED,
@@ -509,6 +542,38 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
         self_review_block=True,
         needs_team_match=True,
     ),
+    # PR-review gate: enter the gate (PM-driven, on an assembled PR), then the
+    # reviewer passes or fails it. pr_pass/pr_fail mirror qa_pass/qa_fail.
+    "submit_for_review": ActionSpec(
+        name="submit_for_review",
+        allowed_roles=_PM_ROLES,
+        source_statuses=frozenset({Status.IN_PROGRESS}),
+        target_status=Status.AWAITING_PR_REVIEW,
+        allowed_task_types=None,
+        preconditions=(),
+        self_review_block=False,
+        needs_team_match=True,
+    ),
+    "pr_pass": ActionSpec(
+        name="pr_pass",
+        allowed_roles=frozenset({Role.PR_REVIEWER}),
+        source_statuses=frozenset({Status.AWAITING_PR_REVIEW}),
+        target_status=Status.AWAITING_PM_REVIEW,
+        allowed_task_types=None,
+        preconditions=(),
+        self_review_block=True,
+        needs_team_match=True,
+    ),
+    "pr_fail": ActionSpec(
+        name="pr_fail",
+        allowed_roles=frozenset({Role.PR_REVIEWER}),
+        source_statuses=frozenset({Status.AWAITING_PR_REVIEW}),
+        target_status=Status.NEEDS_REVISION,
+        allowed_task_types=None,
+        preconditions=(),
+        self_review_block=True,
+        needs_team_match=True,
+    ),
     "complete": ActionSpec(
         name="complete",
         allowed_roles=_PM_ROLES,
@@ -606,7 +671,7 @@ CLAIM_RULES: dict[Role, frozenset[Status]] = {
     Role.PRODUCT_OWNER: frozenset(),
     Role.HEAD_MARKETING: frozenset(),
     Role.AUDITOR: frozenset(),
-    Role.PR_REVIEWER: frozenset({Status.PENDING}),
+    Role.PR_REVIEWER: frozenset({Status.PENDING, Status.AWAITING_PR_REVIEW}),
     Role.CEO: frozenset(),
 }
 
@@ -637,6 +702,9 @@ ROLE_TEAM_RULES: dict[str, str | None] = {
     "head-marketing": None,
     "auditor": None,
     "pr-reviewer-1": None,
+    "be-pr-reviewer": "backend",
+    "fe-pr-reviewer": "frontend",
+    "ux-pr-reviewer": "ux_ui",
     "ceo": None,
 }
 
@@ -668,8 +736,18 @@ def _next_hint_after_plan(_t: Any) -> str:
     )
 
 
-def _next_hint_continue_delegating(_t: Any) -> str:
-    return "continue delegating subtasks, or i_am_idle when done"
+def _next_hint_continue_delegating(t: Any) -> str:
+    # Name the bubble-up verb proactively so PMs don't have to discover it via
+    # a rejection: a root (no parent) is the Main PM's submit_root (root→master
+    # PR); a cell parent is the Cell PM's submit_up (cell→root PR).
+    bubble = (
+        "submit_root" if getattr(t, "parent_task_id", None) is None else "submit_up"
+    )
+    return (
+        "continue delegating subtasks; when every subtask is terminal,"
+        f" call {bubble}(task_id, notes='...') to open the PR + enter the"
+        " review gate (or i_am_idle if not ready)"
+    )
 
 
 def _next_hint_qa_review(_t: Any) -> str:
@@ -700,6 +778,21 @@ def _next_hint_pm_complete(_t: Any) -> str:
 
 def _next_hint_pm_idle(_t: Any) -> str:
     return "idle until subtasks finish"
+
+
+def _next_hint_pr_gate_review(_t: Any) -> str:
+    return (
+        "review the assembled PR diff against the parent objective + full"
+        " acceptance criteria + the cross-cell contract. Then pr_pass(notes)"
+        " to accept or pr_fail(issues) to send back."
+    )
+
+
+def _next_hint_submit_root(_t: Any) -> str:
+    return (
+        "root→master PR opened; the main reviewer will review it,"
+        " then complete(task_id) escalates to the CEO"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1002,6 +1095,46 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         side_effects=(),
         next_hint=_next_hint_idle,
     ),
+    # In-path PR-review gate verbs (assembled cell→root + root→master PRs).
+    # Distinct from the external/fork reviewer surface above: these GATE an
+    # internal delivery task between docs/submit and the PM merge.
+    "claim_gate_review": IntentSpec(
+        name="claim_gate_review",
+        allowed_roles=frozenset({Role.PR_REVIEWER}),
+        description=(
+            "Claim an assembled-PR review task (awaiting_pr_review) WITHOUT"
+            " transitioning it — mirrors QA's claim_review. The assembled diff"
+            " and the parent task's acceptance criteria are returned inline."
+        ),
+        composes=(),
+        extra_preconditions=(),
+        side_effects=(),
+        next_hint=_next_hint_pr_gate_review,
+    ),
+    "pr_pass": IntentSpec(
+        name="pr_pass",
+        allowed_roles=frozenset({Role.PR_REVIEWER}),
+        description=(
+            "Pass the assembled-PR review. Transitions awaiting_pr_review ->"
+            " awaiting_pm_review so the PM can merge."
+        ),
+        composes=("pr_pass",),
+        extra_preconditions=(),
+        side_effects=(),
+        next_hint=_next_hint_idle,
+    ),
+    "pr_fail": IntentSpec(
+        name="pr_fail",
+        allowed_roles=frozenset({Role.PR_REVIEWER}),
+        description=(
+            "Fail the assembled-PR review with concrete issues. Transitions"
+            " awaiting_pr_review -> needs_revision, routed back like a QA fail."
+        ),
+        composes=("pr_fail",),
+        extra_preconditions=(),
+        side_effects=(),
+        next_hint=_next_hint_dev_revise,
+    ),
     # Phase 3: documenter verbs
     "claim_doc_task": IntentSpec(
         name="claim_doc_task",
@@ -1026,8 +1159,9 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         name="complete",
         allowed_roles=_PM_ROLES,
         description=(
-            "Cell PM merges leaf PR + transitions to completed; Main PM"
-            " merges root PR + escalates to CEO."
+            "Cell PM merges the PR (leaf into the cell branch, or the gated"
+            " cell→root PR into the root branch) + transitions to completed;"
+            " Main PM escalates the root to the CEO (who merges root→master)."
         ),
         composes=("complete",),
         extra_preconditions=(),
@@ -1064,10 +1198,11 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         name="submit_up",
         allowed_roles=frozenset({Role.CELL_PM}),
         description=(
-            "Cell PM opens the cell→root PR and moves the cell task to"
-            " awaiting_pm_review. The same Cell PM then completes it."
+            "Cell PM opens the cell→root PR and moves the cell task into the"
+            " PR-review gate (awaiting_pr_review). The cell reviewer reviews the"
+            " assembled diff; after pr_pass the same Cell PM completes it."
         ),
-        composes=("submit_pm_review",),
+        composes=("submit_for_review",),
         extra_preconditions=(),
         # The cell→root PR must exist BEFORE submit_pm_review runs — its
         # pr_created gate rejects (returning None) otherwise, which then
@@ -1078,7 +1213,29 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         side_effects=(),
         # The Cell PM owns cell completion — it merges the cell→root PR
         # via complete(). Main PM only completes the ROOT task.
-        next_hint=lambda _t: "complete(task_id) to merge the cell→root PR",
+        next_hint=lambda _t: (
+            "cell→root PR opened + in review; the cell reviewer will pr_pass,"
+            " then complete(task_id) merges it"
+        ),
+    ),
+    "submit_root": IntentSpec(
+        name="submit_root",
+        allowed_roles=frozenset({Role.MAIN_PM}),
+        description=(
+            "Main PM opens the root→master PR and moves the root task to"
+            " awaiting_pr_review for the main reviewer (the root analogue of the"
+            " cell PM's submit_up). After pr_pass, call complete to escalate to"
+            " the CEO. Only for code roots; branchless coordination roots skip"
+            " the gate and complete directly."
+        ),
+        composes=("submit_for_review",),
+        extra_preconditions=(),
+        # The root→master PR must exist before the reviewer can review it —
+        # opened here (parent=master, is_root_pr=True), mirroring submit_up's
+        # pre-create of the cell→root PR.
+        pre_side_effects=("create_root_pr",),
+        side_effects=(),
+        next_hint=_next_hint_submit_root,
     ),
     "unblock": IntentSpec(
         name="unblock",
@@ -1337,7 +1494,7 @@ def can_invoke_intent(
     # Special handling for claim-like verbs with empty composition (claim_review,
     # claim_doc_task). These verbs don't compose "claim" action, but still need
     # to enforce claim-status rules via CLAIM_RULES narrowing.
-    elif intent in ("claim_review", "claim_doc_task"):
+    elif intent in ("claim_review", "claim_doc_task", "claim_gate_review"):
         rejection = _check_claim_rules_narrow(role, task)
         if rejection is not None:
             return rejection

@@ -22,8 +22,8 @@
 - Create subtasks via `delegate(parent_task_id, title, description, body)`
 - Triage your cell's queue via `triage()`
 - Unblock blocked tasks via `unblock(task_id, restore=True)`
-- Complete tasks via `complete(task_id, notes)` — this merges the leaf PR (no separate `merge_pr` tool exists; the choreographer does it)
-- Submit a finished cell-scoped task up to Main PM via `submit_up(task_id, notes)`
+- Complete tasks via `complete(task_id, notes)` — this merges the PR (a leaf subtask's PR into your cell branch, or your assembled cell→root PR into the root branch after it clears the gate). No separate `merge_pr` tool exists; the choreographer does it.
+- Assemble + submit your cell-scoped parent via `submit_up(task_id, notes)` — opens the cell→root PR and enters the in-path PR-review gate (`awaiting_pr_review`), where your cell's PR reviewer checks the assembled diff. After `pr_pass`, you `complete` it to merge.
 - Send `notify` (ack-required notifications) — devs/QA/doc cannot
 - Read-only inspect git via `roboco_git_status / _log / _diff / _branch_list`
 
@@ -32,7 +32,7 @@
 - Access other cells' tasks → Main PM only (`triage_all`)
 - Pass / fail QA → QA only
 - Write code or commit → devs / documenters only (`commit` is in their manifest, not yours)
-- Open the master PR → that's Main PM's `complete` on the root parent
+- Open or merge the master PR → the Main PM's `submit_root` opens the root→master PR and only the CEO merges it to `master`
 - Run shell git — blocked by the bash-guard hook
 
 ## Task Flow (gateway verbs)
@@ -52,12 +52,15 @@ triage()                       → scan your cell's queue
 unblock(task_id, restore=True) → unblock + restore prior status
 reassign(task_id, new_assignee) → hand a claimed/in_progress task to
                                  another dev in your cell (WIP survives)
-complete(task_id, notes)       → merges the leaf PR; transitions task
-                                 to completed (or escalates root parent
-                                 to CEO via Main PM)
+complete(task_id, notes)       → merges the PR (a leaf subtask into your
+                                 cell branch, or — after the gate — your
+                                 cell→root PR into the root branch);
+                                 transitions the task to completed
 
-submit_up(task_id, notes)      → bubble finished cell-scoped work up to
-                                 Main PM, who integrates it (see below)
+submit_up(task_id, notes)      → opens the cell→root PR and enters the
+                                 PR-review gate (awaiting_pr_review); your
+                                 cell reviewer pr_passes it, then you
+                                 complete to merge (see below)
 escalate_up(task_id, reason)   → ask Main PM for help (cross-cell, etc.)
 unclaim(task_id) / resume(task_id) / i_am_idle()
 ```
@@ -142,11 +145,16 @@ notify(target="be-dev-1", text="Please prioritise task X by EOD.",
        priority="high", task_id="...")
 ```
 
-## Submitting Finished Work Up
+## Assembling + Submitting Finished Work
 
-When a cell-scoped task is done (QA green, docs landed, leaf PR merged into your cell branch via `complete`), `submit_up(task_id, notes)` hands it to **Main PM (main-pm)**. Main PM owns the integration branch and the master PR — it merges your cell branch up the chain and ultimately into master (you never open a master PR yourself). See the Main PM role doc, "Integrating cell work + completing the root."
+When every subtask of your cell-scoped parent is terminal (each leaf PR merged into your cell branch via `complete`), call `submit_up(task_id, notes)`. This opens the **cell→root PR** and moves the parent into the in-path PR-review gate (`awaiting_pr_review`), where your cell's **PR reviewer** reviews the assembled diff:
 
-`submit_up` is for finished work moving up; `escalate_up` (below) is for *help* you need while work is still in flight.
+- `pr_pass` → the parent moves to `awaiting_pm_review`; you then `complete(task_id, notes)` to merge the cell→root PR into the root branch.
+- `pr_fail` → the parent returns to `needs_revision` (owned by you) with the reviewer's issues; fix, then re-`submit_up`.
+
+You merge your own cell→root PR — the Main PM does **not** merge your cell branch. The Main PM owns the **root** task: once every cell's parent is terminal, it runs the same gate one level up (`submit_root` → main reviewer → escalate to CEO) and only the CEO merges to `master`. You never open or merge a master PR yourself.
+
+`submit_up` is for finished work entering the merge gate; `escalate_up` (below) is for *help* you need while work is still in flight.
 
 ## Escalating to Main PM
 

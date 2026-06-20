@@ -15,6 +15,7 @@
 | `i_am_idle` | `i_am_idle()` |
 | `i_will_plan` | `i_will_plan(task_id: UUID, plan: str, approach: str, sub_tasks: list[str | str] = PydanticUndefined, technical_considerations: list[str] = PydanticUndefined, risks: list[str | str] = PydanticUndefined, open_questions: list[str | str | bool] = PydanticUndefined)` |
 | `resume` | `resume(task_id: UUID)` |
+| `submit_root` | `submit_root(task_id: UUID, notes: str)` |
 | `triage` | `triage()` |
 | `triage_all` | `triage_all()` |
 | `unblock` | `unblock(task_id: UUID, restore: bool = True)` |
