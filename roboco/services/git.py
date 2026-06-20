@@ -136,6 +136,33 @@ _HTTP_NOT_FOUND = 404
 # refs are stale. `pr_merge` re-syncs and retries exactly once on this code.
 _HTTP_CONFLICT = 409
 
+# --- Self-heal CI signal -------------------------------------------------
+# Pull a WINDOW of recent completed runs (not just the single newest) so the
+# conclusion can be resolved against the branch's current HEAD rather than
+# whichever run finished most recently — otherwise a green run on an older
+# commit, or (on the unscoped all-workflows endpoint) an unrelated green
+# workflow, masks the HEAD commit's failing run and the signal flickers.
+_CI_RUN_WINDOW = 20
+# Transient GitHub failures (network, 429, 5xx) are retried within the cycle so
+# a single blip does not silently skip a whole self-heal pass.
+_CI_FETCH_ATTEMPTS = 3
+_CI_FETCH_BACKOFF_SECONDS = 0.5
+_CI_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+
+
+def _select_ci_head_run(runs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Pick the run reflecting the branch's current-HEAD CI conclusion.
+
+    GitHub returns completed runs newest-created first, so ``runs[0]`` belongs to
+    the newest commit. Among all returned runs sharing that ``head_sha`` we take
+    the highest ``run_attempt`` so a green re-run supersedes the original
+    failure. This stops a stale green run on an older commit (or an unrelated
+    workflow on the all-workflows endpoint) from masking the HEAD failure.
+    """
+    head_sha = runs[0].get("head_sha")
+    same_head = [r for r in runs if r.get("head_sha") == head_sha] or [runs[0]]
+    return max(same_head, key=lambda r: int(r.get("run_attempt") or 0))
+
 
 class GitService(BaseService):
     """
@@ -1700,45 +1727,69 @@ class GitService(BaseService):
         git_token: str,
         workflow: str | None = None,
     ) -> dict[str, Any] | None:
-        """GET the most recent completed Actions run on ``branch``; None on error.
+        """Resolve ``branch``'s current-HEAD CI conclusion; None on error.
 
         Scopes to ``workflow`` (a workflow file name) when given — the precise
-        signal — otherwise looks across all workflows.
+        signal — otherwise reads across ALL workflows, which on a multi-workflow
+        repo is unreliable (an unrelated green run can mask a red CI run). Pulls a
+        WINDOW of recent completed runs and selects the newest commit's latest
+        attempt (see ``_select_ci_head_run``) rather than the single
+        most-recently-completed run, so a green run on an older commit can't mask
+        the HEAD's failure and a green re-run correctly supersedes it. ``branch``
+        filters by head branch, so only pushes to the default branch (not
+        pull-request runs, whose head is a feature branch) count — exactly the
+        "is the default branch red" signal self-heal needs. Transient network /
+        429 / 5xx errors are retried a few times before giving up so a single
+        blip doesn't silently skip the cycle.
         """
         owner, repo = owner_repo
         api_base = settings.github_api_base_url.rstrip("/")
         base = f"{api_base}/repos/{owner}/{repo}/actions"
         url = f"{base}/workflows/{workflow}/runs" if workflow else f"{base}/runs"
-        try:
-            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
-                resp = await client.get(
-                    url,
-                    headers={
-                        "Authorization": f"Bearer {git_token}",
-                        "Accept": "application/vnd.github+json",
-                        "X-GitHub-Api-Version": "2022-11-28",
-                    },
-                    params={"branch": branch, "status": "completed", "per_page": 1},
-                )
-        except httpx.HTTPError as e:
-            self.log.warning(
-                "get_latest_ci_conclusion request failed",
-                project=project_slug,
-                error=str(e),
-            )
-            return None
-        if not resp.is_success:
+        headers = {
+            "Authorization": f"Bearer {git_token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        params: dict[str, str | int] = {
+            "branch": branch,
+            "status": "completed",
+            "per_page": _CI_RUN_WINDOW,
+        }
+        resp: httpx.Response | None = None
+        for attempt in range(_CI_FETCH_ATTEMPTS):
+            last = attempt + 1 == _CI_FETCH_ATTEMPTS
+            try:
+                async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
+                    resp = await client.get(url, headers=headers, params=params)
+            except httpx.HTTPError as e:
+                if last:
+                    self.log.warning(
+                        "get_latest_ci_conclusion request failed",
+                        project=project_slug,
+                        error=str(e),
+                    )
+                    return None
+                await asyncio.sleep(_CI_FETCH_BACKOFF_SECONDS * (attempt + 1))
+                continue
+            if resp.is_success:
+                break
+            if resp.status_code in _CI_RETRYABLE_STATUS and not last:
+                await asyncio.sleep(_CI_FETCH_BACKOFF_SECONDS * (attempt + 1))
+                continue
             self.log.warning(
                 "get_latest_ci_conclusion non-2xx",
                 project=project_slug,
                 status=resp.status_code,
             )
             return None
+        if resp is None or not resp.is_success:
+            return None
         data = resp.json()
         runs = data.get("workflow_runs") if isinstance(data, dict) else None
         if not runs:
             return None
-        return cast("dict[str, Any]", runs[0])
+        return _select_ci_head_run(runs)
 
     async def _post_pr(
         self,

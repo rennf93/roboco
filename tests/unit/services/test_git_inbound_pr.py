@@ -13,7 +13,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from roboco.services.git import GitService
+from roboco.services.git import _CI_RUN_WINDOW, GitService
 
 _PR = 7
 
@@ -195,13 +195,16 @@ def _patch_project_ci() -> Any:
     return patch("roboco.services.git.get_project_service", return_value=fake)
 
 
-def _run(conclusion: str) -> dict[str, Any]:
+def _run(
+    conclusion: str, *, head_sha: str = "abc123", attempt: int = 1
+) -> dict[str, Any]:
     return {
         "conclusion": conclusion,
-        "head_sha": "abc123",
+        "head_sha": head_sha,
         "html_url": "https://github.com/acme/repo/actions/runs/99",
         "name": "CI",
         "updated_at": "2026-06-17T00:00:00Z",
+        "run_attempt": attempt,
     }
 
 
@@ -227,7 +230,7 @@ async def test_get_latest_ci_conclusion_normalizes_and_requests_correctly() -> N
     assert call.kwargs["params"] == {
         "branch": "master",
         "status": "completed",
-        "per_page": 1,
+        "per_page": _CI_RUN_WINDOW,
     }
     assert call.kwargs["headers"]["Authorization"] == "Bearer tok"
 
@@ -276,3 +279,82 @@ async def test_get_latest_ci_conclusion_scopes_to_workflow() -> None:
     assert out is not None
     assert out["conclusion"] == "success"
     assert client.get.await_args.args[0].endswith("/actions/workflows/ci.yml/runs")
+
+
+@pytest.mark.asyncio
+async def test_get_latest_ci_conclusion_requests_a_window() -> None:
+    # The signal pulls a window of recent runs, not just the single newest, so a
+    # green run on an older commit can't mask the HEAD's failure.
+    svc = _service()
+    client = _client(_resp(200, json_payload={"workflow_runs": [_run("failure")]}))
+    with (
+        _patch_project_ci(),
+        patch("roboco.services.git.httpx.AsyncClient", return_value=client),
+    ):
+        await svc.get_latest_ci_conclusion("roboco", workflow="ci.yml")
+    assert client.get.await_args.kwargs["params"]["per_page"] == _CI_RUN_WINDOW
+
+
+@pytest.mark.asyncio
+async def test_get_latest_ci_conclusion_red_head_not_masked_by_older_green() -> None:
+    # Newest commit's run FAILED; older commits' runs (different sha) are green.
+    # The signal must follow the newest commit — not whatever completed last — so
+    # a stale/unrelated green run cannot mask the regression.
+    svc = _service()
+    payload = {
+        "workflow_runs": [
+            _run("failure", head_sha="newsha"),
+            _run("success", head_sha="oldsha1"),
+            _run("success", head_sha="oldsha2"),
+        ]
+    }
+    client = _client(_resp(200, json_payload=payload))
+    with (
+        _patch_project_ci(),
+        patch("roboco.services.git.httpx.AsyncClient", return_value=client),
+    ):
+        out = await svc.get_latest_ci_conclusion("roboco", workflow="ci.yml")
+    assert out is not None
+    assert out["conclusion"] == "failure"
+    assert out["head_sha"] == "newsha"
+
+
+@pytest.mark.asyncio
+async def test_get_latest_ci_conclusion_green_rerun_supersedes_failure() -> None:
+    # Same commit re-run green after a red first attempt → reads green.
+    svc = _service()
+    payload = {
+        "workflow_runs": [
+            _run("success", head_sha="sha", attempt=2),
+            _run("failure", head_sha="sha", attempt=1),
+        ]
+    }
+    client = _client(_resp(200, json_payload=payload))
+    with (
+        _patch_project_ci(),
+        patch("roboco.services.git.httpx.AsyncClient", return_value=client),
+    ):
+        out = await svc.get_latest_ci_conclusion("roboco", workflow="ci.yml")
+    assert out is not None
+    assert out["conclusion"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_get_latest_ci_conclusion_retries_transient_5xx() -> None:
+    # A transient 503 must not silently skip the cycle — retry, then succeed.
+    svc = _service()
+    ok = _resp(200, json_payload={"workflow_runs": [_run("failure")]})
+    client = MagicMock()
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=False)
+    client.get = AsyncMock(side_effect=[_resp(503, text="busy"), ok])
+    with (
+        _patch_project_ci(),
+        patch("roboco.services.git.httpx.AsyncClient", return_value=client),
+        patch("roboco.services.git.asyncio.sleep", AsyncMock()),
+    ):
+        out = await svc.get_latest_ci_conclusion("roboco", workflow="ci.yml")
+    assert out is not None
+    assert out["conclusion"] == "failure"
+    expected_get_calls = 2
+    assert client.get.await_count == expected_get_calls

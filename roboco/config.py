@@ -380,13 +380,14 @@ class Settings(BaseSettings):
         ),
     )
     self_heal_ci_workflow: str = Field(
-        default="",
+        default="ci.yml",
         description=(
-            "Optional GitHub Actions workflow file name (e.g. 'ci.yml') to scope "
-            "the CI signal to. Empty = use the latest completed run across ALL "
-            "workflows on the default branch, which is imprecise when the repo "
-            "has several workflows; set this to the real CI workflow for a "
-            "reliable signal."
+            "GitHub Actions workflow file name to scope the CI signal to. "
+            "Defaults to 'ci.yml' (RoboCo's own gate). Set empty ONLY for a "
+            "single-workflow repo — an empty value reads the latest completed run "
+            "across ALL workflows on the default branch, which on a "
+            "multi-workflow repo lets an unrelated green run mask a red CI run "
+            "and makes the self-heal signal flicker."
         ),
     )
     self_heal_originate_enabled: bool = Field(
