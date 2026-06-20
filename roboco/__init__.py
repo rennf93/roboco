@@ -1,11 +1,11 @@
 """
 RoboCo - AI Agents Company
 
-A virtual organization of 22 AI agents + 1 human CEO,
+A virtual organization of 25 AI agents + 1 human CEO,
 designed to operate as a complete software development workforce.
 """
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 # Core exports
 from roboco.config import settings

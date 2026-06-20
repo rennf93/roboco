@@ -4,6 +4,29 @@ All notable changes to RoboCo are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-06-20
+
+### Added
+
+- **In-path PR-review gate — every assembled PR is reviewed before the PM merges.** A new `awaiting_pr_review` status sits between the work and the PM merge: the cell PM's `submit_up` opens the cell→root PR and the Main PM's `submit_root` opens the root→master PR, and each enters `awaiting_pr_review`, where a reviewer `pr_pass`es it on to PM review or `pr_fail`s it back for revision — the merge-level reject the PM previously lacked (motivated by a front-end/back-end seam bug that slipped straight through to master). Three new team-scoped cell PR-reviewers (backend, frontend, UX/UI) join the existing main reviewer, taking the company to 25 agents, each with its own first-class image and spawn manifest; leaf developer tasks and branchless coordination roots skip the gate. Ships migration 040 (the `awaiting_pr_review` enum value) plus the panel surfacing: a legible PR-review status badge, a dedicated "PR Review" kanban tab, and a PR-review column on the management board.
+- **Panel test gate.** The Next.js panel gains a baseline vitest suite over its lib and stores, a `pnpm test` step enforced in the CI panel job, and a `make panel-gate` target, so panel changes are quality-gated the way the Python side already is.
+
+### Changed
+
+- **`get_team_metrics` reuses the shared `ACTIVE_STATUSES` constant** instead of re-listing the active task statuses inline, keeping the definition in one place.
+
+### Fixed
+
+- **The self-healing CI signal is now deterministic.** The regression watch defaulted to the latest completed run across all of the repo's workflows, so on a multi-workflow repo an unrelated green run — or a green run on an older commit — could mask a red CI run and the loop fired only intermittently. The signal is now scoped to the `ci.yml` workflow by default, pulls a window of recent completed runs and resolves the conclusion against the branch's current HEAD (a green re-run supersedes the failure; a stale green run can't hide it), and retries transient GitHub errors instead of reading one network blip as all-green.
+- **Self-heal fix tasks are assigned to the Main PM agent, not just the `main_pm` team.** A team-only task fell to slow unassigned-team routing after the CEO approved it; it is now assigned to the Main PM agent up front so the orchestrator dispatches it straight away once approved. The confirmed-by-human hold that keeps the task inert until CEO approval is unchanged.
+
+### Security
+
+- **bash-guard denies git verbs hidden in command substitutions** — a `$(...)`- or backtick-wrapped git command could previously slip past the guard.
+- **Transcript retention matches the encoded workspaces root at a path boundary**, so a sibling directory sharing a name prefix is no longer mistaken for the workspaces root during pruning.
+- **The v1 role guard binds to a verified agent token before trusting a role claim**, so the role a request asserts is checked against its signed token rather than taken at face value.
+- **pydantic-settings upgraded to 2.14.2** to pull in the fix for GHSA-4xgf-cpjx-pc3j.
+
 ## [0.7.0] - 2026-06-19
 
 ### Added
