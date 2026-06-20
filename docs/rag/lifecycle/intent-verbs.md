@@ -38,7 +38,7 @@ Claim a task in awaiting_qa for review. Returns evidence inline.
 
 ## complete
 
-Cell PM merges leaf PR + transitions to completed; Main PM merges root PR + escalates to CEO.
+Cell PM merges the PR (leaf into the cell branch, or the gated cell→root PR into the root branch) + transitions to completed; Main PM escalates the root to the CEO (who merges root→master).
 
 **Allowed roles:** cell_pm, main_pm
 

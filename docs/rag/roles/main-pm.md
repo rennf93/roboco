@@ -80,7 +80,7 @@ channels()        # discover the pm-all channel, then read its history
 
 | MCP server            | Verbs you can call |
 |-----------------------|--------------------|
-| `roboco-flow`         | `triage`, `triage_all`, `give_me_work`, `i_will_plan`, `delegate`, `unblock`, `complete`, `escalate_up`, `escalate_to_ceo`, `resume`, `unclaim`, `i_am_idle` |
+| `roboco-flow`         | `triage`, `triage_all`, `give_me_work`, `i_will_plan`, `delegate`, `unblock`, `submit_root`, `complete`, `escalate_up`, `escalate_to_ceo`, `resume`, `unclaim`, `i_am_idle` |
 | `roboco-do`           | `note`, `say`, `dm`, `notify`, `evidence`, `open_session`, `link_session`, `pr_update` |
 | `roboco-docs`         | `roboco_docs_write`, `roboco_docs_read`, `roboco_docs_list` |
 | `roboco-git-readonly` | `roboco_git_status`, `roboco_git_log`, `roboco_git_diff`, `roboco_git_branch_list` |
@@ -103,16 +103,17 @@ This is for *help while work is in flight*. Finished cell-scoped work arrives by
 
 ## Integrating cell work + completing the root
 
-You own the integration-branch chain and the master PR. Cell PMs `submit_up(task_id, notes)` their finished cell-scoped tasks to you; they merge only their own cell/leaf PRs and never touch master (see the Cell PM role doc, "Submitting Finished Work Up").
+You own the **root** task and the root→master PR. Each Cell PM assembles, gates, and merges its own cell→root PR into your integration branch (its `submit_up` enters the cell-level PR-review gate, not your queue) — so cell work lands on the root branch without you acting per-cell.
 
 ```
 master  ←  feature/main_pm/{root}   ←  feature/{cell}/{root}/{cell-pm}  ←  dev branches
-(you + CEO)        (you)                      (cell PM)                        (devs)
+(CEO)         (you, via gate)              (cell PM, via gate)               (devs)
 ```
 
-- A cell PM's `complete` merges a leaf PR into its cell branch; `submit_up` then hands the cell-scoped result to you.
-- Your `complete(root_task_id, notes)` on the **root** parent is what opens/merges the master-bound PR — once every cell's subtasks are terminal.
-- For major work, escalate the finished root to the CEO with `escalate_to_ceo(root_task_id, reason)` instead; the CEO approves and merges from the panel. Only Main PM and the CEO ever act on master.
+- A cell PM's `complete` merges a leaf PR into its cell branch; after the cell gate, its `complete` merges the cell→root PR into your root branch. You do not merge cell branches.
+- Once every cell's parent is terminal, **`submit_root(root_task_id, notes)`** opens the root→master PR and enters the in-path gate (`awaiting_pr_review`). The **main PR reviewer** checks the assembled root diff: `pr_pass` → `awaiting_pm_review`; `pr_fail` → `needs_revision` (owned by you, fix + re-`submit_root`).
+- After `pr_pass`, `complete(root_task_id, notes)` escalates the root to the CEO (`awaiting_ceo_approval`) — it does **not** merge. A branchless coordination root (product fan-out, no repo) skips the gate and `complete` escalates directly.
+- The CEO approves and merges the root→master PR from the panel. Only the CEO ever merges to `master`.
 
 ## A2A
 

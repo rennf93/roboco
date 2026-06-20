@@ -1159,8 +1159,9 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         name="complete",
         allowed_roles=_PM_ROLES,
         description=(
-            "Cell PM merges leaf PR + transitions to completed; Main PM"
-            " merges root PR + escalates to CEO."
+            "Cell PM merges the PR (leaf into the cell branch, or the gated"
+            " cell→root PR into the root branch) + transitions to completed;"
+            " Main PM escalates the root to the CEO (who merges root→master)."
         ),
         composes=("complete",),
         extra_preconditions=(),

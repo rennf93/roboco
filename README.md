@@ -208,6 +208,16 @@ cancelled                      blocked      needs_revision   awaiting_documentat
                                                               completed
 ```
 
+Assembled, PR-bearing tasks pass through one extra stage — the in-path PR-review gate — before the PM merges:
+
+```
+in_progress → awaiting_pr_review → awaiting_pm_review
+   (submit_up /      (pr_pass)
+    submit_root)     (pr_fail → needs_revision)
+```
+
+The cell PM's `submit_up` (cell→root PR) and the Main PM's `submit_root` (root→master PR) open the assembled PR and enter the gate; a PR reviewer `pr_pass`es it on to the PM merge or `pr_fail`s it back. Leaf dev tasks (reviewed by QA) and branchless coordination roots skip the gate.
+
 ## API Endpoints
 
 Domain routes are mounted under `/api`:

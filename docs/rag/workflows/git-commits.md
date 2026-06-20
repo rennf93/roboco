@@ -48,7 +48,7 @@ This automatically:
 You don't push or create a PR yourself. The choreographer pushed the commit during `commit()`, and the PR is opened/merged as part of the lifecycle transitions:
 
 - `open_pr(task_id)` — opens the PR (devs)
-- `pass(task_id)` (QA) → `i_documented(task_id)` (doc) → `complete(task_id)` (cell PM merges the leaf PR; main PM opens the master PR)
+- `pass(task_id)` (QA) → `i_documented(task_id)` (doc) → `complete(task_id)` (cell PM merges the leaf PR). Assembled PRs pass the in-path gate first: the cell PM's `submit_up` (cell→root PR) and the main PM's `submit_root` (root→master PR) open the PR and enter `awaiting_pr_review`; after a reviewer `pr_pass`, the cell PM `complete`s to merge cell→root, while the main PM's `complete` escalates the root to the CEO, who merges to master.
 
 ## Viewing Commits and History
 

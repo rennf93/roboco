@@ -64,7 +64,7 @@ The canonical source of role → verb mapping is `roboco/services/gateway/role_c
 
 **Read-only git:** all 4
 
-**Workspace writes:** none. `complete` on a root parent task opens the master PR via the choreographer and escalates to CEO.
+**Workspace writes:** none. `submit_root` on a root parent task opens the root→master PR (entering the `awaiting_pr_review` gate); after the main reviewer `pr_pass`es it, `complete` escalates to the CEO. The Main PM never merges to master — only the CEO does.
 
 ## Board (Product Owner, Head of Marketing)
 

@@ -78,7 +78,7 @@
       "composes": [
         "complete"
       ],
-      "description": "Cell PM merges leaf PR + transitions to completed; Main PM merges root PR + escalates to CEO.",
+      "description": "Cell PM merges the PR (leaf into the cell branch, or the gated cell\u2192root PR into the root branch) + transitions to completed; Main PM escalates the root to the CEO (who merges root\u2192master).",
       "name": "complete",
       "pre_side_effects": [],
       "side_effects": [
