@@ -1719,6 +1719,43 @@ class GitService(BaseService):
             "completed_at": run.get("updated_at"),
         }
 
+    async def _get_ci_runs_response(
+        self,
+        project_slug: str,
+        url: str,
+        headers: dict[str, str],
+        params: dict[str, str | int],
+    ) -> httpx.Response | None:
+        """GET *url* with retry/back-off; return the successful response or None."""
+        resp: httpx.Response | None = None
+        for attempt in range(_CI_FETCH_ATTEMPTS):
+            last = attempt + 1 == _CI_FETCH_ATTEMPTS
+            try:
+                async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
+                    resp = await client.get(url, headers=headers, params=params)
+            except httpx.HTTPError as e:
+                if last:
+                    self.log.warning(
+                        "get_latest_ci_conclusion request failed",
+                        project=project_slug,
+                        error=str(e),
+                    )
+                    return None
+                await asyncio.sleep(_CI_FETCH_BACKOFF_SECONDS * (attempt + 1))
+                continue
+            if resp.is_success:
+                return resp
+            if resp.status_code in _CI_RETRYABLE_STATUS and not last:
+                await asyncio.sleep(_CI_FETCH_BACKOFF_SECONDS * (attempt + 1))
+                continue
+            self.log.warning(
+                "get_latest_ci_conclusion non-2xx",
+                project=project_slug,
+                status=resp.status_code,
+            )
+            return None
+        return resp
+
     async def _fetch_latest_ci_run(
         self,
         project_slug: str,
@@ -1756,33 +1793,7 @@ class GitService(BaseService):
             "status": "completed",
             "per_page": _CI_RUN_WINDOW,
         }
-        resp: httpx.Response | None = None
-        for attempt in range(_CI_FETCH_ATTEMPTS):
-            last = attempt + 1 == _CI_FETCH_ATTEMPTS
-            try:
-                async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
-                    resp = await client.get(url, headers=headers, params=params)
-            except httpx.HTTPError as e:
-                if last:
-                    self.log.warning(
-                        "get_latest_ci_conclusion request failed",
-                        project=project_slug,
-                        error=str(e),
-                    )
-                    return None
-                await asyncio.sleep(_CI_FETCH_BACKOFF_SECONDS * (attempt + 1))
-                continue
-            if resp.is_success:
-                break
-            if resp.status_code in _CI_RETRYABLE_STATUS and not last:
-                await asyncio.sleep(_CI_FETCH_BACKOFF_SECONDS * (attempt + 1))
-                continue
-            self.log.warning(
-                "get_latest_ci_conclusion non-2xx",
-                project=project_slug,
-                status=resp.status_code,
-            )
-            return None
+        resp = await self._get_ci_runs_response(project_slug, url, headers, params)
         if resp is None or not resp.is_success:
             return None
         data = resp.json()
