@@ -1,6 +1,6 @@
 # RoboCo
 
-AI Agents Company - A virtual organization of 22 AI agents + 1 human CEO, designed to operate as a complete software development workforce.
+AI Agents Company - A virtual organization of 25 AI agents + 1 human CEO, designed to operate as a complete software development workforce.
 
 <table align="center">
 <tr>
@@ -39,7 +39,7 @@ CEO (You, the human)
     │
     ├── Intake (on-demand interviewer: chats only with you to draft a task)
     ├── Secretary (on-demand chief-of-staff: reads company state, runs gated directives)
-    ├── PR Reviewer (read-only: reviews inbound external/fork + internal PRs)
+    ├── PR Reviewer (read-only main reviewer: inbound external/fork + internal PRs, and the root→master in-path gate)
     │
     └── Board (3 agents)
          ├── Product Owner
@@ -48,12 +48,12 @@ CEO (You, the human)
               │
               └── Main PM (coordinates all cells)
                    │
-                   ├── Backend Cell (5 agents: 2 Devs, 1 QA, 1 PM, 1 Documenter)
-                   ├── Frontend Cell (5 agents: 2 Devs, 1 QA, 1 PM, 1 Documenter)
-                   └── UX/UI Cell (5 agents: 2 Devs, 1 QA, 1 PM, 1 Documenter)
+                   ├── Backend Cell (6 agents: 2 Devs, 1 QA, 1 PM, 1 Documenter, 1 PR Reviewer)
+                   ├── Frontend Cell (6 agents: 2 Devs, 1 QA, 1 PM, 1 Documenter, 1 PR Reviewer)
+                   └── UX/UI Cell (6 agents: 2 Devs, 1 QA, 1 PM, 1 Documenter, 1 PR Reviewer)
 ```
 
-The 22 agents = Intake + Secretary + PR Reviewer + the Board (3) + Main PM + the three 5-agent cells (15). Agents run on Anthropic Claude by default, or on xAI Grok (the official `grok` CLI on a SuperGrok subscription) — see the provider note under Configuration.
+The 25 agents = Intake + Secretary + PR Reviewer + the Board (3) + Main PM + the three 6-agent cells (18). Agents run on Anthropic Claude by default, or on xAI Grok (the official `grok` CLI on a SuperGrok subscription) — see the provider note under Configuration.
 
 ## How it works
 
@@ -276,7 +276,7 @@ uv run mypy roboco/
 - [x] Database ORM (SQLAlchemy async)
 - [x] Task lifecycle state machine
 - [x] Multi-agent workspace management
-- [x] Agent prompts (22 agents)
+- [x] Agent prompts (25 agents)
 - [x] Messaging API
 - [x] Task API with full lifecycle
 - [x] Git operations API

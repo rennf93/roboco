@@ -11,7 +11,7 @@ other verb will be rejected with a Decision telling you the right one.
 - **i_will_plan**: PM mirror of i_will_work_on for parent tasks. Claim, plan, transition to in_progress; from there delegate subtasks.
 - **reassign**: Hand a claimed/in_progress task to another developer in your own cell. The branch is keyed to the task (not the agent), so it is preserved — the new developer continues the work-in-progress. No status change.
 - **resume**: Resume a paused task you own. paused -> in_progress.
-- **submit_up**: Cell PM opens the cell→root PR and moves the cell task to awaiting_pm_review. The same Cell PM then completes it.
+- **submit_up**: Cell PM opens the cell→root PR and moves the cell task into the PR-review gate (awaiting_pr_review). The cell reviewer reviews the assembled diff; after pr_pass the same Cell PM completes it.
 - **triage**: List actionable tasks in your scope.
 - **unblock**: PM unblocks a blocked task; restores pre-block state.
 - **unclaim**: Voluntarily release a claim back to pending. The work-in-progress branch is preserved.

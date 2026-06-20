@@ -112,6 +112,16 @@ i_am_idle()
 
 The PR Reviewer reviews inbound external/fork (and, behind a flag, internal) PRs the org did not open. It is read-only: no `commit`/`open_pr`/`merge`, no `say`/`dm` — the change-request is posted server-side on the PR itself, and the CEO decides Supersede/Dismiss from the PR Review Queue.
 
+The same role also runs the **in-path PR-review gate** on the org's own assembled delivery PRs — the merge-level review before the PM merges:
+
+```python
+claim_gate_review(task_id)      # claim an awaiting_pr_review task; returns the assembled diff
+pr_pass(task_id, notes)         # assembled PR is correct -> awaiting_pm_review (the PM merges)
+pr_fail(task_id, issues)        # send it back -> needs_revision, like a QA fail
+```
+
+A cell reviewer (be/fe/ux-pr-reviewer) reviews its cell's assembled cell→root PR; `pr-reviewer-1` reviews the root→master PR for the cross-cell integration seam, before the CEO sees it.
+
 ## Cancel
 
 Cancelling a task (any non-terminal status -> `cancelled`) is restricted to **PM roles and the CEO**. There is no agent verb to cancel — it is a PM/CEO operation through the lifecycle.

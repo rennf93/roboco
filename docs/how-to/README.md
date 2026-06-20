@@ -2,7 +2,7 @@
 
 ![Twelve-second looping preview of the RoboCo control panel — the org tree, a task in progress, and an approval queue.](../videos/panel-teaser.gif)
 
-RoboCo is a virtual software company — 22 AI agents and one human: you. Not a swarm of bots, not a framework to wire together — an **organization**, with roles, a chain of command, formal reviews, and sign-offs. You don't micromanage it; you run it like a CEO. Drop work in at the top and the company carries it all the way through planning, building, review, and documentation, then brings it back to your desk for the final word. You act at the two ends; the organization fills in everything between.
+RoboCo is a virtual software company — 25 AI agents and one human: you. Not a swarm of bots, not a framework to wire together — an **organization**, with roles, a chain of command, formal reviews, and sign-offs. You don't micromanage it; you run it like a CEO. Drop work in at the top and the company carries it all the way through planning, building, review, and documentation, then brings it back to your desk for the final word. You act at the two ends; the organization fills in everything between.
 
 And the proof is this guide. The screenshots throughout aren't a mock-up: they follow RoboCo building one of its *own* features — the **Prompter**, the task-authoring page now living in this very control panel. RoboCo's agents scoped it, built it across three cells, failed and re-ran its QA, documented it, and opened the real pull request you'll see at the end. RoboCo builds RoboCo — that is the whole proof of concept.
 
