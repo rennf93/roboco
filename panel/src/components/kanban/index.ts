@@ -6,6 +6,7 @@ export { KanbanCard } from "./core/kanban-card";
 // Views
 export { DevKanban } from "./views/dev-kanban";
 export { QaKanban } from "./views/qa-kanban";
+export { PrReviewKanban } from "./views/pr-review-kanban";
 export { PmKanban } from "./views/pm-kanban";
 
 // Shared

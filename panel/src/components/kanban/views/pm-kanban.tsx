@@ -20,6 +20,7 @@ const PM_COLUMNS = [
   { id: "qa", status: TaskStatus.AWAITING_QA, title: "In QA", color: "bg-yellow-50 dark:bg-yellow-950" },
   { id: "needs-revision", status: TaskStatus.NEEDS_REVISION, title: "Needs Revision", color: "bg-rose-50 dark:bg-rose-950" },
   { id: "docs", status: TaskStatus.AWAITING_DOCUMENTATION, title: "In Docs", color: "bg-purple-50 dark:bg-purple-950" },
+  { id: "pr-review", status: TaskStatus.AWAITING_PR_REVIEW, title: "PR Review", color: "bg-teal-50 dark:bg-teal-950" },
   { id: "pm-review", status: TaskStatus.AWAITING_PM_REVIEW, title: "PM Review", color: "bg-orange-50 dark:bg-orange-950" },
   { id: "ceo-approval", status: TaskStatus.AWAITING_CEO_APPROVAL, title: "CEO Approval", color: "bg-indigo-50 dark:bg-indigo-950" },
   { id: "done", status: TaskStatus.COMPLETED, title: "Done", color: "bg-green-50 dark:bg-green-950" },

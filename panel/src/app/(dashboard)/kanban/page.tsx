@@ -2,12 +2,12 @@
 
 import { Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { DevKanban, QaKanban, PmKanban } from "@/components/kanban";
+import { DevKanban, QaKanban, PrReviewKanban, PmKanban } from "@/components/kanban";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Code, TestTube, ClipboardList } from "lucide-react";
+import { Code, TestTube, GitPullRequest, ClipboardList } from "lucide-react";
 
-type KanbanView = "dev" | "qa" | "pm";
+type KanbanView = "dev" | "qa" | "pr-review" | "pm";
 
 function KanbanPageContent() {
   const router = useRouter();
@@ -36,6 +36,10 @@ function KanbanPageContent() {
             <TestTube className="h-4 w-4" />
             QA
           </TabsTrigger>
+          <TabsTrigger value="pr-review" className="gap-2">
+            <GitPullRequest className="h-4 w-4" />
+            PR Review
+          </TabsTrigger>
           <TabsTrigger value="pm" className="gap-2">
             <ClipboardList className="h-4 w-4" />
             PM
@@ -47,6 +51,9 @@ function KanbanPageContent() {
         </TabsContent>
         <TabsContent value="qa" className="mt-6">
           <QaKanban />
+        </TabsContent>
+        <TabsContent value="pr-review" className="mt-6">
+          <PrReviewKanban />
         </TabsContent>
         <TabsContent value="pm" className="mt-6">
           <PmKanban />
