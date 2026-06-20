@@ -29,7 +29,9 @@ DEFAULT_COMM_HOURS = 24
 HOURS_PER_DAY = 24
 SECONDS_PER_HOUR = 3600
 
-# Active task statuses for queries
+# Active task statuses for get_team_metrics and related queries.
+# Note: BLOCKED is intentionally excluded here; get_health_status() uses its
+# own local list that includes BLOCKED to compute the blocked-task ratio.
 ACTIVE_STATUSES = frozenset(
     {
         TaskStatus.CLAIMED,
