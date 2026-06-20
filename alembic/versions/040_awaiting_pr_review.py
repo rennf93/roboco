@@ -6,16 +6,20 @@ reviewer sign-off between the assembled-PR submit and the PM merge. Persisting
 a task in that state requires the postgres ``taskstatus`` enum to carry the
 value. Mirrors migration 037's pattern (forward-only enum ADD VALUE).
 
-Revision ID: 040_taskstatus_awaiting_pr_review
+Revision ID: 040_awaiting_pr_review
 Revises: 039_seed_grok_provider
 Create Date: 2026-06-20
+
+NOTE: the revision id is kept well under 32 chars — alembic's
+``alembic_version.version_num`` column is ``VARCHAR(32)`` and a longer id raises
+``value too long for type character varying(32)`` when alembic records it.
 """
 
 from __future__ import annotations
 
 from alembic import op
 
-revision = "040_taskstatus_awaiting_pr_review"
+revision = "040_awaiting_pr_review"
 down_revision = "039_seed_grok_provider"
 branch_labels = None
 depends_on = None

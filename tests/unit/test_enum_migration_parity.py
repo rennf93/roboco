@@ -19,6 +19,9 @@ from roboco.db.tables import Base  # registers every ORM enum
 
 _ROOT = pathlib.Path(__file__).resolve().parents[2]
 
+# alembic's ``alembic_version.version_num`` column is VARCHAR(32).
+_ALEMBIC_VERSION_NUM_MAX = 32
+
 
 def _orm_enum_values() -> dict[str, set[str]]:
     orm: dict[str, set[str]] = {}
@@ -67,4 +70,25 @@ def test_every_orm_enum_value_is_created_by_the_migration_chain() -> None:
         "`ALTER TYPE <enum> ADD VALUE IF NOT EXISTS '<value>'` migration — "
         "autogenerate does NOT detect added enum labels):\n"
         + "\n".join(f"  {name}: {vals}" for name, vals in sorted(drift.items()))
+    )
+
+
+def test_every_migration_revision_id_fits_the_alembic_version_column() -> None:
+    """Revision ids must fit alembic's ``alembic_version.version_num`` VARCHAR(32).
+
+    A longer id raises ``value too long for type character varying(32)`` when
+    alembic records the migration on a real ``upgrade head`` — but NOT in the
+    test suite, whose DB is built via ``Base.metadata.create_all`` and whose
+    parity test only renders SQL offline. So nothing else catches it; this guard
+    does, statically.
+    """
+    versions = _ROOT / "alembic" / "versions"
+    too_long: dict[str, int] = {}
+    for path in versions.glob("*.py"):
+        match = re.search(r'^revision\s*=\s*"([^"]+)"', path.read_text(), re.M)
+        if match is not None and len(match.group(1)) > _ALEMBIC_VERSION_NUM_MAX:
+            too_long[match.group(1)] = len(match.group(1))
+    assert not too_long, (
+        "migration revision ids exceeding the alembic_version VARCHAR(32) limit "
+        f"(shorten them): {too_long}"
     )
