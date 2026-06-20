@@ -207,14 +207,7 @@ class MetricsService(BaseService):
             select(func.count(TaskTable.id)).where(
                 and_(
                     TaskTable.team == team,
-                    TaskTable.status.in_(
-                        [
-                            TaskStatus.CLAIMED,
-                            TaskStatus.IN_PROGRESS,
-                            TaskStatus.VERIFYING,
-                            TaskStatus.AWAITING_QA,
-                        ]
-                    ),
+                    TaskTable.status.in_(ACTIVE_STATUSES),
                 )
             )
         )
