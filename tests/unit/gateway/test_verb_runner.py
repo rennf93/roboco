@@ -83,13 +83,13 @@ async def test_runner_runs_side_effects_after_db_commit() -> None:
 
 @pytest.mark.asyncio
 async def test_submit_up_creates_pr_before_transition() -> None:
-    """#180: submit_up's create_pr (pre_side_effect) runs BEFORE the
-    submit_pm_review transition.
+    """submit_up's create_pr (pre_side_effect) runs BEFORE the
+    submit_for_review transition.
 
-    submit_pm_review rejects (returns None) unless pr_created is already
-    set; create_pr persists pr_number onto the task row. With the old
-    composes→side_effects ordering the transition ran first, returned
-    None, and the trailing create_pr crashed on ``None.branch_name``.
+    submit_for_review needs the cell→root PR to already exist (the reviewer
+    reviews it); create_pr persists pr_number onto the task row. With a
+    composes→side_effects ordering the transition would run first and the
+    trailing create_pr would crash — so the pre-side-effect must run first.
     """
     calls: list[str] = []
 
@@ -98,11 +98,11 @@ async def test_submit_up_creates_pr_before_transition() -> None:
         return_value=MagicMock(__aenter__=AsyncMock(), __aexit__=AsyncMock())
     )
 
-    def _submit_pm_review(*_args: object, **_kwargs: object) -> MagicMock:
-        calls.append("submit_pm_review")
-        return MagicMock(status="awaiting_pm_review")
+    def _submit_for_review(*_args: object, **_kwargs: object) -> MagicMock:
+        calls.append("submit_for_review")
+        return MagicMock(status="awaiting_pr_review")
 
-    task_svc.submit_pm_review = AsyncMock(side_effect=_submit_pm_review)
+    task_svc.submit_for_review = AsyncMock(side_effect=_submit_for_review)
 
     git_svc = AsyncMock()
 
@@ -123,8 +123,8 @@ async def test_submit_up_creates_pr_before_transition() -> None:
     ctx = spec.Context(notes="cell scope complete; bubbling up to main pm")
 
     await runner.run_intent("submit_up", task, agent, ctx)
-    assert calls == ["create_pr", "submit_pm_review"], (
-        f"create_pr must precede submit_pm_review for submit_up; got {calls}"
+    assert calls == ["create_pr", "submit_for_review"], (
+        f"create_pr must precede submit_for_review for submit_up; got {calls}"
     )
 
 

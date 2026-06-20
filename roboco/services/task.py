@@ -6688,6 +6688,124 @@ class TaskService(BaseService):
         await self.session.flush()
         return await self.fail_qa(task_id, notes=notes, agent_role="qa")
 
+    async def pr_gate_claim(
+        self, reviewer_agent_id: UUID, task_id: UUID
+    ) -> TaskTable | None:
+        """Reviewer claims an awaiting_pr_review task (no state transition).
+
+        The in-path PR-review gate mirrors QA's claim_review: status stays at
+        awaiting_pr_review while the reviewer inspects the assembled diff;
+        pr_pass / pr_fail perform the transition.
+        """
+        return await self._qa_or_doc_claim(
+            reviewer_agent_id, task_id, TaskStatus.AWAITING_PR_REVIEW
+        )
+
+    async def submit_for_review(
+        self, agent_id: UUID, task_id: UUID, notes: str
+    ) -> TaskTable | None:
+        """Enter the in-path PR-review gate: in_progress -> awaiting_pr_review.
+
+        Composed by the cell PM's submit_up (cell→root PR) and the main PM's
+        submit_root (root→master PR); the assembled PR is already open by the
+        time this runs. Mirrors submit_pm_review but targets the gate so a
+        reviewer signs off before the PM merge.
+        """
+        if notes:
+            await self.add_progress(task_id, agent_id, notes)
+        task = await self.get(task_id)
+        if task is None or task.status != TaskStatus.IN_PROGRESS:
+            return None
+        agent = await self.agent_for(agent_id)
+        agent_role = agent.role if agent else "cell_pm"
+        self._validate_and_set_status(task, TaskStatus.AWAITING_PR_REVIEW, agent_role)
+        await self.session.flush()
+        return task
+
+    async def pr_pass(
+        self, reviewer_agent_id: UUID, task_id: UUID, notes: str
+    ) -> TaskTable | None:
+        """Reviewer passes the gate: awaiting_pr_review -> awaiting_pm_review.
+
+        Clears the claim so the PM-closure dispatcher routes the now-unassigned
+        task to the owning PM to merge — the same path a leaf takes after
+        docs_complete. Mirrors qa_pass.
+        """
+        task = await self.get(task_id)
+        if task is None or task.status != TaskStatus.AWAITING_PR_REVIEW:
+            return None
+        if (
+            task.claimed_by is not None
+            and to_python_uuid(task.claimed_by) != reviewer_agent_id
+        ):
+            self.log.warning(
+                "pr_pass actor mismatch",
+                task_id=str(task_id),
+                reviewer_agent_id=str(reviewer_agent_id),
+                claimed_by=str(task.claimed_by),
+            )
+        captured = to_python_uuid(task.claimed_by)
+        if notes:
+            task.qa_notes = _append_capped(task.qa_notes, "[PR REVIEW]\n" + notes)
+        task.assigned_to = None
+        task.claimed_by = None
+        task.active_claimant_id = cast("Any", None)
+        self._validate_and_set_status(
+            task,
+            TaskStatus.AWAITING_PM_REVIEW,
+            "pr_reviewer",
+            audit_agent_id=captured,
+        )
+        await self.session.flush()
+        self.log.info("Assembled PR passed review", task_id=str(task_id))
+        return task
+
+    async def pr_fail(
+        self,
+        reviewer_agent_id: UUID,
+        task_id: UUID,
+        notes: str,
+        issues: list[str],
+    ) -> TaskTable | None:
+        """Reviewer fails the gate: awaiting_pr_review -> needs_revision.
+
+        Appends the concrete issues for the PM's revision and clears the claim;
+        the revision dispatcher routes the assembled task back to its PM.
+        Mirrors qa_fail — an assembled PR is the PM's to revise, so there is no
+        original-developer reassign; routing is handled at dispatch.
+        """
+        task = await self.get(task_id)
+        if task is None or task.status != TaskStatus.AWAITING_PR_REVIEW:
+            return None
+        if (
+            task.claimed_by is not None
+            and to_python_uuid(task.claimed_by) != reviewer_agent_id
+        ):
+            self.log.warning(
+                "pr_fail actor mismatch",
+                task_id=str(task_id),
+                reviewer_agent_id=str(reviewer_agent_id),
+                claimed_by=str(task.claimed_by),
+            )
+        captured = to_python_uuid(task.claimed_by)
+        if issues:
+            issue_block = "[PR REVIEW ISSUES]\n" + "\n".join(f"- {i}" for i in issues)
+            task.dev_notes = _append_capped(task.dev_notes, issue_block)
+        if notes:
+            task.qa_notes = _append_capped(task.qa_notes, "[PR REVIEW]\n" + notes)
+        task.assigned_to = None
+        task.claimed_by = None
+        task.active_claimant_id = cast("Any", None)
+        self._validate_and_set_status(
+            task,
+            TaskStatus.NEEDS_REVISION,
+            "pr_reviewer",
+            audit_agent_id=captured,
+        )
+        await self.session.flush()
+        self.log.info("Assembled PR failed review", task_id=str(task_id))
+        return task
+
     async def unblock_with_restore(
         self,
         pm_agent_id: UUID,

@@ -415,14 +415,17 @@ async def test_cell_pm_complete_not_assigned_returns_not_authorized() -> None:
 
 
 @pytest.mark.asyncio
-async def test_main_pm_complete_opens_master_pr_and_escalates() -> None:
+async def test_main_pm_complete_escalates_code_root_without_reopening_pr() -> None:
+    """A code root reaches main_pm_complete already in awaiting_pm_review —
+    submit_root opened the root→master PR and the main reviewer pr_passed it —
+    so complete just escalates to the CEO and does NOT reopen the PR."""
     main_pm_id = uuid4()
     root_task_id = uuid4()
     t = MagicMock(
         id=root_task_id,
         status="awaiting_pm_review",
         assigned_to=main_pm_id,
-        pr_number=None,
+        pr_number=99,
         branch_name="feature/backend/root123",
         parent_task_id=None,
         team="backend",
@@ -433,7 +436,6 @@ async def test_main_pm_complete_opens_master_pr_and_escalates() -> None:
     task_svc.escalate_to_ceo.return_value = after
     task_svc.all_subtasks_terminal.return_value = True
     git_svc = AsyncMock()
-    git_svc.create_pr.return_value = {"pr_number": 99, "pr_url": "https://x/y/pull/99"}
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
     journal_svc.latest_decision_at.return_value = datetime.now(UTC)
@@ -446,19 +448,51 @@ async def test_main_pm_complete_opens_master_pr_and_escalates() -> None:
     )
     assert env.error is None
     assert env.status == "awaiting_ceo_approval"
-    git_svc.create_pr.assert_awaited_once_with(
-        "feature/backend/root123",
-        parent="master",
-        is_root_pr=True,
-    )
+    git_svc.create_pr.assert_not_awaited()
     task_svc.escalate_to_ceo.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_main_pm_complete_advances_in_progress_root_to_ceo() -> None:
-    """#183: a root resumed to in_progress (subtasks all done) has no submit_up
-    to reach awaiting_pm_review. main_pm_complete opens the root→master PR,
-    walks the root through awaiting_pm_review, then escalates to CEO."""
+async def test_main_pm_complete_rejects_in_progress_code_root_toward_submit_root() -> (
+    None
+):
+    """A code root must pass the in-path gate first. main_pm_complete rejects it
+    while still in_progress and points the Main PM at submit_root."""
+    main_pm_id = uuid4()
+    root_task_id = uuid4()
+    t = MagicMock(
+        id=root_task_id,
+        status="in_progress",
+        assigned_to=main_pm_id,
+        pr_number=None,
+        branch_name="feature/main_pm/root123",
+        parent_task_id=None,
+        team="main_pm",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.all_subtasks_terminal.return_value = True
+    git_svc = AsyncMock()
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
+    journal_svc.has_reflect_for_task.return_value = True
+    deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.main_pm_complete(
+        main_pm_id, root_task_id, notes="root scope reviewed; ready for CEO sign-off"
+    )
+    assert env.error is not None
+    assert "submit_root" in (env.remediate or "")
+    task_svc.escalate_to_ceo.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_main_pm_complete_walks_branchless_coordination_root_to_ceo() -> None:
+    """A branchless coordination root (product fan-out, no repo/PR) skips the
+    in-path gate: main_pm_complete walks it in_progress→awaiting_pm_review and
+    escalates to the CEO. No root→master PR is created (it has no branch)."""
     main_pm_id = uuid4()
     root_task_id = uuid4()
     in_prog = MagicMock(
@@ -466,7 +500,7 @@ async def test_main_pm_complete_advances_in_progress_root_to_ceo() -> None:
         status="in_progress",
         assigned_to=main_pm_id,
         pr_number=None,
-        branch_name="feature/main_pm/root123",
+        branch_name=None,
         parent_task_id=None,
         team="main_pm",
     )
@@ -478,7 +512,6 @@ async def test_main_pm_complete_advances_in_progress_root_to_ceo() -> None:
     task_svc.escalate_to_ceo.return_value = after
     task_svc.all_subtasks_terminal.return_value = True
     git_svc = AsyncMock()
-    git_svc.create_pr.return_value = {"pr_number": 99, "pr_url": "https://x/y/pull/99"}
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
     journal_svc.latest_decision_at.return_value = datetime.now(UTC)
@@ -487,16 +520,11 @@ async def test_main_pm_complete_advances_in_progress_root_to_ceo() -> None:
     c = Choreographer(deps)
 
     env = await c.main_pm_complete(
-        main_pm_id, root_task_id, notes="root scope reviewed; ready for CEO sign-off"
+        main_pm_id, root_task_id, notes="coordination root reviewed; ready for CEO"
     )
     assert env.error is None
     assert env.status == "awaiting_ceo_approval"
-    git_svc.create_pr.assert_awaited_once_with(
-        "feature/main_pm/root123",
-        parent="master",
-        is_root_pr=True,
-    )
-    # #183: the in_progress→awaiting_pm_review hop must run before escalation.
+    git_svc.create_pr.assert_not_awaited()
     task_svc.submit_pm_review.assert_awaited_once()
     task_svc.escalate_to_ceo.assert_awaited_once()
 

@@ -73,7 +73,7 @@ def test_submit_root_is_main_pm_only_and_opens_a_pr() -> None:
     iv = spec._INTENT_VERBS["submit_root"]
     assert iv.allowed_roles == frozenset({Role.MAIN_PM})
     assert iv.composes == ("submit_for_review",)
-    assert "create_pr" in iv.pre_side_effects
+    assert iv.pre_side_effects == ("create_root_pr",)
 
 
 def test_gate_cannot_skip_straight_to_terminal_or_ceo() -> None:

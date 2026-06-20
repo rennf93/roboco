@@ -531,6 +531,26 @@ def submit_up(task_id: str, notes: str) -> dict[str, Any]:
     return _post(_role_path("submit_up"), {"task_id": task_id, "notes": notes})
 
 
+def submit_root(task_id: str, notes: str) -> dict[str, Any]:
+    """Main PM: open the root→master PR and enter the in-path PR-review gate."""
+    return _post(_role_path("submit_root"), {"task_id": task_id, "notes": notes})
+
+
+def claim_gate_review(task_id: str) -> dict[str, Any]:
+    """PR reviewer: claim an assembled-PR review task. Returns the diff inline."""
+    return _post(_role_path("claim_gate_review"), {"task_id": task_id})
+
+
+def pr_pass(task_id: str, notes: str) -> dict[str, Any]:
+    """PR reviewer: pass the assembled PR (→ awaiting_pm_review)."""
+    return _post(_role_path("pr_pass"), {"task_id": task_id, "notes": notes})
+
+
+def pr_fail(task_id: str, issues: list[str]) -> dict[str, Any]:
+    """PR reviewer: fail the assembled PR with concrete issues → needs_revision."""
+    return _post(_role_path("pr_fail"), {"task_id": task_id, "issues": issues})
+
+
 # ---------- Tool registry ----------
 #
 # Maps the verb name an agent calls (matches manifest entries and the
@@ -560,6 +580,10 @@ _TOOLS: dict[str, Any] = {
     # pr reviewer (inbound external/fork PRs)
     "claim_pr_review": claim_pr_review,
     "post_pr_review": post_pr_review,
+    # pr reviewer (in-path assembled-PR gate)
+    "claim_gate_review": claim_gate_review,
+    "pr_pass": pr_pass,
+    "pr_fail": pr_fail,
     # doc
     "claim_doc_task": claim_doc_task,
     "i_documented": i_documented,
@@ -572,6 +596,7 @@ _TOOLS: dict[str, Any] = {
     "i_will_plan": i_will_plan,
     "delegate": delegate,
     "submit_up": submit_up,
+    "submit_root": submit_root,
     # board / main pm
     "escalate_to_ceo": escalate_to_ceo,
 }

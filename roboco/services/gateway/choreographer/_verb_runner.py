@@ -123,6 +123,21 @@ class VerbRunner:
             agent.id, task.id, ctx.notes or ""
         )
 
+    async def _do_submit_for_review(
+        self, task: Any, agent: Any, ctx: spec.Context
+    ) -> Any:
+        return await self.task_service.submit_for_review(
+            agent.id, task.id, ctx.notes or ""
+        )
+
+    async def _do_pr_pass(self, task: Any, agent: Any, ctx: spec.Context) -> Any:
+        return await self.task_service.pr_pass(agent.id, task.id, ctx.notes or "")
+
+    async def _do_pr_fail(self, task: Any, agent: Any, ctx: spec.Context) -> Any:
+        return await self.task_service.pr_fail(
+            agent.id, task.id, ctx.notes or "", list(ctx.issues)
+        )
+
     async def _do_escalate_to_ceo(
         self, task: Any, agent: Any, ctx: spec.Context
     ) -> Any:
@@ -170,6 +185,9 @@ class VerbRunner:
             "docs_complete": cls._do_docs_complete,
             "complete": cls._do_complete,
             "submit_pm_review": cls._do_submit_pm_review,
+            "submit_for_review": cls._do_submit_for_review,
+            "pr_pass": cls._do_pr_pass,
+            "pr_fail": cls._do_pr_fail,
             "escalate_to_ceo": cls._do_escalate_to_ceo,
             "block": cls._do_block,
             "unblock": cls._do_unblock,
@@ -191,6 +209,13 @@ class VerbRunner:
             task.branch_name, parent=parent, is_root_pr=False
         )
 
+    async def _do_create_root_pr(self, task: Any, _agent: Any) -> Any:
+        # Root→master PR for the in-path gate's root level (submit_root). The
+        # base is always master and is_root_pr marks it for the CEO-merge path.
+        return await self.git_service.create_pr(
+            task.branch_name, parent="master", is_root_pr=True
+        )
+
     async def _do_pr_merge(self, task: Any, agent: Any) -> Any:
         from roboco.services.gateway.merge_chain import resolve_parent_branch
 
@@ -204,5 +229,6 @@ class VerbRunner:
         return {
             "push_branch": cls._do_push_branch,
             "create_pr": cls._do_create_pr,
+            "create_root_pr": cls._do_create_root_pr,
             "pr_merge": cls._do_pr_merge,
         }

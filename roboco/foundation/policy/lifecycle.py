@@ -1187,10 +1187,11 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         name="submit_up",
         allowed_roles=frozenset({Role.CELL_PM}),
         description=(
-            "Cell PM opens the cell→root PR and moves the cell task to"
-            " awaiting_pm_review. The same Cell PM then completes it."
+            "Cell PM opens the cell→root PR and moves the cell task into the"
+            " PR-review gate (awaiting_pr_review). The cell reviewer reviews the"
+            " assembled diff; after pr_pass the same Cell PM completes it."
         ),
-        composes=("submit_pm_review",),
+        composes=("submit_for_review",),
         extra_preconditions=(),
         # The cell→root PR must exist BEFORE submit_pm_review runs — its
         # pr_created gate rejects (returning None) otherwise, which then
@@ -1201,7 +1202,10 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         side_effects=(),
         # The Cell PM owns cell completion — it merges the cell→root PR
         # via complete(). Main PM only completes the ROOT task.
-        next_hint=lambda _t: "complete(task_id) to merge the cell→root PR",
+        next_hint=lambda _t: (
+            "cell→root PR opened + in review; the cell reviewer will pr_pass,"
+            " then complete(task_id) merges it"
+        ),
     ),
     "submit_root": IntentSpec(
         name="submit_root",
@@ -1216,8 +1220,9 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         composes=("submit_for_review",),
         extra_preconditions=(),
         # The root→master PR must exist before the reviewer can review it —
-        # opened here, mirroring submit_up's pre-create of the cell→root PR.
-        pre_side_effects=("create_pr",),
+        # opened here (parent=master, is_root_pr=True), mirroring submit_up's
+        # pre-create of the cell→root PR.
+        pre_side_effects=("create_root_pr",),
         side_effects=(),
         next_hint=_next_hint_submit_root,
     ),

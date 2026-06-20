@@ -883,10 +883,11 @@ async def test_delegate_invalid_team_enum_rejected() -> None:
 
 @pytest.mark.asyncio
 async def test_submit_up_opens_pr_and_keeps_cell_pm_assignment() -> None:
-    """#182: submit_up opens the cell→root PR and moves the cell task to
-    awaiting_pm_review, but does NOT hand it off to Main PM. The cell PM
-    owns cell completion (it is respawned to `complete` the task), so the
-    assignment stays put — no reassign."""
+    """submit_up opens the cell→root PR and moves the cell task into the
+    in-path PR-review gate (awaiting_pr_review), but does NOT hand it off to
+    Main PM. The cell PM owns cell completion (it is respawned to `complete`
+    after the cell reviewer pr_passes), so the assignment stays put — no
+    reassign."""
     pm_id = uuid4()
     task_id = uuid4()
     t = MagicMock(
@@ -899,7 +900,7 @@ async def test_submit_up_opens_pr_and_keeps_cell_pm_assignment() -> None:
     )
     after = MagicMock(
         id=task_id,
-        status="awaiting_pm_review",
+        status="awaiting_pr_review",
         assigned_to=pm_id,
         parent_task_id=None,
         branch_name="feature/backend/abc123",
@@ -909,7 +910,7 @@ async def test_submit_up_opens_pr_and_keeps_cell_pm_assignment() -> None:
     task_svc.get.return_value = t
     task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
     task_svc.all_subtasks_terminal.return_value = True
-    task_svc.submit_pm_review.return_value = after
+    task_svc.submit_for_review.return_value = after
     git_svc = AsyncMock()
     git_svc.create_pr.return_value = {"pr_number": 12, "pr_url": "x"}
     journal_svc = AsyncMock()
@@ -919,10 +920,10 @@ async def test_submit_up_opens_pr_and_keeps_cell_pm_assignment() -> None:
     c = Choreographer(deps)
 
     env = await c.submit_up(
-        pm_id, task_id, notes="cell completed all subtasks; ready for main pm"
+        pm_id, task_id, notes="cell completed all subtasks; ready for review"
     )
     assert env.error is None
-    assert env.status == "awaiting_pm_review"
+    assert env.status == "awaiting_pr_review"
     git_svc.create_pr.assert_awaited_once()
     task_svc.reassign.assert_not_called()
 

@@ -680,6 +680,100 @@ async def test_pm_complete_simple_task(
     assert str(final.status) == Status.COMPLETED.value
 
 
+async def _seed_reviewer(db_session: AsyncSession) -> AgentTable:
+    """Add + flush a backend in-path PR-review-gate reviewer for the gate tests.
+
+    Flushed here so a later ``task.assigned_to = reviewer.id`` update can't race
+    the reviewer INSERT in the same unit-of-work and trip the FK constraint.
+    """
+    reviewer = AgentTable(
+        id=uuid4(),
+        name="BE PR Reviewer",
+        slug="be-pr-reviewer",
+        role=AgentRole.PR_REVIEWER,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="reviewer",
+        capabilities=["review"],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(reviewer)
+    await db_session.flush()
+    return reviewer
+
+
+@pytest.mark.asyncio
+async def test_pr_review_gate_pass_path(
+    db_session: AsyncSession, lifecycle_setup: dict[str, Any]
+) -> None:
+    """in_progress → submit_for_review → awaiting_pr_review → pr_gate_claim →
+    pr_pass → awaiting_pm_review.
+
+    Drives the new TaskService transitions through the real enforcement layer
+    (validate_task_transition + validate_git_requirements) and the DB — the
+    layers the mocked unit tests can't exercise.
+    """
+    task = lifecycle_setup["task"]
+    cell_pm_agent = lifecycle_setup["cell_pm_agent"]
+    reviewer = await _seed_reviewer(db_session)
+    task.status = TaskStatus.IN_PROGRESS
+    task.pr_number = _PR_NUMBER
+    task.pr_url = _PR_URL
+    task.pr_created = True
+    task.assigned_to = cell_pm_agent.id
+    task.claimed_by = cell_pm_agent.id
+    await db_session.flush()
+
+    svc = TaskService(db_session)
+
+    entered = await svc.submit_for_review(
+        cell_pm_agent.id, task.id, notes="cell assembled; entering review"
+    )
+    assert entered is not None
+    assert str(entered.status) == Status.AWAITING_PR_REVIEW.value
+
+    claimed = await svc.pr_gate_claim(reviewer.id, task.id)
+    assert claimed is not None
+    assert str(claimed.status) == Status.AWAITING_PR_REVIEW.value
+    assert claimed.assigned_to == reviewer.id
+
+    passed = await svc.pr_pass(reviewer.id, task.id, notes="integration verified")
+    assert passed is not None
+    assert str(passed.status) == Status.AWAITING_PM_REVIEW.value
+    assert passed.assigned_to is None  # cleared so the PM-closure dispatch routes
+
+    final = await svc.get(task.id)
+    assert final is not None
+    assert str(final.status) == Status.AWAITING_PM_REVIEW.value
+
+
+@pytest.mark.asyncio
+async def test_pr_review_gate_fail_path(
+    db_session: AsyncSession, lifecycle_setup: dict[str, Any]
+) -> None:
+    """awaiting_pr_review → pr_fail → needs_revision, with issues recorded for
+    the PM's revision."""
+    task = lifecycle_setup["task"]
+    reviewer = await _seed_reviewer(db_session)
+    task.status = TaskStatus.AWAITING_PR_REVIEW
+    task.assigned_to = reviewer.id
+    task.claimed_by = reviewer.id
+    await db_session.flush()
+
+    svc = TaskService(db_session)
+    failed = await svc.pr_fail(
+        reviewer.id,
+        task.id,
+        notes="integration seam is broken",
+        issues=["FE sends task_id as a string where the BE requires a UUID"],
+    )
+    assert failed is not None
+    assert str(failed.status) == Status.NEEDS_REVISION.value
+    assert "string where the BE requires a UUID" in (failed.dev_notes or "")
+
+
 # ---------------------------------------------------------------------------
 # 6. PM escalate: awaiting_pm_review → awaiting_ceo_approval
 # ---------------------------------------------------------------------------

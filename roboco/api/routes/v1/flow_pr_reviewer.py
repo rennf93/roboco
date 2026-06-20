@@ -8,10 +8,13 @@ from fastapi import APIRouter, Depends, Header, Request
 from roboco.api.deps import get_choreographer
 from roboco.api.routes.v1._role_dep import envelope_to_response, require_pr_reviewer
 from roboco.api.schemas.v1.flow import (
+    ClaimGateReviewRequest,
     ClaimPrReviewRequest,
     GiveMeWorkRequest,
     IAmIdleRequest,
     PostPrReviewRequest,
+    PrFailRequest,
+    PrPassRequest,
 )
 from roboco.services.gateway.choreographer import Choreographer
 
@@ -58,6 +61,39 @@ async def post_pr_review(
     env = await choreographer.post_pr_review(
         x_agent_id, body.task_id, body.body, body.event
     )
+    return envelope_to_response(env, request)
+
+
+@router.post("/claim_gate_review")
+async def claim_gate_review(
+    request: Request,
+    body: ClaimGateReviewRequest,
+    x_agent_id: _AgentIdHeader,
+    choreographer: _ChoreographerDep,
+) -> dict:
+    env = await choreographer.claim_gate_review(x_agent_id, body.task_id)
+    return envelope_to_response(env, request)
+
+
+@router.post("/pr_pass")
+async def pr_pass(
+    request: Request,
+    body: PrPassRequest,
+    x_agent_id: _AgentIdHeader,
+    choreographer: _ChoreographerDep,
+) -> dict:
+    env = await choreographer.pr_pass(x_agent_id, body.task_id, body.notes)
+    return envelope_to_response(env, request)
+
+
+@router.post("/pr_fail")
+async def pr_fail(
+    request: Request,
+    body: PrFailRequest,
+    x_agent_id: _AgentIdHeader,
+    choreographer: _ChoreographerDep,
+) -> dict:
+    env = await choreographer.pr_fail(x_agent_id, body.task_id, body.issues)
     return envelope_to_response(env, request)
 
 

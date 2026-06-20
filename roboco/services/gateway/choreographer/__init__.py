@@ -22,12 +22,13 @@ from roboco.services.gateway.choreographer._impl import (
 )
 from roboco.services.gateway.choreographer.board import BoardMixin
 from roboco.services.gateway.choreographer.doc import DocMixin
+from roboco.services.gateway.choreographer.pr_gate import PRGateMixin
 from roboco.services.gateway.choreographer.pr_review import PRReviewerMixin
 from roboco.services.gateway.choreographer.qa import QAMixin
 
 
 class Choreographer(
-    BoardMixin, DocMixin, QAMixin, PRReviewerMixin, _LegacyChoreographer
+    BoardMixin, DocMixin, QAMixin, PRReviewerMixin, PRGateMixin, _LegacyChoreographer
 ):
     """Composed choreographer.
 
