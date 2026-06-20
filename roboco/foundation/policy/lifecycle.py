@@ -736,8 +736,18 @@ def _next_hint_after_plan(_t: Any) -> str:
     )
 
 
-def _next_hint_continue_delegating(_t: Any) -> str:
-    return "continue delegating subtasks, or i_am_idle when done"
+def _next_hint_continue_delegating(t: Any) -> str:
+    # Name the bubble-up verb proactively so PMs don't have to discover it via
+    # a rejection: a root (no parent) is the Main PM's submit_root (root→master
+    # PR); a cell parent is the Cell PM's submit_up (cell→root PR).
+    bubble = (
+        "submit_root" if getattr(t, "parent_task_id", None) is None else "submit_up"
+    )
+    return (
+        "continue delegating subtasks; when every subtask is terminal,"
+        f" call {bubble}(task_id, notes='...') to open the PR + enter the"
+        " review gate (or i_am_idle if not ready)"
+    )
 
 
 def _next_hint_qa_review(_t: Any) -> str:

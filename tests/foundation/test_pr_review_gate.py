@@ -98,3 +98,14 @@ def test_pr_pass_is_the_sole_action_out_of_the_gate_into_pm_review() -> None:
 def test_gate_actions_block_self_review() -> None:
     assert spec._ATOMIC_ACTIONS["pr_pass"].self_review_block is True
     assert spec._ATOMIC_ACTIONS["pr_fail"].self_review_block is True
+
+
+def test_delegate_hint_names_the_role_correct_bubble_up_verb() -> None:
+    """After delegating, a PM is steered to the right bubble-up verb proactively:
+    a root (no parent) → submit_root; a cell parent → submit_up. Prevents the
+    guess-the-verb flail that deadlocked root closure."""
+    hint = spec._INTENT_VERBS["delegate"].next_hint
+    root = _task("in_progress", parent_task_id=None)
+    cell_parent = _task("in_progress", parent_task_id="parent-id")
+    assert "submit_root" in hint(root)
+    assert "submit_up" in hint(cell_parent)

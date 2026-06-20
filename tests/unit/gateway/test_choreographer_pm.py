@@ -415,6 +415,38 @@ async def test_cell_pm_complete_not_assigned_returns_not_authorized() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cell_pm_complete_in_progress_steers_to_submit_up() -> None:
+    """Mirror of the main-PM submit_root steer: a cell task still in_progress
+    must enter the gate via submit_up first. The rejection must NAME submit_up
+    so the cell PM isn't left guessing the verb (the gap that deadlocked the
+    main PM on submit_root)."""
+    pm_id = uuid4()
+    task_id = uuid4()
+    t = MagicMock(
+        id=task_id,
+        status="in_progress",
+        assigned_to=pm_id,
+        parent_task_id=uuid4(),
+        branch_name="feature/backend/parent123",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.all_subtasks_terminal.return_value = True
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
+    journal_svc.has_reflect_for_task.return_value = True
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.cell_pm_complete(
+        pm_id, task_id, notes="cell scope assembled; ready to bubble up"
+    )
+    assert env.error is not None
+    assert "submit_up" in (env.remediate or "")
+
+
+@pytest.mark.asyncio
 async def test_main_pm_complete_escalates_code_root_without_reopening_pr() -> None:
     """A code root reaches main_pm_complete already in awaiting_pm_review —
     submit_root opened the root→master PR and the main reviewer pr_passed it —

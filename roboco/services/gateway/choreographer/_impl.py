@@ -4822,13 +4822,25 @@ class Choreographer:
                 context_briefing=await self._briefing_for(pm_agent_id, task_id),
             )
         if str(t.status) != "awaiting_pm_review":
+            # An in_progress cell task must enter the in-path gate first:
+            # submit_up opens the cell→root PR and moves it to
+            # awaiting_pr_review, then the cell reviewer pr_passes it to
+            # awaiting_pm_review where complete merges. Name the verb so the
+            # cell PM isn't left guessing (the parallel of the main PM's
+            # submit_root steer).
+            gate_hint = (
+                "open the cell→root PR and enter review first:"
+                " submit_up(task_id, notes='...'). After the cell reviewer"
+                " pr_passes it, complete merges the cell→root PR."
+                if str(t.status) == "in_progress"
+                else "this task is not ready for completion."
+            )
             return Envelope.invalid_state(
                 message=(
                     f"task {task_id} is in {t.status}, expected awaiting_pm_review"
                 ),
                 remediate=(
-                    "this task is not ready for completion."
-                    + await self._own_review_hint(pm_agent_id, task_id)
+                    gate_hint + await self._own_review_hint(pm_agent_id, task_id)
                 ),
                 context_briefing=await self._briefing_for(pm_agent_id, task_id),
             )
