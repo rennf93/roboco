@@ -154,6 +154,50 @@ async def test_duplicate_slug_conflicts(product_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_update_remaps_existing_cells_without_unique_collision(
+    product_setup: dict,
+) -> None:
+    """Re-mapping cells that already have a project must not collide.
+
+    ``_replace_cells`` deletes the old (product_id, team) rows and inserts the
+    new ones. Within a single flush SQLAlchemy orders INSERTs before DELETEs, so
+    without flushing the deletes first the new rows hit
+    ``uq_product_projects_product_team`` — the 409 seen when editing a product's
+    projects. Regression for that ordering bug.
+    """
+    svc = product_setup["svc"]
+    projects = product_setup["projects"]
+    product = await svc.create(
+        ProductCreate(
+            name="Remap",
+            slug=f"remap-{uuid4().hex[:6]}",
+            cells=[
+                ProductCellMapping(team=c, project_id=projects[c].id)
+                for c in (Team.BACKEND, Team.FRONTEND, Team.UX_UI)
+            ],
+        ),
+        created_by=product_setup["creator"],
+    )
+    # Every team already has a mapping; re-map all three to different projects.
+    swapped = {
+        Team.BACKEND: projects[Team.FRONTEND].id,
+        Team.FRONTEND: projects[Team.UX_UI].id,
+        Team.UX_UI: projects[Team.BACKEND].id,
+    }
+    updated = await svc.update(
+        product.id,
+        ProductUpdate(
+            cells=[
+                ProductCellMapping(team=t, project_id=pid) for t, pid in swapped.items()
+            ]
+        ),
+    )
+    assert updated is not None
+    for team, pid in swapped.items():
+        assert await svc.project_for(product.id, team) == pid
+
+
+@pytest.mark.asyncio
 async def test_update_replaces_cells(product_setup: dict) -> None:
     svc = product_setup["svc"]
     projects = product_setup["projects"]

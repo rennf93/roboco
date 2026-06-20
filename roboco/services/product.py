@@ -133,7 +133,14 @@ class ProductService(BaseService):
         synchronous lazy load and raise MissingGreenlet).
         """
         await self.session.refresh(product, ["cells"])
-        product.cells.clear()  # delete-orphan removes the old mapping rows
+        product.cells.clear()  # delete-orphan marks the old mapping rows for delete
+        # Flush the DELETEs before appending the new rows. Within a single flush
+        # SQLAlchemy orders INSERTs before DELETEs for the same table, so without
+        # this the new (product_id, team) rows collide with the not-yet-deleted
+        # old ones on uq_product_projects_product_team (a 409 on any re-mapping of
+        # a team that already has a project). Flushing here issues the DELETEs
+        # first; the appended rows insert cleanly on the next flush.
+        await self.session.flush()
         for mapping in cells:
             product.cells.append(
                 ProductProjectTable(team=mapping.team, project_id=mapping.project_id)
