@@ -4512,14 +4512,25 @@ class Choreographer:
     async def _submit_up_ownership_guard(
         self, pm_agent_id: UUID, task_id: UUID, t: Any, notes: str
     ) -> Envelope | None:
-        """Role + assignment + notes-length guards for submit_up."""
+        """Role + assignment + notes-length guards shared by submit_up + submit_root.
+
+        Both callers run the spec gate (``can_invoke_intent``) first, which
+        already restricts submit_up→cell_pm and submit_root→main_pm, so this
+        guard must accept either PM role — a hardcoded cell_pm-only check would
+        reject the Main PM's submit_root and deadlock root closure (submit_root
+        and complete then point at each other). The check stays as a
+        defense-in-depth reject of any non-PM actor that reaches here.
+        """
         from roboco.config import settings as roboco_settings
 
         agent = await self.task.agent_for(pm_agent_id)
-        if agent is None or agent.role != "cell_pm":
+        if agent is None or agent.role not in ("cell_pm", "main_pm"):
             return Envelope.not_authorized(
-                message="submit_up is reserved for cell_pm",
-                remediate="main_pm should call complete on root tasks instead",
+                message="submit_up / submit_root are reserved for PM roles",
+                remediate=(
+                    "only a cell PM (submit_up) or main PM (submit_root)"
+                    " may bubble work up"
+                ),
                 context_briefing=await self._briefing_for(pm_agent_id, task_id),
             )
         if t.assigned_to != pm_agent_id:

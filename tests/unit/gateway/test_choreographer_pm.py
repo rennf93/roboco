@@ -489,6 +489,49 @@ async def test_main_pm_complete_rejects_in_progress_code_root_toward_submit_root
 
 
 @pytest.mark.asyncio
+async def test_submit_root_accepts_main_pm_and_enters_the_gate() -> None:
+    """submit_root is the Main PM's entry to the in-path gate. It reuses the
+    cell PM's _submit_up_guard for ownership/state, so the ownership guard must
+    NOT hardcode-reject main_pm — otherwise submit_root and complete point at
+    each other and a code root can never close (the circular-rejection bug)."""
+    main_pm_id = uuid4()
+    root_task_id = uuid4()
+    in_prog = MagicMock(
+        id=root_task_id,
+        status="in_progress",
+        assigned_to=main_pm_id,
+        pr_number=None,
+        branch_name="feature/main_pm/root123",
+        parent_task_id=None,
+        team="main_pm",
+    )
+    gated = MagicMock(**{**in_prog.__dict__, "status": "awaiting_pr_review"})
+    task_svc = AsyncMock()
+    task_svc.get.return_value = in_prog
+    task_svc.submit_for_review.return_value = gated
+    task_svc.all_subtasks_terminal.return_value = True
+    task_svc.uncovered_parent_acceptance_criteria.return_value = []
+    task_svc.agent_for.return_value = MagicMock(role="main_pm", team="main_pm")
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(__aenter__=AsyncMock(), __aexit__=AsyncMock())
+    )
+    git_svc = AsyncMock()
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
+    journal_svc.has_reflect_for_task.return_value = True
+    deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.submit_root(
+        main_pm_id, root_task_id, notes="root scope assembled; opening root→master PR"
+    )
+    assert env.error is None, env.as_dict()
+    assert env.status == "awaiting_pr_review"
+    task_svc.submit_for_review.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_main_pm_complete_walks_branchless_coordination_root_to_ceo() -> None:
     """A branchless coordination root (product fan-out, no repo/PR) skips the
     in-path gate: main_pm_complete walks it in_progress→awaiting_pm_review and
