@@ -125,6 +125,8 @@ pr_pass(task_id, notes)         # assembled PR is correct -> awaiting_pm_review 
 pr_fail(task_id, issues)        # send it back -> needs_revision, like a QA fail
 ```
 
+Both verdicts are also posted on the assembled PR itself as a GitHub review (server-side, bot account) so the decision is visible on the PR the PM merges: `pr_pass` → APPROVE, `pr_fail` → REQUEST_CHANGES — except the root→master PR, which only ever gets a plain COMMENT (only the CEO acts on `master`).
+
 A cell reviewer (be/fe/ux-pr-reviewer) reviews its cell's assembled cell→root PR; `pr-reviewer-1` reviews the root→master PR for the cross-cell integration seam, before the CEO sees it.
 
 ## Cancel

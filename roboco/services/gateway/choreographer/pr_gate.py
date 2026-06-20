@@ -238,12 +238,60 @@ class PRGateMixin(_Base):
                 task_id=task_id,
                 verb=verb,
             )
+        # Leave the gate verdict on the PR itself so there's a visible trail on
+        # the very PR the PM (or CEO) merges. Best-effort and AFTER the DB
+        # transition — a GitHub failure must not roll back the gate decision.
+        reviewer_slug = getattr(agent, "slug", None) or role_str
+        await self._post_gate_review_to_pr(t, verb, reviewer_slug, notes)
         return Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
             next=spec_module._INTENT_VERBS[verb].next_hint(t),
             context_briefing=briefing,
         ).with_introspection(task=t, role=role_str)
+
+    async def _post_gate_review_to_pr(
+        self, t: Any, verb: str, reviewer_slug: str, notes: str
+    ) -> None:
+        """Post the gate verdict as a review on the assembled PR (best-effort).
+
+        ``pr_pass`` posts an APPROVE, ``pr_fail`` a REQUEST_CHANGES — EXCEPT on
+        the root→master PR (a root task has no ``parent_task_id``), which always
+        gets a plain COMMENT: only the CEO acts on master, so the gate never
+        leaves an approval that could satisfy branch protection and let anyone
+        else merge, nor a blocking review that could impede the CEO's merge.
+        For the org's own PRs ``git.post_pr_review`` already downgrades a
+        forbidden self-review to a COMMENT, so the verdict lands regardless.
+        """
+        slug = await self._project_slug_for(t)
+        pr_number = getattr(t, "pr_number", None)
+        if not slug or not pr_number:
+            return
+        is_root = getattr(t, "parent_task_id", None) is None
+        if verb == "pr_pass":
+            event = "COMMENT" if is_root else "APPROVE"
+            verdict = "PASSED ✅"
+        else:
+            event = "COMMENT" if is_root else "REQUEST_CHANGES"
+            verdict = "CHANGES REQUESTED 🔴"
+        body_lines = [
+            f"## In-path PR-review gate — {verdict}",
+            "",
+            f"Reviewed by **{reviewer_slug}** (RoboCo PR reviewer). Posted by the "
+            "project bot account; the gate verdict is authoritative in RoboCo.",
+            "",
+            (notes or "").strip() or "_(no additional notes)_",
+        ]
+        if is_root:
+            body_lines += ["", "_Only the CEO merges this PR into `master`._"]
+        try:
+            await self.git.post_pr_review(
+                slug, int(pr_number), "\n".join(body_lines), event=event
+            )
+        except Exception:
+            logger.exception(
+                "gate review PR post failed", task_id=str(getattr(t, "id", ""))
+            )
 
     async def _gate_role_or_rejection(
         self,
