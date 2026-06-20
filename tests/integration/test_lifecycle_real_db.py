@@ -727,6 +727,7 @@ async def test_pr_review_gate_pass_path(
     await db_session.flush()
 
     svc = TaskService(db_session)
+    reviewer_id = UUID(str(reviewer.id))
 
     entered = await svc.submit_for_review(
         cell_pm_agent.id, task.id, notes="cell assembled; entering review"
@@ -734,12 +735,12 @@ async def test_pr_review_gate_pass_path(
     assert entered is not None
     assert str(entered.status) == Status.AWAITING_PR_REVIEW.value
 
-    claimed = await svc.pr_gate_claim(reviewer.id, task.id)
+    claimed = await svc.pr_gate_claim(reviewer_id, task.id)
     assert claimed is not None
     assert str(claimed.status) == Status.AWAITING_PR_REVIEW.value
     assert claimed.assigned_to == reviewer.id
 
-    passed = await svc.pr_pass(reviewer.id, task.id, notes="integration verified")
+    passed = await svc.pr_pass(reviewer_id, task.id, notes="integration verified")
     assert passed is not None
     assert str(passed.status) == Status.AWAITING_PM_REVIEW.value
     assert passed.assigned_to is None  # cleared so the PM-closure dispatch routes
@@ -764,7 +765,7 @@ async def test_pr_review_gate_fail_path(
 
     svc = TaskService(db_session)
     failed = await svc.pr_fail(
-        reviewer.id,
+        UUID(str(reviewer.id)),
         task.id,
         notes="integration seam is broken",
         issues=["FE sends task_id as a string where the BE requires a UUID"],

@@ -22,23 +22,24 @@ CEO (Renzo - Human)
 
 | Role | Count |
 |------|-------|
-| CEO | 1 (human — not counted in the 22) |
+| CEO | 1 (human — not counted in the 25) |
 | Product Owner | 1 |
 | Head of Marketing | 1 |
 | Auditor | 1 |
-| PR Reviewer | 1 |
+| Main PR Reviewer | 1 (pr-reviewer-1; external/fork + internal PRs + the root→master gate) |
 | Main PM | 1 |
 | Cell PMs | 3 |
 | Developers | 6 (2 per cell) |
 | QAs | 3 (1 per cell) |
 | Documenters | 3 (1 per cell) |
+| Cell PR Reviewers | 3 (1 per cell; the in-path cell→root gate) |
 | Prompter (Intake) | 1 (on-demand) |
 | Secretary | 1 (on-demand) |
-| **Total AI agents** | **22** |
+| **Total AI agents** | **25** |
 
 ## On-Demand Roles (Human-Facing)
 
-Two of the 22 — the Prompter (Intake) and the Secretary — sit outside the standing delivery org above. They are **human-only** and **spawned on demand** as live chat sessions; they are counted among the 22, but unlike the standing org they have no lifecycle verbs and no outward agent comms:
+Two of the 25 — the Prompter (Intake) and the Secretary — sit outside the standing delivery org above. They are **human-only** and **spawned on demand** as live chat sessions; they are counted among the 25, but unlike the standing org they have no lifecycle verbs and no outward agent comms:
 
 | Role | Purpose |
 |------|---------|
@@ -49,11 +50,13 @@ Neither has lifecycle verbs or outward agent comms. See [Prompter](../roles/prom
 
 ## Cells
 
-| Cell | PM | Developers | QA | Documenter |
-|------|-----|------------|-----|------------|
-| Backend | be-pm | be-dev-1, be-dev-2 | be-qa | be-doc |
-| Frontend | fe-pm | fe-dev-1, fe-dev-2 | fe-qa | fe-doc |
-| UX/UI | ux-pm | ux-dev-1, ux-dev-2 | ux-qa | ux-doc |
+| Cell | PM | Developers | QA | Documenter | PR Reviewer |
+|------|-----|------------|-----|------------|-------------|
+| Backend | be-pm | be-dev-1, be-dev-2 | be-qa | be-doc | be-pr-reviewer |
+| Frontend | fe-pm | fe-dev-1, fe-dev-2 | fe-qa | fe-doc | fe-pr-reviewer |
+| UX/UI | ux-pm | ux-dev-1, ux-dev-2 | ux-qa | ux-doc | ux-pr-reviewer |
+
+The cell PR reviewer runs the **in-path PR-review gate** on its cell's assembled cell→root PR (`claim_gate_review` → `pr_pass` / `pr_fail`); `pr-reviewer-1` runs the same gate on the root→master PR plus the inbound external/fork + internal PR review.
 
 ## Teams
 
