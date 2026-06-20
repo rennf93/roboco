@@ -2,9 +2,9 @@
 
 The loop opens a fix task only when ``self_heal_originate_enabled``, dedupes one
 open task per regression fingerprint, honors the per-cycle and rolling open-task
-caps, and creates the task PENDING + UNASSIGNED + ``confirmed_by_human=False`` so
-it sits inert until the CEO Approve-&-Starts it. Crucially it NEVER calls
-start / approve / merge / deploy — asserted here.
+caps, and creates the task PENDING + assigned to the Main PM agent +
+``confirmed_by_human=False`` so it sits inert until the CEO Approve-&-Starts it.
+Crucially it NEVER calls start / approve / merge / deploy — asserted here.
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 SYSTEM_UUID = _foundation.AGENTS["system"].uuid
+MAIN_PM_UUID = _foundation.AGENTS["main-pm"].uuid
 SLUG = "roboco"
 ONE = 1
 
@@ -78,6 +79,25 @@ async def _seed_project(session: AsyncSession, slug: str = SLUG) -> None:
             )
         )
         await session.flush()
+    # The loop assigns the fix task to the Main PM agent (an FK to agents.id), so
+    # that row must exist — get-or-create by its fixed foundation uuid.
+    if await session.get(AgentTable, MAIN_PM_UUID) is None:
+        session.add(
+            AgentTable(
+                id=MAIN_PM_UUID,
+                name="Main PM",
+                slug="main-pm",
+                role=AgentRole.MAIN_PM,
+                team=Team.MAIN_PM,
+                status=AgentStatus.ACTIVE,
+                model_config={},
+                system_prompt="pm",
+                capabilities=[],
+                permissions={},
+                metrics={},
+            )
+        )
+        await session.flush()
     session.add(
         ProjectTable(
             name="RoboCo",
@@ -117,7 +137,7 @@ async def test_disabled_originate_creates_no_task(
 
 
 @pytest.mark.asyncio
-async def test_originate_creates_pending_unassigned_task(
+async def test_originate_creates_pending_main_pm_assigned_task(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     await _seed_project(db_session)
@@ -129,8 +149,10 @@ async def test_originate_creates_pending_unassigned_task(
     assert len(open_tasks) == ONE
     task = open_tasks[0]
     assert task.status == TaskStatus.PENDING
-    assert task.assigned_to is None  # inert until the CEO Approve-&-Starts it
-    assert task.confirmed_by_human is False
+    # Assigned to the Main PM agent up front (not just team=main_pm) so that, once
+    # the CEO confirms it, the orchestrator dispatches it straight to that agent.
+    assert task.assigned_to == MAIN_PM_UUID
+    assert task.confirmed_by_human is False  # still inert until Approve-&-Start
     assert task.team == Team.MAIN_PM
     assert task.source == "self_heal"
     assert task.acceptance_criteria  # non-empty (AC-guardrail)

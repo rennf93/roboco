@@ -128,9 +128,15 @@ class SelfHealEngine(BaseService):
         Bounded + deduped: skips a regression that already has an open self-heal
         task (by fingerprint), honors the per-cycle and rolling open-task caps,
         and resolves the repo to RoboCo's own project. Each task is created
-        PENDING + UNASSIGNED + ``confirmed_by_human=False`` so it sits inert until
-        the CEO Approve-&-Starts it — origination is the loop's last act. It NEVER
-        calls start / approve / merge / deploy. Flushes; the caller commits.
+        PENDING + assigned to the Main PM + ``confirmed_by_human=False`` so it
+        sits inert until the CEO Approve-&-Starts it — origination is the loop's
+        last act. It is assigned to the Main PM AGENT (not merely team=main_pm)
+        so that, once the CEO approves, the orchestrator dispatches it straight to
+        that agent via the assigned-PM path instead of the unassigned-team
+        routing, which picks up slowly or not at all. The confirmed_by_human gate
+        still holds it inert until approval (the dispatcher's self-heal skip sits
+        before the assigned/unassigned split). It NEVER calls start / approve /
+        merge / deploy. Flushes; the caller commits.
         """
         task_svc = get_task_service(self.session)
         project_svc = get_project_service(self.session)
@@ -177,6 +183,7 @@ class SelfHealEngine(BaseService):
                         "masked or skipped",
                     ],
                     team=Team.MAIN_PM,
+                    assigned_to=_foundation.AGENTS["main-pm"].uuid,
                     created_by=_foundation.AGENTS["system"].uuid,
                     task_type=TaskType.CODE,
                     nature=TaskNature.TECHNICAL,
