@@ -68,6 +68,17 @@ def test_approve_and_start_notes_roundtrip() -> None:
     assert m.get_approve_and_start_notes(t) == "Board approved; build it."
 
 
+def test_transition_note_roundtrip_keyed_by_event() -> None:
+    t = _task()
+    assert m.get_transition_note(t, "ceo_rejection") is None
+    m.set_transition_note(t, "completion", "Reviewed and merged.")
+    m.set_transition_note(t, "ceo_rejection", "Needs the migration first.")
+    # Each event keeps its own note; setting one doesn't clobber another.
+    assert m.get_transition_note(t, "completion") == "Reviewed and merged."
+    assert m.get_transition_note(t, "ceo_rejection") == "Needs the migration first."
+    assert m.get_transition_note(t, "never_set") is None
+
+
 def test_documenter_self_heal_head_supersede() -> None:
     t = _task()
     m.set_documenter(t, "doc-uuid")

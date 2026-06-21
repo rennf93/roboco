@@ -171,3 +171,27 @@ def get_approve_and_start_notes(task: HasMarkers) -> str | None:
 
 def set_approve_and_start_notes(task: HasMarkers, notes: str) -> None:
     set_marker(task, APPROVE_AND_START_NOTES, notes)
+
+
+# --- lifecycle transition notes -------------------------------------------- #
+# A PM/CEO note attached to a lifecycle transition (completion, escalate_to_ceo,
+# ceo_approval, ceo_rejection). These used to be string-packed into
+# ``quick_context`` as ``<event>:<text>`` soup; they live here keyed by event so
+# ``quick_context`` carries only the human ResumptionNote.
+
+TRANSITION_NOTES = "transition_notes"
+
+
+def get_transition_note(task: HasMarkers, event: str) -> str | None:
+    notes = get_marker(task, TRANSITION_NOTES)
+    if not isinstance(notes, dict):
+        return None
+    val = notes.get(event)
+    return str(val) if val else None
+
+
+def set_transition_note(task: HasMarkers, event: str, note: str) -> None:
+    existing = get_marker(task, TRANSITION_NOTES)
+    notes = dict(existing) if isinstance(existing, dict) else {}
+    notes[event] = note
+    set_marker(task, TRANSITION_NOTES, notes)

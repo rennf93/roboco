@@ -3873,13 +3873,9 @@ class TaskService(BaseService):
         """Append completion_notes entry to quick_context when supplied."""
         if not notes:
             return
-        existing_context = task.quick_context or ""
-        note_entry = f"completion_notes:{notes}"
-        task.quick_context = (
-            f"{existing_context}\n{note_entry}".strip()
-            if existing_context
-            else note_entry
-        )
+        # A coordination annotation, not a human ResumptionNote — store as a
+        # marker so quick_context never carries `completion_notes:<text>` soup.
+        markers.set_transition_note(task, "completion", notes)
 
     async def submit_for_pm_review(
         self,
@@ -4267,15 +4263,9 @@ class TaskService(BaseService):
             )
             return None
 
-        # Store escalation notes
+        # Store the escalation note as a marker, not quick_context soup.
         if notes:
-            existing_context = task.quick_context or ""
-            note_entry = f"escalation_notes:{notes}"
-            task.quick_context = (
-                f"{existing_context}\n{note_entry}".strip()
-                if existing_context
-                else note_entry
-            )
+            markers.set_transition_note(task, "escalate_to_ceo", notes)
 
         # Validate transition with PM role requirement
         self._validate_and_set_status(
@@ -4345,15 +4335,9 @@ class TaskService(BaseService):
                 )
                 return None
 
-        # Store CEO notes
+        # Store the CEO's approval note as a marker, not quick_context soup.
         if notes:
-            existing_context = task.quick_context or ""
-            note_entry = f"ceo_approval_notes:{notes}"
-            task.quick_context = (
-                f"{existing_context}\n{note_entry}".strip()
-                if existing_context
-                else note_entry
-            )
+            markers.set_transition_note(task, "ceo_approval", notes)
 
         task.completed_at = datetime.now(UTC)
         # Validate transition with CEO role requirement
@@ -4548,14 +4532,8 @@ class TaskService(BaseService):
             )
             return None
 
-        # Store CEO rejection reason
-        existing_context = task.quick_context or ""
-        rejection_entry = f"ceo_rejection:{reason}"
-        task.quick_context = (
-            f"{existing_context}\n{rejection_entry}".strip()
-            if existing_context
-            else rejection_entry
-        )
+        # Store the CEO's rejection reason as a marker, not quick_context soup.
+        markers.set_transition_note(task, "ceo_rejection", reason)
 
         # A coordination/integration root (no repo of its own, carries a
         # product) has no developer to revise it — NEEDS_REVISION is
