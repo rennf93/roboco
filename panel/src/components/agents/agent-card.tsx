@@ -28,7 +28,13 @@ interface AgentCardProps {
 export function AgentCard({ agent, agentStatus, usageRow }: AgentCardProps) {
   const stopAgent = useStopAgent();
   const state = agentStatus?.state || "stopped";
-  const isActive = ["running", "ready", "starting", "waiting_long"].includes(state);
+  // "Up" = anything that isn't a terminal/down state. Spawn is offered ONLY when
+  // the agent is down; an up agent (active / running / idle / paused / …) shows
+  // View Details + Stop instead. We list the DOWN states rather than the up ones
+  // so a new "up" state the backend adds defaults to non-spawnable — the safe
+  // side, since spawning an already-running agent is exactly the bug to avoid.
+  // (The badge renders "active" as a first-class state, so it MUST count as up.)
+  const isActive = !["stopped", "offline", "terminated", "error"].includes(state);
 
   const handleStop = async (graceful: boolean) => {
     try {
