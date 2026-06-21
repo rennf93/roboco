@@ -14,9 +14,24 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { User, Calendar, Clock, Target, AlertTriangle, GitBranch, FolderGit2, Wrench, Briefcase, Hash, GitPullRequest, ExternalLink } from "lucide-react";
+import {
+  User,
+  Calendar,
+  Clock,
+  Target,
+  AlertTriangle,
+  GitBranch,
+  FolderGit2,
+  Wrench,
+  Briefcase,
+  Hash,
+  GitPullRequest,
+  ExternalLink,
+} from "lucide-react";
 import { toast } from "sonner";
 import { getAgentDisplayName, resolveToSlug } from "@/lib/agent-utils";
+import { branchUrl } from "@/lib/repo-url";
+import { CopyButton } from "@/components/ui/copy-button";
 import { TaskTypeBadge } from "../task-type-badge";
 import { DocsStatusBadge } from "../docs-status-badge";
 import Link from "next/link";
@@ -80,6 +95,7 @@ function formatDateForInput(date: string | null): string {
 export function TaskMetadata({ task }: TaskMetadataProps) {
   const updateTask = useUpdateTask();
   const { data: project } = useProject(task.project_id ?? "");
+  const branchHref = branchUrl(project?.git_url, task.branch_name);
 
   // Editing states - use local state only while editing
   const [editingAssigned, setEditingAssigned] = useState(false);
@@ -91,10 +107,14 @@ export function TaskMetadata({ task }: TaskMetadataProps) {
   const targetDateInputRef = useRef<HTMLInputElement>(null);
 
   // Display prop value when not editing, local value when editing
-  const assignedValue = editingAssigned ? localAssignedValue : (task.assigned_to ?? "");
+  const assignedValue = editingAssigned
+    ? localAssignedValue
+    : (task.assigned_to ?? "");
   const setAssignedValue = (value: string) => setLocalAssignedValue(value);
 
-  const targetDateValue = editingTargetDate ? localTargetDateValue : formatDateForInput(task.target_date);
+  const targetDateValue = editingTargetDate
+    ? localTargetDateValue
+    : formatDateForInput(task.target_date);
   const setTargetDateValue = (value: string) => setLocalTargetDateValue(value);
 
   // Start editing - copy current prop value to local state (resolved to slug)
@@ -173,7 +193,9 @@ export function TaskMetadata({ task }: TaskMetadataProps) {
   };
 
   const handleTargetDateSave = async () => {
-    const newValue = targetDateValue ? new Date(targetDateValue).toISOString() : null;
+    const newValue = targetDateValue
+      ? new Date(targetDateValue).toISOString()
+      : null;
     if (newValue === task.target_date) {
       setEditingTargetDate(false);
       return;
@@ -214,13 +236,17 @@ export function TaskMetadata({ task }: TaskMetadataProps) {
             onValueChange={handlePriorityChange}
             disabled={updateTask.isPending}
           >
-            <SelectTrigger className={`w-full h-8 text-sm border-0 ${priorityColors[task.priority] ?? priorityColors[2]}`}>
+            <SelectTrigger
+              className={`w-full h-8 text-sm border-0 ${priorityColors[task.priority] ?? priorityColors[2]}`}
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
               {Object.entries(priorityLabels).map(([value, label]) => (
                 <SelectItem key={value} value={value}>
-                  <span className={`px-2 py-0.5 rounded ${priorityColors[parseInt(value)]}`}>
+                  <span
+                    className={`px-2 py-0.5 rounded ${priorityColors[parseInt(value)]}`}
+                  >
                     {label}
                   </span>
                 </SelectItem>
@@ -293,7 +319,9 @@ export function TaskMetadata({ task }: TaskMetadataProps) {
             <User className="h-4 w-4" />
             Created By
           </div>
-          <span className="font-medium">{getAgentDisplayName(task.created_by)}</span>
+          <span className="font-medium">
+            {getAgentDisplayName(task.created_by)}
+          </span>
         </CardContent>
       </Card>
 
@@ -317,7 +345,9 @@ export function TaskMetadata({ task }: TaskMetadataProps) {
             <Calendar className="h-4 w-4" />
             Created
           </div>
-          <span className="font-medium">{formatRelativeTime(task.created_at)}</span>
+          <span className="font-medium">
+            {formatRelativeTime(task.created_at)}
+          </span>
         </CardContent>
       </Card>
 
@@ -328,7 +358,9 @@ export function TaskMetadata({ task }: TaskMetadataProps) {
             <Clock className="h-4 w-4" />
             Started
           </div>
-          <span className="font-medium">{formatRelativeTime(task.started_at)}</span>
+          <span className="font-medium">
+            {formatRelativeTime(task.started_at)}
+          </span>
         </CardContent>
       </Card>
 
@@ -369,7 +401,9 @@ export function TaskMetadata({ task }: TaskMetadataProps) {
             <Clock className="h-4 w-4" />
             Completed
           </div>
-          <span className="font-medium">{formatRelativeTime(task.completed_at)}</span>
+          <span className="font-medium">
+            {formatRelativeTime(task.completed_at)}
+          </span>
         </CardContent>
       </Card>
 
@@ -399,12 +433,15 @@ export function TaskMetadata({ task }: TaskMetadataProps) {
                 : "bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300"
             }
           >
-            {task.nature === TaskNature.TECHNICAL ? "Technical" : "Non-Technical"}
+            {task.nature === TaskNature.TECHNICAL
+              ? "Technical"
+              : "Non-Technical"}
           </Badge>
         </CardContent>
       </Card>
 
-      {/* Branch Name - Read-only (all tasks follow git workflow) */}
+      {/* Branch Name - read-only, but clickable (opens the branch on GitHub)
+          and copyable. Same look as before; the link/copy are additive. */}
       {task.branch_name && (
         <Card>
           <CardContent className="pt-4">
@@ -412,9 +449,26 @@ export function TaskMetadata({ task }: TaskMetadataProps) {
               <GitBranch className="h-4 w-4" />
               Branch
             </div>
-            <Badge variant="outline" className="font-mono text-xs">
-              {task.branch_name}
-            </Badge>
+            <div className="flex items-center gap-1">
+              {branchHref ? (
+                <a
+                  href={branchHref}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title="Open branch in GitHub"
+                  className="inline-flex transition-opacity hover:opacity-80"
+                >
+                  <Badge variant="outline" className="font-mono text-xs">
+                    {task.branch_name}
+                  </Badge>
+                </a>
+              ) : (
+                <Badge variant="outline" className="font-mono text-xs">
+                  {task.branch_name}
+                </Badge>
+              )}
+              <CopyButton value={task.branch_name} />
+            </div>
           </CardContent>
         </Card>
       )}

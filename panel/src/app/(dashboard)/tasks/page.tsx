@@ -7,7 +7,13 @@ import { useProjects } from "@/hooks/use-projects";
 import { useProducts } from "@/hooks/use-products";
 import { TaskStatus, Team, TaskType } from "@/types";
 import { OfflineState } from "@/components/ui/offline-state";
-import { CreateTaskDialog, TaskFilters, TaskTable, SortField, SortDirection } from "@/components/tasks";
+import {
+  CreateTaskDialog,
+  TaskFilters,
+  TaskTable,
+  SortField,
+  SortDirection,
+} from "@/components/tasks";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { RefreshCw } from "lucide-react";
@@ -21,27 +27,27 @@ function TasksPageContent() {
   const statusParam = searchParams.get("status");
   const statusFilter = useMemo(
     () => (statusParam?.split(",").filter(Boolean) as TaskStatus[]) || [],
-    [statusParam]
+    [statusParam],
   );
   const teamParam = searchParams.get("team");
   const teamFilter = useMemo(
     () => (teamParam?.split(",").filter(Boolean) as Team[]) || [],
-    [teamParam]
+    [teamParam],
   );
   const taskTypeParam = searchParams.get("type");
   const taskTypeFilter = useMemo(
     () => (taskTypeParam?.split(",").filter(Boolean) as TaskType[]) || [],
-    [taskTypeParam]
+    [taskTypeParam],
   );
   const projectParam = searchParams.get("project");
   const projectFilter = useMemo(
     () => projectParam?.split(",").filter(Boolean) || [],
-    [projectParam]
+    [projectParam],
   );
   const productParam = searchParams.get("product");
   const productFilter = useMemo(
     () => productParam?.split(",").filter(Boolean) || [],
-    [productParam]
+    [productParam],
   );
 
   // Table state from URL
@@ -52,71 +58,106 @@ function TasksPageContent() {
   const expandedParam = searchParams.get("expanded");
   const expandedIds = useMemo(
     () => new Set(expandedParam?.split(",").filter(Boolean) || []),
-    [expandedParam]
+    [expandedParam],
   );
 
   // Update URL params
-  const updateParams = useCallback((updates: Record<string, string | null>) => {
-    const params = new URLSearchParams(searchParams.toString());
-    Object.entries(updates).forEach(([key, value]) => {
-      if (value) {
-        params.set(key, value);
-      } else {
-        params.delete(key);
-      }
-    });
-    const query = params.toString();
-    router.push(query ? `/tasks?${query}` : "/tasks");
-  }, [router, searchParams]);
+  const updateParams = useCallback(
+    (updates: Record<string, string | null>) => {
+      const params = new URLSearchParams(searchParams.toString());
+      Object.entries(updates).forEach(([key, value]) => {
+        if (value) {
+          params.set(key, value);
+        } else {
+          params.delete(key);
+        }
+      });
+      const query = params.toString();
+      router.push(query ? `/tasks?${query}` : "/tasks");
+    },
+    [router, searchParams],
+  );
 
-  const handleSearchChange = useCallback((value: string) => {
-    updateParams({ q: value || null });
-  }, [updateParams]);
+  const handleSearchChange = useCallback(
+    (value: string) => {
+      updateParams({ q: value || null });
+    },
+    [updateParams],
+  );
 
-  const handleStatusChange = useCallback((value: TaskStatus[]) => {
-    updateParams({ status: value.length > 0 ? value.join(",") : null });
-  }, [updateParams]);
+  const handleStatusChange = useCallback(
+    (value: TaskStatus[]) => {
+      updateParams({ status: value.length > 0 ? value.join(",") : null });
+    },
+    [updateParams],
+  );
 
-  const handleTeamChange = useCallback((value: Team[]) => {
-    updateParams({ team: value.length > 0 ? value.join(",") : null });
-  }, [updateParams]);
+  const handleTeamChange = useCallback(
+    (value: Team[]) => {
+      updateParams({ team: value.length > 0 ? value.join(",") : null });
+    },
+    [updateParams],
+  );
 
-  const handleTaskTypeChange = useCallback((value: TaskType[]) => {
-    updateParams({ type: value.length > 0 ? value.join(",") : null });
-  }, [updateParams]);
+  const handleTaskTypeChange = useCallback(
+    (value: TaskType[]) => {
+      updateParams({ type: value.length > 0 ? value.join(",") : null });
+    },
+    [updateParams],
+  );
 
-  const handleProjectChange = useCallback((value: string[]) => {
-    updateParams({ project: value.length > 0 ? value.join(",") : null });
-  }, [updateParams]);
+  const handleProjectChange = useCallback(
+    (value: string[]) => {
+      updateParams({ project: value.length > 0 ? value.join(",") : null });
+    },
+    [updateParams],
+  );
 
-  const handleProductChange = useCallback((value: string[]) => {
-    updateParams({ product: value.length > 0 ? value.join(",") : null });
-  }, [updateParams]);
+  const handleProductChange = useCallback(
+    (value: string[]) => {
+      updateParams({ product: value.length > 0 ? value.join(",") : null });
+    },
+    [updateParams],
+  );
 
   // Table state handlers
-  const handleSortChange = useCallback((field: SortField, direction: SortDirection | null) => {
-    if (direction === null) {
-      updateParams({ sortBy: null, sortDir: null, page: null });
-    } else {
+  const handleSortChange = useCallback(
+    (field: SortField, direction: SortDirection | null) => {
+      if (direction === null) {
+        updateParams({ sortBy: null, sortDir: null, page: null });
+      } else {
+        updateParams({
+          sortBy: field === "created_at" ? null : field,
+          sortDir: direction === "desc" ? null : direction,
+          page: null,
+        });
+      }
+    },
+    [updateParams],
+  );
+
+  const handlePageChange = useCallback(
+    (page: number) => {
+      updateParams({ page: page === 1 ? null : String(page) });
+    },
+    [updateParams],
+  );
+
+  const handlePageSizeChange = useCallback(
+    (size: number) => {
+      updateParams({ size: size === 25 ? null : String(size), page: null });
+    },
+    [updateParams],
+  );
+
+  const handleExpandedChange = useCallback(
+    (ids: Set<string>) => {
       updateParams({
-        sortBy: field === "created_at" ? null : field,
-        sortDir: direction === "desc" ? null : direction,
-        page: null,
+        expanded: ids.size > 0 ? Array.from(ids).join(",") : null,
       });
-    }
-  }, [updateParams]);
-
-  const handlePageChange = useCallback((page: number) => {
-    updateParams({ page: page === 1 ? null : String(page) });
-  }, [updateParams]);
-
-  const handlePageSizeChange = useCallback((size: number) => {
-    updateParams({ size: size === 25 ? null : String(size), page: null });
-  }, [updateParams]);
-
-  const handleExpandedChange = useCallback((ids: Set<string>) => {
-    updateParams({ expanded: ids.size > 0 ? Array.from(ids).join(",") : null });
-  }, [updateParams]);
+    },
+    [updateParams],
+  );
 
   // Fetch all tasks and filter client-side for multi-select
   const { data: tasks, isLoading, error, refetch } = useTasks();
@@ -126,19 +167,23 @@ function TasksPageContent() {
   const { data: products } = useProducts();
   const projectNames = useMemo(
     () => Object.fromEntries((projects ?? []).map((p) => [p.id, p.name])),
-    [projects]
+    [projects],
+  );
+  const projectGitUrls = useMemo(
+    () => Object.fromEntries((projects ?? []).map((p) => [p.id, p.git_url])),
+    [projects],
   );
   const productNames = useMemo(
     () => Object.fromEntries((products ?? []).map((p) => [p.id, p.name])),
-    [products]
+    [products],
   );
   const projectOptions = useMemo(
     () => (projects ?? []).map((p) => ({ value: p.id, label: p.name })),
-    [projects]
+    [projects],
   );
   const productOptions = useMemo(
     () => (products ?? []).map((p) => ({ value: p.id, label: p.name })),
-    [products]
+    [products],
   );
 
   // Filter tasks based on multi-select filters
@@ -147,7 +192,10 @@ function TasksPageContent() {
 
     return tasks.filter((task) => {
       // Search filter
-      if (searchQuery && !task.title.toLowerCase().includes(searchQuery.toLowerCase())) {
+      if (
+        searchQuery &&
+        !task.title.toLowerCase().includes(searchQuery.toLowerCase())
+      ) {
         return false;
       }
 
@@ -163,30 +211,48 @@ function TasksPageContent() {
 
       // Task type filter (if any selected, task must match one of them)
       // Note: task_type may be undefined until backend adds it to TaskResponse
-      if (taskTypeFilter.length > 0 && task.task_type && !taskTypeFilter.includes(task.task_type)) {
+      if (
+        taskTypeFilter.length > 0 &&
+        task.task_type &&
+        !taskTypeFilter.includes(task.task_type)
+      ) {
         return false;
       }
 
       // Project filter (a task with no project_id is excluded when filtering by project)
-      if (projectFilter.length > 0 && (!task.project_id || !projectFilter.includes(task.project_id))) {
+      if (
+        projectFilter.length > 0 &&
+        (!task.project_id || !projectFilter.includes(task.project_id))
+      ) {
         return false;
       }
 
       // Product filter (a task with no product_id is excluded when filtering by product)
-      if (productFilter.length > 0 && (!task.product_id || !productFilter.includes(task.product_id))) {
+      if (
+        productFilter.length > 0 &&
+        (!task.product_id || !productFilter.includes(task.product_id))
+      ) {
         return false;
       }
 
       return true;
     });
-  }, [tasks, searchQuery, statusFilter, teamFilter, taskTypeFilter, projectFilter, productFilter]);
+  }, [
+    tasks,
+    searchQuery,
+    statusFilter,
+    teamFilter,
+    taskTypeFilter,
+    projectFilter,
+    productFilter,
+  ]);
 
   // Check if it's a connection error (backend not running)
-  const isOffline = error && (
-    error.message?.includes("Network Error") ||
-    error.message?.includes("ECONNREFUSED") ||
-    (error as { code?: string })?.code === "ERR_NETWORK"
-  );
+  const isOffline =
+    error &&
+    (error.message?.includes("Network Error") ||
+      error.message?.includes("ECONNREFUSED") ||
+      (error as { code?: string })?.code === "ERR_NETWORK");
 
   return (
     <div className="space-y-6">
@@ -239,6 +305,7 @@ function TasksPageContent() {
           tasks={filteredTasks}
           isLoading={isLoading}
           projectNames={projectNames}
+          projectGitUrls={projectGitUrls}
           productNames={productNames}
           sortField={sortField}
           sortDirection={sortDir}
@@ -258,18 +325,20 @@ function TasksPageContent() {
 // Wrap in Suspense for useSearchParams
 export default function TasksPage() {
   return (
-    <Suspense fallback={
-      <div className="space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <Skeleton className="h-9 w-32 mb-2" />
-            <Skeleton className="h-5 w-64" />
+    <Suspense
+      fallback={
+        <div className="space-y-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <Skeleton className="h-9 w-32 mb-2" />
+              <Skeleton className="h-5 w-64" />
+            </div>
           </div>
+          <Skeleton className="h-12 w-full" />
+          <Skeleton className="h-96 w-full" />
         </div>
-        <Skeleton className="h-12 w-full" />
-        <Skeleton className="h-96 w-full" />
-      </div>
-    }>
+      }
+    >
       <TasksPageContent />
     </Suspense>
   );

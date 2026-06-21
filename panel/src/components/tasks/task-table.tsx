@@ -54,7 +54,13 @@ const priorityLabels: Record<number, string> = {
 };
 
 // Sorting types - exported for parent components
-export type SortField = "title" | "status" | "team" | "priority" | "assigned_to" | "created_at";
+export type SortField =
+  | "title"
+  | "status"
+  | "team"
+  | "priority"
+  | "assigned_to"
+  | "created_at";
 export type SortDirection = "asc" | "desc";
 
 interface SortConfig {
@@ -67,6 +73,8 @@ interface TaskTableProps {
   isLoading: boolean;
   // id -> display name maps for the Project / Product column
   projectNames?: Record<string, string>;
+  // id -> git_url, used to build clickable branch/PR links on the row badge
+  projectGitUrls?: Record<string, string>;
   productNames?: Record<string, string>;
   // Controlled sort props (optional for backwards compatibility)
   sortField?: SortField;
@@ -91,7 +99,10 @@ interface TaskTreeNode {
   depth: number;
 }
 
-function buildTaskTree(tasks: Task[]): { roots: TaskTreeNode[]; childrenMap: Map<string, Task[]> } {
+function buildTaskTree(tasks: Task[]): {
+  roots: TaskTreeNode[];
+  childrenMap: Map<string, Task[]>;
+} {
   const taskMap = new Map<string, Task>();
   const childrenMap = new Map<string, Task[]>();
 
@@ -110,7 +121,7 @@ function buildTaskTree(tasks: Task[]): { roots: TaskTreeNode[]; childrenMap: Map
 
   function buildNode(task: Task, depth: number): TaskTreeNode {
     const children = (childrenMap.get(task.id) || []).map((child) =>
-      buildNode(child, depth + 1)
+      buildNode(child, depth + 1),
     );
     return { task, children, depth };
   }
@@ -129,7 +140,7 @@ function buildTaskTree(tasks: Task[]): { roots: TaskTreeNode[]; childrenMap: Map
 function flattenTree(
   nodes: TaskTreeNode[],
   expandedIds: Set<string>,
-  result: TaskTreeNode[] = []
+  result: TaskTreeNode[] = [],
 ): TaskTreeNode[] {
   nodes.forEach((node) => {
     result.push(node);
@@ -145,15 +156,33 @@ function TaskTableSkeleton() {
     <>
       {Array.from({ length: 5 }).map((_, i) => (
         <TableRow key={i}>
-          <TableCell><Skeleton className="h-4 w-3/4" /></TableCell>
-          <TableCell className="whitespace-nowrap"><Skeleton className="h-6 w-16" /></TableCell>
-          <TableCell className="whitespace-nowrap"><Skeleton className="h-6 w-12" /></TableCell>
-          <TableCell className="whitespace-nowrap"><Skeleton className="h-4 w-14" /></TableCell>
-          <TableCell className="whitespace-nowrap"><Skeleton className="h-4 w-24" /></TableCell>
-          <TableCell className="whitespace-nowrap"><Skeleton className="h-4 w-8" /></TableCell>
-          <TableCell className="whitespace-nowrap"><Skeleton className="h-4 w-20" /></TableCell>
-          <TableCell className="whitespace-nowrap"><Skeleton className="h-4 w-16" /></TableCell>
-          <TableCell><Skeleton className="h-8 w-8" /></TableCell>
+          <TableCell>
+            <Skeleton className="h-4 w-3/4" />
+          </TableCell>
+          <TableCell className="whitespace-nowrap">
+            <Skeleton className="h-6 w-16" />
+          </TableCell>
+          <TableCell className="whitespace-nowrap">
+            <Skeleton className="h-6 w-12" />
+          </TableCell>
+          <TableCell className="whitespace-nowrap">
+            <Skeleton className="h-4 w-14" />
+          </TableCell>
+          <TableCell className="whitespace-nowrap">
+            <Skeleton className="h-4 w-24" />
+          </TableCell>
+          <TableCell className="whitespace-nowrap">
+            <Skeleton className="h-4 w-8" />
+          </TableCell>
+          <TableCell className="whitespace-nowrap">
+            <Skeleton className="h-4 w-20" />
+          </TableCell>
+          <TableCell className="whitespace-nowrap">
+            <Skeleton className="h-4 w-16" />
+          </TableCell>
+          <TableCell>
+            <Skeleton className="h-8 w-8" />
+          </TableCell>
         </TableRow>
       ))}
     </>
@@ -178,7 +207,13 @@ interface SortableHeaderProps {
   className?: string;
 }
 
-function SortableHeader({ label, field, sortConfig, onSort, className }: SortableHeaderProps) {
+function SortableHeader({
+  label,
+  field,
+  sortConfig,
+  onSort,
+  className,
+}: SortableHeaderProps) {
   const isActive = sortConfig?.field === field;
   const direction = isActive ? sortConfig.direction : null;
 
@@ -202,6 +237,7 @@ export function TaskTable({
   tasks,
   isLoading,
   projectNames = {},
+  projectGitUrls = {},
   productNames = {},
   sortField: controlledSortField,
   sortDirection: controlledSortDirection,
@@ -214,24 +250,35 @@ export function TaskTable({
   onExpandedChange,
 }: TaskTableProps) {
   // Internal state (used when not controlled)
-  const [internalSortConfig, setInternalSortConfig] = useState<SortConfig | null>({
-    field: "created_at",
-    direction: "desc",
-  });
+  const [internalSortConfig, setInternalSortConfig] =
+    useState<SortConfig | null>({
+      field: "created_at",
+      direction: "desc",
+    });
   const [internalCurrentPage, setInternalCurrentPage] = useState(1);
   const [internalPageSize, setInternalPageSize] = useState(25);
-  const [internalExpandedIds, setInternalExpandedIds] = useState<Set<string>>(new Set());
+  const [internalExpandedIds, setInternalExpandedIds] = useState<Set<string>>(
+    new Set(),
+  );
 
   // Use controlled or internal state
   const isControlled = onSortChange !== undefined;
   const sortConfig: SortConfig | null = useMemo(() => {
     if (isControlled) {
       return controlledSortField
-        ? { field: controlledSortField, direction: controlledSortDirection || "desc" }
+        ? {
+            field: controlledSortField,
+            direction: controlledSortDirection || "desc",
+          }
         : null;
     }
     return internalSortConfig;
-  }, [isControlled, controlledSortField, controlledSortDirection, internalSortConfig]);
+  }, [
+    isControlled,
+    controlledSortField,
+    controlledSortDirection,
+    internalSortConfig,
+  ]);
   const currentPage = controlledCurrentPage ?? internalCurrentPage;
   const pageSize = controlledPageSize ?? internalPageSize;
   const expandedIds = controlledExpandedIds ?? internalExpandedIds;
@@ -292,7 +339,11 @@ export function TaskTable({
             const bAssigned = b.task.assigned_to || "";
             return multiplier * aAssigned.localeCompare(bAssigned);
           case "created_at":
-            return multiplier * (new Date(a.task.created_at).getTime() - new Date(b.task.created_at).getTime());
+            return (
+              multiplier *
+              (new Date(a.task.created_at).getTime() -
+                new Date(b.task.created_at).getTime())
+            );
           default:
             return 0;
         }
@@ -385,10 +436,20 @@ export function TaskTable({
         {hasAnyChildren && !isLoading && (
           <div className="flex items-center gap-2 px-4 py-2 border-b bg-muted/30">
             <span className="text-sm text-muted-foreground">Tree view:</span>
-            <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={expandAll}>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 text-xs"
+              onClick={expandAll}
+            >
               Expand all
             </Button>
-            <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={collapseAll}>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 text-xs"
+              onClick={collapseAll}
+            >
               Collapse all
             </Button>
           </div>
@@ -418,7 +479,9 @@ export function TaskTable({
                 onSort={handleSort}
                 className="whitespace-nowrap"
               />
-              <TableHead className="whitespace-nowrap">Project / Product</TableHead>
+              <TableHead className="whitespace-nowrap">
+                Project / Product
+              </TableHead>
               <SortableHeader
                 label="Priority"
                 field="priority"
@@ -462,7 +525,7 @@ export function TaskTable({
                     target.closest("a") ||
                     target.closest("button") ||
                     target.closest('[role="button"]') ||
-                    target.closest('[data-no-expand]')
+                    target.closest("[data-no-expand]")
                   ) {
                     return;
                   }
@@ -477,7 +540,7 @@ export function TaskTable({
                     className={cn(
                       "hover:bg-muted/50",
                       node.depth > 0 && "bg-muted/20",
-                      hasChildren && "cursor-pointer"
+                      hasChildren && "cursor-pointer",
                     )}
                     onClick={handleRowClick}
                   >
@@ -502,12 +565,19 @@ export function TaskTable({
                         ) : (
                           <span className="w-5 shrink-0" />
                         )}
-                        <Link href={"/tasks/" + task.id} className="block hover:underline min-w-0">
+                        <Link
+                          href={"/tasks/" + task.id}
+                          className="block hover:underline min-w-0"
+                        >
                           <div className="font-medium flex items-center gap-2">
                             <span className="truncate">{task.title}</span>
                             {childCount > 0 && (
-                              <Badge variant="secondary" className="text-xs shrink-0">
-                                {childCount} subtask{childCount !== 1 ? "s" : ""}
+                              <Badge
+                                variant="secondary"
+                                className="text-xs shrink-0"
+                              >
+                                {childCount} subtask
+                                {childCount !== 1 ? "s" : ""}
                               </Badge>
                             )}
                           </div>
@@ -518,7 +588,14 @@ export function TaskTable({
                       <TaskStatusBadge status={task.status} />
                     </TableCell>
                     <TableCell className="whitespace-nowrap">
-                      <GitStatusBadge task={task} />
+                      <GitStatusBadge
+                        task={task}
+                        repoUrl={
+                          task.project_id
+                            ? projectGitUrls[task.project_id]
+                            : undefined
+                        }
+                      />
                     </TableCell>
                     <TableCell className="capitalize whitespace-nowrap">
                       {task.team.replace(/_/g, " ")}
@@ -536,15 +613,24 @@ export function TaskTable({
                       )}
                     </TableCell>
                     <TableCell className="whitespace-nowrap">
-                      <Badge className={(priorityColors[task.priority] ?? priorityColors[2]) + " text-xs"}>
+                      <Badge
+                        className={
+                          (priorityColors[task.priority] ?? priorityColors[2]) +
+                          " text-xs"
+                        }
+                      >
                         {priorityLabels[task.priority] ?? "P2 - Medium"}
                       </Badge>
                     </TableCell>
                     <TableCell className="whitespace-nowrap">
-                      <Badge variant="outline">{getAgentDisplayName(task.assigned_to)}</Badge>
+                      <Badge variant="outline">
+                        {getAgentDisplayName(task.assigned_to)}
+                      </Badge>
                     </TableCell>
                     <TableCell className="text-muted-foreground text-sm whitespace-nowrap">
-                      {formatDistanceToNow(new Date(task.created_at), { addSuffix: true })}
+                      {formatDistanceToNow(new Date(task.created_at), {
+                        addSuffix: true,
+                      })}
                     </TableCell>
                     <TableCell>
                       <TaskActions task={task} />
@@ -561,7 +647,10 @@ export function TaskTable({
           <div className="flex items-center justify-end gap-4 px-4 py-3 border-t">
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <span>Rows:</span>
-              <Select value={String(pageSize)} onValueChange={handlePageSizeChange}>
+              <Select
+                value={String(pageSize)}
+                onValueChange={handlePageSizeChange}
+              >
                 <SelectTrigger className="w-auto min-w-14 h-8">
                   <SelectValue />
                 </SelectTrigger>
