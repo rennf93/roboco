@@ -1455,6 +1455,23 @@ class TaskService(BaseService):
         )
         return result.scalar_one_or_none()
 
+    async def record_section_note(
+        self, task_id: UUID, content_type: str, payload: Any
+    ) -> None:
+        """Validate + persist a role's structured section note (dev_notes /
+        quick_context / auditor_notes / …) through the ``apply_structured_note``
+        chokepoint — the only sanctioned writer of the TEXT note columns.
+
+        Raises ``ContentValidationError`` on a malformed payload (the gateway
+        maps it to a remediation envelope) and ``LookupError`` if the task is
+        gone. The request's route transaction commits the mutation.
+        """
+        task = await self.get(task_id)
+        if task is None:
+            raise LookupError(f"task not found: {task_id}")
+        apply_structured_note(task, content_type, payload)
+        await self.session.flush()
+
     async def update(
         self,
         task_id: UUID,

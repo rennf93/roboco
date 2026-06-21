@@ -21,8 +21,10 @@ import structlog
 from roboco.config import settings
 from roboco.exceptions import GitError
 from roboco.foundation.policy import communications as _comms
+from roboco.foundation.policy.content import ContentValidationError
 from roboco.foundation.policy.content.validators import reject_trivial
 from roboco.foundation.policy.journaling import Scope as _Scope
+from roboco.services.content_notes import content_type_for_role
 from roboco.services.gateway.commit_validator import validate_commit_message
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import build_evidence_for_task
@@ -532,8 +534,14 @@ class ContentActions:
         scope: str = "note",
         task_id: UUID | None = None,
         structured: dict[str, Any] | None = None,
+        section: dict[str, Any] | None = None,
     ) -> Envelope:
-        """Write a journal entry. scope ∈ note|decision|reflect|learning|struggle.
+        """Write a journal entry, or (scope='handoff') the role's note section.
+
+        scope ∈ note|decision|reflect|learning|struggle write the JOURNAL;
+        scope='handoff' writes the agent's dedicated SECTION (dev_notes /
+        quick_context / auditor_notes …) from ``section`` (or a summary from
+        ``text`` when ``section`` is omitted).
 
         ``structured`` carries scope-specific fields:
 
@@ -552,6 +560,13 @@ class ContentActions:
         is taken from ``structured["title"]`` when present, otherwise
         from the first line of ``text``.
         """
+        if scope == "handoff":
+            # Section write (dev_notes / quick_context / auditor_notes / …), not
+            # a journal entry. Content quality is enforced by the content model
+            # (apply_structured_note), so skip the journal-text soup check.
+            return await self._record_section_handoff(
+                agent_id=agent_id, text=text, task_id=task_id, structured=section
+            )
         if rej := self._reject_soup(text, field="note", min_chars=8):
             return rej
         if scope not in _VALID_NOTE_SCOPES:
@@ -588,6 +603,79 @@ class ContentActions:
         return Envelope.ok(
             status="noted",
             task_id=str(task_id) if task_id else None,
+            next="continue",
+            context_briefing={},
+        )
+
+    async def _record_section_handoff(
+        self,
+        *,
+        agent_id: UUID,
+        text: str,
+        task_id: UUID | None,
+        structured: dict[str, Any] | None,
+    ) -> Envelope:
+        """Write the agent's dedicated note SECTION — the structured-content
+        counterpart to a journal note. ``note()`` only ever wrote the journal;
+        this is how a developer / PM / auditor authors dev_notes / quick_context
+        / auditor_notes (etc.).
+
+        Routes by role to the right content type, persists through the
+        ``apply_structured_note`` chokepoint, and also drops a journal trail
+        entry so the write shows in the activity log (and the auditor's
+        session has a signal). Validation failures return a remediation
+        Envelope, never a raw 422.
+        """
+        agent = await self.task.agent_for(agent_id)
+        role = str(agent.role) if agent is not None else ""
+        content_type = content_type_for_role(role)
+        if content_type is None:
+            return Envelope.invalid_state(
+                message=f"role {role!r} has no dedicated note section",
+                remediate=(
+                    "only developer / qa / documenter / pr_reviewer / auditor / "
+                    "cell_pm / main_pm author a section — use scope='note' (or "
+                    "decision/reflect/learning/struggle) for a journal entry"
+                ),
+                context_briefing={},
+            )
+        if task_id is not None:
+            if reject := await self._verify_explicit_task_ownership(agent_id, task_id):
+                return reject
+        else:
+            t = await self.task.get_journal_context_task_for_agent(agent_id)
+            if t is None:
+                return Envelope.invalid_state(
+                    message="no task to attach the section note to",
+                    remediate="pass task_id='<the task whose section you write>'",
+                    context_briefing={},
+                )
+            task_id = t.id
+        payload: dict[str, Any] = dict(structured) if structured else {"summary": text}
+        try:
+            await self.task.record_section_note(task_id, content_type, payload)
+        except ContentValidationError as exc:
+            return Envelope.invalid_state(
+                message=f"section note rejected: {exc.field} — {exc.reason}",
+                remediate=(
+                    f"provide the section's fields via structured=... for content "
+                    f"type {content_type!r} (resumption needs done+next; auditor "
+                    "needs summary+severity; others need a substantive summary), "
+                    "then retry"
+                ),
+                context_briefing={},
+            )
+        await self.journal.write_entry(
+            agent_id=agent_id,
+            task_id=task_id,
+            scope="note",
+            title=text.split("\n", 1)[0][:200] if text else f"{content_type} note",
+            content=text or "(structured section note)",
+        )
+        await self._touch_heartbeat(task_id)
+        return Envelope.ok(
+            status="noted",
+            task_id=str(task_id),
             next="continue",
             context_briefing={},
         )

@@ -195,8 +195,11 @@ def note(
     what_learned: str = "",
     what_struggled: str = "",
     next_steps: list[str] | str | None = None,
+    section: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Write a journal entry. scope in note|decision|reflect|learning|struggle.
+    """Write a journal entry, or (scope='handoff') your note SECTION.
+
+    scope in note|decision|reflect|learning|struggle|handoff.
 
     ``text`` is always the short summary (one paragraph max). For ``decision``
     and ``reflect`` scopes the structured fields are RECOMMENDED — fill what
@@ -214,7 +217,12 @@ def note(
     List-typed fields (``options``, ``consequences``, ``next_steps``) tolerate
     a lone value — pass either a list or a single item.
 
-    Other scopes (note / learning / struggle) just need ``text``.
+    Other journal scopes (note / learning / struggle) just need ``text``.
+
+    scope='handoff' writes your dedicated SECTION (dev_notes / quick_context /
+    auditor_notes) instead of the journal: pass ``section={...}`` with the
+    section's fields (PM/resumption needs done+next; auditor needs
+    summary+severity), or just ``text`` for a developer summary.
     """
     return _post(
         "/api/v1/do/note",
@@ -232,6 +240,7 @@ def note(
             "what_learned": what_learned,
             "what_struggled": what_struggled,
             "next_steps": next_steps,
+            "section": section,
         },
     )
 

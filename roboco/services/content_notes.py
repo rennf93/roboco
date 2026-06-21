@@ -28,6 +28,27 @@ _MIRROR_COLUMN: dict[str, str] = {
     "resumption": "quick_context",
 }
 
+# Agent role -> the content type / section it authors via note(scope='handoff').
+# Roles absent here (board / advisory / on-demand) have no dedicated section, so
+# a handoff from them is rejected with guidance to use a journal scope instead.
+_ROLE_TO_CONTENT_TYPE: dict[str, str] = {
+    "developer": "developer",
+    "qa": "qa",
+    "documenter": "doc",
+    "pr_reviewer": "pr_review",
+    "auditor": "auditor",
+    "cell_pm": "resumption",
+    "main_pm": "resumption",
+}
+
+
+def content_type_for_role(role: str) -> str | None:
+    """The section content-type a role authors via note(scope='handoff'), or None.
+
+    None means the role has no dedicated note section (board / advisory roles).
+    """
+    return _ROLE_TO_CONTENT_TYPE.get(role)
+
 
 class _NotesTask(Protocol):
     notes_structured: dict[str, Any] | None

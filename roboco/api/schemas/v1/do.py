@@ -65,6 +65,13 @@ class NoteRequest(BaseModel):
     what_learned: str = ""
     what_struggled: str = ""
     next_steps: list[str] | None = None
+    # handoff scope: the agent's dedicated SECTION fields (dev_notes /
+    # quick_context / auditor_notes …), free-form per content type — e.g.
+    # {"summary": "...", "changes": [...]} (developer), {"done": "...",
+    # "next": "..."} (PM/resumption), {"summary": "...", "severity": "risk"}
+    # (auditor). Validated by the content model server-side. Omit it to write a
+    # developer summary straight from ``text``.
+    section: dict[str, Any] | None = None
 
     # List-typed fields tolerate a lone scalar: a single string (or, for
     # ``options``, a single dict) is wrapped into a one-element list before
