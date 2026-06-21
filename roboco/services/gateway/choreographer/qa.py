@@ -448,6 +448,37 @@ class QAMixin(_Base):
             verb=verb,
         )
 
+    async def _qa_pass_final_gates(
+        self,
+        qa_agent_id: UUID,
+        task_id: UUID,
+        t: Any,
+        role_str: str,
+        ac_verdicts: list[str] | None,
+    ) -> Envelope | None:
+        """AC-coverage + toolchain-runnability gates for pass_review.
+
+        Returns the first rejection (already emitted), else None. QA must not
+        PASS on a workspace that cannot run the suite — that is a source-read
+        "verification"; fail_review is unaffected.
+        """
+        ac_rejection = self._qa_ac_coverage_check(t, ac_verdicts)
+        if ac_rejection is not None:
+            return await self._emit_rejection(
+                ac_rejection.with_introspection(task=t, role=role_str),
+                agent_id=qa_agent_id,
+                task_id=task_id,
+                verb="pass_review",
+            )
+        if toolchain := await self._toolchain_broken_guard(qa_agent_id, t):
+            return await self._emit_rejection(
+                toolchain.with_introspection(task=t, role=role_str),
+                agent_id=qa_agent_id,
+                task_id=task_id,
+                verb="pass_review",
+            )
+        return None
+
     async def pass_review(
         self,
         qa_agent_id: UUID,
@@ -493,14 +524,10 @@ class QAMixin(_Base):
             soup_checks=(("notes", notes, 8),),
         ):
             return gate_rejection
-        ac_rejection = self._qa_ac_coverage_check(t, ac_verdicts)
-        if ac_rejection is not None:
-            return await self._emit_rejection(
-                ac_rejection.with_introspection(task=t, role=role_str),
-                agent_id=qa_agent_id,
-                task_id=task_id,
-                verb="pass_review",
-            )
+        if rej := await self._qa_pass_final_gates(
+            qa_agent_id, task_id, t, role_str, ac_verdicts
+        ):
+            return rej
 
         briefing = await self._briefing_for(qa_agent_id, task_id)
         spec_ctx = spec_module.Context(

@@ -53,6 +53,11 @@ class ChoreographerHelpers:
     ) -> Envelope:
         raise NotImplementedError
 
+    async def _toolchain_broken_guard(
+        self, agent_id: UUID, task: Any
+    ) -> Envelope | None:
+        raise NotImplementedError
+
     @classmethod
     def _free_text_soup(
         cls, checks: tuple[tuple[str, Any, int], ...]

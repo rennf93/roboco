@@ -234,6 +234,17 @@ class PRGateMixin(_Base):
         )
         if gate is not None:
             return gate
+        # A reviewer must not PASS an assembled PR whose suite cannot be run in
+        # the workspace (interpreter mismatch). pr_fail stays available.
+        if verb == "pr_pass" and (
+            toolchain := await self._toolchain_broken_guard(reviewer_agent_id, t)
+        ):
+            return await self._emit_rejection(
+                toolchain.with_introspection(task=t, role=role_str),
+                agent_id=reviewer_agent_id,
+                task_id=task_id,
+                verb=verb,
+            )
         runner = self._verb_runner()
         try:
             t = await runner.run_intent(verb, t, agent, spec_ctx)

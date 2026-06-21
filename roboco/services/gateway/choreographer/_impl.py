@@ -1663,6 +1663,8 @@ class Choreographer:
             return await self._reject_i_am_done(ctx, rejection)
         if rejection := await self._check_quality_gate(ctx):
             return await self._reject_i_am_done(ctx, rejection)
+        if rejection := await self._toolchain_broken_guard(ctx.agent_id, ctx.task):
+            return await self._reject_i_am_done(ctx, rejection)
         # Pre-gateway parity: persist per-criterion
         # status now that all gates have passed. The write runs AFTER the
         # verdict so it cannot change i_am_done's rejection behavior.
@@ -1693,6 +1695,38 @@ class Choreographer:
                 "— QA reviews working code, not a red gate:\n\n" + result.output_excerpt
             ),
             context_briefing=ctx.briefing,
+        )
+
+    async def _toolchain_broken_guard(
+        self, agent_id: UUID, task: Any
+    ) -> Envelope | None:
+        """Refuse a delivery gate when the acting agent's workspace cannot run
+        the project's suite (interpreter mismatch).
+
+        A role that cannot execute the suite degrades to "verifying by reading
+        source", which the QA + PR-review gates exist to prevent. Inert when the
+        flag is off; only a recorded ``broken`` status blocks — a missing or
+        ``unknown`` status never strands a task (fail-open).
+        """
+        from roboco.config import settings as _settings
+
+        if not _settings.toolchain_match_enabled:
+            return None
+        status = await self.git.toolchain_status_for_task(agent_id, task)
+        if status != "broken":
+            return None
+        return Envelope.invalid_state(
+            message=(
+                "the project's test suite cannot be executed in this workspace "
+                "(interpreter mismatch) — verifying by reading source is hollow"
+            ),
+            remediate=(
+                "the workspace Python does not match the project's requirement; "
+                "call i_am_blocked(reason='toolchain') so the environment is "
+                "rebuilt against the right interpreter — do NOT pass on a "
+                "source read"
+            ),
+            context_briefing={},
         )
 
     async def _ensure_branch_pushed(self, ctx: _IAmDoneContext) -> Envelope | None:

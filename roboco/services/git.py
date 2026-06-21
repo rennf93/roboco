@@ -57,7 +57,11 @@ from roboco.services.gateway.quality_gate import GateResult, run_quality_command
 from roboco.services.project import get_project_service
 from roboco.services.task import TaskService, get_task_service
 from roboco.services.work_session import get_work_session_service
-from roboco.services.workspace import WorkspaceError, get_workspace_service
+from roboco.services.workspace import (
+    WorkspaceError,
+    WorkspaceService,
+    get_workspace_service,
+)
 from roboco.templates.git import (
     BranchNameError,
     CommitContext,
@@ -2750,6 +2754,25 @@ class GitService(BaseService):
             return GateResult(passed=True, skipped=True)
         workspace = await self.get_workspace(project.slug, actor_agent_id)
         return await run_quality_commands(workspace, commands)
+
+    async def toolchain_status_for_task(
+        self, actor_agent_id: UUID, task: Any
+    ) -> str | None:
+        """The recorded toolchain status (``ok`` | ``broken`` | ``unknown``) for
+        the acting agent's workspace clone of the task's project, or ``None``.
+
+        ``None`` on any resolution/read failure — the caller fails open and
+        never blocks a gate on an inability to read the marker.
+        """
+        try:
+            project = await self._project_for_task(task)
+            if project is None:
+                return None
+            workspace = await self.get_workspace(project.slug, actor_agent_id)
+            _python, status = WorkspaceService.read_toolchain_status(workspace)
+            return status
+        except Exception:
+            return None
 
     async def _project_slug_for_branch(self, branch_name: str) -> str | None:
         """Resolve project slug via the task that owns the branch."""
