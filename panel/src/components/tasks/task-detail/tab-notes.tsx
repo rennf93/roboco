@@ -9,14 +9,57 @@ import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Markdown } from "@/components/ui/markdown";
-import { FileText, Code, TestTube, Shield, Edit3, Eye, Check, X, Plus } from "lucide-react";
+import {
+  FileText,
+  Code,
+  TestTube,
+  Shield,
+  GitPullRequest,
+  BookText,
+  Edit3,
+  Eye,
+  Check,
+  X,
+  Plus,
+} from "lucide-react";
 import { toast } from "sonner";
 
 interface TabNotesProps {
   task: Task;
 }
 
-type NoteField = "quick_context" | "dev_notes" | "qa_notes" | "auditor_notes";
+type NoteField =
+  | "quick_context"
+  | "dev_notes"
+  | "qa_notes"
+  | "auditor_notes"
+  | "pr_reviewer_notes"
+  | "doc_notes";
+
+// The PR reviewer's verdict pill, read from the structured source of truth.
+function prReviewBadge(task: Task): React.ReactNode {
+  const verdict = (
+    task.notes_structured as
+      | { pr_review?: { verdict?: string } }
+      | null
+      | undefined
+  )?.pr_review?.verdict;
+  if (!verdict) {
+    return (
+      <Badge variant="outline" className="ml-2 text-teal-600 border-teal-300">
+        Review Gate
+      </Badge>
+    );
+  }
+  const map: Record<string, { label: string; cls: string }> = {
+    approved: { label: "Approved", cls: "bg-green-500" },
+    passed: { label: "Passed", cls: "bg-green-500" },
+    changes_requested: { label: "Changes Requested", cls: "bg-amber-500" },
+    failed: { label: "Failed", cls: "bg-red-500" },
+  };
+  const v = map[verdict] ?? { label: verdict, cls: "bg-gray-500" };
+  return <Badge className={`ml-2 ${v.cls} text-white`}>{v.label}</Badge>;
+}
 
 interface NoteCardProps {
   task: Task;
@@ -27,7 +70,14 @@ interface NoteCardProps {
   bgClass?: string;
 }
 
-function EditableNoteCard({ task, field, title, icon, badge, bgClass }: NoteCardProps) {
+function EditableNoteCard({
+  task,
+  field,
+  title,
+  icon,
+  badge,
+  bgClass,
+}: NoteCardProps) {
   const updateTask = useUpdateTask();
   const [isEditing, setIsEditing] = useState(false);
   const [localEditValue, setLocalEditValue] = useState("");
@@ -92,11 +142,7 @@ function EditableNoteCard({ task, field, title, icon, badge, bgClass }: NoteCard
               {title}
               {badge}
             </CardTitle>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={startEditing}
-            >
+            <Button size="sm" variant="ghost" onClick={startEditing}>
               <Plus className="h-4 w-4 mr-1" />
               Add
             </Button>
@@ -125,7 +171,10 @@ function EditableNoteCard({ task, field, title, icon, badge, bgClass }: NoteCard
           </CardTitle>
           {isEditing ? (
             <div className="flex items-center gap-2">
-              <Tabs value={editMode} onValueChange={(v) => setEditMode(v as "write" | "preview")}>
+              <Tabs
+                value={editMode}
+                onValueChange={(v) => setEditMode(v as "write" | "preview")}
+              >
                 <TabsList className="h-8">
                   <TabsTrigger value="write" className="text-xs px-2 h-6">
                     <Edit3 className="h-3 w-3 mr-1" />
@@ -155,11 +204,7 @@ function EditableNoteCard({ task, field, title, icon, badge, bgClass }: NoteCard
               </Button>
             </div>
           ) : (
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={startEditing}
-            >
+            <Button size="sm" variant="ghost" onClick={startEditing}>
               <Edit3 className="h-4 w-4 mr-1" />
               Edit
             </Button>
@@ -180,16 +225,21 @@ function EditableNoteCard({ task, field, title, icon, badge, bgClass }: NoteCard
                 autoFocus
               />
             ) : (
-              <div className={`min-h-[150px] p-4 rounded-lg ${bgClass ?? "bg-muted/50"}`}>
+              <div
+                className={`min-h-[150px] p-4 rounded-lg ${bgClass ?? "bg-muted/50"}`}
+              >
                 {editValue ? (
                   <Markdown className="text-sm">{editValue}</Markdown>
                 ) : (
-                  <p className="text-muted-foreground text-sm italic">Nothing to preview</p>
+                  <p className="text-muted-foreground text-sm italic">
+                    Nothing to preview
+                  </p>
                 )}
               </div>
             )}
             <p className="text-xs text-muted-foreground">
-              Markdown supported. Press Ctrl/Cmd + Enter to save, Escape to cancel.
+              Markdown supported. Press Ctrl/Cmd + Enter to save, Escape to
+              cancel.
             </p>
           </div>
         ) : (
@@ -216,7 +266,11 @@ export function TabNotes({ task }: TabNotesProps) {
         field="quick_context"
         title="Quick Context"
         icon={<FileText className="h-5 w-5" />}
-        badge={<Badge variant="outline" className="ml-2">For Resumption</Badge>}
+        badge={
+          <Badge variant="outline" className="ml-2">
+            For Resumption
+          </Badge>
+        }
         bgClass="bg-blue-50 dark:bg-blue-950 border border-blue-200 dark:border-blue-800"
       />
 
@@ -229,6 +283,15 @@ export function TabNotes({ task }: TabNotesProps) {
         bgClass="bg-muted/50"
       />
 
+      {/* Documenter Notes */}
+      <EditableNoteCard
+        task={task}
+        field="doc_notes"
+        title="Documenter Notes"
+        icon={<BookText className="h-5 w-5" />}
+        bgClass="bg-muted/50"
+      />
+
       {/* QA Notes */}
       <EditableNoteCard
         task={task}
@@ -237,19 +300,39 @@ export function TabNotes({ task }: TabNotesProps) {
         icon={<TestTube className="h-5 w-5" />}
         badge={
           <Badge
-            variant={task.qa_verified === true ? "default" : task.qa_verified === false ? "destructive" : "secondary"}
+            variant={
+              task.qa_verified === true
+                ? "default"
+                : task.qa_verified === false
+                  ? "destructive"
+                  : "secondary"
+            }
             className="ml-2"
           >
-            {task.qa_verified === true ? "Passed" : task.qa_verified === false ? "Failed" : "Pending"}
+            {task.qa_verified === true
+              ? "Passed"
+              : task.qa_verified === false
+                ? "Failed"
+                : "Pending"}
           </Badge>
         }
         bgClass={
           task.qa_verified === true
             ? "bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-800"
             : task.qa_verified === false
-            ? "bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800"
-            : "bg-muted/50"
+              ? "bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800"
+              : "bg-muted/50"
         }
+      />
+
+      {/* PR Reviewer Notes */}
+      <EditableNoteCard
+        task={task}
+        field="pr_reviewer_notes"
+        title="PR Reviewer Notes"
+        icon={<GitPullRequest className="h-5 w-5" />}
+        badge={prReviewBadge(task)}
+        bgClass="bg-teal-50 dark:bg-teal-950 border border-teal-200 dark:border-teal-800"
       />
 
       {/* Auditor Notes */}
@@ -258,7 +341,14 @@ export function TabNotes({ task }: TabNotesProps) {
         field="auditor_notes"
         title="Auditor Notes"
         icon={<Shield className="h-5 w-5" />}
-        badge={<Badge variant="outline" className="ml-2 text-purple-600 border-purple-300">Confidential</Badge>}
+        badge={
+          <Badge
+            variant="outline"
+            className="ml-2 text-purple-600 border-purple-300"
+          >
+            Confidential
+          </Badge>
+        }
         bgClass="bg-purple-50 dark:bg-purple-950 border border-purple-200 dark:border-purple-800"
       />
     </div>

@@ -303,7 +303,12 @@ export interface Task {
   dev_notes: string | null;
   qa_notes: string | null;
   auditor_notes: string | null;
+  pr_reviewer_notes?: string | null;
+  doc_notes?: string | null;
   quick_context: string | null;
+  // Structured content (source of truth; the *_notes fields are rendered mirrors)
+  notes_structured?: Record<string, unknown> | null;
+  orchestration_markers?: Record<string, unknown> | null;
   // Review Status
   self_verified: boolean;
   qa_verified: boolean | null;
@@ -957,7 +962,13 @@ export interface CodeReviewResponse {
 // Learnings
 export interface LearningRecordRequest {
   content: string;
-  category: "error_handling" | "performance" | "testing" | "pattern" | "tool" | "other";
+  category:
+    | "error_handling"
+    | "performance"
+    | "testing"
+    | "pattern"
+    | "tool"
+    | "other";
   team?: "backend" | "frontend" | "ux_ui";
   shareable?: boolean;
   tags?: string[];
