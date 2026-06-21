@@ -23,12 +23,14 @@ from .models import (
     required_shape,
     validate_content,
 )
+from .models import _Content as ContentModel
 from .validators import ContentValidationError
 
 __all__ = [
     "CONTENT_MODELS",
     "AcVerdict",
     "AuditorNote",
+    "ContentModel",
     "ContentValidationError",
     "DeveloperNote",
     "DocNote",
