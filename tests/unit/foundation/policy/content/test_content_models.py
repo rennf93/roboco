@@ -143,17 +143,19 @@ def test_qa_verdict_must_be_pass_or_fail() -> None:
     assert exc.value.field == "verdict"
 
 
-def test_qa_requires_ac_verdicts() -> None:
-    with pytest.raises(ContentValidationError) as exc:
-        validate_content(
-            "qa",
-            {
-                "summary": "Reviewed everything carefully here.",
-                "ac_verdicts": [],
-                "verdict": "passed",
-            },
-        )
-    assert exc.value.field == "ac_verdicts"
+def test_qa_allows_empty_ac_verdicts() -> None:
+    # ac_verdicts is optional (a QA fail can be summary-only); the verb's
+    # coverage gate enforces per-criterion verdicts for a pass.
+    c = validate_content(
+        "qa",
+        {
+            "summary": "Reviewed everything carefully here.",
+            "ac_verdicts": [],
+            "verdict": "failed",
+        },
+    )
+    assert isinstance(c, QaNote)
+    assert c.ac_verdicts == []
 
 
 def test_task_description_requires_work() -> None:

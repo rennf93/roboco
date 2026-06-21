@@ -313,20 +313,15 @@ class QaNote(_Content):
             raise ValueError("QA verdict must be 'passed' or 'failed'")
         return v
 
-    @field_validator("ac_verdicts")
-    @classmethod
-    def _nonempty(cls, v: list[AcVerdict]) -> list[AcVerdict]:
-        if not v:
-            raise ValueError("ac_verdicts must cover at least one acceptance criterion")
-        return v
-
     def render_markdown(self) -> str:
         parts = [_section("Summary", self.summary)]
-        marks = {"verified": "✅", "failed": "❌", "na": "—"}
-        rows = [
-            f"- {marks[a.status]} **{a.criterion}** — {a.how}" for a in self.ac_verdicts
-        ]
-        parts.append("## Acceptance Criteria\n" + "\n".join(rows))
+        if self.ac_verdicts:
+            marks = {"verified": "✅", "failed": "❌", "na": "—"}
+            rows = [
+                f"- {marks[a.status]} **{a.criterion}** — {a.how}"
+                for a in self.ac_verdicts
+            ]
+            parts.append("## Acceptance Criteria\n" + "\n".join(rows))
         parts.append(_section("Verdict", self.verdict.value))
         return _join(parts)
 

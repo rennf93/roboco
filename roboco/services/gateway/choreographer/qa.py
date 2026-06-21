@@ -42,7 +42,8 @@ from typing import TYPE_CHECKING, Any
 from roboco.config import settings
 from roboco.foundation.policy import lifecycle as spec_module
 from roboco.foundation.policy import tracing as _tr
-from roboco.foundation.policy.content import markers
+from roboco.foundation.policy.content import ContentValidationError, markers
+from roboco.services.content_notes import apply_structured_note
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import build_evidence_for_task
 
@@ -380,6 +381,43 @@ class QAMixin(_Base):
         body = "\n".join(f"- {line}" for line in lines)
         return f"{notes}\n\nPer-criterion verification:\n{body}"
 
+    @staticmethod
+    def _store_qa_note(
+        task: Any, notes: str, ac_verdicts: list[str] | None, *, passed: bool
+    ) -> None:
+        """Best-effort: persist the QA review as a structured QaNote (chokepoint).
+
+        Each ac_verdict string is coerced into a structured entry (a pass means
+        every criterion verified). Falls back silently to the legacy qa_notes
+        string on any validation issue, so a QA transition is never blocked by
+        note formatting. Mirrors the PR-reviewer pattern.
+        """
+        verdicts = (
+            [
+                {
+                    "criterion": v.strip(),
+                    "status": "verified",
+                    "how": "verified by QA during review",
+                }
+                for v in (ac_verdicts or [])
+                if isinstance(v, str) and v.strip()
+            ]
+            if passed
+            else []
+        )
+        try:
+            apply_structured_note(
+                task,
+                "qa",
+                {
+                    "summary": notes,
+                    "ac_verdicts": verdicts,
+                    "verdict": "passed" if passed else "failed",
+                },
+            )
+        except ContentValidationError:
+            return
+
     async def pass_review(
         self,
         qa_agent_id: UUID,
@@ -436,6 +474,7 @@ class QAMixin(_Base):
             original_developer_slug=_extract_original_developer(t),
             notes=self._merge_ac_verdicts_into_notes(notes, ac_verdicts),
         )
+        self._store_qa_note(t, notes, ac_verdicts, passed=True)
         runner = self._verb_runner()
         try:
             t = await runner.run_intent("pass_review", t, agent, spec_ctx)
@@ -525,6 +564,7 @@ class QAMixin(_Base):
             notes=notes,
             issues=tuple(issues),
         )
+        self._store_qa_note(t, notes, None, passed=False)
         runner = self._verb_runner()
         try:
             t = await runner.run_intent("fail_review", t, agent, spec_ctx)

@@ -3390,7 +3390,7 @@ class TaskService(BaseService):
         if task.status not in valid_statuses:
             return None
 
-        if notes:
+        if notes and not (task.notes_structured or {}).get("qa"):
             task.qa_notes = notes
 
         # Store QA agent before clearing assignment
@@ -3469,7 +3469,8 @@ class TaskService(BaseService):
         if task.status not in valid_statuses:
             return None
 
-        task.qa_notes = notes
+        if not (task.notes_structured or {}).get("qa"):
+            task.qa_notes = notes
         task.qa_verified = False
         # Use validated transition - QA role required per ROLE_RESTRICTED_TRANSITIONS
         self._validate_and_set_status(task, TaskStatus.NEEDS_REVISION, agent_role)
