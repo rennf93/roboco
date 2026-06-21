@@ -610,6 +610,7 @@ class ContentActions:
         """
         for _pf, _pv, _min in (
             ("title", title, 5),
+            ("slug", slug, 2),
             ("problem", problem, 15),
             ("proposed_solution", proposed_solution, 15),
         ):

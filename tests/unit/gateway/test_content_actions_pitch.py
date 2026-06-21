@@ -29,15 +29,17 @@ def _actions(role: str) -> ContentActions:
 
 @pytest.mark.asyncio
 async def test_pitch_forbidden_for_non_board() -> None:
+    # Substantive fields so the soup guard passes and the ROLE gate is what
+    # rejects (a developer may not pitch) — not an incidental short-field fail.
     env = await _actions("developer").pitch(
         agent_id=uuid4(),
-        title="T",
-        slug="t",
-        problem="p",
-        proposed_solution="s",
+        title="A self-serve widget catalog",
+        slug="widget-catalog",
+        problem="customers cannot browse widgets without an account",
+        proposed_solution="add a public widget catalog with search",
         target_cells=["backend"],
     )
-    assert env.error is not None
+    assert env.error == "not_authorized"
     assert env.status is None
 
 
@@ -63,12 +65,14 @@ async def test_pitch_creates_for_board(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.asyncio
 async def test_pitch_rejects_non_cell_target() -> None:
+    # Substantive fields so the soup guard passes and the non-cell TARGET is
+    # what rejects (a pitch can only target cells, not the board).
     env = await _actions("head_marketing").pitch(
         agent_id=uuid4(),
-        title="T",
-        slug="t",
-        problem="p",
-        proposed_solution="s",
+        title="A self-serve widget catalog",
+        slug="widget-catalog",
+        problem="customers cannot browse widgets without an account",
+        proposed_solution="add a public widget catalog with search",
         target_cells=["board"],
     )
-    assert env.error is not None
+    assert env.error == "invalid_state"
