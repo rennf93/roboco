@@ -772,7 +772,11 @@ async def test_pr_review_gate_fail_path(
     )
     assert failed is not None
     assert str(failed.status) == Status.NEEDS_REVISION.value
-    assert "string where the BE requires a UUID" in (failed.dev_notes or "")
+    # The reviewer's issues land in its OWN slot now (not dev_notes/qa_notes).
+    assert "string where the BE requires a UUID" in (failed.pr_reviewer_notes or "")
+    assert (failed.notes_structured or {}).get("pr_review", {}).get("verdict") == (
+        "failed"
+    )
 
 
 # ---------------------------------------------------------------------------
