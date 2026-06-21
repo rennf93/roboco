@@ -50,6 +50,24 @@ def test_clear_marker_nulls_when_empty() -> None:
     assert t.orchestration_markers is None
 
 
+def test_escalation_roundtrip() -> None:
+    t = _task()
+    assert m.get_escalation(t) is None
+    m.set_escalation(t, from_slug="be-pm", to_slug="main-pm", reason="re-open please")
+    assert m.get_escalation(t) == {
+        "from": "be-pm",
+        "to": "main-pm",
+        "reason": "re-open please",
+    }
+
+
+def test_approve_and_start_notes_roundtrip() -> None:
+    t = _task()
+    assert m.get_approve_and_start_notes(t) is None
+    m.set_approve_and_start_notes(t, "Board approved; build it.")
+    assert m.get_approve_and_start_notes(t) == "Board approved; build it."
+
+
 def test_documenter_self_heal_head_supersede() -> None:
     t = _task()
     m.set_documenter(t, "doc-uuid")

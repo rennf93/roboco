@@ -91,22 +91,25 @@ async def test_reassigns_to_main_pm_and_keeps_pending(start_setup: dict) -> None
     assert out is not None
     assert out.assigned_to == start_setup["main_pm"].id
     assert out.status == TaskStatus.PENDING
-    assert out.quick_context is not None
-    assert "approve_and_start_notes:" in out.quick_context
-    assert note in out.quick_context
+    # The CEO note is a structured marker, not raw soup in quick_context.
+    assert (out.orchestration_markers or {})["approve_and_start_notes"] == note
+    assert "approve_and_start_notes:" not in (out.quick_context or "")
 
 
 @pytest.mark.asyncio
-async def test_audit_note_appends_to_existing_context(start_setup: dict) -> None:
+async def test_audit_note_preserves_context_and_stores_marker(
+    start_setup: dict,
+) -> None:
     task = start_setup["mk"]()
     task.quick_context = "prior context"
     await start_setup["db"].flush()
     note = "Board signed off; ship it."
     out = await start_setup["svc"].approve_and_start(task.id, note)
     assert out is not None
-    assert out.quick_context is not None
-    assert "prior context" in out.quick_context
-    assert f"approve_and_start_notes:{note}" in out.quick_context
+    # An existing human ResumptionNote is preserved untouched...
+    assert out.quick_context == "prior context"
+    # ...and the CEO note lands in the markers, not appended to the context.
+    assert (out.orchestration_markers or {})["approve_and_start_notes"] == note
 
 
 @pytest.mark.asyncio

@@ -1448,7 +1448,10 @@ async def test_apply_escalation_reassigns_and_blocks(
     assert task.status == TaskStatus.BLOCKED
     assert task.assigned_to == target.id
     assert task.blocker_raised_by == task_setup["agent_id"]
-    assert "[ESCALATED]" in (task.dev_notes or "")
+    # The escalation is a structured marker, NOT a developer note.
+    assert not (task.dev_notes or "")
+    esc = (task.orchestration_markers or {})["escalation"]
+    assert esc == {"from": "dev-1", "to": "cell-pm", "reason": "external blocker"}
 
 
 @pytest.mark.asyncio

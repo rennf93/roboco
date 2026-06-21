@@ -199,6 +199,17 @@ def _append_capped(existing: str | None, addition: str) -> str:
     return _TRUNCATION_MARKER + joined[-keep:]
 
 
+def _compose_review_body(summary: str | None, issues: list[str] | None) -> str:
+    """Combine a PR-review summary with issue bullets into one body string."""
+    body = (summary or "").strip()
+    if not issues:
+        return body
+    bullets = "\n".join(f"- {i}" for i in issues if i and i.strip())
+    if not bullets:
+        return body
+    return f"{body}\n\n{bullets}".strip() if body else bullets
+
+
 @dataclass
 class _CompletionSnapshot:
     """Fields copied off a TaskTable before its session detaches.
@@ -3655,10 +3666,7 @@ class TaskService(BaseService):
         """
         if (task.notes_structured or {}).get("pr_review"):
             return
-        body = (summary or "").strip()
-        if issues:
-            bullets = "\n".join(f"- {i}" for i in issues if i and i.strip())
-            body = f"{body}\n\n{bullets}".strip() if body else bullets
+        body = _compose_review_body(summary, issues)
         if not body:
             return
         try:
@@ -4176,11 +4184,14 @@ class TaskService(BaseService):
         task.assigned_to = cast("Any", target_agent_id)
         task.claimed_by = cast("Any", target_agent_id)
         task.status = TaskStatus.BLOCKED
-        existing_notes = task.dev_notes or ""
-        escalation_note = (
-            f"\n\n[ESCALATED] From {escalator_slug} to {target_slug}\nReason: {reason}"
+        # Record the escalation as a structured marker — NOT appended to
+        # dev_notes (the developer's space). The old append polluted dev_notes
+        # and, on a re-escalation loop, grew it unboundedly (a cell PM stuck on
+        # needs_revision escalated 5x → 8KB of [ESCALATED] blocks). The target
+        # learns the reason from the escalate notification (escalate_and_notify).
+        markers.set_escalation(
+            task, from_slug=escalator_slug, to_slug=target_slug, reason=reason
         )
-        task.dev_notes = existing_notes + escalation_note
         await self.session.flush()
         # This path sets BLOCKED directly (bypassing the strict transition
         # validator), so emit the task.blocked audit explicitly — no status
@@ -4430,9 +4441,10 @@ class TaskService(BaseService):
             task.confirmed_by_human = True
 
         if notes:
-            existing = task.quick_context or ""
-            entry = f"approve_and_start_notes:{notes}"
-            task.quick_context = f"{existing}\n{entry}".strip() if existing else entry
+            # Coordination metadata, not a human handoff — store as a marker so
+            # quick_context carries only the structured ResumptionNote (no raw
+            # `approve_and_start_notes:<text>` soup leaking into the panel).
+            markers.set_approve_and_start_notes(task, notes)
 
         await self.session.flush()
         await self._emit_task_event(

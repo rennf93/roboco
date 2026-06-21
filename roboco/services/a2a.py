@@ -539,7 +539,14 @@ class A2AService:
 
     @staticmethod
     def update_task_with_message(task: TaskTable, message: A2AMessage) -> None:
-        """Update an existing task's dev_notes with new message content."""
+        """Append A2A-protocol message text to the task's A2A log (dev_notes).
+
+        NOTE: this is the *legacy A2A-protocol* message store — A2A-protocol
+        tasks carry their request/response thread in ``dev_notes`` (keyed by the
+        ``"A2A Request"`` marker that ``_notify_original_requester`` checks).
+        It is NOT the gateway agent flow (those use the A2AConversation tables),
+        so it does not pollute normal delivery tasks' developer notes.
+        """
         text_parts = [p for p in message.parts if p.type == "text"]
         if not text_parts:
             return

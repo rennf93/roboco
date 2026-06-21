@@ -30,6 +30,8 @@ EXTERNAL_PR_HEAD = "external_pr_head"
 EXTERNAL_PR_SUPERSEDE = "external_pr_supersede"
 SELF_HEAL_FP = "self_heal_fp"
 DISMISSED = "dismissed"
+ESCALATION = "escalation"
+APPROVE_AND_START_NOTES = "approve_and_start_notes"
 
 
 def get_marker(task: HasMarkers, key: str, default: Any = None) -> Any:
@@ -136,3 +138,36 @@ def is_dismissed(task: HasMarkers) -> bool:
 
 def mark_dismissed(task: HasMarkers) -> None:
     set_marker(task, DISMISSED, True)
+
+
+# --- escalation ------------------------------------------------------------ #
+# A coordination event, NOT a developer note. It used to be appended to
+# ``dev_notes`` (polluting the developer's space and growing unboundedly on a
+# re-escalation loop); it lives here as the latest structured record instead.
+# Delivery of the reason to the target is handled by the escalate notification.
+
+
+def get_escalation(task: HasMarkers) -> dict[str, str] | None:
+    val = get_marker(task, ESCALATION)
+    return val if isinstance(val, dict) else None
+
+
+def set_escalation(
+    task: HasMarkers, *, from_slug: str, to_slug: str, reason: str
+) -> None:
+    set_marker(task, ESCALATION, {"from": from_slug, "to": to_slug, "reason": reason})
+
+
+# --- approve-and-start notes ----------------------------------------------- #
+# The CEO's note when approving a board-reviewed coordination root. Used to be
+# string-packed into ``quick_context`` as ``approve_and_start_notes:<text>``;
+# kept here so ``quick_context`` carries only the human ResumptionNote.
+
+
+def get_approve_and_start_notes(task: HasMarkers) -> str | None:
+    val = get_marker(task, APPROVE_AND_START_NOTES)
+    return str(val) if val else None
+
+
+def set_approve_and_start_notes(task: HasMarkers, notes: str) -> None:
+    set_marker(task, APPROVE_AND_START_NOTES, notes)
