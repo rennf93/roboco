@@ -45,7 +45,10 @@ from roboco.services.gateway.remediation import (
     hint_for_missing_progress,
     hint_for_missing_qa_notes,
     hint_for_missing_reflect,
+    hint_for_short_dev_notes,
     hint_for_short_doc_notes,
+    hint_for_short_pr_reviewer_notes,
+    hint_for_short_quick_context,
     hint_for_unaddressed_acceptance_criteria,
 )
 
@@ -1876,6 +1879,7 @@ class Choreographer:
         auto-verify path. It is filtered here and re-asserted by the spec
         action's own preconditions.
         """
+        from roboco.config import settings as _settings
         from roboco.foundation.policy import tracing as _tr
 
         has_reflect = await self.journal.has_reflect_for_task(agent_id, task_id)
@@ -1890,6 +1894,9 @@ class Choreographer:
             journal_learning_present=has_learning,
             journal_struggle_present=has_struggle,
             journal_during_work_count=during_work_count,
+            # DEV_NOTES_MIN_CHARS reads the persisted task.dev_notes — the dev
+            # pre-writes it via note(scope='handoff') before i_am_done.
+            dev_notes_min_chars=_settings.dev_notes_min_chars,
         )
         requirements: list[_tr.Requirement] = [
             r
@@ -2004,7 +2011,15 @@ class Choreographer:
             and (datetime.now(UTC) - latest).total_seconds() <= window_seconds
         )
 
-        ctx = _tr.GateContext(journal_decision_present=fresh)
+        # QUICK_CONTEXT_MIN_CHARS applies only to ``delegate`` (its
+        # required-set is the only one carrying it); the PM pre-writes the
+        # parent's quick_context via note(scope='handoff') before delegating.
+        # Setting the threshold here is inert for unblock / escalate, which do
+        # not require it.
+        ctx = _tr.GateContext(
+            journal_decision_present=fresh,
+            quick_context_min_chars=_settings.quick_context_min_chars,
+        )
         result = _tr.check_requirements(
             task=t,
             requirements=list(_tr.requirements_for(verb)),
@@ -2189,6 +2204,17 @@ class Choreographer:
                 min_chars=_roboco_settings.docs_notes_min_chars
             ),
             "docs_files_non_empty": hint_for_missing_doc_files(),
+            "dev_notes>=min": hint_for_short_dev_notes(
+                min_chars=getattr(_roboco_settings, "dev_notes_min_chars", 40),
+                task_id=tid,
+            ),
+            "pr_reviewer_notes>=min": hint_for_short_pr_reviewer_notes(
+                min_chars=getattr(_roboco_settings, "pr_reviewer_notes_min_chars", 40),
+            ),
+            "quick_context>=min": hint_for_short_quick_context(
+                min_chars=getattr(_roboco_settings, "quick_context_min_chars", 30),
+                task_id=tid,
+            ),
             "journal:note_at_claim": (
                 "pre-gateway parity P1: write a journal:note at claim. "
                 f"Call note(scope='note', task_id='{tid}', "
@@ -2969,22 +2995,21 @@ class Choreographer:
                 ),
                 context_briefing=briefing,
             )
-        if guard := await self._pending_assignment_guard(agent_id, briefing):
-            return await self._emit_rejection(
-                guard, agent_id=agent_id, task_id=None, verb="i_am_idle"
-            )
-        if guard := await self._pm_unfinished_review_guard(agent_id, briefing):
-            return await self._emit_rejection(
-                guard, agent_id=agent_id, task_id=None, verb="i_am_idle"
-            )
-        if guard := await self._pm_uncovered_decomposition_guard(agent_id, briefing):
-            return await self._emit_rejection(
-                guard, agent_id=agent_id, task_id=None, verb="i_am_idle"
-            )
-        if guard := await self._pm_uncovered_required_cells_guard(agent_id, briefing):
-            return await self._emit_rejection(
-                guard, agent_id=agent_id, task_id=None, verb="i_am_idle"
-            )
+        # Pre-idle guards, evaluated in order — the first that returns an
+        # Envelope short-circuits to a rejection (kept as a loop so adding a
+        # guard doesn't push this verb over the return-count bound).
+        idle_guards = (
+            self._pending_assignment_guard,
+            self._pm_unfinished_review_guard,
+            self._pm_uncovered_decomposition_guard,
+            self._pm_uncovered_required_cells_guard,
+            self._auditor_note_guard,
+        )
+        for guard_fn in idle_guards:
+            if guard := await guard_fn(agent_id, briefing):
+                return await self._emit_rejection(
+                    guard, agent_id=agent_id, task_id=None, verb="i_am_idle"
+                )
         paused_ids = await self._auto_pause_in_progress_tasks(agent_id)
         await self.task.mark_agent_idle(agent_id)
         if paused_ids:
@@ -3104,6 +3129,47 @@ class Choreographer:
             remediate=(
                 "complete(task_id) to finish it, or reassign()/delegate() to"
                 " send it back — then retry i_am_idle()."
+            ),
+            context_briefing=briefing,
+        )
+
+    # The auditor must have recorded an observation within this window before
+    # it may go idle (session-scoped note obligation; see _auditor_note_guard).
+    _AUDITOR_IDLE_NOTE_WINDOW_SECONDS: int = 3600
+
+    async def _auditor_note_guard(
+        self, agent_id: UUID, briefing: dict[str, Any]
+    ) -> Envelope | None:
+        """Refuse i_am_idle when the auditor has not recorded an observation.
+
+        Every role with a dedicated note section is obligated to populate it,
+        the same way journals are obligated. The auditor's section is
+        ``auditor_notes``, but it owns no delivery task and has no delivery
+        verb to hang the obligation on — so the obligation is session-scoped:
+        before going idle the auditor must have recorded an observation within
+        the last ``_AUDITOR_IDLE_NOTE_WINDOW_SECONDS`` (a reflect journal entry,
+        or a note(scope='handoff') section write — either leaves a journal
+        entry). Inert for every other role.
+        """
+        agent = await self.task.agent_for(agent_id)
+        if agent is None or str(agent.role) != "auditor":
+            return None
+        if await self.journal.has_recent_entry(
+            agent_id, self._AUDITOR_IDLE_NOTE_WINDOW_SECONDS
+        ):
+            return None
+        return Envelope.invalid_state(
+            message=(
+                "as the auditor you must record an observation before going "
+                "idle — your auditor_notes section is the artifact the company "
+                "reviews, so it cannot be left empty."
+            ),
+            remediate=(
+                "call note(scope='reflect', text='<what you observed and any "
+                "concern>') for a journal observation, or "
+                "note(scope='handoff', task_id='<task>', section={'summary': "
+                "'<observation>', 'severity': 'info'|'watch'|'risk'}) to fill a "
+                "task's auditor_notes — then retry i_am_idle()."
             ),
             context_briefing=briefing,
         )

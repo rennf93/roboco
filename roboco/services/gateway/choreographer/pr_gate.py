@@ -229,7 +229,9 @@ class PRGateMixin(_Base):
         if isinstance(pre, Envelope):
             return pre
         t, agent, role_str, briefing, spec_ctx = pre
-        gate = await self._gate_tracing(reviewer_agent_id, task_id, t, role_str, verb)
+        gate = await self._gate_tracing(
+            reviewer_agent_id, task_id, t, role_str, verb, notes=notes
+        )
         if gate is not None:
             return gate
         runner = self._verb_runner()
@@ -332,14 +334,28 @@ class PRGateMixin(_Base):
         t: Any,
         role_str: str,
         verb: str,
+        *,
+        notes: str,
     ) -> Envelope | None:
-        """pr_pass / pr_fail require a journal:learning entry (parity with QA)."""
+        """pr_pass / pr_fail require a journal:learning entry (parity with QA)
+        plus a substantive pr_reviewer_notes section.
+
+        The section note is the verb's own ``notes`` argument (the review
+        verdict / issues), not yet persisted to the task, so it is threaded
+        through a SimpleNamespace shim (the foundation checker reads
+        ``task.pr_reviewer_notes`` — same write-then-gate pattern as qa_notes).
+        """
+        from roboco.config import settings as _settings
+
         has_learning = await self.journal.has_learning_for_task(
             reviewer_agent_id, task_id
         )
-        ctx = _tr.GateContext(journal_learning_present=has_learning)
+        ctx = _tr.GateContext(
+            journal_learning_present=has_learning,
+            pr_reviewer_notes_min_chars=_settings.pr_reviewer_notes_min_chars,
+        )
         result = _tr.check_requirements(
-            task=SimpleNamespace(),
+            task=SimpleNamespace(pr_reviewer_notes=notes),
             requirements=list(_tr.requirements_for(verb)),
             ctx=ctx,
         )

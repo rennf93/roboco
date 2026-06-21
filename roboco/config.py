@@ -777,6 +777,21 @@ class Settings(BaseSettings):
         ge=1,
         description="Minimum characters for docs notes",
     )
+    dev_notes_min_chars: int = Field(
+        default=40,
+        ge=1,
+        description="Minimum characters for a developer's dev_notes section",
+    )
+    pr_reviewer_notes_min_chars: int = Field(
+        default=40,
+        ge=1,
+        description="Minimum characters for a PR reviewer's pr_reviewer_notes section",
+    )
+    quick_context_min_chars: int = Field(
+        default=30,
+        ge=1,
+        description="Minimum characters for a PM's quick_context resumption section",
+    )
 
     # Commit-validator thresholds (wired into the gateway commit() gate)
     commit_subject_min_chars: int = Field(

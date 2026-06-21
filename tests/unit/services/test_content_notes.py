@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 from roboco.foundation.policy.content import ContentValidationError, PrReviewContent
-from roboco.services.content_notes import apply_structured_note
+from roboco.services.content_notes import apply_structured_note, content_type_for_role
 
 
 def _task() -> SimpleNamespace:
@@ -95,3 +95,22 @@ def test_notes_structured_reassigned_for_dirty_tracking() -> None:
     assert t.notes_structured is not before  # new dict object
     assert "developer" in t.notes_structured  # prior entry preserved
     assert "doc" in t.notes_structured
+
+
+def test_content_type_for_role_maps_section_roles() -> None:
+    """Each role with a dedicated section routes to its content type."""
+    assert content_type_for_role("developer") == "developer"
+    assert content_type_for_role("qa") == "qa"
+    assert content_type_for_role("documenter") == "doc"
+    assert content_type_for_role("pr_reviewer") == "pr_review"
+    assert content_type_for_role("auditor") == "auditor"
+    assert content_type_for_role("cell_pm") == "resumption"
+    assert content_type_for_role("main_pm") == "resumption"
+
+
+def test_content_type_for_role_none_for_sectionless_roles() -> None:
+    """Board / advisory / on-demand roles have no dedicated section."""
+    assert content_type_for_role("product_owner") is None
+    assert content_type_for_role("head_marketing") is None
+    assert content_type_for_role("ceo") is None
+    assert content_type_for_role("prompter") is None

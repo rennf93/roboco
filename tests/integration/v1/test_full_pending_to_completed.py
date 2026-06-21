@@ -173,18 +173,14 @@ class _MockContentActions:
         *,
         agent_id: object,
         text: object,
-        scope: str = "note",
-        task_id: object = None,
-        structured: object = None,
+        **_kwargs: object,
     ) -> Envelope:
-        # `structured` mirrors the Wave 2 G4 production signature (panel
-        # decision/reflect fields). The mock ignores it — the test asserts
-        # lifecycle transitions, not journal-entry rendering.
+        # The route forwards scope / task_id / structured / section as keyword
+        # args; the stub absorbs them via **_kwargs (it asserts lifecycle
+        # transitions, not journal-entry / section rendering). ``section``
+        # mirrors the note(scope='handoff') write-path signature.
         _ = agent_id
         _ = text
-        _ = scope
-        _ = task_id
-        _ = structured
         return Envelope.ok(status="noted", task_id=None, next="continue")
 
 

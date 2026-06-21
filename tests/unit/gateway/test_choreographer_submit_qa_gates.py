@@ -92,7 +92,8 @@ def _ready_task(task_id: Any, agent_id: Any) -> MagicMock:
         ],
         commits=[{"sha": "abc"}],
         documents=[],
-        dev_notes="",
+        # i_am_done obligates the developer's dev_notes section (>=40 chars).
+        dev_notes="Implemented the change and added tests covering the new path.",
     )
 
 
@@ -262,6 +263,41 @@ async def test_i_am_done_blocks_when_no_progress() -> None:
     assert body["error"] == "tracing_gap"
     # progress>=1 is the existing tracing_gate Requirement key.
     assert "progress>=1" in body["missing"] or "NO_PROGRESS" in body["missing"]
+    task_svc.submit_qa.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Role note-section obligation: dev_notes must be filled (note(scope='handoff'))
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_i_am_done_blocks_when_dev_notes_empty() -> None:
+    """i_am_done obligates the developer's dev_notes section; an empty
+    dev_notes (the dev never called note(scope='handoff')) fails the gate."""
+    agent_id = uuid4()
+    task_id = uuid4()
+    t = _ready_task(task_id, agent_id)
+    t.dev_notes = ""
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(
+        id=agent_id, role="developer", team="backend", slug=None
+    )
+    journal_svc = AsyncMock()
+    journal_svc.has_reflect_for_task.return_value = True
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
+    journal_svc.has_learning_for_task.return_value = False
+    journal_svc.has_struggle_for_task.return_value = False
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_am_done(agent_id, task_id, "done")
+    body = env.as_dict()
+    assert body["error"] == "tracing_gap"
+    assert "dev_notes>=min" in body["missing"]
+    assert "scope='handoff'" in body["remediate"]
     task_svc.submit_qa.assert_not_awaited()
 
 

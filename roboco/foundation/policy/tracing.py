@@ -40,6 +40,15 @@ class Requirement(StrEnum):
     SELF_VERIFIED = "self_verified"
     NOTES_MIN_CHARS = "notes>=min"
     SUBTASKS_TERMINAL = "subtasks_terminal"
+    # Role note-section obligations (parity with the journal requirements): a
+    # role with a dedicated note section must populate it via
+    # note(scope='handoff') the same way journals are obligated. The developer's
+    # dev_notes, the PR reviewer's pr_reviewer_notes, and the PM's quick_context
+    # had no agent write-path before — these obligate the section now that one
+    # exists.
+    DEV_NOTES_MIN_CHARS = "dev_notes>=min"
+    PR_REVIEWER_NOTES_MIN_CHARS = "pr_reviewer_notes>=min"
+    QUICK_CONTEXT_MIN_CHARS = "quick_context>=min"
 
 
 @dataclass(frozen=True)
@@ -55,6 +64,9 @@ class GateContext:
     qa_notes_min_chars: int = 80
     docs_notes_min_chars: int = 20
     notes_min_chars: int = 20
+    dev_notes_min_chars: int = 40
+    pr_reviewer_notes_min_chars: int = 40
+    quick_context_min_chars: int = 30
 
 
 @dataclass(frozen=True)
@@ -149,8 +161,27 @@ def _check_qa_evidence_inspected(task: Any, _ctx: GateContext) -> list[str]:
 
 
 def _check_docs_notes_min_chars(task: Any, ctx: GateContext) -> list[str]:
-    notes = getattr(task, "dev_notes", "") or ""
+    notes = getattr(task, "doc_notes", "") or ""
     return [] if len(notes) >= ctx.docs_notes_min_chars else ["docs_notes>=min"]
+
+
+def _check_dev_notes_min_chars(task: Any, ctx: GateContext) -> list[str]:
+    notes = getattr(task, "dev_notes", "") or ""
+    return [] if len(notes) >= ctx.dev_notes_min_chars else ["dev_notes>=min"]
+
+
+def _check_pr_reviewer_notes_min_chars(task: Any, ctx: GateContext) -> list[str]:
+    notes = getattr(task, "pr_reviewer_notes", "") or ""
+    return (
+        []
+        if len(notes) >= ctx.pr_reviewer_notes_min_chars
+        else ["pr_reviewer_notes>=min"]
+    )
+
+
+def _check_quick_context_min_chars(task: Any, ctx: GateContext) -> list[str]:
+    notes = getattr(task, "quick_context", "") or ""
+    return [] if len(notes) >= ctx.quick_context_min_chars else ["quick_context>=min"]
 
 
 def _check_docs_files_non_empty(task: Any, _ctx: GateContext) -> list[str]:
@@ -195,6 +226,9 @@ _CHECKERS: dict[Requirement, Checker] = {
     Requirement.SELF_VERIFIED: _check_self_verified,
     Requirement.NOTES_MIN_CHARS: _check_notes_min_chars,
     Requirement.SUBTASKS_TERMINAL: _check_subtasks_terminal,
+    Requirement.DEV_NOTES_MIN_CHARS: _check_dev_notes_min_chars,
+    Requirement.PR_REVIEWER_NOTES_MIN_CHARS: _check_pr_reviewer_notes_min_chars,
+    Requirement.QUICK_CONTEXT_MIN_CHARS: _check_quick_context_min_chars,
 }
 
 
@@ -232,8 +266,13 @@ VERB_REQUIREMENTS: dict[str, frozenset[Requirement]] = {
             Requirement.JOURNAL_DECISION_AT_CLAIM,
         }
     ),
-    # PM delegate — pre-gateway PM.md required journal:decision before each delegate.
-    "delegate": frozenset({Requirement.JOURNAL_DECISION}),
+    # PM delegate — pre-gateway PM.md required journal:decision before each
+    # delegate. QUICK_CONTEXT_MIN_CHARS obligates the PM's resumption section
+    # (quick_context) on the parent: satisfiable because the PM pre-writes it via
+    # note(scope='handoff', section={done, next, ...}) before delegate.
+    "delegate": frozenset(
+        {Requirement.JOURNAL_DECISION, Requirement.QUICK_CONTEXT_MIN_CHARS}
+    ),
     # Developer submit — adds JOURNAL_DURING_WORK_AT_LEAST_ONE for mid-flight cadence.
     # SELF_VERIFIED is set by the auto-run in_progress→verifying transition; it
     # stays in the required-set as a defense-in-depth backstop.
@@ -246,6 +285,10 @@ VERB_REQUIREMENTS: dict[str, frozenset[Requirement]] = {
             Requirement.JOURNAL_REFLECT,
             Requirement.JOURNAL_DURING_WORK_AT_LEAST_ONE,
             Requirement.ACCEPTANCE_CRITERIA_ADDRESSED,
+            # The developer's dedicated section: obligated like the journal.
+            # Satisfiable because the dev pre-writes dev_notes via
+            # note(scope='handoff') before i_am_done (write-then-gate).
+            Requirement.DEV_NOTES_MIN_CHARS,
         }
     ),
     # QA pass/fail.
@@ -263,12 +306,23 @@ VERB_REQUIREMENTS: dict[str, frozenset[Requirement]] = {
             Requirement.JOURNAL_LEARNING,
         }
     ),
-    # PR reviewer posts its change-request — must record a learning entry first.
-    "post_pr_review": frozenset({Requirement.JOURNAL_LEARNING}),
+    # PR reviewer posts its change-request — must record a learning entry first,
+    # and fill its dedicated pr_reviewer_notes section. The section note is the
+    # verb's own argument (review body), so it is checked via a SimpleNamespace
+    # shim at the call site, not the persisted task (write-then-gate: the arg
+    # isn't on the task yet — same pattern as qa_notes).
+    "post_pr_review": frozenset(
+        {Requirement.JOURNAL_LEARNING, Requirement.PR_REVIEWER_NOTES_MIN_CHARS}
+    ),
     # In-path PR-review gate: the reviewer records a learning entry before
-    # passing or failing the assembled PR (parity with post_pr_review).
-    "pr_pass": frozenset({Requirement.JOURNAL_LEARNING}),
-    "pr_fail": frozenset({Requirement.JOURNAL_LEARNING}),
+    # passing or failing the assembled PR (parity with post_pr_review), and
+    # fills pr_reviewer_notes (the verb's notes/issues argument, shimmed).
+    "pr_pass": frozenset(
+        {Requirement.JOURNAL_LEARNING, Requirement.PR_REVIEWER_NOTES_MIN_CHARS}
+    ),
+    "pr_fail": frozenset(
+        {Requirement.JOURNAL_LEARNING, Requirement.PR_REVIEWER_NOTES_MIN_CHARS}
+    ),
     # Doc submit.
     "i_documented": frozenset(
         {

@@ -31,6 +31,9 @@ def test_requirement_enum_has_canonical_values() -> None:
         "self_verified",
         "notes>=min",
         "subtasks_terminal",
+        "dev_notes>=min",
+        "pr_reviewer_notes>=min",
+        "quick_context>=min",
     }
     actual = {r.value for r in tracing.Requirement}
     assert actual == expected, f"Requirement drift: {actual ^ expected}"
@@ -50,6 +53,51 @@ def test_gate_result_has_passed_and_missing() -> None:
     result = tracing.GateResult(passed=True)
     assert result.passed is True
     assert result.missing == []
+
+
+def test_docs_notes_checker_reads_doc_notes_not_dev_notes() -> None:
+    """Regression: _check_docs_notes_min_chars must read ``doc_notes`` (the
+    documenter's section), not ``dev_notes`` (the developer's)."""
+    ctx = tracing.GateContext(docs_notes_min_chars=20)
+    # A long dev_notes must NOT satisfy the docs requirement.
+    only_dev = SimpleNamespace(dev_notes="x" * 50, doc_notes="")
+    assert tracing._check_docs_notes_min_chars(only_dev, ctx) == ["docs_notes>=min"]
+    # A long doc_notes satisfies it.
+    has_doc = SimpleNamespace(dev_notes="", doc_notes="y" * 25)
+    assert tracing._check_docs_notes_min_chars(has_doc, ctx) == []
+
+
+def test_note_section_checkers_read_their_own_fields() -> None:
+    ctx = tracing.GateContext()  # defaults: dev 40, pr_reviewer 40, quick_context 30
+    assert (
+        tracing._check_dev_notes_min_chars(SimpleNamespace(dev_notes="z" * 40), ctx)
+        == []
+    )
+    assert tracing._check_dev_notes_min_chars(
+        SimpleNamespace(dev_notes="z" * 39), ctx
+    ) == ["dev_notes>=min"]
+    assert (
+        tracing._check_pr_reviewer_notes_min_chars(
+            SimpleNamespace(pr_reviewer_notes="z" * 40), ctx
+        )
+        == []
+    )
+    assert tracing._check_quick_context_min_chars(
+        SimpleNamespace(quick_context="z" * 29), ctx
+    ) == ["quick_context>=min"]
+
+
+def test_note_section_obligations_wired_to_verbs() -> None:
+    assert tracing.Requirement.DEV_NOTES_MIN_CHARS in tracing.requirements_for(
+        "i_am_done"
+    )
+    assert tracing.Requirement.QUICK_CONTEXT_MIN_CHARS in tracing.requirements_for(
+        "delegate"
+    )
+    for verb in ("pr_pass", "pr_fail", "post_pr_review"):
+        assert tracing.Requirement.PR_REVIEWER_NOTES_MIN_CHARS in (
+            tracing.requirements_for(verb)
+        )
 
 
 def test_check_requirements_passes_when_all_satisfied() -> None:

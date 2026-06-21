@@ -75,7 +75,8 @@ def _ready_task(task_id: Any, agent_id: Any) -> MagicMock:
         acceptance_criteria_status=[],
         commits=[{"sha": "deadbeef"}],
         documents=[],
-        dev_notes="",
+        # i_am_done obligates the developer's dev_notes section (>=40 chars).
+        dev_notes="Implemented the change and added tests covering the new path.",
         quick_context=None,
     )
 

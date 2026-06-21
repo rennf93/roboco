@@ -424,6 +424,14 @@ async def test_dev_full_chain_through_awaiting_qa(
     assert refreshed is not None
     assert refreshed.pr_number == _PR_NUMBER, "PR recorded on task"
 
+    # i_am_done obligates the developer's dev_notes section — the agent fills
+    # it via note(scope='handoff') first; record_section_note is that write.
+    await task_service.record_section_note(
+        task.id,
+        "developer",
+        {"summary": "Implemented /healthz and added a test for the happy path."},
+    )
+
     # 4. i_am_done — auto-runs in_progress → verifying → awaiting_qa.
     env = await c.i_am_done(dev_agent.id, task.id, "tests pass; route works")
     assert env.error is None, f"i_am_done failed: {env.message}"
@@ -482,6 +490,12 @@ async def test_full_chain_through_doc_handoff(
     )
     await task_service.add_progress(task.id, dev_agent.id, "implemented /healthz")
     await c.open_pr(dev_agent.id, task.id)
+    # i_am_done obligates the developer's dev_notes section (note(scope='handoff')).
+    await task_service.record_section_note(
+        task.id,
+        "developer",
+        {"summary": "Implemented /healthz and added a test for the happy path."},
+    )
     env = await c.i_am_done(dev_agent.id, task.id, "tests pass; route works")
     assert env.error is None
     assert env.status == "awaiting_qa"

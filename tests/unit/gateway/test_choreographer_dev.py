@@ -428,7 +428,7 @@ async def test_i_am_done_blocks_when_acceptance_criteria_unaddressed() -> None:
         pr_url="https://x/pr/8",
         team="backend",
         documents=[],
-        dev_notes="",
+        dev_notes="Implemented the change and added tests covering the new path.",
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = t
@@ -480,7 +480,7 @@ async def test_i_am_done_reflect_note_addresses_acceptance_criteria() -> None:
         pr_url="https://x/pr/8",
         team="backend",
         documents=[],
-        dev_notes="",
+        dev_notes="Implemented the change and added tests covering the new path.",
         qa_notes="",
     )
     task_svc = AsyncMock()
@@ -534,7 +534,7 @@ async def test_i_am_done_blocks_when_journal_reflect_missing() -> None:
         pr_url="https://x/pr/8",
         team="backend",
         documents=[],
-        dev_notes="",
+        dev_notes="Implemented the change and added tests covering the new path.",
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = t
@@ -717,7 +717,7 @@ def _passing_i_am_done_task(agent_id: Any, task_id: Any) -> Any:
         pr_url="https://x/pr/8",
         team="backend",
         documents=[],
-        dev_notes="",
+        dev_notes="Implemented the change and added tests covering the new path.",
         qa_notes="",
     )
 

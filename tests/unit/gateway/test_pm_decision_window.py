@@ -89,10 +89,16 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
 def _make_task(task_id: Any) -> Any:
     """A task stub that the tracing gate accepts as-is.
 
-    `_check_pm_decision_required` only consults the (agent, task) journal
-    lookup — the task object itself is opaque to that check.
+    `_check_pm_decision_required` consults the (agent, task) journal lookup
+    for the decision window and, for ``delegate``, the persisted
+    ``quick_context`` resumption section — so the stub carries a substantive
+    quick_context to satisfy that obligation.
     """
-    return MagicMock(id=task_id, status="in_progress")
+    return MagicMock(
+        id=task_id,
+        status="in_progress",
+        quick_context="Decomposition planned; cells implement their slice next.",
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -672,6 +672,7 @@ async def test_delegate_main_pm_to_cell_pm_creates_subtask() -> None:
         project_id=project_id,
         status="in_progress",
         assigned_to=main_pm_id,
+        quick_context="Decomposition planned; cells implement their slice next.",
     )
     new_task = MagicMock(id=uuid4())
     task_svc = AsyncMock()
@@ -713,6 +714,7 @@ async def test_delegate_cell_pm_to_team_dev_creates_subtask() -> None:
         project_id=project_id,
         status="in_progress",
         assigned_to=cell_pm_id,
+        quick_context="Decomposition planned; cells implement their slice next.",
     )
     new_task = MagicMock(id=uuid4())
     task_svc = AsyncMock()
@@ -749,6 +751,7 @@ async def test_delegate_main_pm_to_dev_is_rejected() -> None:
         project_id=uuid4(),
         status="in_progress",
         assigned_to=main_pm_id,
+        quick_context="Decomposition planned; cells implement their slice next.",
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = parent
@@ -784,6 +787,7 @@ async def test_delegate_cell_pm_to_other_pm_rejected() -> None:
         project_id=uuid4(),
         status="in_progress",
         assigned_to=cell_pm_id,
+        quick_context="Decomposition planned; cells implement their slice next.",
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = parent
@@ -818,6 +822,7 @@ async def test_delegate_unknown_assignee_returns_invalid_state() -> None:
         project_id=uuid4(),
         status="in_progress",
         assigned_to=pm_id,
+        quick_context="Decomposition planned; cells implement their slice next.",
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = parent
@@ -852,6 +857,7 @@ async def test_delegate_invalid_team_enum_rejected() -> None:
         project_id=uuid4(),
         status="in_progress",
         assigned_to=pm_id,
+        quick_context="Decomposition planned; cells implement their slice next.",
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = parent
@@ -1128,6 +1134,7 @@ async def test_delegate_main_pm_to_cell_pm_rejects_code_typed_subtask() -> None:
         project_id=uuid4(),
         status="in_progress",
         assigned_to=main_pm_id,
+        quick_context="Decomposition planned; cells implement their slice next.",
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = parent
@@ -1166,6 +1173,7 @@ async def test_delegate_main_pm_to_cell_pm_accepts_planning_subtask() -> None:
         project_id=project_id,
         status="in_progress",
         assigned_to=main_pm_id,
+        quick_context="Decomposition planned; cells implement their slice next.",
     )
     new_task = MagicMock(id=uuid4())
     task_svc = AsyncMock()

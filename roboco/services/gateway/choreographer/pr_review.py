@@ -293,7 +293,7 @@ class PRReviewerMixin(_Base):
                 verb="post_pr_review",
             )
         gate = await self._pr_review_tracing_gate(
-            reviewer_agent_id, task_id, t, role_str
+            reviewer_agent_id, task_id, t, role_str, body=body
         )
         if gate is not None:
             return gate
@@ -359,15 +359,33 @@ class PRReviewerMixin(_Base):
         }
 
     async def _pr_review_tracing_gate(
-        self, reviewer_agent_id: UUID, task_id: UUID, t: Any, role_str: str
+        self,
+        reviewer_agent_id: UUID,
+        task_id: UUID,
+        t: Any,
+        role_str: str,
+        *,
+        body: str,
     ) -> Envelope | None:
-        """post_pr_review requires a journal:learning entry (parity with QA)."""
+        """post_pr_review requires a journal:learning entry (parity with QA)
+        plus a substantive pr_reviewer_notes section.
+
+        The section note is the verb's own ``body`` argument (the change
+        request), not yet persisted to the task, so it is threaded through a
+        SimpleNamespace shim (the foundation checker reads
+        ``task.pr_reviewer_notes`` — same write-then-gate pattern as qa_notes).
+        """
+        from roboco.config import settings as _settings
+
         has_learning = await self.journal.has_learning_for_task(
             reviewer_agent_id, task_id
         )
-        ctx = _tr.GateContext(journal_learning_present=has_learning)
+        ctx = _tr.GateContext(
+            journal_learning_present=has_learning,
+            pr_reviewer_notes_min_chars=_settings.pr_reviewer_notes_min_chars,
+        )
         result = _tr.check_requirements(
-            task=SimpleNamespace(),
+            task=SimpleNamespace(pr_reviewer_notes=body),
             requirements=list(_tr.requirements_for("post_pr_review")),
             ctx=ctx,
         )

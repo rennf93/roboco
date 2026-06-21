@@ -272,13 +272,13 @@ class DocMixin(_Base):
         persisted to the task yet (the spec runner / verb body writes
         them via the atomic action / pre-dispatch stamp), so we thread
         them through a SimpleNamespace shim with the minimal attributes
-        the foundation checkers read off the task object (dev_notes +
+        the foundation checkers read off the task object (doc_notes +
         documents — see foundation.policy.tracing._check_docs_notes_min_chars
         and _check_docs_files_non_empty).
         """
         has_reflect = await self.journal.has_reflect_for_task(doc_agent_id, task_id)
         task_view = SimpleNamespace(
-            dev_notes=notes,
+            doc_notes=notes,
             documents=list(files),
         )
         ctx = _tr.GateContext(

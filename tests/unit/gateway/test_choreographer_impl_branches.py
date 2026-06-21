@@ -618,6 +618,9 @@ async def test_delegate_parent_no_project_rejected() -> None:
         project_id=None,
         product_id=None,
         title="p",
+        # delegate obligates the PM's quick_context; supply it so the
+        # no-project guard is the load-bearing rejection.
+        quick_context="Decomposition planned; cells implement their slice next.",
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = parent

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock as _AsyncMock
 from unittest.mock import MagicMock as _MagicMock
@@ -11,7 +12,13 @@ from uuid import uuid4 as _u
 
 import pytest
 import pytest_asyncio
-from roboco.db.tables import AgentTable, JournalTable, ProjectTable, TaskTable
+from roboco.db.tables import (
+    AgentTable,
+    JournalEntryTable,
+    JournalTable,
+    ProjectTable,
+    TaskTable,
+)
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import (
     JournalEntryType,
@@ -29,7 +36,7 @@ from roboco.models.journal import (
     TaskReflectionParams,
 )
 from roboco.services.journal import JournalService
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError as _IE
 
 if TYPE_CHECKING:
@@ -730,3 +737,52 @@ async def test_search_entries_swallows_exception(
 
     results = await svc.search_entries(aid, "query")
     assert results == []
+
+
+@pytest.mark.asyncio
+async def test_has_recent_entry_false_then_true(journal_setup: dict) -> None:
+    """No entries → False; a freshly written entry is within the window."""
+    svc: JournalService = journal_setup["svc"]
+    agent_id = journal_setup["agent_id"]
+    task_id = journal_setup["task_id"]
+
+    assert await svc.has_recent_entry(agent_id, 3600) is False
+
+    await svc.write_entry(
+        agent_id=agent_id,
+        title="observation",
+        content="watching the seam between FE and BE",
+        scope="reflect",
+        task_id=task_id,
+    )
+    assert await svc.has_recent_entry(agent_id, 3600) is True
+
+
+@pytest.mark.asyncio
+async def test_has_recent_entry_excludes_entries_outside_window(
+    journal_setup: dict, db_session: AsyncSession
+) -> None:
+    """An entry older than the window does not count as recent."""
+    svc: JournalService = journal_setup["svc"]
+    agent_id = journal_setup["agent_id"]
+    task_id = journal_setup["task_id"]
+
+    await svc.write_entry(
+        agent_id=agent_id,
+        title="stale observation",
+        content="recorded two hours ago",
+        scope="reflect",
+        task_id=task_id,
+    )
+    # Backdate every entry on this agent's journal to two hours ago.
+    journal = await svc.get_journal_by_agent(agent_id)
+    assert journal is not None
+    await db_session.execute(
+        update(JournalEntryTable)
+        .where(JournalEntryTable.journal_id == journal.id)
+        .values(timestamp=datetime.now(UTC) - timedelta(hours=2))
+    )
+    await db_session.flush()
+
+    assert await svc.has_recent_entry(agent_id, 3600) is False
+    assert await svc.has_recent_entry(agent_id, 3 * 3600) is True

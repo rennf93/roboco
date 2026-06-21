@@ -62,6 +62,8 @@ def _parent_in_progress(pm_id: Any) -> MagicMock:
         status="in_progress",
         assigned_to=pm_id,
         priority=2,
+        # delegate obligates the PM's quick_context resumption section.
+        quick_context="Decomposition planned; cells implement their slice next.",
     )
 
 

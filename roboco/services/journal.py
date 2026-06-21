@@ -6,7 +6,7 @@ Each agent has their own journal with entries tied to tasks and sessions.
 Integrates with the Optimal API for RAG indexing of entries.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 from uuid import UUID
 
@@ -860,6 +860,28 @@ class JournalService(BaseService):
         return await self._has_entry_of_type(
             agent_id, task_id, JournalEntryType.STRUGGLE
         )
+
+    async def has_recent_entry(self, agent_id: UUID, within_seconds: int) -> bool:
+        """True iff the agent wrote any journal entry within the last
+        ``within_seconds`` (of any type, any task).
+
+        Backs the auditor's i_am_idle note obligation: the auditor has no
+        delivery verb and no single owned task, so its section-fill obligation
+        is session-scoped — it must have recorded an observation (a reflect
+        journal entry, or a note(scope='handoff') section write, which also
+        drops a journal trail entry) recently before going idle.
+        """
+        cutoff = datetime.now(UTC) - timedelta(seconds=within_seconds)
+        query = (
+            select(func.count(JournalEntryTable.id))
+            .join(JournalTable, JournalEntryTable.journal_id == JournalTable.id)
+            .where(
+                JournalTable.agent_id == agent_id,
+                JournalEntryTable.timestamp >= cutoff,
+            )
+        )
+        result = await self.session.execute(query)
+        return (result.scalar() or 0) > 0
 
     async def write_struggle(
         self,

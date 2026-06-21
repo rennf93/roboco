@@ -437,6 +437,15 @@ async def test_dev_full_chain_through_awaiting_qa(
     env = await c.open_pr(dev_agent.id, task.id)
     assert env.error is None, f"open_pr failed: {env.message}"
 
+    # i_am_done now obligates the developer's dev_notes section — the agent
+    # fills it via note(scope='handoff') first. record_section_note is the
+    # service call that write-path makes.
+    await task_service.record_section_note(
+        task.id,
+        "developer",
+        {"summary": "Implemented /healthz and added a test for the happy path."},
+    )
+
     env = await c.i_am_done(dev_agent.id, task.id, "tests pass; route works")
     assert env.error is None, f"i_am_done failed: {env.message}"
     assert env.status == Status.AWAITING_QA.value

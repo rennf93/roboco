@@ -71,3 +71,29 @@ def hint_for_missing_doc_files() -> str:
         "i_documented(files=[...]) requires the list of doc-file paths you "
         "committed; pass at least one path"
     )
+
+
+def hint_for_short_dev_notes(*, min_chars: int, task_id: str) -> str:
+    return (
+        f"your dev_notes section is empty or under {min_chars} chars. Before "
+        f"i_am_done, call note(scope='handoff', task_id='{task_id}', "
+        "section={'summary': '<what you built, key changes, risks>'}) to fill "
+        "it, then retry."
+    )
+
+
+def hint_for_short_pr_reviewer_notes(*, min_chars: int) -> str:
+    return (
+        f"your review note must be at least {min_chars} chars stating what you "
+        "checked and the verdict rationale; pass a longer `body` (post_pr_review)"
+        " / `notes` (pr_pass) / `issues` (pr_fail)."
+    )
+
+
+def hint_for_short_quick_context(*, min_chars: int, task_id: str) -> str:
+    return (
+        f"your quick_context section is empty or under {min_chars} chars. Before "
+        f"delegate, call note(scope='handoff', task_id='{task_id}', "
+        "section={'done': '<state so far>', 'next': '<what the cell should do>'})"
+        " to leave a resumption handoff, then retry."
+    )
