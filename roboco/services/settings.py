@@ -51,6 +51,7 @@ FEATURE_FLAGS: tuple[tuple[str, str], ...] = (
     ("self_heal_enabled", "Self-healing (detect + notify)"),
     ("self_heal_originate_enabled", "Self-healing — open fix tasks"),
     ("provisioning_enabled", "Pitch auto-provisioning"),
+    ("toolchain_match_enabled", "Agent runtime toolchain matching"),
     ("rag_auto_update_enabled", "RAG auto-update"),
     ("transcript_prune_enabled", "Transcript pruning"),
 )

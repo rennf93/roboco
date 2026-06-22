@@ -26,6 +26,8 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
   self_heal_originate_enabled:
     "Also open a PENDING fix task for a detected regression (needs Self-healing on; the task waits for your approval).",
   provisioning_enabled: "Auto-provision projects from approved pitches.",
+  toolchain_match_enabled:
+    "Provision each agent workspace with the target project's Python (not RoboCo's) and block delivery gates when its test suite can't be executed.",
   rag_auto_update_enabled: "Keep the knowledge base index refreshed automatically.",
   transcript_prune_enabled: "Run the background sweep that prunes old transcripts.",
 };
