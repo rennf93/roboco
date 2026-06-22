@@ -537,6 +537,32 @@ async def test_fail_qa_reassigns_to_original_developer(
 
 
 @pytest.mark.asyncio
+async def test_fail_qa_increments_revision_count(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """Each QA bounce to needs_revision increments the O(1) rework counter."""
+    svc = task_setup["svc"]
+    dev_id = task_setup["agent_id"]
+    task = await svc.create(_req(task_setup))
+    task.status = TaskStatus.AWAITING_QA
+    task.orchestration_markers = {"original_developer": str(dev_id)}
+    await db_session.flush()
+    assert task.revision_count == 0
+
+    failed = await svc.fail_qa(task.id, notes="missing tests")
+    assert failed is not None
+    assert failed.revision_count == 1
+    count_after_first = failed.revision_count
+
+    # A second QA cycle bumps it again (once per transition into needs_revision).
+    failed.status = TaskStatus.AWAITING_QA
+    await db_session.flush()
+    again = await svc.fail_qa(task.id, notes="still missing")
+    assert again is not None
+    assert again.revision_count == count_after_first + 1
+
+
+@pytest.mark.asyncio
 async def test_fail_qa_with_no_original_dev_unassigns(
     task_setup: dict, db_session: AsyncSession
 ) -> None:
