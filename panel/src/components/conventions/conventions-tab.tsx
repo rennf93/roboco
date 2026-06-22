@@ -165,7 +165,7 @@ export function ConventionsTab({ projectId }: { projectId: string }) {
   const usingDefaults = status === "missing" || status === "unknown";
 
   const moduleBoundaries = (
-    <Card>
+    <Card className="lg:flex lg:flex-col">
       <CardHeader>
         <CardTitle className="text-sm">Module boundaries</CardTitle>
         <CardDescription>
@@ -173,52 +173,60 @@ export function ConventionsTab({ projectId }: { projectId: string }) {
           toggle it.
         </CardDescription>
       </CardHeader>
-      <CardContent className="space-y-3">
-        {standard.modules.length === 0 && (
-          <p className="text-sm text-muted-foreground">
-            No modules mapped yet.
-          </p>
-        )}
-        {standard.modules.map((module, index) => (
-          <div
-            key={index}
-            className="space-y-2 rounded-md border border-border p-3"
-          >
-            <div className="flex items-center gap-2">
-              <Input
-                value={module.path}
-                placeholder="path/to/module"
-                onChange={(e) => updateModule(index, { path: e.target.value })}
-              />
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => removeModule(index)}
-              >
-                Remove
-              </Button>
-            </div>
-            <Input
-              value={module.purpose}
-              placeholder="what this module is for"
-              onChange={(e) => updateModule(index, { purpose: e.target.value })}
-            />
-            <div className="flex flex-wrap gap-1">
-              {FORBIDDABLE_KINDS.map((kind) => (
-                <Badge
-                  key={kind}
-                  variant={
-                    module.forbidden.includes(kind) ? "destructive" : "outline"
+      <CardContent className="space-y-3 lg:flex lg:min-h-0 lg:flex-1 lg:flex-col">
+        <div className="space-y-3 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:pr-1">
+          {standard.modules.length === 0 && (
+            <p className="text-sm text-muted-foreground">
+              No modules mapped yet.
+            </p>
+          )}
+          {standard.modules.map((module, index) => (
+            <div
+              key={index}
+              className="space-y-2 rounded-md border border-border p-3"
+            >
+              <div className="flex items-center gap-2">
+                <Input
+                  value={module.path}
+                  placeholder="path/to/module"
+                  onChange={(e) =>
+                    updateModule(index, { path: e.target.value })
                   }
-                  className="cursor-pointer"
-                  onClick={() => toggleForbidden(index, kind)}
+                />
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => removeModule(index)}
                 >
-                  no {kind}
-                </Badge>
-              ))}
+                  Remove
+                </Button>
+              </div>
+              <Input
+                value={module.purpose}
+                placeholder="what this module is for"
+                onChange={(e) =>
+                  updateModule(index, { purpose: e.target.value })
+                }
+              />
+              <div className="flex flex-wrap gap-1">
+                {FORBIDDABLE_KINDS.map((kind) => (
+                  <Badge
+                    key={kind}
+                    variant={
+                      module.forbidden.includes(kind)
+                        ? "destructive"
+                        : "outline"
+                    }
+                    className="cursor-pointer"
+                    onClick={() => toggleForbidden(index, kind)}
+                  >
+                    no {kind}
+                  </Badge>
+                ))}
+              </div>
             </div>
-          </div>
-        ))}
+          ))}
+        </div>
         <Button variant="outline" size="sm" onClick={addModule}>
           Add module
         </Button>
@@ -430,9 +438,11 @@ export function ConventionsTab({ projectId }: { projectId: string }) {
       )}
 
       {/* Two columns on wide viewports so the modal isn't a long single column;
-          Module boundaries | Rules, then Waivers | Custom rules. Each cell keeps
-          its natural height (items-start) and stacks to one column on mobile. */}
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 lg:items-start">
+          Module boundaries | Rules, then Waivers | Custom rules. items-stretch
+          makes each row's two cards equal height; Module boundaries scrolls
+          internally (below) so it matches Rules instead of running long. Stacks
+          to one column on mobile. */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 lg:items-stretch">
         {moduleBoundaries}
         {rules}
         {waivers}

@@ -27,7 +27,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **`ollama-init` is best-effort and gates startup on the models being present**, so a slow or unreachable model registry can no longer down a fully-cached deployment.
 - **A PM can recover its own coordination task from `needs_revision`**, and lifecycle-transition notes are kept off the human-facing `quick_context` / `dev_notes` columns.
 - **Panel:** a copyable task-id chip with a stable, non-shifting task header, clickable Branch / PR links with a branch-copy button, and clearer agent status badges.
-- **Panel:** the per-project Conventions editor lays out in a responsive two-column grid (Module boundaries | Rules, then Waivers | Custom rules) with Recent violations full-width, inside a wider modal on large viewports — instead of one long single column. It collapses to a single column on mobile and is capped so it stays sane up to a 27" display.
+- **Panel:** the per-project Conventions editor lays out in a responsive two-column grid (Module boundaries | Rules, then Waivers | Custom rules) with Recent violations full-width, inside a wider modal on large viewports — instead of one long single column. Each row's two cards share an equal height, and the Module-boundaries list scrolls internally so it matches the Rules card instead of running long. It collapses to a single column on mobile and is capped so it stays sane up to a 27" display.
 
 ## [0.8.0] - 2026-06-20
 
