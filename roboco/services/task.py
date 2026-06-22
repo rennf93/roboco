@@ -659,7 +659,60 @@ class TaskService(BaseService):
             title=req.title,
             team=req.team if isinstance(req.team, str) else req.team.value,
         )
+        await self._attach_baseline_constraints(task)
         return task
+
+    async def _attach_baseline_constraints(self, task: TaskTable) -> None:
+        """Append the project's block-rule constraints to the task description.
+
+        Server-derived backstop (flag-gated): every project task carries the
+        hard conventions even if nothing upstream added them — the layer the
+        design calls "can't be skipped". Idempotent and non-suppressible: it
+        appends only baseline constraints not already present (dedup by exact
+        string), so a second pass adds nothing AND an agent-authored
+        ``## Constraints`` section can never suppress the mandatory baseline.
+        Best-effort: a failure never blocks task creation.
+        """
+        baseline = await self._project_baseline_constraints(task)
+        if not baseline:
+            return
+        existing = task.description or ""
+        missing = [item for item in baseline if item not in existing]
+        if not missing:
+            return
+        section = "## Constraints\n" + "\n".join(f"- {item}" for item in missing)
+        task.description = f"{existing}\n\n{section}" if existing else section
+        await self.session.flush()
+
+    async def _project_baseline_constraints(self, task: TaskTable) -> list[str]:
+        """The project's baseline constraints, or ``[]`` (flag-off / none / error).
+
+        Imported lazily to avoid the task -> conventions -> git import chain.
+        """
+        from roboco.config import settings
+
+        if not settings.conventions_enabled or task.project_id is None:
+            return []
+
+        from roboco.services.conventions import get_conventions_service
+        from roboco.services.project import get_project_service
+
+        project = await get_project_service(self.session).get(
+            UUID(str(task.project_id))
+        )
+        if project is None:
+            return []
+        try:
+            return await get_conventions_service(self.session).baseline_constraints(
+                project
+            )
+        except Exception as exc:
+            self.log.warning(
+                "Baseline-constraints attach failed (non-fatal)",
+                task_id=str(task.id),
+                error=str(exc),
+            )
+            return []
 
     async def external_review_task_exists(
         self, project_id: UUID, pr_number: int, head_sha: str | None = None

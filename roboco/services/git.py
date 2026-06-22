@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import os
 import re
 import subprocess
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -3719,6 +3721,168 @@ class GitService(BaseService):
             "insertions": insertions,
             "deletions": deletions,
         }
+
+    async def conventions_check_for_task(
+        self, actor_agent_id: UUID | None, task: Any
+    ) -> dict[str, Any]:
+        """Run the conventions validator on a task's changed files.
+
+        Resolves the acting agent's workspace + the branch's changed files and
+        runs ``python -m roboco.conventions`` over them. Fail-open on a
+        resolution error (returns no findings, ``could_not_run=False``); the
+        validator's OWN fail-loud (exit 3) sets ``could_not_run=True`` so the
+        gate blocks rather than passing on an unanalyzable diff.
+        """
+        try:
+            branch = task.branch_name
+            if not branch:
+                return {"findings": [], "could_not_run": False}
+            workspace = await self._workspace_for_branch(
+                branch, actor_agent_id=actor_agent_id
+            )
+            changed = await self.list_changed_files(
+                branch_name=branch, actor_agent_id=actor_agent_id
+            )
+        except Exception:
+            return {"findings": [], "could_not_run": False}
+        if not changed:
+            return {"findings": [], "could_not_run": False}
+        return await self._run_conventions_validator(workspace, changed)
+
+    async def _run_conventions_validator(
+        self, workspace: Path, files: list[str]
+    ) -> dict[str, Any]:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "roboco.conventions",
+            "check",
+            "--root",
+            str(workspace),
+            "--files",
+            *files,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        out, err = await proc.communicate()
+        if proc.returncode != 0:
+            reason = err.decode(errors="replace").strip() or "validator crashed"
+            return {"findings": [], "could_not_run": True, "reason": reason[:300]}
+        findings: list[dict[str, Any]] = []
+        for line in out.decode(errors="replace").splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                findings.append(json.loads(stripped))
+            except json.JSONDecodeError:
+                continue
+        return {"findings": findings, "could_not_run": False, "reason": None}
+
+    async def open_conventions_pr(
+        self,
+        project_slug: str,
+        *,
+        content: str,
+        title: str,
+        body: str,
+        workspace: Path | None = None,
+    ) -> dict[str, Any] | None:
+        """Commit ``.roboco/conventions.yml`` on the scaffold branch + open a PR.
+
+        Best-effort and project-level (no task): writes ``content`` on a fresh
+        ``CONVENTIONS_SCAFFOLD_BRANCH`` cut from the default branch in
+        ``workspace`` (an agent's fresh clone) or the project's configured
+        ``workspace_path``, commits it (always), then pushes + opens a PR (only
+        with a git token + remote), and restores the clone to its original
+        branch so a shared workspace is never stranded on the scaffold branch.
+        Returns ``{"branch", "pr_number", "pr_url"}`` (``pr_number=None`` when no
+        remote PR was opened) or ``None`` when there is no usable workspace.
+        """
+        project_service = get_project_service(self.session)
+        project = await project_service.get_by_slug(project_slug)
+        if project is None:
+            return None
+        ws = workspace or (
+            Path(project.workspace_path) if project.workspace_path else None
+        )
+        if ws is None or not ws.exists():
+            return None
+        base = project.default_branch or "master"
+        spec = _ConventionsPr(
+            content=content,
+            branch=CONVENTIONS_SCAFFOLD_BRANCH,
+            title=title,
+            body=body,
+        )
+        original = await self.get_current_branch(ws)
+        try:
+            await self._commit_conventions_file(ws, base, spec)
+            return await self._push_and_open_conventions_pr(
+                project_slug, ws, base, spec
+            )
+        finally:
+            await self._run_git(ws, ["checkout", original], check=False)
+
+    async def _commit_conventions_file(
+        self, workspace: Path, base: str, spec: _ConventionsPr
+    ) -> None:
+        await self._run_git(workspace, ["checkout", base], check=False)
+        await self._run_git(workspace, ["checkout", "-B", spec.branch])
+        target = workspace / ".roboco" / "conventions.yml"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(spec.content)
+        await self._run_git(workspace, ["add", ".roboco/conventions.yml"])
+        await self._run_git(workspace, ["commit", "-m", spec.title])
+
+    async def _push_and_open_conventions_pr(
+        self, project_slug: str, workspace: Path, base: str, spec: _ConventionsPr
+    ) -> dict[str, Any]:
+        unopened: dict[str, Any] = {
+            "branch": spec.branch,
+            "pr_number": None,
+            "pr_url": None,
+        }
+        token = await self._token_for_project(project_slug)
+        if not token:
+            return unopened
+        try:
+            await self.push(workspace)
+            owner, repo = self._parse_github_remote(workspace)
+            resp = await self._post_pr(
+                owner,
+                repo,
+                token,
+                {
+                    "title": spec.title,
+                    "head": spec.branch,
+                    "base": base,
+                    "body": spec.body,
+                },
+            )
+        except GitError:
+            return unopened
+        if not resp.is_success:
+            return unopened
+        data = resp.json()
+        return {
+            "branch": spec.branch,
+            "pr_number": data.get("number"),
+            "pr_url": data.get("html_url"),
+        }
+
+
+CONVENTIONS_SCAFFOLD_BRANCH = "chore/roboco-conventions-scaffold"
+
+
+@dataclass(frozen=True)
+class _ConventionsPr:
+    """The fields for a project-level conventions scaffold/restore PR."""
+
+    content: str
+    branch: str
+    title: str
+    body: str
 
 
 def get_git_service(session: AsyncSession) -> GitService:

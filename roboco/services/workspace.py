@@ -188,6 +188,10 @@ def _monotonic() -> float:
 # trying to clone into the same directory.
 _ENSURE_WORKSPACE_LOCKS: dict[tuple[str, str], asyncio.Lock] = {}
 
+# Process-level guard so the conventions scaffold (opened on a project's first
+# clone) is attempted at most once per project per process, even across agents.
+_SCAFFOLD_ATTEMPTED: set[str] = set()
+
 
 def _ensure_lock_for(project_slug: str, agent_slug: str) -> asyncio.Lock:
     """Return the asyncio.Lock for a (project, agent) pair, creating lazily."""
@@ -731,7 +735,40 @@ class WorkspaceService:
                 git_token,
                 agent=agent,
             )
+            await self._maybe_scaffold_conventions(project, project_slug, workspace)
             return workspace
+
+    async def _maybe_scaffold_conventions(
+        self, project: Any, project_slug: str, workspace: Path
+    ) -> None:
+        """Open the conventions scaffold PR on a project's first clone.
+
+        Flag-gated, best-effort, once-per-process: fires only when the standard
+        file is absent in the fresh clone and we have not already tried for this
+        project, so a newly registered project gets a starter
+        ``.roboco/conventions.yml`` — and any failure is swallowed so it can
+        never affect the clone path. Imported lazily to avoid the
+        workspace -> conventions -> git import chain.
+        """
+        from roboco.config import settings
+
+        if not settings.conventions_enabled or project_slug in _SCAFFOLD_ATTEMPTED:
+            return
+        _SCAFFOLD_ATTEMPTED.add(project_slug)
+        if (workspace / ".roboco" / "conventions.yml").exists():
+            return
+        try:
+            from roboco.services.conventions import get_conventions_service
+
+            await get_conventions_service(self.session).scaffold(
+                project, workspace=workspace
+            )
+        except Exception as exc:
+            logger.warning(
+                "Conventions scaffold on first clone failed (non-fatal)",
+                project=project_slug,
+                error=str(exc),
+            )
 
     async def _clone_repo(
         self,

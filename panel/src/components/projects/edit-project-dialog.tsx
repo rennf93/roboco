@@ -22,6 +22,13 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs";
+import { ConventionsTab } from "@/components/conventions/conventions-tab";
 import { Key, KeyRound } from "lucide-react";
 import { toast } from "sonner";
 import { Team, type ProjectUpdate, type Project } from "@/types";
@@ -342,13 +349,24 @@ export function EditProjectDialog({ projectId, open, onOpenChange }: EditProject
             <Skeleton className="h-10 w-full" />
           </div>
         ) : project ? (
-          // Key forces remount when project changes, resetting form state
-          <EditProjectForm
-            key={project.id}
-            project={project}
-            onSuccess={() => onOpenChange(false)}
-            onCancel={() => onOpenChange(false)}
-          />
+          <Tabs defaultValue="settings">
+            <TabsList className="grid w-full grid-cols-2">
+              <TabsTrigger value="settings">Settings</TabsTrigger>
+              <TabsTrigger value="conventions">Conventions</TabsTrigger>
+            </TabsList>
+            <TabsContent value="settings">
+              {/* Key forces remount when project changes, resetting form state */}
+              <EditProjectForm
+                key={project.id}
+                project={project}
+                onSuccess={() => onOpenChange(false)}
+                onCancel={() => onOpenChange(false)}
+              />
+            </TabsContent>
+            <TabsContent value="conventions">
+              <ConventionsTab projectId={projectId} />
+            </TabsContent>
+          </Tabs>
         ) : (
           <div className="py-8 text-center text-muted-foreground">Project not found</div>
         )}

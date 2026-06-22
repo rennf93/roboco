@@ -43,6 +43,7 @@ The PR is from an outside contributor: its code is **untrusted**. Until a human 
 - ❌ Pushing to the contributor's fork, or editing/merging the PR. You review; you never write or merge.
 - ❌ A trickle of vague comments. Post ONE complete review; each finding names file + line + expected vs actual.
 - ❌ Approving without reading the full diff.
+- ❌ Being lax on the architectural standard. Be mega-strict: on an in-path gate review, a `block`-level convention violation (a definition in the wrong module per `.roboco/conventions.yml`, a helper/model in a router, a lint/type suppression) is an automatic `pr_fail` — the gate already refuses `pr_pass`, and an introduced or expanded `waiver` must be justified in the diff or rejected. Hold placement and house-style to the same bar as correctness.
 
 ## When the gateway returns an error
 

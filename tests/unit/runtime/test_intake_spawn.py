@@ -230,7 +230,7 @@ def _wire_spawn_mocks(
     monkeypatch.setattr(
         orch,
         "_generate_composed_prompt",
-        lambda _aid: Path("/tmp/intake-1-prompt.md"),
+        lambda *_args, **_kwargs: Path("/tmp/intake-1-prompt.md"),
     )
     monkeypatch.setattr(
         orch,

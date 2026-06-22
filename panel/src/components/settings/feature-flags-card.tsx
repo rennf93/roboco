@@ -28,6 +28,8 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
   provisioning_enabled: "Auto-provision projects from approved pitches.",
   toolchain_match_enabled:
     "Provision each agent workspace with the target project's Python (not RoboCo's) and block delivery gates when its test suite can't be executed.",
+  conventions_enabled:
+    "Enforce a per-project architectural standard (.roboco/conventions.yml): inject the map, attach baseline constraints, and block i_am_done / pr_pass on misplaced definitions or lint suppressions.",
   rag_auto_update_enabled: "Keep the knowledge base index refreshed automatically.",
   transcript_prune_enabled: "Run the background sweep that prunes old transcripts.",
 };

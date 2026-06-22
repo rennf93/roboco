@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from roboco.db.tables import ProjectTable
     from roboco.models import AgentRole, Team
 
 
@@ -202,6 +205,7 @@ def compose_prompt(
     team: "Team | None",
     agent_slug: str,
     base_path: Path | None = None,
+    ambient: str | None = None,
 ) -> str:
     """
     Compose a system prompt from layered components.
@@ -223,6 +227,8 @@ def compose_prompt(
         team: Agent's team (backend, frontend, ux_ui, or None for board)
         agent_slug: Agent's slug identifier (e.g., "be-dev-1")
         base_path: Optional override for prompts base path
+        ambient: Optional ambient layer (e.g. the project's architectural
+            standard) appended last; omitted when None/empty
 
     Returns:
         Composed system prompt string
@@ -238,12 +244,50 @@ def compose_prompt(
         _autogen_verbs_layer(prompts_path, role),
         _team_layer(prompts_path, team),
         _load_layer(prompts_path / "identities" / f"{agent_slug}.md"),
+        ambient,
     ):
         if layer:
             parts.append(layer)
 
     # Join with separator
     return "\n\n---\n\n".join(parts)
+
+
+_AMBIENT_TOTAL_CAP = 3000
+
+
+async def conventions_ambient_layer(
+    session: "AsyncSession", projects: "list[ProjectTable]"
+) -> str | None:
+    """Render the architectural-standard block for the in-scope project(s).
+
+    Merges one block per project (a PO / Intake working a product spans several
+    per-cell projects; a delivery role has one), each headed by its slug when
+    there is more than one, bounded to a total cap. Returns None when the
+    conventions subsystem is off or no project is in scope, so a flag-off /
+    board-level / cross-product spawn injects nothing.
+    """
+    from roboco.config import settings
+
+    if not settings.conventions_enabled or not projects:
+        return None
+    from roboco.services.conventions import get_conventions_service
+
+    service = get_conventions_service(session)
+    blocks: list[str] = []
+    for project in projects:
+        block = await service.render_ambient_block(project)
+        if not block:
+            continue
+        blocks.append(
+            f"### Project `{project.slug}`\n{block}" if len(projects) > 1 else block
+        )
+    if not blocks:
+        return None
+    text = "\n\n".join(blocks)
+    if len(text) > _AMBIENT_TOTAL_CAP:
+        return text[: _AMBIENT_TOTAL_CAP - 1].rstrip() + "…"
+    return text
 
 
 def make_slug(name: str) -> str:

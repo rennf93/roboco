@@ -2249,3 +2249,83 @@ class TaskDraftTable(Base):
         Index("ix_task_drafts_session_id", "session_id"),
         Index("ix_task_drafts_task_id", "task_id"),
     )
+
+
+# =============================================================================
+# PROJECT CONVENTIONS CACHE TABLE
+# =============================================================================
+
+
+class ProjectConventionsCacheTable(Base):
+    """Cached effective conventions map, keyed by (project, commit SHA).
+
+    The effective map (auto-derived defaults overlaid by the committed
+    ``.roboco/conventions.yml``) is re-parsed only when HEAD moves; every
+    consumer reads this cache. ``status`` records how the file resolved at that
+    SHA: ``ok`` | ``degraded`` (unparseable, fell back) | ``missing``.
+    """
+
+    __tablename__ = "project_conventions_cache"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    project_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    commit_sha: Mapped[str] = mapped_column(String(40), nullable=False)
+    effective_map: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    derived_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "commit_sha", name="uq_project_conventions_cache_sha"
+        ),
+    )
+
+
+# =============================================================================
+# PROJECT CONVENTION FINDINGS TABLE (violations feed)
+# =============================================================================
+
+
+class ProjectConventionFindingTable(Base):
+    """A persisted architectural-conventions finding for the violations feed.
+
+    Records the latest validator findings per task (re-recorded on each check —
+    ``ConventionsService.record_findings`` replaces a task's rows), so the panel
+    can show recent block/warn violations across a project and drift stays
+    visible. Written best-effort from the i_am_done gate in its own committed
+    session, so a finding that *blocked* the submit is still captured.
+    """
+
+    __tablename__ = "project_convention_findings"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    project_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    task_id: Mapped[UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    file: Mapped[str] = mapped_column(String(500), nullable=False)
+    line: Mapped[int] = mapped_column(Integer, nullable=False)
+    rule: Mapped[str] = mapped_column(String(100), nullable=False)
+    level: Mapped[str] = mapped_column(String(20), nullable=False)
+    kind: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    detected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+        index=True,
+    )

@@ -164,7 +164,7 @@ class QAMixin(_Base):
         t = await self.task.qa_claim(qa_agent_id, task_id)
         await self.task.mark_evidence_inspected(task_id)
 
-        ev = await self._build_qa_claim_evidence(t, task_id)
+        ev = await self._build_qa_claim_evidence(qa_agent_id, t, task_id)
         return Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
@@ -173,7 +173,26 @@ class QAMixin(_Base):
             context_briefing=briefing,
         ).with_introspection(task=t, role=role_str)
 
-    async def _build_qa_claim_evidence(self, t: Any, task_id: UUID) -> Any:
+    async def _qa_convention_findings(
+        self, qa_agent_id: UUID, t: Any
+    ) -> list[dict[str, Any]]:
+        """Convention-validator findings on the task's changed files (flag-gated).
+
+        Empty when the subsystem is off; a validator that could not run surfaces
+        a single explicit ``could_not_run`` entry rather than being dropped, so
+        QA never mistakes a silent failure for a clean diff.
+        """
+        if not settings.conventions_enabled:
+            return []
+        result = await self.git.conventions_check_for_task(qa_agent_id, t)
+        if result.get("could_not_run"):
+            reason = result.get("reason") or "validator could not run"
+            return [{"could_not_run": True, "reason": reason}]
+        return list(result.get("findings", []))
+
+    async def _build_qa_claim_evidence(
+        self, qa_agent_id: UUID, t: Any, task_id: UUID
+    ) -> Any:
         """Assemble the inline evidence payload returned by claim_review.
 
         Bundles files_changed + pr_diff_summary (both from git, the
@@ -194,11 +213,13 @@ class QAMixin(_Base):
         journal_highlights = await self.evidence_repo.journal_highlights_for_task(
             task_id
         )
+        convention_findings = await self._qa_convention_findings(qa_agent_id, t)
         return build_evidence_for_task(
             t,
             journal_highlights=journal_highlights,
             files_changed=files_changed,
             pr_diff_summary=diff_summary,
+            convention_findings=convention_findings,
         )
 
     async def _verify_qa_owner(

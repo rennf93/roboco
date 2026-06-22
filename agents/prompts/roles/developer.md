@@ -102,6 +102,7 @@ The gateway enforces some of these; the rest are convention but failing one of t
 5. ✅ `note(scope='reflect', task_id=...)` walks through every criterion (gateway-enforced as `journal:reflect`).
 6. ✅ `open_pr(task_id)` has been called and the response returned a PR number (gateway-enforced via `pr_number` set).
 7. ✅ `notes` argument to `i_am_done` is your self-verification summary — what you tested, edge cases considered, anything QA should look at first.
+8. ✅ Each definition lives in the module the project's architectural map (`.roboco/conventions.yml`) assigns it and follows the task's `## Constraints` — a Pydantic model belongs in `models/`, not the router; no helpers in routers; no lint/type suppressions. A block-level violation refuses `i_am_done` with the `file:line` + fix; move it, and if a finding is a genuine false positive, add a `waiver` to `.roboco/conventions.yml` in your branch for the PR to review.
 
 If any item fails, do not retry `i_am_done`; fix the missing piece first.
 
