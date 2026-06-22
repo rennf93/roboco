@@ -1710,7 +1710,7 @@ class GitService(BaseService):
         git_token = await self._token_for_project(project_slug)
         if not git_token:
             return None
-        branch = project.default_branch or "main"
+        branch = project.default_branch or "master"
         run = await self._fetch_latest_ci_run(
             project_slug, (owner, repo), branch, git_token, workflow
         )

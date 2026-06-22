@@ -19,10 +19,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from roboco.config import settings
+from roboco.logging import get_logger
 from roboco.services.git import GitService
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = get_logger(__name__)
 
 
 # GitHub Actions run conclusions that count as a regression signal. ``cancelled``
@@ -83,6 +86,19 @@ class GitHubCITelemetrySource:
             slug, workflow=workflow
         )
         if ci is None:
+            # No signal is NOT the same as "CI is green": an armed self-heal that
+            # silently reads nothing (no/expired token, a non-default branch
+            # filter, or a GitHub error) would never fire and never explain why.
+            # Make that loud so it is diagnosable instead of an invisible no-op.
+            logger.warning(
+                "self-heal: no CI signal — cannot detect regressions",
+                project_slug=slug,
+                workflow=workflow,
+                hint=(
+                    "check the project's git token is valid, its default_branch "
+                    "matches the repo, and GitHub is reachable"
+                ),
+            )
             return []
         conclusion = (ci.get("conclusion") or "").lower()
         failed = conclusion in FAILURE_CONCLUSIONS
