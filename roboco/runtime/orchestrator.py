@@ -79,14 +79,36 @@ AGENT_BASE_IMAGE = "roboco-agent-base"
 # _sweep_budget_exceeded) to build the SDK health/usage URL.
 SDK_PORT: int = 9000
 
-# Rate-limit recovery probe: a free, unmetered liveness call confirms a
-# provider has stopped rate-limiting us before parked agents are resumed.
-# Listing models / tags costs no tokens; a non-429 response means lifted.
+# Provider-recovery probe: a free, unmetered liveness call confirms a parked
+# provider is accepting requests again before parked agents are resumed.
+# Listing models / tags costs no tokens; only a 2xx response means recovered
+# (a 429 rate limit OR a 5xx overload both keep the provider parked).
 _ANTHROPIC_PROBE_BASE = "https://api.anthropic.com"
 _PROBE_TIMEOUT_SECONDS = 10.0
 _HTTP_TOO_MANY_REQUESTS = 429
+_HTTP_OK = 200
+_HTTP_MULTIPLE_CHOICES = 300  # first non-2xx status; 2xx == [_HTTP_OK, this)
 # Consecutive failed recovery probes before the CEO is notified once per episode.
 _CEO_NOTIFY_THRESHOLD = 10
+
+# Persistent server-overload parking (HTTP 529 / 500 / 503). The model API's
+# SDK already retries transient overloads in-process; only a persistent one
+# survives to kill the run. When it does, park the provider like a 429 instead
+# of crash-retrying into the overload. These markers are matched (lowercased,
+# substring) against the tail of the dead container's own output, so they are
+# kept specific to how the API surfaces an overload — bare "500"/"529" would
+# false-match an agent that merely writes about HTTP status codes.
+_OVERLOAD_RETRY_AFTER_S = 45.0
+_ANTHROPIC_OVERLOAD_MARKERS: tuple[str, ...] = (
+    "overloaded_error",
+    "internal_server_error",
+    "api error: 529",
+    "api error: 500",
+    "api error: 503",
+    "error 529",
+    "error 500",
+    "error 503",
+)
 
 # The intake (prompter) agent: a single seeded, board-adjacent interviewer.
 # Unlike delivery agents it is never dispatched and runs ONE persistent
@@ -5041,6 +5063,29 @@ Start by:
             await self._park_grok_rate_limited(agent_id, instance)
             return
         graceful = exit_code == 0
+        # Server-overload parking: a persistent 529/500/503 from the model API
+        # kills the run (the SDK already retries transient ones). Detect the
+        # overload marker in the dead container's output and park the provider —
+        # the same break as a 429 — instead of crash-retrying into the overload.
+        if not graceful:
+            overloaded_provider = await self._provider_overload_park_target(
+                agent_id, instance
+            )
+            if overloaded_provider is not None:
+                logger.warning(
+                    "Provider overload detected in agent output; parking provider",
+                    agent_id=agent_id,
+                    provider=overloaded_provider,
+                    task_id=instance.current_task_id,
+                )
+                await self._park_provider_unavailable(
+                    agent_id,
+                    instance,
+                    provider=overloaded_provider,
+                    retry_after=_OVERLOAD_RETRY_AFTER_S,
+                    kind="overloaded",
+                )
+                return
         if graceful:
             logger.info(
                 "Agent container exited gracefully",
@@ -5618,32 +5663,105 @@ Start by:
             and instance.config.provider_type == ModelProvider.GROK.value
         )
 
-    async def _park_grok_rate_limited(self, agent_id: str, instance: Any) -> None:
-        """Park a grok agent whose run hit an xAI 429 (entrypoint exit 75).
+    @staticmethod
+    async def _tail_container_logs(container_name: str, lines: int = 80) -> str:
+        """Return the last ``lines`` of a container's combined output, '' on error.
 
-        Finalize the session for usage capture, mark the instance OFFLINE
-        WITHOUT counting a crash (so it isn't escalated as stranded), and
-        activate the grok rate-limit tracker so the spawn guard suppresses
-        re-spawns until the probe-resume loop clears it after the retry window.
-        The task stays claimed/in_progress and is retried when the limit lifts.
+        The container is still present at exit (agents run detached, not
+        ``--rm``), so ``docker logs`` can read what the dead run printed.
         """
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "docker",
+                "logs",
+                "--tail",
+                str(lines),
+                container_name,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            out, _ = await proc.communicate()
+        except Exception:
+            return ""
+        return out.decode(errors="replace")
+
+    async def _provider_overload_park_target(
+        self, agent_id: str, instance: Any
+    ) -> str | None:
+        """Provider to park if this dead run hit a persistent overload, else None.
+
+        Only the Anthropic path is matched: grok has its own exit-75 detector,
+        and other providers surface overloads differently. Returns None when
+        the feature is disabled, the agent isn't Anthropic, or the output holds
+        no overload marker. Gated so a misfire can be turned off without a
+        redeploy of the detection logic.
+        """
+        if not settings.overload_break_enabled:
+            return None
         from roboco.models.base import ModelProvider
 
-        await self._finalize_spawn_session(agent_id, exit_reason="rate_limited")
+        provider_type = instance.config.provider_type if instance.config else None
+        if provider_type not in (None, ModelProvider.ANTHROPIC.value):
+            return None
+        tail = await self._tail_container_logs(f"roboco-agent-{agent_id}")
+        lowered = tail.lower()
+        if any(marker in lowered for marker in _ANTHROPIC_OVERLOAD_MARKERS):
+            return ModelProvider.ANTHROPIC.value
+        return None
+
+    async def _park_provider_unavailable(
+        self,
+        agent_id: str,
+        instance: Any,
+        *,
+        provider: str,
+        retry_after: float,
+        kind: str,
+    ) -> None:
+        """Park an agent whose run ended because its provider is unavailable.
+
+        Covers both a 429 rate limit and a persistent 5xx overload. Finalize
+        the session for usage capture, mark the instance OFFLINE WITHOUT
+        counting a crash (so it isn't escalated as stranded), and activate the
+        provider's tracker so the spawn guard suppresses re-spawns until the
+        probe-resume loop clears it. The task stays claimed/in_progress and is
+        retried when the provider recovers.
+        """
+        await self._finalize_spawn_session(agent_id, exit_reason=kind)
         instance.state = AgentState.OFFLINE
         instance.container_id = None
-        instance.error_count = 0  # a 429 is not a crash — don't escalate as stranded
+        instance.error_count = 0  # provider unavailability is not a crash
         try:
-            await self._make_tracker(ModelProvider.GROK.value).activate(
-                retry_after=_GROK_RATE_LIMIT_RETRY_AFTER_S,
+            await self._make_tracker(provider).activate(
+                retry_after=retry_after,
                 affected_agents=[agent_id],
+                kind=kind,
             )
         except Exception as exc:
-            logger.warning("failed to park grok rate-limit state", error=str(exc))
+            logger.warning(
+                "failed to park provider-unavailable state",
+                provider=provider,
+                kind=kind,
+                error=str(exc),
+            )
         logger.warning(
-            "Grok provider rate-limited; parked (task retried when the limit lifts)",
+            "Provider unavailable; parked (task retried when it recovers)",
+            provider=provider,
+            kind=kind,
             agent_id=agent_id,
             task_id=instance.current_task_id,
+        )
+
+    async def _park_grok_rate_limited(self, agent_id: str, instance: Any) -> None:
+        """Park a grok agent whose run hit an xAI 429 (entrypoint exit 75)."""
+        from roboco.models.base import ModelProvider
+
+        await self._park_provider_unavailable(
+            agent_id,
+            instance,
+            provider=ModelProvider.GROK.value,
+            retry_after=_GROK_RATE_LIMIT_RETRY_AFTER_S,
+            kind="rate_limited",
         )
 
     @staticmethod
@@ -5759,14 +5877,16 @@ Start by:
         return None, {}
 
     async def _do_probe(self, provider: str) -> bool:
-        """Return True if ``provider`` is accepting requests again (not 429).
+        """Return True if ``provider`` is accepting requests again.
 
         Makes a free, unmetered liveness call — Anthropic ``GET /v1/models``
-        or Ollama ``GET /api/tags`` — and treats any non-429 response as the
-        rate limit having lifted. A 429 keeps the provider parked; a network
-        error stays parked too (retry next sweep). When the provider can't be
-        probed (no key / unknown), fall back to time-expiry optimism: the
-        caller only reaches this after ``estimated_lift_at`` has passed.
+        or Ollama ``GET /api/tags`` — and treats only a 2xx response as
+        recovered. Any error status keeps the provider parked: a 429 (still
+        rate-limited) **and** a 5xx (still overloaded) alike — resuming on a
+        non-2xx would march parked agents straight back into the failure. A
+        network error stays parked too (retry next sweep). When the provider
+        can't be probed (no key / unknown), fall back to time-expiry optimism:
+        the caller only reaches this after ``estimated_lift_at`` has passed.
 
         Injectable boundary — tests monkeypatch this to force outcomes.
         """
@@ -5778,10 +5898,12 @@ Start by:
                 resp = await client.get(url, headers=headers)
         except httpx.HTTPError as exc:
             logger.debug(
-                "Rate-limit probe request failed", provider=provider, error=str(exc)
+                "Provider-recovery probe request failed",
+                provider=provider,
+                error=str(exc),
             )
             return False  # unreachable — stay parked, retry on the next sweep
-        return resp.status_code != _HTTP_TOO_MANY_REQUESTS
+        return _HTTP_OK <= resp.status_code < _HTTP_MULTIPLE_CHOICES
 
     async def _notify_rate_limit_ceo(
         self,

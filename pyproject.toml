@@ -12,7 +12,7 @@ requires-python = ">=3.10,<3.15"
 dependencies = [
     # Core
     "pydantic",
-    "pydantic-settings>=2.14.2",
+    "pydantic-settings",
     # API
     "fastapi",
     "uvicorn[standard]",
@@ -46,10 +46,10 @@ dependencies = [
     "packaging",  # services/toolchain.py — PEP 440 requires-python resolution
     "pyyaml",  # foundation/policy/conventions — .roboco/conventions.yml parse
     # Conventions validator (roboco.conventions) — tree-sitter ASTs, Python + TS
-    "tree-sitter>=0.22",
+    "tree-sitter",
     "tree-sitter-python",
     "tree-sitter-typescript",
-    "claude-agent-sdk>=0.2.105",
+    "claude-agent-sdk",
 ]
 
 [project.optional-dependencies]

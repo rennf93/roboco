@@ -2,9 +2,10 @@
 
 ``_do_probe`` replaced a time-based stub that always returned True. It now
 makes a free, unmetered call (Anthropic ``GET /v1/models`` / Ollama
-``GET /api/tags``) and treats any non-429 response as the rate limit having
-lifted. These tests pin that contract: target resolution per provider, the
-429-vs-not decision, network-error → stay-parked, and the un-probeable
+``GET /api/tags``) and treats only a 2xx response as the provider having
+recovered — a 429 (rate limit) and a 5xx (overload) both keep it parked.
+These tests pin that contract: target resolution per provider, the
+2xx-vs-error decision, network-error → stay-parked, and the un-probeable
 fallback to time-expiry optimism.
 """
 
@@ -107,6 +108,17 @@ async def test_probe_anthropic_ok_is_lifted(orch: AgentOrchestrator) -> None:
 @pytest.mark.usefixtures("with_anthropic_key")
 async def test_probe_anthropic_429_stays_limited(orch: AgentOrchestrator) -> None:
     fake = _fake_async_client(status_code=_HTTP_TOO_MANY_REQUESTS)
+    with patch("roboco.runtime.orchestrator.httpx.AsyncClient", fake):
+        assert await orch._do_probe("anthropic") is False
+
+
+@pytest.mark.usefixtures("with_anthropic_key")
+@pytest.mark.parametrize("status", [500, 503, 529])
+async def test_probe_anthropic_5xx_stays_parked(
+    orch: AgentOrchestrator, status: int
+) -> None:
+    """A 5xx (overload) keeps the provider parked — resuming would re-overload it."""
+    fake = _fake_async_client(status_code=status)
     with patch("roboco.runtime.orchestrator.httpx.AsyncClient", fake):
         assert await orch._do_probe("anthropic") is False
 

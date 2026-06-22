@@ -68,18 +68,24 @@ class RateLimitStateTracker:
         self,
         retry_after: float | None = None,
         affected_agents: list[str] | None = None,
+        kind: str = "rate_limited",
     ) -> None:
-        """Mark the provider as rate-limited.
+        """Mark the provider as unavailable so new spawns are queued.
 
         Args:
             retry_after:      Seconds until the provider should accept new
                               requests, or ``None`` if unknown.
             affected_agents:  Agent slugs that were active when the limit
                               was hit (informational; stored in state).
+            kind:             Why the provider is parked — ``"rate_limited"``
+                              (a 429) or ``"overloaded"`` (a persistent 5xx).
+                              Both gate spawns identically; the kind is stored
+                              so the panel / notifications can distinguish them.
         """
         r = await self._conn()
         state: dict[str, Any] = {
             "rate_limited": True,
+            "kind": kind,
             "activated_at": datetime.now(UTC).isoformat(),
             "retry_after": retry_after,
             "affected_agents": affected_agents or [],
