@@ -454,6 +454,41 @@ class DocMixin(_Base):
         if gate_rejection is not None:
             return gate_rejection
 
+        # Push the doc commit to origin BEFORE the transition, so it reaches the
+        # already-open PR (the PM merges the pushed branch). Without this the
+        # doc commit lives only in the documenter's clone and the merge drops it.
+        if push_rejection := await self._ensure_doc_branch_pushed(
+            doc_agent_id, task_id, briefing
+        ):
+            return push_rejection
+
+        return await self._finalize_documented(
+            doc_agent_id,
+            task_id,
+            files,
+            owned_task,
+            agent,
+            role_str,
+            spec_ctx,
+            briefing,
+        )
+
+    async def _finalize_documented(
+        self,
+        doc_agent_id: UUID,
+        task_id: UUID,
+        files: list[str],
+        owned_task: Any,
+        agent: Any,
+        role_str: str,
+        spec_ctx: Any,
+        briefing: Any,
+    ) -> Envelope:
+        """Stamp docs, dispatch the docs_complete transition, hand off to the PM.
+
+        Split out of ``i_documented`` so its body stays under the
+        return-statement / cyclomatic-complexity ceilings.
+        """
         # TaskService.docs_complete signature is (task_id, doc_notes); it
         # reads task.documents for indexing. Stamp the file list onto the
         # task before the runner dispatches docs_complete so the indexer
@@ -485,6 +520,33 @@ class DocMixin(_Base):
             next=spec_module._INTENT_VERBS["i_documented"].next_hint(t),
             context_briefing=briefing,
         ).with_introspection(task=t, role=role_str)
+
+    async def _ensure_doc_branch_pushed(
+        self, doc_agent_id: UUID, task_id: UUID, briefing: Any
+    ) -> Envelope | None:
+        """Push the documenter's doc commit to origin before awaiting_pm_review.
+
+        The documenter writes docs onto the task branch in its own workspace
+        clone (via write_doc or the gateway commit tool), but the PR is already
+        open and nothing pushes the new commit — so without this the PM merges a
+        PR that excludes the docs and the deliverable never lands in the repo.
+        Mirrors the developer's ``_ensure_branch_pushed``. Idempotent: a no-op
+        when nothing is unpushed. A push failure holds the task (no transition)
+        so the documenter retries rather than silently losing the docs.
+        """
+        try:
+            await self.git.push_task_branch(doc_agent_id, task_id)
+        except Exception as exc:
+            return Envelope.invalid_state(
+                message=f"could not push your documentation to origin: {exc}",
+                remediate=(
+                    "your doc commits are local-only and the PM merges the "
+                    "pushed PR branch. resolve the push error (often a transient "
+                    "network / fetch timeout) and call i_documented again."
+                ),
+                context_briefing=briefing,
+            )
+        return None
 
     async def _handoff_to_cell_pm(
         self, doc_agent_id: UUID, task_id: UUID, task: Any

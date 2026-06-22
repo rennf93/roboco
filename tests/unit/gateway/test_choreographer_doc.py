@@ -236,6 +236,80 @@ async def test_i_documented_succeeds_and_transitions() -> None:
     a2a_svc.send.assert_awaited_once()
 
 
+def _doc_success_task_svc(task_id: Any, doc_id: Any) -> AsyncMock:
+    """A task service stubbed for a passing i_documented (awaiting_pm_review)."""
+    t = _doc_owned_task(task_id, doc_id)
+    after = MagicMock(
+        id=task_id,
+        status="awaiting_pm_review",
+        assigned_to=doc_id,
+        team="backend",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = _doc_agent_mock(doc_id)
+    task_svc.docs_complete.return_value = after
+    task_svc.cell_pm_for_team.return_value = MagicMock(id=uuid4())
+    task_svc.session = MagicMock()
+    task_svc.session.flush = AsyncMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
+    return task_svc
+
+
+@pytest.mark.asyncio
+async def test_i_documented_pushes_doc_commit() -> None:
+    """The documenter's doc commit must be PUSHED so it reaches the open PR.
+
+    The PR is already open by the time docs are written; without a push the
+    doc commit lives only in the documenter's clone and the PM merges a PR
+    that excludes the docs. Mirrors the developer's _ensure_branch_pushed.
+    """
+    doc_id = uuid4()
+    task_id = uuid4()
+    task_svc = _doc_success_task_svc(task_id, doc_id)
+    git_svc = AsyncMock()
+    git_svc.push_task_branch.return_value = 1
+    journal_svc = AsyncMock()
+    journal_svc.has_reflect_for_task.return_value = True
+    deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    notes = "Wrote backend/guides/feature-x.md with usage examples and config."
+    env = await c.i_documented(
+        doc_id, task_id, notes=notes, files=["backend/guides/feature-x.md"]
+    )
+    assert env.error is None
+    assert env.status == "awaiting_pm_review"
+    git_svc.push_task_branch.assert_awaited_once_with(doc_id, task_id)
+
+
+@pytest.mark.asyncio
+async def test_i_documented_push_failure_holds_task() -> None:
+    """A push failure must NOT transition — the docs are local-only, so the
+    documenter stays in awaiting_documentation and retries (no silent drop)."""
+    doc_id = uuid4()
+    task_id = uuid4()
+    task_svc = _doc_success_task_svc(task_id, doc_id)
+    git_svc = AsyncMock()
+    git_svc.push_task_branch.side_effect = RuntimeError("push rejected")
+    journal_svc = AsyncMock()
+    journal_svc.has_reflect_for_task.return_value = True
+    deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    notes = "Wrote backend/guides/feature-x.md with usage examples and config."
+    env = await c.i_documented(
+        doc_id, task_id, notes=notes, files=["backend/guides/feature-x.md"]
+    )
+    assert env.as_dict()["error"] == "invalid_state"
+    task_svc.docs_complete.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_i_documented_not_assigned_returns_not_authorized() -> None:
     doc_id = uuid4()
