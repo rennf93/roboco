@@ -804,10 +804,14 @@ class WorkspaceService:
                 now = _monotonic()
                 last = _read_clone_synced.get(str(workspace), -math.inf)
                 if (now - last) >= _READ_CLONE_FETCH_TTL_SECONDS:
+                    token = await self._read_clone_token(project_service, project_slug)
                     await asyncio.to_thread(self._prune_broken_refs, workspace)
-                    await self._fetch_origin_best_effort(workspace, project_slug)
                     await asyncio.to_thread(
-                        self._reset_to_default, workspace, default_branch
+                        self._sync_read_clone,
+                        workspace,
+                        git_url,
+                        default_branch,
+                        token,
                     )
                     _read_clone_synced[str(workspace)] = _monotonic()
                 return workspace
@@ -823,8 +827,40 @@ class WorkspaceService:
             return workspace
 
     @staticmethod
-    def _reset_to_default(workspace: Path, default_branch: str) -> None:
-        """Hard-reset the read clone to ``origin/<default_branch>``. Best-effort."""
+    async def _read_clone_token(project_service: Any, project_slug: str) -> str | None:
+        """The project's decrypted git token, or ``None`` — never raises.
+
+        The read-clone refresh must authenticate against a private origin, but a
+        public repo legitimately has no token, so (unlike the clone path) we do
+        not hard-require one here.
+        """
+        from roboco.utils.crypto import EncryptionError
+
+        try:
+            token = await project_service.get_decrypted_token_by_slug(project_slug)
+        except EncryptionError:
+            return None
+        return cast("str | None", token)
+
+    @staticmethod
+    def _sync_read_clone(
+        workspace: Path,
+        git_url: str,
+        default_branch: str,
+        git_token: str | None,
+    ) -> None:
+        """Token-authenticated fetch + hard-reset of the read clone to origin's
+        default branch. Best-effort: logs and returns on failure.
+
+        ``_clone_repo`` scrubs the token from ``.git/config`` (the secret-exfil
+        mitigation), so a plain ``git fetch origin`` cannot authenticate against
+        a PRIVATE repo — the refresh silently fails and the clone stays frozen at
+        clone-time, never seeing commits merged afterwards. The read clone runs
+        orchestrator-side and is never mounted into an agent container, so the
+        token is injected transiently into the fetch argv (mirroring the clone)
+        to keep a private repo current.
+        """
+        auth_url = _inject_token_into_url(git_url, git_token)
 
         def _git(*args: str) -> subprocess.CompletedProcess[str]:
             return subprocess.run(
@@ -835,8 +871,16 @@ class WorkspaceService:
                 check=False,
             )
 
+        fetched = _git("fetch", "--no-tags", auth_url, default_branch)
+        if fetched.returncode != 0:
+            logger.warning(
+                "conventions read-clone fetch failed",
+                workspace=str(workspace),
+                error=(fetched.stderr or fetched.stdout).strip()[:200],
+            )
+            return
         _git("checkout", default_branch)
-        _git("reset", "--hard", f"origin/{default_branch}")
+        _git("reset", "--hard", "FETCH_HEAD")
 
     async def _clone_repo(
         self,
