@@ -108,6 +108,21 @@ class TestActivateAndRead:
         state = await tracker.get_state()
         assert state["probe_failures"] == 0
 
+    async def test_activate_defaults_kind_to_rate_limited(self) -> None:
+        mock = _make_redis_mock()
+        tracker = _make_tracker(redis_mock=mock)
+        await tracker.activate()
+        state = await tracker.get_state()
+        assert state["kind"] == "rate_limited"
+
+    async def test_activate_stores_overloaded_kind(self) -> None:
+        mock = _make_redis_mock()
+        tracker = _make_tracker(redis_mock=mock)
+        await tracker.activate(kind="overloaded")
+        state = await tracker.get_state()
+        assert state["kind"] == "overloaded"
+        assert await tracker.is_rate_limited() is True  # gates spawns either way
+
     async def test_clear_removes_state(self) -> None:
         mock = _make_redis_mock()
         tracker = _make_tracker(redis_mock=mock)

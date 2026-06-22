@@ -191,6 +191,16 @@ class Settings(BaseSettings):
         ),
     )
 
+    overload_break_enabled: bool = Field(
+        default=True,
+        description=(
+            "Park a provider on a persistent server overload (HTTP 529 / 500 / "
+            "503 from the model API) the same way a 429 rate limit is parked: "
+            "queue that provider's spawns and probe until it recovers, instead "
+            "of crash-retrying into the overload. Off => crash-retry behavior."
+        ),
+    )
+
     # ==========================================================================
     # Web Research (pluggable external search/fetch for Board + PM roles)
     # ==========================================================================
