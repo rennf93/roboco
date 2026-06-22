@@ -120,7 +120,27 @@ class ProjectService(BaseService):
             if isinstance(data.assigned_cell, Team)
             else data.assigned_cell,
         )
+        await self._maybe_scaffold_conventions(project)
         return project
+
+    async def _maybe_scaffold_conventions(self, project: ProjectTable) -> None:
+        """Best-effort: open the conventions scaffold PR (flag-gated, never fatal).
+
+        Imported lazily to avoid the project -> conventions -> git -> project
+        import cycle. A scaffold hiccup must never fail project registration.
+        """
+        if not settings.conventions_enabled:
+            return
+        from roboco.services.conventions import get_conventions_service
+
+        try:
+            await get_conventions_service(self.session).scaffold(project)
+        except Exception as exc:
+            self.log.warning(
+                "Conventions scaffold failed (non-fatal)",
+                project_id=str(project.id),
+                error=str(exc),
+            )
 
     async def get(self, project_id: UUID) -> ProjectTable | None:
         """Get a project by ID."""
