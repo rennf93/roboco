@@ -666,17 +666,33 @@ class TaskService(BaseService):
         """Append the project's block-rule constraints to the task description.
 
         Server-derived backstop (flag-gated): every project task carries the
-        hard conventions even if nothing upstream added them. Idempotent — the
-        rendered ``## Constraints`` section is appended at most once. Best-effort:
-        a failure never blocks task creation. Imported lazily to avoid the
-        task -> conventions -> git import chain.
+        hard conventions even if nothing upstream added them — the layer the
+        design calls "can't be skipped". Idempotent and non-suppressible: it
+        appends only baseline constraints not already present (dedup by exact
+        string), so a second pass adds nothing AND an agent-authored
+        ``## Constraints`` section can never suppress the mandatory baseline.
+        Best-effort: a failure never blocks task creation.
+        """
+        baseline = await self._project_baseline_constraints(task)
+        if not baseline:
+            return
+        existing = task.description or ""
+        missing = [item for item in baseline if item not in existing]
+        if not missing:
+            return
+        section = "## Constraints\n" + "\n".join(f"- {item}" for item in missing)
+        task.description = f"{existing}\n\n{section}" if existing else section
+        await self.session.flush()
+
+    async def _project_baseline_constraints(self, task: TaskTable) -> list[str]:
+        """The project's baseline constraints, or ``[]`` (flag-off / none / error).
+
+        Imported lazily to avoid the task -> conventions -> git import chain.
         """
         from roboco.config import settings
 
         if not settings.conventions_enabled or task.project_id is None:
-            return
-        if task.description and "## Constraints" in task.description:
-            return
+            return []
 
         from roboco.services.conventions import get_conventions_service
         from roboco.services.project import get_project_service
@@ -685,9 +701,9 @@ class TaskService(BaseService):
             UUID(str(task.project_id))
         )
         if project is None:
-            return
+            return []
         try:
-            baseline = await get_conventions_service(self.session).baseline_constraints(
+            return await get_conventions_service(self.session).baseline_constraints(
                 project
             )
         except Exception as exc:
@@ -696,15 +712,7 @@ class TaskService(BaseService):
                 task_id=str(task.id),
                 error=str(exc),
             )
-            return
-        if not baseline:
-            return
-
-        section = "## Constraints\n" + "\n".join(f"- {item}" for item in baseline)
-        task.description = (
-            f"{task.description}\n\n{section}" if task.description else section
-        )
-        await self.session.flush()
+            return []
 
     async def external_review_task_exists(
         self, project_id: UUID, pr_number: int, head_sha: str | None = None

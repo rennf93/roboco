@@ -82,12 +82,29 @@ async def test_flag_off_attaches_nothing(
     assert task.description == "Do the work"
 
 
-async def test_attach_is_idempotent_when_section_present(
+async def test_baseline_not_suppressed_by_agent_constraints_section(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An agent-authored ## Constraints section must NOT suppress the mandatory
+    # server baseline — both are present.
+    monkeypatch.setattr(settings, "conventions_enabled", True)
+    agent, project = await _seed(db_session)
+    seeded = "Do the work\n\n## Constraints\n- a task-specific note"
+    task = await TaskService(db_session).create(_req(agent, project, seeded))
+    assert task.description is not None
+    assert "a task-specific note" in task.description
+    assert "no models in routers" in task.description
+
+
+async def test_baseline_attach_is_idempotent(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(settings, "conventions_enabled", True)
     agent, project = await _seed(db_session)
-    seeded = "Do the work\n\n## Constraints\n- already here"
-    task = await TaskService(db_session).create(_req(agent, project, seeded))
+    svc = TaskService(db_session)
+    task = await svc.create(_req(agent, project, "Do the work"))
+    before = task.description
+    await svc._attach_baseline_constraints(task)
+    assert task.description == before
     assert task.description is not None
-    assert task.description.count("## Constraints") == 1
+    assert task.description.count("no models in routers") == 1
