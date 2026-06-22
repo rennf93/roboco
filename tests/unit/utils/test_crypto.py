@@ -5,6 +5,8 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import pytest
+from cryptography.fernet import Fernet
+from roboco.config import settings
 from roboco.utils.crypto import (
     EncryptionError,
     _get_fernet,
@@ -12,6 +14,19 @@ from roboco.utils.crypto import (
     encrypt_token,
     is_encryption_configured,
 )
+
+
+@pytest.fixture(autouse=True)
+def _configured_encryption_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Supply a valid Fernet key for the tests that exercise real crypto.
+
+    The round-trip tests need a configured key; without this they depend on
+    ``ROBOCO_ENCRYPTION_KEY`` being set in the environment — it is not in agent
+    gate containers, which is exactly why they failed there. The patch-based
+    tests below replace ``settings`` wholesale inside their ``with`` blocks, so
+    this autouse default never interferes with them.
+    """
+    monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
 
 
 def test_encrypt_decrypt_round_trip() -> None:
