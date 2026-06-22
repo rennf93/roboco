@@ -39,6 +39,11 @@ export function ConventionsTab({ projectId }: { projectId: string }) {
     queryFn: () => conventionsApi.get(projectId),
   });
 
+  const { data: findings } = useQuery({
+    queryKey: ["conventions-findings", projectId],
+    queryFn: () => conventionsApi.findings(projectId),
+  });
+
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: ["conventions", projectId] });
 
@@ -163,6 +168,38 @@ export function ConventionsTab({ projectId }: { projectId: string }) {
                   }
                 />
               </div>
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-sm">Recent violations</CardTitle>
+          <CardDescription>
+            The latest findings recorded across this project&apos;s tasks.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          {(!findings || findings.length === 0) && (
+            <p className="text-sm text-muted-foreground">
+              No violations recorded yet.
+            </p>
+          )}
+          {(findings ?? []).map((finding, index) => (
+            <div
+              key={`${finding.file}:${finding.line}:${finding.rule}:${index}`}
+              className="flex items-start justify-between gap-4 text-sm"
+            >
+              <div className="min-w-0">
+                <code>
+                  {finding.file}:{finding.line}
+                </code>{" "}
+                <span className="text-muted-foreground">{finding.message}</span>
+              </div>
+              <Badge variant={finding.level === "block" ? "destructive" : "secondary"}>
+                {finding.rule}
+              </Badge>
             </div>
           ))}
         </CardContent>

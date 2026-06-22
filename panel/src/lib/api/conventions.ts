@@ -62,6 +62,17 @@ export interface ConventionsActionResult {
   created: boolean;
 }
 
+export interface ConventionFinding {
+  file: string;
+  line: number;
+  rule: string;
+  level: RuleLevel;
+  kind: string | null;
+  message: string;
+  task_id: string | null;
+  detected_at: string;
+}
+
 export const conventionsApi = {
   // GET the project's effective map + health.
   get: async (projectId: string): Promise<ConventionsResponse> => {
@@ -86,6 +97,13 @@ export const conventionsApi = {
     const { data } = await api.post<ConventionsActionResult>(
       `/projects/${projectId}/conventions/restore`,
       {},
+    );
+    return data;
+  },
+  // GET the recent violations feed for the project.
+  findings: async (projectId: string): Promise<ConventionFinding[]> => {
+    const { data } = await api.get<ConventionFinding[]>(
+      `/projects/${projectId}/conventions/findings`,
     );
     return data;
   },
