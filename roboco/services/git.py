@@ -3720,6 +3720,95 @@ class GitService(BaseService):
             "deletions": deletions,
         }
 
+    async def open_conventions_pr(
+        self,
+        project_slug: str,
+        *,
+        content: str,
+        branch: str,
+        title: str,
+        body: str,
+    ) -> dict[str, Any] | None:
+        """Commit ``.roboco/conventions.yml`` on ``branch`` and open a PR.
+
+        Best-effort and project-level (no task): writes ``content`` to the
+        project workspace on a fresh ``branch`` cut from the default branch and
+        commits it (always), then pushes + opens a PR (only when the project has
+        a git token + remote). Returns ``{"branch", "pr_number", "pr_url"}`` with
+        ``pr_number=None`` when the remote PR could not be opened, or ``None``
+        when the project has no usable workspace to scaffold into.
+        """
+        project_service = get_project_service(self.session)
+        project = await project_service.get_by_slug(project_slug)
+        if project is None or not project.workspace_path:
+            return None
+        workspace = Path(project.workspace_path)
+        if not workspace.exists():
+            return None
+        base = project.default_branch or "master"
+        spec = _ConventionsPr(content=content, branch=branch, title=title, body=body)
+        await self._commit_conventions_file(workspace, base, spec)
+        return await self._push_and_open_conventions_pr(
+            project_slug, workspace, base, spec
+        )
+
+    async def _commit_conventions_file(
+        self, workspace: Path, base: str, spec: _ConventionsPr
+    ) -> None:
+        await self._run_git(workspace, ["checkout", base], check=False)
+        await self._run_git(workspace, ["checkout", "-B", spec.branch])
+        target = workspace / ".roboco" / "conventions.yml"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(spec.content)
+        await self._run_git(workspace, ["add", ".roboco/conventions.yml"])
+        await self._run_git(workspace, ["commit", "-m", spec.title])
+
+    async def _push_and_open_conventions_pr(
+        self, project_slug: str, workspace: Path, base: str, spec: _ConventionsPr
+    ) -> dict[str, Any]:
+        unopened: dict[str, Any] = {
+            "branch": spec.branch,
+            "pr_number": None,
+            "pr_url": None,
+        }
+        token = await self._token_for_project(project_slug)
+        if not token:
+            return unopened
+        try:
+            await self.push(workspace)
+            owner, repo = self._parse_github_remote(workspace)
+            resp = await self._post_pr(
+                owner,
+                repo,
+                token,
+                {
+                    "title": spec.title,
+                    "head": spec.branch,
+                    "base": base,
+                    "body": spec.body,
+                },
+            )
+        except GitError:
+            return unopened
+        if not resp.is_success:
+            return unopened
+        data = resp.json()
+        return {
+            "branch": spec.branch,
+            "pr_number": data.get("number"),
+            "pr_url": data.get("html_url"),
+        }
+
+
+@dataclass(frozen=True)
+class _ConventionsPr:
+    """The fields for a project-level conventions scaffold/restore PR."""
+
+    content: str
+    branch: str
+    title: str
+    body: str
+
 
 def get_git_service(session: AsyncSession) -> GitService:
     """Factory function to get git service."""
