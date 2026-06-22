@@ -10,14 +10,21 @@ non-zero so the gate blocks rather than silently passing.
 from __future__ import annotations
 
 from .classify_python import classify_definitions
+from .custom import check_custom
 from .findings import Finding
 from .grammars import GrammarUnavailable, get_parser
+from .hygiene import check_hygiene
 from .placement import check_placement
+from .runner import ValidatorCouldNotRun, run
 
 __all__ = [
     "Finding",
     "GrammarUnavailable",
+    "ValidatorCouldNotRun",
+    "check_custom",
+    "check_hygiene",
     "check_placement",
     "classify_definitions",
     "get_parser",
+    "run",
 ]
