@@ -1729,8 +1729,46 @@ class Choreographer:
         )
 
     async def _conventions_gate(self, ctx: _IAmDoneContext) -> Envelope | None:
-        """Block i_am_done on unresolved block-level architectural violations."""
-        return await self._conventions_guard(ctx.agent_id, ctx.task, ctx.briefing)
+        """Block i_am_done on unresolved block-level architectural violations.
+
+        Also persists the findings for the panel's violations feed — even the
+        ones that block this submit.
+        """
+        from roboco.config import settings as _settings
+
+        if not _settings.conventions_enabled:
+            return None
+        result = await self.git.conventions_check_for_task(ctx.agent_id, ctx.task)
+        await self._record_convention_findings(ctx.task, result)
+        return self._conventions_rejection(result, ctx.briefing)
+
+    @staticmethod
+    async def _record_convention_findings(task: Any, result: dict[str, Any]) -> None:
+        """Persist the task's findings for the feed, best-effort.
+
+        Runs in its OWN committed session so a finding that *blocks* the submit
+        is captured regardless of the verb's transaction outcome.
+        """
+        project_id = getattr(task, "project_id", None)
+        task_id = getattr(task, "id", None)
+        if project_id is None or task_id is None:
+            return
+        try:
+            from roboco.db.base import get_session_factory
+            from roboco.services.conventions import get_conventions_service
+
+            factory = get_session_factory()
+            async with factory() as db:
+                await get_conventions_service(db).record_findings(
+                    UUID(str(project_id)),
+                    UUID(str(task_id)),
+                    result.get("findings", []),
+                )
+                await db.commit()
+        except Exception as exc:
+            logger.warning(
+                "Recording convention findings failed (non-fatal)", error=str(exc)
+            )
 
     async def _conventions_guard(
         self, agent_id: UUID, task: Any, briefing: dict[str, Any]

@@ -174,6 +174,19 @@ class ConventionsActionResponse(BaseModel):
     created: bool
 
 
+class ConventionFinding(BaseModel):
+    """One recorded architectural-conventions violation (for the feed)."""
+
+    file: str
+    line: int
+    rule: str
+    level: str
+    kind: str | None
+    message: str
+    task_id: str | None
+    detected_at: str
+
+
 # =============================================================================
 # CONVERTERS
 # =============================================================================

@@ -92,3 +92,20 @@ async def test_flag_off_is_inert(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_no_findings_passes() -> None:
     result: dict[str, Any] = {"findings": [], "could_not_run": False}
     assert Choreographer._conventions_rejection(result, {}) is None
+
+
+@pytest.mark.asyncio
+async def test_gate_records_findings_even_when_blocking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "conventions_enabled", True)
+    recorded: list[dict[str, Any]] = []
+
+    async def _spy(_task: Any, result: dict[str, Any]) -> None:
+        recorded.append(result)
+
+    c = _make_choreographer(check_result=_BLOCK_RESULT)
+    monkeypatch.setattr(c, "_record_convention_findings", _spy)
+    env = await c._conventions_gate(_ctx())
+    assert env is not None  # still blocks
+    assert recorded and recorded[0] is _BLOCK_RESULT

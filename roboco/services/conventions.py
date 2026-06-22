@@ -15,13 +15,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from roboco.conventions.scan import derive_from_scan, render_yaml
-from roboco.db.tables import ProjectConventionsCacheTable
+from roboco.db.tables import (
+    ProjectConventionFindingTable,
+    ProjectConventionsCacheTable,
+)
 from roboco.foundation.policy.conventions.effective_map import effective_map
 from roboco.foundation.policy.conventions.models import (
     ConventionsParseError,
@@ -159,6 +162,57 @@ class ConventionsService(BaseService):
             head_sha=head,
             last_ok_sha=last_ok.commit_sha if last_ok is not None else None,
         )
+
+    async def record_findings(
+        self, project_id: UUID, task_id: UUID, findings: list[dict[str, Any]]
+    ) -> None:
+        """Replace a task's recorded findings with the latest set. Caller commits."""
+        await self.session.execute(
+            delete(ProjectConventionFindingTable).where(
+                ProjectConventionFindingTable.project_id == project_id,
+                ProjectConventionFindingTable.task_id == task_id,
+            )
+        )
+        for finding in findings:
+            if not finding.get("file") or not finding.get("rule"):
+                continue
+            self.session.add(
+                ProjectConventionFindingTable(
+                    project_id=project_id,
+                    task_id=task_id,
+                    file=str(finding.get("file", "")),
+                    line=int(finding.get("line", 0)),
+                    rule=str(finding.get("rule", "")),
+                    level=str(finding.get("level", "")),
+                    kind=finding.get("kind"),
+                    message=str(finding.get("message", "")),
+                )
+            )
+        await self.session.flush()
+
+    async def recent_findings(
+        self, project_id: UUID, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """Recent findings across the project, newest first (for the panel feed)."""
+        result = await self.session.execute(
+            select(ProjectConventionFindingTable)
+            .where(ProjectConventionFindingTable.project_id == project_id)
+            .order_by(ProjectConventionFindingTable.detected_at.desc())
+            .limit(limit)
+        )
+        return [
+            {
+                "file": row.file,
+                "line": row.line,
+                "rule": row.rule,
+                "level": row.level,
+                "kind": row.kind,
+                "message": row.message,
+                "task_id": str(row.task_id) if row.task_id is not None else None,
+                "detected_at": row.detected_at.isoformat(),
+            }
+            for row in result.scalars().all()
+        ]
 
     # -- internals ---------------------------------------------------------- #
 
