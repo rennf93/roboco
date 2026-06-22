@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import os
 import re
 import subprocess
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -3719,6 +3721,75 @@ class GitService(BaseService):
             "insertions": insertions,
             "deletions": deletions,
         }
+
+    async def conventions_check_for_task(
+        self, actor_agent_id: UUID | None, task: Any
+    ) -> dict[str, Any]:
+        """Run the conventions validator on a task's changed files.
+
+        Resolves the acting agent's workspace + the branch's changed files and
+        runs ``python -m roboco.conventions`` over them. Fail-open on a
+        resolution error (returns no findings, ``could_not_run=False``); the
+        validator's OWN fail-loud (exit 3) sets ``could_not_run=True`` so the
+        gate blocks rather than passing on an unanalyzable diff.
+        """
+        try:
+            branch = task.branch_name
+            if not branch:
+                return {"findings": [], "could_not_run": False}
+            workspace = await self._workspace_for_branch(
+                branch, actor_agent_id=actor_agent_id
+            )
+            changed = await self.list_changed_files(
+                branch_name=branch, actor_agent_id=actor_agent_id
+            )
+        except Exception:
+            return {"findings": [], "could_not_run": False}
+        if not changed:
+            return {"findings": [], "could_not_run": False}
+        return await self._run_conventions_validator(workspace, changed)
+
+    async def conventions_check_pr(
+        self, project_slug: str, changed_files: list[str], actor_agent_id: UUID | None
+    ) -> dict[str, Any]:
+        """Run the conventions validator over an assembled PR's changed files."""
+        if not changed_files:
+            return {"findings": [], "could_not_run": False}
+        try:
+            workspace = await self.get_workspace(project_slug, actor_agent_id)
+        except Exception:
+            return {"findings": [], "could_not_run": False}
+        return await self._run_conventions_validator(workspace, changed_files)
+
+    async def _run_conventions_validator(
+        self, workspace: Path, files: list[str]
+    ) -> dict[str, Any]:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "roboco.conventions",
+            "check",
+            "--root",
+            str(workspace),
+            "--files",
+            *files,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        out, err = await proc.communicate()
+        if proc.returncode != 0:
+            reason = err.decode(errors="replace").strip() or "validator crashed"
+            return {"findings": [], "could_not_run": True, "reason": reason[:300]}
+        findings: list[dict[str, Any]] = []
+        for line in out.decode(errors="replace").splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                findings.append(json.loads(stripped))
+            except json.JSONDecodeError:
+                continue
+        return {"findings": findings, "could_not_run": False, "reason": None}
 
     async def open_conventions_pr(
         self,

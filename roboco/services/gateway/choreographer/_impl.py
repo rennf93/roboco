@@ -1651,20 +1651,19 @@ class Choreographer:
         Returns the rejection envelope if any gate fails; None on pass. Shared
         by the normal and resume-from-verifying paths so both push.
         """
-        if rejection := await self._check_tracing_gates(
-            ctx.agent_id, ctx.task_id, ctx.task
-        ):
-            return await self._reject_i_am_done(ctx, rejection)
-        if rejection := await self._check_submit_qa_field_gates(
-            ctx.agent_id, ctx.task_id, ctx.task
-        ):
-            return await self._reject_i_am_done(ctx, rejection)
-        if rejection := await self._ensure_branch_pushed(ctx):
-            return await self._reject_i_am_done(ctx, rejection)
-        if rejection := await self._check_quality_gate(ctx):
-            return await self._reject_i_am_done(ctx, rejection)
-        if rejection := await self._toolchain_broken_guard(ctx.agent_id, ctx.task):
-            return await self._reject_i_am_done(ctx, rejection)
+        guards = (
+            lambda: self._check_tracing_gates(ctx.agent_id, ctx.task_id, ctx.task),
+            lambda: self._check_submit_qa_field_gates(
+                ctx.agent_id, ctx.task_id, ctx.task
+            ),
+            lambda: self._ensure_branch_pushed(ctx),
+            lambda: self._check_quality_gate(ctx),
+            lambda: self._toolchain_broken_guard(ctx.agent_id, ctx.task),
+            lambda: self._conventions_gate(ctx),
+        )
+        for guard in guards:
+            if rejection := await guard():
+                return await self._reject_i_am_done(ctx, rejection)
         # Pre-gateway parity: persist per-criterion
         # status now that all gates have passed. The write runs AFTER the
         # verdict so it cannot change i_am_done's rejection behavior.
@@ -1727,6 +1726,59 @@ class Choreographer:
                 "source read"
             ),
             context_briefing={},
+        )
+
+    async def _conventions_gate(self, ctx: _IAmDoneContext) -> Envelope | None:
+        """Block i_am_done on unresolved block-level architectural violations.
+
+        Runs the conventions validator on the dev's changed files. A ``block``
+        finding (a misplaced definition, a lint suppression) or a validator that
+        could not run refuses the submit with the offending ``file:line`` and a
+        fix hint. ``warn`` findings never block. Inert when the flag is off.
+        """
+        from roboco.config import settings as _settings
+
+        if not _settings.conventions_enabled:
+            return None
+        result = await self.git.conventions_check_for_task(ctx.agent_id, ctx.task)
+        return self._conventions_rejection(result, ctx.briefing)
+
+    @staticmethod
+    def _conventions_rejection(
+        result: dict[str, Any], briefing: dict[str, Any]
+    ) -> Envelope | None:
+        """Turn a validator result into a rejection Envelope, or None to pass."""
+        if result.get("could_not_run"):
+            return Envelope.invalid_state(
+                message=(
+                    "the architectural-conventions validator could not run on "
+                    "your changed files — this blocks rather than passing silently"
+                ),
+                remediate=(
+                    "the validator failed to analyze the diff (a parse or grammar "
+                    "error). resolve it and call the verb again; if it persists, "
+                    "call i_am_blocked"
+                ),
+                context_briefing=briefing,
+            )
+        blocks = [f for f in result.get("findings", []) if f.get("level") == "block"]
+        if not blocks:
+            return None
+        listing = "\n".join(
+            f"- {f.get('file')}:{f.get('line')} — {f.get('fix_hint')}" for f in blocks
+        )
+        return Envelope.invalid_state(
+            message=(
+                f"{len(blocks)} architectural-convention violation(s) must be "
+                "fixed before this can proceed"
+            ),
+            remediate=(
+                "place each definition in the module the architecture map assigns "
+                "it, then commit and call the verb again. if a finding is a false "
+                "positive, add a waiver to .roboco/conventions.yml in your branch "
+                "for the PR to review:\n\n" + listing
+            ),
+            context_briefing=briefing,
         )
 
     async def _ensure_branch_pushed(self, ctx: _IAmDoneContext) -> Envelope | None:
