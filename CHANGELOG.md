@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-06-23
+
 ### Added
 
 - **Architectural Conventions Standard — a per-project, repo-canonical architecture map that gates where code may live.** Beyond the `make`-style checks (syntax, types, tests), each project can carry a `.roboco/conventions.yml` declaring which definition *kinds* belong in which modules, a toggleable rule set, custom regex rules, and waivers — so an agent can no longer land a Pydantic model inside a router or a lint suppression (a misplaced *helper* — any top-level function — warns rather than blocks). A tree-sitter validator CLI (Python + TypeScript) classifies every changed definition and emits findings; a `block`-level finding refuses a developer's `i_am_done` and the in-path PR gate's `pr_pass` with the offending `file:line` and a fix hint, and findings surface in QA's review evidence. The auto-derived defaults exclude test and documentation trees, count an explicit `db.commit()` in a route as legitimate (not a fat-route violation), and exempt a small allowlist of structurally-unavoidable framework suppressions (ruff `TC001`–`TC003`, pydantic `prop-decorator`). The committed file and repo scan are read from a dedicated project-level read clone the service ensures on demand — so the standard resolves even for a project created before it existed, with no manual workspace configuration. The file is auto-scaffolded on first clone, editable from a per-project Conventions tab in the panel, and a false positive is cleared by a waiver committed in the branch and reviewed in the PR. Gated by `ROBOCO_CONVENTIONS_ENABLED` (default off) and fully inert when off.
