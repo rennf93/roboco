@@ -128,6 +128,12 @@ class ConventionsService(BaseService):
         mapping = last_good if last_good is not None else self._derive(project)
         return await self._publish(project, render_yaml(mapping), restore=True)
 
+    async def commit_standard(
+        self, project: ProjectTable, standard: ConventionsStandard
+    ) -> ScaffoldResult:
+        """Open a PR committing an externally-edited standard (panel save)."""
+        return await self._publish(project, render_yaml(standard), restore=False)
+
     async def health(self, project: ProjectTable) -> ConventionsHealth:
         """Report the standard's status at HEAD + the last-good commit SHA."""
         pid = self._pid(project)

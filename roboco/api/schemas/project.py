@@ -147,6 +147,34 @@ class SyncStateRequest(BaseModel):
 
 
 # =============================================================================
+# CONVENTIONS
+# =============================================================================
+
+
+class ConventionsHealthResponse(BaseModel):
+    """Health of a project's architectural-conventions standard."""
+
+    status: str
+    head_sha: str
+    last_ok_sha: str | None
+
+
+class ConventionsResponse(BaseModel):
+    """The project's effective conventions map + its current health."""
+
+    standard: dict[str, object]
+    health: ConventionsHealthResponse
+
+
+class ConventionsActionResponse(BaseModel):
+    """Result of a scaffold / restore / save — the branch + PR (if opened)."""
+
+    pr_number: int | None
+    branch: str
+    created: bool
+
+
+# =============================================================================
 # CONVERTERS
 # =============================================================================
 
