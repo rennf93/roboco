@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from roboco.config import settings
 from roboco.db.tables import AgentTable, ProjectTable
@@ -54,11 +54,11 @@ def _req(
         description=description,
         acceptance_criteria=["it works"],
         team=Team.BACKEND,
-        created_by=agent.id,
+        created_by=UUID(str(agent.id)),
         task_type=TaskType.CODE,
         nature=TaskNature.TECHNICAL,
         estimated_complexity=Complexity.MEDIUM,
-        project_id=project.id,
+        project_id=UUID(str(project.id)),
     )
 
 

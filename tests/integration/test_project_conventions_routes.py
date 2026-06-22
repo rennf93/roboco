@@ -73,7 +73,7 @@ async def _make_project(client: AsyncClient) -> str:
         },
     )
     assert resp.status_code == HTTPStatus.CREATED
-    return resp.json()["id"]
+    return str(resp.json()["id"])
 
 
 async def test_get_conventions_returns_map_and_health(client: AsyncClient) -> None:

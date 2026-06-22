@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from roboco.conventions.placement import check_placement
+from roboco.conventions.placement import Definition, check_placement
 from roboco.foundation.policy.conventions.models import (
     ConventionsStandard,
     Module,
@@ -12,7 +12,7 @@ from roboco.foundation.policy.conventions.models import (
 )
 
 _MODEL_LINE = 2
-_DEFS = [("UserCreate", _MODEL_LINE, "model")]
+_DEFS: list[Definition] = [("UserCreate", _MODEL_LINE, "model")]
 
 
 def test_forbidden_kind_in_module_is_flagged() -> None:
