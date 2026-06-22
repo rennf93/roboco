@@ -405,6 +405,7 @@ DEP002 = [
     # Type stubs (used by mypy)
     "types-passlib",
     "types-python-jose",
+    "types-PyYAML",
     # Documentation (CLI tools)
     "mkdocs",
     "mkdocs-material",
