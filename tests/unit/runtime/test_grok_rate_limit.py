@@ -35,10 +35,17 @@ class _FakeTracker:
     async def is_rate_limited(self) -> bool:
         return self._limited
 
-    async def activate(self, *, retry_after: float, affected_agents: list[str]) -> None:
+    async def activate(
+        self,
+        *,
+        retry_after: float,
+        affected_agents: list[str],
+        kind: str = "rate_limited",
+    ) -> None:
         self.activated_with = {
             "retry_after": retry_after,
             "affected_agents": affected_agents,
+            "kind": kind,
         }
 
 
@@ -115,6 +122,7 @@ async def test_park_grok_rate_limited_activates_and_offlines(
     assert tracker.activated_with == {
         "retry_after": pytest.approx(60.0),
         "affected_agents": ["be-dev-1"],
+        "kind": "rate_limited",
     }
 
 
