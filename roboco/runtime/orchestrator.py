@@ -2086,6 +2086,38 @@ class AgentOrchestrator:
             cmd.extend(["-e", f"ROBOCO_BRANCH={config.git_context.branch_name}"])
 
     @staticmethod
+    def _append_gate_env(cmd: list[str]) -> None:
+        """Inject the test-DB env so an agent's gate runs the real, DB-backed
+        suite instead of a hollow unit-only subset.
+
+        Without a reachable Postgres the conftest skips every integration test,
+        so coverage collapses far below the gate threshold and a role 'gates'
+        against a partial run (the failure that made a PM read 71% on a suite
+        that is ~96% with a DB). The values come from the orchestrator's own DB
+        settings; agents share the Docker network, so the host resolves. The app
+        runtime reads ROBOCO_DATABASE_*, never ROBOCO_TEST_DB_*, so this only
+        feeds the test harness and never changes live behaviour. Gated on the
+        same faithful-gate flag as interpreter matching — both exist to make an
+        agent's self-gate trustworthy.
+        """
+        if not settings.toolchain_match_enabled:
+            return
+        cmd.extend(
+            [
+                "-e",
+                f"ROBOCO_TEST_DB_HOST={settings.database_host}",
+                "-e",
+                f"ROBOCO_TEST_DB_PORT={settings.database_port}",
+                "-e",
+                f"ROBOCO_TEST_DB_USER={settings.database_user}",
+                "-e",
+                f"ROBOCO_TEST_DB_PASSWORD={settings.database_password}",
+                "-e",
+                "ROBOCO_TEST_DB_ADMIN_DB=postgres",
+            ]
+        )
+
+    @staticmethod
     def _default_spawn_prompt() -> str:
         """Fallback prompt when the caller provided none."""
         return (
@@ -2222,6 +2254,7 @@ class AgentOrchestrator:
         cmd = self._build_mount_args(container_name, config, hosts)
         self._append_agent_auth_env(cmd, config)
         self._append_git_context_env(cmd, config)
+        self._append_gate_env(cmd)
         self._append_image_and_claude_args(cmd, config, initial_prompt)
 
         proc = await asyncio.create_subprocess_exec(
