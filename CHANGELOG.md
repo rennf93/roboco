@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-06-23
+
 ### Added
 
 - **Delivery observability dashboards — cycle-time, bottlenecks, rework rate, and per-agent/per-cell scorecards.** A new "Delivery" tab on the Metrics page surfaces how work *flows*, built on data RoboCo already captures: per-stage cycle time reconstructed from the `audit_log` transition journey, a bottleneck view (which lifecycle stage holds the most cumulative time + how many tasks are parked there now), a rework view (how often work bounces to `needs_revision`, by team and by agent, with the rejection attributed to the QA / PR-reviewer who made it, plus the rework's token cost), and fused per-agent / per-cell scorecards. Backed by new read-only `MetricsService` methods and `/dashboard/metrics/{cycle-time,bottlenecks,rework,scorecard}` endpoints. To make rework correct and O(1), each task now carries a `revision_count` incremented at the single transition chokepoint (migration 045, with a composite `audit_log(target_id, event_type, timestamp)` index for the reconstruction queries), and QA/PR-review bounces emit rejector-attributed `task.qa_fail` / `task.pr_fail` audit events. No feature flag — it reads the always-on metrics surface.
