@@ -4,6 +4,27 @@ All notable changes to RoboCo are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Architectural Conventions Standard — a per-project, repo-canonical architecture map that gates where code may live.** Beyond the `make`-style checks (syntax, types, tests), each project can carry a `.roboco/conventions.yml` declaring which definition *kinds* belong in which modules, a toggleable rule set, custom regex rules, and waivers — so an agent can no longer land a Pydantic model inside a router, a helper in a route file, or a lint suppression. A tree-sitter validator CLI (Python + TypeScript) classifies every changed definition and emits findings; a `block`-level finding refuses a developer's `i_am_done` and the in-path PR gate's `pr_pass` with the offending `file:line` and a fix hint, and findings surface in QA's review evidence. The file is auto-scaffolded on first clone, editable from a per-project Conventions tab in the panel, and a false positive is cleared by a waiver committed in the branch and reviewed in the PR. Gated by `ROBOCO_CONVENTIONS_ENABLED` (default off) and fully inert when off.
+- **Agent runtime toolchain matching — agents build each target project under the Python that project actually requires.** The agent image bakes one interpreter, but the projects RoboCo builds don't all share it, so a self-gate could pass against the wrong runtime. The workspace now resolves each target's Python from its `requires-python` / `.python-version`, provisions the clone with `uv sync --extra dev --python <version>` (fetching the interpreter on demand), and records a `.git/.roboco-toolchain` marker. A guard refuses a developer's `i_am_done`, QA's `pass_review`, and the PR gate's `pr_pass` when the suite cannot be collected under the provisioned interpreter, so "verifying by reading source" can't masquerade as a passing gate. Gated by `ROBOCO_TOOLCHAIN_MATCH_ENABLED` (default off).
+- **Provider overload circuit-break — a persistent model-API overload parks the provider instead of crash-retrying into it.** A sustained 529/500/503 (the SDK already retries transient ones) now trips the same park-and-probe break as a rate limit: the spawn gate queues further work for that provider and a background loop revives it when the overload lifts, instead of respawning the agent straight back into the failure and burning tokens. Gated by `ROBOCO_OVERLOAD_BREAK_ENABLED` (default on).
+- **Structured content standard with obligated note sections.** Every agent-authored handoff (developer, QA, documenter, PR-reviewer, auditor, PM resumption) is now a validated structured model persisted as the source of truth, with the legacy text column derived from it through a single chokepoint. An anti-soup guard rejects filler and all-token-noise free-text across the flow and content verbs, structured PR-review findings render a generated GitHub comment, and each role's note section is obligated at its lifecycle transition the way journals already were.
+
+### Changed
+
+- **RoboCo's own `requires-python` floor is raised to `>=3.13`.** The codebase imports `tomllib` (3.11+) and runs on 3.13; the previous `>=3.10` floor made the toolchain resolver provision the self-hosted build at 3.10, where the suite cannot even be collected. Agent gate containers now also receive the test-database connection, so an agent's `make quality` runs the real, DB-backed suite instead of a coverage-collapsing unit-only subset.
+
+### Fixed
+
+- **The toolchain gate no longer passes silently on an unverifiable workspace.** A `broken` interpreter still blocks; an `unknown` status — the smoke could not confirm the suite is collectable — now emits a warning when the gate proceeds, instead of slipping through unseen.
+- **The crypto tests are hermetic.** The Fernet round-trip tests supply their own key instead of depending on `ROBOCO_ENCRYPTION_KEY` in the environment, so they pass in any gate container without the production secret being injected.
+- **`ollama-init` is best-effort and gates startup on the models being present**, so a slow or unreachable model registry can no longer down a fully-cached deployment.
+- **A PM can recover its own coordination task from `needs_revision`**, and lifecycle-transition notes are kept off the human-facing `quick_context` / `dev_notes` columns.
+- **Panel:** a copyable task-id chip with a stable, non-shifting task header, clickable Branch / PR links with a branch-copy button, and clearer agent status badges.
+
 ## [0.8.0] - 2026-06-20
 
 ### Added

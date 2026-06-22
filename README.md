@@ -143,7 +143,7 @@ docker compose up -d              # builds images on first run, then starts ever
 
 ### Option 3 — Local development (no full stack)
 
-For hacking on the code itself, run only the backing services in Docker and the API on your host:
+For hacking on the code itself, run only the backing services in Docker and the API on your host. RoboCo's own code requires **Python 3.13+** (`uv` will fetch it if needed):
 
 ```bash
 uv sync
@@ -176,6 +176,11 @@ ROBOCO_WORKSPACE_AUTO_CLONE=true
 # RAG/LLM
 ROBOCO_LOCAL_LLM_BASE_URL=http://roboco-ollama:11434/v1
 ROBOCO_LOCAL_LLM_MODEL=glm-5:cloud
+
+# Feature flags (default-off unless noted; toggle from Settings → Feature Flags)
+ROBOCO_CONVENTIONS_ENABLED=false        # per-project architectural conventions standard
+ROBOCO_TOOLCHAIN_MATCH_ENABLED=false    # build each target project under its own Python
+ROBOCO_OVERLOAD_BREAK_ENABLED=true      # park a provider on a persistent model-API overload
 ```
 
 ## Multi-Agent Workspace Structure

@@ -83,6 +83,12 @@ pass(
 
 `notes` must be substantive — the enforcement layer rejects empty or near-empty notes. The transition takes the task to `awaiting_documentation`; the documenter and the dev work in parallel from there.
 
+Your pass/fail note is a mandatory structured note (a QaNote) carrying substantive findings, not an empty string. It is persisted structured, and the legacy `qa_notes` text column is derived from it.
+
+## Conventions in Review Evidence
+
+When the architectural-conventions standard is enabled, the evidence returned on `claim_review` includes `convention_findings` for the work under review — surface them in your verdict alongside the acceptance-criteria check.
+
 ## Failing QA
 
 ```python

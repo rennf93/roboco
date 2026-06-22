@@ -479,6 +479,7 @@ Server-side events reach these sockets through `roboco/api/websocket_bridge.py`,
 ### Rate limiting & usage
 
 - **Provider rate limits** are tracked in Redis (`RateLimitStateTracker`, `roboco/services/gateway/`). On a provider 429 an agent calls `i_am_blocked(reason="rate_limited")`; the spawn gate then **queues** (never drops) further work for that provider, and a background probe-and-resume loop in the orchestrator clears the limit and revives parked agents when it lifts.
+- **Provider overloads** reuse the same park-and-probe break. A persistent model-API overload (HTTP 529 / 500 / 503 — the SDK already retries transient ones) parks the provider exactly like a 429 instead of crash-retrying the agent straight back into the overload and burning tokens; the overload is detected orchestrator-side from the dead container's log markers, and the background loop revives the parked work when it recovers. Gated by `ROBOCO_OVERLOAD_BREAK_ENABLED` (default-on).
 - **Token usage** is captured per agent session from the Claude Code transcript via the SDK server's `/usage/sync` (hook → orchestrator finalize → `agent_spawn_sessions` → `daily_usage_rollups` → dashboard). Cost uses provider-aware pricing in `roboco/billing/pricing.py` (Anthropic priced; local/Ollama intentionally `$0`). The token sweep also publishes `USAGE_SNAPSHOT` to `/ws/system`, so the dashboard's "Token Usage & Cost" panel updates live and falls back to HTTP polling when the stream is down.
 
 ### Startup Sequence

@@ -48,7 +48,6 @@ Environment variables for RoboCo (prefix: `ROBOCO_`).
 | `ROBOCO_RAG_CHUNK_SIZE_DOCS` | `1536` | Chunk size for docs |
 | `ROBOCO_RAG_CHUNK_SIZE_JOURNALS` | `1024` | Chunk size for journals |
 | `ROBOCO_RAG_CHUNK_OVERLAP` | `128` | Chunk overlap |
-| `ROBOCO_RAG_USE_HYDE` | `true` | Use HyDE for queries |
 | `ROBOCO_RAG_USE_HYBRID_SEARCH` | `true` | BM25 + vector search |
 | `ROBOCO_RAG_USE_CROSS_ENCODER` | `true` | Neural reranking |
 | `ROBOCO_RAG_AUTO_UPDATE_ENABLED` | `true` | Auto-update indexes |
@@ -74,6 +73,18 @@ Agents whose provider is `GROK` run xAI's official `grok` CLI. Auth is the host 
 | `ROBOCO_GROK_REASONING_EFFORT` | (blank) | Per-run reasoning-effort override; blank = the grok CLI default |
 | `ROBOCO_GROK_IDLE_KILL_SECONDS` | `900` | Kill + evict a Grok container that has been ACTIVE-yet-idle (no gateway verb) this long |
 | `ROBOCO_GROK_MAX_COST_USD` | `0.0` | Per-agent Grok cost ceiling (USD); `0` disables |
+
+## Feature flags
+
+Env-gated subsystems, default-off except the overload break. Each takes effect on the next backend restart; the panel's Settings → Feature Flags card toggles them without hand-editing env.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ROBOCO_CONVENTIONS_ENABLED` | `false` | Architectural Conventions Standard: auto-scaffold `.roboco/conventions.yml`, inject the architecture map, attach baseline constraints, and block `i_am_done` / `pr_pass` on block-level placement and hygiene violations. Off = fully inert. |
+| `ROBOCO_TOOLCHAIN_MATCH_ENABLED` | `false` | Provision each agent workspace with the target project's Python (resolved from its `requires-python` / `.python-version`) and block delivery gates when the suite cannot be executed under it. Off = today's behavior. |
+| `ROBOCO_OVERLOAD_BREAK_ENABLED` | `true` | Park a provider on a persistent model-API overload (HTTP 529 / 500 / 503) the same way a 429 is parked — queue its spawns and probe until it recovers — instead of crash-retrying into the overload. Off = crash-retry behavior. |
+
+The company-in-a-box subsystems toggle the same way and are all default-off: web research (`ROBOCO_RESEARCH_ENABLED`), the strategy engine (`ROBOCO_STRATEGY_ENGINE_ENABLED`), and pitch provisioning (`ROBOCO_PROVISIONING_ENABLED`).
 
 ## Self-Healing CI loop
 

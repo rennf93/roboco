@@ -19,6 +19,10 @@ The org's own in-flight integration PRs are skipped by the **inbound** poll abov
 
 The `pr_reviewer` role also runs the **in-path gate** on the org's OWN assembled delivery PRs — the merge-level review QA does not do. When a cell PM bubbles up its cell→root PR (`submit_up`) or the Main PM opens the root→master PR (`submit_root`), the task enters `awaiting_pr_review`. The cell reviewer (be/fe/ux-pr-reviewer) reviews its cell's assembled PR; pr-reviewer-1 reviews the root→master PR for the cross-cell integration seam (the bug class that lives where the FE and BE meet). Workflow: `claim_gate_review(task_id)` → review the assembled diff against the parent objective + every acceptance criterion + the FE↔BE contract → `note(scope="learning", ...)` → `pr_pass(task_id, notes)` (moves it on to the PM merge) or `pr_fail(task_id, issues)` (sends it back to `needs_revision`, like a QA fail). Either verdict is also posted on the assembled PR itself as a GitHub review (server-side, via the bot account) so the decision is visible on the PR the PM merges: `pr_pass` posts an APPROVE and `pr_fail` a REQUEST_CHANGES — except on the root→master PR, which only ever gets a plain COMMENT because only the CEO acts on `master`. This gate gives the merge level the reject teeth the PM otherwise lacks. Leaf dev tasks and branchless coordination roots skip the gate.
 
+### Gate enforcement
+
+When the architectural-conventions standard is enabled, `pr_pass` is refused on any block-level convention finding, the same way the developer's `i_am_done` is. When toolchain matching is enabled, `pr_pass` is likewise refused on a "broken" toolchain status. Your verdict note is a mandatory structured field (`pr_reviewer_notes`) written at `pr_pass` / `pr_fail`; it is persisted structured with a derived text mirror.
+
 ## What You CAN Do
 
 - Pull an inbound-PR review task via `give_me_work()` and claim it via `claim_pr_review(task_id)`.

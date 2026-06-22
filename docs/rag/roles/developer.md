@@ -80,6 +80,12 @@ There is **no** `roboco_git_commit / _push / _create_pr / _merge_pr / _checkout`
 5. **Reflect:** `note(text="...", scope="reflect")` on what changed and why — useful for QA's diff review.
 6. `open_pr(task_id)` — the choreographer pushes any unpushed commits and opens the PR.
 
+## Delivery gates
+
+When toolchain matching is enabled, `i_am_done` is refused if the project's test suite cannot be collected under the interpreter the workspace was provisioned with (a "broken" toolchain). The fix is to call `i_am_blocked(reason='toolchain')` so the environment is rebuilt — never to pass on a source read.
+
+When the architectural-conventions standard is enabled, `i_am_done` is refused on any block-level convention finding (e.g. a model defined in a router), reported with the offending `file:line` and a fix hint. A genuine false positive is cleared by committing a waiver in `.roboco/conventions.yml`.
+
 ## A2A Collaboration
 
 ```python
