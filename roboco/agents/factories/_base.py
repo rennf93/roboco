@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from roboco.db.tables import ProjectTable
     from roboco.models import AgentRole, Team
 
 
@@ -202,6 +205,7 @@ def compose_prompt(
     team: "Team | None",
     agent_slug: str,
     base_path: Path | None = None,
+    ambient: str | None = None,
 ) -> str:
     """
     Compose a system prompt from layered components.
@@ -223,6 +227,8 @@ def compose_prompt(
         team: Agent's team (backend, frontend, ux_ui, or None for board)
         agent_slug: Agent's slug identifier (e.g., "be-dev-1")
         base_path: Optional override for prompts base path
+        ambient: Optional ambient layer (e.g. the project's architectural
+            standard) appended last; omitted when None/empty
 
     Returns:
         Composed system prompt string
@@ -238,12 +244,30 @@ def compose_prompt(
         _autogen_verbs_layer(prompts_path, role),
         _team_layer(prompts_path, team),
         _load_layer(prompts_path / "identities" / f"{agent_slug}.md"),
+        ambient,
     ):
         if layer:
             parts.append(layer)
 
     # Join with separator
     return "\n\n---\n\n".join(parts)
+
+
+async def conventions_ambient_layer(
+    session: "AsyncSession", project: "ProjectTable | None"
+) -> str | None:
+    """Render the project's architectural-standard prompt block (flag-gated).
+
+    Returns None when the conventions subsystem is off or no project is in
+    scope, so a flag-off / board-level spawn injects nothing.
+    """
+    from roboco.config import settings
+
+    if not settings.conventions_enabled or project is None:
+        return None
+    from roboco.services.conventions import get_conventions_service
+
+    return await get_conventions_service(session).render_ambient_block(project)
 
 
 def make_slug(name: str) -> str:

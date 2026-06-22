@@ -178,6 +178,10 @@ select = [
 # the package imports without tree-sitter present and a missing grammar fails
 # loud at call time (GrammarUnavailable) instead of crashing the import.
 "roboco/conventions/grammars.py" = ["PLC0415"]
+# The conventions ambient-layer resolver defers its config + ConventionsService
+# imports so the prompt-composition utility stays decoupled from the heavy
+# service graph (it loads at every agent spawn).
+"roboco/agents/factories/_base.py" = ["PLC0415"]
 # Test fixtures that reload modules to test env-var-at-import-time behavior.
 # ARG002: ApiClient-subclassing fakes must keep the superclass parameter names
 # for mypy's override check, so unused override-stub args can't be renamed.
