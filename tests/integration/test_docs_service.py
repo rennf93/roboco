@@ -802,3 +802,69 @@ async def test_list_docs_for_team_shallow_path_infers_readme(
     ):
         docs = await svc._list_docs_for_team("backend")
     assert any(d.doc_type == "readme" for d in docs)
+
+
+@pytest.mark.asyncio
+async def test_commit_doc_to_repo_writes_into_workspace_and_commits(
+    docs_setup: dict,
+    db_session: AsyncSession,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A doc write also commits the file into the project repo on the task branch."""
+    svc = docs_setup["svc"]
+    task_id = docs_setup["task_id"]
+    agent_uuid = docs_setup["agent_id"]
+
+    task = (
+        await db_session.execute(select(TaskTable).where(TaskTable.id == task_id))
+    ).scalar_one()
+    task.branch_name = "feature/backend/ABC12345"
+    await db_session.flush()
+
+    mock_git = MagicMock()
+    mock_git.get_workspace = AsyncMock(return_value=tmp_path)
+    mock_git.commit = AsyncMock(return_value={"sha": "deadbeef"})
+    monkeypatch.setattr(
+        "roboco.services.git.get_git_service", lambda _session: mock_git
+    )
+
+    req = WriteDocInput(
+        task_id=task_id,
+        filename="guide.md",
+        doc_type="api",
+        title="API Guide",
+        content="# API Guide\n",
+    )
+    await svc._commit_doc_to_repo(str(agent_uuid), req, "api")
+
+    # The doc landed in the workspace repo under docs/...
+    assert (tmp_path / "docs" / "api" / "guide.md").read_text() == "# API Guide\n"
+    # ...and was committed onto the task branch.
+    mock_git.commit.assert_awaited_once()
+    kwargs = mock_git.commit.await_args.kwargs
+    assert kwargs["branch_name"] == "feature/backend/ABC12345"
+    assert kwargs["files"] == ["docs/api/guide.md"]
+    assert kwargs["task_id"] == task_id
+
+
+@pytest.mark.asyncio
+async def test_commit_doc_to_repo_skips_without_task_branch(
+    docs_setup: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No task branch yet → best-effort no-op (no git commit, no raise)."""
+    svc = docs_setup["svc"]
+    mock_git = MagicMock()
+    mock_git.commit = AsyncMock()
+    monkeypatch.setattr(
+        "roboco.services.git.get_git_service", lambda _session: mock_git
+    )
+    req = WriteDocInput(
+        task_id=docs_setup["task_id"],
+        filename="x.md",
+        doc_type="api",
+        title="X",
+        content="x",
+    )
+    await svc._commit_doc_to_repo(str(docs_setup["agent_id"]), req, "api")
+    mock_git.commit.assert_not_awaited()

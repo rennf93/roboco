@@ -194,20 +194,96 @@ class DocsService(BaseService):
 
         if existing_path:
             # UPDATE existing doc instead of creating new
-            return await self._update_existing_doc(
+            result = await self._update_existing_doc(
                 agent_id=agent_id,
                 existing_path=existing_path,
                 req=req,
                 doc_type=doc_type,
             )
+        else:
+            # 5. No similar doc found - create new
+            result = await self._create_new_doc(
+                agent_id=agent_id,
+                team=team,
+                req=req,
+                doc_type=doc_type,
+            )
 
-        # 5. No similar doc found - create new
-        return await self._create_new_doc(
-            agent_id=agent_id,
-            team=team,
-            req=req,
-            doc_type=doc_type,
-        )
+        # 6. Persist the doc into the project's repo and commit it onto the task
+        # branch, so the documenter's output actually lands in the repository via
+        # the open PR — not only in the /app/docs knowledge store. Best-effort: a
+        # documenter without a cloned workspace / task branch still succeeds.
+        await self._commit_doc_to_repo(agent_id, req, doc_type)
+        return result
+
+    async def _commit_doc_to_repo(
+        self, agent_id: str, req: WriteDocInput, doc_type: str
+    ) -> None:
+        """Write the doc into the project's workspace clone and commit it onto
+        the task branch, so it persists to the repository through the open PR.
+
+        Best-effort: any failure (no task branch yet, workspace not cloned, a git
+        hiccup) is logged and swallowed — it must never fail the doc write.
+        """
+        from roboco.services.git import get_git_service
+        from roboco.services.project import get_project_service
+
+        try:
+            result = await self.session.execute(
+                select(TaskTable).where(TaskTable.id == req.task_id)
+            )
+            task = result.scalar_one_or_none()
+            if task is None or not task.branch_name or task.project_id is None:
+                return
+            project = await get_project_service(self.session).get(
+                UUID(str(task.project_id))
+            )
+            if project is None:
+                return
+            actor = self._agent_uuid(agent_id)
+            if actor is None:
+                return
+
+            git = get_git_service(self.session)
+            workspace = await git.get_workspace(project.slug, actor)
+            subfolder = TYPE_SUBFOLDERS[doc_type]
+            rel_path = (
+                f"docs/{subfolder}/{req.filename}"
+                if subfolder
+                else f"docs/{req.filename}"
+            )
+            await self._write_file(workspace / rel_path, req.content)
+            await git.commit(
+                branch_name=task.branch_name,
+                message=f"docs: {req.title}",
+                task_id=req.task_id,
+                files=[rel_path],
+                actor_agent_id=actor,
+            )
+            self.log.info(
+                "Documentation committed to project repo",
+                agent_id=agent_id,
+                task_id=str(req.task_id),
+                path=rel_path,
+            )
+        except Exception as exc:
+            self.log.warning(
+                "Could not commit documentation to repo (non-fatal)",
+                agent_id=agent_id,
+                task_id=str(req.task_id),
+                error=str(exc),
+            )
+
+    @staticmethod
+    def _agent_uuid(agent_id: str) -> UUID | None:
+        """Resolve an agent slug or UUID string to its UUID, or None."""
+        from roboco.seeds.initial_data import AGENT_UUIDS
+
+        try:
+            return UUID(agent_id)
+        except ValueError:
+            raw = AGENT_UUIDS.get(agent_id)
+            return UUID(str(raw)) if raw is not None else None
 
     async def _find_similar_doc(
         self,
