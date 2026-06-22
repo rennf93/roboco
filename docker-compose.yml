@@ -342,6 +342,13 @@ services:
       ROBOCO_SELF_HEAL_ORIGINATE_ENABLED: ${ROBOCO_SELF_HEAL_ORIGINATE_ENABLED:-false}
       ROBOCO_SELF_HEAL_PROJECT_SLUG: ${ROBOCO_SELF_HEAL_PROJECT_SLUG:-roboco-api}
       ROBOCO_SELF_HEAL_CI_WORKFLOW: ${ROBOCO_SELF_HEAL_CI_WORKFLOW:-ci.yml}
+      # Agent runtime toolchain matching: provision each agent workspace with
+      # the TARGET project's Python (uv resolves requires-python) and block a
+      # delivery gate when the suite can't be executed instead of passing on a
+      # source read. Config default is OFF; enabled HERE (personal deploy) but
+      # deliberately left OFF in docker-compose.registry.yml so the published
+      # default stays conservative until it's verified on a live run.
+      ROBOCO_TOOLCHAIN_MATCH_ENABLED: ${ROBOCO_TOOLCHAIN_MATCH_ENABLED:-true}
     volumes:
       # Docker socket - allows spawning agent containers
       - /var/run/docker.sock:/var/run/docker.sock
