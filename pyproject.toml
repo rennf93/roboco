@@ -45,6 +45,10 @@ dependencies = [
     "cryptography",  # utils/crypto.py — Fernet-encrypted project git tokens
     "packaging",  # services/toolchain.py — PEP 440 requires-python resolution
     "pyyaml",  # foundation/policy/conventions — .roboco/conventions.yml parse
+    # Conventions validator (roboco.conventions) — tree-sitter ASTs, Python + TS
+    "tree-sitter>=0.22",
+    "tree-sitter-python",
+    "tree-sitter-typescript",
     "claude-agent-sdk>=0.2.105",
 ]
 
@@ -170,6 +174,10 @@ select = [
 # bottom of policy/lifecycle.py at module-load time, so the validators must
 # defer their inverse imports until call time to avoid a cycle.
 "roboco/foundation/_validate_lifecycle.py" = ["PLC0415"]
+# The conventions validator loads tree-sitter grammars lazily, per language, so
+# the package imports without tree-sitter present and a missing grammar fails
+# loud at call time (GrammarUnavailable) instead of crashing the import.
+"roboco/conventions/grammars.py" = ["PLC0415"]
 # Test fixtures that reload modules to test env-var-at-import-time behavior.
 # ARG002: ApiClient-subclassing fakes must keep the superclass parameter names
 # for mypy's override check, so unused override-stub args can't be renamed.
