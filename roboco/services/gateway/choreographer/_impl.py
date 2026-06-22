@@ -1729,19 +1729,25 @@ class Choreographer:
         )
 
     async def _conventions_gate(self, ctx: _IAmDoneContext) -> Envelope | None:
-        """Block i_am_done on unresolved block-level architectural violations.
+        """Block i_am_done on unresolved block-level architectural violations."""
+        return await self._conventions_guard(ctx.agent_id, ctx.task, ctx.briefing)
 
-        Runs the conventions validator on the dev's changed files. A ``block``
-        finding (a misplaced definition, a lint suppression) or a validator that
-        could not run refuses the submit with the offending ``file:line`` and a
-        fix hint. ``warn`` findings never block. Inert when the flag is off.
+    async def _conventions_guard(
+        self, agent_id: UUID, task: Any, briefing: dict[str, Any]
+    ) -> Envelope | None:
+        """Run the conventions validator on the actor's changed files (gated).
+
+        A ``block`` finding (a misplaced definition, a lint suppression) or a
+        validator that could not run returns a rejection with the offending
+        ``file:line`` + fix hint. ``warn`` findings never block. Inert when the
+        flag is off. Shared by the i_am_done and pr_pass gates.
         """
         from roboco.config import settings as _settings
 
         if not _settings.conventions_enabled:
             return None
-        result = await self.git.conventions_check_for_task(ctx.agent_id, ctx.task)
-        return self._conventions_rejection(result, ctx.briefing)
+        result = await self.git.conventions_check_for_task(agent_id, task)
+        return self._conventions_rejection(result, briefing)
 
     @staticmethod
     def _conventions_rejection(

@@ -245,6 +245,17 @@ class PRGateMixin(_Base):
                 task_id=task_id,
                 verb=verb,
             )
+        # A reviewer must not PASS an assembled PR with unresolved block-level
+        # architectural violations; pr_fail stays available.
+        if verb == "pr_pass" and (
+            conventions := await self._conventions_guard(reviewer_agent_id, t, briefing)
+        ):
+            return await self._emit_rejection(
+                conventions.with_introspection(task=t, role=role_str),
+                agent_id=reviewer_agent_id,
+                task_id=task_id,
+                verb=verb,
+            )
         runner = self._verb_runner()
         try:
             t = await runner.run_intent(verb, t, agent, spec_ctx)

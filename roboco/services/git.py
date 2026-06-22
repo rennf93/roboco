@@ -3749,18 +3749,6 @@ class GitService(BaseService):
             return {"findings": [], "could_not_run": False}
         return await self._run_conventions_validator(workspace, changed)
 
-    async def conventions_check_pr(
-        self, project_slug: str, changed_files: list[str], actor_agent_id: UUID | None
-    ) -> dict[str, Any]:
-        """Run the conventions validator over an assembled PR's changed files."""
-        if not changed_files:
-            return {"findings": [], "could_not_run": False}
-        try:
-            workspace = await self.get_workspace(project_slug, actor_agent_id)
-        except Exception:
-            return {"findings": [], "could_not_run": False}
-        return await self._run_conventions_validator(workspace, changed_files)
-
     async def _run_conventions_validator(
         self, workspace: Path, files: list[str]
     ) -> dict[str, Any]:
