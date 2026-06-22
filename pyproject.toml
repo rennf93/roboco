@@ -44,6 +44,7 @@ dependencies = [
     # Direct imports (promoted from transitive)
     "cryptography",  # utils/crypto.py — Fernet-encrypted project git tokens
     "packaging",  # services/toolchain.py — PEP 440 requires-python resolution
+    "pyyaml",  # foundation/policy/conventions — .roboco/conventions.yml parse
     "claude-agent-sdk>=0.2.105",
 ]
 
@@ -72,6 +73,7 @@ dev = [
     # Type Stubs
     "types-passlib",
     "types-python-jose",
+    "types-PyYAML",
 
     # Development
     "ipython",
