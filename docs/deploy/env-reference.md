@@ -193,11 +193,11 @@ These gate the env-toggled capabilities. Each is inert when off. See [Optional c
 | `ROBOCO_PROVISIONING_TIMEOUT_SECONDS` | `30.0` | Per-request provisioning timeout. |
 | `ROBOCO_PROVISIONING_REPO_PRIVATE` | `true` | Whether provisioned repos are private. |
 
-### Architectural conventions — default **off**
+### Architectural conventions — **off** (config) / **on** (compose)
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `ROBOCO_CONVENTIONS_ENABLED` | `false` | Master switch for the per-project conventions standard (scaffold, ambient injection, baseline constraints, gate enforcement). Fully inert when off. |
+| `ROBOCO_CONVENTIONS_ENABLED` | `false` (config) / `true` (compose) | Master switch for the per-project conventions standard (scaffold, ambient injection, baseline constraints, gate enforcement). The compose orchestrator block defaults this **on** (left off in `docker-compose.registry.yml`); fully inert when off. |
 
 ### Toolchain matching — default **off**
 

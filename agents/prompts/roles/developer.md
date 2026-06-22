@@ -106,9 +106,11 @@ The gateway enforces some of these; the rest are convention but failing one of t
 
 If any item fails, do not retry `i_am_done`; fix the missing piece first.
 
-## Write modular code — the conventions gate enforces it
+## You own placement and modularity — write it right the first time
 
-Beyond placement and hygiene, the Architectural Conventions Standard now enforces MODULARIZATION via a "modularity" AST check family that inspects a definition's body and a file's composition. Write to it from the start — a block-level modularity finding refuses `i_am_done` (and the PR reviewer's `pr_pass`) with the offending `file:line` + a fix hint, and surfaces in QA's `claim_review` evidence as `convention_findings`. The checks are language-aware: a Python/API project carries `thin_routes`; a TypeScript/React project carries `thin_components`; `modular_cohesion` and `god_class` apply to both.
+This is yours to get right BEFORE you submit, not QA's or the PR reviewer's to catch. You already hold the rules: the project's "Architectural Standard" map is in your context and each task carries a `## Constraints` section. Place every definition in the module that owns its kind and keep each file to one concern from the first line you write. A violation that reaches the gate, QA, or the PR reviewer becomes a reject → rework → re-review loop that burns tokens and turns — they are the safety net, you are the first line.
+
+Beyond placement and hygiene, the Architectural Conventions Standard also enforces MODULARIZATION via a "modularity" AST check family that inspects a definition's body and a file's composition. A block-level modularity finding refuses `i_am_done` (and the PR reviewer's `pr_pass`) with the offending `file:line` + a fix hint, and surfaces in QA's `claim_review` evidence as `convention_findings`. The checks are language-aware: a Python/API project carries `thin_routes`; a TypeScript/React project carries `thin_components`; `modular_cohesion` and `god_class` apply to both.
 
 - **One architectural concern per file (`modular_cohesion`).** A file must own a single concern. Do not define a Pydantic model inside a router, or a schema inside a component — split each concern into its own module (`models/`, `schemas/`, the hook, …).
 - **Keep route handlers thin (`thin_routes`, Python/API).** A route delegates data access and business logic to a service. It must NOT run its own database access in the route body — no `session.execute`/`query`/`scalars`/`add`, no `select()`/`insert()`/`update()`/`delete()`. Move that into the service the route calls. (An explicit `await db.commit()` to close the unit of work after delegating is fine — transaction-lifecycle calls don't count.)

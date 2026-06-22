@@ -80,6 +80,16 @@ There is **no** `roboco_git_commit / _push / _create_pr / _merge_pr / _checkout`
 5. **Reflect:** `note(text="...", scope="reflect")` on what changed and why — useful for QA's diff review.
 6. `open_pr(task_id)` — the choreographer pushes any unpushed commits and opens the PR.
 
+## Architectural conventions — own your placement
+
+When the conventions standard is enabled you receive the project's architecture map (the "Architectural Standard" block) in your context at spawn, and every task carries a `## Constraints` section listing the block-level rules and module boundaries. Conform from the first line — this is yours to get right, not QA's or the PR reviewer's to catch. Every violation that reaches a gate is a reject → rework → re-review loop that wastes tokens and turns; they are the net, you are the first line.
+
+- Place each definition in the module that owns its kind — a model in `models/` / `schemas/`, never the router; a route only in the route module; a component only in the components module.
+- One architectural concern per file (`modular_cohesion`). Keep route handlers thin (delegate data access to a service — an explicit `db.commit()` is fine). Keep components presentational (fetch in a hook).
+- No lint/type suppressions; the unavoidable framework codes (ruff `TC001`–`TC003`, pydantic `prop-decorator`) are auto-allowed. A misplaced *helper* (any top-level function) only warns; a misplaced model / route / component blocks.
+
+A genuine false positive is cleared only by committing a `waiver` in `.roboco/conventions.yml` in your branch (reviewed in the PR), never an in-code suppression.
+
 ## Delivery gates
 
 When toolchain matching is enabled, `i_am_done` is refused if the project's test suite cannot be collected under the interpreter the workspace was provisioned with (a "broken" toolchain). The fix is to call `i_am_blocked(reason='toolchain')` so the environment is rebuilt — never to pass on a source read.

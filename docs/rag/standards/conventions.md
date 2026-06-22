@@ -21,7 +21,7 @@ languages: [python, typescript]
 modules:
   - path: app/routers
     purpose: HTTP routing only
-    forbidden: [model, helper]      # no Pydantic models or helpers in routers
+    forbidden: [model, helper]      # a model here blocks; a helper only warns
   - path: app/models
     purpose: data models
   - path: app/services
