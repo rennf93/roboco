@@ -16,34 +16,11 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter
-from pydantic import BaseModel, ConfigDict
-from pydantic.alias_generators import to_camel
 
+from roboco.api.schemas.system import RateLimitEntry, RateLimitListResponse
 from roboco.services.gateway.rate_limit_tracker import RateLimitStateTracker
 
 router = APIRouter()
-
-
-class _CamelModel(BaseModel):
-    """Serialize with camelCase aliases so the panel consumes fields directly."""
-
-    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
-
-
-class RateLimitEntry(_CamelModel):
-    """A single provider's active rate-limit state, in the panel's shape."""
-
-    provider: str
-    affected_agents: list[str]
-    hit_at: str | None
-    resume_at: str | None
-    retry_after_seconds: float | None
-
-
-class RateLimitListResponse(_CamelModel):
-    """The envelope the panel's rate-limit store expects: ``{ "entries": [...] }``."""
-
-    entries: list[RateLimitEntry]
 
 
 def _resume_at(hit_at: str | None, retry_after: float | None) -> str | None:

@@ -41,6 +41,13 @@ _IGNORE_DIRS = frozenset(
     }
 )
 
+# Directory trees that are never placement-enforced. Test trees legitimately
+# define fixtures, fakes, and helper functions of every kind, and documentation
+# trees (e.g. a docs site) are not code at all. A candidate module sitting under
+# any of these path segments is dropped from the map so a test or docs task is
+# never stranded — this holds for any project, not just RoboCo.
+_NON_SOURCE_SEGMENTS = frozenset({"tests", "test", "docs", "__tests__"})
+
 # Directory-name keywords -> (purpose, forbidden definition kinds). Only kinds
 # the classifiers actually emit can ever fire, so extra entries are harmless.
 _MODULE_PATTERNS: tuple[tuple[frozenset[str], str, tuple[DefinitionKind, ...]], ...] = (
@@ -85,6 +92,9 @@ _LANGUAGE_BY_SUFFIX = {".py": "python", ".ts": "typescript", ".tsx": "typescript
 _IMPERATIVE = re.compile(r"\b(never|don't|do not|avoid|no)\b", re.IGNORECASE)
 _CODE_SPAN = re.compile(r"`([^`]+)`")
 _MAX_LIFTED_RULES = 25
+# A separator-free, all-lowercase token shorter than this is treated as a common
+# word and not lifted into a custom rule (it would match everywhere).
+_MIN_SPECIFIC_TOKEN_LEN = 12
 
 
 def derive_from_scan(root: Path | str) -> ConventionsStandard:
@@ -104,6 +114,15 @@ def derive_from_scan(root: Path | str) -> ConventionsStandard:
 # is absent — so auto-derived enforcement has teeth; the owner downgrades any
 # rule to warn per-rule via the panel editor or the committed file.
 _PLACEMENT_DEFAULT: RuleLevel = "block"
+
+# 'helper' is the catch-all kind — ANY top-level function classifies as one — so
+# a misplaced helper is too weak a signal to hard-block: a route file's small
+# private glue would otherwise strand a task. Helper placement therefore seeds at
+# warn, while the precise kinds (model / route / component) stay block. A project
+# can still promote no_helpers_in_<leaf> to block in .roboco/conventions.yml. The
+# fat-handler signal that does have teeth is the body-level thin_routes check.
+_SOFT_PLACEMENT_KINDS = frozenset({"helper"})
+_SOFT_PLACEMENT_DEFAULT: RuleLevel = "warn"
 
 # Modularity rules — the separation-of-concerns checks that go beyond linting.
 # Cohesion + god-class apply to any classifiable project; the body checks are
@@ -141,7 +160,12 @@ def _seed_rules(modules: list[Module], languages: list[str]) -> dict[str, Rule]:
         leaf = module.path.rstrip("/").rsplit("/", 1)[-1]
         for kind in module.forbidden:
             name = f"no_{kind}s_in_{leaf}"
-            rules.setdefault(name, Rule(name=name, level=_PLACEMENT_DEFAULT))
+            level = (
+                _SOFT_PLACEMENT_DEFAULT
+                if kind in _SOFT_PLACEMENT_KINDS
+                else _PLACEMENT_DEFAULT
+            )
+            rules.setdefault(name, Rule(name=name, level=level))
     if languages:
         for name, any_level in _MODULARITY_ANY.items():
             rules.setdefault(name, Rule(name=name, level=any_level))
@@ -168,9 +192,13 @@ def _scan_modules(root: Path) -> list[Module]:
             spec = _match_module(name)
             if spec is None:
                 continue
-            rel = (Path(dirpath) / name).relative_to(root).as_posix()
+            rel = (Path(dirpath) / name).relative_to(root)
+            if _NON_SOURCE_SEGMENTS.intersection(rel.parts):
+                continue
             purpose, forbidden = spec
-            modules.append(Module(path=rel, purpose=purpose, forbidden=list(forbidden)))
+            modules.append(
+                Module(path=rel.as_posix(), purpose=purpose, forbidden=list(forbidden))
+            )
     return modules
 
 
@@ -207,6 +235,21 @@ def _lift_claude_md(root: Path) -> list[CustomRule]:
     return rules
 
 
+def _is_specific_token(token: str) -> bool:
+    """Only lift identifiers specific enough not to match everywhere.
+
+    A bare common-word token (``commit``, ``triage``) lifted into a regex would
+    flag every legitimate use of the word — pure noise. Keep tokens with a
+    separator (``.`` / ``_`` / ``/`` / ``-``), any uppercase letter or digit, or
+    a length that makes an incidental match unlikely.
+    """
+    if any(sep in token for sep in "._/-"):
+        return True
+    if any(ch.isupper() or ch.isdigit() for ch in token):
+        return True
+    return len(token) >= _MIN_SPECIFIC_TOKEN_LEN
+
+
 def _rule_from_line(line: str, seen: set[str]) -> CustomRule | None:
     if not _IMPERATIVE.search(line):
         return None
@@ -214,6 +257,8 @@ def _rule_from_line(line: str, seen: set[str]) -> CustomRule | None:
     if span is None:
         return None
     token = span.group(1).strip()
+    if not _is_specific_token(token):
+        return None
     rule_id = _slug(token)
     if not token or not rule_id or rule_id in seen:
         return None

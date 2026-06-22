@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi import HTTPException
 from roboco.api.routes import secretary_live as sl
-from roboco.api.routes.secretary_live import (
+from roboco.api.schemas.secretary_live import (
     AgentEvent,
     LiveMessageRequest,
     StartSecretaryRequest,

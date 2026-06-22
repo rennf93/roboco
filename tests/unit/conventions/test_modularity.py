@@ -77,6 +77,21 @@ def test_thin_routes_clean_when_delegating_to_a_service() -> None:
     assert "thin_routes" not in rules
 
 
+def test_thin_routes_allows_explicit_commit_in_route() -> None:
+    # Committing the unit of work after delegating is a common, valid pattern —
+    # a bare `db.commit()` must not count as the route doing data access.
+    rules = _py(
+        "from fastapi import APIRouter\n"
+        "router = APIRouter()\n"
+        "@router.post('/users')\n"
+        "async def create_user(svc, db):\n"
+        "    user = await svc.create()\n"
+        "    await db.commit()\n"
+        "    return user\n"
+    )
+    assert "thin_routes" not in rules
+
+
 # --- Thin components: data fetching belongs in a hook ----------------------- #
 
 

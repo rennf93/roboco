@@ -276,7 +276,10 @@ async def conventions_ambient_layer(
     service = get_conventions_service(session)
     blocks: list[str] = []
     for project in projects:
-        block = await service.render_ambient_block(project)
+        # Ensure the read clone so the standard resolves even when the project
+        # has no manually-configured workspace_path (the backfill path).
+        workspace = await service.resolve_workspace(project)
+        block = await service.render_ambient_block(project, workspace=workspace)
         if not block:
             continue
         blocks.append(

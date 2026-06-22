@@ -1,6 +1,6 @@
 # Architectural Conventions Standard
 
-A per-project, repo-canonical standard for *where code lives*, how a definition is *built*, and basic house-style hygiene — the layer above the `make`-style gates (which check syntax, types, and tests, not placement or structure). It exists so an agent cannot land a model defined inside a router, a route handler that runs its own database access, a helper in a route file, or a lint suppression, even when the code compiles and the tests pass. It enforces the separation of concerns a senior would demand in review, not just linting.
+A per-project, repo-canonical standard for *where code lives*, how a definition is *built*, and basic house-style hygiene — the layer above the `make`-style gates (which check syntax, types, and tests, not placement or structure). It exists so an agent cannot land a model defined inside a router, a route handler that runs its own database access, or a lint suppression, even when the code compiles and the tests pass (a misplaced *helper* — any top-level function — only warns, since that signal is too blunt to hard-block). It enforces the separation of concerns a senior would demand in review, not just linting.
 
 The standard is gated by `ROBOCO_CONVENTIONS_ENABLED` (default off) and is fully inert when off.
 
@@ -8,7 +8,9 @@ The standard is gated by `ROBOCO_CONVENTIONS_ENABLED` (default off) and is fully
 
 Each project carries a repo-canonical `.roboco/conventions.yml`. It is auto-scaffolded into a project's clone the first time the project is worked on, editable from the per-project **Conventions** tab in the panel, and committed like any other repo file.
 
-Consumers always read the *effective* map: auto-derived defaults (from a repo scan plus the built-in rules) overlaid by the committed file. Behaviour is identical whether the file is present, absent, or partial — a missing file just means "defaults only".
+Consumers always read the *effective* map: auto-derived defaults (from a repo scan plus the built-in rules) overlaid by the committed file. Behaviour is identical whether the file is present, absent, or partial — a missing file just means "defaults only". The scan excludes test and documentation trees (`tests/`, `docs/`) — those legitimately define fixtures and aren't enforced code.
+
+The committed file and the scan are read from a project-level **read clone** the service ensures on demand (pinned to the default branch's HEAD), not from any agent's working clone — so the standard resolves even for a project created long before it existed, with no manual workspace configuration.
 
 ```yaml
 # .roboco/conventions.yml
@@ -25,9 +27,9 @@ modules:
   - path: app/services
     purpose: business logic + side effects
 
-# Toggle or re-level the built-in rules.
+# Toggle or re-level the built-in rules (each fires at `warn` or `block`).
 rules:
-  no_models_in_routers: { level: block }   # block | warn | off
+  no_models_in_routers: { level: block }
   no_inline_comments: { level: warn }
 
 # Project-specific regex rules.
@@ -59,7 +61,7 @@ It favours precision over recall — it abstains when it cannot classify a defin
 Beyond placement and hygiene, the standard enforces modularization with a **modularity** check family. Where placement asks *which module a definition belongs in*, modularity inspects a definition's **body** and a file's **composition** — the structural questions a senior asks in code review:
 
 - **`modular_cohesion`** (any stack) — a file must own one architectural concern. A file that mixes them (a Pydantic model defined in a router, a schema defined in a component) is a monolith to split.
-- **`thin_routes`** (Python / API) — a route handler must delegate to a service. It may not run its own database access (no `session.execute` / `query` / `commit` / `add`, no `select()` / `insert()` / `update()` / `delete()`) in the route body.
+- **`thin_routes`** (Python / API) — a route handler must delegate to a service. It may not run its own database access (no `session.execute` / `query` / `scalars` / `add`, no `select()` / `insert()` / `update()` / `delete()`) in the route body. Transaction-lifecycle calls — `commit` / `flush` / `refresh` — do not count: an explicit `await db.commit()` after delegating to a service is a valid pattern.
 - **`thin_components`** (TypeScript / React) — a component must stay presentational. Data fetching (`fetch` / `axios`) belongs in a hook, not in the component body.
 - **`god_class`** (any stack) — a class past a method-count threshold is doing too much; decompose it to keep a single responsibility.
 
@@ -80,6 +82,8 @@ A `warn`-level finding is reported but never blocks.
 ## Clearing a false positive
 
 A false positive is relieved by a **waiver** the developer commits in their branch — so the escape is accountable and reviewed in the PR, not a silent in-code suppression (`# noqa` / `# type: ignore` are themselves hygiene violations the standard flags). Add the waiver to `.roboco/conventions.yml`, commit it, and the finding is filtered on the next check.
+
+The one exception to "suppressions are violations" is a small allowlist of *structurally unavoidable* framework codes that the validator does not flag: ruff's flake8-type-checking codes (`TC001`–`TC003`, for an import a framework needs at runtime) and pydantic's `prop-decorator`. A bare `# noqa` / `# type: ignore` or any other code is still a finding.
 
 ## Panel
 

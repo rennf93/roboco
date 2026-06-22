@@ -17,11 +17,10 @@ Phase 5.
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, Request, status
-from pydantic import BaseModel, Field, model_validator
 from sse_starlette import EventSourceResponse
 
 from roboco.api.deps import (
@@ -29,6 +28,13 @@ from roboco.api.deps import (
     DbSession,
     get_orchestrator,
     require_pm_or_above,
+)
+from roboco.api.schemas.prompter_live import (
+    AgentEvent,
+    LiveConfirmRequest,
+    LiveMessageRequest,
+    StartLiveRequest,
+    StartLiveResponse,
 )
 from roboco.services.base import NotFoundError, ServiceError, ValidationError
 from roboco.services.prompter import get_prompter_service
@@ -60,41 +66,6 @@ def _translate_service_error(e: ServiceError) -> HTTPException:
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         detail={"error": "internal_error", "message": e.message},
     )
-
-
-class StartLiveRequest(BaseModel):
-    """Open a live intake chat scoped to a project XOR a product."""
-
-    project_id: UUID | None = None
-    product_id: UUID | None = None
-    initial_message: str | None = Field(default=None, min_length=1)
-
-    @model_validator(mode="after")
-    def _exactly_one_scope(self) -> StartLiveRequest:
-        if bool(self.project_id) == bool(self.product_id):
-            raise ValueError("provide exactly one of project_id / product_id")
-        return self
-
-
-class StartLiveResponse(BaseModel):
-    """The new session's id — the panel opens its stream and posts messages to it."""
-
-    session_id: str
-
-
-class LiveMessageRequest(BaseModel):
-    """The human's message in an active intake chat."""
-
-    text: str = Field(..., min_length=1)
-
-
-class AgentEvent(BaseModel):
-    """One normalized event the container relays (mirrors driver.StreamChunk)."""
-
-    kind: str
-    text: str = ""
-    tool: str = ""
-    data: dict[str, Any] = Field(default_factory=dict)
 
 
 @router.post(
@@ -186,32 +157,6 @@ async def stop_live(session_id: str) -> dict[str, bool]:
     """Reap the live intake session (panel close, or draft confirmed)."""
     await get_orchestrator().reap_intake_session(session_id)
     return {"stopped": True}
-
-
-class LiveConfirmRequest(BaseModel):
-    """Confirm the agent's draft → a task, scoped to exactly one target.
-
-    ``route`` is which start button the human pressed: ``"board"`` (Board review
-    & Start → PO + HoM review first) or ``"main_pm"`` (Approve & Start → straight
-    to the Main PM).
-    """
-
-    project_id: UUID | None = None
-    product_id: UUID | None = None
-    draft: dict[str, Any]
-    route: Literal["board", "main_pm"] = "board"
-    # Set on a board-informed re-draft: confirm updates this existing task in
-    # place instead of creating a new one. When present, project/product scope
-    # is taken from the task, so neither is required here.
-    task_id: UUID | None = None
-
-    @model_validator(mode="after")
-    def _exactly_one_target(self) -> LiveConfirmRequest:
-        if self.task_id is not None:
-            return self
-        if bool(self.project_id) == bool(self.product_id):
-            raise ValueError("provide exactly one of project_id / product_id")
-        return self
 
 
 @router.post("/live/{session_id}/confirm", status_code=status.HTTP_201_CREATED)

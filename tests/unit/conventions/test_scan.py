@@ -48,11 +48,35 @@ def test_scan_ignores_vendored_directories(tmp_path: Path) -> None:
 
 def test_scan_lifts_claude_md_imperative_into_custom_rule(tmp_path: Path) -> None:
     _sample_repo(tmp_path)
-    (tmp_path / "CLAUDE.md").write_text("- Never use `print()`; use the logger.\n")
+    (tmp_path / "CLAUDE.md").write_text("- Never call `os.system()`; use subprocess.\n")
     custom = derive_from_scan(tmp_path).custom
     assert custom
     assert custom[0].level == "warn"
-    assert "print" in custom[0].pattern
+    assert custom[0].id == "os-system"
+
+
+def test_scan_skips_bare_common_word_in_claude_md(tmp_path: Path) -> None:
+    # A bare word like `commit` would match everywhere; it must not be lifted.
+    _sample_repo(tmp_path)
+    (tmp_path / "CLAUDE.md").write_text("- Never `commit` straight to master.\n")
+    assert derive_from_scan(tmp_path).custom == []
+
+
+def test_scan_excludes_test_and_docs_trees(tmp_path: Path) -> None:
+    (tmp_path / "tests" / "unit" / "services").mkdir(parents=True)
+    (tmp_path / "docs" / "api").mkdir(parents=True)
+    (tmp_path / "app" / "services").mkdir(parents=True)
+    paths = {m.path for m in derive_from_scan(tmp_path).modules}
+    assert "app/services" in paths
+    assert not any(p.startswith(("tests/", "docs/")) for p in paths)
+
+
+def test_scan_seeds_helper_placement_as_warn(tmp_path: Path) -> None:
+    _sample_repo(tmp_path)
+    std = derive_from_scan(tmp_path)
+    # A misplaced model is a hard error; a misplaced helper only warns.
+    assert std.rules["no_models_in_routers"].level == "block"
+    assert std.rules["no_helpers_in_routers"].level == "warn"
 
 
 def test_render_yaml_round_trips_through_parse(tmp_path: Path) -> None:

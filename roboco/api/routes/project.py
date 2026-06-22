@@ -473,8 +473,12 @@ async def get_conventions(
     """Return the project's effective conventions map + its current health."""
     project = await _get_project_or_404(get_project_service(db), project_id)
     conv = get_conventions_service(db)
-    standard = await conv.get_map(project)
-    health = await conv.health(project)
+    # Ensure a default-branch read clone once, then read the map + health from
+    # it. This is the backfill: a project created before the standard existed
+    # (no manual workspace_path) still resolves its committed conventions file.
+    workspace = await conv.resolve_workspace(project)
+    standard = await conv.get_map(project, workspace=workspace)
+    health = await conv.health(project, workspace=workspace)
     await db.commit()
     return ConventionsResponse(
         standard=standard.model_dump(mode="json"),

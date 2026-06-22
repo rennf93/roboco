@@ -37,16 +37,18 @@ _MAX_CONCERNS_PER_FILE = 1
 
 # SQLAlchemy session methods + 2.0 constructs that signal data access. A route
 # whose body calls one of these is doing a repository's / service's job.
+# Transaction-lifecycle calls (commit / flush / refresh) are deliberately NOT
+# here: a thin route legitimately commits the unit of work after delegating to a
+# service — an explicit `await db.commit()` in the handler is a common pattern
+# (e.g. when middleware-driven auto-commit is unreliable) and must not, on its
+# own, count as the route doing data access.
 _DB_METHODS = frozenset(
     {
         "execute",
         "scalar",
         "scalars",
-        "commit",
         "add",
         "add_all",
-        "flush",
-        "refresh",
         "merge",
         "query",
     }

@@ -192,6 +192,12 @@ _ENSURE_WORKSPACE_LOCKS: dict[tuple[str, str], asyncio.Lock] = {}
 # clone) is attempted at most once per project per process, even across agents.
 _SCAFFOLD_ATTEMPTED: set[str] = set()
 
+# Project-level read clones (the conventions standard) refresh at most this often
+# on a healthy clone, so a burst of spawns / task creations doesn't fetch on
+# every call. Keyed by workspace path; process-wide.
+_READ_CLONE_FETCH_TTL_SECONDS = 30.0
+_read_clone_synced: dict[str, float] = {}
+
 
 def _ensure_lock_for(project_slug: str, agent_slug: str) -> asyncio.Lock:
     """Return the asyncio.Lock for a (project, agent) pair, creating lazily."""
@@ -769,6 +775,68 @@ class WorkspaceService:
                 project=project_slug,
                 error=str(exc),
             )
+
+    async def ensure_read_clone(self, project_slug: str) -> Path:
+        """Ensure a project-level read clone pinned to the default branch's HEAD.
+
+        The architectural-conventions standard is read from the committed
+        ``.roboco/conventions.yml`` plus a scan of the repo tree. Per-agent
+        working clones are the wrong source — one may sit on a feature branch or
+        be stale — so metadata reads use this dedicated clone instead. It is
+        never mounted into an agent container and is always hard-reset to
+        ``origin/<default_branch>``, which makes destructive refresh safe. This
+        is what lets the standard work for a project created before the standard
+        existed: no manually-configured ``workspace_path`` is required.
+        """
+        from roboco.services.project import get_project_service
+
+        project_service = get_project_service(self.session)
+        project = await project_service.get_by_slug(project_slug)
+        if not project:
+            raise WorkspaceError(f"Project not found: {project_slug}")
+        default_branch = project.default_branch or "master"
+        git_url = project.git_url
+        workspace = self.root / project_slug / "_meta" / "conventions"
+
+        lock = _ensure_lock_for(project_slug, "_meta-conventions")
+        async with lock:
+            if self._is_workspace_healthy(workspace):
+                now = _monotonic()
+                last = _read_clone_synced.get(str(workspace), -math.inf)
+                if (now - last) >= _READ_CLONE_FETCH_TTL_SECONDS:
+                    await asyncio.to_thread(self._prune_broken_refs, workspace)
+                    await self._fetch_origin_best_effort(workspace, project_slug)
+                    await asyncio.to_thread(
+                        self._reset_to_default, workspace, default_branch
+                    )
+                    _read_clone_synced[str(workspace)] = _monotonic()
+                return workspace
+            if workspace.exists():
+                shutil.rmtree(workspace)
+            git_token = await self._resolve_git_token(
+                project_service, project_slug, git_url
+            )
+            await self._clone_repo(
+                workspace, git_url, default_branch, git_token, agent=None
+            )
+            _read_clone_synced[str(workspace)] = _monotonic()
+            return workspace
+
+    @staticmethod
+    def _reset_to_default(workspace: Path, default_branch: str) -> None:
+        """Hard-reset the read clone to ``origin/<default_branch>``. Best-effort."""
+
+        def _git(*args: str) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                ["git", *args],
+                cwd=str(workspace),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        _git("checkout", default_branch)
+        _git("reset", "--hard", f"origin/{default_branch}")
 
     async def _clone_repo(
         self,

@@ -20,39 +20,21 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request, status
-from pydantic import BaseModel, Field
 from sse_starlette import EventSourceResponse
 
 from roboco.api.deps import get_orchestrator
+from roboco.api.schemas.secretary_live import (
+    AgentEvent,
+    LiveMessageRequest,
+    StartSecretaryRequest,
+    StartSecretaryResponse,
+)
 from roboco.services.prompter_live import get_live_registry
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
 router = APIRouter()
-
-
-class StartSecretaryRequest(BaseModel):
-    """Open a live Secretary chat (optionally with an opening message)."""
-
-    initial_message: str | None = Field(default=None, min_length=1)
-
-
-class StartSecretaryResponse(BaseModel):
-    session_id: str
-
-
-class LiveMessageRequest(BaseModel):
-    text: str = Field(..., min_length=1)
-
-
-class AgentEvent(BaseModel):
-    """One event relayed from the container onto the session stream."""
-
-    kind: str
-    text: str = ""
-    tool: str = ""
-    data: dict[str, Any] = Field(default_factory=dict)
 
 
 @router.post(

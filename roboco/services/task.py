@@ -703,9 +703,9 @@ class TaskService(BaseService):
         if project is None:
             return []
         try:
-            return await get_conventions_service(self.session).baseline_constraints(
-                project
-            )
+            conv = get_conventions_service(self.session)
+            workspace = await conv.resolve_workspace(project)
+            return await conv.baseline_constraints(project, workspace=workspace)
         except Exception as exc:
             self.log.warning(
                 "Baseline-constraints attach failed (non-fatal)",

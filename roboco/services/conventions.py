@@ -13,6 +13,7 @@ on are pure.
 
 from __future__ import annotations
 
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -39,7 +40,7 @@ if TYPE_CHECKING:
     from roboco.db.tables import ProjectTable
 
 _SCAFFOLD_BRANCH = CONVENTIONS_SCAFFOLD_BRANCH
-_AMBIENT_CHAR_CAP = 1200
+_AMBIENT_CHAR_CAP = 2000
 
 
 @dataclass(frozen=True)
@@ -63,28 +64,32 @@ class ConventionsHealth:
 class ConventionsService(BaseService):
     """Cache, render, scaffold, and restore a project's conventions standard."""
 
-    async def get_map(self, project: ProjectTable) -> ConventionsStandard:
+    async def get_map(
+        self, project: ProjectTable, *, workspace: Path | None = None
+    ) -> ConventionsStandard:
         """Return the effective standard for ``project`` at its current HEAD."""
         pid = self._pid(project)
-        head = self._head_sha(project)
+        root, head = self._resolve(project, workspace)
         cached = await self._cache_get(pid, head)
         if cached is not None:
             return ConventionsStandard.model_validate(cached.effective_map)
 
-        file_standard, status = self._read_committed_standard(project)
+        file_standard, status = self._read_committed_standard(root)
         if status == "degraded":
             last_good = await self._latest_ok_map(pid)
             if last_good is not None:
                 await self._cache_put(pid, head, last_good, status)
                 return last_good
 
-        mapping = effective_map(self._derive(project), file_standard)
+        mapping = effective_map(self._derive(root), file_standard)
         await self._cache_put(pid, head, mapping, status)
         return mapping
 
-    async def baseline_constraints(self, project: ProjectTable) -> list[str]:
+    async def baseline_constraints(
+        self, project: ProjectTable, *, workspace: Path | None = None
+    ) -> list[str]:
         """Render the project's block rules + module boundaries as constraints."""
-        mapping = await self.get_map(project)
+        mapping = await self.get_map(project, workspace=workspace)
         constraints = [
             f"Convention (block): {name.replace('_', ' ')}"
             for name, rule in mapping.rules.items()
@@ -98,33 +103,53 @@ class ConventionsService(BaseService):
         ]
         return constraints
 
-    async def render_ambient_block(self, project: ProjectTable) -> str:
-        """Render a compact, bounded 'Architectural Standard' prompt block."""
-        mapping = await self.get_map(project)
-        lines = [
+    async def render_ambient_block(
+        self, project: ProjectTable, *, workspace: Path | None = None
+    ) -> str:
+        """Render a compact, bounded 'Architectural Standard' prompt block.
+
+        Only modules that actually forbid a kind are listed — an unconstrained
+        module adds no signal. If the module list would exceed the budget it is
+        truncated at a line boundary with a ``+N more`` pointer (never cut
+        mid-line), and the block-level rule summary is always kept.
+        """
+        mapping = await self.get_map(project, workspace=workspace)
+        header = [
             "## Architectural Standard",
             "Place each definition in the module that owns its kind:",
         ]
-        for module in mapping.modules:
-            suffix = (
-                f" — forbidden: {', '.join(module.forbidden)}"
-                if module.forbidden
-                else ""
-            )
-            lines.append(f"- `{module.path}`: {module.purpose}{suffix}")
+        constrained = [m for m in mapping.modules if m.forbidden]
         block = sorted(n for n, r in mapping.rules.items() if r.level == "block")
-        if block:
-            lines.append("Block-level rules: " + ", ".join(block) + ".")
-        text = "\n".join(lines)
-        if len(text) > _AMBIENT_CHAR_CAP:
-            return text[: _AMBIENT_CHAR_CAP - 1].rstrip() + "…"
-        return text
+        footer = ["Block-level rules: " + ", ".join(block) + "."] if block else []
+
+        # Reserve room for the fixed header/footer plus a possible '+N more' line
+        # so the budget is spent on whole module lines.
+        reserve = len("\n".join(header + footer)) + 80
+        budget = max(0, _AMBIENT_CHAR_CAP - reserve)
+        kept: list[str] = []
+        used = 0
+        for module in constrained:
+            line = (
+                f"- `{module.path}`: {module.purpose} "
+                f"— forbidden: {', '.join(module.forbidden)}"
+            )
+            if used + len(line) + 1 > budget:
+                break
+            kept.append(line)
+            used += len(line) + 1
+        if len(kept) < len(constrained):
+            extra = len(constrained) - len(kept)
+            plural = "s" if extra != 1 else ""
+            kept.append(
+                f"- (+{extra} more module{plural} — see .roboco/conventions.yml)"
+            )
+        return "\n".join(header + kept + footer)
 
     async def scaffold(
         self, project: ProjectTable, *, workspace: Path | None = None
     ) -> ScaffoldResult:
         """Open a PR adding the auto-scaffolded ``.roboco/conventions.yml``."""
-        mapping = await self.get_map(project)
+        mapping = await self.get_map(project, workspace=workspace)
         return await self._publish(
             project, render_yaml(mapping), restore=False, workspace=workspace
         )
@@ -134,7 +159,11 @@ class ConventionsService(BaseService):
     ) -> ScaffoldResult:
         """Open a PR re-committing the file from the last-good map (or a scan)."""
         last_good = await self._latest_ok_map(self._pid(project))
-        mapping = last_good if last_good is not None else self._derive(project)
+        if last_good is not None:
+            mapping = last_good
+        else:
+            root, _ = self._resolve(project, workspace)
+            mapping = self._derive(root)
         return await self._publish(
             project, render_yaml(mapping), restore=True, workspace=workspace
         )
@@ -151,10 +180,12 @@ class ConventionsService(BaseService):
             project, render_yaml(standard), restore=False, workspace=workspace
         )
 
-    async def health(self, project: ProjectTable) -> ConventionsHealth:
+    async def health(
+        self, project: ProjectTable, *, workspace: Path | None = None
+    ) -> ConventionsHealth:
         """Report the standard's status at HEAD + the last-good commit SHA."""
         pid = self._pid(project)
-        head = self._head_sha(project)
+        _root, head = self._resolve(project, workspace)
         current = await self._cache_get(pid, head)
         last_ok = await self._latest_ok_row(pid)
         return ConventionsHealth(
@@ -233,14 +264,71 @@ class ConventionsService(BaseService):
         path = Path(project.workspace_path)
         return path if path.exists() else None
 
-    def _derive(self, project: ProjectTable) -> ConventionsStandard:
-        root = self._workspace_root(project)
+    async def resolve_workspace(self, project: ProjectTable) -> Path | None:
+        """Ensure (clone / refresh) the project's read clone; None if unavailable."""
+        from roboco.services.workspace import get_workspace_service
+
+        try:
+            return await get_workspace_service(self.session).ensure_read_clone(
+                project.slug
+            )
+        except Exception as exc:
+            self.log.warning(
+                "conventions: read-clone unavailable; falling back to workspace_path",
+                project=getattr(project, "slug", None),
+                error=str(exc),
+            )
+            return None
+
+    def _resolve(
+        self, project: ProjectTable, workspace: Path | None
+    ) -> tuple[Path | None, str]:
+        """Resolve the repo root to read the standard from, plus its HEAD sha.
+
+        Uses an explicit ``workspace`` (the read clone the caller resolved via
+        :meth:`resolve_workspace`) when given, else the legacy persisted
+        ``workspace_path``. When a clone is resolved, its path + real HEAD are
+        persisted back onto the project — the backfill — so the next read (and
+        the cache key) reflect the committed standard, even for a project
+        created before the standard existed.
+        """
+        root: Path | None = None
+        if workspace is not None and Path(workspace).exists():
+            root = Path(workspace)
+        else:
+            root = self._workspace_root(project)
+        if root is None:
+            return None, self._head_sha(project)
+        sha = self._head_sha_at(root)
+        project.workspace_path = str(root)
+        if sha is not None:
+            # Only a real rev-parse (an actual git clone) updates the cache key;
+            # a non-git legacy path keeps the persisted head_commit / "HEAD".
+            project.head_commit = sha
+        return root, sha or self._head_sha(project)
+
+    @staticmethod
+    def _head_sha_at(root: Path) -> str | None:
+        """The clone's HEAD sha, or None if ``root`` is not a readable git repo."""
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=str(root),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return result.stdout.strip() or None
+
+    def _derive(self, root: Path | None) -> ConventionsStandard:
         return derive_from_scan(root) if root is not None else ConventionsStandard()
 
     def _read_committed_standard(
-        self, project: ProjectTable
+        self, root: Path | None
     ) -> tuple[ConventionsStandard | None, str]:
-        root = self._workspace_root(project)
         if root is None:
             return None, "missing"
         path = root / ".roboco" / "conventions.yml"

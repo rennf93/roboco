@@ -21,15 +21,15 @@ The rules live in a per-project `.roboco/conventions.yml` with four curated part
 
 The validator runs four check families over each changed file:
 
-- **Placement** — a definition whose *kind* is forbidden in its module (a model in a router).
-- **Hygiene** — the universal, stack-agnostic house-style rules seeded into every project: `no_lint_suppressions` (`block` by default — no `# noqa`, `# type: ignore`, `eslint-disable`) and `no_inline_comments` (`warn`).
+- **Placement** — a definition whose *kind* is forbidden in its module (a model in a router). A misplaced **model**, **route**, or **component** is `block` by default; a misplaced **helper** only `warn`s — `helper` matches *any* top-level function, too blunt a signal to hard-block a route file's small private glue (the body-level `thin_routes` check is the real fat-handler guard).
+- **Hygiene** — the universal, stack-agnostic house-style rules seeded into every project: `no_lint_suppressions` (`block` by default — no `# noqa`, `# type: ignore`, `eslint-disable`) and `no_inline_comments` (`warn`). A small allowlist of *structurally unavoidable* framework codes is exempt from `no_lint_suppressions` — ruff's flake8-type-checking codes (`TC001`–`TC003`, for an import a framework needs at runtime) and pydantic's `prop-decorator` — so the rule keeps its teeth on genuine error-silencing without footgunning every pydantic/FastAPI project. A bare `# noqa` / `# type: ignore` or any other code is still flagged.
 - **Custom** — your project-specific regex rules.
 - **Modularity** — separation-of-concerns judgements the linters are blind to, inspecting a file's *composition* and a definition's *body*, not just its top-level kind:
 
 | Rule | Fires when | Default level |
 |------|-----------|---------------|
 | `modular_cohesion` | One file mixes architectural concerns (e.g. a model *and* a route *and* a component) | `block` |
-| `thin_routes` | A route handler does its own data access (SQLAlchemy `execute`/`commit`/`select`…) instead of delegating to a service | `block` |
+| `thin_routes` | A route handler does its own data access (SQLAlchemy `execute`/`scalars`/`add`/`select`…) instead of delegating to a service. Transaction-lifecycle calls (`commit`/`flush`/`refresh`) do **not** count — an explicit `await db.commit()` after delegating is a valid pattern | `block` |
 | `thin_components` | A React component fetches data in its body instead of through a hook | `block` |
 | `god_class` | A class grows past 15 methods (single-responsibility smell) | `warn` |
 
@@ -38,9 +38,12 @@ The validator runs four check families over each changed file:
 
 ## The effective map: defaults, present, absent, or partial
 
-Consumers never read the raw committed file — they read the **effective map**, so behaviour is identical whether `.roboco/conventions.yml` is present, absent, or partial. `ConventionsService` (`roboco/services/conventions.py`) builds it by auto-deriving a baseline from a repo scan (it infers modules from directory names like `routers/`, `models/`, `services/`, `components/`, `hooks/`; detects languages by file extension; seeds the universal hygiene rules) and then overlaying the committed file on top. The result is cached per `(project, HEAD sha)`.
+Consumers never read the raw committed file — they read the **effective map**, so behaviour is identical whether `.roboco/conventions.yml` is present, absent, or partial. `ConventionsService` (`roboco/services/conventions.py`) builds it by auto-deriving a baseline from a repo scan (it infers modules from directory names like `routers/`, `models/`, `services/`, `components/`, `hooks/`; **excludes test and documentation trees** — `tests/`, `docs/` — since those legitimately define fixtures and aren't enforced code; detects languages by file extension; seeds the universal hygiene rules) and then overlaying the committed file on top. The result is cached per `(project, HEAD sha)`.
 
 That is the load-bearing property: **the standard is enforced even before any file is committed.** A project with no `.roboco/conventions.yml` still gets sensible auto-derived rules and is gated by them. Resilience is built in — a missing file degrades to the auto-derived defaults, and an unparseable file falls back to the last-good cached map (status `degraded`) so the standard is never silently switched off by a typo.
+
+!!! info "Reads come from a dedicated clone — no setup needed for old projects"
+    The committed file and the repo scan are read from a project-level **read clone** that the service ensures on demand (pinned to the default branch's HEAD), not from any agent's working clone. This is the backfill: a project created long before the standard existed — with no manually-configured workspace path — still resolves its committed `.roboco/conventions.yml` the first time the panel, a spawn, or a task asks for it. There is nothing to wire up.
 
 ## The per-project Conventions editor
 

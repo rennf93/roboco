@@ -59,6 +59,41 @@ def test_python_marker_not_applied_to_typescript() -> None:
     assert _rules(findings, "no_lint_suppressions") == []
 
 
+def _src(line: str) -> bytes:
+    # Build via a variable so a literal suppression marker never sits on this
+    # test file's own source line (ruff would parse it as a real directive).
+    return (line + "\n").encode()
+
+
+def test_runtime_typing_noqa_is_allowed() -> None:
+    # A runtime-needed typing import (pydantic / SQLAlchemy) — the sanctioned
+    # escape, not error-silencing.
+    findings = check_hygiene(
+        "a.py", _src("from uuid import UUID  # noqa: TC003"), "python", _STD
+    )
+    assert _rules(findings, "no_lint_suppressions") == []
+
+
+def test_pydantic_prop_decorator_ignore_is_allowed() -> None:
+    findings = check_hygiene(
+        "a.py", _src("y = f()  # type: ignore[prop-decorator]"), "python", _STD
+    )
+    assert _rules(findings, "no_lint_suppressions") == []
+
+
+def test_other_ignore_code_is_still_flagged() -> None:
+    findings = check_hygiene(
+        "a.py", _src("x = bad()  # type: ignore[arg-type]"), "python", _STD
+    )
+    assert _rules(findings, "no_lint_suppressions")
+
+
+def test_mixed_allowed_and_disallowed_codes_is_flagged() -> None:
+    # One allowed code does not launder a disallowed one alongside it.
+    findings = check_hygiene("a.py", _src("x = 1  # noqa: TC003, E501"), "python", _STD)
+    assert _rules(findings, "no_lint_suppressions")
+
+
 def test_rule_level_override_from_standard() -> None:
     std = ConventionsStandard(
         rules={"no_inline_comments": Rule(name="no_inline_comments", level="block")}
