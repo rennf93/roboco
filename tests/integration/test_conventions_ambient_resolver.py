@@ -49,9 +49,21 @@ async def test_ambient_block_when_flag_on(
 ) -> None:
     monkeypatch.setattr(settings, "conventions_enabled", True)
     project = await _seed_project(db_session)
-    block = await conventions_ambient_layer(db_session, project)
+    block = await conventions_ambient_layer(db_session, [project])
     assert block is not None
     assert block.startswith("## Architectural Standard")
+
+
+async def test_merges_multiple_projects_with_slug_headers(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "conventions_enabled", True)
+    p1 = await _seed_project(db_session)
+    p2 = await _seed_project(db_session)
+    block = await conventions_ambient_layer(db_session, [p1, p2])
+    assert block is not None
+    assert f"### Project `{p1.slug}`" in block
+    assert f"### Project `{p2.slug}`" in block
 
 
 async def test_none_when_flag_off(
@@ -59,11 +71,11 @@ async def test_none_when_flag_off(
 ) -> None:
     monkeypatch.setattr(settings, "conventions_enabled", False)
     project = await _seed_project(db_session)
-    assert await conventions_ambient_layer(db_session, project) is None
+    assert await conventions_ambient_layer(db_session, [project]) is None
 
 
 async def test_none_when_no_project(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(settings, "conventions_enabled", True)
-    assert await conventions_ambient_layer(db_session, None) is None
+    assert await conventions_ambient_layer(db_session, []) is None

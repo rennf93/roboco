@@ -253,21 +253,41 @@ def compose_prompt(
     return "\n\n---\n\n".join(parts)
 
 
-async def conventions_ambient_layer(
-    session: "AsyncSession", project: "ProjectTable | None"
-) -> str | None:
-    """Render the project's architectural-standard prompt block (flag-gated).
+_AMBIENT_TOTAL_CAP = 3000
 
-    Returns None when the conventions subsystem is off or no project is in
-    scope, so a flag-off / board-level spawn injects nothing.
+
+async def conventions_ambient_layer(
+    session: "AsyncSession", projects: "list[ProjectTable]"
+) -> str | None:
+    """Render the architectural-standard block for the in-scope project(s).
+
+    Merges one block per project (a PO / Intake working a product spans several
+    per-cell projects; a delivery role has one), each headed by its slug when
+    there is more than one, bounded to a total cap. Returns None when the
+    conventions subsystem is off or no project is in scope, so a flag-off /
+    board-level / cross-product spawn injects nothing.
     """
     from roboco.config import settings
 
-    if not settings.conventions_enabled or project is None:
+    if not settings.conventions_enabled or not projects:
         return None
     from roboco.services.conventions import get_conventions_service
 
-    return await get_conventions_service(session).render_ambient_block(project)
+    service = get_conventions_service(session)
+    blocks: list[str] = []
+    for project in projects:
+        block = await service.render_ambient_block(project)
+        if not block:
+            continue
+        blocks.append(
+            f"### Project `{project.slug}`\n{block}" if len(projects) > 1 else block
+        )
+    if not blocks:
+        return None
+    text = "\n\n".join(blocks)
+    if len(text) > _AMBIENT_TOTAL_CAP:
+        return text[: _AMBIENT_TOTAL_CAP - 1].rstrip() + "…"
+    return text
 
 
 def make_slug(name: str) -> str:
