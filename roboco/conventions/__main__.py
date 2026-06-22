@@ -21,14 +21,10 @@ from roboco.foundation.policy.conventions.models import (
 )
 
 from .runner import ValidatorCouldNotRun, run
+from .scan import derive_from_scan
 
 _CONVENTIONS_FILE = ".roboco/conventions.yml"
 _EXIT_COULD_NOT_RUN = 3
-
-
-def _derive_stub(_root: Path) -> ConventionsStandard:
-    """Auto-derived defaults placeholder (wired to the repo scan in Task 5)."""
-    return ConventionsStandard()
 
 
 def _load_file(root: Path) -> ConventionsStandard | None:
@@ -48,7 +44,7 @@ def _run_check(root: Path, files: list[str]) -> int:
         file_standard = _load_file(root)
     except ConventionsParseError as exc:
         return _fail(f"unparseable {_CONVENTIONS_FILE}: {exc.reason}")
-    standard = effective_map(_derive_stub(root), file_standard)
+    standard = effective_map(derive_from_scan(root), file_standard)
     try:
         findings = run(root, files, standard)
     except ValidatorCouldNotRun as exc:
