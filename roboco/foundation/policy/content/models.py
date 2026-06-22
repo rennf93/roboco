@@ -200,19 +200,6 @@ class TaskDescription(_Content):
     def _coerce(cls, v: Any) -> Any:
         return coerce_to_list(v)
 
-    def with_baseline_constraints(self, baseline: list[str]) -> TaskDescription:
-        """Return a copy with ``baseline`` prepended to ``constraints``.
-
-        Idempotent and order-stable: baseline first, then this task's own
-        constraints that aren't already present (deduped by exact string), so
-        a second attach of the same baseline is a no-op.
-        """
-        merged = list(baseline)
-        for constraint in self.constraints:
-            if constraint not in merged:
-                merged.append(constraint)
-        return self.model_copy(update={"constraints": merged})
-
     @field_validator("objective")
     @classmethod
     def _nontrivial_objective(cls, v: str) -> str:
