@@ -84,20 +84,26 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        set -e
-        echo "=== Pulling embedding model (qwen3-embedding:0.6b) ==="
+        # NO `set -e`: pulls are best-effort. Cached models persist in the ollama
+        # volume and MUST survive a slow/unreachable ollama registry — a manifest
+        # re-check failure there must never down a fully-cached deployment (it
+        # used to: a degraded registry made `ollama pull` fail under set -e, which
+        # blocked the orchestrator's service_completed_successfully gate). Success
+        # is gated on the models being PRESENT (verify step), not on the pull.
+        # Note: $$ escapes $ for docker-compose variable substitution.
+        echo "=== Pulling embedding model (qwen3-embedding:0.6b) — best-effort ==="
         curl -sN http://ollama:11434/api/pull -d '{"name":"qwen3-embedding:0.6b"}' | while read -r line; do
           status=$$(echo "$$line" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
           [ -n "$$status" ] && echo "  $$status"
-        done
-        echo "=== Pulling LLM model (glm-5:cloud) ==="
+        done || echo "  (pull failed — relying on the cached model)"
+        echo "=== Pulling LLM model (glm-5:cloud) — best-effort ==="
         curl -sN http://ollama:11434/api/pull -d '{"name":"glm-5:cloud"}' | while read -r line; do
           status=$$(echo "$$line" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
           [ -n "$$status" ] && echo "  $$status"
-        done
-        echo "=== Verifying models are available ==="
-        curl -sf http://ollama:11434/api/tags | grep -q "qwen3-embedding" && echo "  qwen3-embedding: OK"
-        curl -sf http://ollama:11434/api/tags | grep -q "glm-5" && echo "  glm-5: OK"
+        done || echo "  (pull failed — relying on the cached model)"
+        echo "=== Verifying models are present (the real success gate) ==="
+        curl -sf http://ollama:11434/api/tags | grep -q "qwen3-embedding" || { echo "FATAL: qwen3-embedding missing and could not be pulled"; exit 1; }
+        curl -sf http://ollama:11434/api/tags | grep -q "glm-5" || { echo "FATAL: glm-5 missing and could not be pulled"; exit 1; }
         echo "=== All models ready! ==="
 
   # --------------------------------------------------------------------------
