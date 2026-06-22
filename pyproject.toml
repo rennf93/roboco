@@ -88,10 +88,11 @@ docs = [
     "mkdocs",
     "mkdocs-material",
     "mkdocstrings[python]",
+    "pymarkdownlnt",
 ]
 
 [project.scripts]
-roboco = "roboco.cli:main"
+roboco = "roboco.cli:cli"
 roboco-bootstrap = "roboco.bootstrap:cli"
 
 [project.urls]
@@ -410,6 +411,7 @@ DEP002 = [
     "mkdocs",
     "mkdocs-material",
     "mkdocstrings",
+    "pymarkdownlnt",
 ]
 # DEP003: Starlette is a transitive dep of FastAPI, but BaseHTTPMiddleware is needed
 DEP003 = ["starlette"]

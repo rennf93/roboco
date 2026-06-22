@@ -401,19 +401,25 @@ high-load-stress-test:
 # Serve docs
 .PHONY: serve-docs
 serve-docs:
-	@uv run mkdocs serve
+	@uv run --extra docs mkdocs serve
+	@find . | grep -E "(__pycache__|\.pyc|\.pyo|\.pytest_cache|\.ruff_cache|\.mypy_cache)" | xargs rm -rf
+
+# Build the documentation site (strict — fails on broken links / nav)
+.PHONY: build-docs
+build-docs:
+	@uv run --extra docs mkdocs build --strict
 	@find . | grep -E "(__pycache__|\.pyc|\.pyo|\.pytest_cache|\.ruff_cache|\.mypy_cache)" | xargs rm -rf
 
 # Lint documentation
 .PHONY: lint-docs
 lint-docs:
-	@uv run pymarkdownlnt scan -r -e ./.venv -e ./.git -e ./.github -e ./roboco -e ./tests -e ./.claude -e ./CLAUDE.md -e ./ZZZ .
+	@uv run --extra docs pymarkdownlnt --config .pymarkdown.json scan -r docs/index.md docs/get-started docs/company docs/how-to docs/panel docs/models docs/operations docs/optional docs/deploy docs/api docs/troubleshooting
 	@find . | grep -E "(__pycache__|\.pyc|\.pyo|\.pytest_cache|\.ruff_cache|\.mypy_cache)" | xargs rm -rf
 
 # Fix documentation
 .PHONY: fix-docs
 fix-docs:
-	@uv run pymarkdownlnt fix -r -e ./.venv -e ./.git -e ./.github -e ./roboco -e ./tests -e ./.claude -e ./CLAUDE.md -e ./ZZZ .
+	@uv run --extra docs pymarkdownlnt --config .pymarkdown.json fix -r docs/index.md docs/get-started docs/company docs/how-to docs/panel docs/models docs/operations docs/optional docs/deploy docs/api docs/troubleshooting
 	@find . | grep -E "(__pycache__|\.pyc|\.pyo|\.pytest_cache|\.ruff_cache|\.mypy_cache)" | xargs rm -rf
 
 # Prune
@@ -487,7 +493,7 @@ help:
 	@echo "  make clean                    - Clean cache files"
 	@echo "  make prune                    - Prune docker resources"
 	@echo ""
-	@echo "See docs/deployment.md and docs/usage.md for detailed guides."
+	@echo "Full docs: https://roboco.dev/docs  (preview locally: make serve-docs)"
 
 # Python versions list
 .PHONY: show-python-versions

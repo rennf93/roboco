@@ -28,4 +28,4 @@ This guide follows one task — the Prompter's own build — from a rough idea t
 
 ---
 
-*RoboCo is early-stage, work-in-progress software (v0) — expect rough edges. The [README](../../README.md) covers setup, architecture, and the security model.*
+*RoboCo is early-stage, work-in-progress software (v0) — expect rough edges. The [Get Started guide](../get-started/index.md) covers setup, configuration, and the security model.*

@@ -536,4 +536,4 @@ ROBOCO_OLLAMA_BASE_URL=http://roboco-ollama:11434          # Native API
 
 ## Blueprint Reference
 
-The organizational structure, communication matrix, role descriptions, and access-control model are documented inline above and in the published `docs/` tree (per-area `README.md` files, `usage.md`, `deployment.md`).
+The organizational structure, communication matrix, role descriptions, and access-control model are documented inline above and in the user-facing documentation site (MkDocs Material; source under `docs/`, built by `mkdocs.yml`, published to `gh-pages` via `.github/workflows/docs.yml` and served at roboco.dev/docs). `docs/rag/` remains the agent-facing RAG corpus (excluded from the published site); the old root `usage.md` / `deployment.md` are now redirect stubs into the site.

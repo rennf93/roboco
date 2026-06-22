@@ -30,6 +30,9 @@ AI Agents Company - A virtual organization of 25 AI agents + 1 human CEO, design
 > [!WARNING]
 > **RoboCo is early-stage, work-in-progress software (v0).** It's under active development, runs in a homelab, and *will* have rough edges, breaking changes, and bugs. It is **not production-ready** and the API/database schema are not stable yet. Treat it as a working prototype to explore and build on — please  don't expose it to the public internet as-is. Issues and PRs very welcome.
 
+> [!TIP]
+> 📚 **Full documentation:** **[roboco.dev/docs](https://roboco.dev/docs)** — install & first run, the company model, a page-by-page panel reference, model providers, the optional subsystems, deployment, and the API.
+
 ## Overview
 
 RoboCo implements a structured organizational hierarchy with formal communication protocols, task management, and quality controls. The system enables a single human (CEO) to orchestrate complex multi-project development at scale.
@@ -86,9 +89,9 @@ roboco/
 │   │   ├── task.py              # Task lifecycle management
 │   │   ├── workspace.py         # Multi-agent workspace management
 │   │   ├── messaging.py         # Agent communication
-│   │   └── optimal_brain/       # RAG/Knowledge base (in-house pgvector)
+│   │   └── optimal.py           # RAG/Knowledge base (in-house pgvector)
 │   ├── models/                  # Pydantic domain models
-│   ├── db/                      # SQLAlchemy ORM & migrations
+│   ├── db/                      # SQLAlchemy ORM & session
 │   ├── enforcement/             # Task lifecycle state machine
 │   ├── runtime/                 # Orchestrator for agent spawning
 │   ├── agents/                  # Agent base classes

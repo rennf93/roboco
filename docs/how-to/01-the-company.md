@@ -4,7 +4,7 @@ What keeps twenty-two agents from dissolving into noise is that RoboCo is relent
 
 Work in RoboCo is always a **task**, and tasks nest into a tree that mirrors the org itself:
 
-```
+```text
 CEO (you, the human)
  ├── Intake (on-demand interviewer — drafts a task with you)
  ├── Secretary (your chief-of-staff — acts only on your command)

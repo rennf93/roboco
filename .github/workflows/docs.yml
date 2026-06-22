@@ -1,0 +1,42 @@
+# Builds the MkDocs site and publishes it to the `gh-pages` orphan branch.
+# GitHub Pages then serves from that branch (set Settings → Pages → Source:
+# "Deploy from a branch" → gh-pages, and configure the custom domain there).
+name: docs
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: docs-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Sync docs toolchain
+        run: uv sync --extra docs
+
+      - name: Configure git identity for gh-pages
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Build and deploy to gh-pages
+        run: uv run mkdocs gh-deploy --force --strict
