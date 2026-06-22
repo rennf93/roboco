@@ -55,6 +55,7 @@ FEATURE_FLAGS: tuple[tuple[str, str], ...] = (
     ("conventions_enabled", "Architectural conventions standard"),
     ("rag_auto_update_enabled", "RAG auto-update"),
     ("transcript_prune_enabled", "Transcript pruning"),
+    ("gateway_health_enabled", "Gateway-health recovery"),
 )
 _FEATURE_FLAG_KEYS = tuple(key for key, _ in FEATURE_FLAGS)
 

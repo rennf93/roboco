@@ -200,6 +200,22 @@ class Settings(BaseSettings):
             "of crash-retrying into the overload. Off => crash-retry behavior."
         ),
     )
+    gateway_health_enabled: bool = Field(
+        default=True,
+        description=(
+            "Detect a broken-but-alive agent gateway (a corrupted /app venv so no "
+            "gateway verb can fire) and kill + respawn the container, instead of "
+            "the reaper protecting it forever as a 'live' agent. Off => live "
+            "containers are spared on verb-heartbeat liveness alone."
+        ),
+    )
+    gateway_health_grace_seconds: int = Field(
+        default=180,
+        description=(
+            "How long an agent gateway may probe as broken before the reaper "
+            "recovers it — tolerates a transient probe miss (the gateway mid-call)."
+        ),
+    )
 
     # ==========================================================================
     # Architectural Conventions (per-project placement + house-style standard)

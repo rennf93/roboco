@@ -41,6 +41,7 @@ async def test_reap_stale_claims_releases_dead_holders() -> None:
     )()
 
     orch = AgentOrchestrator.__new__(AgentOrchestrator)  # bypass __init__
+    orch._maybe_recover_broken_gateway = AsyncMock(return_value=False)
     orch._claim_heartbeat_ttl = 300
     svc = AsyncMock()
     svc.list_in_progress_or_claimed.return_value = [stale_task, fresh_task]
@@ -58,6 +59,7 @@ async def test_reap_stale_claims_releases_holders_with_null_heartbeat() -> None:
     null_task = type("T", (), {"id": null_id, "last_heartbeat_at": None})()
 
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    orch._maybe_recover_broken_gateway = AsyncMock(return_value=False)
     orch._claim_heartbeat_ttl = 300
     svc = AsyncMock()
     svc.list_in_progress_or_claimed.return_value = [null_task]
@@ -82,6 +84,7 @@ async def test_reap_stale_claims_swallows_unclaim_errors() -> None:
     )()
 
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    orch._maybe_recover_broken_gateway = AsyncMock(return_value=False)
     orch._claim_heartbeat_ttl = 300
     svc = AsyncMock()
     svc.list_in_progress_or_claimed.return_value = [task_a, task_b]
@@ -128,6 +131,7 @@ async def test_reap_spares_claims_whose_assignee_container_is_alive() -> None:
     )()
 
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    orch._maybe_recover_broken_gateway = AsyncMock(return_value=False)
     orch._claim_heartbeat_ttl = 300
     orch._instances = {
         "be-dev-1": AgentInstance(agent_id="be-dev-1", state=AgentState.ACTIVE)
@@ -172,6 +176,7 @@ async def test_reaper_kills_and_releases_wedged_grok_container(
     )()
 
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    orch._maybe_recover_broken_gateway = AsyncMock(return_value=False)
     orch._claim_heartbeat_ttl = 300
     orch._grok_idle_kill_ttl = 900
     orch._instances = {"be-dev-1": _grok_instance()}
@@ -210,6 +215,7 @@ async def test_reaper_spares_grok_container_within_kill_ttl(
     )()
 
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    orch._maybe_recover_broken_gateway = AsyncMock(return_value=False)
     orch._claim_heartbeat_ttl = 300
     orch._grok_idle_kill_ttl = 900
     orch._instances = {"be-dev-1": _grok_instance()}
@@ -249,6 +255,7 @@ async def test_reaper_never_kills_non_grok_container(
     claude_cfg = type("C", (), {"provider_type": "anthropic"})()
 
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    orch._maybe_recover_broken_gateway = AsyncMock(return_value=False)
     orch._claim_heartbeat_ttl = 300
     orch._grok_idle_kill_ttl = 900
     orch._instances = {
@@ -292,6 +299,7 @@ async def test_reap_spares_live_container_on_registry_miss(
     )()
 
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    orch._maybe_recover_broken_gateway = AsyncMock(return_value=False)
     orch._claim_heartbeat_ttl = 300
     orch._grok_idle_kill_ttl = 900
     orch._instances = {}  # registry lost; container still up
@@ -326,6 +334,7 @@ async def test_reap_releases_on_registry_miss_when_container_gone(
     )()
 
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    orch._maybe_recover_broken_gateway = AsyncMock(return_value=False)
     orch._claim_heartbeat_ttl = 300
     orch._grok_idle_kill_ttl = 900
     orch._instances = {}
@@ -361,6 +370,7 @@ async def test_registry_uninitialised_skips_docker_fallback() -> None:
     )()
 
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    orch._maybe_recover_broken_gateway = AsyncMock(return_value=False)
     orch._claim_heartbeat_ttl = 300
     # _instances intentionally NOT set -> getattr yields None -> no fallback.
     svc = AsyncMock()
