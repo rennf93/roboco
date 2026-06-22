@@ -93,7 +93,12 @@ export function ConventionsTab({ projectId }: { projectId: string }) {
       rules: { ...standard.rules, [name]: { name, level } },
     });
 
-  const degraded = data.health.status !== "ok";
+  const status = data.health.status;
+  // "degraded" is the only problem state: a committed file that won't parse.
+  // "missing"/"unknown" is the normal starting point — no file yet, defaults
+  // apply and are already enforced — so it must not be flagged as an error.
+  const degraded = status === "degraded";
+  const usingDefaults = status === "missing" || status === "unknown";
 
   return (
     <div className="space-y-4 py-2">
@@ -101,11 +106,24 @@ export function ConventionsTab({ projectId }: { projectId: string }) {
         <Card className="border-amber-500/40">
           <CardHeader>
             <CardTitle className="text-sm">
-              Conventions degraded — {data.health.status}
+              Conventions degraded — committed file unparseable
             </CardTitle>
             <CardDescription>
-              The committed file is missing or unparseable; the effective map
-              fell back to the last-good cache plus auto-derived defaults.
+              The committed <code>.roboco/conventions.yml</code> could not be
+              parsed; the effective map fell back to the last-good cache plus
+              auto-derived defaults. Restore re-commits the last-good file.
+            </CardDescription>
+          </CardHeader>
+        </Card>
+      )}
+      {usingDefaults && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-sm">Using auto-derived defaults</CardTitle>
+            <CardDescription>
+              No <code>.roboco/conventions.yml</code> is committed yet. These
+              rules are auto-derived from the repository and are already
+              enforced. Edit them below and Save to repo to make them canonical.
             </CardDescription>
           </CardHeader>
         </Card>
@@ -216,10 +234,10 @@ export function ConventionsTab({ projectId }: { projectId: string }) {
         </Button>
         <Button
           size="sm"
-          disabled={draft == null || save.isPending}
-          onClick={() => draft && save.mutate(draft)}
+          disabled={(draft == null && !usingDefaults) || save.isPending}
+          onClick={() => save.mutate(draft ?? standard)}
         >
-          Save to repo
+          {usingDefaults && draft == null ? "Save defaults to repo" : "Save to repo"}
         </Button>
       </div>
     </div>
