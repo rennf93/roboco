@@ -185,18 +185,33 @@ class TaskDescription(_Content):
     what_this_builds: list[str] = Field(default_factory=list)
     the_work: list[WorkUnit] = Field(default_factory=list)
     notes: list[str] = Field(default_factory=list)
+    constraints: list[str] = Field(default_factory=list)
     acceptance_criteria: list[str] = Field(default_factory=list)
 
     @field_validator(
         "what_this_builds",
         "the_work",
         "notes",
+        "constraints",
         "acceptance_criteria",
         mode="before",
     )
     @classmethod
     def _coerce(cls, v: Any) -> Any:
         return coerce_to_list(v)
+
+    def with_baseline_constraints(self, baseline: list[str]) -> TaskDescription:
+        """Return a copy with ``baseline`` prepended to ``constraints``.
+
+        Idempotent and order-stable: baseline first, then this task's own
+        constraints that aren't already present (deduped by exact string), so
+        a second attach of the same baseline is a no-op.
+        """
+        merged = list(baseline)
+        for constraint in self.constraints:
+            if constraint not in merged:
+                merged.append(constraint)
+        return self.model_copy(update={"constraints": merged})
 
     @field_validator("objective")
     @classmethod
@@ -230,6 +245,8 @@ class TaskDescription(_Content):
             parts.append("## The Work\n" + "\n\n".join(units))
         if self.notes:
             parts.append(_section("Notes", _bullets(self.notes)))
+        if self.constraints:
+            parts.append(_section("Constraints", _bullets(self.constraints)))
         parts.append(
             _section("Acceptance Criteria", _bullets(self.acceptance_criteria))
         )

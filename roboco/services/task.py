@@ -659,7 +659,52 @@ class TaskService(BaseService):
             title=req.title,
             team=req.team if isinstance(req.team, str) else req.team.value,
         )
+        await self._attach_baseline_constraints(task)
         return task
+
+    async def _attach_baseline_constraints(self, task: TaskTable) -> None:
+        """Append the project's block-rule constraints to the task description.
+
+        Server-derived backstop (flag-gated): every project task carries the
+        hard conventions even if nothing upstream added them. Idempotent — the
+        rendered ``## Constraints`` section is appended at most once. Best-effort:
+        a failure never blocks task creation. Imported lazily to avoid the
+        task -> conventions -> git import chain.
+        """
+        from roboco.config import settings
+
+        if not settings.conventions_enabled or task.project_id is None:
+            return
+        if task.description and "## Constraints" in task.description:
+            return
+
+        from roboco.services.conventions import get_conventions_service
+        from roboco.services.project import get_project_service
+
+        project = await get_project_service(self.session).get(
+            UUID(str(task.project_id))
+        )
+        if project is None:
+            return
+        try:
+            baseline = await get_conventions_service(
+                self.session
+            ).baseline_constraints(project)
+        except Exception as exc:
+            self.log.warning(
+                "Baseline-constraints attach failed (non-fatal)",
+                task_id=str(task.id),
+                error=str(exc),
+            )
+            return
+        if not baseline:
+            return
+
+        section = "## Constraints\n" + "\n".join(f"- {item}" for item in baseline)
+        task.description = (
+            f"{task.description}\n\n{section}" if task.description else section
+        )
+        await self.session.flush()
 
     async def external_review_task_exists(
         self, project_id: UUID, pr_number: int, head_sha: str | None = None
