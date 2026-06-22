@@ -1361,3 +1361,60 @@ export interface UsageSession {
   cost: number;
   model: string;
 }
+
+// =============================================================================
+// Observability (0.10.0): cycle-time, bottlenecks, rework, scorecard
+// =============================================================================
+
+export interface StageTiming {
+  status: string;
+  avg_seconds: number;
+  median_seconds: number;
+  p90_seconds: number;
+  sample_size: number;
+}
+
+export interface StageBottleneck {
+  status: string;
+  cumulative_seconds: number;
+  parked_now: number;
+  pct_of_total: number;
+}
+
+export interface BottleneckReport {
+  by_stage: StageBottleneck[];
+  worst_stage: string | null;
+  active_blockers: number;
+}
+
+export interface AgentReworkRate {
+  agent_slug: string;
+  rate: number;
+  qa_fails: number;
+  pr_fails: number;
+}
+
+export interface TeamReworkRate {
+  team: string;
+  rate: number;
+}
+
+export interface ReworkReport {
+  rate: number;
+  total_completed: number;
+  total_reworked: number;
+  by_team: TeamReworkRate[];
+  by_agent: AgentReworkRate[];
+  rework_cost_usd: number;
+}
+
+export interface Scorecard {
+  scope: string;
+  id: string;
+  name: string;
+  tasks_completed: number;
+  avg_cycle_hours: number | null;
+  rework_rate: number;
+  tokens: number;
+  cost_usd: number;
+}
