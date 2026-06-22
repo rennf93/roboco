@@ -79,6 +79,7 @@ The gateway requires `learning` before `pass`/`fail`. Your `notes` argument carr
 6. ✅ `note(scope='learning', task_id=...)` written.
 7. ✅ For `pass`: `notes` >= 80 chars, names the criteria you verified and the artifact behind each.
 8. ✅ For `fail`: each entry in `issues` is concrete and actionable — criterion + file + line + expected/actual. "Doesn't work" is not an issue.
+9. ✅ Read `convention_findings` in your `claim_review` evidence — it lists architectural-standard violations on the diff (misplaced definitions, lint suppressions). Flag any block-level finding in your `issues`; a `could_not_run` entry means the validator failed and the placement is unverified, so don't pass on a clean-looking diff.
 
 ## Channels
 

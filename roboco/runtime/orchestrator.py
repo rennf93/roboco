@@ -1658,7 +1658,9 @@ class AgentOrchestrator:
         git_context: SpawnGitContext | None,
     ) -> tuple[AgentConfig, AgentInstance, Path | None]:
         """Build AgentConfig + AgentInstance and surface per-agent settings path."""
-        blueprint_path = self._generate_composed_prompt(agent_id)
+        project_slug = self._resolve_project_slug(git_context, agent_id, task_id)
+        ambient = await self._resolve_conventions_ambient(project_slug, task_id)
+        blueprint_path = self._generate_composed_prompt(agent_id, ambient=ambient)
         canonical_role = get_agent_role(agent_id)
         team = get_agent_team(agent_id) or "backend"
 
@@ -1672,7 +1674,6 @@ class AgentOrchestrator:
         if not model:
             model = route.model_name
 
-        project_slug = self._resolve_project_slug(git_context, agent_id, task_id)
         workspace_path = _agent_workspace_path(project_slug, team, agent_id)
         cell_workspace_path = _cell_workspace_path(project_slug, team)
 
@@ -2458,11 +2459,15 @@ class AgentOrchestrator:
 
         return config_path
 
-    def _generate_composed_prompt(self, agent_id: str) -> Path:
+    def _generate_composed_prompt(
+        self, agent_id: str, ambient: str | None = None
+    ) -> Path:
         """Generate composed system prompt for an agent.
 
         Uses the layered prompt composition system:
         base.md + roles/{role}.md + teams/{team}.md + identities/{agent}.md
+        plus an optional ``ambient`` layer (the project's architectural
+        standard, resolved by the async spawn path).
 
         Returns:
             Path to the generated prompt file
@@ -2479,7 +2484,7 @@ class AgentOrchestrator:
             raise ValueError(f"Unknown role for agent: {agent_id}")
 
         # Compose the prompt from layers
-        prompt_content = compose_prompt(role_enum, team_enum, agent_id)
+        prompt_content = compose_prompt(role_enum, team_enum, agent_id, ambient=ambient)
 
         # Determine output directory
         if PROJECT_HOST_PATH:
@@ -2505,6 +2510,89 @@ class AgentOrchestrator:
         )
 
         return prompt_path
+
+    async def _resolve_conventions_ambient(
+        self,
+        project_slug: str | None,
+        task_id: str | None = None,
+        product_id: str | None = None,
+    ) -> str | None:
+        """Resolve the architectural-standard ambient block for the spawn.
+
+        Covers a delivery role's single project (via ``project_slug``) AND a
+        PO / Intake working a product, whose per-cell projects are resolved from
+        the task's ``product_id`` or a directly-supplied ``product_id``.
+        Best-effort + flag-gated: returns None (no ambient layer) when the
+        subsystem is off, no project is in scope, or anything fails — a prompt
+        compose must never be blocked by conventions resolution.
+        """
+        from roboco.config import settings
+
+        if not settings.conventions_enabled:
+            return None
+        try:
+            from roboco.agents.factories._base import conventions_ambient_layer
+            from roboco.db.base import get_session_factory
+
+            factory = get_session_factory()
+            async with factory() as db:
+                projects = await self._resolve_ambient_projects(
+                    db,
+                    project_slug=project_slug,
+                    task_id=task_id,
+                    product_id=product_id,
+                )
+                return await conventions_ambient_layer(db, projects)
+        except Exception as exc:
+            logger.warning(
+                "Conventions ambient resolution failed (non-fatal)",
+                project_slug=project_slug,
+                error=str(exc),
+            )
+            return None
+
+    async def _resolve_ambient_projects(
+        self,
+        db: Any,
+        *,
+        project_slug: str | None,
+        task_id: str | None,
+        product_id: str | None,
+    ) -> list[Any]:
+        """The in-scope projects for the ambient block (single repo or product)."""
+        if product_id is None and task_id is not None:
+            product_id = await self._ambient_product_for_task(db, task_id)
+        if product_id is not None:
+            return await self._ambient_product_projects(db, product_id)
+        if project_slug:
+            from roboco.services.project import get_project_service
+
+            project = await get_project_service(db).get_by_slug(project_slug)
+            return [project] if project is not None else []
+        return []
+
+    @staticmethod
+    async def _ambient_product_for_task(db: Any, task_id: str) -> str | None:
+        from uuid import UUID
+
+        from roboco.services.task import get_task_service
+
+        task = await get_task_service(db).get(UUID(task_id))
+        if task is not None and task.product_id is not None:
+            return str(task.product_id)
+        return None
+
+    @staticmethod
+    async def _ambient_product_projects(db: Any, product_id: str) -> list[Any]:
+        from uuid import UUID
+
+        from roboco.services.product import get_product_service
+        from roboco.services.project import get_project_service
+
+        project_service = get_project_service(db)
+        ids = await get_product_service(db).distinct_project_ids(UUID(product_id))
+        resolved = [await project_service.get(pid) for pid in ids]
+        return [p for p in resolved if p is not None]
 
     async def _readiness_gate(self, agent_id: str, task_id: str | None) -> str | None:
         """Return a reason string if the spawn must be refused, else None.
@@ -3113,7 +3201,10 @@ class AgentOrchestrator:
 
         cwd, cloned = await self._clone_intake_scope(project_slug, product_id)
 
-        prompt_path = self._generate_composed_prompt(INTAKE_AGENT_ID)
+        ambient = await self._resolve_conventions_ambient(
+            project_slug, product_id=product_id
+        )
+        prompt_path = self._generate_composed_prompt(INTAKE_AGENT_ID, ambient=ambient)
         route = await self._resolve_agent_route(INTAKE_AGENT_ID)
         cli_model = _resolve_agent_cli_model(
             route.provider_type.value, route.model_name

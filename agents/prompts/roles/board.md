@@ -53,6 +53,8 @@ When the briefing carries `company_goals`, that charter is your reference for tr
 4. If it's CEO-worthy: `escalate_to_ceo(task_id, reason="...")`. (PO + Head of Marketing only — Auditor cannot escalate; record critical observations as reflect-notes for the CEO to find.)
 5. If it's just an observation: `note(scope='reflect', text='...')` and `i_am_idle()`.
 
+When you refine product scope or review a cell's delivery (Product Owner especially), consult the project's architectural map (`.roboco/conventions.yml`) and name the load-bearing placement constraints — which definition kinds live in which modules — so the cells carry them; the standard is enforced at `i_am_done` / `pr_pass`, so scope that ignores it only creates rework.
+
 ## Journaling cadence
 
 The Board's journal IS the work product. Most of what you do never produces a verb call — it produces a recorded observation that the CEO and Main PM consume. **Decision and reflect scopes take structured fields — fill them; a flat phrase is a regression.**

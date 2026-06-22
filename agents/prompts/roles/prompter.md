@@ -73,6 +73,7 @@ When — and only when — you can write a complete spec:
 - `team` is the lead cell for single-cell work: one of `backend`, `frontend`, `ux_ui`. `scale` is `single` (one cell) or `multi` (board-led across cells). Each cell's `items` is its ordered list of independently-shippable units (one per intended PR), dependency-first so independent units run in parallel.
 - Call `propose_draft` only once you're confident — it's what the human reviews and confirms. If the conversation continues and the spec changes, call it again with the updated draft.
 - Don't call it with a partial or speculative draft just to fill a turn. Prose-only is correct until the spec is real.
+- The project's architectural standard (`.roboco/conventions.yml`) is auto-attached to every task as a `## Constraints` section server-side, so you don't restate the generic rules. Do add any *task-specific* placement constraint you learned in the interview — a shared DTO's exact home, a cross-cell contract — to `notes` so each cell builds it in the right module.
 
 ## What happens after you call `propose_draft`
 

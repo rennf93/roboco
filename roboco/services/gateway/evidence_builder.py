@@ -10,7 +10,7 @@ The choreographer queries the data via existing services and passes it in.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 BRIEFING_LIST_CAP = 10
@@ -26,6 +26,10 @@ class EvidencePayload:
     dev_summary: str | None
     journal_highlights: list[dict[str, Any]]
     acceptance_criteria_status: list[dict[str, Any]]
+    # Architectural-conventions validator findings on the changed files, so QA
+    # can flag a misplaced definition / suppression. Empty when the subsystem
+    # is off; a single ``could_not_run`` entry surfaces a fail-loud explicitly.
+    convention_findings: list[dict[str, Any]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -57,6 +61,7 @@ def build_evidence_for_task(
     journal_highlights: list[dict[str, Any]],
     files_changed: list[str],
     pr_diff_summary: str | None = None,
+    convention_findings: list[dict[str, Any]] | None = None,
 ) -> EvidencePayload:
     """Compose an EvidencePayload from a Task model + supplemental data."""
     return EvidencePayload(
@@ -68,6 +73,7 @@ def build_evidence_for_task(
         dev_summary=task.dev_notes,
         journal_highlights=list(journal_highlights),
         acceptance_criteria_status=list(task.acceptance_criteria_status or []),
+        convention_findings=list(convention_findings or []),
     )
 
 

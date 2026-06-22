@@ -4,10 +4,13 @@ Project API Routes
 CRUD operations for managing git projects/repositories.
 """
 
-from typing import Annotated, cast
+from typing import TYPE_CHECKING, Annotated, cast
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
+
+if TYPE_CHECKING:
+    from roboco.db.tables import ProjectTable
 
 from roboco.api.deps import (
     CurrentAgentContext,
@@ -16,6 +19,10 @@ from roboco.api.deps import (
     require_pm_or_above,
 )
 from roboco.api.schemas.project import (
+    ConventionFinding,
+    ConventionsActionResponse,
+    ConventionsHealthResponse,
+    ConventionsResponse,
     ProjectCreateRequest,
     ProjectResponse,
     ProjectSummaryResponse,
@@ -25,9 +32,14 @@ from roboco.api.schemas.project import (
     project_to_response,
     project_to_summary,
 )
+from roboco.foundation.policy.conventions.models import ConventionsStandard
 from roboco.models.base import Team
 from roboco.models.project import ProjectCreate, ProjectUpdate
-from roboco.services.project import get_project_service
+from roboco.services.conventions import (
+    ScaffoldResult,
+    get_conventions_service,
+)
+from roboco.services.project import ProjectService, get_project_service
 
 router = APIRouter()
 
@@ -423,3 +435,101 @@ async def remove_agent_access(
         )
 
     return project_to_response(updated)
+
+
+# =============================================================================
+# CONVENTIONS ENDPOINTS
+# =============================================================================
+
+
+async def _get_project_or_404(
+    service: ProjectService, project_id: str
+) -> "ProjectTable":
+    """Resolve a project by UUID or slug, raising 404 when absent."""
+    try:
+        project = await service.get(UUID(project_id))
+    except ValueError:
+        project = await service.get_by_slug(project_id)
+    if project is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Project not found: {project_id}",
+        )
+    return project
+
+
+def _action_response(result: ScaffoldResult) -> ConventionsActionResponse:
+    return ConventionsActionResponse(
+        pr_number=result.pr_number, branch=result.branch, created=result.created
+    )
+
+
+@router.get("/{project_id}/conventions", response_model=ConventionsResponse)
+async def get_conventions(
+    project_id: str,
+    db: DbSession,
+    _agent: CurrentAgentContext,
+) -> ConventionsResponse:
+    """Return the project's effective conventions map + its current health."""
+    project = await _get_project_or_404(get_project_service(db), project_id)
+    conv = get_conventions_service(db)
+    standard = await conv.get_map(project)
+    health = await conv.health(project)
+    await db.commit()
+    return ConventionsResponse(
+        standard=standard.model_dump(mode="json"),
+        health=ConventionsHealthResponse(
+            status=health.status,
+            head_sha=health.head_sha,
+            last_ok_sha=health.last_ok_sha,
+        ),
+    )
+
+
+@router.put("/{project_id}/conventions", response_model=ConventionsActionResponse)
+async def update_conventions(
+    project_id: str,
+    standard: ConventionsStandard,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> ConventionsActionResponse:
+    """Commit an edited conventions standard back to the repo via a PR (PM+)."""
+    require_pm_or_above(agent.role, "edit conventions")
+    project = await _get_project_or_404(get_project_service(db), project_id)
+    result = await get_conventions_service(db).commit_standard(project, standard)
+    await db.commit()
+    return _action_response(result)
+
+
+@router.post(
+    "/{project_id}/conventions/restore", response_model=ConventionsActionResponse
+)
+async def restore_conventions(
+    project_id: str,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> ConventionsActionResponse:
+    """Re-commit the conventions file from the last-good map via a PR (PM+)."""
+    require_pm_or_above(agent.role, "restore conventions")
+    project = await _get_project_or_404(get_project_service(db), project_id)
+    result = await get_conventions_service(db).restore(project)
+    await db.commit()
+    return _action_response(result)
+
+
+@router.get(
+    "/{project_id}/conventions/findings",
+    response_model=list[ConventionFinding],
+)
+async def get_conventions_findings(
+    project_id: str,
+    db: DbSession,
+    _agent: CurrentAgentContext,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> list[ConventionFinding]:
+    """Recent architectural-conventions findings for the project (violations feed)."""
+    project = await _get_project_or_404(get_project_service(db), project_id)
+    rows = await get_conventions_service(db).recent_findings(
+        UUID(str(project.id)), limit
+    )
+    return [ConventionFinding(**row) for row in rows]

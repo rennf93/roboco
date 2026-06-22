@@ -58,6 +58,11 @@ class ChoreographerHelpers:
     ) -> Envelope | None:
         raise NotImplementedError
 
+    async def _conventions_guard(
+        self, agent_id: UUID, task: Any, briefing: dict[str, Any]
+    ) -> Envelope | None:
+        raise NotImplementedError
+
     @classmethod
     def _free_text_soup(
         cls, checks: tuple[tuple[str, Any, int], ...]

@@ -234,17 +234,12 @@ class PRGateMixin(_Base):
         )
         if gate is not None:
             return gate
-        # A reviewer must not PASS an assembled PR whose suite cannot be run in
-        # the workspace (interpreter mismatch). pr_fail stays available.
-        if verb == "pr_pass" and (
-            toolchain := await self._toolchain_broken_guard(reviewer_agent_id, t)
-        ):
-            return await self._emit_rejection(
-                toolchain.with_introspection(task=t, role=role_str),
-                agent_id=reviewer_agent_id,
-                task_id=task_id,
-                verb=verb,
+        if verb == "pr_pass":
+            blocked = await self._pr_pass_blocked(
+                reviewer_agent_id, task_id, t, role_str, briefing
             )
+            if blocked is not None:
+                return blocked
         runner = self._verb_runner()
         try:
             t = await runner.run_intent(verb, t, agent, spec_ctx)
@@ -270,6 +265,36 @@ class PRGateMixin(_Base):
             next=spec_module._INTENT_VERBS[verb].next_hint(t),
             context_briefing=briefing,
         ).with_introspection(task=t, role=role_str)
+
+    async def _pr_pass_blocked(
+        self,
+        reviewer_agent_id: UUID,
+        task_id: UUID,
+        t: Any,
+        role_str: str,
+        briefing: dict[str, Any],
+    ) -> Envelope | None:
+        """Refuse pr_pass on a broken toolchain or a block-level violation.
+
+        A reviewer must not PASS an assembled PR whose suite can't run in the
+        workspace, or that carries unresolved architectural-convention
+        violations; pr_fail stays available. Returns the emitted rejection or
+        None to proceed. Both guards are inert when their flag is off.
+        """
+        guards = (
+            lambda: self._toolchain_broken_guard(reviewer_agent_id, t),
+            lambda: self._conventions_guard(reviewer_agent_id, t, briefing),
+        )
+        for guard in guards:
+            rejection = await guard()
+            if rejection is not None:
+                return await self._emit_rejection(
+                    rejection.with_introspection(task=t, role=role_str),
+                    agent_id=reviewer_agent_id,
+                    task_id=task_id,
+                    verb="pr_pass",
+                )
+        return None
 
     async def _post_gate_review_to_pr(
         self, t: Any, verb: str, reviewer_slug: str, notes: str
