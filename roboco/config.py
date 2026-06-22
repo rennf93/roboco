@@ -192,6 +192,23 @@ class Settings(BaseSettings):
     )
 
     # ==========================================================================
+    # Architectural Conventions (per-project placement + house-style standard)
+    # ==========================================================================
+    # A repo-canonical .roboco/conventions.yml plus the roboco-conventions
+    # validator gate i_am_done / pr_pass on block-level placement and hygiene
+    # violations. Default-off; every hook (scaffold, ambient injection, baseline
+    # constraints, the gates) is inert when off.
+    conventions_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for the architectural-conventions standard: "
+            "auto-scaffold .roboco/conventions.yml, inject the architecture map, "
+            "attach baseline constraints, and block gates on violations. Off => "
+            "fully inert."
+        ),
+    )
+
+    # ==========================================================================
     # Web Research (pluggable external search/fetch for Board + PM roles)
     # ==========================================================================
     # Calls go agent -> roboco-search MCP -> /api/research/* -> ResearchService
