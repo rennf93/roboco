@@ -567,6 +567,27 @@ class ContentActions:
             return await self._record_section_handoff(
                 agent_id=agent_id, text=text, task_id=task_id, structured=section
             )
+        return await self._write_journal_note(
+            agent_id=agent_id,
+            text=text,
+            scope=scope,
+            task_id=task_id,
+            structured=structured,
+        )
+
+    async def _write_journal_note(
+        self,
+        *,
+        agent_id: UUID,
+        text: str,
+        scope: str,
+        task_id: UUID | None,
+        structured: dict[str, Any] | None,
+    ) -> Envelope:
+        """Validate + persist a journal entry for the non-handoff scopes
+        (note|decision|reflect|learning|struggle). Extracted from ``note`` so
+        both stay under the cyclomatic-complexity bound.
+        """
         if rej := self._reject_soup(text, field="note", min_chars=8):
             return rej
         if scope not in _VALID_NOTE_SCOPES:
