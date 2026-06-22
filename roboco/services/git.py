@@ -3784,32 +3784,45 @@ class GitService(BaseService):
         project_slug: str,
         *,
         content: str,
-        branch: str,
         title: str,
         body: str,
+        workspace: Path | None = None,
     ) -> dict[str, Any] | None:
-        """Commit ``.roboco/conventions.yml`` on ``branch`` and open a PR.
+        """Commit ``.roboco/conventions.yml`` on the scaffold branch + open a PR.
 
-        Best-effort and project-level (no task): writes ``content`` to the
-        project workspace on a fresh ``branch`` cut from the default branch and
-        commits it (always), then pushes + opens a PR (only when the project has
-        a git token + remote). Returns ``{"branch", "pr_number", "pr_url"}`` with
-        ``pr_number=None`` when the remote PR could not be opened, or ``None``
-        when the project has no usable workspace to scaffold into.
+        Best-effort and project-level (no task): writes ``content`` on a fresh
+        ``CONVENTIONS_SCAFFOLD_BRANCH`` cut from the default branch in
+        ``workspace`` (an agent's fresh clone) or the project's configured
+        ``workspace_path``, commits it (always), then pushes + opens a PR (only
+        with a git token + remote), and restores the clone to its original
+        branch so a shared workspace is never stranded on the scaffold branch.
+        Returns ``{"branch", "pr_number", "pr_url"}`` (``pr_number=None`` when no
+        remote PR was opened) or ``None`` when there is no usable workspace.
         """
         project_service = get_project_service(self.session)
         project = await project_service.get_by_slug(project_slug)
-        if project is None or not project.workspace_path:
+        if project is None:
             return None
-        workspace = Path(project.workspace_path)
-        if not workspace.exists():
+        ws = workspace or (
+            Path(project.workspace_path) if project.workspace_path else None
+        )
+        if ws is None or not ws.exists():
             return None
         base = project.default_branch or "master"
-        spec = _ConventionsPr(content=content, branch=branch, title=title, body=body)
-        await self._commit_conventions_file(workspace, base, spec)
-        return await self._push_and_open_conventions_pr(
-            project_slug, workspace, base, spec
+        spec = _ConventionsPr(
+            content=content,
+            branch=CONVENTIONS_SCAFFOLD_BRANCH,
+            title=title,
+            body=body,
         )
+        original = await self.get_current_branch(ws)
+        try:
+            await self._commit_conventions_file(ws, base, spec)
+            return await self._push_and_open_conventions_pr(
+                project_slug, ws, base, spec
+            )
+        finally:
+            await self._run_git(ws, ["checkout", original], check=False)
 
     async def _commit_conventions_file(
         self, workspace: Path, base: str, spec: _ConventionsPr
@@ -3857,6 +3870,9 @@ class GitService(BaseService):
             "pr_number": data.get("number"),
             "pr_url": data.get("html_url"),
         }
+
+
+CONVENTIONS_SCAFFOLD_BRANCH = "chore/roboco-conventions-scaffold"
 
 
 @dataclass(frozen=True)

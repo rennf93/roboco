@@ -28,14 +28,14 @@ from roboco.foundation.policy.conventions.models import (
     ConventionsStandard,
 )
 from roboco.services.base import BaseService
-from roboco.services.git import get_git_service
+from roboco.services.git import CONVENTIONS_SCAFFOLD_BRANCH, get_git_service
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from roboco.db.tables import ProjectTable
 
-_SCAFFOLD_BRANCH = "chore/roboco-conventions-scaffold"
+_SCAFFOLD_BRANCH = CONVENTIONS_SCAFFOLD_BRANCH
 _AMBIENT_CHAR_CAP = 1200
 
 
@@ -117,22 +117,36 @@ class ConventionsService(BaseService):
             return text[: _AMBIENT_CHAR_CAP - 1].rstrip() + "…"
         return text
 
-    async def scaffold(self, project: ProjectTable) -> ScaffoldResult:
+    async def scaffold(
+        self, project: ProjectTable, *, workspace: Path | None = None
+    ) -> ScaffoldResult:
         """Open a PR adding the auto-scaffolded ``.roboco/conventions.yml``."""
         mapping = await self.get_map(project)
-        return await self._publish(project, render_yaml(mapping), restore=False)
+        return await self._publish(
+            project, render_yaml(mapping), restore=False, workspace=workspace
+        )
 
-    async def restore(self, project: ProjectTable) -> ScaffoldResult:
+    async def restore(
+        self, project: ProjectTable, *, workspace: Path | None = None
+    ) -> ScaffoldResult:
         """Open a PR re-committing the file from the last-good map (or a scan)."""
         last_good = await self._latest_ok_map(self._pid(project))
         mapping = last_good if last_good is not None else self._derive(project)
-        return await self._publish(project, render_yaml(mapping), restore=True)
+        return await self._publish(
+            project, render_yaml(mapping), restore=True, workspace=workspace
+        )
 
     async def commit_standard(
-        self, project: ProjectTable, standard: ConventionsStandard
+        self,
+        project: ProjectTable,
+        standard: ConventionsStandard,
+        *,
+        workspace: Path | None = None,
     ) -> ScaffoldResult:
         """Open a PR committing an externally-edited standard (panel save)."""
-        return await self._publish(project, render_yaml(standard), restore=False)
+        return await self._publish(
+            project, render_yaml(standard), restore=False, workspace=workspace
+        )
 
     async def health(self, project: ProjectTable) -> ConventionsHealth:
         """Report the standard's status at HEAD + the last-good commit SHA."""
@@ -188,7 +202,12 @@ class ConventionsService(BaseService):
             return None, "degraded"
 
     async def _publish(
-        self, project: ProjectTable, content: str, *, restore: bool
+        self,
+        project: ProjectTable,
+        content: str,
+        *,
+        restore: bool,
+        workspace: Path | None = None,
     ) -> ScaffoldResult:
         action = "restore" if restore else "scaffold"
         title = f"chore(conventions): {action} .roboco/conventions.yml"
@@ -200,9 +219,9 @@ class ConventionsService(BaseService):
         result = await git.open_conventions_pr(
             project.slug,
             content=content,
-            branch=_SCAFFOLD_BRANCH,
             title=title,
             body=body,
+            workspace=workspace,
         )
         if result is None:
             return ScaffoldResult(

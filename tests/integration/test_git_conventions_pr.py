@@ -71,7 +71,6 @@ async def test_open_conventions_pr_commits_locally_without_remote(
     result = await git.open_conventions_pr(
         project.slug,
         content="version: 1\n",
-        branch=_SCAFFOLD_BRANCH,
         title="scaffold",
         body="b",
     )
@@ -97,7 +96,6 @@ async def test_open_conventions_pr_returns_none_without_workspace(
     result = await git.open_conventions_pr(
         project.slug,
         content="version: 1\n",
-        branch=_SCAFFOLD_BRANCH,
         title="t",
         body="b",
     )

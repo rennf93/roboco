@@ -26,10 +26,14 @@ class _FakeGit:
         self.calls: list[dict[str, Any]] = []
 
     async def open_conventions_pr(
-        self, project_slug: str, *, content: str, branch: str, **_kwargs: str
+        self, project_slug: str, *, content: str, **_kwargs: object
     ) -> dict[str, Any]:
-        self.calls.append({"slug": project_slug, "content": content, "branch": branch})
-        return {"branch": branch, "pr_number": _FAKE_PR_NUMBER, "pr_url": "u"}
+        self.calls.append({"slug": project_slug, "content": content})
+        return {
+            "branch": "chore/roboco-conventions-scaffold",
+            "pr_number": _FAKE_PR_NUMBER,
+            "pr_url": "u",
+        }
 
 
 async def _seed_project(
