@@ -13,6 +13,7 @@
 - `paused` - Temporarily stopped
 - `awaiting_qa` - Ready for QA review
 - `awaiting_documentation` - Ready for docs
+- `awaiting_pr_review` - Assembled cell→root / root→master PR awaiting the in-path review gate
 - `awaiting_pm_review` - Ready for PM approval
 - `awaiting_ceo_approval` - Major task, CEO review
 
@@ -45,6 +46,15 @@ awaiting_qa → claimed (claim_review) → pass/fail
 awaiting_documentation → claimed (claim_doc_task) → awaiting_pm_review
 ```
 
+### PR Review Gate (assembled PRs)
+```
+in_progress → awaiting_pr_review (cell PM submit_up / Main PM submit_root opens the PR)
+                   ↓
+        pr_pass: awaiting_pm_review   (PR reviewer)
+        pr_fail: needs_revision       (PR reviewer)
+```
+The cell PM's `submit_up` opens the cell→root PR and the Main PM's `submit_root` opens the root→master PR; both enter `awaiting_pr_review` for the in-path reviewer. Leaf developer tasks and branchless coordination roots skip the gate.
+
 ### PM Activation
 ```
 backlog → pending (a PM activates the task during `triage`)
@@ -59,6 +69,9 @@ backlog → pending (a PM activates the task during `triage`)
 | `awaiting_qa → awaiting_documentation` | qa only |
 | `awaiting_qa → needs_revision` | qa only |
 | `awaiting_documentation → awaiting_pm_review` | documenter, developer (parallel) |
+| `in_progress → awaiting_pr_review` (submit_up / submit_root) | cell_pm, main_pm |
+| `awaiting_pr_review → awaiting_pm_review` (pr_pass) | pr_reviewer only |
+| `awaiting_pr_review → needs_revision` (pr_fail) | pr_reviewer only |
 | `awaiting_pm_review → completed` | cell_pm, main_pm |
 | `awaiting_pm_review → awaiting_ceo_approval` | cell_pm, main_pm (parent tasks only) |
 | `awaiting_ceo_approval → completed` | ceo only |
