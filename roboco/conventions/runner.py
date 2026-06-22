@@ -14,6 +14,7 @@ from . import classify_python, classify_ts
 from .custom import check_custom
 from .grammars import GrammarUnavailable
 from .hygiene import check_hygiene
+from .modularity import check_modularity
 from .placement import check_placement
 
 if TYPE_CHECKING:
@@ -61,6 +62,7 @@ def _check_file(
         check_placement(rel, defs, standard)
         + check_hygiene(rel, source, language, standard)
         + check_custom(rel, source, language, standard)
+        + check_modularity(rel, defs, source, language, standard)
     )
 
 

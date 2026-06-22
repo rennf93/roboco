@@ -25,6 +25,7 @@ from roboco.foundation.policy.conventions.models import (
     DefinitionKind,
     Module,
     Rule,
+    RuleLevel,
 )
 
 _IGNORE_DIRS = frozenset(
@@ -64,6 +65,16 @@ _MODULE_PATTERNS: tuple[tuple[frozenset[str], str, tuple[DefinitionKind, ...]], 
         ("model", "route"),
     ),
     (
+        frozenset({"hooks"}),
+        "React hooks",
+        ("component", "model", "route"),
+    ),
+    (
+        frozenset({"store", "stores", "state", "context", "contexts"}),
+        "state management",
+        ("component", "route"),
+    ),
+    (
         frozenset({"helpers", "utils", "util", "lib"}),
         "shared helpers / utilities",
         ("route", "component"),
@@ -79,16 +90,65 @@ _MAX_LIFTED_RULES = 25
 def derive_from_scan(root: Path | str) -> ConventionsStandard:
     """Infer a conventions standard from the repository at ``root``."""
     root_path = Path(root)
+    modules = _scan_modules(root_path)
+    languages = _detect_languages(root_path)
     return ConventionsStandard(
-        languages=_detect_languages(root_path),
-        modules=_scan_modules(root_path),
-        rules=_seed_rules(),
+        languages=languages,
+        modules=modules,
+        rules=_seed_rules(modules, languages),
         custom=_lift_claude_md(root_path),
     )
 
 
-def _seed_rules() -> dict[str, Rule]:
-    return {name: Rule(name=name, level=level) for name, level in BUILTIN_RULES.items()}
+# Placement rules default to block — the level placement.py applies when a rule
+# is absent — so auto-derived enforcement has teeth; the owner downgrades any
+# rule to warn per-rule via the panel editor or the committed file.
+_PLACEMENT_DEFAULT: RuleLevel = "block"
+
+# Modularity rules — the separation-of-concerns checks that go beyond linting.
+# Cohesion + god-class apply to any classifiable project; the body checks are
+# stack-specific (thin routes for Python APIs, thin components for TS/React), so
+# a Python project never carries thin_components and a frontend never carries
+# thin_routes.
+_MODULARITY_ANY: dict[str, RuleLevel] = {
+    "modular_cohesion": "block",
+    "god_class": "warn",
+}
+_MODULARITY_BY_LANGUAGE: dict[str, dict[str, RuleLevel]] = {
+    "python": {"thin_routes": "block"},
+    "typescript": {"thin_components": "block"},
+}
+
+
+def _seed_rules(modules: list[Module], languages: list[str]) -> dict[str, Rule]:
+    """Seed the rules that actually apply to this project.
+
+    Three layers, each scoped so a project never carries a rule that cannot fire
+    on it:
+
+    - **Hygiene** (``BUILTIN_RULES``) — language-agnostic, seeded for everyone.
+    - **Placement** — seeded per detected module; the rule name mirrors the
+      validator's ``no_<kind>s_in_<leaf>``, so a frontend repo gets
+      ``no_models_in_components`` rather than a backend ``no_models_in_routers``.
+    - **Modularity** — the separation-of-concerns checks; cohesion + god-class
+      for any stack, plus the stack-specific body checks (thin routes for
+      Python, thin components for TypeScript).
+    """
+    rules = {
+        name: Rule(name=name, level=level) for name, level in BUILTIN_RULES.items()
+    }
+    for module in modules:
+        leaf = module.path.rstrip("/").rsplit("/", 1)[-1]
+        for kind in module.forbidden:
+            name = f"no_{kind}s_in_{leaf}"
+            rules.setdefault(name, Rule(name=name, level=_PLACEMENT_DEFAULT))
+    if languages:
+        for name, any_level in _MODULARITY_ANY.items():
+            rules.setdefault(name, Rule(name=name, level=any_level))
+    for language in languages:
+        for name, lang_level in _MODULARITY_BY_LANGUAGE.get(language, {}).items():
+            rules.setdefault(name, Rule(name=name, level=lang_level))
+    return rules
 
 
 def _walk_dirs(root: Path) -> list[tuple[str, list[str], list[str]]]:

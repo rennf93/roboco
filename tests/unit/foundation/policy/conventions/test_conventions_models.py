@@ -81,11 +81,13 @@ def test_unknown_definition_kind_in_forbidden_raises() -> None:
         )
 
 
-def test_builtin_rules_cover_the_org_defaults() -> None:
-    assert BUILTIN_RULES["no_models_in_routers"] == "block"
-    assert BUILTIN_RULES["no_helpers_in_routers"] == "block"
+def test_builtin_rules_are_language_agnostic_hygiene_only() -> None:
+    # BUILTIN_RULES are the universal hygiene defaults; placement / modularity
+    # rules are derived per project from the scan, never seeded universally.
     assert BUILTIN_RULES["no_lint_suppressions"] == "block"
     assert BUILTIN_RULES["no_inline_comments"] == "warn"
+    assert "no_models_in_routers" not in BUILTIN_RULES
+    assert "no_helpers_in_routers" not in BUILTIN_RULES
 
 
 def test_models_construct_directly() -> None:

@@ -14,8 +14,10 @@ from roboco.foundation.policy.conventions.models import (
 
 def test_effective_map_applies_builtin_rules_when_file_absent() -> None:
     eff = effective_map(ConventionsStandard(), None)
-    assert eff.rules["no_models_in_routers"].level == "block"
+    assert eff.rules["no_lint_suppressions"].level == "block"
     assert eff.rules["no_inline_comments"].level == "warn"
+    # Placement / modularity rules are derived per project, not universal.
+    assert "no_models_in_routers" not in eff.rules
 
 
 def test_file_module_overrides_derived_by_path() -> None:

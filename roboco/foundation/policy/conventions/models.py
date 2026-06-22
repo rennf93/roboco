@@ -29,12 +29,13 @@ class ConventionsParseError(ValueError):
         self.reason = reason
 
 
-# The org-default rule set: applied to every project's effective map before the
-# committed file or auto-derived rules overlay it. Keep in sync with the
-# validator's rule emitters and the panel's rule list.
+# The org-default HYGIENE rules — language-agnostic, applicable to any project
+# regardless of stack, so they seed into every project's effective map. Placement
+# rules (e.g. no_models_in_routers) are NOT here: they only make sense where the
+# target module exists, so they are derived per-project from the repo scan (see
+# roboco/conventions/scan.py). This is why a frontend project never shows a
+# backend "no models in routers" rule.
 BUILTIN_RULES: dict[str, RuleLevel] = {
-    "no_models_in_routers": "block",
-    "no_helpers_in_routers": "block",
     "no_lint_suppressions": "block",
     "no_inline_comments": "warn",
 }
