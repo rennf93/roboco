@@ -5145,6 +5145,14 @@ Start by:
         if graceful:
             instance.error_count = 0
             return
+        await self._crash_retry_or_escalate(agent_id, instance)
+
+    async def _crash_retry_or_escalate(self, agent_id: str, instance: Any) -> None:
+        """A crashed (non-graceful) agent: auto-restart up to a cap, then escalate.
+
+        Bumps error_count and respawns while under the cap; at exactly the cap
+        escalates once to humans (subsequent crashes stay quiet to avoid spam).
+        """
         instance.error_count += 1
         max_retries = 3
         if instance.error_count < max_retries:
