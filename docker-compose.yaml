@@ -353,6 +353,11 @@ services:
       # deliberately left OFF in docker-compose.registry.yml so the published
       # default stays conservative until it's verified on a live run.
       ROBOCO_TOOLCHAIN_MATCH_ENABLED: ${ROBOCO_TOOLCHAIN_MATCH_ENABLED:-true}
+      # Architectural conventions standard: gate where code lives (placement,
+      # hygiene, modularity) via each project's .roboco/conventions.yml. Config
+      # default is OFF; enabled HERE (personal deploy), deliberately left OFF in
+      # docker-compose.registry.yml so the published default stays conservative.
+      ROBOCO_CONVENTIONS_ENABLED: ${ROBOCO_CONVENTIONS_ENABLED:-true}
     volumes:
       # Docker socket - allows spawning agent containers
       - /var/run/docker.sock:/var/run/docker.sock
