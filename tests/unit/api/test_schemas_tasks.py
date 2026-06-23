@@ -300,7 +300,10 @@ def _stub_task(*, with_project: bool = False) -> SimpleNamespace:
         dev_notes=None,
         qa_notes=None,
         auditor_notes=None,
+        pr_reviewer_notes=None,
+        doc_notes=None,
         quick_context=None,
+        notes_structured=None,
         self_verified=False,
         qa_verified=None,
         branch_name=None,
@@ -325,6 +328,23 @@ def test_task_to_response_includes_slug_when_project_loaded() -> None:
     with patch("roboco.api.schemas.tasks.sa_inspect", return_value=fake_inspector):
         resp = task_to_response(stub)  # type: ignore[arg-type]
     assert resp.project_slug == "proj-1"
+
+
+def test_task_to_response_serializes_all_note_sections() -> None:
+    """Regression: pr_reviewer_notes / doc_notes / notes_structured MUST be in the
+    response. The builder previously omitted them, so the panel showed them blank
+    even when the DB had them (the recurring "notes invisible" bug)."""
+    stub = _stub_task()
+    stub.pr_reviewer_notes = "## Findings\n- looks good"
+    stub.doc_notes = "Updated the README"
+    stub.notes_structured = {"pr_review": {"verdict": "passed"}}
+    fake_inspector = MagicMock()
+    fake_inspector.unloaded = {"project"}
+    with patch("roboco.api.schemas.tasks.sa_inspect", return_value=fake_inspector):
+        resp = task_to_response(stub)  # type: ignore[arg-type]
+    assert resp.pr_reviewer_notes == "## Findings\n- looks good"
+    assert resp.doc_notes == "Updated the README"
+    assert resp.notes_structured == {"pr_review": {"verdict": "passed"}}
 
 
 def test_task_list_to_response_returns_list() -> None:
