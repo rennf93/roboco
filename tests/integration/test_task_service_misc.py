@@ -298,6 +298,23 @@ async def test_ensure_branch_no_project_id_raises(
 
 
 @pytest.mark.asyncio
+async def test_ensure_branch_batch_umbrella_returns_empty(
+    task_setup: dict,
+) -> None:
+    """A MegaTask umbrella (batch_id, top-level, no project/product) is branchless
+    by design — it must short-circuit to "" rather than hit the misconfigured
+    raise, so the claim path treats it as coordination, not a defect."""
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup))
+    task.project_id = None
+    task.product_id = None
+    task.batch_id = uuid4()
+    task.parent_task_id = None
+    out = await svc._ensure_branch_for_task(task, task_setup["agent_id"])
+    assert out == ""
+
+
+@pytest.mark.asyncio
 async def test_auto_create_branch_no_project_raises(
     task_setup: dict,
     monkeypatch: pytest.MonkeyPatch,

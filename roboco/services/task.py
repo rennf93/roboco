@@ -32,6 +32,10 @@ from roboco.enforcement import (
     validate_task_transition,
 )
 from roboco.events import Event, EventType, get_event_bus
+from roboco.foundation.policy.batch import (
+    is_batch_umbrella,
+    is_branchless_coordination,
+)
 from roboco.foundation.policy.content import markers
 from roboco.foundation.policy.content.validators import ContentValidationError
 from roboco.models.base import (
@@ -449,11 +453,17 @@ class TaskService(BaseService):
             pr_created=bool(task.pr_created),
             pr_number=task.pr_number,
             branch_name=str(task.branch_name) if task.branch_name else None,
-            # A coordination/fan-out task (product, no repo of its own) does no
-            # git and never gets a branch — exempt it from the branch gate so it
-            # can reach in_progress and delegate. product_id is a plain column
-            # (no lazy load).
-            is_coordination=(task.project_id is None and task.product_id is not None),
+            # A branchless coordination task does no git and never gets a branch
+            # — exempt it from the branch gate so it can reach in_progress and
+            # delegate. Two shapes qualify: a product fan-out root (product, no
+            # repo) and a MegaTask umbrella (batch_id, top-level). All four are
+            # plain columns (no lazy load).
+            is_coordination=is_branchless_coordination(
+                project_id=task.project_id,
+                product_id=task.product_id,
+                batch_id=task.batch_id,
+                parent_task_id=task.parent_task_id,
+            ),
             # An external-PR review task reviews someone else's PR read-only —
             # no branch of its own — so it is branch-gate exempt.
             is_external_review=(getattr(task, "source", "manual") in PR_REVIEW_SOURCES),
@@ -1293,7 +1303,10 @@ class TaskService(BaseService):
         - If branch exists: return it
         - Coordination/fan-out task (carries a product, no repo of its own): no
           branch — it does no git work
-        - If neither project nor product: raise (genuinely misconfigured)
+        - MegaTask umbrella (batch_id, top-level): branchless by design (spans
+          many projects, assembles no PR) — return "" (its root-subtasks branch)
+        - If neither project nor product nor umbrella: raise (genuinely
+          misconfigured)
         - Create NEW branch (hierarchical name built by build_branch_name)
         - Branch created from parent's branch (or default if root)
 
@@ -1312,6 +1325,14 @@ class TaskService(BaseService):
             # Only a task with neither project nor product is misconfigured.
             if task.product_id:
                 return await self._ensure_coordination_root_branches(task, agent_id)
+            # A MegaTask umbrella is branchless by design: it spans many projects
+            # (no single master to branch off) and assembles no PR of its own —
+            # each root-subtask carries its own project/branch/PR. Return "" so
+            # the claim path treats it as branchless rather than misconfigured.
+            if is_batch_umbrella(
+                batch_id=task.batch_id, parent_task_id=task.parent_task_id
+            ):
+                return ""
             raise ValueError(
                 "Task requires a project_id (a repo) or a product_id (a "
                 "cell->project map) to create a branch. Assign one before "
@@ -4632,12 +4653,17 @@ class TaskService(BaseService):
         # Store the CEO's rejection reason as a marker, not quick_context soup.
         markers.set_transition_note(task, "ceo_rejection", reason)
 
-        # A coordination/integration root (no repo of its own, carries a
-        # product) has no developer to revise it — NEEDS_REVISION is
+        # A branchless coordination root (a product integration root or a
+        # MegaTask umbrella) has no developer to revise it — NEEDS_REVISION is
         # developer-claim-only, so it would deadlock the Main PM that owns the
         # root. Such a root is routed to PENDING below instead; every other task
         # takes the normal NEEDS_REVISION path back toward its developer.
-        is_coordination_root = task.project_id is None and task.product_id is not None
+        is_coordination_root = is_branchless_coordination(
+            project_id=task.project_id,
+            product_id=task.product_id,
+            batch_id=task.batch_id,
+            parent_task_id=task.parent_task_id,
+        )
         if not is_coordination_root:
             self._validate_and_set_status(task, TaskStatus.NEEDS_REVISION, "ceo")
 

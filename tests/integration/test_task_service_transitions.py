@@ -146,6 +146,32 @@ async def test_start_with_plan_advances_to_in_progress(
 
 
 @pytest.mark.asyncio
+async def test_start_batch_umbrella_advances_without_branch(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """A MegaTask umbrella (batch_id, no project/product, no branch) is branchless
+    coordination — the claimed->in_progress branch gate must be skipped for it so
+    it can reach in_progress and delegate, exactly like a product fan-out root."""
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup))
+    task.status = TaskStatus.CLAIMED
+    task.assigned_to = task_setup["agent_id"]
+    task.project_id = None
+    task.product_id = None
+    task.batch_id = uuid4()
+    task.parent_task_id = None
+    task.branch_name = None
+    task.plan = {"text": "sequence the waves"}
+    await db_session.flush()
+    started = await svc.start(
+        task.id, agent_id=task_setup["agent_id"], agent_role="developer"
+    )
+    assert started is not None
+    assert started.status == TaskStatus.IN_PROGRESS
+    assert started.branch_name is None
+
+
+@pytest.mark.asyncio
 async def test_start_returns_none_when_ownership_fails(
     task_setup: dict, db_session: AsyncSession
 ) -> None:
@@ -688,6 +714,49 @@ async def test_ceo_reject_routes_coordination_task_to_main_pm(
     # A coordination root goes to PENDING (the Main PM's claim source), NOT
     # needs_revision — that status is developer-claim-only and would deadlock
     # the Main PM, which owns the root and must re-plan/re-delegate.
+    assert rejected.status == TaskStatus.PENDING
+    assert rejected.team == Team.MAIN_PM
+    assert rejected.assigned_to == main_pm_id
+    assert rejected.claimed_by is None
+
+
+@pytest.mark.asyncio
+async def test_ceo_reject_routes_batch_umbrella_to_main_pm(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """A rejected MegaTask umbrella (batch_id, top-level, no project/product) is a
+    branchless coordination root too — it routes to the Main PM to re-plan, never
+    to a developer (needs_revision would deadlock the Main PM that owns it)."""
+    svc = task_setup["svc"]
+    main_pm_id = UUID(AGENT_UUIDS["main-pm"])
+    if await db_session.get(AgentTable, main_pm_id) is None:
+        db_session.add(
+            AgentTable(
+                id=main_pm_id,
+                name="Main PM",
+                slug="main-pm",
+                role=AgentRole.MAIN_PM,
+                team=Team.MAIN_PM,
+                status=AgentStatus.ACTIVE,
+                model_config={},
+                system_prompt="pm",
+                capabilities=[],
+                permissions={},
+                metrics={},
+            )
+        )
+        await db_session.flush()
+
+    task = await svc.create(_req(task_setup))
+    task.status = TaskStatus.AWAITING_CEO_APPROVAL
+    task.project_id = None  # umbrella: no project, no product — carries a batch_id
+    task.product_id = None
+    task.batch_id = uuid4()
+    task.parent_task_id = None
+    await db_session.flush()
+
+    rejected = await svc.ceo_reject(task.id, reason="re-sequence the waves")
+    assert rejected is not None
     assert rejected.status == TaskStatus.PENDING
     assert rejected.team == Team.MAIN_PM
     assert rejected.assigned_to == main_pm_id
