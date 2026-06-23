@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from roboco.config import Settings
-from roboco.services.settings import FEATURE_FLAGS
 
 
 def test_internal_api_url_uses_api_url_when_set() -> None:
@@ -38,13 +37,3 @@ def test_redis_url_with_password_includes_credential() -> None:
 def test_redis_url_without_password() -> None:
     s = Settings(redis_host="redis", redis_port=6379, redis_db=0, redis_password=None)
     assert s.redis_url == "redis://redis:6379/0"
-
-
-def test_batch_intake_enabled_defaults_off() -> None:
-    """Sequenced batch intake is gated and inert by default."""
-    assert Settings().batch_intake_enabled is False
-
-
-def test_batch_intake_enabled_registered_in_feature_flags() -> None:
-    """The flag is toggleable from the panel Feature Flags card."""
-    assert "batch_intake_enabled" in {key for key, _ in FEATURE_FLAGS}

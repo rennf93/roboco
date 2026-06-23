@@ -32,8 +32,6 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
     "Enforce a per-project architectural standard (.roboco/conventions.yml): inject the map, attach baseline constraints, and block i_am_done / pr_pass on misplaced definitions or lint suppressions.",
   rag_auto_update_enabled: "Keep the knowledge base index refreshed automatically.",
   transcript_prune_enabled: "Run the background sweep that prunes old transcripts.",
-  batch_intake_enabled:
-    "MegaTask: let the Prompter take a multi-item batch in one chat; a deterministic analyzer sequences the items into conflict-free waves the dependency gate executes (each item keeps its own PR).",
 };
 
 export function FeatureFlagsCard() {
