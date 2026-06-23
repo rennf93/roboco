@@ -633,6 +633,24 @@ class TaskService(BaseService):
             parent_parent = parent.parent_task_id
             current_id = UUID(str(parent_parent)) if parent_parent else None
 
+    @staticmethod
+    def _require_target_or_umbrella(req: TaskCreateRequest) -> None:
+        """Service-layer invariant (covers every create path — API, a2a, gateway).
+
+        A task targets a single repo (``project_id``) or fans out across cells via
+        a product (``product_id``) — it must have one or the other, EXCEPT a
+        MegaTask umbrella, which targets neither (it groups N root-subtasks that
+        each carry their own project) and is branchless.
+        """
+        if req.project_id is not None or req.product_id is not None:
+            return
+        if is_batch_umbrella(batch_id=req.batch_id, parent_task_id=req.parent_task_id):
+            return
+        raise ValueError(
+            "task needs a project_id (the repo it targets) or a product_id "
+            "(a cell->project map for a fan-out task)"
+        )
+
     async def create(self, req: TaskCreateRequest) -> TaskTable:
         """
         Create a new task.
@@ -640,22 +658,7 @@ class TaskService(BaseService):
         Default status is PENDING. PM can pass status=BACKLOG when creating
         subtasks that need session setup before activation.
         """
-        # Service-layer invariant (covers every create path — API, a2a,
-        # gateway): a task targets a single repo (project_id) or fans out across
-        # cells via a product (product_id). It must have one or the other —
-        # except a MegaTask umbrella, which targets neither (it groups N
-        # root-subtasks that each carry their own project) and is branchless.
-        if (
-            req.project_id is None
-            and req.product_id is None
-            and not is_batch_umbrella(
-                batch_id=req.batch_id, parent_task_id=req.parent_task_id
-            )
-        ):
-            raise ValueError(
-                "task needs a project_id (the repo it targets) or a product_id "
-                "(a cell->project map for a fan-out task)"
-            )
+        self._require_target_or_umbrella(req)
 
         if req.parent_task_id:
             await self._validate_parent_depth(req.parent_task_id)
@@ -4557,6 +4560,10 @@ class TaskService(BaseService):
             markers.set_approve_and_start_notes(task, notes)
 
         await self.session.flush()
+        # A MegaTask umbrella holds its root-subtasks in BACKLOG until this gate
+        # (the board reviews the batch first). Now that the CEO approved it,
+        # release them so the dependency-gate dispatches wave 0.
+        await self._activate_batch_root_subtasks(task)
         await self._emit_task_event(
             EventType.TASK_STARTED,
             task_id,
@@ -4568,6 +4575,29 @@ class TaskService(BaseService):
             idempotent=already,
         )
         return task
+
+    async def _activate_batch_root_subtasks(self, umbrella: TaskTable) -> None:
+        """Release a MegaTask umbrella's held root-subtasks on CEO approval.
+
+        No-op unless ``umbrella`` is a batch umbrella. The board route creates the
+        root-subtasks in BACKLOG (team=board) so the work waits for the batch
+        review; once the CEO approves the umbrella to the Main PM, flip each held
+        child to PENDING + team=main_pm. The dependency-gate then dispatches the
+        wave-0 items and holds later waves until their predecessors are terminal.
+        Idempotent: a child already past BACKLOG is left untouched.
+        """
+        if not is_batch_umbrella(
+            batch_id=umbrella.batch_id, parent_task_id=umbrella.parent_task_id
+        ):
+            return
+        released = False
+        for child in await self.get_subtasks(cast("UUID", umbrella.id)):
+            if child.batch_id is not None and child.status == TaskStatus.BACKLOG:
+                child.status = TaskStatus.PENDING
+                child.team = cast("Any", Team.MAIN_PM)
+                released = True
+        if released:
+            await self.session.flush()
 
     async def mark_board_review_complete(self, task_id: UUID) -> bool:
         """Flag a board task as board-reviewed without moving it off pending.
