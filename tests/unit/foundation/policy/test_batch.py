@@ -9,6 +9,7 @@ from roboco.foundation.policy.batch import (
     is_batch_root_subtask,
     is_batch_umbrella,
     is_branchless_coordination,
+    is_valid_batch_shape,
 )
 
 
@@ -47,3 +48,44 @@ def test_branchless_coordination_excludes_normal_and_root_subtasks() -> None:
     )
     # genuinely unroutable (none of project / product / batch) stays gated
     assert not is_branchless_coordination(project_id=None, product_id=None)
+
+
+def test_valid_batch_shape_allows_umbrella_and_root_subtask() -> None:
+    bid = uuid4()
+    # umbrella: batch_id, no parent, NO target
+    assert is_valid_batch_shape(
+        batch_id=bid, parent_task_id=None, project_id=None, product_id=None
+    )
+    # root-subtask: batch_id, a parent, exactly one target (project)
+    assert is_valid_batch_shape(
+        batch_id=bid, parent_task_id=uuid4(), project_id=uuid4(), product_id=None
+    )
+    # root-subtask targeting a product instead is also well-formed
+    assert is_valid_batch_shape(
+        batch_id=bid, parent_task_id=uuid4(), project_id=None, product_id=uuid4()
+    )
+    # no batch_id → unconstrained here
+    assert is_valid_batch_shape(
+        batch_id=None, parent_task_id=None, project_id=uuid4(), product_id=None
+    )
+
+
+def test_valid_batch_shape_denies_stray_batch_id() -> None:
+    bid = uuid4()
+    # an umbrella-shaped task (batch_id, no parent) that ALSO targets a project —
+    # the spoof that would otherwise get the branchless exemption — is refused.
+    assert not is_valid_batch_shape(
+        batch_id=bid, parent_task_id=None, project_id=uuid4(), product_id=None
+    )
+    # umbrella with a product is equally malformed
+    assert not is_valid_batch_shape(
+        batch_id=bid, parent_task_id=None, project_id=None, product_id=uuid4()
+    )
+    # a root-subtask (has a parent) with NO target is malformed
+    assert not is_valid_batch_shape(
+        batch_id=bid, parent_task_id=uuid4(), project_id=None, product_id=None
+    )
+    # a root-subtask with BOTH targets is malformed
+    assert not is_valid_batch_shape(
+        batch_id=bid, parent_task_id=uuid4(), project_id=uuid4(), product_id=uuid4()
+    )

@@ -32,6 +32,7 @@ from roboco.api.deps import (
 from roboco.api.schemas.prompter_live import (
     AgentEvent,
     BatchConfirmRequest,
+    BatchPreviewRequest,
     LiveConfirmRequest,
     LiveMessageRequest,
     StartLiveRequest,
@@ -212,6 +213,26 @@ async def confirm_live(
     # The draft is now a task — reap the agent + close the relay stream.
     await get_orchestrator().reap_intake_session(session_id)
     return {"task_id": str(task_id)}
+
+
+@router.post("/live/{session_id}/preview-batch")
+async def preview_live_batch(
+    session_id: str,  # noqa: ARG001 — kept for route symmetry; preview is pure
+    body: BatchPreviewRequest,
+    db: DbSession,
+    agent: CurrentAgentContext,  # noqa: ARG001 — auth context only
+) -> dict[str, Any]:
+    """Compute a MegaTask's waves from the proposed drafts WITHOUT creating it.
+
+    Lets the panel show the human the conflict-free wave plan before they confirm
+    the batch. Pure compute — no task is created and the live session is left
+    running so the human can still keep chatting.
+    """
+    service = get_prompter_service(db)
+    try:
+        return service.preview_batch(body.drafts)
+    except ServiceError as e:
+        raise _translate_service_error(e) from e
 
 
 @router.post("/live/{session_id}/confirm-batch", status_code=status.HTTP_201_CREATED)

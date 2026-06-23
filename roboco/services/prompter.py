@@ -22,7 +22,7 @@ from sqlalchemy import select
 from roboco.db.tables import AgentTable, TaskTable
 from roboco.foundation.identity import CELL_TEAMS
 from roboco.foundation.policy.batch import is_batch_umbrella
-from roboco.foundation.policy.sequencing.models import DraftSurface
+from roboco.foundation.policy.sequencing.models import DraftSurface, SequencePlan
 from roboco.models.base import (
     AgentRole,
     Complexity,
@@ -309,6 +309,47 @@ class PrompterService:
         )
         return UUID(str(task.id))
 
+    def _sequence_drafts(self, drafts: list[dict[str, Any]]) -> SequencePlan:
+        """Build each draft's collision surface and sequence them into waves.
+
+        Pure (no DB, no side effects). The single source of the wave plan, shared
+        by ``preview_batch`` (panel pre-confirm preview) and ``confirm_live_batch``
+        (create), so the previewed waves are exactly the ones that get wired.
+        """
+        from roboco.services.sequencing import SequencingService
+
+        surfaces = [
+            DraftSurface(
+                idx=idx,
+                priority=self._coerce_priority(d.get("priority")),
+                intends_to_touch=_clean_list(d.get("intends_to_touch")),
+                adds_migration=bool(d.get("adds_migration")),
+                touches_shared=bool(d.get("touches_shared")),
+            )
+            for idx, d in enumerate(drafts)
+        ]
+        cell_by_idx = {
+            idx: self._lead_cell_team(d, default=Team.BACKEND).value
+            for idx, d in enumerate(drafts)
+        }
+        return SequencingService().analyze(
+            surfaces, lambda i: cell_by_idx[i], _CELL_CAPACITY
+        )
+
+    def preview_batch(self, drafts: list[dict[str, Any]]) -> dict[str, Any]:
+        """Compute a MegaTask's waves + warnings WITHOUT creating anything.
+
+        The panel calls this once the agent proposes a batch so the human can
+        review the sequencing before confirming. ``waves`` is a list of waves,
+        each a list of draft indices that run together.
+        """
+        if not drafts:
+            raise ValidationError(
+                message="A MegaTask needs at least one task draft.", field="drafts"
+            )
+        plan = self._sequence_drafts(drafts)
+        return {"waves": plan.waves, "warnings": plan.warnings}
+
     async def confirm_live_batch(
         self,
         title: str,
@@ -336,7 +377,6 @@ class PrompterService:
         panel's wave/DAG review.
         """
         from roboco.seeds.initial_data import AGENT_UUIDS
-        from roboco.services.sequencing import SequencingService
         from roboco.services.task import get_task_service
 
         if not drafts:
@@ -345,24 +385,9 @@ class PrompterService:
             )
 
         batch_id = uuid4()
-        # 1. Build each draft's collision surface and sequence them into waves.
-        surfaces = [
-            DraftSurface(
-                idx=idx,
-                priority=self._coerce_priority(d.get("priority")),
-                intends_to_touch=_clean_list(d.get("intends_to_touch")),
-                adds_migration=bool(d.get("adds_migration")),
-                touches_shared=bool(d.get("touches_shared")),
-            )
-            for idx, d in enumerate(drafts)
-        ]
-        cell_by_idx = {
-            idx: self._lead_cell_team(d, default=Team.BACKEND).value
-            for idx, d in enumerate(drafts)
-        }
-        plan = SequencingService().analyze(
-            surfaces, lambda i: cell_by_idx[i], _CELL_CAPACITY
-        )
+        # 1. Sequence the drafts into conflict-free waves (same plan the panel
+        #    previewed via preview_batch — _sequence_drafts is the single source).
+        plan = self._sequence_drafts(drafts)
         wave_of = {idx: w for w, wave in enumerate(plan.waves) for idx in wave}
 
         # 2. Route → owning team + umbrella assignee + held status for the items.

@@ -98,3 +98,15 @@ class BatchConfirmRequest(BaseModel):
     title: str = Field(..., min_length=1)
     drafts: list[dict[str, Any]] = Field(..., min_length=1)
     route: Literal["board", "main_pm"] = "board"
+
+
+class BatchPreviewRequest(BaseModel):
+    """Preview a MegaTask's sequencing without creating anything.
+
+    The panel sends the proposed drafts (each with its collision surface) once
+    the agent proposes a batch, to show the human the conflict-free waves before
+    they confirm. Returns ``{waves, warnings}`` — ``waves`` is a list of waves,
+    each a list of draft indices that run together.
+    """
+
+    drafts: list[dict[str, Any]] = Field(..., min_length=1)

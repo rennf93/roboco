@@ -556,3 +556,24 @@ async def test_confirm_live_batch_rejects_empty(db_session: Any) -> None:
     service = get_prompter_service(db=db_session)
     with pytest.raises(ValidationError):
         await service.confirm_live_batch("Empty", [], ceo_id)
+
+
+def test_preview_batch_computes_waves_without_creating() -> None:
+    """preview_batch is pure: it returns the same waves confirm would wire, with
+    no DB session and no task creation."""
+    service = get_prompter_service()  # no db — pure compute
+    drafts: list[dict[str, Any]] = [
+        {"title": "A", "adds_migration": True, "intends_to_touch": ["a.py"]},
+        {"title": "B", "adds_migration": True, "intends_to_touch": ["b.py"]},
+        {"title": "C", "intends_to_touch": ["c.py"]},
+    ]
+    result = service.preview_batch(drafts)
+    # A & B chain on the migration rule; C is independent → [[0, 2], [1]].
+    assert result["waves"] == [[0, 2], [1]]
+    assert isinstance(result["warnings"], list)
+
+
+def test_preview_batch_rejects_empty() -> None:
+    service = get_prompter_service()
+    with pytest.raises(ValidationError):
+        service.preview_batch([])

@@ -35,6 +35,7 @@ from roboco.events import Event, EventType, get_event_bus
 from roboco.foundation.policy.batch import (
     is_batch_umbrella,
     is_branchless_coordination,
+    is_valid_batch_shape,
 )
 from roboco.foundation.policy.content import markers
 from roboco.foundation.policy.content.validators import ContentValidationError
@@ -651,6 +652,41 @@ class TaskService(BaseService):
             "(a cell->project map for a fan-out task)"
         )
 
+    async def _validate_batch_membership(self, req: TaskCreateRequest) -> None:
+        """Guardrail: a ``batch_id`` is only valid on a well-formed MegaTask member.
+
+        ``is_valid_batch_shape`` checks the structural shape; for a root-subtask we
+        ALSO verify its parent is the batch umbrella (same ``batch_id``, top-level).
+        Together they deny a stray ``batch_id`` on a normal task — which would
+        otherwise spoof the umbrella's branch-gate / no-PR exemption or mislabel
+        the task as part of a batch. No-op when ``batch_id`` is unset.
+        """
+        if req.batch_id is None:
+            return
+        if not is_valid_batch_shape(
+            batch_id=req.batch_id,
+            parent_task_id=req.parent_task_id,
+            project_id=req.project_id,
+            product_id=req.product_id,
+        ):
+            raise ValueError(
+                "batch_id is only valid on a MegaTask umbrella (targets neither "
+                "project nor product) or a root-subtask (targets exactly one); "
+                "refusing a stray batch_id on any other task."
+            )
+        if req.parent_task_id is None:
+            return  # a well-formed umbrella
+        parent = await self.get(req.parent_task_id)
+        if (
+            parent is None
+            or parent.batch_id != req.batch_id
+            or parent.parent_task_id is not None
+        ):
+            raise ValueError(
+                "a MegaTask root-subtask's parent must be the batch umbrella "
+                "(same batch_id, top-level)."
+            )
+
     async def create(self, req: TaskCreateRequest) -> TaskTable:
         """
         Create a new task.
@@ -659,6 +695,7 @@ class TaskService(BaseService):
         subtasks that need session setup before activation.
         """
         self._require_target_or_umbrella(req)
+        await self._validate_batch_membership(req)
 
         if req.parent_task_id:
             await self._validate_parent_depth(req.parent_task_id)

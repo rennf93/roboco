@@ -315,6 +315,32 @@ async def test_ensure_branch_batch_umbrella_returns_empty(
 
 
 @pytest.mark.asyncio
+async def test_create_denies_stray_batch_id_on_targeted_top_level_task(
+    task_setup: dict,
+) -> None:
+    """Guardrail: a top-level task that targets a project must NOT carry a
+    batch_id — that umbrella-shaped-but-targeted task would otherwise spoof the
+    branchless exemption. create() refuses it."""
+    svc = task_setup["svc"]
+    # _req sets project_id; adding batch_id with no parent is the spoof shape.
+    with pytest.raises(ValueError, match="batch_id is only valid"):
+        await svc.create(_req(task_setup, batch_id=uuid4()))
+
+
+@pytest.mark.asyncio
+async def test_create_denies_batch_root_subtask_under_non_umbrella_parent(
+    task_setup: dict,
+) -> None:
+    """Guardrail: a batch root-subtask's parent must be the batch umbrella. A
+    child pointed at a normal (non-umbrella) parent, or a mismatched batch, is
+    refused."""
+    svc = task_setup["svc"]
+    parent = await svc.create(_req(task_setup))  # a normal task, no batch_id
+    with pytest.raises(ValueError, match="parent must be the batch umbrella"):
+        await svc.create(_req(task_setup, batch_id=uuid4(), parent_task_id=parent.id))
+
+
+@pytest.mark.asyncio
 async def test_auto_create_branch_no_project_raises(
     task_setup: dict,
     monkeypatch: pytest.MonkeyPatch,
