@@ -89,6 +89,19 @@ _PROBE_TIMEOUT_SECONDS = 10.0
 _HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_OK = 200
 _HTTP_MULTIPLE_CHOICES = 300  # first non-2xx status; 2xx == [_HTTP_OK, this)
+
+# The orchestrator calls its own write API as a trusted internal actor. Those
+# routes require an agent identity (X-Agent-ID); a self-call without it is
+# rejected 401, so silent recovery ops (auto-block / auto-resume / auto-recover
+# / SLA annotation) no-op and paused/blocked parents wedge. The system identity
+# holds TaskAction.ASSIGN, so it is authorized for the audited admin_set_status
+# path those routes use. EVERY dispatcher client that can reach the API must
+# carry it — header propagation was previously inconsistent across the separate
+# AsyncClient call-sites, so only some paths were authenticated.
+_SYSTEM_API_HEADERS = {
+    "X-Agent-ID": "00000000-0000-0000-0000-000000000000",
+    "X-Agent-Role": "system",
+}
 # Consecutive failed recovery probes before the CEO is notified once per episode.
 _CEO_NOTIFY_THRESHOLD = 10
 
@@ -2650,7 +2663,9 @@ class AgentOrchestrator:
             return None
 
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            async with httpx.AsyncClient(
+                timeout=5.0, headers=_SYSTEM_API_HEADERS
+            ) as client:
                 task_or_reason = await self._readiness_fetch_task(client, task_id)
                 if isinstance(task_or_reason, str):
                     return task_or_reason
@@ -2947,7 +2962,9 @@ class AgentOrchestrator:
     ) -> dict[str, Any] | None:
         """Best-effort GET /tasks/{id}; returns task dict or None on failure."""
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            async with httpx.AsyncClient(
+                timeout=5.0, headers=_SYSTEM_API_HEADERS
+            ) as client:
                 resp = await client.get(f"{self._api_url}/tasks/{task_id}")
             if resp.status_code == http_status.HTTP_200_OK:
                 payload: dict[str, Any] = resp.json()
@@ -4309,7 +4326,9 @@ class AgentOrchestrator:
         tokens = (0, 0, 0, 0)
         sdk_url = f"http://roboco-agent-{agent_id}:{SDK_PORT}/usage/status"
         try:
-            async with httpx.AsyncClient(timeout=3.0) as client:
+            async with httpx.AsyncClient(
+                timeout=3.0, headers=_SYSTEM_API_HEADERS
+            ) as client:
                 resp = await client.get(sdk_url)
                 if resp.status_code == http_status.HTTP_200_OK:
                     data = resp.json()
@@ -4564,7 +4583,9 @@ class AgentOrchestrator:
         _usage_total_output = 0
         _usage_total_cost = 0.0
 
-        async with httpx.AsyncClient(timeout=3.0) as client:
+        async with httpx.AsyncClient(
+            timeout=3.0, headers=_SYSTEM_API_HEADERS
+        ) as client:
             for agent_id, instance in list(self._instances.items()):
                 if instance.state not in (
                     AgentState.ACTIVE,
@@ -5092,7 +5113,9 @@ Start by:
         """
         if not self._instances:
             return
-        async with httpx.AsyncClient(timeout=3.0) as client:
+        async with httpx.AsyncClient(
+            timeout=3.0, headers=_SYSTEM_API_HEADERS
+        ) as client:
             for agent_id, instance in list(self._instances.items()):
                 if instance.state not in (
                     AgentState.ACTIVE,
@@ -7362,14 +7385,10 @@ Start now: evidence(task_id="{task_id}")
         except Exception as e:
             logger.error("Grok cost-budget sweep failed; continuing tick", error=str(e))
 
-        # Orchestrator uses SYSTEM role for internal API calls
-        # Using a well-known UUID for the orchestrator identity
-        headers = {
-            "X-Agent-ID": "00000000-0000-0000-0000-000000000000",
-            "X-Agent-Role": "system",
-        }
         dispatchers: list[tuple[str, Any]] = []
-        async with httpx.AsyncClient(timeout=30.0, headers=headers) as client:
+        async with httpx.AsyncClient(
+            timeout=30.0, headers=_SYSTEM_API_HEADERS
+        ) as client:
             dispatchers = [
                 ("pm_work", self._dispatch_pm_work(client)),
                 ("pm_closure_work", self._dispatch_pm_closure_work(client)),
