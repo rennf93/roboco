@@ -3127,12 +3127,28 @@ class AgentOrchestrator:
     # agent reads code with Read/Grep/Glob and talks only to the human).
     # =========================================================================
 
+    @staticmethod
+    def _require_one_intake_scope(
+        project_slug: str | None,
+        product_id: str | None,
+        project_ids: list[str] | None,
+    ) -> None:
+        """Exactly one intake scope: a single project, a product, or a MegaTask's
+        explicit project set."""
+        chosen = sum(1 for scope in (project_slug, product_id, project_ids) if scope)
+        if chosen != 1:
+            raise ValueError(
+                "intake scope requires exactly one of project_slug / product_id"
+                " / project_ids"
+            )
+
     async def start_intake_session(
         self,
         session_id: str,
         *,
         project_slug: str | None = None,
         product_id: str | None = None,
+        project_ids: list[str] | None = None,
         initial_message: str | None = None,
     ) -> None:
         """Non-blocking start: open the relay now, spawn the container in the bg.
@@ -3144,18 +3160,16 @@ class AgentOrchestrator:
         first reply arrives once the container is up. A spawn failure is pushed
         onto the relay as an ``error`` event and closes the session, so the panel
         shows it instead of hanging. Exactly one of ``project_slug`` /
-        ``product_id`` must be given.
+        ``product_id`` / ``project_ids`` (a MegaTask) must be given.
         """
-        if bool(project_slug) == bool(product_id):
-            raise ValueError(
-                "intake scope requires exactly one of project_slug / product_id"
-            )
+        self._require_one_intake_scope(project_slug, product_id, project_ids)
         self._open_intake_relay(session_id)
         self._schedule_bg(
             self._spawn_intake_container_guarded(
                 session_id,
                 project_slug=project_slug,
                 product_id=product_id,
+                project_ids=project_ids,
                 initial_message=initial_message,
             )
         )
@@ -3166,6 +3180,7 @@ class AgentOrchestrator:
         *,
         project_slug: str | None = None,
         product_id: str | None = None,
+        project_ids: list[str] | None = None,
         initial_message: str | None = None,
     ) -> AgentInstance:
         """Spawn the intake container for one live chat, **synchronously**.
@@ -3173,17 +3188,16 @@ class AgentOrchestrator:
         Opens the relay then clones + launches the container, awaiting the whole
         thing. Prefer ``start_intake_session`` on the request path; this blocking
         variant is for direct/internal callers and tests. Exactly one of
-        ``project_slug`` / ``product_id`` must be given.
+        ``project_slug`` / ``product_id`` / ``project_ids`` (a MegaTask) must be
+        given.
         """
-        if bool(project_slug) == bool(product_id):
-            raise ValueError(
-                "intake scope requires exactly one of project_slug / product_id"
-            )
+        self._require_one_intake_scope(project_slug, product_id, project_ids)
         self._open_intake_relay(session_id)
         return await self._spawn_intake_container(
             session_id,
             project_slug=project_slug,
             product_id=product_id,
+            project_ids=project_ids,
             initial_message=initial_message,
         )
 
@@ -3200,6 +3214,7 @@ class AgentOrchestrator:
         *,
         project_slug: str | None,
         product_id: str | None,
+        project_ids: list[str] | None = None,
         initial_message: str | None,
     ) -> None:
         """Background container spawn; surface failures on the relay, not silently."""
@@ -3210,6 +3225,7 @@ class AgentOrchestrator:
                 session_id,
                 project_slug=project_slug,
                 product_id=product_id,
+                project_ids=project_ids,
                 initial_message=initial_message,
             )
         except Exception as exc:
@@ -3229,6 +3245,7 @@ class AgentOrchestrator:
         *,
         project_slug: str | None,
         product_id: str | None,
+        project_ids: list[str] | None = None,
         initial_message: str | None,
     ) -> AgentInstance:
         """Clone the scope, launch the SDK-driver container, track the instance.
@@ -3243,7 +3260,9 @@ class AgentOrchestrator:
 
         from roboco.models.base import ModelProvider
 
-        cwd, cloned = await self._clone_intake_scope(project_slug, product_id)
+        cwd, cloned = await self._clone_intake_scope(
+            project_slug, product_id, project_ids
+        )
 
         ambient = await self._resolve_conventions_ambient(
             project_slug, product_id=product_id
@@ -3600,15 +3619,20 @@ class AgentOrchestrator:
         return cmd
 
     async def _clone_intake_scope(
-        self, project_slug: str | None, product_id: str | None
+        self,
+        project_slug: str | None,
+        product_id: str | None,
+        project_ids: list[str] | None = None,
     ) -> tuple[str, list[str]]:
         """Clone the chat scope's repo(s); return (container cwd, all paths).
 
         ``project`` → one repo; ``product`` → each distinct cell project (the
         Main-PM-style distinct-repo set, kept in its deterministic team order so
-        the primary is stable). The agent's cwd is the primary project's intake
-        workspace; for a product the sibling repos sit alongside it under
-        ``/data/workspaces`` and are readable via Grep/Glob/Read.
+        the primary is stable); ``project_ids`` → a MegaTask's explicit set of
+        (possibly unrelated) projects, in the order given. The agent's cwd is the
+        primary project's intake workspace; for a multi-repo scope the sibling
+        repos sit alongside it under ``/data/workspaces`` and are readable via
+        Grep/Glob/Read.
         """
         from roboco.db.base import get_session_factory
         from roboco.services.workspace import WorkspaceService
@@ -3616,7 +3640,9 @@ class AgentOrchestrator:
         team = get_agent_team(INTAKE_AGENT_ID) or "board"
         factory = get_session_factory()
         async with factory() as db:
-            slugs = await self._intake_scope_slugs(db, project_slug, product_id)
+            slugs = await self._intake_scope_slugs(
+                db, project_slug, product_id, project_ids
+            )
             ws = WorkspaceService(db)
             for slug in slugs:
                 await ws.ensure_workspace(slug, INTAKE_AGENT_ID)
@@ -3627,13 +3653,42 @@ class AgentOrchestrator:
 
     @staticmethod
     async def _intake_scope_slugs(
-        db: Any, project_slug: str | None, product_id: str | None
+        db: Any,
+        project_slug: str | None,
+        product_id: str | None,
+        project_ids: list[str] | None = None,
     ) -> list[str]:
         """Resolve the chat scope to the project slug(s) to clone."""
         if project_slug:
             return [project_slug]
-        if not product_id:
-            raise ValueError("intake scope requires project_slug or product_id")
+        if project_ids:
+            return await AgentOrchestrator._slugs_for_project_ids(db, project_ids)
+        if product_id:
+            return await AgentOrchestrator._slugs_for_product(db, product_id)
+        raise ValueError(
+            "intake scope requires project_slug, product_id, or project_ids"
+        )
+
+    @staticmethod
+    async def _slugs_for_project_ids(db: Any, project_ids: list[str]) -> list[str]:
+        """MegaTask scope: the slugs of an explicit set of (unrelated) projects."""
+        from uuid import UUID
+
+        from roboco.services.project import get_project_service
+
+        project_svc = get_project_service(db)
+        slugs: list[str] = []
+        for pid in project_ids:
+            project = await project_svc.get(UUID(pid))
+            if project and project.slug:
+                slugs.append(project.slug)
+        if not slugs:
+            raise ValueError("MegaTask scope resolves to no projects")
+        return slugs
+
+    @staticmethod
+    async def _slugs_for_product(db: Any, product_id: str) -> list[str]:
+        """Product scope: the distinct cell-project slugs, in deterministic order."""
         from uuid import UUID
 
         from roboco.services.product import ProductService

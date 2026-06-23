@@ -138,6 +138,7 @@ class _FakeOrchestrator:
         *,
         project_slug: str | None = None,
         product_id: str | None = None,
+        project_ids: list[str] | None = None,
         initial_message: str | None = None,
     ) -> None:
         # The route is non-blocking now: it calls start_intake_session (returns
@@ -147,6 +148,7 @@ class _FakeOrchestrator:
                 "session_id": session_id,
                 "project_slug": project_slug,
                 "product_id": product_id,
+                "project_ids": project_ids,
                 "initial_message": initial_message,
             }
         )
@@ -193,9 +195,25 @@ async def test_start_product_scope_spawns_and_returns_session(
             "session_id": session_id,
             "project_slug": None,
             "product_id": product_id,
+            "project_ids": None,
             "initial_message": "build X",
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_start_megatask_scope_passes_project_ids(start_client: dict) -> None:
+    client, orch = start_client["client"], start_client["orch"]
+    ids = [str(uuid4()), str(uuid4())]
+
+    resp = await client.post(
+        "/api/prompter/live/start",
+        json={"project_ids": ids, "initial_message": "three repos"},
+    )
+    assert resp.status_code == HTTPStatus.CREATED
+    assert orch.spawned[0]["project_ids"] == ids
+    assert orch.spawned[0]["project_slug"] is None
+    assert orch.spawned[0]["product_id"] is None
 
 
 @pytest.mark.asyncio

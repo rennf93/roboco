@@ -13,16 +13,27 @@ from pydantic import BaseModel, Field, model_validator
 
 
 class StartLiveRequest(BaseModel):
-    """Open a live intake chat scoped to a project XOR a product."""
+    """Open a live intake chat scoped to a project, a product, or a MegaTask.
+
+    Exactly one scope: a single ``project_id`` (single-cell), a ``product_id``
+    (board-led multi-cell), or ``project_ids`` (a MegaTask spanning several
+    possibly-unrelated repos — the agent reads them all and proposes a batch).
+    """
 
     project_id: UUID | None = None
     product_id: UUID | None = None
+    project_ids: list[UUID] | None = None
     initial_message: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def _exactly_one_scope(self) -> StartLiveRequest:
-        if bool(self.project_id) == bool(self.product_id):
-            raise ValueError("provide exactly one of project_id / product_id")
+        chosen = sum(
+            1 for scope in (self.project_id, self.product_id, self.project_ids) if scope
+        )
+        if chosen != 1:
+            raise ValueError(
+                "provide exactly one of project_id / product_id / project_ids"
+            )
         return self
 
 

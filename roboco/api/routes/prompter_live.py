@@ -93,6 +93,8 @@ async def start_live(body: StartLiveRequest, db: DbSession) -> StartLiveResponse
             )
         project_slug = project.slug
 
+    project_ids = [str(pid) for pid in body.project_ids] if body.project_ids else None
+
     session_id = uuid4().hex
     try:
         # Non-blocking: opens the relay + spawns the container in the background,
@@ -101,6 +103,7 @@ async def start_live(body: StartLiveRequest, db: DbSession) -> StartLiveResponse
             session_id,
             project_slug=project_slug,
             product_id=str(body.product_id) if body.product_id else None,
+            project_ids=project_ids,
             initial_message=body.initial_message,
         )
     except HTTPException:
