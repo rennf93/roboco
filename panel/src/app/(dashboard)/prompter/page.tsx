@@ -40,7 +40,9 @@ export default function PrompterPage() {
     isLaunching,
     startRedraft,
     batch,
+    batchWaves,
     batchResult,
+    updateBatchDraftProject,
     confirmBatch,
   } = usePrompter();
 
@@ -144,7 +146,9 @@ export default function PrompterPage() {
             <div className="mx-4 mb-2">
               <BatchReviewCard
                 batch={batch}
+                waves={batchWaves}
                 onKeepChatting={keepChatting}
+                onProjectChange={updateBatchDraftProject}
                 onConfirm={confirmBatch}
                 isLaunching={isLaunching}
               />

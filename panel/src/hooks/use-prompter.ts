@@ -185,9 +185,17 @@ interface PersistedChat {
   sessionId: string;
   messages: ChatMessage[];
   state: PrompterState;
-  scope: { targetKind: TargetKind; projectId: string; productId: string };
+  scope: {
+    targetKind: TargetKind;
+    projectId: string;
+    productId: string;
+    projectIds?: string[];
+  };
   editableDraft: EditableDraft;
   redraftTaskId?: string | null;
+  // MegaTask review state, so a reload mid-batch-review restores the batch.
+  batch?: BatchProposal | null;
+  batchWaves?: number[][] | null;
   savedAt: number;
 }
 
@@ -251,8 +259,10 @@ export function usePrompter() {
 
   const [editableDraft, setEditableDraft] =
     useState<EditableDraft>(EMPTY_DRAFT);
-  // The proposed MegaTask (when the agent calls propose_batch) + its create result.
+  // The proposed MegaTask (when the agent calls propose_batch), its previewed
+  // waves (computed without creating anything), and its create result.
   const [batch, setBatch] = useState<BatchProposal | null>(null);
+  const [batchWaves, setBatchWaves] = useState<number[][] | null>(null);
   const [batchResult, setBatchResult] = useState<BatchConfirmResult | null>(
     null,
   );
@@ -366,7 +376,17 @@ export function usePrompter() {
           if (parsedBatch) {
             streamingIdRef.current = null;
             setBatch(parsedBatch);
+            setBatchWaves(null);
             setState("batch_preview");
+            // Compute the conflict-free waves (no task created) so the human can
+            // review the sequencing before confirming. Best-effort.
+            const sid = sessionIdRef.current;
+            if (sid) {
+              void prompterLiveApi
+                .previewBatch(sid, parsedBatch.drafts)
+                .then((p) => setBatchWaves(p.waves))
+                .catch(() => setBatchWaves(null));
+            }
           }
           break;
         }
@@ -432,6 +452,7 @@ export function usePrompter() {
       (state === "chatting" ||
         state === "streaming" ||
         state === "draft_preview" ||
+        state === "batch_preview" ||
         state === "review_modal");
     if (persistable && sessionId) {
       savePersisted({
@@ -441,10 +462,12 @@ export function usePrompter() {
         scope: scopeRef.current,
         editableDraft,
         redraftTaskId: redraftTaskIdRef.current,
+        batch,
+        batchWaves,
         savedAt: Date.now(),
       });
     }
-  }, [sessionId, messages, state, editableDraft]);
+  }, [sessionId, messages, state, editableDraft, batch, batchWaves]);
 
   // On mount, reconnect to a still-running session left behind by a reload.
   const didRestoreRef = useRef(false);
@@ -473,11 +496,17 @@ export function usePrompter() {
         setTargetKind(persisted.scope.targetKind);
         setProjectId(persisted.scope.projectId);
         setProductId(persisted.scope.productId);
+        setProjectIds(persisted.scope.projectIds ?? []);
+        setBatch(persisted.batch ?? null);
+        setBatchWaves(persisted.batchWaves ?? null);
+        // A MegaTask review survives reload; otherwise land on a stable state.
         setState(
-          persisted.state === "draft_preview" ||
-            persisted.state === "review_modal"
-            ? "draft_preview"
-            : "chatting",
+          persisted.state === "batch_preview" && persisted.batch
+            ? "batch_preview"
+            : persisted.state === "draft_preview" ||
+                persisted.state === "review_modal"
+              ? "draft_preview"
+              : "chatting",
         );
         openStream(persisted.sessionId);
       } catch {
@@ -736,6 +765,25 @@ export function usePrompter() {
   // Confirm a MegaTask — create the umbrella + sequenced root-subtasks, reap
   // -----------------------------------------------------------------------
 
+  /** Reassign one task in the proposed MegaTask to a different project. Lets the
+   *  human fix a draft the agent put in the wrong (or no) repo before launch.
+   *  Project does not affect the wave plan (waves derive from collision surface),
+   *  so the previewed waves stay valid. */
+  const updateBatchDraftProject = useCallback(
+    (index: number, projectId: string) => {
+      setBatch((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          drafts: prev.drafts.map((d, i) =>
+            i === index ? { ...d, project_id: projectId } : d,
+          ),
+        };
+      });
+    },
+    [],
+  );
+
   const confirmBatch = useCallback(
     async (route: StartRoute) => {
       if (launchingRef.current) return;
@@ -810,6 +858,7 @@ export function usePrompter() {
     setActivity(null);
     setEditableDraft(EMPTY_DRAFT);
     setBatch(null);
+    setBatchWaves(null);
     setBatchResult(null);
     setProjectId("");
     setProductId("");
@@ -862,7 +911,9 @@ export function usePrompter() {
 
     // MegaTask
     batch,
+    batchWaves,
     batchResult,
+    updateBatchDraftProject,
     confirmBatch,
   };
 }

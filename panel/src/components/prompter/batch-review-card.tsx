@@ -11,12 +11,22 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useProjects } from "@/hooks/use-projects";
 import type { BatchProposal, StartRoute } from "@/hooks/use-prompter";
 
 interface BatchReviewCardProps {
   batch: BatchProposal;
+  /** The conflict-free waves (lists of draft indices), once previewed. */
+  waves: number[][] | null;
   onKeepChatting: () => void;
+  onProjectChange: (index: number, projectId: string) => void;
   onConfirm: (route: StartRoute) => void;
   /** A launch is in flight — disable the actions so a double-click can't dupe. */
   isLaunching?: boolean;
@@ -24,21 +34,21 @@ interface BatchReviewCardProps {
 
 /**
  * The MegaTask review card: every task the agent proposed in one batch, each
- * with its target project + collision surface. The system sequences them into
- * conflict-free waves on confirm — the human reviews the whole batch, not one
- * item, and picks one start path for all of them.
+ * with its target project (editable) and collision surface, plus the
+ * conflict-free wave plan. The human reviews the whole batch and the sequencing,
+ * fixes any task in the wrong repo, then picks one start path for all of them.
  */
 export function BatchReviewCard({
   batch,
+  waves,
   onKeepChatting,
+  onProjectChange,
   onConfirm,
   isLaunching = false,
 }: BatchReviewCardProps) {
   const { data: projects = [] } = useProjects();
-  const projectName = (id?: string | null): string => {
-    if (!id) return "no project set";
-    return projects.find((p) => p.id === id)?.name ?? "unknown project";
-  };
+  const titleOf = (i: number): string =>
+    batch.drafts[i]?.title ?? `Task ${i + 1}`;
   const missingProject = batch.drafts.some((d) => !d.project_id);
 
   return (
@@ -58,7 +68,7 @@ export function BatchReviewCard({
         </p>
       </CardHeader>
 
-      <CardContent className="space-y-2 pb-3">
+      <CardContent className="space-y-3 pb-3">
         <ol className="space-y-2">
           {batch.drafts.map((draft, i) => (
             <li
@@ -69,7 +79,7 @@ export function BatchReviewCard({
                 <span className="font-medium leading-tight">
                   {i + 1}. {draft.title}
                 </span>
-                <div className="flex shrink-0 flex-wrap items-center gap-1">
+                <div className="flex shrink-0 items-center gap-1">
                   {draft.adds_migration && (
                     <Badge variant="outline" className="gap-1 text-xs">
                       <Database className="h-3 w-3" />
@@ -82,12 +92,6 @@ export function BatchReviewCard({
                       shared
                     </Badge>
                   )}
-                  <Badge
-                    variant={draft.project_id ? "secondary" : "destructive"}
-                    className="text-xs"
-                  >
-                    {projectName(draft.project_id)}
-                  </Badge>
                 </div>
               </div>
               {(draft.objective || draft.description) && (
@@ -95,14 +99,54 @@ export function BatchReviewCard({
                   {draft.objective || draft.description}
                 </p>
               )}
+              {/* Per-task project — editable so a misfiled task can be fixed */}
+              <div className="mt-1.5 flex items-center gap-2">
+                <span className="text-xs text-muted-foreground">Project</span>
+                <Select
+                  value={draft.project_id ?? ""}
+                  onValueChange={(v) => onProjectChange(i, v)}
+                  disabled={isLaunching}
+                >
+                  <SelectTrigger
+                    className={`h-7 flex-1 text-xs ${
+                      draft.project_id ? "" : "border-destructive"
+                    }`}
+                  >
+                    <SelectValue placeholder="Pick a project…" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {projects.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </li>
           ))}
         </ol>
 
+        {/* Wave plan — how the batch will be sequenced */}
+        {waves && waves.length > 0 && (
+          <div className="rounded-md border border-dashed px-3 py-2">
+            <p className="mb-1 text-xs font-medium text-muted-foreground">
+              Wave plan ({waves.length} wave{waves.length === 1 ? "" : "s"})
+            </p>
+            <ol className="space-y-0.5">
+              {waves.map((wave, w) => (
+                <li key={w} className="text-xs">
+                  <span className="font-medium">Wave {w + 1}:</span>{" "}
+                  {wave.map((i) => titleOf(i)).join(", ")}
+                </li>
+              ))}
+            </ol>
+          </div>
+        )}
+
         {missingProject && (
           <p className="text-xs text-destructive">
-            Some tasks have no project — ask the agent to set each task&apos;s
-            project before launching the MegaTask.
+            Pick a project for every task before launching the MegaTask.
           </p>
         )}
 

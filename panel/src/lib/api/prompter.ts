@@ -69,3 +69,10 @@ export interface BatchConfirmResult {
   waves: number[][];
   warnings: string[];
 }
+
+/** The wave plan for a MegaTask, computed without creating anything — shown so
+ *  the human can review the sequencing before confirming. */
+export interface BatchPreviewResult {
+  waves: number[][];
+  warnings: string[];
+}

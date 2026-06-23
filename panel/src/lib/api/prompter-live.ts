@@ -2,7 +2,9 @@ import api, { API_URL } from "./client";
 import type {
   BatchConfirmPayload,
   BatchConfirmResult,
+  BatchPreviewResult,
   ConfirmPayload,
+  DraftProposal,
 } from "./prompter";
 
 // ---------------------------------------------------------------------------
@@ -116,6 +118,19 @@ export const prompterLiveApi = {
     const { data } = await api.post<{ task_id: string }>(
       `/prompter/live/${sessionId}/confirm`,
       payload,
+    );
+    return data;
+  },
+
+  /** Preview a MegaTask's waves without creating anything — for the human to
+   *  review the sequencing before confirming. */
+  previewBatch: async (
+    sessionId: string,
+    drafts: DraftProposal[],
+  ): Promise<BatchPreviewResult> => {
+    const { data } = await api.post<BatchPreviewResult>(
+      `/prompter/live/${sessionId}/preview-batch`,
+      { drafts },
     );
     return data;
   },
