@@ -159,17 +159,25 @@ def test_golden_reproduces_ceo_waves() -> None:
         _guard_core_app_batch(), _cell_of, {"backend": 2, "frontend": 2}
     )
 
+    # EXACT partition — the CEO's own 4-wave hand-sequencing, locked. The bar is
+    # "reproduce my exact waves or it's not done", so assert the full partition,
+    # not just the properties below.
+    assert plan.waves == [
+        sorted([R1, R2, S1, S2, S3, S5, S7]),  # wave 1: everything unblocked
+        [R3],  # wave 2: the shared+migration hinge
+        sorted([R4, S8]),  # wave 3: after R3
+        [S6],  # wave 4: the shared UI-consistency pass, alone, last
+    ]
+
+    # The properties that partition expresses (kept as documentation of WHY):
     # S6 (the shared UI-consistency pass) runs alone, last.
     assert plan.waves[-1] == [S6]
-
     # R1/R3/R4 form a serial migration chain (no concurrent Alembic heads).
     assert (R1, R3) in plan.edges
     assert (R3, R4) in plan.edges
-
     # R2/R3/S8 serialize on the shared threats service surface.
     assert (R2, R3) in plan.edges
     assert (R3, S8) in plan.edges
-
     # The page-isolated frontend work (S1/S2/S7) lands in one parallel wave.
     assert _wave_of(plan.waves, S1) == _wave_of(plan.waves, S2)
     assert _wave_of(plan.waves, S2) == _wave_of(plan.waves, S7)
