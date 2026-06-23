@@ -43,6 +43,18 @@ DEFAULT_COMM_HOURS = 24
 HOURS_PER_DAY = 24
 SECONDS_PER_HOUR = 3600
 
+
+def _as_hours(value: Any) -> float | None:
+    """Coerce a SQL avg/extract aggregate to a rounded float, or None.
+
+    ``EXTRACT(epoch ...)`` returns ``numeric`` on PostgreSQL 14+, which asyncpg
+    surfaces as a ``Decimal`` — and a ``Decimal`` serializes to a JSON *string*,
+    crashing the panel's numeric formatting (``value.toFixed(...)``). Rounding to
+    a real ``float`` here keeps every "hours" field a JSON number.
+    """
+    return round(float(value), 2) if value else None
+
+
 # Active task statuses for get_team_metrics and related queries.
 # Note: BLOCKED is intentionally excluded here; get_health_status() uses its
 # own local list that includes BLOCKED to compute the blocked-task ratio.
@@ -152,7 +164,7 @@ class MetricsService(BaseService):
             period=_format_period(days),
             tasks_completed=tasks_completed,
             tasks_created=tasks_created,
-            avg_completion_hours=round(avg_hours, 2) if avg_hours else None,
+            avg_completion_hours=_as_hours(avg_hours),
             completion_rate=round(completion_rate, 2),
         )
 
@@ -204,9 +216,9 @@ class MetricsService(BaseService):
 
         return BlockerMetrics(
             active_blockers=active_blockers,
-            avg_blocked_hours=round(avg_blocked, 2) if avg_blocked else None,
+            avg_blocked_hours=_as_hours(avg_blocked),
             longest_blocked_task_id=to_python_uuid(longest_task_id),
-            longest_blocked_hours=round(longest_hours, 2) if longest_hours else None,
+            longest_blocked_hours=_as_hours(longest_hours),
             blockers_by_team=blockers_by_team,
         )
 
@@ -303,7 +315,7 @@ class MetricsService(BaseService):
             active_tasks=active_tasks,
             completed_tasks_week=completed_tasks_week,
             blocked_tasks=blocked_tasks,
-            avg_completion_hours=round(avg_hours, 2) if avg_hours else None,
+            avg_completion_hours=_as_hours(avg_hours),
             documentation_coverage=round(doc_coverage, 2),
         )
 
@@ -379,7 +391,7 @@ class MetricsService(BaseService):
             agent_name=agent.name,
             tasks_completed_week=tasks_completed,
             current_task_id=to_python_uuid(agent.current_task_id),
-            avg_completion_hours=round(avg_hours, 2) if avg_hours else None,
+            avg_completion_hours=_as_hours(avg_hours),
             messages_sent_week=messages_sent,
         )
 
@@ -880,7 +892,7 @@ class MetricsService(BaseService):
                 ).where(and_(*conds))
             )
         ).scalar()
-        return round(avg_hours, 2) if avg_hours else None
+        return _as_hours(avg_hours)
 
 
 # =============================================================================
