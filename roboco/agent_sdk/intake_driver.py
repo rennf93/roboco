@@ -50,7 +50,7 @@ class StreamChunk:
     from the SDK's message classes so the relay/panel never import the SDK.
     """
 
-    kind: str  # text|thinking|tool_use|tool_result|turn_end|system|draft|error
+    kind: str  # text|thinking|tool_use|tool_result|turn_end|system|draft|batch|error
     text: str = ""
     tool: str = ""
     data: dict[str, Any] = field(default_factory=dict)
@@ -99,6 +99,29 @@ def _is_propose_draft(name: str) -> bool:
     return name == "propose_draft" or name.endswith("__propose_draft")
 
 
+def _is_propose_batch(name: str) -> bool:
+    """True for the intake ``propose_batch`` tool (the MegaTask multi-draft tool)."""
+    return name == "propose_batch" or name.endswith("__propose_batch")
+
+
+def _batch_from_tool_input(tool_input: Any) -> dict[str, Any] | None:
+    """Pull a MegaTask batch out of a ``propose_batch`` tool call's input.
+
+    Expects ``{"drafts": [draft, ...], "title": "..."}``; returns the coerced
+    batch (drafts each draft-shaped, plus a string title) or ``None`` when no
+    well-formed, non-empty draft list is present.
+    """
+    if not isinstance(tool_input, dict):
+        return None
+    raw = tool_input.get("drafts")
+    if not isinstance(raw, list):
+        return None
+    drafts = [d for d in (_coerce_draft(x) for x in raw) if d is not None]
+    if not drafts:
+        return None
+    return {"drafts": drafts, "title": str(tool_input.get("title") or "")}
+
+
 def _block_to_chunk(
     block: Any,
 ) -> tuple[StreamChunk | None, str | None, dict[str, Any] | None]:
@@ -115,6 +138,11 @@ def _block_to_chunk(
         tool_input = getattr(block, "input", {})
         if _is_propose_draft(name):
             return None, None, _draft_from_tool_input(tool_input)
+        if _is_propose_batch(name):
+            # A MegaTask: one tool call carrying N drafts → a single batch chunk.
+            batch = _batch_from_tool_input(tool_input)
+            chunk = StreamChunk(kind="batch", data=batch) if batch else None
+            return chunk, None, None
         return (
             StreamChunk(kind="tool_use", tool=name, data={"input": tool_input}),
             None,
@@ -284,6 +312,12 @@ class IntakeDriver:
                 elif chunk.kind == "draft":
                     drafted = True
                     self.log.info("Intake draft emitted")
+                elif chunk.kind == "batch":
+                    drafted = True
+                    self.log.info(
+                        "Intake MegaTask batch emitted",
+                        items=len(chunk.data.get("drafts", [])),
+                    )
                 await self._emit(chunk)
         except Exception as exc:
             self.log.error("Intake turn failed", error=str(exc), chunks=chunks)
@@ -352,12 +386,39 @@ def build_intake_options(
             ]
         }
 
+    @tool(
+        "propose_batch",
+        "Submit a MegaTask — SEVERAL task drafts at once — for the human to review "
+        "and confirm together. Use this (instead of propose_draft) when the CEO "
+        "asked for multiple tasks across the scoped repos. Pass {drafts: [draft, "
+        "...], title: '...'} where each draft has the same fields as propose_draft "
+        "PLUS its own project_id (which repo it targets) and collision surface "
+        "(intends_to_touch[], adds_migration, touches_shared) so the system can "
+        "sequence them into conflict-free waves.",
+        {"drafts": list, "title": str},
+    )
+    async def _propose_batch(_args: dict[str, Any]) -> dict[str, Any]:
+        # The driver intercepts this call and emits the batch event; the handler
+        # only acknowledges so the agent knows it landed.
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": "MegaTask submitted — the human can review it.",
+                }
+            ]
+        }
+
     server = create_sdk_mcp_server(
-        name="intake", version="1.0.0", tools=[_propose_draft]
+        name="intake", version="1.0.0", tools=[_propose_draft, _propose_batch]
     )
 
     async def _gate(tool_name: str, _input: dict[str, Any], _ctx: Any) -> Any:
-        if tool_name in _INTAKE_BASE_TOOLS or _is_propose_draft(tool_name):
+        if (
+            tool_name in _INTAKE_BASE_TOOLS
+            or _is_propose_draft(tool_name)
+            or _is_propose_batch(tool_name)
+        ):
             return PermissionResultAllow()
         # The intake's job is to ask questions, so it reaches for AskUserQuestion
         # by reflex. It isn't wired to the live chat panel (and isn't allowed), so
@@ -385,8 +446,9 @@ def build_intake_options(
         return PermissionResultDeny(
             message=(
                 f"{tool_name} is not available to the intake agent. Your only tools "
-                "are Read, Grep, Glob, Task, and propose_draft. Ask the human inline; "
-                "when the spec is ready, call propose_draft."
+                "are Read, Grep, Glob, Task, propose_draft, and propose_batch (for a "
+                "MegaTask). Ask the human inline; when the spec is ready, call "
+                "propose_draft (one task) or propose_batch (several)."
             )
         )
 
@@ -394,7 +456,11 @@ def build_intake_options(
         system_prompt=system_prompt,
         cwd=cwd,
         mcp_servers={"intake": server},
-        allowed_tools=[*_INTAKE_BASE_TOOLS, "mcp__intake__propose_draft"],
+        allowed_tools=[
+            *_INTAKE_BASE_TOOLS,
+            "mcp__intake__propose_draft",
+            "mcp__intake__propose_batch",
+        ],
         model=model,
         include_partial_messages=True,  # live token streaming
         permission_mode="dontAsk",

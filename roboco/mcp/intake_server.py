@@ -35,30 +35,18 @@ def _api_base() -> str:
     )
 
 
-async def post_draft(
+async def _post_event(
     session_id: str,
-    draft: dict[str, Any],
+    payload: dict[str, Any],
     *,
     client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
-    """POST the draft to the prompter-live relay; never raises.
-
-    Module-level so it is unit-testable with ``httpx.MockTransport`` (the tool
-    wrapper below only shapes the result string).
-    """
+    """POST one relay event to the prompter-live relay; never raises."""
     owns = client is None
     http = client or httpx.AsyncClient(timeout=_TIMEOUT)
     url = f"{_api_base()}/api/prompter/live/{session_id}/events"
     try:
-        resp = await http.post(
-            url,
-            json={
-                "kind": "draft",
-                "text": "",
-                "tool": "propose_draft",
-                "data": draft,
-            },
-        )
+        resp = await http.post(url, json=payload)
     except httpx.HTTPError as exc:
         return {"error": "request_failed", "detail": str(exc)}
     finally:
@@ -67,6 +55,38 @@ async def post_draft(
     if not resp.is_success:
         return {"error": f"http_{resp.status_code}"}
     return {"ok": True}
+
+
+async def post_draft(
+    session_id: str,
+    draft: dict[str, Any],
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> dict[str, Any]:
+    """POST a single draft to the prompter-live relay; never raises.
+
+    Module-level so it is unit-testable with ``httpx.MockTransport`` (the tool
+    wrapper below only shapes the result string).
+    """
+    return await _post_event(
+        session_id,
+        {"kind": "draft", "text": "", "tool": "propose_draft", "data": draft},
+        client=client,
+    )
+
+
+async def post_batch(
+    session_id: str,
+    batch: dict[str, Any],
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> dict[str, Any]:
+    """POST a MegaTask batch (``{drafts: [...], title}``) to the relay; never raises."""
+    return await _post_event(
+        session_id,
+        {"kind": "batch", "text": "", "tool": "propose_batch", "data": batch},
+        client=client,
+    )
 
 
 @mcp.tool()
@@ -97,6 +117,32 @@ async def propose_draft(draft: dict[str, Any]) -> str:
         return "Draft submitted — the human can review it in the panel."
     detail = result.get("detail") or result.get("error") or "unknown error"
     return f"Could not submit the draft to the panel: {detail}"
+
+
+@mcp.tool()
+async def propose_batch(drafts: list[dict[str, Any]], title: str = "") -> str:
+    """Submit a MegaTask — SEVERAL task drafts at once — for the human to confirm.
+
+    Use this instead of ``propose_draft`` when the CEO asked for multiple tasks
+    across the scoped repos. ``drafts`` is a list where each item has the same
+    fields as a single draft PLUS its own ``project_id`` (which repo it targets)
+    and collision surface — ``intends_to_touch[]`` (files/dirs it will modify),
+    ``adds_migration`` (adds a DB migration?), ``touches_shared`` (edits a widely
+    shared component?). The system sequences them into conflict-free waves;
+    over-declaring a surface is safer than under-declaring. ``title`` names the
+    MegaTask.
+    """
+    session_id = os.environ.get("ROBOCO_PROMPTER_SESSION_ID", "")
+    if not session_id:
+        return (
+            "No live session id (ROBOCO_PROMPTER_SESSION_ID) — cannot surface the "
+            "MegaTask."
+        )
+    result = await post_batch(session_id, {"drafts": drafts or [], "title": title})
+    if result.get("ok"):
+        return "MegaTask submitted — the human can review it in the panel."
+    detail = result.get("detail") or result.get("error") or "unknown error"
+    return f"Could not submit the MegaTask to the panel: {detail}"
 
 
 if __name__ == "__main__":
