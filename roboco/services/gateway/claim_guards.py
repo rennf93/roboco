@@ -57,18 +57,24 @@ def already_active_guard(
     )
 
 
-def paused_tasks_guard(paused_tasks: list[Any]) -> Envelope | None:
-    """Refuse claim if agent has any paused tasks.
+def paused_tasks_guard(
+    paused_tasks: list[Any], target_task_id: UUID | None = None
+) -> Envelope | None:
+    """Refuse claim if agent has a paused task OTHER than the one being claimed.
+
+    ``target_task_id`` is excluded so a re-entry on the agent's own paused task
+    (e.g. a PM re-planning an umbrella that ``i_am_idle`` auto-paused) is never
+    self-blocked — mirroring ``already_active_guard``'s target exclusion.
 
     Pre-gateway: _helpers.py:check_paused_tasks 154-165.
     """
-    if not paused_tasks:
+    blocking = [t for t in paused_tasks if t.id != target_task_id]
+    if not blocking:
         return None
-    paused = paused_tasks[0]
+    paused = blocking[0]
     return Envelope.invalid_state(
         message=(
-            f"You have {len(paused_tasks)} paused task(s); resume before "
-            "claiming new work."
+            f"You have {len(blocking)} paused task(s); resume before claiming new work."
         ),
         remediate=(
             f"resume {paused.id} (call i_will_work_on again) before starting new work"
