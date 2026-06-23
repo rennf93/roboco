@@ -147,6 +147,7 @@ export default function PrompterPage() {
               <BatchReviewCard
                 batch={batch}
                 waves={batchWaves}
+                projectIds={projectIds}
                 onKeepChatting={keepChatting}
                 onProjectChange={updateBatchDraftProject}
                 onConfirm={confirmBatch}

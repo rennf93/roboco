@@ -48,10 +48,12 @@ export interface ChatMessage {
 export type TargetKind = "project" | "product" | "megatask";
 
 /** A MegaTask the agent proposed: a title + one draft per task (each draft
- *  carries its own project_id + collision surface). */
+ *  carries its own project_id + collision surface). `dropped` is how many raw
+ *  entries the agent emitted that were malformed and discarded. */
 export interface BatchProposal {
   title: string;
   drafts: DraftProposal[];
+  dropped: number;
 }
 
 /** Which start button the human pressed on the draft card. */
@@ -164,7 +166,14 @@ function batchFromEvent(
   );
   if (drafts.length === 0) return null;
   const title = (data as Record<string, unknown>).title;
-  return { title: typeof title === "string" ? title : "", drafts };
+  // Prefer the backend's dropped count; else compute from what we filtered, so a
+  // shrunk batch is surfaced rather than silently delivering fewer tasks.
+  const backendDropped = (data as Record<string, unknown>).dropped;
+  const dropped =
+    typeof backendDropped === "number"
+      ? backendDropped
+      : raw.length - drafts.length;
+  return { title: typeof title === "string" ? title : "", drafts, dropped };
 }
 
 // ---------------------------------------------------------------------------
@@ -378,6 +387,16 @@ export function usePrompter() {
             setBatch(parsedBatch);
             setBatchWaves(null);
             setState("batch_preview");
+            if (parsedBatch.dropped > 0) {
+              addMessage({
+                role: "error",
+                content:
+                  `${parsedBatch.dropped} proposed task${
+                    parsedBatch.dropped === 1 ? " was" : "s were"
+                  } malformed and dropped from this MegaTask. Ask the agent to ` +
+                  "re-propose them if they're needed.",
+              });
+            }
             // Compute the conflict-free waves (no task created) so the human can
             // review the sequencing before confirming. Best-effort.
             const sid = sessionIdRef.current;
@@ -800,11 +819,16 @@ export function usePrompter() {
         );
         return;
       }
-      // Every task in a MegaTask must target its own repo (the agent assigns it).
-      if (batch.drafts.some((d) => !d.project_id)) {
+      // Every task must target one of the scoped repos (the agent assigns it,
+      // the human can fix it). The backend re-asserts this authoritatively.
+      const scoped = scopeRef.current.projectIds;
+      const offender = batch.drafts.findIndex(
+        (d) => !d.project_id || !scoped.includes(d.project_id),
+      );
+      if (offender !== -1) {
         toast.error(
-          "Every task in a MegaTask needs a project. Ask the agent to set each " +
-            "task's project, or keep chatting to refine the batch.",
+          `Task ${offender + 1} ("${batch.drafts[offender].title}") needs one of ` +
+            "this MegaTask's selected projects. Pick it in the review card.",
         );
         return;
       }
@@ -816,6 +840,7 @@ export function usePrompter() {
         const result = await prompterLiveApi.confirmBatch(sid, {
           title: batch.title.trim() || "MegaTask",
           drafts: batch.drafts,
+          project_ids: scopeRef.current.projectIds,
           route,
         });
         closeStream();

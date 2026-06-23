@@ -25,6 +25,8 @@ interface BatchReviewCardProps {
   batch: BatchProposal;
   /** The conflict-free waves (lists of draft indices), once previewed. */
   waves: number[][] | null;
+  /** The repos this MegaTask is scoped to — each task must target one of them. */
+  projectIds: string[];
   onKeepChatting: () => void;
   onProjectChange: (index: number, projectId: string) => void;
   onConfirm: (route: StartRoute) => void;
@@ -41,15 +43,22 @@ interface BatchReviewCardProps {
 export function BatchReviewCard({
   batch,
   waves,
+  projectIds,
   onKeepChatting,
   onProjectChange,
   onConfirm,
   isLaunching = false,
 }: BatchReviewCardProps) {
-  const { data: projects = [] } = useProjects();
+  const { data: allProjects = [] } = useProjects();
+  // Only the scoped repos are valid targets (the agent read only those).
+  const projects = allProjects.filter((p) => projectIds.includes(p.id));
+  const scoped = new Set(projectIds);
   const titleOf = (i: number): string =>
     batch.drafts[i]?.title ?? `Task ${i + 1}`;
-  const missingProject = batch.drafts.some((d) => !d.project_id);
+  // A task is mis-targeted unless its project is one of the scoped repos.
+  const missingProject = batch.drafts.some(
+    (d) => !d.project_id || !scoped.has(d.project_id),
+  );
 
   return (
     <Card className="border-primary/40 bg-primary/5">
@@ -103,13 +112,19 @@ export function BatchReviewCard({
               <div className="mt-1.5 flex items-center gap-2">
                 <span className="text-xs text-muted-foreground">Project</span>
                 <Select
-                  value={draft.project_id ?? ""}
+                  value={
+                    draft.project_id && scoped.has(draft.project_id)
+                      ? draft.project_id
+                      : ""
+                  }
                   onValueChange={(v) => onProjectChange(i, v)}
                   disabled={isLaunching}
                 >
                   <SelectTrigger
                     className={`h-7 flex-1 text-xs ${
-                      draft.project_id ? "" : "border-destructive"
+                      draft.project_id && scoped.has(draft.project_id)
+                        ? ""
+                        : "border-destructive"
                     }`}
                   >
                     <SelectValue placeholder="Pick a project…" />

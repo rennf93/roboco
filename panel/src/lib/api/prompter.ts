@@ -54,10 +54,12 @@ export interface ConfirmPayload {
 }
 
 /** Confirm a MegaTask: the umbrella's title + one draft per task (each carrying
- *  its own `project_id` + collision surface) + which start button. */
+ *  its own `project_id` + collision surface) + the scoped repos it spans + which
+ *  start button. */
 export interface BatchConfirmPayload {
   title: string;
   drafts: DraftProposal[];
+  project_ids: string[];
   route?: "board" | "main_pm";
 }
 

@@ -23,7 +23,7 @@ For each task it proposes, the agent declares a small **collision surface**: whi
 - A task that edits a shared surface runs **after** the tasks it overlaps.
 - Everything else runs **in parallel**.
 
-The waves are just ordinary task dependencies, so the same dependency-gate that already paces the rest of the company runs them: a wave starts only once the previous wave's work has merged.
+The waves are just ordinary task dependencies, so the same dependency-gate that already paces the rest of the company runs them: a wave starts only once the previous wave's tasks have reached a terminal state — normally each one's pull request is merged (a cancelled task releases the next wave too).
 
 ## What gets created
 
