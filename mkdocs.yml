@@ -126,6 +126,7 @@ nav:
       - Org & roles: company/org-and-roles.md
       - The task lifecycle: company/task-lifecycle.md
       - The merge model: company/merge-model.md
+      - MegaTask — batched, sequenced work: company/megatask.md
       - How agents are sandboxed: company/agent-gateway.md
   - The Tour:
       - how-to/README.md

@@ -48,6 +48,7 @@ from roboco.config import settings
 from roboco.foundation import identity as _foundation
 from roboco.foundation.identity import CELL_TEAMS
 from roboco.foundation.policy.agent_loop import DEFAULT_BUDGET as _AGENT_LOOP_BUDGET
+from roboco.foundation.policy.batch import is_branchless_coordination
 from roboco.models import AgentRole, Team
 from roboco.models.runtime import (
     MODEL_MAP,
@@ -88,6 +89,19 @@ _PROBE_TIMEOUT_SECONDS = 10.0
 _HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_OK = 200
 _HTTP_MULTIPLE_CHOICES = 300  # first non-2xx status; 2xx == [_HTTP_OK, this)
+
+# The orchestrator calls its own write API as a trusted internal actor. Those
+# routes require an agent identity (X-Agent-ID); a self-call without it is
+# rejected 401, so silent recovery ops (auto-block / auto-resume / auto-recover
+# / SLA annotation) no-op and paused/blocked parents wedge. The system identity
+# holds TaskAction.ASSIGN, so it is authorized for the audited admin_set_status
+# path those routes use. EVERY dispatcher client that can reach the API must
+# carry it — header propagation was previously inconsistent across the separate
+# AsyncClient call-sites, so only some paths were authenticated.
+_SYSTEM_API_HEADERS = {
+    "X-Agent-ID": "00000000-0000-0000-0000-000000000000",
+    "X-Agent-Role": "system",
+}
 # Consecutive failed recovery probes before the CEO is notified once per episode.
 _CEO_NOTIFY_THRESHOLD = 10
 
@@ -283,16 +297,22 @@ def _read_project_slug(task: dict[str, Any]) -> str | None:
 
 
 def _is_coordination_task(task: dict[str, Any]) -> bool:
-    """True for a board/fan-out task that carries a product but no repo of its own.
+    """True for a task that does no git of its own.
 
-    Such a task does no git work itself: its cell subtasks each resolve a real
-    project from the product's cell->project map (see TaskCreate's
-    project-or-product invariant and migration 018). It therefore has no
+    Two shapes qualify: a board/fan-out coordination root (carries a product, no
+    repo — its cell subtasks resolve a real project from the product's
+    cell->project map), and a MegaTask umbrella (carries a batch_id, top-level —
+    its root-subtasks each carry their own branch/PR). Such a task has no
     project_slug, branch_name, or git token, and must NOT be git-gated at the
     spawn-readiness or stuck-detection checks the way a code task is. A task with
-    neither a project nor a product is genuinely unroutable and stays gated.
+    none of project / product / batch is genuinely unroutable and stays gated.
     """
-    return not task.get("project_id") and bool(task.get("product_id"))
+    return is_branchless_coordination(
+        project_id=task.get("project_id"),
+        product_id=task.get("product_id"),
+        batch_id=task.get("batch_id"),
+        parent_task_id=task.get("parent_task_id"),
+    )
 
 
 # A branch is auto-created only at CLAIM (the claimed->in_progress transition).
@@ -2643,7 +2663,9 @@ class AgentOrchestrator:
             return None
 
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            async with httpx.AsyncClient(
+                timeout=5.0, headers=_SYSTEM_API_HEADERS
+            ) as client:
                 task_or_reason = await self._readiness_fetch_task(client, task_id)
                 if isinstance(task_or_reason, str):
                     return task_or_reason
@@ -2940,7 +2962,9 @@ class AgentOrchestrator:
     ) -> dict[str, Any] | None:
         """Best-effort GET /tasks/{id}; returns task dict or None on failure."""
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            async with httpx.AsyncClient(
+                timeout=5.0, headers=_SYSTEM_API_HEADERS
+            ) as client:
                 resp = await client.get(f"{self._api_url}/tasks/{task_id}")
             if resp.status_code == http_status.HTTP_200_OK:
                 payload: dict[str, Any] = resp.json()
@@ -3120,12 +3144,28 @@ class AgentOrchestrator:
     # agent reads code with Read/Grep/Glob and talks only to the human).
     # =========================================================================
 
+    @staticmethod
+    def _require_one_intake_scope(
+        project_slug: str | None,
+        product_id: str | None,
+        project_ids: list[str] | None,
+    ) -> None:
+        """Exactly one intake scope: a single project, a product, or a MegaTask's
+        explicit project set."""
+        chosen = sum(1 for scope in (project_slug, product_id, project_ids) if scope)
+        if chosen != 1:
+            raise ValueError(
+                "intake scope requires exactly one of project_slug / product_id"
+                " / project_ids"
+            )
+
     async def start_intake_session(
         self,
         session_id: str,
         *,
         project_slug: str | None = None,
         product_id: str | None = None,
+        project_ids: list[str] | None = None,
         initial_message: str | None = None,
     ) -> None:
         """Non-blocking start: open the relay now, spawn the container in the bg.
@@ -3137,18 +3177,16 @@ class AgentOrchestrator:
         first reply arrives once the container is up. A spawn failure is pushed
         onto the relay as an ``error`` event and closes the session, so the panel
         shows it instead of hanging. Exactly one of ``project_slug`` /
-        ``product_id`` must be given.
+        ``product_id`` / ``project_ids`` (a MegaTask) must be given.
         """
-        if bool(project_slug) == bool(product_id):
-            raise ValueError(
-                "intake scope requires exactly one of project_slug / product_id"
-            )
+        self._require_one_intake_scope(project_slug, product_id, project_ids)
         self._open_intake_relay(session_id)
         self._schedule_bg(
             self._spawn_intake_container_guarded(
                 session_id,
                 project_slug=project_slug,
                 product_id=product_id,
+                project_ids=project_ids,
                 initial_message=initial_message,
             )
         )
@@ -3159,6 +3197,7 @@ class AgentOrchestrator:
         *,
         project_slug: str | None = None,
         product_id: str | None = None,
+        project_ids: list[str] | None = None,
         initial_message: str | None = None,
     ) -> AgentInstance:
         """Spawn the intake container for one live chat, **synchronously**.
@@ -3166,17 +3205,16 @@ class AgentOrchestrator:
         Opens the relay then clones + launches the container, awaiting the whole
         thing. Prefer ``start_intake_session`` on the request path; this blocking
         variant is for direct/internal callers and tests. Exactly one of
-        ``project_slug`` / ``product_id`` must be given.
+        ``project_slug`` / ``product_id`` / ``project_ids`` (a MegaTask) must be
+        given.
         """
-        if bool(project_slug) == bool(product_id):
-            raise ValueError(
-                "intake scope requires exactly one of project_slug / product_id"
-            )
+        self._require_one_intake_scope(project_slug, product_id, project_ids)
         self._open_intake_relay(session_id)
         return await self._spawn_intake_container(
             session_id,
             project_slug=project_slug,
             product_id=product_id,
+            project_ids=project_ids,
             initial_message=initial_message,
         )
 
@@ -3193,6 +3231,7 @@ class AgentOrchestrator:
         *,
         project_slug: str | None,
         product_id: str | None,
+        project_ids: list[str] | None = None,
         initial_message: str | None,
     ) -> None:
         """Background container spawn; surface failures on the relay, not silently."""
@@ -3203,6 +3242,7 @@ class AgentOrchestrator:
                 session_id,
                 project_slug=project_slug,
                 product_id=product_id,
+                project_ids=project_ids,
                 initial_message=initial_message,
             )
         except Exception as exc:
@@ -3222,6 +3262,7 @@ class AgentOrchestrator:
         *,
         project_slug: str | None,
         product_id: str | None,
+        project_ids: list[str] | None = None,
         initial_message: str | None,
     ) -> AgentInstance:
         """Clone the scope, launch the SDK-driver container, track the instance.
@@ -3236,7 +3277,9 @@ class AgentOrchestrator:
 
         from roboco.models.base import ModelProvider
 
-        cwd, cloned = await self._clone_intake_scope(project_slug, product_id)
+        cwd, cloned = await self._clone_intake_scope(
+            project_slug, product_id, project_ids
+        )
 
         ambient = await self._resolve_conventions_ambient(
             project_slug, product_id=product_id
@@ -3593,15 +3636,20 @@ class AgentOrchestrator:
         return cmd
 
     async def _clone_intake_scope(
-        self, project_slug: str | None, product_id: str | None
+        self,
+        project_slug: str | None,
+        product_id: str | None,
+        project_ids: list[str] | None = None,
     ) -> tuple[str, list[str]]:
         """Clone the chat scope's repo(s); return (container cwd, all paths).
 
         ``project`` → one repo; ``product`` → each distinct cell project (the
         Main-PM-style distinct-repo set, kept in its deterministic team order so
-        the primary is stable). The agent's cwd is the primary project's intake
-        workspace; for a product the sibling repos sit alongside it under
-        ``/data/workspaces`` and are readable via Grep/Glob/Read.
+        the primary is stable); ``project_ids`` → a MegaTask's explicit set of
+        (possibly unrelated) projects, in the order given. The agent's cwd is the
+        primary project's intake workspace; for a multi-repo scope the sibling
+        repos sit alongside it under ``/data/workspaces`` and are readable via
+        Grep/Glob/Read.
         """
         from roboco.db.base import get_session_factory
         from roboco.services.workspace import WorkspaceService
@@ -3609,7 +3657,9 @@ class AgentOrchestrator:
         team = get_agent_team(INTAKE_AGENT_ID) or "board"
         factory = get_session_factory()
         async with factory() as db:
-            slugs = await self._intake_scope_slugs(db, project_slug, product_id)
+            slugs = await self._intake_scope_slugs(
+                db, project_slug, product_id, project_ids
+            )
             ws = WorkspaceService(db)
             for slug in slugs:
                 await ws.ensure_workspace(slug, INTAKE_AGENT_ID)
@@ -3620,13 +3670,46 @@ class AgentOrchestrator:
 
     @staticmethod
     async def _intake_scope_slugs(
-        db: Any, project_slug: str | None, product_id: str | None
+        db: Any,
+        project_slug: str | None,
+        product_id: str | None,
+        project_ids: list[str] | None = None,
     ) -> list[str]:
         """Resolve the chat scope to the project slug(s) to clone."""
         if project_slug:
             return [project_slug]
-        if not product_id:
-            raise ValueError("intake scope requires project_slug or product_id")
+        if project_ids:
+            return await AgentOrchestrator._slugs_for_project_ids(db, project_ids)
+        if product_id:
+            return await AgentOrchestrator._slugs_for_product(db, product_id)
+        raise ValueError(
+            "intake scope requires project_slug, product_id, or project_ids"
+        )
+
+    @staticmethod
+    async def _slugs_for_project_ids(db: Any, project_ids: list[str]) -> list[str]:
+        """MegaTask scope: the slugs of an explicit set of (unrelated) projects."""
+        from uuid import UUID
+
+        from roboco.services.project import get_project_service
+
+        project_svc = get_project_service(db)
+        slugs: list[str] = []
+        for pid in project_ids:
+            project = await project_svc.get(UUID(pid))
+            # Fail loud on ANY unresolvable id (matching the single-project route's
+            # 404) rather than silently cloning fewer repos — a partial scope would
+            # let the agent draft against an incomplete workspace with no signal.
+            if not (project and project.slug):
+                raise ValueError(f"MegaTask scope: project {pid} not found")
+            slugs.append(project.slug)
+        if not slugs:
+            raise ValueError("MegaTask scope resolves to no projects")
+        return slugs
+
+    @staticmethod
+    async def _slugs_for_product(db: Any, product_id: str) -> list[str]:
+        """Product scope: the distinct cell-project slugs, in deterministic order."""
         from uuid import UUID
 
         from roboco.services.product import ProductService
@@ -4243,7 +4326,9 @@ class AgentOrchestrator:
         tokens = (0, 0, 0, 0)
         sdk_url = f"http://roboco-agent-{agent_id}:{SDK_PORT}/usage/status"
         try:
-            async with httpx.AsyncClient(timeout=3.0) as client:
+            async with httpx.AsyncClient(
+                timeout=3.0, headers=_SYSTEM_API_HEADERS
+            ) as client:
                 resp = await client.get(sdk_url)
                 if resp.status_code == http_status.HTTP_200_OK:
                     data = resp.json()
@@ -4498,7 +4583,9 @@ class AgentOrchestrator:
         _usage_total_output = 0
         _usage_total_cost = 0.0
 
-        async with httpx.AsyncClient(timeout=3.0) as client:
+        async with httpx.AsyncClient(
+            timeout=3.0, headers=_SYSTEM_API_HEADERS
+        ) as client:
             for agent_id, instance in list(self._instances.items()):
                 if instance.state not in (
                     AgentState.ACTIVE,
@@ -5026,7 +5113,9 @@ Start by:
         """
         if not self._instances:
             return
-        async with httpx.AsyncClient(timeout=3.0) as client:
+        async with httpx.AsyncClient(
+            timeout=3.0, headers=_SYSTEM_API_HEADERS
+        ) as client:
             for agent_id, instance in list(self._instances.items()):
                 if instance.state not in (
                     AgentState.ACTIVE,
@@ -7296,14 +7385,10 @@ Start now: evidence(task_id="{task_id}")
         except Exception as e:
             logger.error("Grok cost-budget sweep failed; continuing tick", error=str(e))
 
-        # Orchestrator uses SYSTEM role for internal API calls
-        # Using a well-known UUID for the orchestrator identity
-        headers = {
-            "X-Agent-ID": "00000000-0000-0000-0000-000000000000",
-            "X-Agent-Role": "system",
-        }
         dispatchers: list[tuple[str, Any]] = []
-        async with httpx.AsyncClient(timeout=30.0, headers=headers) as client:
+        async with httpx.AsyncClient(
+            timeout=30.0, headers=_SYSTEM_API_HEADERS
+        ) as client:
             dispatchers = [
                 ("pm_work", self._dispatch_pm_work(client)),
                 ("pm_closure_work", self._dispatch_pm_closure_work(client)),

@@ -28,7 +28,7 @@ from roboco.models.base import (
     Team,
 )
 from roboco.seeds.initial_data import AGENT_UUIDS
-from roboco.services.base import ServiceError
+from roboco.services.base import ServiceError, ValidationError
 from roboco.services.prompter import (
     PrompterService,
     compose_description,
@@ -423,3 +423,210 @@ async def test_confirm_live_draft_product_routes_to_main_pm(db_session: Any) -> 
     assert row.team == Team.MAIN_PM
     assert row.product_id == product_id
     assert row.project_id is None
+
+
+# =============================================================================
+# MegaTask: confirm_live_batch (umbrella + sequenced root-subtasks)
+# =============================================================================
+
+
+async def _seed_second_project(db_session: Any, ceo_id: UUID) -> UUID:
+    """Seed a second project so a MegaTask can span multiple repos."""
+    project_id = uuid4()
+    db_session.add(
+        ProjectTable(
+            id=project_id,
+            name="Intake Test Project 2",
+            slug=f"intake2-{uuid4().hex[:8]}",
+            git_url="https://github.com/example/intake2.git",
+            default_branch="main",
+            protected_branches=["main"],
+            assigned_cell=Team.FRONTEND,
+            created_by=ceo_id,
+            is_active=True,
+        )
+    )
+    await db_session.flush()
+    return project_id
+
+
+@pytest.mark.asyncio
+async def test_confirm_live_batch_builds_umbrella_and_sequenced_subtasks(
+    db_session: Any,
+) -> None:
+    """A MegaTask creates one branchless umbrella + N root-subtasks across many
+    projects, with the collision-derived dependency edges wired so the
+    dependency-gate runs the waves in order."""
+    project1, ceo_id = await _seed_project_and_ceo(db_session)
+    project2 = await _seed_second_project(db_session, ceo_id)
+    service = get_prompter_service(db=db_session)
+
+    # A & B both add a migration → serial chain A→B (the migration rule orders
+    # them by priority then index). C is an independent frontend task in another
+    # project, so it runs in parallel with A in wave 0.
+    drafts: list[dict[str, Any]] = [
+        {
+            "title": "A: add table",
+            "acceptance_criteria": ["a"],
+            "team": "backend",
+            "project_id": str(project1),
+            "intends_to_touch": ["roboco/services/foo.py"],
+            "adds_migration": True,
+        },
+        {
+            "title": "B: extend table",
+            "acceptance_criteria": ["b"],
+            "team": "backend",
+            "project_id": str(project1),
+            "intends_to_touch": ["roboco/services/bar.py"],
+            "adds_migration": True,
+        },
+        {
+            "title": "C: frontend widget",
+            "acceptance_criteria": ["c"],
+            "team": "frontend",
+            "project_id": str(project2),
+            "intends_to_touch": ["panel/src/widget.tsx"],
+        },
+    ]
+    result = await service.confirm_live_batch(
+        "Three things",
+        drafts,
+        ceo_id,
+        project_ids=[project1, project2],
+        route="main_pm",
+    )
+
+    # A (migration) and C (independent) run in wave 0; B chains after A.
+    assert result["waves"] == [[0, 2], [1]]
+    ids = result["root_subtask_ids"]
+    assert len(ids) == len(drafts)
+
+    umbrella_id = UUID(result["umbrella_task_id"])
+    umbrella = await db_session.get(TaskTable, umbrella_id)
+    assert umbrella.batch_id is not None
+    assert umbrella.parent_task_id is None
+    assert umbrella.project_id is None and umbrella.product_id is None
+    assert umbrella.team == Team.MAIN_PM
+    assert umbrella.status == TaskStatus.PENDING
+    assert umbrella.branch_name is None  # branchless
+
+    a, b, c = [await db_session.get(TaskTable, UUID(sid)) for sid in ids]
+    for sub in (a, b, c):
+        assert sub.parent_task_id == umbrella_id
+        assert sub.batch_id == umbrella.batch_id
+        assert sub.team == Team.MAIN_PM
+        assert sub.status == TaskStatus.PENDING
+    assert a.project_id == project1
+    assert b.project_id == project1
+    assert c.project_id == project2
+    # sequence = wave index: A and C in wave 0, B in wave 1.
+    assert (a.sequence, b.sequence, c.sequence) == (0, 1, 0)
+    # Dependency wiring: B waits on A; C is independent.
+    assert UUID(ids[0]) in b.dependency_ids
+    assert c.dependency_ids == []
+
+
+@pytest.mark.asyncio
+async def test_confirm_live_batch_board_route_holds_subtasks_in_backlog(
+    db_session: Any,
+) -> None:
+    """The "board" route sends the umbrella to the Product Owner for batch review
+    and holds the root-subtasks in BACKLOG until the umbrella is approved."""
+    project1, ceo_id = await _seed_project_and_ceo(db_session)
+    project2 = await _seed_second_project(db_session, ceo_id)
+    service = get_prompter_service(db=db_session)
+    drafts = [
+        {
+            "title": "One",
+            "acceptance_criteria": ["x"],
+            "team": "backend",
+            "project_id": str(project1),
+        },
+        {
+            "title": "Two",
+            "acceptance_criteria": ["y"],
+            "team": "frontend",
+            "project_id": str(project2),
+        },
+    ]
+    result = await service.confirm_live_batch(
+        "Two repos", drafts, ceo_id, project_ids=[project1, project2], route="board"
+    )
+
+    umbrella = await db_session.get(TaskTable, UUID(result["umbrella_task_id"]))
+    assert umbrella.team == Team.BOARD
+    assert umbrella.assigned_to == UUID(AGENT_UUIDS["product-owner"])
+    assert umbrella.status == TaskStatus.PENDING
+    sub = await db_session.get(TaskTable, UUID(result["root_subtask_ids"][0]))
+    assert sub.status == TaskStatus.BACKLOG  # held until batch review approves
+    assert sub.team == Team.BOARD
+
+
+@pytest.mark.asyncio
+async def test_confirm_live_batch_rejects_empty(db_session: Any) -> None:
+    _project1, ceo_id = await _seed_project_and_ceo(db_session)
+    service = get_prompter_service(db=db_session)
+    with pytest.raises(ValidationError):
+        await service.confirm_live_batch(
+            "Empty", [], ceo_id, project_ids=[uuid4(), uuid4()]
+        )
+
+
+@pytest.mark.asyncio
+async def test_confirm_live_batch_rejects_draft_outside_scope(db_session: Any) -> None:
+    """A draft targeting a project NOT in the scoped project_ids is refused — the
+    intake agent only read the scoped repos."""
+    project1, ceo_id = await _seed_project_and_ceo(db_session)
+    project2 = await _seed_second_project(db_session, ceo_id)
+    service = get_prompter_service(db=db_session)
+    outside = uuid4()  # never in scope
+    drafts = [
+        {"title": "A", "acceptance_criteria": ["a"], "project_id": str(project1)},
+        {"title": "B", "acceptance_criteria": ["b"], "project_id": str(outside)},
+    ]
+    with pytest.raises(ValidationError, match="outside this MegaTask"):
+        await service.confirm_live_batch(
+            "Scoped", drafts, ceo_id, project_ids=[project1, project2], route="main_pm"
+        )
+
+
+@pytest.mark.asyncio
+async def test_confirm_live_batch_rejects_single_project(db_session: Any) -> None:
+    """A degenerate batch whose drafts all target one project is not a MegaTask."""
+    project1, ceo_id = await _seed_project_and_ceo(db_session)
+    project2 = await _seed_second_project(db_session, ceo_id)
+    service = get_prompter_service(db=db_session)
+    drafts = [
+        {"title": "A", "acceptance_criteria": ["a"], "project_id": str(project1)},
+        {"title": "B", "acceptance_criteria": ["b"], "project_id": str(project1)},
+    ]
+    with pytest.raises(ValidationError, match="at least two distinct projects"):
+        await service.confirm_live_batch(
+            "One repo",
+            drafts,
+            ceo_id,
+            project_ids=[project1, project2],
+            route="main_pm",
+        )
+
+
+def test_preview_batch_computes_waves_without_creating() -> None:
+    """preview_batch is pure: it returns the same waves confirm would wire, with
+    no DB session and no task creation."""
+    service = get_prompter_service()  # no db — pure compute
+    drafts: list[dict[str, Any]] = [
+        {"title": "A", "adds_migration": True, "intends_to_touch": ["a.py"]},
+        {"title": "B", "adds_migration": True, "intends_to_touch": ["b.py"]},
+        {"title": "C", "intends_to_touch": ["c.py"]},
+    ]
+    result = service.preview_batch(drafts)
+    # A & B chain on the migration rule; C is independent → [[0, 2], [1]].
+    assert result["waves"] == [[0, 2], [1]]
+    assert isinstance(result["warnings"], list)
+
+
+def test_preview_batch_rejects_empty() -> None:
+    service = get_prompter_service()
+    with pytest.raises(ValidationError):
+        service.preview_batch([])

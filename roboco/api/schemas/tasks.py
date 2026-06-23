@@ -314,6 +314,9 @@ class TaskResponse(BaseModel):
     parent_task_id: UUID | None
     dependency_ids: list[UUID]
     blocker_ids: list[UUID]
+    # MegaTask grouping: set on the umbrella AND every root-subtask of a batch.
+    # The umbrella is the one with batch_id set and parent_task_id None.
+    batch_id: UUID | None = None
 
     # Timestamps
     created_at: datetime
@@ -694,6 +697,7 @@ def task_to_response(task: "TaskTable") -> TaskResponse:
         parent_task_id=to_python_uuid(task.parent_task_id),
         dependency_ids=to_python_uuid_list(task.dependency_ids),
         blocker_ids=to_python_uuid_list(task.blocker_ids),
+        batch_id=to_python_uuid(task.batch_id),
         created_at=task.created_at,
         updated_at=task.updated_at,
         claimed_at=task.claimed_at,

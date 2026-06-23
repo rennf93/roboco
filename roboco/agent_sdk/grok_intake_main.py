@@ -4,9 +4,10 @@ The Grok analogue of ``intake_main``: the same in-container ``POST /turn``
 receiver and the same relay sink to ``/api/prompter/live/{id}/events``, but the
 held-open session is a :class:`GrokCliSession` (per-turn headless ``grok -p``,
 resuming one session id) instead of a ``ClaudeSDKClient``. ``~/.grok/config.toml``
-is rendered first to wire the intake agent's one action tool, ``propose_draft``,
-as the ``roboco-intake`` MCP server. Intake is a human-only interviewer with no
-gateway verbs; its only MCP server is ``roboco-intake``. The ``IntakeDriver``
+is rendered first to wire the intake agent's two action tools — ``propose_draft``
+(one task) and ``propose_batch`` (a sequenced MegaTask of several tasks) — as the
+``roboco-intake`` MCP server. Intake is a human-only interviewer with no gateway
+verbs; its only MCP server is ``roboco-intake``. The ``IntakeDriver``
 loop, message source, and relay are reused unchanged — only the
 ``SessionFactory`` differs.
 """

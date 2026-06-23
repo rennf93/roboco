@@ -25,6 +25,8 @@ interface IntakeFormProps {
   onProjectId: (id: string) => void;
   productId: string;
   onProductId: (id: string) => void;
+  projectIds: string[];
+  onProjectIds: (ids: string[]) => void;
   initialMessage: string;
   onInitialMessage: (v: string) => void;
   isValid: boolean;
@@ -34,8 +36,9 @@ interface IntakeFormProps {
 
 /**
  * The one-time scope form shown before the chat. The agent is spawned against
- * exactly one of project / product, clones that scope's repo(s), and reads the
- * real code before answering — so the scope must be chosen up front.
+ * exactly one scope — a single project, a board-led product, or a MegaTask (a
+ * set of projects) — clones that scope's repo(s), and reads the real code before
+ * answering, so the scope must be chosen up front.
  */
 export function IntakeForm({
   targetKind,
@@ -44,6 +47,8 @@ export function IntakeForm({
   onProjectId,
   productId,
   onProductId,
+  projectIds,
+  onProjectIds,
   initialMessage,
   onInitialMessage,
   isValid,
@@ -105,12 +110,15 @@ export function IntakeForm({
             value={targetKind}
             onValueChange={(v) => onTargetKind(v as TargetKind)}
           >
-            <TabsList className="grid w-full grid-cols-2">
+            <TabsList className="grid w-full grid-cols-3">
               <TabsTrigger value="project" disabled={isPreparing}>
-                Single cell (Project)
+                Single cell
               </TabsTrigger>
               <TabsTrigger value="product" disabled={isPreparing}>
-                Board-led (Product)
+                Board-led
+              </TabsTrigger>
+              <TabsTrigger value="megatask" disabled={isPreparing}>
+                MegaTask
               </TabsTrigger>
             </TabsList>
           </Tabs>
@@ -132,6 +140,50 @@ export function IntakeForm({
                 ))}
               </SelectContent>
             </Select>
+          ) : targetKind === "megatask" ? (
+            <div className="space-y-2">
+              <p className="text-xs text-muted-foreground">
+                A MegaTask spans several projects worked at once — even
+                unrelated ones (e.g. a SaaS app, its OSS core, and an adapter).
+                Pick every repo it touches; the agent reads them all and
+                proposes one batch of sequenced tasks.
+              </p>
+              <div className="max-h-48 space-y-1 overflow-y-auto rounded-md border p-2">
+                {projects.map((p) => {
+                  const checked = projectIds.includes(p.id);
+                  return (
+                    <label
+                      key={p.id}
+                      className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted"
+                    >
+                      <input
+                        type="checkbox"
+                        className="h-4 w-4 accent-primary"
+                        checked={checked}
+                        disabled={isPreparing}
+                        onChange={(e) =>
+                          onProjectIds(
+                            e.target.checked
+                              ? [...projectIds, p.id]
+                              : projectIds.filter((id) => id !== p.id),
+                          )
+                        }
+                      />
+                      <span>{p.name}</span>
+                    </label>
+                  );
+                })}
+                {projects.length === 0 && (
+                  <p className="px-2 py-1.5 text-xs text-muted-foreground">
+                    No projects exist yet — create some under Projects first.
+                  </p>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {projectIds.length} selected
+                {projectIds.length < 2 ? " — pick at least two" : ""}
+              </p>
+            </div>
           ) : (
             <>
               <Select

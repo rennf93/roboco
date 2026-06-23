@@ -32,7 +32,7 @@ from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
-from roboco.db.tables import AgentTable, ProjectTable, WorkSessionTable
+from roboco.db.tables import AgentTable, ProjectTable, TaskTable, WorkSessionTable
 from roboco.enforcement import TaskLifecycleError
 from roboco.foundation.policy.content import markers
 from roboco.models import AgentRole, AgentStatus, Team
@@ -295,6 +295,81 @@ async def test_ensure_branch_no_project_id_raises(
     task.project_id = None
     with pytest.raises(ValueError, match="project_id"):
         await svc._ensure_branch_for_task(task, task_setup["agent_id"])
+
+
+@pytest.mark.asyncio
+async def test_ensure_branch_batch_umbrella_returns_empty(
+    task_setup: dict,
+) -> None:
+    """A MegaTask umbrella (batch_id, top-level, no project/product) is branchless
+    by design — it must short-circuit to "" rather than hit the misconfigured
+    raise, so the claim path treats it as coordination, not a defect."""
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup))
+    task.project_id = None
+    task.product_id = None
+    task.batch_id = uuid4()
+    task.parent_task_id = None
+    out = await svc._ensure_branch_for_task(task, task_setup["agent_id"])
+    assert out == ""
+
+
+@pytest.mark.asyncio
+async def test_create_denies_stray_batch_id_on_targeted_top_level_task(
+    task_setup: dict,
+) -> None:
+    """Guardrail: a top-level task that targets a project must NOT carry a
+    batch_id — that umbrella-shaped-but-targeted task would otherwise spoof the
+    branchless exemption. create() refuses it."""
+    svc = task_setup["svc"]
+    # _req sets project_id; adding batch_id with no parent is the spoof shape.
+    with pytest.raises(ValueError, match="batch_id is only valid"):
+        await svc.create(_req(task_setup, batch_id=uuid4()))
+
+
+@pytest.mark.asyncio
+async def test_create_denies_batch_root_subtask_under_non_umbrella_parent(
+    task_setup: dict,
+) -> None:
+    """Guardrail: a batch root-subtask's parent must be the batch umbrella. A
+    child pointed at a normal (non-umbrella) parent, or a mismatched batch, is
+    refused."""
+    svc = task_setup["svc"]
+    parent = await svc.create(_req(task_setup))  # a normal task, no batch_id
+    with pytest.raises(ValueError, match="parent must be the batch umbrella"):
+        await svc.create(_req(task_setup, batch_id=uuid4(), parent_task_id=parent.id))
+
+
+@pytest.mark.asyncio
+async def test_update_rejects_breaking_batch_umbrella_shape(
+    task_setup: dict,
+) -> None:
+    """Guardrail completeness: update() re-validates the MegaTask shape, so a
+    PATCH that adds a project to a branchless umbrella (which would spoof the
+    branch-gate / no-PR exemption) is refused — the invariant the branchless
+    predicates trust is enforced on mutation, not only at create."""
+    db = task_setup["db"]
+    svc = task_setup["svc"]
+    umbrella = TaskTable(
+        id=uuid4(),
+        title="MegaTask",
+        description="d",
+        acceptance_criteria=["ac"],
+        status=TaskStatus.PENDING,
+        priority=1,
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        project_id=None,  # a valid umbrella targets neither
+        product_id=None,
+        batch_id=uuid4(),
+        parent_task_id=None,
+        team=Team.MAIN_PM,
+        created_by=task_setup["agent_id"],
+    )
+    db.add(umbrella)
+    await db.flush()
+    with pytest.raises(ValueError, match="MegaTask shape"):
+        await svc.update(umbrella.id, project_id=task_setup["project_id"])
 
 
 @pytest.mark.asyncio

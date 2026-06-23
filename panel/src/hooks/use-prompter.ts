@@ -12,6 +12,7 @@ import {
   type CellWork,
   type DraftScale,
   type ConfirmPayload,
+  type BatchConfirmResult,
 } from "@/lib/api/prompter";
 import { getErrorMessage } from "@/lib/api/client";
 import { tasksApi } from "@/lib/api/tasks";
@@ -28,6 +29,7 @@ export type PrompterState =
   | "chatting"
   | "streaming" // a reply is mid-flight over SSE
   | "draft_preview"
+  | "batch_preview" // a MegaTask (N drafts) is ready to review
   | "review_modal"
   | "launching"
   | "success";
@@ -43,7 +45,16 @@ export interface ChatMessage {
 }
 
 /** Which target the human picked for this chat. */
-export type TargetKind = "project" | "product";
+export type TargetKind = "project" | "product" | "megatask";
+
+/** A MegaTask the agent proposed: a title + one draft per task (each draft
+ *  carries its own project_id + collision surface). `dropped` is how many raw
+ *  entries the agent emitted that were malformed and discarded. */
+export interface BatchProposal {
+  title: string;
+  drafts: DraftProposal[];
+  dropped: number;
+}
 
 /** Which start button the human pressed on the draft card. */
 export type StartRoute = "board" | "main_pm";
@@ -101,7 +112,7 @@ function stripDraftFence(text: string): string {
 function toEditable(
   draft: DraftProposal,
   scale: DraftScale | null,
-  scope: { targetKind: TargetKind; projectId: string; productId: string }
+  scope: { targetKind: TargetKind; projectId: string; productId: string },
 ): EditableDraft {
   return {
     title: draft.title,
@@ -121,8 +132,7 @@ function toEditable(
     the_work: draft.the_work ?? [],
     notes: draft.notes ?? [],
     // The scope picked up front wins; fall back to scale only if unset.
-    targetKind:
-      scope.targetKind || (scale === "multi" ? "product" : "project"),
+    targetKind: scope.targetKind || (scale === "multi" ? "product" : "project"),
     projectId: scope.projectId,
     productId: scope.productId,
   };
@@ -143,6 +153,29 @@ function draftFromEvent(data: Record<string, unknown> | undefined): {
   return { draft: d as unknown as DraftProposal, scale };
 }
 
+/** Pull a MegaTask ({title, drafts[]}) out of a `batch` SSE event's payload. */
+function batchFromEvent(
+  data: Record<string, unknown> | undefined,
+): BatchProposal | null {
+  if (!data || typeof data !== "object") return null;
+  const raw = (data as Record<string, unknown>).drafts;
+  if (!Array.isArray(raw)) return null;
+  const drafts = raw.filter(
+    (x): x is DraftProposal =>
+      !!x && typeof (x as DraftProposal).title === "string",
+  );
+  if (drafts.length === 0) return null;
+  const title = (data as Record<string, unknown>).title;
+  // Prefer the backend's dropped count; else compute from what we filtered, so a
+  // shrunk batch is surfaced rather than silently delivering fewer tasks.
+  const backendDropped = (data as Record<string, unknown>).dropped;
+  const dropped =
+    typeof backendDropped === "number"
+      ? backendDropped
+      : raw.length - drafts.length;
+  return { title: typeof title === "string" ? title : "", drafts, dropped };
+}
+
 // ---------------------------------------------------------------------------
 // Refresh durability
 //
@@ -161,9 +194,17 @@ interface PersistedChat {
   sessionId: string;
   messages: ChatMessage[];
   state: PrompterState;
-  scope: { targetKind: TargetKind; projectId: string; productId: string };
+  scope: {
+    targetKind: TargetKind;
+    projectId: string;
+    productId: string;
+    projectIds?: string[];
+  };
   editableDraft: EditableDraft;
   redraftTaskId?: string | null;
+  // MegaTask review state, so a reload mid-batch-review restores the batch.
+  batch?: BatchProposal | null;
+  batchWaves?: number[][] | null;
   savedAt: number;
 }
 
@@ -221,9 +262,19 @@ export function usePrompter() {
   const [targetKind, setTargetKind] = useState<TargetKind>("project");
   const [projectId, setProjectId] = useState("");
   const [productId, setProductId] = useState("");
+  // MegaTask scope: the set of (possibly unrelated) projects it spans.
+  const [projectIds, setProjectIds] = useState<string[]>([]);
   const [initialMessage, setInitialMessage] = useState("");
 
-  const [editableDraft, setEditableDraft] = useState<EditableDraft>(EMPTY_DRAFT);
+  const [editableDraft, setEditableDraft] =
+    useState<EditableDraft>(EMPTY_DRAFT);
+  // The proposed MegaTask (when the agent calls propose_batch), its previewed
+  // waves (computed without creating anything), and its create result.
+  const [batch, setBatch] = useState<BatchProposal | null>(null);
+  const [batchWaves, setBatchWaves] = useState<number[][] | null>(null);
+  const [batchResult, setBatchResult] = useState<BatchConfirmResult | null>(
+    null,
+  );
 
   // Live-session plumbing held in refs so SSE callbacks never see stale state.
   const sessionIdRef = useRef<string | null>(null);
@@ -234,8 +285,8 @@ export function usePrompter() {
   const streamingIdRef = useRef<string | null>(null);
   // Synchronous re-entry guard for launch — a double-click was creating two tasks.
   const launchingRef = useRef(false);
-  const scopeRef = useRef({ targetKind, projectId, productId });
-  scopeRef.current = { targetKind, projectId, productId };
+  const scopeRef = useRef({ targetKind, projectId, productId, projectIds });
+  scopeRef.current = { targetKind, projectId, productId, projectIds };
 
   // -----------------------------------------------------------------------
   // Message helpers
@@ -254,7 +305,7 @@ export function usePrompter() {
       const id = streamingIdRef.current;
       if (id) {
         return prev.map((m) =>
-          m.id === id ? { ...m, content: m.content + delta } : m
+          m.id === id ? { ...m, content: m.content + delta } : m,
         );
       }
       const newMsgId = newId();
@@ -277,7 +328,7 @@ export function usePrompter() {
         return prev.map((m) =>
           m.id === id
             ? { ...m, draft, content: stripDraftFence(m.content) }
-            : m
+            : m,
         );
       }
       return [...prev, { id: newId(), role: "assistant", content: "", draft }];
@@ -312,16 +363,49 @@ export function usePrompter() {
           streamingIdRef.current = null;
           setActivity(null);
           setIsSending(false);
-          setState((s) => (s === "draft_preview" ? s : "chatting"));
+          setState((s) =>
+            s === "draft_preview" || s === "batch_preview" ? s : "chatting",
+          );
           break;
         case "draft": {
           const parsed = draftFromEvent(evt.data);
           if (parsed) {
             attachDraft(parsed.draft);
             setEditableDraft(
-              toEditable(parsed.draft, parsed.scale, scopeRef.current)
+              toEditable(parsed.draft, parsed.scale, scopeRef.current),
             );
             setState("draft_preview");
+          }
+          break;
+        }
+        case "batch": {
+          // A MegaTask: the agent proposed N drafts at once. Hold them for the
+          // Review MegaTask card; the human confirms the whole batch together.
+          const parsedBatch = batchFromEvent(evt.data);
+          if (parsedBatch) {
+            streamingIdRef.current = null;
+            setBatch(parsedBatch);
+            setBatchWaves(null);
+            setState("batch_preview");
+            if (parsedBatch.dropped > 0) {
+              addMessage({
+                role: "error",
+                content:
+                  `${parsedBatch.dropped} proposed task${
+                    parsedBatch.dropped === 1 ? " was" : "s were"
+                  } malformed and dropped from this MegaTask. Ask the agent to ` +
+                  "re-propose them if they're needed.",
+              });
+            }
+            // Compute the conflict-free waves (no task created) so the human can
+            // review the sequencing before confirming. Best-effort.
+            const sid = sessionIdRef.current;
+            if (sid) {
+              void prompterLiveApi
+                .previewBatch(sid, parsedBatch.drafts)
+                .then((p) => setBatchWaves(p.waves))
+                .catch(() => setBatchWaves(null));
+            }
           }
           break;
         }
@@ -340,7 +424,7 @@ export function usePrompter() {
           break;
       }
     },
-    [appendDelta, attachDraft, addMessage]
+    [appendDelta, attachDraft, addMessage],
   );
 
   const closeStream = useCallback(() => {
@@ -363,7 +447,7 @@ export function usePrompter() {
       }
       sourceRef.current = es;
     },
-    [closeStream, handleEvent]
+    [closeStream, handleEvent],
   );
 
   // Best-effort reap if the user navigates away mid-chat. This cleanup runs on
@@ -387,6 +471,7 @@ export function usePrompter() {
       (state === "chatting" ||
         state === "streaming" ||
         state === "draft_preview" ||
+        state === "batch_preview" ||
         state === "review_modal");
     if (persistable && sessionId) {
       savePersisted({
@@ -396,10 +481,12 @@ export function usePrompter() {
         scope: scopeRef.current,
         editableDraft,
         redraftTaskId: redraftTaskIdRef.current,
+        batch,
+        batchWaves,
         savedAt: Date.now(),
       });
     }
-  }, [sessionId, messages, state, editableDraft]);
+  }, [sessionId, messages, state, editableDraft, batch, batchWaves]);
 
   // On mount, reconnect to a still-running session left behind by a reload.
   const didRestoreRef = useRef(false);
@@ -428,11 +515,17 @@ export function usePrompter() {
         setTargetKind(persisted.scope.targetKind);
         setProjectId(persisted.scope.projectId);
         setProductId(persisted.scope.productId);
+        setProjectIds(persisted.scope.projectIds ?? []);
+        setBatch(persisted.batch ?? null);
+        setBatchWaves(persisted.batchWaves ?? null);
+        // A MegaTask review survives reload; otherwise land on a stable state.
         setState(
-          persisted.state === "draft_preview" ||
-            persisted.state === "review_modal"
-            ? "draft_preview"
-            : "chatting"
+          persisted.state === "batch_preview" && persisted.batch
+            ? "batch_preview"
+            : persisted.state === "draft_preview" ||
+                persisted.state === "review_modal"
+              ? "draft_preview"
+              : "chatting",
         );
         openStream(persisted.sessionId);
       } catch {
@@ -450,20 +543,29 @@ export function usePrompter() {
   // -----------------------------------------------------------------------
 
   const isFormValid = useCallback((): boolean => {
-    const scoped = targetKind === "product" ? productId !== "" : projectId !== "";
+    const scoped =
+      targetKind === "product"
+        ? productId !== ""
+        : targetKind === "megatask"
+          ? projectIds.length >= 2 // a MegaTask spans several repos
+          : projectId !== "";
     return scoped && initialMessage.trim().length > 0;
-  }, [targetKind, projectId, productId, initialMessage]);
+  }, [targetKind, projectId, productId, projectIds, initialMessage]);
 
   const start = useCallback(async () => {
     if (!isFormValid() || state === "preparing") return;
     const opening = initialMessage.trim();
     setState("preparing");
     addMessage({ role: "user", content: opening });
+    const scopePayload =
+      targetKind === "product"
+        ? { product_id: productId }
+        : targetKind === "megatask"
+          ? { project_ids: projectIds }
+          : { project_id: projectId };
     try {
       const { session_id } = await prompterLiveApi.start({
-        ...(targetKind === "product"
-          ? { product_id: productId }
-          : { project_id: projectId }),
+        ...scopePayload,
         initial_message: opening,
       });
       sessionIdRef.current = session_id;
@@ -472,7 +574,9 @@ export function usePrompter() {
       setIsSending(true); // the opening reply is on its way over SSE
       // start now returns immediately; the container spawns in the background
       // (clone + image build can take a minute). Show that until the first event.
-      setActivity("Preparing the agent — cloning your repo and reading the code…");
+      setActivity(
+        "Preparing the agent — cloning your repo and reading the code…",
+      );
       setState("streaming");
     } catch (err) {
       addMessage({ role: "error", content: getErrorMessage(err) });
@@ -485,6 +589,7 @@ export function usePrompter() {
     targetKind,
     productId,
     projectId,
+    projectIds,
     addMessage,
     openStream,
   ]);
@@ -546,7 +651,7 @@ export function usePrompter() {
         setState("chatting");
       }
     },
-    [isSending, addMessage]
+    [isSending, addMessage],
   );
 
   // -----------------------------------------------------------------------
@@ -577,98 +682,190 @@ export function usePrompter() {
   // Launch — confirm the draft → task, then reap the agent
   // -----------------------------------------------------------------------
 
-  const launchTask = useCallback(async (route: StartRoute) => {
-    // Re-entry guard FIRST (synchronous, no stale closure): a double-click was
-    // firing two confirms and creating duplicate tasks.
-    if (launchingRef.current) return;
-    const sid = sessionIdRef.current;
-    // Never fail silently — a dead button with no feedback reads as "broken"
-    // (it did: a missing `description` threw inside validation and the click
-    // vanished). Tell the human exactly what's blocking the launch.
-    if (!sid) {
-      toast.error("This chat has ended — start a new one to launch a task.");
-      return;
-    }
-    if (!isValidForLaunch()) {
-      toast.error(
-        "The draft is missing something needed to launch: a title, a 20+ character " +
-          "summary, at least one acceptance criterion, and a target. Keep chatting to refine it."
-      );
-      return;
-    }
-
-    launchingRef.current = true;
-    setIsLaunching(true);
-    setState("launching");
-
-    const draft: DraftProposal = {
-      title: editableDraft.title.trim(),
-      description: (editableDraft.description ?? "").trim(),
-      acceptance_criteria: editableDraft.acceptance_criteria,
-      team: editableDraft.team as Team,
-      priority: editableDraft.priority,
-      objective: editableDraft.objective.trim() || null,
-      what_this_builds: editableDraft.what_this_builds,
-      the_work: editableDraft.the_work,
-      notes: editableDraft.notes,
-      ...(editableDraft.task_type ? { task_type: editableDraft.task_type } : {}),
-      ...(editableDraft.nature ? { nature: editableDraft.nature } : {}),
-      ...(editableDraft.estimated_complexity
-        ? { estimated_complexity: editableDraft.estimated_complexity }
-        : {}),
-    };
-
-    const payload: ConfirmPayload =
-      editableDraft.targetKind === "product"
-        ? { product_id: editableDraft.productId, draft, route }
-        : { project_id: editableDraft.projectId, draft, route };
-    // Board-informed re-draft: confirm updates the existing task in place.
-    const redraftId = redraftTaskIdRef.current;
-    if (redraftId) {
-      payload.task_id = redraftId;
-    }
-
-    const effectiveTeam =
-      editableDraft.targetKind === "product"
-        ? Team.MAIN_PM
-        : (editableDraft.team as Team);
-
-    try {
-      const { task_id } = await prompterLiveApi.confirm(sid, payload);
-      // Board route, first pass: the backend parked the intake agent so the
-      // board's feedback can be injected for an in-place re-draft. Keep the chat
-      // alive (don't reap) — the revised draft will arrive here to approve.
-      if (route === "board" && !redraftId) {
-        redraftTaskIdRef.current = task_id;
-        addMessage({
-          role: "assistant",
-          content:
-            "Sent to the board — the Product Owner and Head of Marketing are " +
-            "reviewing this. Their feedback will arrive here as a revised draft " +
-            "you can approve. You can leave and come back; this chat stays open.",
-        });
-        setState("chatting");
-        return; // `finally` resets the launching guard
+  const launchTask = useCallback(
+    async (route: StartRoute) => {
+      // Re-entry guard FIRST (synchronous, no stale closure): a double-click was
+      // firing two confirms and creating duplicate tasks.
+      if (launchingRef.current) return;
+      const sid = sessionIdRef.current;
+      // Never fail silently — a dead button with no feedback reads as "broken"
+      // (it did: a missing `description` threw inside validation and the click
+      // vanished). Tell the human exactly what's blocking the launch.
+      if (!sid) {
+        toast.error("This chat has ended — start a new one to launch a task.");
+        return;
       }
-      // The draft became a task — reap the agent and close the stream.
-      closeStream();
-      void prompterLiveApi.stop(sid).catch(() => undefined);
-      clearPersisted();
-      sessionIdRef.current = null;
-      redraftTaskIdRef.current = null;
-      setCreatedTaskId(task_id);
-      setCreatedTaskTitle(draft.title);
-      setCreatedTaskTeam(effectiveTeam);
-      toast.success("Task created and launched!");
-      setState("success");
-    } catch (err) {
-      toast.error(`Failed to launch task: ${getErrorMessage(err)}`);
-      setState("draft_preview"); // back to the draft card to retry
-    } finally {
-      setIsLaunching(false);
-      launchingRef.current = false;
-    }
-  }, [editableDraft, isValidForLaunch, closeStream, addMessage]);
+      if (!isValidForLaunch()) {
+        toast.error(
+          "The draft is missing something needed to launch: a title, a 20+ character " +
+            "summary, at least one acceptance criterion, and a target. Keep chatting to refine it.",
+        );
+        return;
+      }
+
+      launchingRef.current = true;
+      setIsLaunching(true);
+      setState("launching");
+
+      const draft: DraftProposal = {
+        title: editableDraft.title.trim(),
+        description: (editableDraft.description ?? "").trim(),
+        acceptance_criteria: editableDraft.acceptance_criteria,
+        team: editableDraft.team as Team,
+        priority: editableDraft.priority,
+        objective: editableDraft.objective.trim() || null,
+        what_this_builds: editableDraft.what_this_builds,
+        the_work: editableDraft.the_work,
+        notes: editableDraft.notes,
+        ...(editableDraft.task_type
+          ? { task_type: editableDraft.task_type }
+          : {}),
+        ...(editableDraft.nature ? { nature: editableDraft.nature } : {}),
+        ...(editableDraft.estimated_complexity
+          ? { estimated_complexity: editableDraft.estimated_complexity }
+          : {}),
+      };
+
+      const payload: ConfirmPayload =
+        editableDraft.targetKind === "product"
+          ? { product_id: editableDraft.productId, draft, route }
+          : { project_id: editableDraft.projectId, draft, route };
+      // Board-informed re-draft: confirm updates the existing task in place.
+      const redraftId = redraftTaskIdRef.current;
+      if (redraftId) {
+        payload.task_id = redraftId;
+      }
+
+      const effectiveTeam =
+        editableDraft.targetKind === "product"
+          ? Team.MAIN_PM
+          : (editableDraft.team as Team);
+
+      try {
+        const { task_id } = await prompterLiveApi.confirm(sid, payload);
+        // Board route, first pass: the backend parked the intake agent so the
+        // board's feedback can be injected for an in-place re-draft. Keep the chat
+        // alive (don't reap) — the revised draft will arrive here to approve.
+        if (route === "board" && !redraftId) {
+          redraftTaskIdRef.current = task_id;
+          addMessage({
+            role: "assistant",
+            content:
+              "Sent to the board — the Product Owner and Head of Marketing are " +
+              "reviewing this. Their feedback will arrive here as a revised draft " +
+              "you can approve. You can leave and come back; this chat stays open.",
+          });
+          setState("chatting");
+          return; // `finally` resets the launching guard
+        }
+        // The draft became a task — reap the agent and close the stream.
+        closeStream();
+        void prompterLiveApi.stop(sid).catch(() => undefined);
+        clearPersisted();
+        sessionIdRef.current = null;
+        redraftTaskIdRef.current = null;
+        setCreatedTaskId(task_id);
+        setCreatedTaskTitle(draft.title);
+        setCreatedTaskTeam(effectiveTeam);
+        toast.success("Task created and launched!");
+        setState("success");
+      } catch (err) {
+        toast.error(`Failed to launch task: ${getErrorMessage(err)}`);
+        setState("draft_preview"); // back to the draft card to retry
+      } finally {
+        setIsLaunching(false);
+        launchingRef.current = false;
+      }
+    },
+    [editableDraft, isValidForLaunch, closeStream, addMessage],
+  );
+
+  // -----------------------------------------------------------------------
+  // Confirm a MegaTask — create the umbrella + sequenced root-subtasks, reap
+  // -----------------------------------------------------------------------
+
+  /** Reassign one task in the proposed MegaTask to a different project. Lets the
+   *  human fix a draft the agent put in the wrong (or no) repo before launch.
+   *  Project does not affect the wave plan (waves derive from collision surface),
+   *  so the previewed waves stay valid. */
+  const updateBatchDraftProject = useCallback(
+    (index: number, projectId: string) => {
+      setBatch((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          drafts: prev.drafts.map((d, i) =>
+            i === index ? { ...d, project_id: projectId } : d,
+          ),
+        };
+      });
+    },
+    [],
+  );
+
+  const confirmBatch = useCallback(
+    async (route: StartRoute) => {
+      if (launchingRef.current) return;
+      const sid = sessionIdRef.current;
+      if (!sid) {
+        toast.error(
+          "This chat has ended — start a new one to launch a MegaTask.",
+        );
+        return;
+      }
+      if (!batch || batch.drafts.length === 0) {
+        toast.error(
+          "No MegaTask to launch yet — keep chatting to propose one.",
+        );
+        return;
+      }
+      // Every task must target one of the scoped repos (the agent assigns it,
+      // the human can fix it). The backend re-asserts this authoritatively.
+      const scoped = scopeRef.current.projectIds;
+      const offender = batch.drafts.findIndex(
+        (d) => !d.project_id || !scoped.includes(d.project_id),
+      );
+      if (offender !== -1) {
+        toast.error(
+          `Task ${offender + 1} ("${batch.drafts[offender].title}") needs one of ` +
+            "this MegaTask's selected projects. Pick it in the review card.",
+        );
+        return;
+      }
+
+      launchingRef.current = true;
+      setIsLaunching(true);
+      setState("launching");
+      try {
+        const result = await prompterLiveApi.confirmBatch(sid, {
+          title: batch.title.trim() || "MegaTask",
+          drafts: batch.drafts,
+          project_ids: scopeRef.current.projectIds,
+          route,
+        });
+        closeStream();
+        void prompterLiveApi.stop(sid).catch(() => undefined);
+        clearPersisted();
+        sessionIdRef.current = null;
+        setBatchResult(result);
+        setCreatedTaskId(result.umbrella_task_id);
+        setCreatedTaskTitle(batch.title.trim() || "MegaTask");
+        setCreatedTaskTeam(route === "board" ? Team.BOARD : Team.MAIN_PM);
+        toast.success(
+          `MegaTask launched — ${result.root_subtask_ids.length} tasks in ` +
+            `${result.waves.length} wave${result.waves.length === 1 ? "" : "s"}.`,
+        );
+        setState("success");
+      } catch (err) {
+        toast.error(`Failed to launch MegaTask: ${getErrorMessage(err)}`);
+        setState("batch_preview");
+      } finally {
+        setIsLaunching(false);
+        launchingRef.current = false;
+      }
+    },
+    [batch, closeStream],
+  );
 
   // -----------------------------------------------------------------------
   // Reset to start another conversation
@@ -685,8 +882,12 @@ export function usePrompter() {
     setSessionId(null);
     setActivity(null);
     setEditableDraft(EMPTY_DRAFT);
+    setBatch(null);
+    setBatchWaves(null);
+    setBatchResult(null);
     setProjectId("");
     setProductId("");
+    setProjectIds([]);
     setInitialMessage("");
     setTargetKind("project");
     setCreatedTaskId(null);
@@ -714,6 +915,8 @@ export function usePrompter() {
     setProjectId,
     productId,
     setProductId,
+    projectIds,
+    setProjectIds,
     initialMessage,
     setInitialMessage,
     isFormValid,
@@ -730,5 +933,12 @@ export function usePrompter() {
     launchTask,
     startAnother,
     isLaunching,
+
+    // MegaTask
+    batch,
+    batchWaves,
+    batchResult,
+    updateBatchDraftProject,
+    confirmBatch,
   };
 }

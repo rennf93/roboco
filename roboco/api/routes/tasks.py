@@ -138,6 +138,19 @@ def _apply_null_clears(task: Any, null_clears: dict[str, None]) -> None:
         setattr(task, field, None)
 
 
+def _reassert_batch_shape(task: Any) -> None:
+    """Raise HTTP 400 if a mutation broke the task's MegaTask shape. Raised
+    before any commit, so a violation rolls back cleanly."""
+    from roboco.services.task import TaskService
+
+    try:
+        TaskService.assert_batch_shape_intact(task)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+
+
 async def _resolve_assigned_to_slug(
     data: "TaskUpdate", db: AsyncSession
 ) -> "TaskUpdate":
@@ -867,6 +880,10 @@ async def update_task(
             detail="Task update failed unexpectedly",
         )
     _apply_null_clears(task, null_clears)
+    # Null-clears apply AFTER service.update() (and its shape guard), so re-assert
+    # the MegaTask shape here too — a cleared parent_task_id / project_id must not
+    # turn a root-subtask into an umbrella-shaped-but-targeted spoof.
+    _reassert_batch_shape(task)
     if new_status is not None and new_status != task.status:
         if not has_higher_perms:
             raise HTTPException(

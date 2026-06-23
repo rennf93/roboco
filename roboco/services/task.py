@@ -32,6 +32,11 @@ from roboco.enforcement import (
     validate_task_transition,
 )
 from roboco.events import Event, EventType, get_event_bus
+from roboco.foundation.policy.batch import (
+    is_batch_umbrella,
+    is_branchless_coordination,
+    is_valid_batch_shape,
+)
 from roboco.foundation.policy.content import markers
 from roboco.foundation.policy.content.validators import ContentValidationError
 from roboco.models.base import (
@@ -449,14 +454,25 @@ class TaskService(BaseService):
             pr_created=bool(task.pr_created),
             pr_number=task.pr_number,
             branch_name=str(task.branch_name) if task.branch_name else None,
-            # A coordination/fan-out task (product, no repo of its own) does no
-            # git and never gets a branch — exempt it from the branch gate so it
-            # can reach in_progress and delegate. product_id is a plain column
-            # (no lazy load).
-            is_coordination=(task.project_id is None and task.product_id is not None),
+            # A branchless coordination task does no git and never gets a branch
+            # — exempt it from the branch gate so it can reach in_progress and
+            # delegate. Two shapes qualify: a product fan-out root (product, no
+            # repo) and a MegaTask umbrella (batch_id, top-level). All four are
+            # plain columns (no lazy load).
+            is_coordination=is_branchless_coordination(
+                project_id=task.project_id,
+                product_id=task.product_id,
+                batch_id=task.batch_id,
+                parent_task_id=task.parent_task_id,
+            ),
             # An external-PR review task reviews someone else's PR read-only —
             # no branch of its own — so it is branch-gate exempt.
             is_external_review=(getattr(task, "source", "manual") in PR_REVIEW_SOURCES),
+            # A MegaTask umbrella assembles no PR of its own, so it is exempt
+            # from the awaiting_pm_review->awaiting_ceo_approval pr_number gate.
+            is_umbrella=is_batch_umbrella(
+                batch_id=task.batch_id, parent_task_id=task.parent_task_id
+            ),
         )
         validate_git_requirements(current, target, git_ctx)
 
@@ -623,6 +639,59 @@ class TaskService(BaseService):
             parent_parent = parent.parent_task_id
             current_id = UUID(str(parent_parent)) if parent_parent else None
 
+    @staticmethod
+    def _require_target_or_umbrella(req: TaskCreateRequest) -> None:
+        """Service-layer invariant (covers every create path — API, a2a, gateway).
+
+        A task targets a single repo (``project_id``) or fans out across cells via
+        a product (``product_id``) — it must have one or the other, EXCEPT a
+        MegaTask umbrella, which targets neither (it groups N root-subtasks that
+        each carry their own project) and is branchless.
+        """
+        if req.project_id is not None or req.product_id is not None:
+            return
+        if is_batch_umbrella(batch_id=req.batch_id, parent_task_id=req.parent_task_id):
+            return
+        raise ValueError(
+            "task needs a project_id (the repo it targets) or a product_id "
+            "(a cell->project map for a fan-out task)"
+        )
+
+    async def _validate_batch_membership(self, req: TaskCreateRequest) -> None:
+        """Guardrail: a ``batch_id`` is only valid on a well-formed MegaTask member.
+
+        ``is_valid_batch_shape`` checks the structural shape; for a root-subtask we
+        ALSO verify its parent is the batch umbrella (same ``batch_id``, top-level).
+        Together they deny a stray ``batch_id`` on a normal task — which would
+        otherwise spoof the umbrella's branch-gate / no-PR exemption or mislabel
+        the task as part of a batch. No-op when ``batch_id`` is unset.
+        """
+        if req.batch_id is None:
+            return
+        if not is_valid_batch_shape(
+            batch_id=req.batch_id,
+            parent_task_id=req.parent_task_id,
+            project_id=req.project_id,
+            product_id=req.product_id,
+        ):
+            raise ValueError(
+                "batch_id is only valid on a MegaTask umbrella (targets neither "
+                "project nor product) or a root-subtask (targets exactly one); "
+                "refusing a stray batch_id on any other task."
+            )
+        if req.parent_task_id is None:
+            return  # a well-formed umbrella
+        parent = await self.get(req.parent_task_id)
+        if (
+            parent is None
+            or parent.batch_id != req.batch_id
+            or parent.parent_task_id is not None
+        ):
+            raise ValueError(
+                "a MegaTask root-subtask's parent must be the batch umbrella "
+                "(same batch_id, top-level)."
+            )
+
     async def create(self, req: TaskCreateRequest) -> TaskTable:
         """
         Create a new task.
@@ -630,14 +699,8 @@ class TaskService(BaseService):
         Default status is PENDING. PM can pass status=BACKLOG when creating
         subtasks that need session setup before activation.
         """
-        # Service-layer invariant (covers every create path — API, a2a,
-        # gateway): a task targets a single repo (project_id) or fans out across
-        # cells via a product (product_id). It must have one or the other.
-        if req.project_id is None and req.product_id is None:
-            raise ValueError(
-                "task needs a project_id (the repo it targets) or a product_id "
-                "(a cell->project map for a fan-out task)"
-            )
+        self._require_target_or_umbrella(req)
+        await self._validate_batch_membership(req)
 
         if req.parent_task_id:
             await self._validate_parent_depth(req.parent_task_id)
@@ -664,6 +727,11 @@ class TaskService(BaseService):
             status=req.status if req.status else TaskStatus.PENDING,
             sequence=req.sequence,  # Task ordering within siblings
             dependency_ids=req.dependency_ids,  # Task IDs that must complete first
+            # Sequenced batch intake collision surface
+            batch_id=req.batch_id,
+            intends_to_touch=req.intends_to_touch,
+            adds_migration=req.adds_migration,
+            touches_shared=req.touches_shared,
             # Git configuration (all tasks follow git workflow)
             task_type=req.task_type,
             project_id=req.project_id,
@@ -1288,7 +1356,10 @@ class TaskService(BaseService):
         - If branch exists: return it
         - Coordination/fan-out task (carries a product, no repo of its own): no
           branch — it does no git work
-        - If neither project nor product: raise (genuinely misconfigured)
+        - MegaTask umbrella (batch_id, top-level): branchless by design (spans
+          many projects, assembles no PR) — return "" (its root-subtasks branch)
+        - If neither project nor product nor umbrella: raise (genuinely
+          misconfigured)
         - Create NEW branch (hierarchical name built by build_branch_name)
         - Branch created from parent's branch (or default if root)
 
@@ -1307,6 +1378,14 @@ class TaskService(BaseService):
             # Only a task with neither project nor product is misconfigured.
             if task.product_id:
                 return await self._ensure_coordination_root_branches(task, agent_id)
+            # A MegaTask umbrella is branchless by design: it spans many projects
+            # (no single master to branch off) and assembles no PR of its own —
+            # each root-subtask carries its own project/branch/PR. Return "" so
+            # the claim path treats it as branchless rather than misconfigured.
+            if is_batch_umbrella(
+                batch_id=task.batch_id, parent_task_id=task.parent_task_id
+            ):
+                return ""
             raise ValueError(
                 "Task requires a project_id (a repo) or a product_id (a "
                 "cell->project map) to create a branch. Assign one before "
@@ -1555,6 +1634,32 @@ class TaskService(BaseService):
         apply_structured_note(task, content_type, payload)
         await self.session.flush()
 
+    @staticmethod
+    def assert_batch_shape_intact(task: TaskTable) -> None:
+        """A mutation must not break a task's MegaTask shape.
+
+        The branchless predicates (is_batch_umbrella / is_branchless_coordination)
+        trust the create-time ``is_valid_batch_shape`` invariant — so any update
+        path that can change ``parent_task_id`` / ``project_id`` / ``product_id``
+        must re-check it, else a PATCH could turn a root-subtask into an
+        umbrella-shaped-but-targeted task and spoof the branch-gate / no-PR
+        exemption. No-op for a non-batch task (``batch_id`` None/absent) — uses
+        ``getattr`` so a partial-caller stub without the column is tolerated.
+        """
+        if getattr(task, "batch_id", None) is None:
+            return
+        if not is_valid_batch_shape(
+            batch_id=task.batch_id,
+            parent_task_id=getattr(task, "parent_task_id", None),
+            project_id=getattr(task, "project_id", None),
+            product_id=getattr(task, "product_id", None),
+        ):
+            raise ValueError(
+                "this update would break the task's MegaTask shape: a batch "
+                "member must stay an umbrella (targets neither project nor "
+                "product) or a root-subtask (exactly one target, parented)."
+            )
+
     async def update(
         self,
         task_id: UUID,
@@ -1569,6 +1674,7 @@ class TaskService(BaseService):
             if hasattr(task, key) and value is not None:
                 setattr(task, key, value)
 
+        self.assert_batch_shape_intact(task)
         await self.session.flush()
 
         self.log.info(
@@ -4354,8 +4460,13 @@ class TaskService(BaseService):
             )
             return None
 
-        # ENFORCEMENT: Tasks must have PR created before CEO approval
-        if not task.pr_number:
+        # ENFORCEMENT: Tasks must have a PR before CEO approval — EXCEPT a
+        # MegaTask umbrella, which is branchless by design (assembles no PR of
+        # its own; each root-subtask carries its own project/branch/PR). It
+        # escalates to the CEO with no pr_number once every root-subtask is done.
+        if not task.pr_number and not is_batch_umbrella(
+            batch_id=task.batch_id, parent_task_id=task.parent_task_id
+        ):
             self.log.warning(
                 "Cannot escalate to CEO - task has no PR",
                 task_id=str(task_id),
@@ -4523,6 +4634,10 @@ class TaskService(BaseService):
             markers.set_approve_and_start_notes(task, notes)
 
         await self.session.flush()
+        # A MegaTask umbrella holds its root-subtasks in BACKLOG until this gate
+        # (the board reviews the batch first). Now that the CEO approved it,
+        # release them so the dependency-gate dispatches wave 0.
+        await self._activate_batch_root_subtasks(task)
         await self._emit_task_event(
             EventType.TASK_STARTED,
             task_id,
@@ -4534,6 +4649,29 @@ class TaskService(BaseService):
             idempotent=already,
         )
         return task
+
+    async def _activate_batch_root_subtasks(self, umbrella: TaskTable) -> None:
+        """Release a MegaTask umbrella's held root-subtasks on CEO approval.
+
+        No-op unless ``umbrella`` is a batch umbrella. The board route creates the
+        root-subtasks in BACKLOG (team=board) so the work waits for the batch
+        review; once the CEO approves the umbrella to the Main PM, flip each held
+        child to PENDING + team=main_pm. The dependency-gate then dispatches the
+        wave-0 items and holds later waves until their predecessors are terminal.
+        Idempotent: a child already past BACKLOG is left untouched.
+        """
+        if not is_batch_umbrella(
+            batch_id=umbrella.batch_id, parent_task_id=umbrella.parent_task_id
+        ):
+            return
+        released = False
+        for child in await self.get_subtasks(cast("UUID", umbrella.id)):
+            if child.batch_id is not None and child.status == TaskStatus.BACKLOG:
+                child.status = TaskStatus.PENDING
+                child.team = cast("Any", Team.MAIN_PM)
+                released = True
+        if released:
+            await self.session.flush()
 
     async def mark_board_review_complete(self, task_id: UUID) -> bool:
         """Flag a board task as board-reviewed without moving it off pending.
@@ -4627,12 +4765,17 @@ class TaskService(BaseService):
         # Store the CEO's rejection reason as a marker, not quick_context soup.
         markers.set_transition_note(task, "ceo_rejection", reason)
 
-        # A coordination/integration root (no repo of its own, carries a
-        # product) has no developer to revise it — NEEDS_REVISION is
+        # A branchless coordination root (a product integration root or a
+        # MegaTask umbrella) has no developer to revise it — NEEDS_REVISION is
         # developer-claim-only, so it would deadlock the Main PM that owns the
         # root. Such a root is routed to PENDING below instead; every other task
         # takes the normal NEEDS_REVISION path back toward its developer.
-        is_coordination_root = task.project_id is None and task.product_id is not None
+        is_coordination_root = is_branchless_coordination(
+            project_id=task.project_id,
+            product_id=task.product_id,
+            batch_id=task.batch_id,
+            parent_task_id=task.parent_task_id,
+        )
         if not is_coordination_root:
             self._validate_and_set_status(task, TaskStatus.NEEDS_REVISION, "ceo")
 

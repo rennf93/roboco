@@ -184,6 +184,76 @@ class TestIntakeScopeSlugs:
                 product_id="33333333-3333-3333-3333-333333333333",
             )
 
+    @pytest.mark.asyncio
+    async def test_megatask_scope_resolves_explicit_project_ids_in_order(self) -> None:
+        # A MegaTask spans an explicit set of (possibly unrelated) projects; the
+        # slugs are resolved in the given order (the first is the primary cwd).
+        ids = [
+            "11111111-1111-1111-1111-111111111111",
+            "22222222-2222-2222-2222-222222222222",
+        ]
+
+        class _FakeProjectSvc:
+            async def get(self, pid: Any) -> Any:
+                return SimpleNamespace(slug=f"proj-{str(pid)[0]}")
+
+        with patch(
+            "roboco.services.project.get_project_service",
+            lambda _db: _FakeProjectSvc(),
+        ):
+            slugs = await AgentOrchestrator._intake_scope_slugs(
+                db=object(),
+                project_slug=None,
+                product_id=None,
+                project_ids=ids,
+            )
+        assert slugs == ["proj-1", "proj-2"]
+
+    @pytest.mark.asyncio
+    async def test_megatask_scope_with_unresolvable_project_raises(self) -> None:
+        class _FakeProjectSvc:
+            async def get(self, _pid: Any) -> Any:
+                return None
+
+        with (
+            patch(
+                "roboco.services.project.get_project_service",
+                lambda _db: _FakeProjectSvc(),
+            ),
+            pytest.raises(ValueError, match="not found"),
+        ):
+            await AgentOrchestrator._intake_scope_slugs(
+                db=object(),
+                project_slug=None,
+                product_id=None,
+                project_ids=["11111111-1111-1111-1111-111111111111"],
+            )
+
+    @pytest.mark.asyncio
+    async def test_megatask_scope_with_one_unresolvable_id_raises(self) -> None:
+        # A PARTIAL failure (one of N ids invalid) must fail loud, not silently
+        # clone fewer repos than the agent was told it has.
+        good = "11111111-1111-1111-1111-111111111111"
+        bad = "22222222-2222-2222-2222-222222222222"
+
+        class _FakeProjectSvc:
+            async def get(self, pid: Any) -> Any:
+                return SimpleNamespace(slug="proj-a") if str(pid) == good else None
+
+        with (
+            patch(
+                "roboco.services.project.get_project_service",
+                lambda _db: _FakeProjectSvc(),
+            ),
+            pytest.raises(ValueError, match="not found"),
+        ):
+            await AgentOrchestrator._intake_scope_slugs(
+                db=object(),
+                project_slug=None,
+                product_id=None,
+                project_ids=[good, bad],
+            )
+
 
 # ---------------------------------------------------------------------------
 # spawn_intake_session / reap_intake_session — orchestration (docker mocked).
@@ -206,7 +276,7 @@ def _wire_spawn_mocks(
 ) -> None:
     """Patch every external boundary spawn_intake_session touches."""
 
-    async def _clone(_p: Any, _pr: Any) -> tuple[str, list[str]]:
+    async def _clone(_p: Any, _pr: Any, _pids: Any = None) -> tuple[str, list[str]]:
         return "/data/workspaces/roboco/board/intake-1", [
             "/data/workspaces/roboco/board/intake-1"
         ]
@@ -271,6 +341,25 @@ class TestSpawnIntakeSession:
             await orch.spawn_intake_session("s", project_slug="roboco", product_id="p")
         with pytest.raises(ValueError, match="exactly one"):
             await orch.spawn_intake_session("s")
+        # A MegaTask scope cannot combine with a single-project scope.
+        with pytest.raises(ValueError, match="exactly one"):
+            await orch.spawn_intake_session(
+                "s", project_slug="roboco", project_ids=["p1"]
+            )
+
+    @pytest.mark.asyncio
+    async def test_spawn_accepts_megatask_project_ids_scope(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        orch = _make_minimal_orchestrator()
+        run_calls: list[list[str]] = []
+        _wire_spawn_mocks(monkeypatch, orch, run_calls)
+
+        instance = await orch.spawn_intake_session(
+            "sess-mega", project_ids=["11111111-1111-1111-1111-111111111111"]
+        )
+        assert orch._instances[INTAKE_AGENT_ID] is instance
+        assert run_calls  # the container actually launched for the MegaTask scope
 
     @pytest.mark.asyncio
     async def test_spawn_reaps_prior_session_first(

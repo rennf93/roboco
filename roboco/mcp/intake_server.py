@@ -1,9 +1,11 @@
-"""roboco-intake MCP server — the Intake interviewer's ``propose_draft`` tool.
+"""roboco-intake MCP server — the Intake interviewer's ``propose_draft`` and
+``propose_batch`` (MegaTask) tools.
 
-The grok-CLI interactive intake agent calls ``propose_draft`` once the task spec
-is ready; this delivers the draft to the panel's reviewable draft card by POSTing
-it straight to the prompter-live relay (the same ``/api/prompter/live/{session}/
-events`` endpoint the driver's relay sink uses).
+The grok-CLI interactive intake agent calls ``propose_draft`` (one task) or
+``propose_batch`` (a sequenced MegaTask of several tasks) once the spec is ready;
+this delivers it to the panel's reviewable card by POSTing it straight to the
+prompter-live relay (the same ``/api/prompter/live/{session}/events`` endpoint the
+driver's relay sink uses).
 
 WHY IT POSTS DIRECTLY: grok's ``streaming-json`` output does not surface
 tool-call events (verified live — a tool runs but never appears in the stream),
@@ -35,30 +37,18 @@ def _api_base() -> str:
     )
 
 
-async def post_draft(
+async def _post_event(
     session_id: str,
-    draft: dict[str, Any],
+    payload: dict[str, Any],
     *,
     client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
-    """POST the draft to the prompter-live relay; never raises.
-
-    Module-level so it is unit-testable with ``httpx.MockTransport`` (the tool
-    wrapper below only shapes the result string).
-    """
+    """POST one relay event to the prompter-live relay; never raises."""
     owns = client is None
     http = client or httpx.AsyncClient(timeout=_TIMEOUT)
     url = f"{_api_base()}/api/prompter/live/{session_id}/events"
     try:
-        resp = await http.post(
-            url,
-            json={
-                "kind": "draft",
-                "text": "",
-                "tool": "propose_draft",
-                "data": draft,
-            },
-        )
+        resp = await http.post(url, json=payload)
     except httpx.HTTPError as exc:
         return {"error": "request_failed", "detail": str(exc)}
     finally:
@@ -69,6 +59,38 @@ async def post_draft(
     return {"ok": True}
 
 
+async def post_draft(
+    session_id: str,
+    draft: dict[str, Any],
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> dict[str, Any]:
+    """POST a single draft to the prompter-live relay; never raises.
+
+    Module-level so it is unit-testable with ``httpx.MockTransport`` (the tool
+    wrapper below only shapes the result string).
+    """
+    return await _post_event(
+        session_id,
+        {"kind": "draft", "text": "", "tool": "propose_draft", "data": draft},
+        client=client,
+    )
+
+
+async def post_batch(
+    session_id: str,
+    batch: dict[str, Any],
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> dict[str, Any]:
+    """POST a MegaTask batch (``{drafts: [...], title}``) to the relay; never raises."""
+    return await _post_event(
+        session_id,
+        {"kind": "batch", "text": "", "tool": "propose_batch", "data": batch},
+        client=client,
+    )
+
+
 @mcp.tool()
 async def propose_draft(draft: dict[str, Any]) -> str:
     """Submit the finished task draft for the human to review and confirm.
@@ -77,6 +99,14 @@ async def propose_draft(draft: dict[str, Any]) -> str:
     what_this_builds[], the_work[] ({team, summary, items}), notes[],
     acceptance_criteria[], team, scale, task_type, nature, estimated_complexity,
     priority.
+
+    Sequenced batch intake (when enabled): if the CEO asks for several tasks at
+    once, propose one draft per item and set each item's collision surface so the
+    system can sequence them into conflict-free waves — intends_to_touch[] (the
+    files/dirs this item will modify, from its grounding), adds_migration (does it
+    add a DB migration / column?), touches_shared (does it edit a widely-shared
+    component, token, or primitive?). Over-declaring a surface is safer than
+    under-declaring; the analyzer derives the ordering from these.
     """
     session_id = os.environ.get("ROBOCO_PROMPTER_SESSION_ID", "")
     if not session_id:
@@ -89,6 +119,49 @@ async def propose_draft(draft: dict[str, Any]) -> str:
         return "Draft submitted — the human can review it in the panel."
     detail = result.get("detail") or result.get("error") or "unknown error"
     return f"Could not submit the draft to the panel: {detail}"
+
+
+@mcp.tool()
+async def propose_batch(drafts: list[dict[str, Any]], title: str = "") -> str:
+    """Submit a MegaTask — SEVERAL task drafts at once — for the human to confirm.
+
+    Use this instead of ``propose_draft`` when the CEO asked for multiple tasks
+    across the scoped repos. ``drafts`` is a list where each item has the same
+    fields as a single draft PLUS its own ``project_id`` (which repo it targets)
+    and collision surface — ``intends_to_touch[]`` (files/dirs it will modify),
+    ``adds_migration`` (adds a DB migration?), ``touches_shared`` (edits a widely
+    shared component?). The system sequences them into conflict-free waves;
+    over-declaring a surface is safer than under-declaring. ``title`` names the
+    MegaTask.
+    """
+    session_id = os.environ.get("ROBOCO_PROMPTER_SESSION_ID", "")
+    if not session_id:
+        return (
+            "No live session id (ROBOCO_PROMPTER_SESSION_ID) — cannot surface the "
+            "MegaTask."
+        )
+    # Drop malformed entries (a draft needs a string title) and refuse to POST an
+    # empty batch — otherwise it would silently vanish on the panel side, telling
+    # the agent it succeeded while nothing appears.
+    raw = drafts or []
+    well_formed = [
+        d for d in raw if isinstance(d, dict) and isinstance(d.get("title"), str)
+    ]
+    if not well_formed:
+        return (
+            "That MegaTask had no well-formed task drafts — give each a title and "
+            "project_id and call propose_batch again."
+        )
+    payload = {
+        "drafts": well_formed,
+        "title": title,
+        "dropped": len(raw) - len(well_formed),
+    }
+    result = await post_batch(session_id, payload)
+    if result.get("ok"):
+        return "MegaTask submitted — the human can review it in the panel."
+    detail = result.get("detail") or result.get("error") or "unknown error"
+    return f"Could not submit the MegaTask to the panel: {detail}"
 
 
 if __name__ == "__main__":

@@ -8,6 +8,8 @@ You describe what you want — a feature, a fix, an entire product. The way in i
 
 *Where it starts — point the assistant at a project (one repo) or a product (several), drop in a rough idea, and it spins up an agent that reads that code before it says a word.*
 
+There is a third scope, **MegaTask**, for when you want several tasks at once across projects that don't share a codebase — the assistant proposes the whole batch and the company sequences it into conflict-free waves. See [MegaTask](../company/megatask.md).
+
 ![The Task Assistant chat opening: the idea is in, and the agent is cloning the repo and reading the code before it answers.](../images/prompter_run_1.png)
 
 *No canned questions. The agent clones the scope and reads the real surface first, so everything it asks and proposes is grounded in what your code actually does.*

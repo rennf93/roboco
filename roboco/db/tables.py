@@ -283,6 +283,22 @@ class TaskTable(Base):
         Integer, default=0, nullable=False, index=True
     )
 
+    # Sequenced batch intake ("Mega task"): a batch of top-level tasks created
+    # together. ``batch_id`` groups them; the three descriptors are the per-task
+    # collision surface the SequencingService reads to compute dependency waves.
+    batch_id: Mapped[UUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True, index=True
+    )
+    intends_to_touch: Mapped[list[str] | None] = mapped_column(
+        ARRAY(String), nullable=True
+    )
+    adds_migration: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    touches_shared: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False

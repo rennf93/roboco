@@ -21,6 +21,7 @@ import structlog
 
 from roboco.exceptions import MergeConflictError
 from roboco.foundation.policy import lifecycle as spec_module
+from roboco.foundation.policy.batch import is_batch_umbrella
 from roboco.foundation.policy.content import markers
 from roboco.foundation.policy.content.validators import reject_trivial
 from roboco.services.gateway.choreographer._verb_runner import VerbRunner
@@ -5394,6 +5395,42 @@ class Choreographer:
             return
         await self.task.reassign(parent_task_id, pm_agent.id)
 
+    def _submit_root_preflight(
+        self, t: Any, role_str: str, briefing: dict[str, Any]
+    ) -> Envelope | None:
+        """Reject a submit_root that can never assemble a root→master PR.
+
+        Two early refusals collapse here to keep ``submit_root`` within the
+        return-count budget. A MegaTask umbrella assembles no PR of its own — it
+        spans many projects (no single master) and each root-subtask opens its
+        own PR — so it must never enter the in-path review gate; the Main PM
+        completes the umbrella directly once every root-subtask is terminal. And
+        an actor whose role is not in the lifecycle spec cannot drive the verb.
+        Returns the rejection Envelope (caller adds introspection + emits) or
+        None when neither refusal applies.
+        """
+        if is_batch_umbrella(batch_id=t.batch_id, parent_task_id=t.parent_task_id):
+            return Envelope.invalid_state(
+                message="a MegaTask umbrella assembles no PR of its own",
+                remediate=(
+                    "the umbrella spans many projects — each root-subtask opens"
+                    " its own PR and is reviewed on its own diff. Do not"
+                    " submit_root the umbrella; once every root-subtask is"
+                    " terminal, call complete(task_id, notes='...') to escalate"
+                    " the MegaTask to the CEO."
+                ),
+                context_briefing=briefing,
+            )
+        try:
+            spec_module.Role(role_str)
+        except ValueError:
+            return Envelope.not_authorized(
+                message=f"unknown role '{role_str}'",
+                remediate="role is not declared in the lifecycle spec",
+                context_briefing=briefing,
+            )
+        return None
+
     async def submit_root(
         self, main_pm_agent_id: UUID, task_id: UUID, notes: str
     ) -> Envelope:
@@ -5420,19 +5457,16 @@ class Choreographer:
             )
         agent = await self.task.agent_for(main_pm_agent_id)
         role_str = str(agent.role) if agent is not None else "main_pm"
-        try:
-            role = spec_module.Role(role_str)
-        except ValueError:
+        # Hard-reject an umbrella (no PR of its own) or an unknown role before the
+        # spec gate; the preflight collapses both into one Envelope-or-None.
+        if env := self._submit_root_preflight(t, role_str, briefing):
             return await self._emit_rejection(
-                Envelope.not_authorized(
-                    message=f"unknown role '{role_str}'",
-                    remediate="role is not declared in the lifecycle spec",
-                    context_briefing=briefing,
-                ).with_introspection(task=t, role=role_str),
+                env.with_introspection(task=t, role=role_str),
                 agent_id=main_pm_agent_id,
                 task_id=task_id,
                 verb="submit_root",
             )
+        role = spec_module.Role(role_str)
         spec_ctx = spec_module.Context(
             actor_id=main_pm_agent_id,
             actor_slug=getattr(agent, "slug", None) if agent is not None else None,
@@ -5631,6 +5665,25 @@ class Choreographer:
         t = await self.task.escalate_to_ceo(
             task_id=root_task_id, agent_role="main_pm", notes=notes
         )
+        # Defense-in-depth: escalate_to_ceo returns None when it refuses (e.g. a
+        # transition guard rejects). Surface that as a clean rejection instead of
+        # dereferencing None below.
+        if t is None:
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message="escalate_to_ceo did not apply",
+                    remediate=(
+                        "ensure the root is in awaiting_pm_review with all"
+                        " subtasks terminal, then retry complete"
+                    ),
+                    context_briefing=await self._briefing_for(
+                        main_pm_agent_id, root_task_id
+                    ),
+                ),
+                agent_id=main_pm_agent_id,
+                task_id=root_task_id,
+                verb="main_pm_complete",
+            )
         # CEO acts via the UI, not as an agent the orchestrator spawns. Clear
         # ``assigned_to`` so no agent gets respawned to chase this task while
         # it sits in awaiting_ceo_approval.

@@ -571,6 +571,14 @@ export function TaskTable({
                         >
                           <div className="font-medium flex items-center gap-2">
                             <span className="truncate">{task.title}</span>
+                            {task.batch_id && !task.parent_task_id && (
+                              <Badge
+                                variant="outline"
+                                className="text-xs shrink-0 border-primary/50 text-primary"
+                              >
+                                MegaTask
+                              </Badge>
+                            )}
                             {childCount > 0 && (
                               <Badge
                                 variant="secondary"

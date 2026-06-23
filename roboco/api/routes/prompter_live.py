@@ -31,6 +31,8 @@ from roboco.api.deps import (
 )
 from roboco.api.schemas.prompter_live import (
     AgentEvent,
+    BatchConfirmRequest,
+    BatchPreviewRequest,
     LiveConfirmRequest,
     LiveMessageRequest,
     StartLiveRequest,
@@ -92,6 +94,8 @@ async def start_live(body: StartLiveRequest, db: DbSession) -> StartLiveResponse
             )
         project_slug = project.slug
 
+    project_ids = [str(pid) for pid in body.project_ids] if body.project_ids else None
+
     session_id = uuid4().hex
     try:
         # Non-blocking: opens the relay + spawns the container in the background,
@@ -100,6 +104,7 @@ async def start_live(body: StartLiveRequest, db: DbSession) -> StartLiveResponse
             session_id,
             project_slug=project_slug,
             product_id=str(body.product_id) if body.product_id else None,
+            project_ids=project_ids,
             initial_message=body.initial_message,
         )
     except HTTPException:
@@ -208,6 +213,58 @@ async def confirm_live(
     # The draft is now a task — reap the agent + close the relay stream.
     await get_orchestrator().reap_intake_session(session_id)
     return {"task_id": str(task_id)}
+
+
+@router.post("/live/{session_id}/preview-batch")
+async def preview_live_batch(
+    session_id: str,  # noqa: ARG001 — kept for route symmetry; preview is pure
+    body: BatchPreviewRequest,
+    db: DbSession,
+    agent: CurrentAgentContext,  # noqa: ARG001 — auth context only
+) -> dict[str, Any]:
+    """Compute a MegaTask's waves from the proposed drafts WITHOUT creating it.
+
+    Lets the panel show the human the conflict-free wave plan before they confirm
+    the batch. Pure compute — no task is created and the live session is left
+    running so the human can still keep chatting.
+    """
+    service = get_prompter_service(db)
+    try:
+        return service.preview_batch(body.drafts)
+    except ServiceError as e:
+        raise _translate_service_error(e) from e
+
+
+@router.post("/live/{session_id}/confirm-batch", status_code=status.HTTP_201_CREATED)
+async def confirm_live_batch(
+    session_id: str,
+    body: BatchConfirmRequest,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> dict[str, Any]:
+    """Turn the agent's confirmed MegaTask (N drafts) into a sequenced batch, reap.
+
+    Builds the branchless umbrella + one root-subtask per draft, wires the
+    collision-derived dependency waves, and routes the umbrella per ``route``
+    (Board review vs. straight to the Main PM) — each root-subtask keeps its own
+    project / branch / PR. Returns the umbrella id, the root-subtask ids, and the
+    computed waves + warnings for the panel. Always terminal → the live session
+    is reaped once the drafts are tasks.
+    """
+    service = get_prompter_service(db)
+    try:
+        result = await service.confirm_live_batch(
+            body.title,
+            body.drafts,
+            agent.agent_id,
+            project_ids=body.project_ids,
+            route=body.route,
+        )
+    except ServiceError as e:
+        raise _translate_service_error(e) from e
+    await db.commit()
+    await get_orchestrator().reap_intake_session(session_id)
+    return result
 
 
 async def _intake_scope_for_task(

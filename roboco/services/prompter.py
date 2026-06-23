@@ -14,13 +14,15 @@ import json
 import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import structlog
 from sqlalchemy import select
 
 from roboco.db.tables import AgentTable, TaskTable
 from roboco.foundation.identity import CELL_TEAMS
+from roboco.foundation.policy.batch import is_batch_umbrella
+from roboco.foundation.policy.sequencing.models import DraftSurface, SequencePlan
 from roboco.models.base import (
     AgentRole,
     Complexity,
@@ -44,6 +46,20 @@ _BOARD_REVIEW_ROLES: frozenset[AgentRole] = frozenset(
     {AgentRole.PRODUCT_OWNER, AgentRole.HEAD_MARKETING, AgentRole.AUDITOR}
 )
 
+# Per-cell developer headcount the MegaTask analyzer uses to *warn* (never block)
+# when a wave puts more same-cell root-subtasks in flight than the cell has devs.
+# Each delivery cell ships two developers (see the org blueprint in CLAUDE.md);
+# advisory only, so a coarse constant is sufficient.
+_CELL_CAPACITY: dict[str, int] = {
+    Team.BACKEND.value: 2,
+    Team.FRONTEND.value: 2,
+    Team.UX_UI.value: 2,
+}
+
+# A MegaTask must span at least this many distinct projects — fewer is a
+# single-repo batch, which is just an ordinary (multi-)task, not a MegaTask.
+_MIN_MEGATASK_PROJECTS = 2
+
 
 @dataclass
 class ReadinessTag:
@@ -52,6 +68,23 @@ class ReadinessTag:
     covered: list[str] = field(default_factory=list)
     ready: bool = False
     scale: str | None = None
+
+
+@dataclass(frozen=True)
+class BatchPlacement:
+    """Where a draft sits inside a MegaTask batch.
+
+    All four are set together by the batch create path and left at their
+    defaults for an ordinary single-draft confirm. ``team_override`` pins the
+    owning team for the whole batch; ``parent_task_id`` is the umbrella (or None
+    for the umbrella itself); ``batch_id`` is the shared batch identity; and
+    ``sequence`` is the item's wave index.
+    """
+
+    parent_task_id: UUID | None = None
+    batch_id: UUID | None = None
+    sequence: int = 0
+    team_override: Team | None = None
 
 
 class PrompterService:
@@ -82,6 +115,61 @@ class PrompterService:
         )
         return result.scalar_one_or_none() in _BOARD_REVIEW_ROLES
 
+    @staticmethod
+    def _validate_draft_target(
+        project_id: UUID | None,
+        product_id: UUID | None,
+        *,
+        is_umbrella: bool,
+    ) -> None:
+        """A draft targets exactly one of project / product — or neither when it
+        is a MegaTask umbrella (branchless; its root-subtasks carry the projects).
+        """
+        if project_id is None and product_id is None and not is_umbrella:
+            raise ValidationError(
+                message=(
+                    "The draft must target a project (single-cell) or a product "
+                    "(board-led, multi-cell). Pick one in the confirm step."
+                ),
+                field="project_id",
+            )
+        if project_id is not None and product_id is not None:
+            raise ValidationError(
+                message="Set exactly one of project_id or product_id, not both.",
+                field="product_id",
+            )
+
+    async def _resolve_owning_team(
+        self,
+        draft_data: dict[str, Any],
+        *,
+        resolved_product_id: UUID | None,
+        resolved_assigned_to: UUID | None,
+        team_override: Team | None,
+        default_lead: Team,
+    ) -> Team:
+        """Route the owning team for a draft.
+
+        ``team_override`` pins the team for a MegaTask batch (umbrella + every
+        root-subtask share one owner). Otherwise: a project target is a
+        single-cell executable owned by the lead cell; a product target is a
+        board-led coordination root whose team follows the start mode (encoded in
+        the assignee) — the "Board review & Start" path assigns a board reviewer,
+        so it stays team=board until approved (else the CEO's Approve & Start
+        gate, which keys on team=board, never appears and the task strands).
+        "Approve & Start" (assignee main-pm) and the post-approval state are
+        team=main_pm.
+        """
+        if team_override is not None:
+            return team_override
+        if resolved_product_id is None:
+            return self._lead_cell_team(draft_data, default=default_lead)
+        if resolved_assigned_to is not None and await self._assignee_is_board(
+            resolved_assigned_to
+        ):
+            return Team.BOARD
+        return Team.MAIN_PM
+
     async def create_task_from_draft(
         self,
         draft_data: dict[str, Any],
@@ -89,6 +177,7 @@ class PrompterService:
         *,
         status: TaskStatus = TaskStatus.BACKLOG,
         assigned_to: UUID | None = None,
+        placement: BatchPlacement | None = None,
     ) -> TaskTable:
         """Create a Task from a structured draft.
 
@@ -102,26 +191,41 @@ class PrompterService:
         Start", main-pm for "Approve & Start") so the task starts immediately on
         the chosen review path. An explicit ``assigned_to`` wins over any
         assignee carried on the draft.
+
+        ``placement`` carries the MegaTask batch position (see
+        :class:`BatchPlacement`): a batch umbrella targets neither project nor
+        product (it is branchless), and a root-subtask carries its own project
+        plus the umbrella as parent. The collision descriptors
+        (``intends_to_touch`` / ``adds_migration`` / ``touches_shared``) ride the
+        draft through to the task so the analyzer's surface is persisted.
         """
+        place = placement or BatchPlacement()
+        # A draft must carry a title + acceptance criteria — without this a
+        # malformed draft (e.g. an agent's incomplete propose_batch item) hits a
+        # bare KeyError below and surfaces as an opaque 500 instead of a clean,
+        # actionable 400.
+        if not draft_data.get("title"):
+            raise ValidationError(
+                message="This task draft is missing a title.", field="title"
+            )
+        if not draft_data.get("acceptance_criteria"):
+            raise ValidationError(
+                message="This task draft is missing acceptance criteria.",
+                field="acceptance_criteria",
+            )
         # Recompose the description from the (possibly edited) structured fields —
         # the task always carries a freshly-composed, consistent description.
         draft_data["description"] = compose_description(draft_data)
 
         resolved_project_id = self._resolve_uuid_field(draft_data, "project_id")
         resolved_product_id = self._resolve_uuid_field(draft_data, "product_id")
-        if resolved_project_id is None and resolved_product_id is None:
-            raise ValidationError(
-                message=(
-                    "The draft must target a project (single-cell) or a product "
-                    "(board-led, multi-cell). Pick one in the confirm step."
-                ),
-                field="project_id",
-            )
-        if resolved_project_id is not None and resolved_product_id is not None:
-            raise ValidationError(
-                message="Set exactly one of project_id or product_id, not both.",
-                field="product_id",
-            )
+        self._validate_draft_target(
+            resolved_project_id,
+            resolved_product_id,
+            is_umbrella=is_batch_umbrella(
+                batch_id=place.batch_id, parent_task_id=place.parent_task_id
+            ),
+        )
 
         _lead, task_type, nature, complexity = self._coerce_draft_enums(draft_data)
 
@@ -133,21 +237,13 @@ class PrompterService:
             with contextlib.suppress(ValueError):
                 resolved_assigned_to = UUID(str(draft_data["assigned_to"]))
 
-        # Adaptive routing. A project target is a single-cell executable task
-        # owned by the lead cell. A product target is a board-led coordination
-        # root whose team follows the start mode (encoded in the assignee): the
-        # "Board review & Start" path assigns a board reviewer, so it must stay
-        # team=board until approved — otherwise the CEO's Approve & Start gate,
-        # which keys on team=board, never appears and the task strands. "Approve
-        # & Start" (assignee main-pm) and the post-approval state are team=main_pm.
-        if resolved_product_id is None:
-            team = self._lead_cell_team(draft_data, default=_lead)
-        elif resolved_assigned_to is not None and await self._assignee_is_board(
-            resolved_assigned_to
-        ):
-            team = Team.BOARD
-        else:
-            team = Team.MAIN_PM
+        team = await self._resolve_owning_team(
+            draft_data,
+            resolved_product_id=resolved_product_id,
+            resolved_assigned_to=resolved_assigned_to,
+            team_override=place.team_override,
+            default_lead=_lead,
+        )
 
         req = TaskCreateRequest(
             title=draft_data["title"],
@@ -163,6 +259,12 @@ class PrompterService:
             project_id=resolved_project_id,
             product_id=resolved_product_id,
             status=status,
+            parent_task_id=place.parent_task_id,
+            batch_id=place.batch_id,
+            sequence=place.sequence,
+            intends_to_touch=_clean_list(draft_data.get("intends_to_touch")) or None,
+            adds_migration=bool(draft_data.get("adds_migration")),
+            touches_shared=bool(draft_data.get("touches_shared")),
             source="prompter",
             confirmed_by_human=True,
         )
@@ -223,6 +325,194 @@ class PrompterService:
             assigned_to=assignee_slug,
         )
         return UUID(str(task.id))
+
+    def _sequence_drafts(self, drafts: list[dict[str, Any]]) -> SequencePlan:
+        """Build each draft's collision surface and sequence them into waves.
+
+        Pure (no DB, no side effects). The single source of the wave plan, shared
+        by ``preview_batch`` (panel pre-confirm preview) and ``confirm_live_batch``
+        (create), so the previewed waves are exactly the ones that get wired.
+        """
+        from roboco.foundation.policy.sequencing.models import SequencingError
+        from roboco.services.sequencing import SequencingService
+
+        surfaces = [
+            DraftSurface(
+                idx=idx,
+                priority=self._coerce_priority(d.get("priority")),
+                intends_to_touch=_clean_list(d.get("intends_to_touch")),
+                adds_migration=bool(d.get("adds_migration")),
+                touches_shared=bool(d.get("touches_shared")),
+                project_id=str(d["project_id"]) if d.get("project_id") else None,
+            )
+            for idx, d in enumerate(drafts)
+        ]
+        cell_by_idx = {
+            idx: self._lead_cell_team(d, default=Team.BACKEND).value
+            for idx, d in enumerate(drafts)
+        }
+        try:
+            return SequencingService().analyze(
+                surfaces, lambda i: cell_by_idx[i], _CELL_CAPACITY
+            )
+        except SequencingError as exc:
+            # A cyclic / malformed collision graph is a user-actionable input
+            # problem, not a server fault — surface it as a clean 400.
+            raise ValidationError(
+                message=(
+                    "These tasks can't be sequenced into conflict-free waves: "
+                    f"{exc}. Adjust what they touch and try again."
+                ),
+                field="drafts",
+            ) from exc
+
+    def preview_batch(self, drafts: list[dict[str, Any]]) -> dict[str, Any]:
+        """Compute a MegaTask's waves + warnings WITHOUT creating anything.
+
+        The panel calls this once the agent proposes a batch so the human can
+        review the sequencing before confirming. ``waves`` is a list of waves,
+        each a list of draft indices that run together.
+        """
+        if not drafts:
+            raise ValidationError(
+                message="A MegaTask needs at least one task draft.", field="drafts"
+            )
+        plan = self._sequence_drafts(drafts)
+        return {"waves": plan.waves, "warnings": plan.warnings}
+
+    @staticmethod
+    def _validate_batch_scope(
+        drafts: list[dict[str, Any]], project_ids: list[UUID]
+    ) -> None:
+        """A MegaTask's drafts must each target one of the scoped repos (the only
+        ones the intake agent read), and collectively span at least two distinct
+        projects — otherwise it's a single-repo batch, not a MegaTask.
+        """
+        scope = {str(p) for p in project_ids}
+        seen: set[str] = set()
+        for idx, draft in enumerate(drafts):
+            pid = draft.get("project_id")
+            if not pid or str(pid) not in scope:
+                raise ValidationError(
+                    message=(
+                        f"Task {idx + 1} targets a project outside this MegaTask's "
+                        "selected repos. Point it at one of the scoped projects."
+                    ),
+                    field="drafts",
+                )
+            seen.add(str(pid))
+        if len(seen) < _MIN_MEGATASK_PROJECTS:
+            raise ValidationError(
+                message=(
+                    "A MegaTask must span at least two distinct projects — use a "
+                    "single-project task for work in one repo."
+                ),
+                field="drafts",
+            )
+
+    async def confirm_live_batch(
+        self,
+        title: str,
+        drafts: list[dict[str, Any]],
+        agent_id: UUID,
+        *,
+        project_ids: list[UUID],
+        route: Literal["board", "main_pm"] = "board",
+    ) -> dict[str, Any]:
+        """Confirm a MegaTask: create the umbrella + N sequenced root-subtasks.
+
+        Each draft carries its own ``project_id`` (one of the scoped ``project_ids``
+        the intake agent read) and a collision surface (``intends_to_touch`` /
+        ``adds_migration`` / ``touches_shared``). The pure :class:`SequencingService`
+        turns those surfaces into conflict-free waves; the umbrella (branchless,
+        batch-owning coordination root) groups the root-subtasks, and the existing
+        dependency-gate executes the waves — each root-subtask keeping its own
+        project / branch / PR.
+
+        ``route`` picks the start path exactly like a single draft. ``"board"``
+        sends the umbrella to the Board (PO + HoM) for one batch review, with the
+        root-subtasks held in ``BACKLOG`` until the umbrella is approved.
+        ``"main_pm"`` hands the umbrella straight to the Main PM and creates the
+        root-subtasks ``PENDING`` so the dependency-gate dispatches wave 0 at once.
+
+        Returns ``{umbrella_task_id, root_subtask_ids, waves, warnings}`` for the
+        panel's wave/DAG review.
+        """
+        from roboco.seeds.initial_data import AGENT_UUIDS
+        from roboco.services.task import get_task_service
+
+        if not drafts:
+            raise ValidationError(
+                message="A MegaTask needs at least one task draft.", field="drafts"
+            )
+        self._validate_batch_scope(drafts, project_ids)
+
+        batch_id = uuid4()
+        # 1. Sequence the drafts into conflict-free waves (same plan the panel
+        #    previewed via preview_batch — _sequence_drafts is the single source).
+        plan = self._sequence_drafts(drafts)
+        wave_of = {idx: w for w, wave in enumerate(plan.waves) for idx in wave}
+
+        # 2. Route → owning team + umbrella assignee + held status for the items.
+        #    "board" holds the root-subtasks until the batch review approves the
+        #    umbrella; "main_pm" lets the dependency-gate dispatch wave 0 at once.
+        if route == "main_pm":
+            owning_team = Team.MAIN_PM
+            umbrella_assignee = UUID(AGENT_UUIDS["main-pm"])
+            subtask_status = TaskStatus.PENDING
+        else:
+            owning_team = Team.BOARD
+            umbrella_assignee = UUID(AGENT_UUIDS["product-owner"])
+            subtask_status = TaskStatus.BACKLOG
+
+        # 3. The umbrella: a branchless coordination root that owns the batch and
+        #    is the single board-review / CEO-approve / Main-PM-coordinate unit.
+        umbrella = await self.create_task_from_draft(
+            _compose_umbrella_draft(title, drafts, plan),
+            agent_id,
+            status=TaskStatus.PENDING,
+            assigned_to=umbrella_assignee,
+            placement=BatchPlacement(batch_id=batch_id, team_override=owning_team),
+        )
+        umbrella_id = UUID(str(umbrella.id))
+
+        # 4. The root-subtasks: each carries its own project / branch / PR, with
+        #    sequence = its wave index and the umbrella as parent.
+        task_of: dict[int, UUID] = {}
+        for idx, draft in enumerate(drafts):
+            sub = await self.create_task_from_draft(
+                dict(draft),
+                agent_id,
+                status=subtask_status,
+                placement=BatchPlacement(
+                    parent_task_id=umbrella_id,
+                    batch_id=batch_id,
+                    sequence=wave_of[idx],
+                    team_override=owning_team,
+                ),
+            )
+            task_of[idx] = UUID(str(sub.id))
+
+        # 5. Wire the dependency edges. An edge ``(a, b)`` means *b waits on a*,
+        #    so b depends on a — the dependency-gate then releases each wave only
+        #    once the prior wave's items reach a terminal state.
+        task_service = get_task_service(self._session)
+        for a, b in plan.edges:
+            await task_service.add_dependency(task_of[b], task_of[a])
+
+        self.log.info(
+            "MegaTask batch confirmed",
+            umbrella_task_id=str(umbrella_id),
+            items=len(drafts),
+            waves=len(plan.waves),
+            route=route,
+        )
+        return {
+            "umbrella_task_id": str(umbrella_id),
+            "root_subtask_ids": [str(task_of[i]) for i in range(len(drafts))],
+            "waves": plan.waves,
+            "warnings": plan.warnings,
+        }
 
     async def update_live_draft(
         self,
@@ -547,6 +837,45 @@ def compose_description(draft: dict[str, Any]) -> str:
     if len(composed) >= _MIN_DESCRIPTION_LEN:
         return composed
     return _text(draft.get("description")) or composed
+
+
+def _compose_umbrella_draft(
+    title: str, drafts: list[dict[str, Any]], plan: Any
+) -> dict[str, Any]:
+    """Build the umbrella's draft from the batch + its computed wave plan.
+
+    The umbrella targets neither project nor product (it is branchless) and
+    carries no collision surface of its own — it exists to group the batch, hold
+    the wave plan in its description for review, and be the one board-review /
+    CEO-approve / Main-PM-coordinate unit. ``task_type=code`` mirrors the existing
+    product coordination roots created from intake (the branch/PR exemption comes
+    from the batch identity, not the type).
+    """
+    item_titles = [
+        _text(d.get("title")) or f"Task {i + 1}" for i, d in enumerate(drafts)
+    ]
+    wave_lines = [
+        f"Wave {w + 1}: " + ", ".join(item_titles[i] for i in wave)
+        for w, wave in enumerate(plan.waves)
+    ]
+    return {
+        "title": f"MegaTask: {title}",
+        "objective": (
+            f"Coordinate {len(drafts)} sequenced tasks as one MegaTask. The Board "
+            "reviews the batch once; the Main PM coordinates the root-subtasks, "
+            "which the dependency-gate dispatches in collision-free waves, each "
+            "keeping its own pull request."
+        ),
+        "what_this_builds": item_titles,
+        "notes": [*wave_lines, *plan.warnings],
+        "acceptance_criteria": [
+            "Every root-subtask in the MegaTask is completed and merged.",
+        ],
+        "task_type": TaskType.CODE.value,
+        "nature": TaskNature.TECHNICAL.value,
+        "estimated_complexity": Complexity.HIGH.value,
+        "priority": 1,
+    }
 
 
 # ---------------------------------------------------------------------------

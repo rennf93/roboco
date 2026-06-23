@@ -299,6 +299,7 @@ def _stub_task(*, with_project: bool = False) -> SimpleNamespace:
         created_by=uuid4(),
         assigned_to=None,
         parent_task_id=None,
+        batch_id=None,
         dependency_ids=[],
         blocker_ids=[],
         created_at=datetime.now(UTC),

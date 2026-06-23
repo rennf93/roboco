@@ -9,6 +9,7 @@ import {
   ChatComposer,
   SuccessCard,
   IntakeForm,
+  BatchReviewCard,
 } from "@/components/prompter";
 
 export default function PrompterPage() {
@@ -26,6 +27,8 @@ export default function PrompterPage() {
     setProjectId,
     productId,
     setProductId,
+    projectIds,
+    setProjectIds,
     initialMessage,
     setInitialMessage,
     isFormValid,
@@ -36,6 +39,11 @@ export default function PrompterPage() {
     startAnother,
     isLaunching,
     startRedraft,
+    batch,
+    batchWaves,
+    batchResult,
+    updateBatchDraftProject,
+    confirmBatch,
   } = usePrompter();
 
   // Entry from a task's "Re-draft with board feedback" button: ?redraft=<taskId>
@@ -88,6 +96,8 @@ export default function PrompterPage() {
           onProjectId={setProjectId}
           productId={productId}
           onProductId={setProductId}
+          projectIds={projectIds}
+          onProjectIds={setProjectIds}
           initialMessage={initialMessage}
           onInitialMessage={setInitialMessage}
           isValid={isFormValid()}
@@ -102,13 +112,24 @@ export default function PrompterPage() {
           createdTaskTitle &&
           createdTaskTeam ? (
             <div className="flex flex-1 flex-col items-center justify-center px-8 py-8">
-              <div className="w-full max-w-md">
+              <div className="w-full max-w-md space-y-3">
                 <SuccessCard
                   taskId={createdTaskId}
                   taskTitle={createdTaskTitle}
                   team={createdTaskTeam}
                   onStartAnother={startAnother}
                 />
+                {batchResult && (
+                  <p className="text-center text-xs text-muted-foreground">
+                    {batchResult.root_subtask_ids.length} tasks sequenced into{" "}
+                    {batchResult.waves.length} wave
+                    {batchResult.waves.length === 1 ? "" : "s"}.
+                    {batchResult.warnings.length > 0 &&
+                      ` ${batchResult.warnings.length} advisory note${
+                        batchResult.warnings.length === 1 ? "" : "s"
+                      }.`}
+                  </p>
+                )}
               </div>
             </div>
           ) : (
@@ -118,6 +139,21 @@ export default function PrompterPage() {
               onKeepChatting={keepChatting}
               isLaunching={isLaunching}
             />
+          )}
+
+          {/* MegaTask review — the agent proposed a batch; confirm them together */}
+          {state === "batch_preview" && batch && (
+            <div className="mx-4 mb-2">
+              <BatchReviewCard
+                batch={batch}
+                waves={batchWaves}
+                projectIds={projectIds}
+                onKeepChatting={keepChatting}
+                onProjectChange={updateBatchDraftProject}
+                onConfirm={confirmBatch}
+                isLaunching={isLaunching}
+              />
+            </div>
           )}
 
           {/* Live activity indicator — "watch it work" (prominent) */}

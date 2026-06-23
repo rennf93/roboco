@@ -331,6 +331,12 @@ class GitContext:
     # does no git work of its own and never gets a branch, so it is exempt from
     # the claimed->in_progress branch gate (same rationale as is_coordination).
     is_external_review: bool = False
+    # A MegaTask umbrella assembles no PR of its own (each root-subtask carries
+    # its own), so it escalates to the CEO with no pr_number — exempt from the
+    # awaiting_pm_review->awaiting_ceo_approval pr_number gate. A product fan-out
+    # root is is_coordination too but DOES get a pr_number (via submit_root), so
+    # this is umbrella-specific, not all-coordination.
+    is_umbrella: bool = False
 
 
 def validate_git_requirements(
@@ -393,10 +399,12 @@ def _check_doc_phase_gate(transition: tuple[str, str], git_ctx: GitContext) -> N
 def _check_ceo_escalation_gate(
     transition: tuple[str, str], git_ctx: GitContext
 ) -> None:
-    """awaiting_pm_review -> awaiting_ceo_approval needs a recorded pr_number."""
+    """awaiting_pm_review -> awaiting_ceo_approval needs a recorded pr_number,
+    EXCEPT a MegaTask umbrella, which is branchless and assembles no PR."""
     if (
         transition == ("awaiting_pm_review", "awaiting_ceo_approval")
         and git_ctx.pr_number is None
+        and not git_ctx.is_umbrella
     ):
         raise GitRequirementError(
             transition=transition,

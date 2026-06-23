@@ -269,6 +269,9 @@ export interface Task {
   parent_task_id: string | null;
   dependency_ids: string[];
   blocker_ids: string[];
+  // MegaTask grouping: set on the umbrella (parent_task_id null) and every
+  // root-subtask of a batch. null on ordinary tasks.
+  batch_id?: string | null;
   created_at: string;
   updated_at: string | null;
   claimed_at: string | null;

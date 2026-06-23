@@ -148,3 +148,63 @@ async def test_succeeds_when_board_review_complete(start_setup: dict) -> None:
     assert out is not None
     assert out.assigned_to == start_setup["main_pm"].id
     assert out.status == TaskStatus.PENDING
+
+
+@pytest.mark.asyncio
+async def test_approving_megatask_umbrella_releases_backlog_root_subtasks(
+    start_setup: dict,
+) -> None:
+    """Approving a board-route MegaTask umbrella releases its held root-subtasks:
+    BACKLOG → PENDING and team → main_pm, so the dependency-gate dispatches them."""
+    db = start_setup["db"]
+    po = start_setup["po"]
+    project_id = start_setup["mk"]().project_id  # reuse the fixture's project
+    batch_id = uuid4()
+    umbrella = TaskTable(
+        id=uuid4(),
+        title="MegaTask: three things",
+        description="d",
+        acceptance_criteria=["ac"],
+        status=TaskStatus.PENDING,
+        priority=1,
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        project_id=None,  # branchless umbrella: no project, no product
+        product_id=None,
+        batch_id=batch_id,
+        parent_task_id=None,
+        created_by=po.id,
+        team=Team.BOARD,
+        board_review_complete=True,
+        assigned_to=po.id,
+    )
+    db.add(umbrella)
+    await db.flush()
+    subs = [
+        TaskTable(
+            id=uuid4(),
+            title=f"Root-subtask {i}",
+            description="d",
+            acceptance_criteria=["ac"],
+            status=TaskStatus.BACKLOG,  # held until the batch review approves
+            priority=2,
+            task_type=TaskType.CODE,
+            nature=TaskNature.TECHNICAL,
+            project_id=project_id,
+            batch_id=batch_id,
+            parent_task_id=umbrella.id,
+            created_by=po.id,
+            team=Team.BOARD,
+        )
+        for i in range(2)
+    ]
+    db.add_all(subs)
+    await db.flush()
+
+    out = await start_setup["svc"].approve_and_start(umbrella.id, "x" * 25)
+    assert out is not None
+    assert out.assigned_to == start_setup["main_pm"].id
+    for sub in subs:
+        await db.refresh(sub)
+        assert sub.status == TaskStatus.PENDING
+        assert sub.team == Team.MAIN_PM

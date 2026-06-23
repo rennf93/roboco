@@ -48,6 +48,28 @@ def test_not_coordination_when_neither() -> None:
     assert _is_coordination_task({"project_id": None, "product_id": None}) is False
 
 
+def test_coordination_task_when_batch_umbrella() -> None:
+    # A MegaTask umbrella carries a batch_id and is top-level (no parent); it does
+    # no git of its own — its root-subtasks each branch/PR — so it is coordination.
+    assert (
+        _is_coordination_task(
+            {"project_id": None, "product_id": None, "batch_id": "b1"}
+        )
+        is True
+    )
+
+
+def test_not_coordination_when_batch_root_subtask() -> None:
+    # A MegaTask root-subtask shares the batch_id but has a parent (the umbrella)
+    # and its own project — it does real git, so it is NOT coordination.
+    assert (
+        _is_coordination_task(
+            {"project_id": "r1", "batch_id": "b1", "parent_task_id": "u1"}
+        )
+        is False
+    )
+
+
 # ---------------------------------------------------------------------------
 # _readiness_check_task
 # ---------------------------------------------------------------------------
@@ -90,6 +112,16 @@ def test_readiness_skips_branch_gate_for_coordination_task() -> None:
     assert reason is None
 
 
+def test_readiness_skips_branch_gate_for_batch_umbrella() -> None:
+    # A MegaTask umbrella (batch_id, no project/branch) coordinates its
+    # root-subtasks and does no git — it must reach in_progress unbranched.
+    orch = _bare_orchestrator()
+    reason = orch._readiness_check_task(
+        "main-pm", _task(batch_id="b1", status="in_progress", branch_name=None)
+    )
+    assert reason is None
+
+
 def test_readiness_still_gates_code_task_without_project() -> None:
     orch = _bare_orchestrator()
     reason = orch._readiness_check_task("be-dev-1", _task(status="pending"))
@@ -124,6 +156,21 @@ def test_stuck_check_ignores_missing_branch_for_coordination_task() -> None:
         {
             "project_id": None,
             "product_id": "p1",
+            "branch_name": None,
+            "description": _GOOD_DESC,
+        }
+    )
+    assert "Task missing branch_name" not in issues
+    assert issues == []
+
+
+def test_stuck_check_ignores_missing_branch_for_batch_umbrella() -> None:
+    orch = _bare_orchestrator()
+    issues = orch._check_stuck_conditions(
+        {
+            "project_id": None,
+            "product_id": None,
+            "batch_id": "b1",
             "branch_name": None,
             "description": _GOOD_DESC,
         }
@@ -211,6 +258,16 @@ def test_branch_never_expected_for_coordination_task() -> None:
     assert (
         _branch_is_expected(
             {"project_id": None, "product_id": "p1", "status": "in_progress"}
+        )
+        is False
+    )
+
+
+def test_branch_never_expected_for_batch_umbrella() -> None:
+    # A MegaTask umbrella never gets a branch even at in_progress.
+    assert (
+        _branch_is_expected(
+            {"project_id": None, "batch_id": "b1", "status": "in_progress"}
         )
         is False
     )
