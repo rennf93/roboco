@@ -38,8 +38,8 @@ export interface DraftProposal {
   product_id?: string | null;
 }
 
-/** Single-cell project vs board-led multi-cell product. */
-export type DraftScale = "single" | "multi";
+/** Single-cell project, board-led multi-cell product, or a multi-project MegaTask. */
+export type DraftScale = "single" | "multi" | "megatask";
 
 /** What the human picked/edited at confirm time. `route` is which start button:
  *  "board" (Board review & Start) or "main_pm" (Approve & Start). */
@@ -51,4 +51,21 @@ export interface ConfirmPayload {
   // Set on a board-informed re-draft: the confirm updates this existing task in
   // place instead of creating a new one (scope is taken from the task).
   task_id?: string;
+}
+
+/** Confirm a MegaTask: the umbrella's title + one draft per task (each carrying
+ *  its own `project_id` + collision surface) + which start button. */
+export interface BatchConfirmPayload {
+  title: string;
+  drafts: DraftProposal[];
+  route?: "board" | "main_pm";
+}
+
+/** The backend's MegaTask create result: the umbrella, its root-subtasks, and
+ *  the computed conflict-free waves (each wave is a list of draft indices). */
+export interface BatchConfirmResult {
+  umbrella_task_id: string;
+  root_subtask_ids: string[];
+  waves: number[][];
+  warnings: string[];
 }

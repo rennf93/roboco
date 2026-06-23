@@ -1,5 +1,9 @@
 import api, { API_URL } from "./client";
-import type { ConfirmPayload } from "./prompter";
+import type {
+  BatchConfirmPayload,
+  BatchConfirmResult,
+  ConfirmPayload,
+} from "./prompter";
 
 // ---------------------------------------------------------------------------
 // Live intake chat — the panel side of the spawned-agent bridge.
@@ -15,10 +19,12 @@ import type { ConfirmPayload } from "./prompter";
 //   4. on confirm, /confirm turns the draft into a task and reaps the agent.
 // ---------------------------------------------------------------------------
 
-/** Open a live chat scoped to exactly one of project / product. */
+/** Open a live chat scoped to exactly one of project / product / project_ids
+ *  (a MegaTask spanning several possibly-unrelated repos). */
 export interface StartLivePayload {
   project_id?: string;
   product_id?: string;
+  project_ids?: string[];
   initial_message?: string;
 }
 
@@ -35,6 +41,7 @@ export type LiveEventKind =
   | "turn_end"
   | "system"
   | "draft"
+  | "batch"
   | "error";
 
 /** One normalized event from the agent's live reply. */
@@ -54,6 +61,7 @@ export const LIVE_EVENT_KINDS: LiveEventKind[] = [
   "turn_end",
   "system",
   "draft",
+  "batch",
   "error",
 ];
 
@@ -62,7 +70,7 @@ export const prompterLiveApi = {
   start: async (payload: StartLivePayload): Promise<StartLiveResponse> => {
     const { data } = await api.post<StartLiveResponse>(
       "/prompter/live/start",
-      payload
+      payload,
     );
     return data;
   },
@@ -71,7 +79,7 @@ export const prompterLiveApi = {
    *  Spawns a fresh session seeded with the current draft + the board review. */
   reInterview: async (taskId: string): Promise<StartLiveResponse> => {
     const { data } = await api.post<StartLiveResponse>(
-      `/prompter/live/re-interview/${taskId}`
+      `/prompter/live/re-interview/${taskId}`,
     );
     return data;
   },
@@ -85,7 +93,7 @@ export const prompterLiveApi = {
    *  decide whether to reconnect the chat or fall back to the scope form. */
   status: async (sessionId: string): Promise<{ alive: boolean }> => {
     const { data } = await api.get<{ alive: boolean }>(
-      `/prompter/live/${sessionId}/status`
+      `/prompter/live/${sessionId}/status`,
     );
     return data;
   },
@@ -103,11 +111,24 @@ export const prompterLiveApi = {
   /** Confirm the draft → create the task and reap the agent (Phase 4 backend). */
   confirm: async (
     sessionId: string,
-    payload: ConfirmPayload
+    payload: ConfirmPayload,
   ): Promise<{ task_id: string }> => {
     const { data } = await api.post<{ task_id: string }>(
       `/prompter/live/${sessionId}/confirm`,
-      payload
+      payload,
+    );
+    return data;
+  },
+
+  /** Confirm a MegaTask → create the umbrella + sequenced root-subtasks, reap.
+   *  Returns the umbrella id, the root-subtask ids, and the computed waves. */
+  confirmBatch: async (
+    sessionId: string,
+    payload: BatchConfirmPayload,
+  ): Promise<BatchConfirmResult> => {
+    const { data } = await api.post<BatchConfirmResult>(
+      `/prompter/live/${sessionId}/confirm-batch`,
+      payload,
     );
     return data;
   },
