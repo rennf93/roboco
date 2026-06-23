@@ -238,6 +238,10 @@ class TaskUpdate(BaseModel):
     pr_reviewer_notes: str | None = None
     doc_notes: str | None = None
     quick_context: str | None = None
+    # The structured source of truth (panel renders the verdict pill + sections
+    # from this). Must be serialized or the PR-review verdict + any structured
+    # rendering are blank even when the DB has them.
+    notes_structured: dict | None = None
 
     # Lifecycle override — privileged/admin only. Applied by the route as an
     # audited force-transition (so an operator can recover a task wedged in a
@@ -705,7 +709,10 @@ def task_to_response(task: "TaskTable") -> TaskResponse:
         dev_notes=task.dev_notes,
         qa_notes=task.qa_notes,
         auditor_notes=task.auditor_notes,
+        pr_reviewer_notes=task.pr_reviewer_notes,
+        doc_notes=task.doc_notes,
         quick_context=task.quick_context,
+        notes_structured=task.notes_structured,
         self_verified=task.self_verified,
         qa_verified=task.qa_verified,
         branch_name=getattr(task, "branch_name", None),

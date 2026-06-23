@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **Task notes were invisible in the panel — the API response dropped them.** The `task_to_response` serializer (used by the task list and detail endpoints the panel reads) set `dev_notes` / `qa_notes` / `quick_context` but **omitted `pr_reviewer_notes`, `doc_notes`, and `notes_structured`**, and `TaskResponse` didn't even declare `notes_structured` — so the PR-reviewer's notes, the documenter's notes, and the structured PR-review verdict were always blank in the UI no matter what the agents wrote to the DB (the structured-content write-path and obligation gates work; the data simply wasn't being serialized). The builder now returns all note sections plus the structured source of truth. (`dev_notes`/`qa_notes` on an in-flight task are still legitimately empty until the developer submits / QA reviews.)
+
 ## [0.9.0] - 2026-06-23
 
 ### Added
