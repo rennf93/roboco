@@ -1643,15 +1643,16 @@ class TaskService(BaseService):
         path that can change ``parent_task_id`` / ``project_id`` / ``product_id``
         must re-check it, else a PATCH could turn a root-subtask into an
         umbrella-shaped-but-targeted task and spoof the branch-gate / no-PR
-        exemption. No-op for a non-batch task.
+        exemption. No-op for a non-batch task (``batch_id`` None/absent) — uses
+        ``getattr`` so a partial-caller stub without the column is tolerated.
         """
-        if task.batch_id is None:
+        if getattr(task, "batch_id", None) is None:
             return
         if not is_valid_batch_shape(
             batch_id=task.batch_id,
-            parent_task_id=task.parent_task_id,
-            project_id=task.project_id,
-            product_id=task.product_id,
+            parent_task_id=getattr(task, "parent_task_id", None),
+            project_id=getattr(task, "project_id", None),
+            product_id=getattr(task, "product_id", None),
         ):
             raise ValueError(
                 "this update would break the task's MegaTask shape: a batch "
