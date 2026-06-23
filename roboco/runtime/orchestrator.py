@@ -48,6 +48,7 @@ from roboco.config import settings
 from roboco.foundation import identity as _foundation
 from roboco.foundation.identity import CELL_TEAMS
 from roboco.foundation.policy.agent_loop import DEFAULT_BUDGET as _AGENT_LOOP_BUDGET
+from roboco.foundation.policy.batch import is_branchless_coordination
 from roboco.models import AgentRole, Team
 from roboco.models.runtime import (
     MODEL_MAP,
@@ -283,16 +284,22 @@ def _read_project_slug(task: dict[str, Any]) -> str | None:
 
 
 def _is_coordination_task(task: dict[str, Any]) -> bool:
-    """True for a board/fan-out task that carries a product but no repo of its own.
+    """True for a task that does no git of its own.
 
-    Such a task does no git work itself: its cell subtasks each resolve a real
-    project from the product's cell->project map (see TaskCreate's
-    project-or-product invariant and migration 018). It therefore has no
+    Two shapes qualify: a board/fan-out coordination root (carries a product, no
+    repo — its cell subtasks resolve a real project from the product's
+    cell->project map), and a MegaTask umbrella (carries a batch_id, top-level —
+    its root-subtasks each carry their own branch/PR). Such a task has no
     project_slug, branch_name, or git token, and must NOT be git-gated at the
     spawn-readiness or stuck-detection checks the way a code task is. A task with
-    neither a project nor a product is genuinely unroutable and stays gated.
+    none of project / product / batch is genuinely unroutable and stays gated.
     """
-    return not task.get("project_id") and bool(task.get("product_id"))
+    return is_branchless_coordination(
+        project_id=task.get("project_id"),
+        product_id=task.get("product_id"),
+        batch_id=task.get("batch_id"),
+        parent_task_id=task.get("parent_task_id"),
+    )
 
 
 # A branch is auto-created only at CLAIM (the claimed->in_progress transition).
