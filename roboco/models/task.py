@@ -204,6 +204,21 @@ class Task(TimestampMixin):
         description="Dependency task IDs that have since completed and cleared",
     )
 
+    # Sequenced batch intake ("Mega task"): the collision surface the analyzer
+    # reads to wire dependency waves across a batch of tasks created together.
+    batch_id: UUID | None = Field(
+        default=None, description="Groups tasks created as one sequenced batch"
+    )
+    intends_to_touch: list[str] | None = Field(
+        default=None, description="Files/dirs this task expects to modify"
+    )
+    adds_migration: bool = Field(
+        default=False, description="Whether this task adds a DB migration"
+    )
+    touches_shared: bool = Field(
+        default=False, description="Whether this task edits a widely-shared surface"
+    )
+
     # Timestamps
     claimed_at: datetime | None = None
     started_at: datetime | None = None
@@ -445,6 +460,12 @@ class TaskCreateRequest:
     # Ordering and dependencies
     sequence: int = 0  # Order within siblings (lower = first)
     dependency_ids: list[UUID] = field(default_factory=list)
+
+    # Sequenced batch intake ("Mega task") collision surface — see Task model.
+    batch_id: UUID | None = None
+    intends_to_touch: list[str] | None = None
+    adds_migration: bool = False
+    touches_shared: bool = False
 
     # AC identity + linkage (migration 036). acceptance_criteria_ids is generated
     # in TaskService.create when empty; parent_ac_refs is the parent AC ids a

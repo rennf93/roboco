@@ -664,6 +664,11 @@ class TaskService(BaseService):
             status=req.status if req.status else TaskStatus.PENDING,
             sequence=req.sequence,  # Task ordering within siblings
             dependency_ids=req.dependency_ids,  # Task IDs that must complete first
+            # Sequenced batch intake collision surface
+            batch_id=req.batch_id,
+            intends_to_touch=req.intends_to_touch,
+            adds_migration=req.adds_migration,
+            touches_shared=req.touches_shared,
             # Git configuration (all tasks follow git workflow)
             task_type=req.task_type,
             project_id=req.project_id,
