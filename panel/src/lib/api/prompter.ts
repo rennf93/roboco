@@ -29,6 +29,10 @@ export interface DraftProposal {
   what_this_builds?: string[];
   the_work?: CellWork[];
   notes?: string[];
+  // Sequenced batch intake collision surface (lower = first; analyzer-derived)
+  intends_to_touch?: string[];
+  adds_migration?: boolean;
+  touches_shared?: boolean;
   // Targeting (resolved at confirm time)
   project_id?: string | null;
   product_id?: string | null;

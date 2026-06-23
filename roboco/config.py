@@ -218,6 +218,21 @@ class Settings(BaseSettings):
     )
 
     # ==========================================================================
+    # Sequenced batch intake ("Mega task")
+    # ==========================================================================
+    # Lets the Prompter intake a multi-item batch in one chat; a deterministic
+    # analyzer turns the per-task collision descriptors into dependency waves the
+    # existing dep-gate executes. Default-off; single-task intake is unchanged.
+    batch_intake_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for sequenced batch intake. Off => the Prompter only "
+            "proposes a single draft per chat and the batch confirm/sequencing "
+            "paths are inert; the collision descriptor columns stay unused."
+        ),
+    )
+
+    # ==========================================================================
     # Architectural Conventions (per-project placement + house-style standard)
     # ==========================================================================
     # A repo-canonical .roboco/conventions.yml plus the roboco-conventions

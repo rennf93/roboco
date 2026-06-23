@@ -36,6 +36,34 @@ async def test_post_draft_posts_to_the_relay(monkeypatch: pytest.MonkeyPatch) ->
 
 
 @pytest.mark.asyncio
+async def test_post_draft_forwards_batch_collision_descriptors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A batch draft carries its collision surface through to the relay intact."""
+    monkeypatch.setenv("ROBOCO_API_URL", "http://orch:8000")
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["json"] = __import__("json").loads(request.content)
+        return httpx.Response(200, json={"ok": True})
+
+    draft = {
+        "title": "Fix charts",
+        "intends_to_touch": ["svc/dashboard.py", "page/metrics.tsx"],
+        "adds_migration": True,
+        "touches_shared": False,
+    }
+    async with _client(handler) as client:
+        result = await intake_server.post_draft("sess-1", draft, client=client)
+
+    assert result == {"ok": True}
+    data = seen["json"]["data"]
+    assert data["intends_to_touch"] == ["svc/dashboard.py", "page/metrics.tsx"]
+    assert data["adds_migration"] is True
+    assert data["touches_shared"] is False
+
+
+@pytest.mark.asyncio
 async def test_post_draft_reports_http_error() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(503)

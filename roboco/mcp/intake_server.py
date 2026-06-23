@@ -77,6 +77,14 @@ async def propose_draft(draft: dict[str, Any]) -> str:
     what_this_builds[], the_work[] ({team, summary, items}), notes[],
     acceptance_criteria[], team, scale, task_type, nature, estimated_complexity,
     priority.
+
+    Sequenced batch intake (when enabled): if the CEO asks for several tasks at
+    once, propose one draft per item and set each item's collision surface so the
+    system can sequence them into conflict-free waves — intends_to_touch[] (the
+    files/dirs this item will modify, from its grounding), adds_migration (does it
+    add a DB migration / column?), touches_shared (does it edit a widely-shared
+    component, token, or primitive?). Over-declaring a surface is safer than
+    under-declaring; the analyzer derives the ordering from these.
     """
     session_id = os.environ.get("ROBOCO_PROMPTER_SESSION_ID", "")
     if not session_id:
