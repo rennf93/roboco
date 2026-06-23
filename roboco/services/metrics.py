@@ -538,9 +538,10 @@ class MetricsService(BaseService):
         the same-timestamp named events can't inject a zero-length stage.
         """
         since = datetime.now(UTC) - timedelta(days=days)
-        team_clause = "AND a.details->>'team' = :team" if team else ""
+        # A NULL :team disables the team filter — the query is a static string
+        # (no interpolation), so the team value is only ever a bound parameter.
         sql = text(
-            f"""
+            """
             WITH ordered AS (
                 SELECT
                     (a.details->>'to_status') AS status,
@@ -552,7 +553,7 @@ class MetricsService(BaseService):
                 WHERE a.event_type LIKE 'task.%'
                   AND a.event_type = 'task.' || (a.details->>'to_status')
                   AND a.timestamp >= :since
-                  {team_clause}
+                  AND (CAST(:team AS text) IS NULL OR a.details->>'team' = :team)
             )
             SELECT
                 status,
@@ -570,9 +571,7 @@ class MetricsService(BaseService):
             ORDER BY avg_s DESC
             """
         )
-        params: dict[str, Any] = {"since": since}
-        if team:
-            params["team"] = team.value
+        params: dict[str, Any] = {"since": since, "team": team.value if team else None}
         rows = (await self.session.execute(sql, params)).all()
         return [
             StageTiming(
