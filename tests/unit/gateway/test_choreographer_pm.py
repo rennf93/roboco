@@ -535,6 +535,7 @@ async def test_submit_root_accepts_main_pm_and_enters_the_gate() -> None:
         pr_number=None,
         branch_name="feature/main_pm/root123",
         parent_task_id=None,
+        batch_id=None,  # a normal root carries no batch_id (not a MegaTask umbrella)
         team="main_pm",
     )
     gated = MagicMock(**{**in_prog.__dict__, "status": "awaiting_pr_review"})

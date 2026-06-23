@@ -253,3 +253,76 @@ async def test_submit_up_blocks_when_subtask_pending() -> None:
     assert body["error"] == "tracing_gap"
     assert str(sub_id) in body["remediate"]
     task_svc.submit_pm_review.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# MegaTask umbrella: no PR assembly + branchless completion
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_submit_root_rejects_batch_umbrella() -> None:
+    """A MegaTask umbrella assembles no PR of its own — submit_root must
+    hard-reject it (each root-subtask PRs itself) so it never enters the
+    in-path review gate."""
+    pm_id = uuid4()
+    umbrella_id = uuid4()
+    t = MagicMock(
+        id=umbrella_id,
+        status="in_progress",
+        assigned_to=pm_id,
+        parent_task_id=None,
+        batch_id=uuid4(),
+        branch_name=None,
+        team="main_pm",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="main_pm")
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.submit_root(pm_id, umbrella_id, "all root-subtasks shipped")
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+    assert "no PR" in body["message"]
+    assert "complete(" in body["remediate"]
+
+
+@pytest.mark.asyncio
+async def test_main_pm_complete_allows_batch_umbrella_from_in_progress() -> None:
+    """A MegaTask umbrella is branchless: with every root-subtask terminal it
+    completes straight from in_progress (no submit_root / PR), walking to
+    awaiting_pm_review and escalating to the CEO — the PR requirement is waived."""
+    pm_id = uuid4()
+    umbrella_id = uuid4()
+    t = MagicMock(
+        id=umbrella_id,
+        status="in_progress",
+        assigned_to=pm_id,
+        parent_task_id=None,
+        batch_id=uuid4(),
+        branch_name=None,
+        team="main_pm",
+    )
+    escalated = MagicMock(**{**t.__dict__, "status": "awaiting_ceo_approval"})
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.all_subtasks_terminal.return_value = True
+    task_svc.get_subtasks.return_value = []
+    task_svc.submit_pm_review.return_value = MagicMock(status="awaiting_pm_review")
+    task_svc.escalate_to_ceo.return_value = escalated
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
+    journal_svc.has_reflect_for_task.return_value = True
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.main_pm_complete(
+        pm_id, umbrella_id, "every root-subtask is terminal; MegaTask ready for CEO"
+    )
+    assert env.error is None
+    # Branchless walk in_progress -> awaiting_pm_review, then escalate. No PR.
+    task_svc.submit_pm_review.assert_awaited_once()
+    task_svc.escalate_to_ceo.assert_awaited_once()
