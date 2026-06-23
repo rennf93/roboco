@@ -642,8 +642,16 @@ class TaskService(BaseService):
         """
         # Service-layer invariant (covers every create path — API, a2a,
         # gateway): a task targets a single repo (project_id) or fans out across
-        # cells via a product (product_id). It must have one or the other.
-        if req.project_id is None and req.product_id is None:
+        # cells via a product (product_id). It must have one or the other —
+        # except a MegaTask umbrella, which targets neither (it groups N
+        # root-subtasks that each carry their own project) and is branchless.
+        if (
+            req.project_id is None
+            and req.product_id is None
+            and not is_batch_umbrella(
+                batch_id=req.batch_id, parent_task_id=req.parent_task_id
+            )
+        ):
             raise ValueError(
                 "task needs a project_id (the repo it targets) or a product_id "
                 "(a cell->project map for a fan-out task)"

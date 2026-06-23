@@ -71,3 +71,19 @@ class LiveConfirmRequest(BaseModel):
         if bool(self.project_id) == bool(self.product_id):
             raise ValueError("provide exactly one of project_id / product_id")
         return self
+
+
+class BatchConfirmRequest(BaseModel):
+    """Confirm a MegaTask — a batch of drafts sequenced into collision-free waves.
+
+    Each entry in ``drafts`` is a normal intake draft dict that ALSO carries its
+    own ``project_id`` (the batch spans many projects) and an optional collision
+    surface the analyzer reads (``intends_to_touch`` globs, ``adds_migration``,
+    ``touches_shared``). ``route`` is the same start button as a single confirm:
+    ``"board"`` (Board reviews the batch first) or ``"main_pm"`` (straight to the
+    Main PM). ``title`` names the umbrella.
+    """
+
+    title: str = Field(..., min_length=1)
+    drafts: list[dict[str, Any]] = Field(..., min_length=1)
+    route: Literal["board", "main_pm"] = "board"
