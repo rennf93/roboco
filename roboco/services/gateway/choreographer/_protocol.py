@@ -111,6 +111,7 @@ class ChoreographerHelpers:
         *,
         agent_id: UUID,
         task: Any,
+        role_str: str | None = None,
     ) -> Envelope | None:
         raise NotImplementedError
 

@@ -668,6 +668,10 @@ class AgentOrchestrator:
         self.dispatcher_interval = dispatcher_interval
 
         self._instances: dict[str, AgentInstance] = {}
+        # Gateway-health grace tracker: agent slug -> first time its gateway was
+        # seen broken. Tolerates a transient probe miss before the reaper recovers
+        # a broken-but-alive agent (see _maybe_recover_broken_gateway).
+        self._gateway_broken_since: dict[str, datetime] = {}
         self._waiting_records: dict[str, WaitingRecord] = {}
         self._health_task: asyncio.Task | None = None
         self._dispatcher_task: asyncio.Task | None = None
@@ -5075,6 +5079,37 @@ Start by:
             exit_code = None
         return is_running, exit_code
 
+    @staticmethod
+    async def _probe_gateway_health(slug: str) -> bool | None:
+        """Probe an agent container's gateway out-of-band: healthy / broken / unknown.
+
+        The heartbeat only proves a verb fired recently; it cannot tell a quiet-
+        but-healthy agent from one whose MCP gateway is broken (e.g. a corrupted
+        ``/app/.venv`` so every gateway tool import raises) yet whose container is
+        still up. This asks the container directly whether the gateway venv imports
+        its core deps. Returns True (healthy), False (the import failed => broken
+        gateway), or None when the probe itself could not run (no docker, container
+        gone) so the caller declines to act on an inconclusive probe.
+        """
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "docker",
+                "exec",
+                f"roboco-agent-{slug}",
+                "/app/.venv/bin/python",
+                "-c",
+                "import httpx, mcp",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+        except Exception:
+            return None
+        try:
+            rc = await proc.wait()
+        except Exception:
+            return None
+        return rc == 0
+
     async def _handle_stopped_container(
         self, agent_id: str, instance: Any, exit_code: int | None
     ) -> None:
@@ -7112,6 +7147,67 @@ Start now: evidence(task_id="{task_id}")
         )
         return True
 
+    async def _maybe_recover_broken_gateway(self, task: Any) -> bool:
+        """Kill + evict a live agent whose gateway is broken past the grace window.
+
+        The reaper's live-skip protects a running container from a stale-heartbeat
+        reap — right for a healthy agent quiet during a long edit/test cycle, but
+        it would shield a broken-but-alive agent (a corrupted gateway firing no
+        verb) forever. This probes the gateway out-of-band and, once it has been
+        broken longer than ``gateway_health_grace_seconds`` (so a transient probe
+        miss is tolerated), kills + evicts the container so the reaper falls
+        through to release + respawn. Returns True only on a kill; a healthy
+        gateway, an inconclusive probe, or a still-within-grace breakage returns
+        False (the live container is spared). Gated by ``gateway_health_enabled``.
+        """
+        if not settings.gateway_health_enabled:
+            return False
+        owner = getattr(task, "assigned_to", None) or getattr(task, "claimed_by", None)
+        if not owner:
+            return False
+        slug = self._resolve_agent_slug(str(owner))
+        if not await self._gateway_broken_past_grace(slug):
+            return False
+        try:
+            await self._remove_container(f"roboco-agent-{slug}")
+        except Exception as exc:
+            logger.error(
+                "broken-gateway kill failed; will retry next tick",
+                agent_id=slug,
+                error=str(exc),
+            )
+            return False
+        self._instances.pop(slug, None)
+        self._gateway_broken_since.pop(slug, None)
+        logger.warning(
+            "broken-gateway agent killed and evicted",
+            agent_id=slug,
+            task_id=str(getattr(task, "id", "")),
+        )
+        return True
+
+    async def _gateway_broken_past_grace(self, slug: str) -> bool:
+        """True when ``slug``'s gateway has probed broken longer than the grace.
+
+        Probe-inconclusive (None) or healthy clears the grace mark and returns
+        False; the first broken sighting records the mark and returns False (one
+        grace tick); a breakage older than ``gateway_health_grace_seconds`` (or a
+        test-injected ``_gateway_health_grace``) returns True.
+        """
+        healthy = await self._probe_gateway_health(slug)
+        if healthy is None or healthy:
+            self._gateway_broken_since.pop(slug, None)
+            return False
+        now = datetime.now(UTC)
+        first_seen = self._gateway_broken_since.get(slug)
+        if first_seen is None:
+            self._gateway_broken_since[slug] = now
+            return False
+        grace = getattr(self, "_gateway_health_grace", None)
+        if grace is None:
+            grace = settings.gateway_health_grace_seconds
+        return (now - first_seen).total_seconds() >= grace
+
     async def _reap_with_service(self, svc: "TaskService") -> None:
         """Inner reap loop, parameterized by the TaskService to use.
 
@@ -7140,7 +7236,14 @@ Start now: evidence(task_id="{task_id}")
                 live = self._assignee_has_active_instance(
                     t
                 ) or await self._assignee_container_running(t)
-                if live and not await self._maybe_kill_wedged_grok(t, ts):
+                # A live container is spared UNLESS it is wedged (grok) or its
+                # gateway is broken-but-alive past the grace window — both get
+                # killed + evicted here so we fall through to release + respawn.
+                if (
+                    live
+                    and not await self._maybe_kill_wedged_grok(t, ts)
+                    and not await self._maybe_recover_broken_gateway(t)
+                ):
                     continue
                 task_id = require_uuid(t.id)
                 try:

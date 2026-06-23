@@ -511,3 +511,75 @@ async def get_agent_metrics(
             status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found"
         )
     return metrics.to_dict()
+
+
+# =============================================================================
+# OBSERVABILITY ENDPOINTS (0.10.0): cycle-time / bottlenecks / rework / scorecard
+# =============================================================================
+
+
+@router.get("/metrics/cycle-time")
+async def get_cycle_time(
+    db: DbSession,
+    days: int = Query(default=30, ge=1, le=90),
+    team: Team | None = None,
+) -> list[dict[str, Any]]:
+    """Per-stage cycle time (dwell per lifecycle status) over the window."""
+    metrics_service = get_metrics_service(db)
+    stages = await metrics_service.get_cycle_time_by_stage(team=team, days=days)
+    return [s.to_dict() for s in stages]
+
+
+@router.get("/metrics/bottlenecks")
+async def get_bottlenecks(
+    db: DbSession,
+    days: int = Query(default=30, ge=1, le=90),
+) -> dict[str, Any]:
+    """Where work piles up: cumulative dwell per stage + live parked counts."""
+    metrics_service = get_metrics_service(db)
+    report = await metrics_service.get_bottleneck_distribution(days=days)
+    return report.to_dict()
+
+
+@router.get("/metrics/rework")
+async def get_rework(
+    db: DbSession,
+    days: int = Query(default=30, ge=1, le=90),
+    team: Team | None = None,
+) -> dict[str, Any]:
+    """Rework rate (bounced/completed) overall, by team, and by agent + cost."""
+    metrics_service = get_metrics_service(db)
+    report = await metrics_service.get_rework_metrics(team=team, days=days)
+    return report.to_dict()
+
+
+@router.get("/metrics/scorecard/agent/{agent_id}")
+async def get_agent_scorecard(
+    agent_id: UUID,
+    db: DbSession,
+    days: int = Query(default=7, ge=1, le=90),
+) -> dict[str, Any]:
+    """Fused per-agent delivery scorecard."""
+    metrics_service = get_metrics_service(db)
+    card = await metrics_service.get_scorecard(agent_id=agent_id, days=days)
+    if card is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found"
+        )
+    return card.to_dict()
+
+
+@router.get("/metrics/scorecard/team/{team}")
+async def get_team_scorecard(
+    team: Team,
+    db: DbSession,
+    days: int = Query(default=7, ge=1, le=90),
+) -> dict[str, Any]:
+    """Fused per-cell delivery scorecard."""
+    metrics_service = get_metrics_service(db)
+    card = await metrics_service.get_scorecard(team=team, days=days)
+    if card is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Team scorecard unavailable"
+        )
+    return card.to_dict()

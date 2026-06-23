@@ -204,6 +204,7 @@ class TaskUpdate(BaseModel):
     description: str | None = Field(default=None, min_length=20)
     acceptance_criteria: list[str] | None = Field(default=None, min_length=1)
     priority: int | None = Field(default=None, ge=0, le=3)
+    sequence: int | None = Field(default=None, ge=0)  # Order within siblings
     target_date: datetime | None = None
     estimated_complexity: Complexity | None = None
 

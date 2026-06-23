@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     # ==========================================================================
     # Application
     # ==========================================================================
-    app_version: str = "0.9.0"
+    app_version: str = "0.10.0"
     debug: bool = False
     environment: str = Field(
         default="development", pattern="^(development|staging|production)$"
@@ -198,6 +198,22 @@ class Settings(BaseSettings):
             "503 from the model API) the same way a 429 rate limit is parked: "
             "queue that provider's spawns and probe until it recovers, instead "
             "of crash-retrying into the overload. Off => crash-retry behavior."
+        ),
+    )
+    gateway_health_enabled: bool = Field(
+        default=True,
+        description=(
+            "Detect a broken-but-alive agent gateway (a corrupted /app venv so no "
+            "gateway verb can fire) and kill + respawn the container, instead of "
+            "the reaper protecting it forever as a 'live' agent. Off => live "
+            "containers are spared on verb-heartbeat liveness alone."
+        ),
+    )
+    gateway_health_grace_seconds: int = Field(
+        default=180,
+        description=(
+            "How long an agent gateway may probe as broken before the reaper "
+            "recovers it — tolerates a transient probe miss (the gateway mid-call)."
         ),
     )
 
@@ -532,7 +548,7 @@ class Settings(BaseSettings):
     agent_image_tag: str = Field(
         default="",
         description=(
-            "Tag for pre-built agent images (e.g. 'latest' or '0.9.0'). Empty "
+            "Tag for pre-built agent images (e.g. 'latest' or '0.10.0'). Empty "
             "leaves the tag implicit (':latest'); only meaningful with "
             "agent_image_registry set."
         ),

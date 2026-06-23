@@ -527,6 +527,17 @@ class TaskService(BaseService):
 
         from roboco.services.audit import get_audit_service
 
+        # Rework counter: a bounce INTO needs_revision (not a re-entry) is one
+        # rework cycle. Incremented at this single chokepoint — every transition
+        # path funnels its audit through here exactly once — so the rework rate
+        # is an O(1) column read. Synchronous (part of this unit of work),
+        # unlike the fire-and-forget audit rows below.
+        if (
+            to_status == TaskStatus.NEEDS_REVISION.value
+            and from_status != TaskStatus.NEEDS_REVISION.value
+        ):
+            task.revision_count = (task.revision_count or 0) + 1
+
         if audit_agent_id is not None:
             resolved_audit_agent_id: str | None = str(audit_agent_id)
         elif task.claimed_by is not None:
@@ -534,27 +545,46 @@ class TaskService(BaseService):
         else:
             resolved_audit_agent_id = None
 
+        details = {
+            "from_status": from_status,
+            "to_status": to_status,
+            "agent_role": agent_role,
+            "team": (
+                task.team.value if hasattr(task.team, "value") else str(task.team)
+            ),
+        }
         audit = get_audit_service()
         with contextlib.suppress(RuntimeError):
-            bg = asyncio.get_running_loop().create_task(
-                audit.log_task_event(
-                    event_type=f"task.{to_status}",
-                    task_id=str(task.id),
-                    agent_id=resolved_audit_agent_id,
-                    details={
-                        "from_status": from_status,
-                        "to_status": to_status,
-                        "agent_role": agent_role,
-                        "team": (
-                            task.team.value
-                            if hasattr(task.team, "value")
-                            else str(task.team)
-                        ),
-                    },
+            loop = asyncio.get_running_loop()
+            for event_type in self._audit_events_for(to_status, agent_role):
+                bg = loop.create_task(
+                    audit.log_task_event(
+                        event_type=event_type,
+                        task_id=str(task.id),
+                        agent_id=resolved_audit_agent_id,
+                        details=details,
+                    )
                 )
-            )
-            self._background_tasks.add(bg)
-            bg.add_done_callback(self._background_tasks.discard)
+                self._background_tasks.add(bg)
+                bg.add_done_callback(self._background_tasks.discard)
+
+    @staticmethod
+    def _audit_events_for(to_status: str, agent_role: str | None) -> list[str]:
+        """Audit event types to emit for a transition.
+
+        Always the generic ``task.<status>``; plus a rejector-attributed
+        ``task.qa_fail`` / ``task.pr_fail`` when a reviewer bounces a task to
+        needs_revision — so the per-agent rework scorecard can charge the
+        rejection to the QA / PR-reviewer who made it (the audit row carries
+        their agent_id), not the developer who owns the task.
+        """
+        events = [f"task.{to_status}"]
+        if to_status == TaskStatus.NEEDS_REVISION.value:
+            if agent_role == "pr_reviewer":
+                events.append("task.pr_fail")
+            elif agent_role == "qa":
+                events.append("task.qa_fail")
+        return events
 
     # =========================================================================
     # CRUD OPERATIONS

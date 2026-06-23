@@ -362,10 +362,12 @@ async def test_i_will_work_on_in_progress_assigned_to_self_idempotent() -> None:
 
 
 @pytest.mark.asyncio
-async def test_i_will_plan_pm_with_already_active_task_rejects() -> None:
-    """The already_active_guard still fires on i_will_plan even though
-    pm_cannot_execute_code is skipped. Covers _impl.py:1106-1108
-    (with-briefing wrap of the guard rejection).
+async def test_i_will_plan_pm_exempt_from_already_active_guard() -> None:
+    """A PM coordinator is exempt from already_active_guard on i_will_plan: it
+    plans + delegates many roots in parallel, so holding one in_progress root
+    must NOT block planning another. (The guard still fires for developers — see
+    test_choreographer_claim_guards.py.) Repurposed from the pre-fix test that
+    asserted the now-removed PM block.
     """
     pm_id = uuid4()
     task_id = uuid4()
@@ -380,12 +382,25 @@ async def test_i_will_plan_pm_with_already_active_task_rejects() -> None:
         parent_task_id=None,
         task_type="planning",
     )
+    started = MagicMock(
+        id=task_id,
+        status="in_progress",
+        plan={"text": "x"},
+        assigned_to=pm_id,
+        title="t",
+        team="backend",
+        task_type="planning",
+    )
     busy_task = MagicMock(id=other_task_id, status="in_progress")
     task_svc = AsyncMock()
     task_svc.get.return_value = target
     task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
     task_svc.list_in_progress_for_agent.return_value = [busy_task]
     task_svc.list_paused_for_agent.return_value = []
+    task_svc.get_subtasks.return_value = []
+    task_svc.claim.return_value = target
+    task_svc.set_plan.return_value = target
+    task_svc.start.return_value = started
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
     env = await c.i_will_plan(
@@ -412,8 +427,8 @@ async def test_i_will_plan_pm_with_already_active_task_rejects() -> None:
         },
     )
     body = env.as_dict()
-    assert body["error"] == "invalid_state"
-    assert "in_progress task" in body["message"]
+    assert body.get("error") is None, body
+    task_svc.start.assert_awaited()
 
 
 @pytest.mark.asyncio

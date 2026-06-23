@@ -9,15 +9,29 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 from uuid import UUID
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from roboco.db.tables import AgentTable, MessageTable, NotificationTable, TaskTable
+from roboco.db.tables import (
+    AgentSpawnSessionTable,
+    AgentTable,
+    AuditLogTable,
+    MessageTable,
+    NotificationTable,
+    TaskTable,
+)
 from roboco.models.base import TaskStatus, Team
 from roboco.models.metrics import (
     AgentMetrics,
+    AgentReworkRate,
     BlockerMetrics,
+    BottleneckReport,
+    ReworkReport,
+    Scorecard,
+    StageBottleneck,
+    StageTiming,
     TeamMetrics,
+    TeamReworkRate,
     VelocityMetrics,
 )
 from roboco.services.base import BaseService
@@ -28,6 +42,18 @@ DEFAULT_VELOCITY_DAYS = 7
 DEFAULT_COMM_HOURS = 24
 HOURS_PER_DAY = 24
 SECONDS_PER_HOUR = 3600
+
+
+def _as_hours(value: Any) -> float | None:
+    """Coerce a SQL avg/extract aggregate to a rounded float, or None.
+
+    ``EXTRACT(epoch ...)`` returns ``numeric`` on PostgreSQL 14+, which asyncpg
+    surfaces as a ``Decimal`` — and a ``Decimal`` serializes to a JSON *string*,
+    crashing the panel's numeric formatting (``value.toFixed(...)``). Rounding to
+    a real ``float`` here keeps every "hours" field a JSON number.
+    """
+    return round(float(value), 2) if value else None
+
 
 # Active task statuses for get_team_metrics and related queries.
 # Note: BLOCKED is intentionally excluded here; get_health_status() uses its
@@ -138,7 +164,7 @@ class MetricsService(BaseService):
             period=_format_period(days),
             tasks_completed=tasks_completed,
             tasks_created=tasks_created,
-            avg_completion_hours=round(avg_hours, 2) if avg_hours else None,
+            avg_completion_hours=_as_hours(avg_hours),
             completion_rate=round(completion_rate, 2),
         )
 
@@ -190,9 +216,9 @@ class MetricsService(BaseService):
 
         return BlockerMetrics(
             active_blockers=active_blockers,
-            avg_blocked_hours=round(avg_blocked, 2) if avg_blocked else None,
+            avg_blocked_hours=_as_hours(avg_blocked),
             longest_blocked_task_id=to_python_uuid(longest_task_id),
-            longest_blocked_hours=round(longest_hours, 2) if longest_hours else None,
+            longest_blocked_hours=_as_hours(longest_hours),
             blockers_by_team=blockers_by_team,
         )
 
@@ -289,7 +315,7 @@ class MetricsService(BaseService):
             active_tasks=active_tasks,
             completed_tasks_week=completed_tasks_week,
             blocked_tasks=blocked_tasks,
-            avg_completion_hours=round(avg_hours, 2) if avg_hours else None,
+            avg_completion_hours=_as_hours(avg_hours),
             documentation_coverage=round(doc_coverage, 2),
         )
 
@@ -365,7 +391,7 @@ class MetricsService(BaseService):
             agent_name=agent.name,
             tasks_completed_week=tasks_completed,
             current_task_id=to_python_uuid(agent.current_task_id),
-            avg_completion_hours=round(avg_hours, 2) if avg_hours else None,
+            avg_completion_hours=_as_hours(avg_hours),
             messages_sent_week=messages_sent,
         )
 
@@ -495,6 +521,377 @@ class MetricsService(BaseService):
             "blocked_ratio": round(blocked_ratio, 2),
             "completed_this_week": completed_count,
         }
+
+    # =========================================================================
+    # OBSERVABILITY (cycle-time / bottleneck / rework / scorecard)
+    # =========================================================================
+
+    async def get_cycle_time_by_stage(
+        self, team: Team | None = None, days: int = 30
+    ) -> list[StageTiming]:
+        """Per-stage dwell time reconstructed from the audit_log journey.
+
+        Each generic ``task.<status>`` event marks entry into a status; the
+        dwell in that status is the gap to the next event for the same task.
+        The named ``task.qa_fail`` / ``task.pr_fail`` events are excluded —
+        ``event_type = 'task.' || to_status`` keeps only generic transitions, so
+        the same-timestamp named events can't inject a zero-length stage.
+        """
+        since = datetime.now(UTC) - timedelta(days=days)
+        # A NULL :team disables the team filter — the query is a static string
+        # (no interpolation), so the team value is only ever a bound parameter.
+        sql = text(
+            """
+            WITH ordered AS (
+                SELECT
+                    (a.details->>'to_status') AS status,
+                    a.timestamp AS entered_at,
+                    LEAD(a.timestamp) OVER (
+                        PARTITION BY a.target_id ORDER BY a.timestamp
+                    ) AS exited_at
+                FROM audit_log a
+                WHERE a.event_type LIKE 'task.%'
+                  AND a.event_type = 'task.' || (a.details->>'to_status')
+                  AND a.timestamp >= :since
+                  AND (CAST(:team AS text) IS NULL OR a.details->>'team' = :team)
+            )
+            SELECT
+                status,
+                AVG(EXTRACT(epoch FROM (exited_at - entered_at)))::float AS avg_s,
+                PERCENTILE_CONT(0.5) WITHIN GROUP (
+                    ORDER BY EXTRACT(epoch FROM (exited_at - entered_at))
+                )::float AS median_s,
+                PERCENTILE_CONT(0.9) WITHIN GROUP (
+                    ORDER BY EXTRACT(epoch FROM (exited_at - entered_at))
+                )::float AS p90_s,
+                COUNT(*) AS n
+            FROM ordered
+            WHERE exited_at IS NOT NULL
+            GROUP BY status
+            ORDER BY avg_s DESC
+            """
+        )
+        params: dict[str, Any] = {"since": since, "team": team.value if team else None}
+        rows = (await self.session.execute(sql, params)).all()
+        return [
+            StageTiming(
+                status=r.status,
+                avg_seconds=float(r.avg_s or 0.0),
+                median_seconds=float(r.median_s or 0.0),
+                p90_seconds=float(r.p90_s or 0.0),
+                sample_size=int(r.n),
+            )
+            for r in rows
+        ]
+
+    async def get_bottleneck_distribution(self, days: int = 30) -> BottleneckReport:
+        """Where work piles up: cumulative dwell per stage + live parked counts."""
+        stages = await self.get_cycle_time_by_stage(days=days)
+        cumulative = {s.status: s.avg_seconds * s.sample_size for s in stages}
+        total = sum(cumulative.values())
+
+        parked_rows = (
+            await self.session.execute(
+                select(TaskTable.status, func.count(TaskTable.id)).group_by(
+                    TaskTable.status
+                )
+            )
+        ).all()
+        parked = {
+            (st.value if hasattr(st, "value") else str(st)): cnt
+            for st, cnt in parked_rows
+        }
+
+        by_stage = [
+            StageBottleneck(
+                status=status,
+                cumulative_seconds=cum,
+                parked_now=parked.get(status, 0),
+                pct_of_total=(cum / total) if total else 0.0,
+            )
+            for status, cum in cumulative.items()
+        ]
+        by_stage.sort(key=lambda s: s.cumulative_seconds, reverse=True)
+        blockers = await self.get_blocker_metrics()
+        return BottleneckReport(
+            by_stage=by_stage,
+            worst_stage=by_stage[0].status if by_stage else None,
+            active_blockers=blockers.active_blockers,
+        )
+
+    async def _completed_reworked_counts(
+        self, since: datetime, team: Team | None
+    ) -> tuple[int, int]:
+        """(#completed, #completed-with-a-rework) in the window, optional team."""
+        base: list[Any] = [
+            TaskTable.status == TaskStatus.COMPLETED,
+            TaskTable.completed_at >= since,
+        ]
+        if team:
+            base.append(TaskTable.team == team)
+        completed = (
+            await self.session.execute(
+                select(func.count(TaskTable.id)).where(and_(*base))
+            )
+        ).scalar() or 0
+        reworked = (
+            await self.session.execute(
+                select(func.count(TaskTable.id)).where(
+                    and_(*base, TaskTable.revision_count > 0)
+                )
+            )
+        ).scalar() or 0
+        return completed, reworked
+
+    async def _rework_by_agent(self, since: datetime) -> list[AgentReworkRate]:
+        """Per-agent rework: owner bounce-rate + reviewer-attributed fails."""
+        fail_rows = (
+            await self.session.execute(
+                select(
+                    AuditLogTable.agent_id,
+                    AuditLogTable.event_type,
+                    func.count(AuditLogTable.id),
+                )
+                .where(
+                    AuditLogTable.event_type.in_(["task.qa_fail", "task.pr_fail"]),
+                    AuditLogTable.timestamp >= since,
+                    AuditLogTable.agent_id.isnot(None),
+                )
+                .group_by(AuditLogTable.agent_id, AuditLogTable.event_type)
+            )
+        ).all()
+        completed_by = await self._count_by_assignee(since, reworked_only=False)
+        reworked_by = await self._count_by_assignee(since, reworked_only=True)
+
+        qa_by: dict[str, int] = {}
+        pr_by: dict[str, int] = {}
+        for agent_id, event_type, cnt in fail_rows:
+            key = str(agent_id)
+            (qa_by if event_type == "task.qa_fail" else pr_by)[key] = cnt
+
+        agent_ids = set(completed_by) | set(qa_by) | set(pr_by)
+        if not agent_ids:
+            return []
+        slug_rows = (
+            await self.session.execute(
+                select(AgentTable.id, AgentTable.slug).where(
+                    AgentTable.id.in_([UUID(a) for a in agent_ids])
+                )
+            )
+        ).all()
+        slug_by = {str(i): s for i, s in slug_rows}
+
+        out = [
+            AgentReworkRate(
+                agent_slug=slug_by.get(aid, aid),
+                rate=(
+                    reworked_by.get(aid, 0) / completed_by[aid]
+                    if completed_by.get(aid)
+                    else 0.0
+                ),
+                qa_fails=qa_by.get(aid, 0),
+                pr_fails=pr_by.get(aid, 0),
+            )
+            for aid in agent_ids
+        ]
+        out.sort(key=lambda a: (a.qa_fails + a.pr_fails, a.rate), reverse=True)
+        return out
+
+    async def _count_by_assignee(
+        self, since: datetime, *, reworked_only: bool
+    ) -> dict[str, int]:
+        """#completed tasks per assignee in the window (optionally rework-only)."""
+        conds: list[Any] = [
+            TaskTable.status == TaskStatus.COMPLETED,
+            TaskTable.completed_at >= since,
+            TaskTable.assigned_to.isnot(None),
+        ]
+        if reworked_only:
+            conds.append(TaskTable.revision_count > 0)
+        rows = (
+            await self.session.execute(
+                select(TaskTable.assigned_to, func.count(TaskTable.id))
+                .where(and_(*conds))
+                .group_by(TaskTable.assigned_to)
+            )
+        ).all()
+        return {str(a): c for a, c in rows}
+
+    async def _rework_cost(self, since: datetime, team: Team | None) -> float:
+        """Total spawn-session cost of the reworked tasks in the window."""
+        base: list[Any] = [
+            TaskTable.status == TaskStatus.COMPLETED,
+            TaskTable.completed_at >= since,
+            TaskTable.revision_count > 0,
+        ]
+        if team:
+            base.append(TaskTable.team == team)
+        ids = (
+            (await self.session.execute(select(TaskTable.id).where(and_(*base))))
+            .scalars()
+            .all()
+        )
+        if not ids:
+            return 0.0
+        cost = (
+            await self.session.execute(
+                select(
+                    func.coalesce(
+                        func.sum(AgentSpawnSessionTable.estimated_cost_usd), 0.0
+                    )
+                ).where(AgentSpawnSessionTable.task_id.in_([str(i) for i in ids]))
+            )
+        ).scalar() or 0.0
+        return float(cost)
+
+    async def get_rework_metrics(
+        self, team: Team | None = None, days: int = 30
+    ) -> ReworkReport:
+        """Rework rate (bounced/completed) overall, by team, and by agent + cost."""
+        since = datetime.now(UTC) - timedelta(days=days)
+        completed, reworked = await self._completed_reworked_counts(since, team)
+        by_team = []
+        for t in [Team.BACKEND, Team.FRONTEND, Team.UX_UI]:
+            c, r = await self._completed_reworked_counts(since, t)
+            by_team.append(TeamReworkRate(team=t.value, rate=(r / c if c else 0.0)))
+        by_agent = await self._rework_by_agent(since)
+        cost = await self._rework_cost(since, team)
+        return ReworkReport(
+            rate=(reworked / completed if completed else 0.0),
+            total_completed=completed,
+            total_reworked=reworked,
+            by_team=by_team,
+            by_agent=by_agent,
+            rework_cost_usd=cost,
+        )
+
+    async def _tokens_cost_for(
+        self, *, agent_slug: str | None, team: Team | None, since: datetime
+    ) -> tuple[int, float]:
+        """Sum (tokens, cost) from spawn sessions for an agent or a team."""
+        tok = (
+            AgentSpawnSessionTable.tokens_input
+            + AgentSpawnSessionTable.tokens_output
+            + AgentSpawnSessionTable.tokens_cache_read
+            + AgentSpawnSessionTable.tokens_cache_write
+        )
+        conds: list[Any] = [AgentSpawnSessionTable.started_at >= since]
+        if agent_slug is not None:
+            conds.append(AgentSpawnSessionTable.agent_slug == agent_slug)
+        if team is not None:
+            conds.append(AgentSpawnSessionTable.team == team.value)
+        row = (
+            await self.session.execute(
+                select(
+                    func.coalesce(func.sum(tok), 0),
+                    func.coalesce(
+                        func.sum(AgentSpawnSessionTable.estimated_cost_usd), 0.0
+                    ),
+                ).where(and_(*conds))
+            )
+        ).first()
+        return (int(row[0]) if row else 0, float(row[1]) if row else 0.0)
+
+    async def get_scorecard(
+        self,
+        agent_id: UUID | None = None,
+        team: Team | None = None,
+        days: int = 7,
+    ) -> Scorecard | None:
+        """Fused per-agent or per-cell delivery scorecard (None if agent absent)."""
+        since = datetime.now(UTC) - timedelta(days=days)
+        if agent_id is not None:
+            agent = (
+                await self.session.execute(
+                    select(AgentTable).where(AgentTable.id == agent_id)
+                )
+            ).scalar_one_or_none()
+            if agent is None:
+                return None
+            completed, reworked = await self._completed_for_owner(agent_id, since)
+            avg_hours = await self._avg_cycle_hours(
+                owner=agent_id, team=None, since=since
+            )
+            tokens, cost = await self._tokens_cost_for(
+                agent_slug=agent.slug, team=None, since=since
+            )
+            return Scorecard(
+                scope="agent",
+                id=str(agent_id),
+                name=agent.name,
+                tasks_completed=completed,
+                avg_cycle_hours=avg_hours,
+                rework_rate=(reworked / completed if completed else 0.0),
+                tokens=tokens,
+                cost_usd=cost,
+            )
+        if team is not None:
+            completed, reworked = await self._completed_reworked_counts(since, team)
+            avg_hours = await self._avg_cycle_hours(owner=None, team=team, since=since)
+            tokens, cost = await self._tokens_cost_for(
+                agent_slug=None, team=team, since=since
+            )
+            return Scorecard(
+                scope="cell",
+                id=team.value,
+                name=team.value,
+                tasks_completed=completed,
+                avg_cycle_hours=avg_hours,
+                rework_rate=(reworked / completed if completed else 0.0),
+                tokens=tokens,
+                cost_usd=cost,
+            )
+        return None
+
+    async def _completed_for_owner(
+        self, agent_id: UUID, since: datetime
+    ) -> tuple[int, int]:
+        """(#completed, #reworked) tasks owned by an agent in the window."""
+        base: list[Any] = [
+            TaskTable.assigned_to == agent_id,
+            TaskTable.status == TaskStatus.COMPLETED,
+            TaskTable.completed_at >= since,
+        ]
+        completed = (
+            await self.session.execute(
+                select(func.count(TaskTable.id)).where(and_(*base))
+            )
+        ).scalar() or 0
+        reworked = (
+            await self.session.execute(
+                select(func.count(TaskTable.id)).where(
+                    and_(*base, TaskTable.revision_count > 0)
+                )
+            )
+        ).scalar() or 0
+        return completed, reworked
+
+    async def _avg_cycle_hours(
+        self, *, owner: UUID | None, team: Team | None, since: datetime
+    ) -> float | None:
+        """Average completed-task cycle time (started→completed) in hours."""
+        conds: list[Any] = [
+            TaskTable.completed_at >= since,
+            TaskTable.started_at.isnot(None),
+            TaskTable.status == TaskStatus.COMPLETED,
+        ]
+        if owner is not None:
+            conds.append(TaskTable.assigned_to == owner)
+        if team is not None:
+            conds.append(TaskTable.team == team)
+        avg_hours = (
+            await self.session.execute(
+                select(
+                    func.avg(
+                        func.extract(
+                            "epoch", TaskTable.completed_at - TaskTable.started_at
+                        )
+                        / 3600
+                    )
+                ).where(and_(*conds))
+            )
+        ).scalar()
+        return _as_hours(avg_hours)
 
 
 # =============================================================================

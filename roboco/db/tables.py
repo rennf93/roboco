@@ -330,6 +330,11 @@ class TaskTable(Base):
     # Review Status
     self_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     qa_verified: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # Rework: incremented on every transition into needs_revision so the
+    # rework rate is an O(1) column read instead of an audit_log scan.
+    revision_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
 
     # Quick Context
     quick_context: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -1794,6 +1799,9 @@ class AuditLogTable(Base):
     __table_args__ = (
         Index("ix_audit_log_agent_timestamp", "agent_id", "timestamp"),
         Index("ix_audit_log_target", "target_type", "target_id"),
+        # Powers the observability cycle-time / rework reconstruction: per-task
+        # transition journeys are read by (target_id, event_type) ordered by time.
+        Index("ix_audit_log_target_event_ts", "target_id", "event_type", "timestamp"),
     )
 
 

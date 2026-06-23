@@ -210,6 +210,8 @@ These gate the env-toggled capabilities. Each is inert when off. See [Optional c
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `ROBOCO_OVERLOAD_BREAK_ENABLED` | `true` | Park a provider on a persistent overload (HTTP 529/500/503) the way a 429 is parked, instead of crash-retrying. |
+| `ROBOCO_GATEWAY_HEALTH_ENABLED` | `true` | Probe a stale-heartbeat-but-live agent's gateway and kill + respawn it when the gateway is broken (a corrupted `/app` venv firing no verb), instead of the reaper protecting it forever. Off => spare live containers on verb-heartbeat liveness alone. |
+| `ROBOCO_GATEWAY_HEALTH_GRACE_SECONDS` | `180` | How long an agent gateway may probe as broken before recovery — tolerates a transient probe miss. |
 
 ### Strategy engine — default **off**
 

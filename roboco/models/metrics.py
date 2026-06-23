@@ -111,3 +111,139 @@ class AgentMetrics:
             "avg_completion_hours": self.avg_completion_hours,
             "messages_sent_week": self.messages_sent_week,
         }
+
+
+# =============================================================================
+# OBSERVABILITY (0.10.0): cycle-time, bottlenecks, rework, scorecard
+# =============================================================================
+
+
+@dataclass
+class StageTiming:
+    """Time tasks spend in one lifecycle status, reconstructed from audit_log."""
+
+    status: str
+    avg_seconds: float
+    median_seconds: float
+    p90_seconds: float
+    sample_size: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "avg_seconds": round(self.avg_seconds, 1),
+            "median_seconds": round(self.median_seconds, 1),
+            "p90_seconds": round(self.p90_seconds, 1),
+            "sample_size": self.sample_size,
+        }
+
+
+@dataclass
+class StageBottleneck:
+    """Cumulative dwell + current parked count for one lifecycle status."""
+
+    status: str
+    cumulative_seconds: float
+    parked_now: int
+    pct_of_total: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "cumulative_seconds": round(self.cumulative_seconds, 1),
+            "parked_now": self.parked_now,
+            "pct_of_total": round(self.pct_of_total, 4),
+        }
+
+
+@dataclass
+class BottleneckReport:
+    """Where the work piles up: cumulative dwell per stage + live parked counts."""
+
+    by_stage: list[StageBottleneck]
+    worst_stage: str | None
+    active_blockers: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "by_stage": [s.to_dict() for s in self.by_stage],
+            "worst_stage": self.worst_stage,
+            "active_blockers": self.active_blockers,
+        }
+
+
+@dataclass
+class AgentReworkRate:
+    """Per-agent rework: bounce rate + fails attributed to this agent's reviews."""
+
+    agent_slug: str
+    rate: float
+    qa_fails: int
+    pr_fails: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "agent_slug": self.agent_slug,
+            "rate": round(self.rate, 4),
+            "qa_fails": self.qa_fails,
+            "pr_fails": self.pr_fails,
+        }
+
+
+@dataclass
+class TeamReworkRate:
+    """Per-cell rework rate."""
+
+    team: str
+    rate: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"team": self.team, "rate": round(self.rate, 4)}
+
+
+@dataclass
+class ReworkReport:
+    """How often work bounces to needs_revision, by team and by agent."""
+
+    rate: float
+    total_completed: int
+    total_reworked: int
+    by_team: list[TeamReworkRate]
+    by_agent: list[AgentReworkRate]
+    rework_cost_usd: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "rate": round(self.rate, 4),
+            "total_completed": self.total_completed,
+            "total_reworked": self.total_reworked,
+            "by_team": [t.to_dict() for t in self.by_team],
+            "by_agent": [a.to_dict() for a in self.by_agent],
+            "rework_cost_usd": round(self.rework_cost_usd, 4),
+        }
+
+
+@dataclass
+class Scorecard:
+    """Fused per-agent or per-cell delivery scorecard."""
+
+    scope: str  # "agent" | "cell"
+    id: str
+    name: str
+    tasks_completed: int
+    avg_cycle_hours: float | None
+    rework_rate: float
+    tokens: int
+    cost_usd: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "scope": self.scope,
+            "id": self.id,
+            "name": self.name,
+            "tasks_completed": self.tasks_completed,
+            "avg_cycle_hours": self.avg_cycle_hours,
+            "rework_rate": round(self.rework_rate, 4),
+            "tokens": self.tokens,
+            "cost_usd": round(self.cost_usd, 4),
+        }

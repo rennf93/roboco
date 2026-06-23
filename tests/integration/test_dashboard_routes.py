@@ -93,6 +93,55 @@ async def test_get_auditor_flags(dashboard_client: AsyncClient) -> None:
     assert isinstance(response.json(), list)
 
 
+# ---------------------------------------------------------------------------
+# Observability endpoints (0.10.0)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cycle_time_endpoint(dashboard_client: AsyncClient) -> None:
+    resp = await dashboard_client.get(
+        "/api/dashboard/metrics/cycle-time?days=30", headers=_HDR
+    )
+    assert resp.status_code == HTTPStatus.OK
+    assert isinstance(resp.json(), list)
+
+
+@pytest.mark.asyncio
+async def test_bottlenecks_endpoint(dashboard_client: AsyncClient) -> None:
+    resp = await dashboard_client.get(
+        "/api/dashboard/metrics/bottlenecks", headers=_HDR
+    )
+    assert resp.status_code == HTTPStatus.OK
+    body = resp.json()
+    assert "by_stage" in body and "worst_stage" in body and "active_blockers" in body
+
+
+@pytest.mark.asyncio
+async def test_rework_endpoint(dashboard_client: AsyncClient) -> None:
+    resp = await dashboard_client.get("/api/dashboard/metrics/rework", headers=_HDR)
+    assert resp.status_code == HTTPStatus.OK
+    body = resp.json()
+    assert "rate" in body and "by_team" in body and "by_agent" in body
+
+
+@pytest.mark.asyncio
+async def test_agent_scorecard_404_when_absent(dashboard_client: AsyncClient) -> None:
+    resp = await dashboard_client.get(
+        f"/api/dashboard/metrics/scorecard/agent/{uuid4()}", headers=_HDR
+    )
+    assert resp.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_team_scorecard_endpoint(dashboard_client: AsyncClient) -> None:
+    resp = await dashboard_client.get(
+        "/api/dashboard/metrics/scorecard/team/backend", headers=_HDR
+    )
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.json()["scope"] == "cell"
+
+
 @pytest.mark.asyncio
 async def test_resolve_auditor_flag(dashboard_client: AsyncClient) -> None:
     create = await dashboard_client.post(

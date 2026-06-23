@@ -20,6 +20,7 @@ import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { OfflineState } from "@/components/ui/offline-state";
+import { DeliveryTabContent } from "@/components/metrics/delivery-tab";
 import {
   UsageTimeSeriesChart,
   ModelUsageDonut,
@@ -527,9 +528,9 @@ function CacheEfficiencyCard({ cacheStats, isLoading }: CacheEfficiencyCardProps
 
 // ─── Tab types ────────────────────────────────────────────────────────────────
 
-type MetricsTab = "performance" | "token-usage";
+type MetricsTab = "performance" | "token-usage" | "delivery";
 
-const VALID_METRICS_TABS: MetricsTab[] = ["performance", "token-usage"];
+const VALID_METRICS_TABS: MetricsTab[] = ["performance", "token-usage", "delivery"];
 
 function isValidMetricsTab(value: string | null): value is MetricsTab {
   return VALID_METRICS_TABS.includes(value as MetricsTab);
@@ -567,6 +568,7 @@ function MetricsPageContent() {
         <TabsList>
           <TabsTrigger value="performance">Performance</TabsTrigger>
           <TabsTrigger value="token-usage">Token Usage</TabsTrigger>
+          <TabsTrigger value="delivery">Delivery</TabsTrigger>
         </TabsList>
 
         <TabsContent value="performance" className="mt-6">
@@ -575,6 +577,10 @@ function MetricsPageContent() {
 
         <TabsContent value="token-usage" className="mt-6">
           <TokenUsageCostsSection />
+        </TabsContent>
+
+        <TabsContent value="delivery" className="mt-6">
+          <DeliveryTabContent />
         </TabsContent>
       </Tabs>
     </div>

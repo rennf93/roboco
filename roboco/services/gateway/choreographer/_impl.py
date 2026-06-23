@@ -847,11 +847,22 @@ class Choreographer:
                 }
         return briefing
 
+    # PM coordinator roles plan + delegate many roots in parallel; the actual
+    # work then runs in the delegated children/cells, not in the PM's own hands.
+    # So the single-active-task concurrency invariants (already_active / paused)
+    # that keep a *developer* to one task at a time must NOT gate a coordinator
+    # — only a genuine upstream sequence dependency (unmet_dependency) may hold a
+    # PM's root back. Without this exemption a PM that claimed one root could
+    # never plan a second and thrashed between its claimed roots, respawning
+    # forever and burning tokens for zero progress.
+    _COORDINATOR_ROLES: ClassVar[frozenset[str]] = frozenset({"main_pm", "cell_pm"})
+
     async def _run_claim_guards(
         self,
         *,
         agent_id: UUID,
         task: Any,
+        role_str: str | None = None,
     ) -> Envelope | None:
         """Run concurrency-invariant claim guards. Returns rejection or None.
 
@@ -861,14 +872,21 @@ class Choreographer:
         in the verb's spec gate; the former role-typed and
         pm_cannot_execute_code guards have been deleted.
 
+        ``role_str`` selects whether the single-active-task guards apply: a PM
+        coordinator (``_COORDINATOR_ROLES``) is exempt from ``already_active`` /
+        ``paused`` (it holds many roots in parallel by design) but the sequence
+        guard ``unmet_dependency`` still applies to everyone. A ``None`` role
+        keeps the full guards (safe default for non-PM callers).
+
         Pre-gateway location: _helpers.py:124-204.
         """
-        in_progress = await self.task.list_in_progress_for_agent(agent_id)
-        if guard := already_active_guard(in_progress, task.id):
-            return guard
-        paused = await self.task.list_paused_for_agent(agent_id)
-        if guard := paused_tasks_guard(paused):
-            return guard
+        if role_str not in self._COORDINATOR_ROLES:
+            in_progress = await self.task.list_in_progress_for_agent(agent_id)
+            if guard := already_active_guard(in_progress, task.id):
+                return guard
+            paused = await self.task.list_paused_for_agent(agent_id)
+            if guard := paused_tasks_guard(paused, task.id):
+                return guard
         dep_ids = list(task.dependency_ids)
         if dep_ids:
             unmet = await self.task.unmet_dependency_ids(dep_ids)
@@ -1005,6 +1023,7 @@ class Choreographer:
         if guard := await self._run_claim_guards(
             agent_id=agent_id,
             task=t,
+            role_str=role_str,
         ):
             return await self._emit_rejection(
                 self._with_briefing(guard, briefing).with_introspection(
@@ -1099,6 +1118,7 @@ class Choreographer:
         if guard := await self._run_claim_guards(
             agent_id=ctx.agent_id,
             task=t,
+            role_str=role_str,
         ):
             return await self._emit_rejection(
                 self._with_briefing(guard, briefing).with_introspection(

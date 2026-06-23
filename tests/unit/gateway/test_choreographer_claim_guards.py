@@ -19,6 +19,7 @@ from uuid import uuid4
 
 import pytest
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
+from roboco.services.gateway.claim_guards import paused_tasks_guard
 
 # #172: a developer fresh claim must carry a substantive step checklist.
 # Inert on re-entry/error/non-dev paths, so safe to pass everywhere.
@@ -559,3 +560,137 @@ async def test_claim_doc_task_blocks_when_documenter_has_paused_task() -> None:
     assert body["error"] == "invalid_state"
     assert "resume" in body["remediate"].lower()
     task_svc.doc_claim.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Coordinator exemption — a PM plans + delegates many roots in parallel, so the
+# single-active-task guards (already_active / paused) must NOT gate it; only a
+# real upstream sequence dependency may hold a PM's root back. (Developers stay
+# blocked — see the A.2 / A.3 tests above.)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_main_pm_can_plan_second_root_despite_active_and_paused() -> None:
+    """A main_pm may plan a new root while it already holds one in_progress and
+    one paused root — the developer concurrency guards do not gate a coordinator.
+    """
+    pm_id = uuid4()
+    task_id = uuid4()
+    target = MagicMock(
+        id=task_id,
+        status="pending",
+        plan=None,
+        assigned_to=None,
+        parent_task_id=None,
+        sequence=0,
+        task_type="code",
+        team="main_pm",
+    )
+    claimed = MagicMock(
+        id=task_id, status="claimed", plan=None, assigned_to=pm_id, task_type="code"
+    )
+    started = MagicMock(
+        id=task_id,
+        status="in_progress",
+        plan={"text": "x"},
+        assigned_to=pm_id,
+        task_type="code",
+    )
+    # The coordinator already holds one in_progress root and one paused root —
+    # both would trip the guards for a non-PM caller.
+    other_active = MagicMock(id=uuid4(), status="in_progress")
+    other_paused = MagicMock(id=uuid4(), status="paused")
+    task_svc = _task_svc_with(
+        target,
+        role="main_pm",
+        agent_id=pm_id,
+        lookups={"in_progress": [other_active], "paused": [other_paused]},
+    )
+    task_svc.claim.return_value = claimed
+    task_svc.set_plan.return_value = claimed
+    task_svc.start.return_value = started
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_will_plan(
+        pm_id,
+        task_id,
+        plan="route to backend + frontend cells",
+        rich_plan={
+            "approach": (
+                "Route this root to the backend and frontend cells in parallel: "
+                "be-pm owns the API contract, fe-pm consumes it. No cross-cell "
+                "dependency for this slice, so both cells start at once."
+            ),
+            "sub_tasks": [
+                {
+                    "title": "Backend slice",
+                    "description": (
+                        "be-pm decomposes the API change and assigns be-dev-1, "
+                        "who implements with tests and opens the leaf PR for QA."
+                    ),
+                }
+            ],
+        },
+    )
+    assert env.error is None, env.as_dict()
+    task_svc.start.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_main_pm_recovers_claimed_root_with_paused_sibling() -> None:
+    """The live deadlock: a respawned main_pm re-enters i_will_plan on a stuck
+    `claimed` root while another root is paused (i_am_idle auto-paused it). The
+    paused guard must NOT block the coordinator's recovery — set_plan + start
+    runs and the root reaches in_progress.
+    """
+    pm_id = uuid4()
+    task_id = uuid4()
+    claimed = MagicMock(
+        id=task_id,
+        status="claimed",
+        plan=None,
+        assigned_to=pm_id,
+        parent_task_id=None,
+        sequence=0,
+        task_type="code",
+        team="main_pm",
+        branch_name="feature/main_pm/abc",
+    )
+    started = MagicMock(
+        id=task_id,
+        status="in_progress",
+        plan={"text": "x"},
+        assigned_to=pm_id,
+        task_type="code",
+    )
+    other_paused = MagicMock(id=uuid4(), status="paused")
+    task_svc = _task_svc_with(
+        claimed, role="main_pm", agent_id=pm_id, lookups={"paused": [other_paused]}
+    )
+    task_svc.set_plan.return_value = started
+    task_svc.start.return_value = started
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_will_plan(
+        pm_id, task_id, plan="route this root to the backend + frontend cells"
+    )
+    assert env.error is None, env.as_dict()
+    task_svc.start.assert_awaited_once_with(task_id, pm_id)
+
+
+def test_paused_tasks_guard_excludes_target() -> None:
+    """A paused task that IS the claim target must not self-block, mirroring
+    already_active_guard's target exclusion (the 2026-06-14 self-deadlock)."""
+    target_id = uuid4()
+    other_id = uuid4()
+    # Only the target itself is paused -> no block.
+    assert paused_tasks_guard([MagicMock(id=target_id)], target_id) is None
+    # A different paused task -> block, naming that task.
+    env = paused_tasks_guard([MagicMock(id=other_id)], target_id)
+    assert env is not None
+    assert str(other_id) in env.as_dict()["remediate"]
+    # Back-compat: with no target supplied, any paused task blocks.
+    assert paused_tasks_guard([MagicMock(id=other_id)]) is not None
