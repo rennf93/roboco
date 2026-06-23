@@ -32,7 +32,7 @@ from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
-from roboco.db.tables import AgentTable, ProjectTable, WorkSessionTable
+from roboco.db.tables import AgentTable, ProjectTable, TaskTable, WorkSessionTable
 from roboco.enforcement import TaskLifecycleError
 from roboco.foundation.policy.content import markers
 from roboco.models import AgentRole, AgentStatus, Team
@@ -338,6 +338,38 @@ async def test_create_denies_batch_root_subtask_under_non_umbrella_parent(
     parent = await svc.create(_req(task_setup))  # a normal task, no batch_id
     with pytest.raises(ValueError, match="parent must be the batch umbrella"):
         await svc.create(_req(task_setup, batch_id=uuid4(), parent_task_id=parent.id))
+
+
+@pytest.mark.asyncio
+async def test_update_rejects_breaking_batch_umbrella_shape(
+    task_setup: dict,
+) -> None:
+    """Guardrail completeness: update() re-validates the MegaTask shape, so a
+    PATCH that adds a project to a branchless umbrella (which would spoof the
+    branch-gate / no-PR exemption) is refused — the invariant the branchless
+    predicates trust is enforced on mutation, not only at create."""
+    db = task_setup["db"]
+    svc = task_setup["svc"]
+    umbrella = TaskTable(
+        id=uuid4(),
+        title="MegaTask",
+        description="d",
+        acceptance_criteria=["ac"],
+        status=TaskStatus.PENDING,
+        priority=1,
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        project_id=None,  # a valid umbrella targets neither
+        product_id=None,
+        batch_id=uuid4(),
+        parent_task_id=None,
+        team=Team.MAIN_PM,
+        created_by=task_setup["agent_id"],
+    )
+    db.add(umbrella)
+    await db.flush()
+    with pytest.raises(ValueError, match="MegaTask shape"):
+        await svc.update(umbrella.id, project_id=task_setup["project_id"])
 
 
 @pytest.mark.asyncio

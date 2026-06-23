@@ -129,6 +129,25 @@ async def test_propose_batch_requires_a_live_session(
 
 
 @pytest.mark.asyncio
+async def test_propose_batch_refuses_empty_without_posting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ROBOCO_PROMPTER_SESSION_ID", "sess-1")
+    posted = False
+
+    async def _spy(_sid: str, _batch: dict[str, Any]) -> dict[str, Any]:
+        nonlocal posted
+        posted = True
+        return {"ok": True}
+
+    monkeypatch.setattr(intake_server, "post_batch", _spy)
+    # No titles anywhere → nothing well-formed → don't POST, tell the agent.
+    msg = await intake_server.propose_batch([{"no_title": True}], "MegaTask")
+    assert "no well-formed task drafts" in msg
+    assert posted is False
+
+
+@pytest.mark.asyncio
 async def test_propose_draft_requires_a_live_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

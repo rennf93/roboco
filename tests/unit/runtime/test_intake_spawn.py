@@ -210,7 +210,7 @@ class TestIntakeScopeSlugs:
         assert slugs == ["proj-1", "proj-2"]
 
     @pytest.mark.asyncio
-    async def test_megatask_scope_with_no_resolvable_projects_raises(self) -> None:
+    async def test_megatask_scope_with_unresolvable_project_raises(self) -> None:
         class _FakeProjectSvc:
             async def get(self, _pid: Any) -> Any:
                 return None
@@ -220,13 +220,38 @@ class TestIntakeScopeSlugs:
                 "roboco.services.project.get_project_service",
                 lambda _db: _FakeProjectSvc(),
             ),
-            pytest.raises(ValueError, match="MegaTask scope resolves to no projects"),
+            pytest.raises(ValueError, match="not found"),
         ):
             await AgentOrchestrator._intake_scope_slugs(
                 db=object(),
                 project_slug=None,
                 product_id=None,
                 project_ids=["11111111-1111-1111-1111-111111111111"],
+            )
+
+    @pytest.mark.asyncio
+    async def test_megatask_scope_with_one_unresolvable_id_raises(self) -> None:
+        # A PARTIAL failure (one of N ids invalid) must fail loud, not silently
+        # clone fewer repos than the agent was told it has.
+        good = "11111111-1111-1111-1111-111111111111"
+        bad = "22222222-2222-2222-2222-222222222222"
+
+        class _FakeProjectSvc:
+            async def get(self, pid: Any) -> Any:
+                return SimpleNamespace(slug="proj-a") if str(pid) == good else None
+
+        with (
+            patch(
+                "roboco.services.project.get_project_service",
+                lambda _db: _FakeProjectSvc(),
+            ),
+            pytest.raises(ValueError, match="not found"),
+        ):
+            await AgentOrchestrator._intake_scope_slugs(
+                db=object(),
+                project_slug=None,
+                product_id=None,
+                project_ids=[good, bad],
             )
 
 

@@ -1,9 +1,11 @@
-"""roboco-intake MCP server — the Intake interviewer's ``propose_draft`` tool.
+"""roboco-intake MCP server — the Intake interviewer's ``propose_draft`` and
+``propose_batch`` (MegaTask) tools.
 
-The grok-CLI interactive intake agent calls ``propose_draft`` once the task spec
-is ready; this delivers the draft to the panel's reviewable draft card by POSTing
-it straight to the prompter-live relay (the same ``/api/prompter/live/{session}/
-events`` endpoint the driver's relay sink uses).
+The grok-CLI interactive intake agent calls ``propose_draft`` (one task) or
+``propose_batch`` (a sequenced MegaTask of several tasks) once the spec is ready;
+this delivers it to the panel's reviewable card by POSTing it straight to the
+prompter-live relay (the same ``/api/prompter/live/{session}/events`` endpoint the
+driver's relay sink uses).
 
 WHY IT POSTS DIRECTLY: grok's ``streaming-json`` output does not surface
 tool-call events (verified live — a tool runs but never appears in the stream),
@@ -138,7 +140,24 @@ async def propose_batch(drafts: list[dict[str, Any]], title: str = "") -> str:
             "No live session id (ROBOCO_PROMPTER_SESSION_ID) — cannot surface the "
             "MegaTask."
         )
-    result = await post_batch(session_id, {"drafts": drafts or [], "title": title})
+    # Drop malformed entries (a draft needs a string title) and refuse to POST an
+    # empty batch — otherwise it would silently vanish on the panel side, telling
+    # the agent it succeeded while nothing appears.
+    raw = drafts or []
+    well_formed = [
+        d for d in raw if isinstance(d, dict) and isinstance(d.get("title"), str)
+    ]
+    if not well_formed:
+        return (
+            "That MegaTask had no well-formed task drafts — give each a title and "
+            "project_id and call propose_batch again."
+        )
+    payload = {
+        "drafts": well_formed,
+        "title": title,
+        "dropped": len(raw) - len(well_formed),
+    }
+    result = await post_batch(session_id, payload)
     if result.get("ok"):
         return "MegaTask submitted — the human can review it in the panel."
     detail = result.get("detail") or result.get("error") or "unknown error"

@@ -3680,8 +3680,12 @@ class AgentOrchestrator:
         slugs: list[str] = []
         for pid in project_ids:
             project = await project_svc.get(UUID(pid))
-            if project and project.slug:
-                slugs.append(project.slug)
+            # Fail loud on ANY unresolvable id (matching the single-project route's
+            # 404) rather than silently cloning fewer repos — a partial scope would
+            # let the agent draft against an incomplete workspace with no signal.
+            if not (project and project.slug):
+                raise ValueError(f"MegaTask scope: project {pid} not found")
+            slugs.append(project.slug)
         if not slugs:
             raise ValueError("MegaTask scope resolves to no projects")
         return slugs

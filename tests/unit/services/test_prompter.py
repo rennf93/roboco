@@ -490,7 +490,11 @@ async def test_confirm_live_batch_builds_umbrella_and_sequenced_subtasks(
         },
     ]
     result = await service.confirm_live_batch(
-        "Three things", drafts, ceo_id, route="main_pm"
+        "Three things",
+        drafts,
+        ceo_id,
+        project_ids=[project1, project2],
+        route="main_pm",
     )
 
     # A (migration) and C (independent) run in wave 0; B chains after A.
@@ -530,16 +534,25 @@ async def test_confirm_live_batch_board_route_holds_subtasks_in_backlog(
     """The "board" route sends the umbrella to the Product Owner for batch review
     and holds the root-subtasks in BACKLOG until the umbrella is approved."""
     project1, ceo_id = await _seed_project_and_ceo(db_session)
+    project2 = await _seed_second_project(db_session, ceo_id)
     service = get_prompter_service(db=db_session)
     drafts = [
         {
-            "title": "Solo",
+            "title": "One",
             "acceptance_criteria": ["x"],
             "team": "backend",
             "project_id": str(project1),
-        }
+        },
+        {
+            "title": "Two",
+            "acceptance_criteria": ["y"],
+            "team": "frontend",
+            "project_id": str(project2),
+        },
     ]
-    result = await service.confirm_live_batch("Just one", drafts, ceo_id, route="board")
+    result = await service.confirm_live_batch(
+        "Two repos", drafts, ceo_id, project_ids=[project1, project2], route="board"
+    )
 
     umbrella = await db_session.get(TaskTable, UUID(result["umbrella_task_id"]))
     assert umbrella.team == Team.BOARD
@@ -555,7 +568,47 @@ async def test_confirm_live_batch_rejects_empty(db_session: Any) -> None:
     _project1, ceo_id = await _seed_project_and_ceo(db_session)
     service = get_prompter_service(db=db_session)
     with pytest.raises(ValidationError):
-        await service.confirm_live_batch("Empty", [], ceo_id)
+        await service.confirm_live_batch(
+            "Empty", [], ceo_id, project_ids=[uuid4(), uuid4()]
+        )
+
+
+@pytest.mark.asyncio
+async def test_confirm_live_batch_rejects_draft_outside_scope(db_session: Any) -> None:
+    """A draft targeting a project NOT in the scoped project_ids is refused — the
+    intake agent only read the scoped repos."""
+    project1, ceo_id = await _seed_project_and_ceo(db_session)
+    project2 = await _seed_second_project(db_session, ceo_id)
+    service = get_prompter_service(db=db_session)
+    outside = uuid4()  # never in scope
+    drafts = [
+        {"title": "A", "acceptance_criteria": ["a"], "project_id": str(project1)},
+        {"title": "B", "acceptance_criteria": ["b"], "project_id": str(outside)},
+    ]
+    with pytest.raises(ValidationError, match="outside this MegaTask"):
+        await service.confirm_live_batch(
+            "Scoped", drafts, ceo_id, project_ids=[project1, project2], route="main_pm"
+        )
+
+
+@pytest.mark.asyncio
+async def test_confirm_live_batch_rejects_single_project(db_session: Any) -> None:
+    """A degenerate batch whose drafts all target one project is not a MegaTask."""
+    project1, ceo_id = await _seed_project_and_ceo(db_session)
+    project2 = await _seed_second_project(db_session, ceo_id)
+    service = get_prompter_service(db=db_session)
+    drafts = [
+        {"title": "A", "acceptance_criteria": ["a"], "project_id": str(project1)},
+        {"title": "B", "acceptance_criteria": ["b"], "project_id": str(project1)},
+    ]
+    with pytest.raises(ValidationError, match="at least two distinct projects"):
+        await service.confirm_live_batch(
+            "One repo",
+            drafts,
+            ceo_id,
+            project_ids=[project1, project2],
+            route="main_pm",
+        )
 
 
 def test_preview_batch_computes_waves_without_creating() -> None:

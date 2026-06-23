@@ -5665,6 +5665,25 @@ class Choreographer:
         t = await self.task.escalate_to_ceo(
             task_id=root_task_id, agent_role="main_pm", notes=notes
         )
+        # Defense-in-depth: escalate_to_ceo returns None when it refuses (e.g. a
+        # transition guard rejects). Surface that as a clean rejection instead of
+        # dereferencing None below.
+        if t is None:
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message="escalate_to_ceo did not apply",
+                    remediate=(
+                        "ensure the root is in awaiting_pm_review with all"
+                        " subtasks terminal, then retry complete"
+                    ),
+                    context_briefing=await self._briefing_for(
+                        main_pm_agent_id, root_task_id
+                    ),
+                ),
+                agent_id=main_pm_agent_id,
+                task_id=root_task_id,
+                verb="main_pm_complete",
+            )
         # CEO acts via the UI, not as an agent the orchestrator spawns. Clear
         # ``assigned_to`` so no agent gets respawned to chase this task while
         # it sits in awaiting_ceo_approval.

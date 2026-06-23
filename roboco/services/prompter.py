@@ -56,6 +56,10 @@ _CELL_CAPACITY: dict[str, int] = {
     Team.UX_UI.value: 2,
 }
 
+# A MegaTask must span at least this many distinct projects — fewer is a
+# single-repo batch, which is just an ordinary (multi-)task, not a MegaTask.
+_MIN_MEGATASK_PROJECTS = 2
+
 
 @dataclass
 class ReadinessTag:
@@ -196,6 +200,19 @@ class PrompterService:
         draft through to the task so the analyzer's surface is persisted.
         """
         place = placement or BatchPlacement()
+        # A draft must carry a title + acceptance criteria — without this a
+        # malformed draft (e.g. an agent's incomplete propose_batch item) hits a
+        # bare KeyError below and surfaces as an opaque 500 instead of a clean,
+        # actionable 400.
+        if not draft_data.get("title"):
+            raise ValidationError(
+                message="This task draft is missing a title.", field="title"
+            )
+        if not draft_data.get("acceptance_criteria"):
+            raise ValidationError(
+                message="This task draft is missing acceptance criteria.",
+                field="acceptance_criteria",
+            )
         # Recompose the description from the (possibly edited) structured fields —
         # the task always carries a freshly-composed, consistent description.
         draft_data["description"] = compose_description(draft_data)
@@ -316,6 +333,7 @@ class PrompterService:
         by ``preview_batch`` (panel pre-confirm preview) and ``confirm_live_batch``
         (create), so the previewed waves are exactly the ones that get wired.
         """
+        from roboco.foundation.policy.sequencing.models import SequencingError
         from roboco.services.sequencing import SequencingService
 
         surfaces = [
@@ -325,6 +343,7 @@ class PrompterService:
                 intends_to_touch=_clean_list(d.get("intends_to_touch")),
                 adds_migration=bool(d.get("adds_migration")),
                 touches_shared=bool(d.get("touches_shared")),
+                project_id=str(d["project_id"]) if d.get("project_id") else None,
             )
             for idx, d in enumerate(drafts)
         ]
@@ -332,9 +351,20 @@ class PrompterService:
             idx: self._lead_cell_team(d, default=Team.BACKEND).value
             for idx, d in enumerate(drafts)
         }
-        return SequencingService().analyze(
-            surfaces, lambda i: cell_by_idx[i], _CELL_CAPACITY
-        )
+        try:
+            return SequencingService().analyze(
+                surfaces, lambda i: cell_by_idx[i], _CELL_CAPACITY
+            )
+        except SequencingError as exc:
+            # A cyclic / malformed collision graph is a user-actionable input
+            # problem, not a server fault — surface it as a clean 400.
+            raise ValidationError(
+                message=(
+                    "These tasks can't be sequenced into conflict-free waves: "
+                    f"{exc}. Adjust what they touch and try again."
+                ),
+                field="drafts",
+            ) from exc
 
     def preview_batch(self, drafts: list[dict[str, Any]]) -> dict[str, Any]:
         """Compute a MegaTask's waves + warnings WITHOUT creating anything.
@@ -350,22 +380,54 @@ class PrompterService:
         plan = self._sequence_drafts(drafts)
         return {"waves": plan.waves, "warnings": plan.warnings}
 
+    @staticmethod
+    def _validate_batch_scope(
+        drafts: list[dict[str, Any]], project_ids: list[UUID]
+    ) -> None:
+        """A MegaTask's drafts must each target one of the scoped repos (the only
+        ones the intake agent read), and collectively span at least two distinct
+        projects — otherwise it's a single-repo batch, not a MegaTask.
+        """
+        scope = {str(p) for p in project_ids}
+        seen: set[str] = set()
+        for idx, draft in enumerate(drafts):
+            pid = draft.get("project_id")
+            if not pid or str(pid) not in scope:
+                raise ValidationError(
+                    message=(
+                        f"Task {idx + 1} targets a project outside this MegaTask's "
+                        "selected repos. Point it at one of the scoped projects."
+                    ),
+                    field="drafts",
+                )
+            seen.add(str(pid))
+        if len(seen) < _MIN_MEGATASK_PROJECTS:
+            raise ValidationError(
+                message=(
+                    "A MegaTask must span at least two distinct projects — use a "
+                    "single-project task for work in one repo."
+                ),
+                field="drafts",
+            )
+
     async def confirm_live_batch(
         self,
         title: str,
         drafts: list[dict[str, Any]],
         agent_id: UUID,
         *,
+        project_ids: list[UUID],
         route: Literal["board", "main_pm"] = "board",
     ) -> dict[str, Any]:
         """Confirm a MegaTask: create the umbrella + N sequenced root-subtasks.
 
-        Each draft carries its own ``project_id`` and a collision surface
-        (``intends_to_touch`` / ``adds_migration`` / ``touches_shared``). The pure
-        :class:`SequencingService` turns those surfaces into conflict-free waves;
-        the umbrella (branchless, batch-owning coordination root) groups the
-        root-subtasks, and the existing dependency-gate executes the waves — each
-        root-subtask keeping its own project / branch / PR.
+        Each draft carries its own ``project_id`` (one of the scoped ``project_ids``
+        the intake agent read) and a collision surface (``intends_to_touch`` /
+        ``adds_migration`` / ``touches_shared``). The pure :class:`SequencingService`
+        turns those surfaces into conflict-free waves; the umbrella (branchless,
+        batch-owning coordination root) groups the root-subtasks, and the existing
+        dependency-gate executes the waves — each root-subtask keeping its own
+        project / branch / PR.
 
         ``route`` picks the start path exactly like a single draft. ``"board"``
         sends the umbrella to the Board (PO + HoM) for one batch review, with the
@@ -383,6 +445,7 @@ class PrompterService:
             raise ValidationError(
                 message="A MegaTask needs at least one task draft.", field="drafts"
             )
+        self._validate_batch_scope(drafts, project_ids)
 
         batch_id = uuid4()
         # 1. Sequence the drafts into conflict-free waves (same plan the panel

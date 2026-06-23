@@ -108,8 +108,10 @@ def _batch_from_tool_input(tool_input: Any) -> dict[str, Any] | None:
     """Pull a MegaTask batch out of a ``propose_batch`` tool call's input.
 
     Expects ``{"drafts": [draft, ...], "title": "..."}``; returns the coerced
-    batch (drafts each draft-shaped, plus a string title) or ``None`` when no
-    well-formed, non-empty draft list is present.
+    batch (drafts each draft-shaped, a string title, and ``dropped`` = how many
+    raw entries were malformed and discarded) or ``None`` when no well-formed,
+    non-empty draft list is present. ``dropped`` lets the panel tell the human the
+    batch shrank rather than silently delivering fewer tasks than proposed.
     """
     if not isinstance(tool_input, dict):
         return None
@@ -119,7 +121,27 @@ def _batch_from_tool_input(tool_input: Any) -> dict[str, Any] | None:
     drafts = [d for d in (_coerce_draft(x) for x in raw) if d is not None]
     if not drafts:
         return None
-    return {"drafts": drafts, "title": str(tool_input.get("title") or "")}
+    return {
+        "drafts": drafts,
+        "title": str(tool_input.get("title") or ""),
+        "dropped": len(raw) - len(drafts),
+    }
+
+
+def _propose_batch_chunk(tool_input: Any) -> StreamChunk:
+    """A ``propose_batch`` call → a single ``batch`` chunk, or an ``error`` chunk
+    when no well-formed drafts (so an empty/malformed batch surfaces to the human
+    instead of being silently dropped while the tool acks success)."""
+    batch = _batch_from_tool_input(tool_input)
+    if batch is None:
+        return StreamChunk(
+            kind="error",
+            text=(
+                "That MegaTask had no well-formed task drafts — give each a title "
+                "and project_id and call propose_batch again."
+            ),
+        )
+    return StreamChunk(kind="batch", data=batch)
 
 
 def _block_to_chunk(
@@ -139,10 +161,7 @@ def _block_to_chunk(
         if _is_propose_draft(name):
             return None, None, _draft_from_tool_input(tool_input)
         if _is_propose_batch(name):
-            # A MegaTask: one tool call carrying N drafts → a single batch chunk.
-            batch = _batch_from_tool_input(tool_input)
-            chunk = StreamChunk(kind="batch", data=batch) if batch else None
-            return chunk, None, None
+            return _propose_batch_chunk(tool_input), None, None
         return (
             StreamChunk(kind="tool_use", tool=name, data={"input": tool_input}),
             None,

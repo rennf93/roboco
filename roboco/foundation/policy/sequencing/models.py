@@ -23,6 +23,9 @@ class DraftSurface:
 
     ``idx`` is the task's position in the batch; ``priority`` is its task
     priority (lower number = more important, runs first on a collision tie).
+    ``project_id`` is the repo the task targets — collisions are scoped to it, so
+    two tasks in different repos never collide on a coincidentally-equal path or a
+    migration (each repo has its own working tree and migration chain).
     """
 
     idx: int
@@ -30,6 +33,7 @@ class DraftSurface:
     intends_to_touch: list[str]
     adds_migration: bool
     touches_shared: bool
+    project_id: str | None = None
 
 
 @dataclass

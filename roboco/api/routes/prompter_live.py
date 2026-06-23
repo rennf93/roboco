@@ -254,7 +254,11 @@ async def confirm_live_batch(
     service = get_prompter_service(db)
     try:
         result = await service.confirm_live_batch(
-            body.title, body.drafts, agent.agent_id, route=body.route
+            body.title,
+            body.drafts,
+            agent.agent_id,
+            project_ids=body.project_ids,
+            route=body.route,
         )
     except ServiceError as e:
         raise _translate_service_error(e) from e

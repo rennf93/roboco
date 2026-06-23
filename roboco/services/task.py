@@ -468,6 +468,11 @@ class TaskService(BaseService):
             # An external-PR review task reviews someone else's PR read-only —
             # no branch of its own — so it is branch-gate exempt.
             is_external_review=(getattr(task, "source", "manual") in PR_REVIEW_SOURCES),
+            # A MegaTask umbrella assembles no PR of its own, so it is exempt
+            # from the awaiting_pm_review->awaiting_ceo_approval pr_number gate.
+            is_umbrella=is_batch_umbrella(
+                batch_id=task.batch_id, parent_task_id=task.parent_task_id
+            ),
         )
         validate_git_requirements(current, target, git_ctx)
 
@@ -1629,6 +1634,31 @@ class TaskService(BaseService):
         apply_structured_note(task, content_type, payload)
         await self.session.flush()
 
+    @staticmethod
+    def assert_batch_shape_intact(task: TaskTable) -> None:
+        """A mutation must not break a task's MegaTask shape.
+
+        The branchless predicates (is_batch_umbrella / is_branchless_coordination)
+        trust the create-time ``is_valid_batch_shape`` invariant — so any update
+        path that can change ``parent_task_id`` / ``project_id`` / ``product_id``
+        must re-check it, else a PATCH could turn a root-subtask into an
+        umbrella-shaped-but-targeted task and spoof the branch-gate / no-PR
+        exemption. No-op for a non-batch task.
+        """
+        if task.batch_id is None:
+            return
+        if not is_valid_batch_shape(
+            batch_id=task.batch_id,
+            parent_task_id=task.parent_task_id,
+            project_id=task.project_id,
+            product_id=task.product_id,
+        ):
+            raise ValueError(
+                "this update would break the task's MegaTask shape: a batch "
+                "member must stay an umbrella (targets neither project nor "
+                "product) or a root-subtask (exactly one target, parented)."
+            )
+
     async def update(
         self,
         task_id: UUID,
@@ -1643,6 +1673,7 @@ class TaskService(BaseService):
             if hasattr(task, key) and value is not None:
                 setattr(task, key, value)
 
+        self.assert_batch_shape_intact(task)
         await self.session.flush()
 
         self.log.info(
@@ -4428,8 +4459,13 @@ class TaskService(BaseService):
             )
             return None
 
-        # ENFORCEMENT: Tasks must have PR created before CEO approval
-        if not task.pr_number:
+        # ENFORCEMENT: Tasks must have a PR before CEO approval — EXCEPT a
+        # MegaTask umbrella, which is branchless by design (assembles no PR of
+        # its own; each root-subtask carries its own project/branch/PR). It
+        # escalates to the CEO with no pr_number once every root-subtask is done.
+        if not task.pr_number and not is_batch_umbrella(
+            batch_id=task.batch_id, parent_task_id=task.parent_task_id
+        ):
             self.log.warning(
                 "Cannot escalate to CEO - task has no PR",
                 task_id=str(task_id),

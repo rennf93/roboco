@@ -856,6 +856,28 @@ async def test_escalate_to_ceo_returns_none_when_no_pr(
 
 
 @pytest.mark.asyncio
+async def test_escalate_to_ceo_waives_pr_for_batch_umbrella(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """A MegaTask umbrella is branchless and assembles no PR — escalate_to_ceo
+    must NOT block it on a missing pr_number, or umbrella completion crashes."""
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup))
+    task.status = TaskStatus.AWAITING_PM_REVIEW
+    task.project_id = None  # umbrella: branchless, no repo, no PR
+    task.product_id = None
+    task.batch_id = uuid4()
+    task.parent_task_id = None
+    task.pr_number = None
+    await db_session.flush()
+    escalated = await svc.escalate_to_ceo(
+        task.id, agent_role="main_pm", notes="MegaTask ready for CEO sign-off"
+    )
+    assert escalated is not None
+    assert escalated.status == TaskStatus.AWAITING_CEO_APPROVAL
+
+
+@pytest.mark.asyncio
 async def test_escalate_to_ceo_advances_status_with_notes(
     task_setup: dict, db_session: AsyncSession
 ) -> None:

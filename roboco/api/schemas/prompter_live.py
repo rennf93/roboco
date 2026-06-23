@@ -97,6 +97,9 @@ class BatchConfirmRequest(BaseModel):
 
     title: str = Field(..., min_length=1)
     drafts: list[dict[str, Any]] = Field(..., min_length=1)
+    # The scoped repos the MegaTask spans (the set the intake agent read). Every
+    # draft must target one of these, and the batch must span at least two.
+    project_ids: list[UUID] = Field(..., min_length=2)
     route: Literal["board", "main_pm"] = "board"
 
 

@@ -364,3 +364,99 @@ async def test_confirm_validation_error_is_translated_and_not_reaped(
         )
     assert resp.status_code == HTTPStatus.BAD_REQUEST
     assert orch.reaped == []  # a failed confirm must NOT reap the session
+
+
+# ---------------------------------------------------------------------------
+# MegaTask batch routes — confirm-batch (terminal, reaps) + preview-batch (pure).
+# ---------------------------------------------------------------------------
+
+
+def _batch_body() -> dict[str, Any]:
+    return {
+        "title": "MegaTask",
+        "drafts": [
+            {"title": "A", "acceptance_criteria": ["a"], "project_id": str(uuid4())},
+            {"title": "B", "acceptance_criteria": ["b"], "project_id": str(uuid4())},
+        ],
+        "project_ids": [str(uuid4()), str(uuid4())],
+        "route": "main_pm",
+    }
+
+
+@pytest.mark.asyncio
+async def test_confirm_batch_creates_and_reaps(confirm_client: dict) -> None:
+    client, orch = confirm_client["client"], confirm_client["orch"]
+    result = {
+        "umbrella_task_id": str(uuid4()),
+        "root_subtask_ids": [str(uuid4()), str(uuid4())],
+        "waves": [[0], [1]],
+        "warnings": [],
+    }
+
+    class _FakeService:
+        async def confirm_live_batch(self, *_a: Any, **_kw: Any) -> Any:
+            return result
+
+    with patch(
+        "roboco.api.routes.prompter_live.get_prompter_service",
+        lambda _db: _FakeService(),
+    ):
+        resp = await client.post(
+            "/api/prompter/live/s1/confirm-batch", json=_batch_body()
+        )
+    assert resp.status_code == HTTPStatus.CREATED
+    assert resp.json() == result
+    assert orch.reaped == ["s1"]  # confirm-batch is terminal → reap
+
+
+@pytest.mark.asyncio
+async def test_confirm_batch_validation_error_not_reaped(confirm_client: dict) -> None:
+    client, orch = confirm_client["client"], confirm_client["orch"]
+
+    class _FakeService:
+        async def confirm_live_batch(self, *_a: Any, **_kw: Any) -> Any:
+            raise ValidationError(message="bad batch", field="drafts")
+
+    with patch(
+        "roboco.api.routes.prompter_live.get_prompter_service",
+        lambda _db: _FakeService(),
+    ):
+        resp = await client.post(
+            "/api/prompter/live/s1/confirm-batch", json=_batch_body()
+        )
+    assert resp.status_code == HTTPStatus.BAD_REQUEST
+    assert orch.reaped == []  # a failed confirm must NOT reap
+
+
+@pytest.mark.asyncio
+async def test_confirm_batch_schema_rejects_too_few_projects(
+    confirm_client: dict,
+) -> None:
+    client = confirm_client["client"]
+    body = _batch_body()
+    body["project_ids"] = [str(uuid4())]  # < 2 → schema 422
+    resp = await client.post("/api/prompter/live/s1/confirm-batch", json=body)
+    assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+
+@pytest.mark.asyncio
+async def test_preview_batch_returns_waves_and_does_not_reap(
+    confirm_client: dict,
+) -> None:
+    client, orch = confirm_client["client"], confirm_client["orch"]
+
+    class _FakeService:
+        def preview_batch(self, _drafts: Any) -> Any:
+            return {"waves": [[0, 1]], "warnings": []}
+
+    with patch(
+        "roboco.api.routes.prompter_live.get_prompter_service",
+        lambda _db: _FakeService(),
+    ):
+        resp = await client.post(
+            "/api/prompter/live/s1/preview-batch",
+            json={"drafts": [{"title": "A"}, {"title": "B"}]},
+        )
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.json() == {"waves": [[0, 1]], "warnings": []}
+    assert orch.reaped == []  # preview creates nothing and leaves the chat alive

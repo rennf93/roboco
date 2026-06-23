@@ -64,6 +64,9 @@ class SequencingService:
         edges: list[tuple[int, int]] = []
         for i, a in enumerate(surfaces):
             for b in surfaces[i + 1 :]:
+                # Different repos can't share a working-tree path — no collision.
+                if a.project_id != b.project_id:
+                    continue
                 # Mixed shared/non-shared overlaps are owned by rule 3.
                 if a.touches_shared != b.touches_shared:
                     continue
@@ -76,11 +79,19 @@ class SequencingService:
     def _migration_chain_edges(
         surfaces: list[DraftSurface],
     ) -> list[tuple[int, int]]:
-        migs = sorted(
-            (s for s in surfaces if s.adds_migration),
-            key=lambda s: (s.priority, s.idx),
-        )
-        return [(prev.idx, cur.idx) for prev, cur in pairwise(migs)]
+        # Migrations serialize per project (each repo has its own alembic chain);
+        # two repos' migrations are independent. Within a project, non-shared
+        # migrations chain BEFORE shared ones (the ``touches_shared`` sort key) so
+        # this never contradicts rule 3's shared-last ordering into a cycle.
+        by_project: dict[object, list[DraftSurface]] = defaultdict(list)
+        for s in surfaces:
+            if s.adds_migration:
+                by_project[s.project_id].append(s)
+        edges: list[tuple[int, int]] = []
+        for group in by_project.values():
+            migs = sorted(group, key=lambda s: (s.touches_shared, s.priority, s.idx))
+            edges.extend((prev.idx, cur.idx) for prev, cur in pairwise(migs))
+        return edges
 
     # --- rule 3: shared-last -------------------------------------------------
     def _shared_last_edges(self, surfaces: list[DraftSurface]) -> list[tuple[int, int]]:
@@ -90,6 +101,9 @@ class SequencingService:
                 continue
             for other in surfaces:
                 if other.idx == s.idx or other.touches_shared:
+                    continue
+                # A shared edit only runs after a NON-shared task in the SAME repo.
+                if other.project_id != s.project_id:
                     continue
                 if self._globs_overlap(other.intends_to_touch, s.intends_to_touch):
                     edges.append((other.idx, s.idx))

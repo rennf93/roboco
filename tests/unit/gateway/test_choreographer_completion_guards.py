@@ -326,3 +326,36 @@ async def test_main_pm_complete_allows_batch_umbrella_from_in_progress() -> None
     # Branchless walk in_progress -> awaiting_pm_review, then escalate. No PR.
     task_svc.submit_pm_review.assert_awaited_once()
     task_svc.escalate_to_ceo.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_main_pm_complete_handles_escalate_returning_none() -> None:
+    """Defense-in-depth: if escalate_to_ceo refuses (returns None), the verb
+    surfaces an invalid_state rejection instead of dereferencing None."""
+    pm_id = uuid4()
+    umbrella_id = uuid4()
+    t = MagicMock(
+        id=umbrella_id,
+        status="in_progress",
+        assigned_to=pm_id,
+        parent_task_id=None,
+        batch_id=uuid4(),
+        branch_name=None,
+        team="main_pm",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.all_subtasks_terminal.return_value = True
+    task_svc.get_subtasks.return_value = []
+    task_svc.submit_pm_review.return_value = MagicMock(status="awaiting_pm_review")
+    task_svc.escalate_to_ceo.return_value = None  # refused
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
+    journal_svc.has_reflect_for_task.return_value = True
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.main_pm_complete(pm_id, umbrella_id, "ready for CEO sign-off")
+    assert env.error == "invalid_state"
+    assert "escalate_to_ceo" in env.as_dict()["message"]

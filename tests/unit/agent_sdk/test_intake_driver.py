@@ -196,14 +196,32 @@ def test_normalize_propose_batch_namespaced_name() -> None:
     assert [c.kind for c in normalize(msg)] == ["batch"]
 
 
-def test_normalize_propose_batch_empty_or_titleless_drafts_ignored() -> None:
-    # No usable drafts → no batch chunk (a draft needs a string title).
+def test_normalize_propose_batch_empty_or_titleless_emits_error() -> None:
+    # No usable drafts → an ERROR chunk (the panel renders it), not silence with
+    # the tool falsely acking success.
     empty = AssistantMessage([ToolUseBlock("propose_batch", {"drafts": []})])
-    assert normalize(empty) == []
+    assert [c.kind for c in normalize(empty)] == ["error"]
     titleless = AssistantMessage(
         [ToolUseBlock("propose_batch", {"drafts": [{"acceptance_criteria": []}]})]
     )
-    assert normalize(titleless) == []
+    assert [c.kind for c in normalize(titleless)] == ["error"]
+
+
+def test_normalize_propose_batch_reports_dropped_count() -> None:
+    # One well-formed, one malformed → batch chunk with dropped=1 so the panel can
+    # tell the human the batch shrank.
+    msg = AssistantMessage(
+        [
+            ToolUseBlock(
+                "propose_batch",
+                {"drafts": [{"title": "Good"}, {"no_title": True}]},
+            )
+        ]
+    )
+    chunks = normalize(msg)
+    assert [c.kind for c in chunks] == ["batch"]
+    assert chunks[0].data["dropped"] == 1
+    assert [d["title"] for d in chunks[0].data["drafts"]] == ["Good"]
 
 
 def test_normalize_propose_draft_without_title_is_ignored() -> None:

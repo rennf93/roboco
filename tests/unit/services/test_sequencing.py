@@ -85,6 +85,32 @@ def test_existence_check_rejects_out_of_range_edge() -> None:
         SequencingService()._toposort([(0, 5)], 2)
 
 
+def test_shared_migration_chains_after_non_shared_no_cycle() -> None:
+    # Regression: a draft that is BOTH touches_shared AND adds_migration,
+    # overlapping a non-shared migration draft on the same file, used to fabricate
+    # a cycle — rule 2 (migration chain) emitted shared->non-shared while rule 3
+    # (shared-last) emitted non-shared->shared. The migration chain is now
+    # shared-last-aware, so the shared draft is ordered LAST and there is no cycle.
+    s = [
+        DraftSurface(0, 1, ["svc/threats.py"], True, True),  # shared migration
+        DraftSurface(1, 1, ["svc/threats.py"], True, False),  # non-shared migration
+    ]
+    plan = SequencingService().analyze(s, _backend, {"backend": 2})
+    assert plan.waves == [[1], [0]]  # non-shared first, shared migration last
+
+
+def test_cross_project_surfaces_do_not_collide() -> None:
+    # A MegaTask spans repos that don't share a working tree — two migrations in
+    # different projects run in PARALLEL, and a coincidentally-equal path across
+    # repos is not a collision.
+    s = [
+        DraftSurface(0, 1, ["alembic/x.py"], True, False, project_id="proj-a"),
+        DraftSurface(1, 1, ["alembic/x.py"], True, False, project_id="proj-b"),
+    ]
+    plan = SequencingService().analyze(s, _backend, {"backend": 2})
+    assert plan.waves == [[0, 1]]  # independent repos → one parallel wave
+
+
 def test_cell_contention_warns_not_serializes() -> None:
     s = [DraftSurface(i, 1, [f"page/{i}.tsx"], False, False) for i in range(3)]
     plan = SequencingService().analyze(s, _frontend, {"frontend": 2})
