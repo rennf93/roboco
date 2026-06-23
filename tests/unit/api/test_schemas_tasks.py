@@ -255,6 +255,23 @@ def test_transform_update_data_handles_null_unassign() -> None:
     assert out["assigned_to"] is None
 
 
+def test_transform_update_data_passes_sequence() -> None:
+    """sequence is editable via PATCH (panel task-details sequence editor)."""
+    new_order = 3
+    update = TaskUpdate(sequence=new_order)
+    out = transform_update_data(update)
+    assert out["sequence"] == new_order
+    # Unset sequence is omitted (exclude_unset), so a partial PATCH never
+    # clobbers the existing order.
+    assert "sequence" not in transform_update_data(TaskUpdate(priority=1))
+
+
+def test_task_update_sequence_rejects_negative() -> None:
+    """sequence has ge=0 — a negative order is a validation error, not stored."""
+    with pytest.raises(ValueError, match="sequence"):
+        TaskUpdate(sequence=-1)
+
+
 # ---------------------------------------------------------------------------
 # task_to_response / task_list_to_response
 # ---------------------------------------------------------------------------

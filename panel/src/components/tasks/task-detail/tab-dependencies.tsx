@@ -7,7 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { ArrowUp, Link2, AlertTriangle, Plus, Trash2, X, Check } from "lucide-react";
+import { ArrowUp, Link2, AlertTriangle, Plus, Trash2, X, Check, Hash, Pencil } from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
 
@@ -264,6 +264,54 @@ export function TabDependencies({ task }: TabDependenciesProps) {
     }
   };
 
+  // Sequence editing (sibling order — lower runs first; mirrors dependency order)
+  const [editingSequence, setEditingSequence] = useState(false);
+  const [localSequenceValue, setLocalSequenceValue] = useState("");
+  const sequenceInputRef = useRef<HTMLInputElement>(null);
+
+  const startEditingSequence = () => {
+    setLocalSequenceValue(String(task.sequence ?? 0));
+    setEditingSequence(true);
+  };
+
+  useEffect(() => {
+    if (editingSequence && sequenceInputRef.current) {
+      sequenceInputRef.current.focus();
+      sequenceInputRef.current.select();
+    }
+  }, [editingSequence]);
+
+  const handleSequenceSave = async () => {
+    const parsed = parseInt(localSequenceValue, 10);
+    if (Number.isNaN(parsed) || parsed < 0) {
+      toast.error("Sequence must be a non-negative integer");
+      setLocalSequenceValue(String(task.sequence ?? 0));
+      return;
+    }
+    if (parsed === task.sequence) {
+      setEditingSequence(false);
+      return;
+    }
+    try {
+      await updateTask.mutateAsync({
+        taskId: task.id,
+        updates: { sequence: parsed },
+      });
+      setEditingSequence(false);
+    } catch {
+      toast.error("Failed to update sequence");
+      setLocalSequenceValue(String(task.sequence ?? 0));
+    }
+  };
+
+  const handleSequenceKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") {
+      handleSequenceSave();
+    } else if (e.key === "Escape") {
+      setEditingSequence(false);
+    }
+  };
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
       {/* Dependencies (upstream - blocks this task) */}
@@ -366,6 +414,76 @@ export function TabDependencies({ task }: TabDependenciesProps) {
             >
               No parent task. Click to set one.
             </p>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Sequence (sibling order) */}
+      <Card className="lg:col-span-2">
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-lg flex items-center gap-2">
+              <Hash className="h-5 w-5 text-amber-500" />
+              Sequence
+            </CardTitle>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {editingSequence ? (
+            <div className="flex items-center gap-2">
+              <Hash className="h-4 w-4 text-muted-foreground shrink-0" />
+              <Input
+                ref={sequenceInputRef}
+                type="number"
+                min={0}
+                value={localSequenceValue}
+                onChange={(e) => setLocalSequenceValue(e.target.value)}
+                onKeyDown={handleSequenceKeyDown}
+                placeholder="Order within siblings (lower runs first)"
+                className="h-8 text-sm flex-1"
+                disabled={updateTask.isPending}
+              />
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setEditingSequence(false)}
+                className="h-7 w-7 p-0"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+              <Button
+                size="sm"
+                onClick={handleSequenceSave}
+                onMouseDown={(e) => e.preventDefault()}
+                disabled={updateTask.isPending}
+                className="h-7 w-7 p-0"
+              >
+                <Check className="h-4 w-4" />
+              </Button>
+            </div>
+          ) : (
+            <div
+              className="flex items-center gap-2 p-3 rounded-lg border hover:bg-muted/50 transition-colors cursor-pointer group"
+              onClick={startEditingSequence}
+              title="Click to edit"
+            >
+              <Hash className="h-4 w-4 text-muted-foreground" />
+              <span className="font-medium text-sm">#{task.sequence ?? 0}</span>
+              <span className="ml-2 text-xs text-muted-foreground">
+                Order within siblings — lower runs first
+              </span>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  startEditingSequence();
+                }}
+                className="ml-auto h-7 w-7 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
+              >
+                <Pencil className="h-3 w-3" />
+              </Button>
+            </div>
           )}
         </CardContent>
       </Card>
