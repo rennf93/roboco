@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -27,11 +28,11 @@ class _FakeProc:
         return self._rc
 
 
-def _orch() -> AgentOrchestrator:
+def _orch(monkeypatch: pytest.MonkeyPatch) -> AgentOrchestrator:
     orch = AgentOrchestrator.__new__(AgentOrchestrator)  # bypass __init__
     orch._instances = {}
     orch._gateway_broken_since = {}
-    orch._resolve_agent_slug = lambda _owner: "be-dev-1"  # type: ignore[method-assign]
+    monkeypatch.setattr(orch, "_resolve_agent_slug", lambda _owner: "be-dev-1")
     return orch
 
 
@@ -65,29 +66,31 @@ async def test_probe_infra_error_is_none(monkeypatch: pytest.MonkeyPatch) -> Non
 # ─── recovery decision ──────────────────────────────────────────────────────
 
 
-def _task() -> object:
+def _task() -> Any:
     return type("T", (), {"id": uuid4(), "assigned_to": uuid4(), "claimed_by": None})()
 
 
 @pytest.mark.asyncio
 async def test_disabled_never_recovers(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "gateway_health_enabled", False)
-    orch = _orch()
-    orch._remove_container = AsyncMock()  # type: ignore[method-assign]
-    orch._probe_gateway_health = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    orch = _orch(monkeypatch)
+    remove = AsyncMock()
+    monkeypatch.setattr(orch, "_remove_container", remove)
+    monkeypatch.setattr(orch, "_probe_gateway_health", AsyncMock(return_value=False))
     assert await orch._maybe_recover_broken_gateway(_task()) is False
-    orch._remove_container.assert_not_awaited()
+    remove.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_healthy_is_spared(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "gateway_health_enabled", True)
-    orch = _orch()
+    orch = _orch(monkeypatch)
     orch._gateway_broken_since["be-dev-1"] = datetime.now(UTC)  # stale mark
-    orch._remove_container = AsyncMock()  # type: ignore[method-assign]
-    orch._probe_gateway_health = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    remove = AsyncMock()
+    monkeypatch.setattr(orch, "_remove_container", remove)
+    monkeypatch.setattr(orch, "_probe_gateway_health", AsyncMock(return_value=True))
     assert await orch._maybe_recover_broken_gateway(_task()) is False
-    orch._remove_container.assert_not_awaited()
+    remove.assert_not_awaited()
     assert "be-dev-1" not in orch._gateway_broken_since  # mark cleared
 
 
@@ -96,42 +99,47 @@ async def test_first_broken_sighting_waits_for_grace(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings, "gateway_health_enabled", True)
-    orch = _orch()
-    orch._remove_container = AsyncMock()  # type: ignore[method-assign]
-    orch._probe_gateway_health = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    orch = _orch(monkeypatch)
+    remove = AsyncMock()
+    monkeypatch.setattr(orch, "_remove_container", remove)
+    monkeypatch.setattr(orch, "_probe_gateway_health", AsyncMock(return_value=False))
     assert await orch._maybe_recover_broken_gateway(_task()) is False
-    orch._remove_container.assert_not_awaited()
+    remove.assert_not_awaited()
     assert "be-dev-1" in orch._gateway_broken_since  # grace mark recorded
 
 
 @pytest.mark.asyncio
 async def test_broken_past_grace_is_killed(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "gateway_health_enabled", True)
-    orch = _orch()
-    orch._gateway_health_grace = 0  # past grace immediately
+    orch = _orch(monkeypatch)
+    # _gateway_health_grace is a test-only injection read via getattr(..., None);
+    # 0 means "past grace immediately".
+    monkeypatch.setattr(orch, "_gateway_health_grace", 0, raising=False)
     orch._gateway_broken_since["be-dev-1"] = datetime.now(UTC) - timedelta(seconds=5)
-    orch._instances["be-dev-1"] = object()
-    orch._remove_container = AsyncMock()  # type: ignore[method-assign]
-    orch._probe_gateway_health = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    orch._instances["be-dev-1"] = cast("Any", object())
+    remove = AsyncMock()
+    monkeypatch.setattr(orch, "_remove_container", remove)
+    monkeypatch.setattr(orch, "_probe_gateway_health", AsyncMock(return_value=False))
     assert await orch._maybe_recover_broken_gateway(_task()) is True
-    orch._remove_container.assert_awaited_once_with("roboco-agent-be-dev-1")
+    remove.assert_awaited_once_with("roboco-agent-be-dev-1")
     assert "be-dev-1" not in orch._instances  # evicted
 
 
 @pytest.mark.asyncio
 async def test_inconclusive_probe_is_spared(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "gateway_health_enabled", True)
-    orch = _orch()
-    orch._remove_container = AsyncMock()  # type: ignore[method-assign]
-    orch._probe_gateway_health = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    orch = _orch(monkeypatch)
+    remove = AsyncMock()
+    monkeypatch.setattr(orch, "_remove_container", remove)
+    monkeypatch.setattr(orch, "_probe_gateway_health", AsyncMock(return_value=None))
     assert await orch._maybe_recover_broken_gateway(_task()) is False
-    orch._remove_container.assert_not_awaited()
+    remove.assert_not_awaited()
 
 
 # ─── reaper wiring ──────────────────────────────────────────────────────────
 
 
-def _stale_task() -> object:
+def _stale_task() -> Any:
     return type(
         "T",
         (),
@@ -143,12 +151,16 @@ def _stale_task() -> object:
 
 
 @pytest.mark.asyncio
-async def test_reaper_reaps_broken_gateway_agent() -> None:
+async def test_reaper_reaps_broken_gateway_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
     orch._claim_heartbeat_ttl = 300
-    orch._assignee_has_active_instance = lambda _t: True  # type: ignore[method-assign]
-    orch._maybe_kill_wedged_grok = AsyncMock(return_value=False)  # type: ignore[method-assign]
-    orch._maybe_recover_broken_gateway = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    monkeypatch.setattr(orch, "_assignee_has_active_instance", lambda _t: True)
+    monkeypatch.setattr(orch, "_maybe_kill_wedged_grok", AsyncMock(return_value=False))
+    monkeypatch.setattr(
+        orch, "_maybe_recover_broken_gateway", AsyncMock(return_value=True)
+    )
     task = _stale_task()
     svc = AsyncMock()
     svc.list_in_progress_or_claimed.return_value = [task]
@@ -158,12 +170,16 @@ async def test_reaper_reaps_broken_gateway_agent() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reaper_spares_healthy_live_agent() -> None:
+async def test_reaper_spares_healthy_live_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
     orch._claim_heartbeat_ttl = 300
-    orch._assignee_has_active_instance = lambda _t: True  # type: ignore[method-assign]
-    orch._maybe_kill_wedged_grok = AsyncMock(return_value=False)  # type: ignore[method-assign]
-    orch._maybe_recover_broken_gateway = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    monkeypatch.setattr(orch, "_assignee_has_active_instance", lambda _t: True)
+    monkeypatch.setattr(orch, "_maybe_kill_wedged_grok", AsyncMock(return_value=False))
+    monkeypatch.setattr(
+        orch, "_maybe_recover_broken_gateway", AsyncMock(return_value=False)
+    )
     svc = AsyncMock()
     svc.list_in_progress_or_claimed.return_value = [_stale_task()]
     svc.unclaim_for_reaper = AsyncMock()
