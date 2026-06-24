@@ -1150,12 +1150,20 @@ class GitService(BaseService):
         workspace = await self.get_workspace(data.project_slug, agent_id)
         await self.checkout(workspace, data.branch)
 
-    async def push(self, workspace: Path, force: bool = False) -> tuple[str, int]:
+    async def push(
+        self, workspace: Path, force: bool = False, branch: str | None = None
+    ) -> tuple[str, int]:
         """Push commits to remote.
+
+        ``branch`` pushes that named local branch by ref (``git push origin
+        <branch>``), independent of the workspace's current checkout — a dev's
+        single clone is shared across many tasks, so by push time it is often
+        parked on a LATER task's branch. Defaults to the current branch.
 
         Returns: (branch, commits_pushed)
         """
-        branch = await self.get_current_branch(workspace)
+        if branch is None:
+            branch = await self.get_current_branch(workspace)
         token = await self._token_for_workspace(workspace)
 
         count_result = await self._run_git(
@@ -1231,14 +1239,15 @@ class GitService(BaseService):
                 ),
             )
 
+        force = getattr(data, "force", False)
         if data.task_id is not None:
             task = await self._assert_task_owned_with_branch(data.task_id, agent_id)
             workspace = await self.get_workspace(data.project_slug, agent_id)
-            await self._assert_on_task_branch(workspace, task.branch_name)
-        else:
-            workspace = await self.get_workspace(data.project_slug, agent_id)
-
-        return await self.push(workspace, getattr(data, "force", False))
+            # Push the task's branch BY NAME, not the current checkout — the
+            # shared clone is often parked on a later task's branch by now.
+            return await self.push(workspace, force, branch=str(task.branch_name))
+        workspace = await self.get_workspace(data.project_slug, agent_id)
+        return await self.push(workspace, force)
 
     async def push_task_branch(self, agent_id: UUID, task_id: UUID) -> int:
         """Idempotently push a task's branch to origin; return commits pushed.
@@ -1256,8 +1265,14 @@ class GitService(BaseService):
         if project is None:
             return 0
         workspace = await self.get_workspace(project.slug, agent_id)
-        await self._assert_on_task_branch(workspace, task.branch_name)
-        _branch, pushed = await self.push(workspace)
+        # Push the task's branch BY NAME, independent of the current checkout.
+        # The dev's clone is shared across tasks, so by the QA-submission /
+        # open_pr boundary it is usually parked on a LATER task's branch; the
+        # old assert-on-current-branch then push-current rejected the push, and
+        # the locally-committed work never reached origin → open_pr then saw
+        # "No commits between" (origin branch empty/missing). The local task
+        # branch ref carries the commits; push it by name.
+        _branch, pushed = await self.push(workspace, branch=str(task.branch_name))
         return pushed
 
     # =========================================================================
@@ -1882,6 +1897,23 @@ class GitService(BaseService):
         )
         return default_branch
 
+    async def _pr_head_branch(
+        self, workspace: Path, request: GitCreatePRRequest
+    ) -> str:
+        """The PR head branch — the task's recorded branch by name.
+
+        A dev's single clone is shared across many tasks, so by open_pr time the
+        workspace is often parked on a LATER task's branch; ``get_current_branch``
+        would open the PR for the wrong head (or fail). Use the task's
+        ``branch_name`` when ``task_id`` is set; fall back to the current branch.
+        """
+        if request.task_id is not None:
+            task_service = get_task_service(self.session)
+            task = await task_service.get(request.task_id)
+            if task and task.branch_name:
+                return str(task.branch_name)
+        return await self.get_current_branch(workspace)
+
     async def create_pull_request(
         self, workspace: Path, request: GitCreatePRRequest
     ) -> tuple[int, str, str, str, str]:
@@ -1894,7 +1926,7 @@ class GitService(BaseService):
 
         Returns: (pr_number, pr_url, title, source_branch, target_branch)
         """
-        source_branch = await self.get_current_branch(workspace)
+        source_branch = await self._pr_head_branch(workspace, request)
         default_branch = await self._project_default_branch(request.project_slug)
         git_token = await self._get_project_token_or_raise(request.project_slug)
         target_branch, pr_title, pr_body = await self._resolve_new_pr_context(

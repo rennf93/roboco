@@ -134,22 +134,79 @@ async def test_project_for_task_uses_project_id_when_present() -> None:
 
 
 @pytest.mark.asyncio
-async def test_push_task_branch_resolves_workspace_and_pushes() -> None:
-    """Resolves the task's project + workspace, then pushes; returns the count."""
+async def test_push_task_branch_pushes_task_branch_by_name() -> None:
+    """Pushes the task's branch BY NAME (independent of the current checkout).
+
+    A dev's clone is shared across many tasks, so by the QA-submission /
+    open_pr boundary it is usually parked on a LATER task's branch. The old
+    assert-on-current-branch gate rejected the push and the locally-committed
+    work never reached origin; the push must target the named ref instead.
+    """
     task = MagicMock(branch_name="feature/backend/abc")
     project = MagicMock(slug="roboco")
     svc = _service()
     _bind(svc, "_assert_task_owned_with_branch", AsyncMock(return_value=task))
     _bind(svc, "_project_for_task", AsyncMock(return_value=project))
     _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
-    _bind(svc, "_assert_on_task_branch", AsyncMock())
+    assert_branch = AsyncMock()
+    _bind(svc, "_assert_on_task_branch", assert_branch)
     push_mock = AsyncMock(return_value=("feature/backend/abc", _PUSHED_COMMIT_COUNT))
     _bind(svc, "push", push_mock)
 
     pushed = await svc.push_task_branch(uuid4(), uuid4())
 
     assert pushed == _PUSHED_COMMIT_COUNT
-    push_mock.assert_awaited_once_with(Path("/tmp/ws"))
+    push_mock.assert_awaited_once_with(Path("/tmp/ws"), branch="feature/backend/abc")
+    # The old current-branch gate is no longer consulted on the push path.
+    assert_branch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_push_targets_explicit_branch_not_current_checkout() -> None:
+    """push(branch=X) pushes X by ref even when the workspace is on Y."""
+    svc = _service()
+    _bind(svc, "get_current_branch", AsyncMock(return_value="feature/frontend/OTHER"))
+    _bind(svc, "_token_for_workspace", AsyncMock(return_value=None))
+    calls: list[list[str]] = []
+
+    async def _run_git(_ws: object, args: list[str], **_kw: object) -> MagicMock:
+        calls.append(args)
+        res = MagicMock()
+        res.returncode = 0
+        res.stdout = "3" if args[:2] == ["rev-list", "--count"] else ""
+        return res
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+
+    branch, _pushed = await svc.push(Path("/tmp/ws"), branch="feature/frontend/TASK")
+
+    assert branch == "feature/frontend/TASK"
+    push_args = next(a for a in calls if a and a[0] == "push")
+    assert "feature/frontend/TASK" in push_args
+    assert "feature/frontend/OTHER" not in push_args
+
+
+@pytest.mark.asyncio
+async def test_pr_head_is_task_branch_not_current() -> None:
+    """The PR head is the task's recorded branch, not the workspace checkout."""
+    task = MagicMock(branch_name="feature/frontend/TASK")
+    svc = _service()
+    _bind(svc, "get_current_branch", AsyncMock(return_value="feature/frontend/OTHER"))
+    req = MagicMock(task_id=uuid4())
+    with patch("roboco.services.git.get_task_service") as gts:
+        gts.return_value.get = AsyncMock(return_value=task)
+        head = await svc._pr_head_branch(Path("/tmp/ws"), req)
+    assert head == "feature/frontend/TASK"
+
+
+@pytest.mark.asyncio
+async def test_pr_head_falls_back_to_current_when_no_task() -> None:
+    """No task_id → the PR head is the current checkout (unchanged behavior)."""
+    svc = _service()
+    _bind(svc, "get_current_branch", AsyncMock(return_value="feature/frontend/CUR"))
+    req = MagicMock(task_id=None)
+    head = await svc._pr_head_branch(Path("/tmp/ws"), req)
+    assert head == "feature/frontend/CUR"
 
 
 @pytest.mark.asyncio
