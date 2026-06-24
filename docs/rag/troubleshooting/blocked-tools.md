@@ -15,7 +15,7 @@
 | `git checkout` of a task branch | None — branch is auto-checked-out by `i_will_work_on(task_id)` (devs) or `i_will_plan(task_id, plan)` (PMs) |
 | Open a PR | None — PR is opened by the choreographer when the dev calls `open_pr(task_id)` |
 | Merge a PR | `complete(task_id, notes)` (PMs only) — Cell PM merges leaf PR; Main PM merges parent and escalates to CEO |
-| `git fetch` / `git pull` / `git rebase` | None at the agent layer — task branches are short-lived; if yours diverged, `unclaim` and re-`claim` |
+| `git fetch` / `git pull` / `git rebase` | None at the agent layer — there is no pull/rebase verb. If your branch is **behind its base**, ESCALATE (`escalate_up` / `i_am_blocked`) — that, not unclaim, is the fix. Use `unclaim` + re-`claim` only to rebuild a branch fresh from the current base, and only on instruction |
 
 ## Write/Edit Outside Workspace
 
