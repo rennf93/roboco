@@ -24,6 +24,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **A dev claiming a new task no longer gets stuck on `BRANCH_MISMATCH`.** Each developer has one persistent clone shared across all their tasks, so a finished or abandoned prior task could leave the clone dirty and sitting on a sibling task's branch. The claim's git work (creating/checking out the new task's branch) runs as a side-effect *after* the claim's DB transition commits — so when the checkout failed on that dirty tree, the task was already marked assigned while the workspace stayed on the wrong branch, and the dev's next commit was rejected with `BRANCH_MISMATCH` (stalling, then blocking, the task). The claim now does a `git reset --hard` to clean the tree before the checkouts. It runs only on a fresh claim (resume short-circuits earlier), so the discarded changes are abandoned cruft from a finished task — never committed work, and never the gitignored `.venv`.
 
+- **The `note` tool no longer times out under load.** Writing a journal entry / note synchronously waited on RAG indexing, which embeds via Ollama — and Ollama is CPU-bound, so under concurrent load that embed slowed enough to time the `note` gateway tool out entirely (despite a "non-blocking" comment on the code). The entry is already persisted before indexing, so indexing is pure best-effort enrichment: it now runs fire-and-forget on the event loop, and the note/journal write returns immediately.
+
+- **A feature flag stopped showing its raw internal key.** In Settings → Feature Flags, the "Gateway-health recovery" toggle displayed its raw key `gateway_health_enabled` as its description (the only flag missing a human blurb). Added the description, and changed the fallback so a future flag without one renders nothing rather than leaking a snake_case key.
+
 ## [0.10.0] - 2026-06-23
 
 ### Added

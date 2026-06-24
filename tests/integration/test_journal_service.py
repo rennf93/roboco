@@ -35,7 +35,7 @@ from roboco.models.journal import (
     StruggleEntryParams,
     TaskReflectionParams,
 )
-from roboco.services.journal import JournalService
+from roboco.services.journal import JournalService, drain_rag_index_tasks
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError as _IE
 
@@ -505,6 +505,7 @@ async def test_create_entry_learning_calls_record_learning(
         )
     )
     assert entry is not None
+    await drain_rag_index_tasks()  # indexing is fire-and-forget; let it run
     mock_optimal.record_learning.assert_awaited()
 
 
