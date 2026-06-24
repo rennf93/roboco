@@ -2492,8 +2492,40 @@ class GitService(BaseService):
     async def _sync_target_branch(
         self, workspace: Path, target_branch: str, git_token: str
     ) -> str:
-        """Checkout + pull the target branch, return the tip commit hash."""
-        await self._run_git(workspace, ["checkout", target_branch])
+        """Checkout + pull the target branch, return the tip commit hash.
+
+        If the target branch has no local ref (common in agent workspaces that
+        only ever checked out their own task branch), fetch it from origin and
+        create a tracking branch before pulling. This prevents the "parent
+        branch doesn't exist locally" SERVICE_ERROR that blocks every leaf→cell
+        merge in a shared workspace.
+        """
+        checkout = await self._run_git(
+            workspace, ["checkout", target_branch], check=False
+        )
+        if checkout.returncode != 0:
+            # Local ref missing — fetch the single branch from origin and create
+            # a tracking branch. A full `git fetch` is avoided because the
+            # workspace may hold many refs; narrowing to the target keeps it
+            # cheap and avoids token-burn on a large repo.
+            await self._run_git(
+                workspace, ["fetch", "origin", target_branch], token=git_token
+            )
+            tracking = await self._run_git(
+                workspace,
+                ["checkout", "-b", target_branch, f"origin/{target_branch}"],
+                check=False,
+            )
+            if tracking.returncode != 0:
+                raise GitError(
+                    f"Could not check out target branch '{target_branch}' "
+                    "locally or from origin.",
+                    {
+                        "target_branch": target_branch,
+                        "checkout_stderr": checkout.stderr.strip(),
+                        "tracking_stderr": tracking.stderr.strip(),
+                    },
+                )
         await self._run_git(workspace, ["pull"], token=git_token)
         log_result = await self._run_git(workspace, ["log", "-1", "--format=%H"])
         return log_result.stdout.strip()

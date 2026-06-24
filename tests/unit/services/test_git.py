@@ -15,7 +15,7 @@ from uuid import uuid4
 import pytest
 from roboco.api.schemas.git import GitCreateBranchRequest
 from roboco.config import settings
-from roboco.exceptions import GitCommandError
+from roboco.exceptions import GitCommandError, GitError
 from roboco.services.base import NotFoundError, UnauthorizedError
 from roboco.services.git import GitService
 
@@ -797,3 +797,91 @@ async def test_push_propagates_non_gh001_error_unchanged() -> None:
     _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
     with pytest.raises(GitCommandError, match="Authentication failed"):
         await svc.push(Path("/tmp/ws"))
+
+
+# ---------------------------------------------------------------------------
+# _sync_target_branch fallback
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sync_target_branch_uses_local_ref_when_present() -> None:
+    """If the target branch already exists locally, just checkout + pull."""
+    svc = _service()
+    calls: list[list[str]] = []
+
+    async def _run_git(_workspace: object, args: list[str], **_kw: object) -> object:
+        calls.append(args)
+        if args[:2] == ["checkout", "feature/backend/parent"]:
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if args[:1] == ["pull"]:
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if args[:2] == ["log", "-1"]:
+            return MagicMock(returncode=0, stdout="local-tip-sha", stderr="")
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+    sha = await svc._sync_target_branch(
+        Path("/tmp/ws"), "feature/backend/parent", "token"
+    )
+    assert sha == "local-tip-sha"
+    assert ["checkout", "feature/backend/parent"] in calls
+    assert ["pull"] in calls
+    assert ["fetch", "origin", "feature/backend/parent"] not in calls
+
+
+@pytest.mark.asyncio
+async def test_sync_target_branch_fetches_and_tracks_when_local_ref_missing() -> None:
+    """A parent branch that only exists on origin is fetched and tracked."""
+    svc = _service()
+    calls: list[list[str]] = []
+
+    async def _run_git(_workspace: object, args: list[str], **_kw: object) -> object:
+        calls.append(args)
+        if args[:2] == ["checkout", "feature/backend/parent"]:
+            return MagicMock(returncode=1, stdout="", stderr="pathspec did not match")
+        if args[:2] == ["fetch", "origin"]:
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if args[:3] == ["checkout", "-b", "feature/backend/parent"]:
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if args[:1] == ["pull"]:
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if args[:2] == ["log", "-1"]:
+            return MagicMock(returncode=0, stdout="origin-tip-sha", stderr="")
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+    sha = await svc._sync_target_branch(
+        Path("/tmp/ws"), "feature/backend/parent", "token"
+    )
+    assert sha == "origin-tip-sha"
+    assert ["checkout", "feature/backend/parent"] in calls
+    assert ["fetch", "origin", "feature/backend/parent"] in calls
+    assert [
+        "checkout",
+        "-b",
+        "feature/backend/parent",
+        "origin/feature/backend/parent",
+    ] in calls
+    assert ["pull"] in calls
+
+
+@pytest.mark.asyncio
+async def test_sync_target_branch_raises_when_origin_also_missing() -> None:
+    """If the branch is missing locally AND on origin, raise a clear GitError."""
+    svc = _service()
+
+    async def _run_git(_workspace: object, args: list[str], **_kw: object) -> object:
+        if args[:2] == ["checkout", "feature/backend/parent"]:
+            return MagicMock(returncode=1, stdout="", stderr="local missing")
+        if args[:2] == ["fetch", "origin"]:
+            return MagicMock(returncode=0, stdout="", stderr="")
+        if args[:3] == ["checkout", "-b", "feature/backend/parent"]:
+            return MagicMock(returncode=1, stdout="", stderr="origin missing")
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+    with pytest.raises(GitError, match="Could not check out target branch"):
+        await svc._sync_target_branch(
+            Path("/tmp/ws"), "feature/backend/parent", "token"
+        )
