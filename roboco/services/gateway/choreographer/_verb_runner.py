@@ -51,6 +51,18 @@ class VerbRunner:
         the underlying TaskService methods raise; the savepoint context
         rolls the DB back on raise.
         """
+        # Fail loud + clean on a missing task/agent. The atomic handlers below
+        # dereference task.id / agent.id, so a None here would otherwise crash
+        # with a cryptic "'NoneType' object has no attribute 'id'" (observed when
+        # a task was forced into an unexpected state out-of-band) instead of an
+        # actionable error the agent can recover from.
+        if task is None or agent is None:
+            missing = "task" if task is None else "agent"
+            raise ValueError(
+                f"INVALID_STATE: cannot run '{intent_name}' — its {missing} "
+                "could not be resolved. Re-fetch with evidence(task_id) and "
+                "re-issue your claim verb."
+            )
         intent = spec._INTENT_VERBS[intent_name]
         for side_effect_name in intent.pre_side_effects:
             await self._dispatch_side_effect(side_effect_name, task, agent)
