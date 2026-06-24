@@ -8974,14 +8974,29 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         orchestrator respawns it forever (a livelock — a task escalated to
         Main PM kept respawning the ex-assignee cell PM, which could not author
         the note). So whenever the blocked task carries an assignee that is a
-        PM or board role, dispatch THAT assignee. Only a task with no PM/board
-        assignee (e.g. still held by the dev who raised i_am_blocked) falls back
-        to the cell PM for its team.
+        PM role, dispatch THAT assignee. Only a task with no PM assignee
+        (e.g. still held by the dev who raised i_am_blocked) falls back to the
+        cell PM for its team.
+
+        A BOARD/advisory assignee (product-owner / head-marketing) is the one
+        case we must NOT dispatch: a board role has no ``unblock`` verb at all
+        — its only moves are notify/note/triage/i_am_idle — so dispatching it
+        to "resolve" a blocker is a futile catch-22. It cannot unblock, cannot
+        hand the task off (the assignee-only gate also forbids any PM from
+        unblocking a task it does not own), and so it spam-notifies the CEO and
+        the orchestrator respawns it forever (observed: 6400+ tool calls burned
+        on a single delivery root mis-assigned to product-owner). Return None so
+        the blocker dispatch SKIPS it — the task is mis-owned and must be
+        re-routed / surfaced to the CEO out-of-band, never auto-respawned onto a
+        role that physically cannot act. (The upstream cure is to never assign a
+        board role as the owner of an executable delivery/coordination root.)
         """
         assignee_uuid = task.get("assigned_to") or task.get("claimed_by")
         if assignee_uuid:
             assignee_slug = self._resolve_agent_slug(str(assignee_uuid))
-            if assignee_slug in self._PM_AGENTS or assignee_slug in self._BOARD_AGENTS:
+            if assignee_slug in self._BOARD_AGENTS:
+                return None
+            if assignee_slug in self._PM_AGENTS:
                 return assignee_slug
         team = task.get("team")
         if team not in ("backend", "frontend", "ux_ui"):
