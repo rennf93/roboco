@@ -6,6 +6,7 @@ Each agent has their own journal with entries tied to tasks and sessions.
 Integrates with the Optimal API for RAG indexing of entries.
 """
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 from uuid import UUID
@@ -39,6 +40,18 @@ from roboco.models.journal import (
 from roboco.models.optimal import IndexJournalEntryParams
 from roboco.services.base import BaseService
 from roboco.utils.converters import require_uuid, to_python_uuid
+
+# Fire-and-forget RAG index tasks. asyncio holds only a weak ref to a bare task,
+# so a module-level strong ref keeps a scheduled index alive until it finishes;
+# the done-callback removes it. `drain_rag_index_tasks` lets tests await the
+# pending indexing deterministically.
+_RAG_INDEX_TASKS: set[asyncio.Task[None]] = set()
+
+
+async def drain_rag_index_tasks() -> None:
+    """Await all in-flight background journal RAG index tasks (test helper)."""
+    await asyncio.gather(*list(_RAG_INDEX_TASKS), return_exceptions=True)
+
 
 # Scope mapping is canonical in foundation.policy.journaling.
 # Derived as string-keyed dict here because the service's call sites pass
@@ -270,44 +283,28 @@ class JournalService(BaseService):
             type=entry_create.type,
         )
 
-        # Index in RAG - non-blocking
-        try:
-            optimal = await self._get_optimal_service()
-            # Convert SQLAlchemy UUIDs to Python UUIDs for the params
-            agent_id_for_index = (
-                require_uuid(journal_row.agent_id)
-                if journal_row
-                else entry_create.journal_id
-            )
-            await optimal.index_journal_entry(
-                IndexJournalEntryParams(
-                    entry_id=require_uuid(entry_row.id),
-                    agent_id=agent_id_for_index,
-                    content=entry_create.content,
-                    entry_type=type_key,
-                    task_id=entry_create.task_id,
-                    tags=entry_create.tags,
-                )
-            )
-
-            # Also index LEARNING entries to the learnings index for cross-agent sharing
-            if type_key == JournalEntryType.LEARNING.value:
-                from roboco.services.optimal_brain.indexes.learnings import (
-                    RecordLearningParams,
-                )
-
-                await optimal.record_learning(
-                    RecordLearningParams(
-                        content=entry_create.content,
-                        category="journal_learning",
-                        agent_id=agent_id_for_index,
-                        task_id=entry_create.task_id,
-                        shareable=not entry_create.is_private,
-                        tags=entry_create.tags,
-                    )
-                )
-        except Exception as e:
-            self.log.warning("Failed to index journal entry in RAG", error=str(e))
+        # Index in RAG — fire-and-forget. The entry is already committed above, so
+        # indexing is pure best-effort enrichment; it embeds via Ollama, which is
+        # CPU-bound and slows under concurrent load. Awaiting it inline (the old
+        # code, despite the "non-blocking" comment) blocked the journal write and
+        # made the `note` gateway tool time out under load. Schedule it instead so
+        # the write returns immediately.
+        agent_id_for_index = (
+            require_uuid(journal_row.agent_id)
+            if journal_row
+            else entry_create.journal_id
+        )
+        self._schedule_rag_index(
+            IndexJournalEntryParams(
+                entry_id=require_uuid(entry_row.id),
+                agent_id=agent_id_for_index,
+                content=entry_create.content,
+                entry_type=type_key,
+                task_id=entry_create.task_id,
+                tags=entry_create.tags,
+            ),
+            is_private=entry_create.is_private,
+        )
 
         return JournalEntry(
             id=require_uuid(entry_row.id),
@@ -323,6 +320,52 @@ class JournalService(BaseService):
             is_private=entry_row.is_private,
             created_at=entry_row.created_at,
         )
+
+    def _schedule_rag_index(
+        self, params: IndexJournalEntryParams, *, is_private: bool
+    ) -> None:
+        """Index a journal entry in RAG off the critical path (fire-and-forget).
+
+        Embedding goes through Ollama, which is CPU-bound and slows under load;
+        awaiting it inline made the `note` gateway tool time out. The entry is
+        already persisted, so indexing is best-effort enrichment — schedule it on
+        the event loop and return. Errors are logged, never raised; a strong ref
+        in ``_RAG_INDEX_TASKS`` keeps the task alive until it finishes.
+        """
+
+        async def _index() -> None:
+            try:
+                optimal = await self._get_optimal_service()
+                await optimal.index_journal_entry(params)
+                if params.entry_type == JournalEntryType.LEARNING.value:
+                    from roboco.services.optimal_brain.indexes.learnings import (
+                        RecordLearningParams,
+                    )
+
+                    await optimal.record_learning(
+                        RecordLearningParams(
+                            content=params.content,
+                            category="journal_learning",
+                            agent_id=params.agent_id,
+                            task_id=params.task_id,
+                            shareable=not is_private,
+                            tags=params.tags or [],
+                        )
+                    )
+            except Exception as e:
+                self.log.warning(
+                    "Failed to index journal entry in RAG (best-effort)",
+                    entry_id=str(params.entry_id),
+                    error=str(e),
+                )
+
+        try:
+            task = asyncio.create_task(_index())
+        except RuntimeError:
+            # No running event loop (sync context) — skip best-effort indexing.
+            return
+        _RAG_INDEX_TASKS.add(task)
+        task.add_done_callback(_RAG_INDEX_TASKS.discard)
 
     async def get_entry(self, entry_id: UUID) -> JournalEntry | None:
         """Get a journal entry by ID."""

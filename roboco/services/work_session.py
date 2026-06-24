@@ -99,6 +99,14 @@ class WorkSessionService(BaseService):
                 resource_type="work_session",
             )
 
+        # Single-active-per-task invariant: a task has one owner, so close any
+        # OTHER agent's stale ACTIVE session before opening this one. A re-claim
+        # by a different agent otherwise left duplicate ACTIVE rows that crashed
+        # get_active_for_task with MultipleResultsFound (the i_will_plan wedge).
+        await self.supersede_active_sessions_for_task(
+            task_id=data.task_id, keep_agent_id=data.agent_id
+        )
+
         work_session = WorkSessionTable(
             project_id=data.project_id,
             task_id=data.task_id,
@@ -185,16 +193,28 @@ class WorkSessionService(BaseService):
 
         Returns:
             Active work session or None
+
+        Resilient to the historical duplicate-ACTIVE-rows defect: a task is
+        owned by one agent at a time, but a re-claim by a different agent used
+        to leave the prior holder's ACTIVE session open, so a task could carry
+        more than one ACTIVE row. ``scalar_one_or_none`` *raised*
+        ``MultipleResultsFound`` on those rows — the failure surfaced as the
+        cryptic ``'NoneType' object has no attribute 'id'`` that wedged
+        ``i_will_plan`` into an infinite respawn loop. Returning the most recent
+        ACTIVE session instead never raises; the invariant is now also enforced
+        at creation and by a partial unique index (migration 047).
         """
         result = await self.session.execute(
-            select(WorkSessionTable).where(
+            select(WorkSessionTable)
+            .where(
                 and_(
                     WorkSessionTable.task_id == task_id,
                     WorkSessionTable.status == WorkSessionStatus.ACTIVE,
                 )
             )
+            .order_by(WorkSessionTable.started_at.desc())
         )
-        return result.scalar_one_or_none()
+        return result.scalars().first()
 
     async def get_active_for_task_and_agent(
         self,
@@ -212,15 +232,52 @@ class WorkSessionService(BaseService):
             Active work session or None
         """
         result = await self.session.execute(
-            select(WorkSessionTable).where(
+            select(WorkSessionTable)
+            .where(
                 and_(
                     WorkSessionTable.task_id == task_id,
                     WorkSessionTable.agent_id == agent_id,
                     WorkSessionTable.status == WorkSessionStatus.ACTIVE,
                 )
             )
+            .order_by(WorkSessionTable.started_at.desc())
         )
-        return result.scalar_one_or_none()
+        return result.scalars().first()
+
+    async def supersede_active_sessions_for_task(
+        self,
+        task_id: UUID,
+        keep_agent_id: UUID | None = None,
+    ) -> int:
+        """Abandon every ACTIVE work session for a task (single-active invariant).
+
+        A task is owned by exactly one agent at a time, so it must have at most
+        one ACTIVE work session. A re-claim by a different agent (pool release,
+        reaper unclaim, escalation redirect) used to leave the prior holder's
+        ACTIVE session open, accumulating duplicate ACTIVE rows;
+        ``get_active_for_task`` then hit ``MultipleResultsFound`` and the verb
+        flow crashed with ``'NoneType' object has no attribute 'id'`` —
+        wedging the task into an infinite respawn loop. Closing stale sessions
+        before a new claim keeps the invariant. Pass ``keep_agent_id`` to spare
+        the incoming claimant's own session. Returns the count superseded.
+        """
+        stmt = select(WorkSessionTable).where(
+            and_(
+                WorkSessionTable.task_id == task_id,
+                WorkSessionTable.status == WorkSessionStatus.ACTIVE,
+            )
+        )
+        if keep_agent_id is not None:
+            stmt = stmt.where(WorkSessionTable.agent_id != keep_agent_id)
+        result = await self.session.execute(stmt)
+        superseded = 0
+        for ws in result.scalars().all():
+            ws.status = WorkSessionStatus.ABANDONED
+            ws.ended_at = datetime.now(UTC)
+            superseded += 1
+        if superseded:
+            await self.session.flush()
+        return superseded
 
     async def list_by_agent(
         self,

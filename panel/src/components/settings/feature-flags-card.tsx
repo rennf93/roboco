@@ -32,6 +32,8 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
     "Enforce a per-project architectural standard (.roboco/conventions.yml): inject the map, attach baseline constraints, and block i_am_done / pr_pass on misplaced definitions or lint suppressions.",
   rag_auto_update_enabled: "Keep the knowledge base index refreshed automatically.",
   transcript_prune_enabled: "Run the background sweep that prunes old transcripts.",
+  gateway_health_enabled:
+    "Recover an agent whose MCP gateway has broken (it can run no tools) while its container stays up — kill + respawn it instead of shielding it from the reaper forever.",
 };
 
 export function FeatureFlagsCard() {
@@ -87,7 +89,7 @@ export function FeatureFlagsCard() {
               <div className="min-w-0">
                 <Label htmlFor={`flag-${flag.key}`}>{flag.label}</Label>
                 <p className="text-sm text-muted-foreground">
-                  {FLAG_DESCRIPTIONS[flag.key] ?? flag.key}
+                  {FLAG_DESCRIPTIONS[flag.key] ?? ""}
                 </p>
               </div>
               <Switch
