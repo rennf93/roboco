@@ -124,6 +124,22 @@ _ANTHROPIC_OVERLOAD_MARKERS: tuple[str, ...] = (
     "error 503",
 )
 
+# Session / usage-limit parking (HTTP 429). The Claude session ("5-hour") limit
+# crashes the agent container with a 0-token rejection that is NOT a 5xx
+# overload, so without its own markers it falls through to crash-respawn —
+# straight back into the limit until the window resets. Park the provider like a
+# 429 instead and let the probe-resume loop revive the parked tasks once the
+# quota clears. Markers are specific to how the session limit surfaces (matched
+# lowercased, substring) so they can't false-match an agent writing about
+# limits; the probe (which also hits the same limit) keeps the park until reset.
+# Reuses the longer overload retry cadence — probing a multi-hour window every
+# few seconds is wasteful, and each probe is itself a rejected call.
+_RATE_LIMIT_RETRY_AFTER_S = 300.0
+_ANTHROPIC_RATE_LIMIT_MARKERS: tuple[str, ...] = (
+    "hit your session limit",
+    "five_hour",
+)
+
 # The intake (prompter) agent: a single seeded, board-adjacent interviewer.
 # Unlike delivery agents it is never dispatched and runs ONE persistent
 # container at a time (single CEO → one live chat). See the INTAKE section
@@ -5220,6 +5236,30 @@ Start by:
             await self._park_grok_rate_limited(agent_id, instance)
             return
         graceful = exit_code == 0
+        # Session/usage-limit parking: the Claude session ("5-hour") limit is a
+        # 429 the SDK does not retry — the container exits non-zero with a
+        # 0-token rejection. Detect it in the dead container's output and park
+        # the provider (instead of crash-respawning straight back into the
+        # limit); the probe-resume loop revives the task when the quota resets.
+        if not graceful:
+            rate_limited_provider = await self._provider_rate_limit_park_target(
+                agent_id, instance
+            )
+            if rate_limited_provider is not None:
+                logger.warning(
+                    "Session/usage limit detected in agent output; parking provider",
+                    agent_id=agent_id,
+                    provider=rate_limited_provider,
+                    task_id=instance.current_task_id,
+                )
+                await self._park_provider_unavailable(
+                    agent_id,
+                    instance,
+                    provider=rate_limited_provider,
+                    retry_after=_RATE_LIMIT_RETRY_AFTER_S,
+                    kind="rate_limited",
+                )
+                return
         # Server-overload parking: a persistent 529/500/503 from the model API
         # kills the run (the SDK already retries transient ones). Detect the
         # overload marker in the dead container's output and park the provider —
@@ -5871,6 +5911,30 @@ Start by:
         tail = await self._tail_container_logs(f"roboco-agent-{agent_id}")
         lowered = tail.lower()
         if any(marker in lowered for marker in _ANTHROPIC_OVERLOAD_MARKERS):
+            return ModelProvider.ANTHROPIC.value
+        return None
+
+    async def _provider_rate_limit_park_target(
+        self, agent_id: str, instance: Any
+    ) -> str | None:
+        """Provider to park if this dead run hit a session/usage limit, else None.
+
+        Mirrors ``_provider_overload_park_target`` but matches the Claude session
+        ("5-hour") limit, which surfaces as a 429 the SDK does not retry — the
+        container exits with a 0-token rejection rather than an overload. Without
+        this it would crash-respawn straight back into the limit. Gated by the
+        same flag so a misfire is toggle-able without a redeploy.
+        """
+        if not settings.overload_break_enabled:
+            return None
+        from roboco.models.base import ModelProvider
+
+        provider_type = instance.config.provider_type if instance.config else None
+        if provider_type not in (None, ModelProvider.ANTHROPIC.value):
+            return None
+        tail = await self._tail_container_logs(f"roboco-agent-{agent_id}")
+        lowered = tail.lower()
+        if any(marker in lowered for marker in _ANTHROPIC_RATE_LIMIT_MARKERS):
             return ModelProvider.ANTHROPIC.value
         return None
 

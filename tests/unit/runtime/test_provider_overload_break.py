@@ -16,6 +16,7 @@ from roboco.config import settings
 from roboco.models.runtime import AgentInstance
 from roboco.runtime.orchestrator import (
     _OVERLOAD_RETRY_AFTER_S,
+    _RATE_LIMIT_RETRY_AFTER_S,
     AgentOrchestrator,
     AgentState,
 )
@@ -25,6 +26,11 @@ _OVERLOAD_LOG = (
     '"message":"Overloaded"}}'
 )
 _CLEAN_LOG = "be-dev-1 finished editing src/app.py; all checks passed"
+_SESSION_LIMIT_LOG = (
+    '{"type":"result","is_error":true,"api_error_status":429,'
+    '"result":"You have hit your session limit - resets 1am (UTC)",'
+    '"rate_limit_info":{"rateLimitType":"five_hour"}}'
+)
 
 
 def _instance(provider_type: str | None = "anthropic") -> AgentInstance:
@@ -156,6 +162,9 @@ async def test_stopped_container_parks_on_overload(
     spawn = AsyncMock()
     monkeypatch.setattr(orch, "_is_grok_rate_limit_exit", lambda _i, _e: False)
     monkeypatch.setattr(
+        orch, "_provider_rate_limit_park_target", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
         orch, "_provider_overload_park_target", AsyncMock(return_value="anthropic")
     )
     monkeypatch.setattr(orch, "_park_provider_unavailable", park)
@@ -183,6 +192,9 @@ async def test_stopped_container_crash_retries_when_not_overload(
     spawn = AsyncMock()
     monkeypatch.setattr(orch, "_is_grok_rate_limit_exit", lambda _i, _e: False)
     monkeypatch.setattr(
+        orch, "_provider_rate_limit_park_target", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
         orch, "_provider_overload_park_target", AsyncMock(return_value=None)
     )
     monkeypatch.setattr(orch, "_finalize_spawn_session", AsyncMock())
@@ -192,3 +204,74 @@ async def test_stopped_container_crash_retries_when_not_overload(
 
     # Not an overload → the normal crash-retry path runs.
     spawn.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Session/usage-limit (429) parking — the same break for a different signal
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_detects_session_limit_marker_for_anthropic(
+    orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "overload_break_enabled", True)
+    monkeypatch.setattr(
+        orch, "_tail_container_logs", AsyncMock(return_value=_SESSION_LIMIT_LOG)
+    )
+    assert (
+        await orch._provider_rate_limit_park_target("be-dev-1", _instance())
+        == "anthropic"
+    )
+
+
+@pytest.mark.asyncio
+async def test_clean_output_is_not_a_session_limit(
+    orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "overload_break_enabled", True)
+    monkeypatch.setattr(
+        orch, "_tail_container_logs", AsyncMock(return_value=_CLEAN_LOG)
+    )
+    assert await orch._provider_rate_limit_park_target("be-dev-1", _instance()) is None
+
+
+@pytest.mark.asyncio
+async def test_session_limit_disabled_flag_never_parks(
+    orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "overload_break_enabled", False)
+    tail = AsyncMock(return_value=_SESSION_LIMIT_LOG)
+    monkeypatch.setattr(orch, "_tail_container_logs", tail)
+    assert await orch._provider_rate_limit_park_target("be-dev-1", _instance()) is None
+    tail.assert_not_awaited()  # short-circuits before reading logs
+
+
+@pytest.mark.asyncio
+async def test_stopped_container_parks_on_session_limit(
+    orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inst = _instance()
+    park = AsyncMock()
+    spawn = AsyncMock()
+    overload = AsyncMock(return_value=None)
+    monkeypatch.setattr(orch, "_is_grok_rate_limit_exit", lambda _i, _e: False)
+    monkeypatch.setattr(
+        orch, "_provider_rate_limit_park_target", AsyncMock(return_value="anthropic")
+    )
+    monkeypatch.setattr(orch, "_provider_overload_park_target", overload)
+    monkeypatch.setattr(orch, "_park_provider_unavailable", park)
+    monkeypatch.setattr(orch, "_finalize_spawn_session", AsyncMock())
+    monkeypatch.setattr(orch, "spawn_agent", spawn)
+
+    await orch._handle_stopped_container("be-dev-1", inst, exit_code=1)
+
+    park.assert_awaited_once_with(
+        "be-dev-1",
+        inst,
+        provider="anthropic",
+        retry_after=_RATE_LIMIT_RETRY_AFTER_S,
+        kind="rate_limited",
+    )
+    spawn.assert_not_awaited()  # crash-retry short-circuited
+    overload.assert_not_awaited()  # session-limit checked before the overload path
