@@ -49,14 +49,30 @@ def test_blocked_task_assigned_to_main_pm_dispatches_main_pm() -> None:
     assert orch._blocker_resolver_slug(task) == "main-pm"
 
 
-def test_blocked_task_assigned_to_board_dispatches_board() -> None:
+def test_blocked_task_assigned_to_board_is_not_dispatched() -> None:
+    # A board/advisory role (product-owner / head-marketing) has NO unblock
+    # verb — dispatching it to resolve a blocker is a futile catch-22 (it can
+    # only notify/triage, so it spam-notifies the CEO and respawns forever).
+    # The resolver must be None so the blocker dispatch SKIPS it; the task is
+    # mis-owned and must be re-routed / surfaced to the CEO out-of-band.
     orch = _orch()
     task: dict[str, Any] = {
         "id": "t1",
         "team": "backend",
         "assigned_to": AGENT_UUIDS["product-owner"],
     }
-    assert orch._blocker_resolver_slug(task) == "product-owner"
+    assert orch._blocker_resolver_slug(task) is None
+
+
+def test_blocked_task_assigned_to_head_marketing_is_not_dispatched() -> None:
+    # Same catch-22 guard for the other board role.
+    orch = _orch()
+    task: dict[str, Any] = {
+        "id": "t1",
+        "team": "backend",
+        "assigned_to": AGENT_UUIDS["head-marketing"],
+    }
+    assert orch._blocker_resolver_slug(task) is None
 
 
 def test_blocked_task_held_by_dev_falls_back_to_cell_pm() -> None:

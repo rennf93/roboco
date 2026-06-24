@@ -187,6 +187,67 @@ async def test_push_targets_explicit_branch_not_current_checkout() -> None:
 
 
 @pytest.mark.asyncio
+async def test_push_recovers_missing_local_branch_from_origin() -> None:
+    """A push-by-name on a re-provisioned/shared clone missing the local ref
+    recovers it from origin instead of dying on "src refspec ... does not
+    match any".
+
+    The branch's commits are already on origin (pushed in a prior cycle/clone),
+    so after recreating the local tracking ref the push is a clean no-op.
+    """
+    svc = _service()
+    _bind(svc, "_token_for_workspace", AsyncMock(return_value=None))
+    calls: list[list[str]] = []
+
+    async def _run_git(_ws: object, args: list[str], **_kw: object) -> MagicMock:
+        calls.append(args)
+        res = MagicMock()
+        # Local ref MISSING; origin HAS it.
+        if args[:2] == ["rev-parse", "--verify"]:
+            is_local = any(a.startswith("refs/heads/") for a in args)
+            res.returncode = 1 if is_local else 0
+            res.stdout = ""
+            return res
+        res.returncode = 0
+        res.stdout = "0" if args[:2] == ["rev-list", "--count"] else ""
+        return res
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+
+    branch, _pushed = await svc.push(Path("/tmp/ws"), branch="feature/backend/TASK")
+
+    assert branch == "feature/backend/TASK"
+    # It fetched origin and recreated the local ref before pushing.
+    assert ["fetch", "origin", "feature/backend/TASK"] in calls
+    assert ["branch", "feature/backend/TASK", "origin/feature/backend/TASK"] in calls
+    assert any(a and a[0] == "push" for a in calls)
+
+
+@pytest.mark.asyncio
+async def test_push_fails_loud_when_branch_absent_local_and_origin() -> None:
+    """When the named branch is in neither the local clone nor origin, the work
+    is genuinely lost from this clone — fail with a recoverable instruction, not
+    the raw "src refspec does not match any"."""
+    svc = _service()
+    _bind(svc, "_token_for_workspace", AsyncMock(return_value=None))
+
+    async def _run_git(_ws: object, args: list[str], **_kw: object) -> MagicMock:
+        res = MagicMock()
+        if args[:2] == ["rev-parse", "--verify"]:
+            res.returncode = 1  # absent both locally and on origin
+            res.stdout = ""
+            return res
+        res.returncode = 0
+        res.stdout = ""
+        return res
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+
+    with pytest.raises(GitCommandError, match="unclaim the task and"):
+        await svc.push(Path("/tmp/ws"), branch="feature/backend/GONE")
+
+
+@pytest.mark.asyncio
 async def test_pr_head_is_task_branch_not_current() -> None:
     """The PR head is the task's recorded branch, not the workspace checkout."""
     task = MagicMock(branch_name="feature/frontend/TASK")

@@ -73,6 +73,42 @@ async def test_runner_rejects_none_task_or_agent() -> None:
 
 
 @pytest.mark.asyncio
+async def test_runner_rejects_none_returned_mid_composition() -> None:
+    """A composed action returning None mid-sequence fails loud, not a crash.
+
+    Observed in prod: i_will_plan on a task a concurrent agent had just moved to
+    `blocked` — claim() returned None (no valid transition), then
+    _do_set_plan(None, ...) crashed with "'NoneType' object has no attribute
+    'id'". The choreographer surfaced it as a cryptic "verb runner failed" and
+    the PM respawn-looped. The entry guard only covers the INITIAL task, so the
+    loop body must re-check after each composed action.
+    """
+    task_svc = AsyncMock()
+    # __aexit__ must return falsy so the savepoint context does not SUPPRESS the
+    # ValueError raised inside it (real SQLAlchemy begin_nested re-raises + rolls back).
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(), __aexit__=AsyncMock(return_value=False)
+        )
+    )
+    # claim() returns None — its source status was invalid (concurrent change).
+    task_svc.claim = AsyncMock(return_value=None)
+    task_svc.set_plan = AsyncMock()
+    task_svc.start = AsyncMock()
+    runner = VerbRunner(task_service=task_svc, git_service=AsyncMock())
+
+    task = MagicMock(id=uuid4(), status="needs_revision", plan="p", commits=[])
+    agent = MagicMock(id=uuid4(), role="main_pm")
+    ctx = spec.Context(plan="my plan")
+
+    with pytest.raises(ValueError, match="INVALID_STATE"):
+        await runner.run_intent("i_will_plan", task, agent, ctx)
+    # The downstream composed actions must NOT run on a None task.
+    task_svc.set_plan.assert_not_called()
+    task_svc.start.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_runner_runs_side_effects_after_db_commit() -> None:
     """For open_pr: composes is empty; side_effects (push_branch, create_pr) run."""
     task_svc = AsyncMock()

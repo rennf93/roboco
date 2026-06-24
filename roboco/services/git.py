@@ -1150,6 +1150,66 @@ class GitService(BaseService):
         workspace = await self.get_workspace(data.project_slug, agent_id)
         await self.checkout(workspace, data.branch)
 
+    async def _ensure_pushable_branch(
+        self, workspace: Path, branch: str, token: str | None
+    ) -> None:
+        """Make sure ``branch`` exists as a local ref before a push-by-name.
+
+        Push-by-name (``git push origin <branch>``) decouples the push from the
+        workspace checkout, but it still requires the named ref to exist LOCALLY.
+        A dev's clone is shared across tasks and may be freshly re-provisioned
+        (the per-task workspace-collision recovery re-clones it), so by push time
+        the task branch can be ABSENT as a local ref even though its commits are
+        already safe on origin — the workspace is parked on a different task's
+        branch. ``git push`` then dies with the cryptic ``src refspec <branch>
+        does not match any`` and the task wedges in a blocked respawn loop.
+
+        Recover idempotently: if the local ref is missing, fetch ``origin
+        <branch>`` and recreate the local tracking ref so the subsequent
+        push-by-name is a clean no-op. If origin has no such branch either, the
+        commits are genuinely not in this clone — fail loud with a recoverable
+        instruction instead of the raw refspec error.
+        """
+        local = await self._run_git(
+            workspace,
+            ["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+            check=False,
+        )
+        if local.returncode == 0:
+            return
+        # Local ref missing — try to recover it from origin (commits often
+        # already pushed in a prior cycle / clone).
+        await self._run_git(
+            workspace,
+            ["fetch", "origin", branch],
+            token=token,
+            check=False,
+            timeout=_network_git_timeout(),
+        )
+        remote = await self._run_git(
+            workspace,
+            ["rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}"],
+            check=False,
+        )
+        if remote.returncode == 0:
+            # Recreate the local ref from origin so push-by-name is a no-op
+            # instead of a refspec error. The local ref is known-absent here, so
+            # this only ever creates (never clobbers local-only commits).
+            await self._run_git(
+                workspace,
+                ["branch", branch, f"origin/{branch}"],
+                check=False,
+            )
+            return
+        raise GitCommandError(
+            "push",
+            f"the task branch '{branch}' does not exist in this workspace and "
+            "is not on origin — your commits are not in this clone (it was "
+            "likely re-provisioned after a reassignment). unclaim the task and "
+            "re-claim it to rebuild the branch, then replay your commits via "
+            "commit(...).",
+        )
+
     async def push(
         self, workspace: Path, force: bool = False, branch: str | None = None
     ) -> tuple[str, int]:
@@ -1165,6 +1225,10 @@ class GitService(BaseService):
         if branch is None:
             branch = await self.get_current_branch(workspace)
         token = await self._token_for_workspace(workspace)
+        # The named ref must exist locally for push-by-name; recover it from
+        # origin if a re-provisioned/shared clone is missing it (else the push
+        # dies on "src refspec ... does not match any" and the task wedges).
+        await self._ensure_pushable_branch(workspace, branch, token)
 
         count_result = await self._run_git(
             workspace,

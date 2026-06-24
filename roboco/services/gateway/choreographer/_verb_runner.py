@@ -69,6 +69,24 @@ class VerbRunner:
         async with self.task_service.session.begin_nested():
             for action_name in intent.composes:
                 task = await self._dispatch_atomic(action_name, task, agent, context)
+                # A composed atomic action (claim/set_plan/start) returns None when
+                # its source-status check fails — which happens mid-sequence when a
+                # CONCURRENT agent transitions the row between the verb's precondition
+                # gate and this execution (e.g. i_will_plan's gate saw `needs_revision`
+                # but a racing i_am_blocked moved it to `blocked`, so claim() found no
+                # valid transition and returned None). The next action would then
+                # dereference None.id and crash with the cryptic "'NoneType' object has
+                # no attribute 'id'" — the entry guard above only covers the INITIAL
+                # task. Fail loud + clean instead so the choreographer surfaces an
+                # actionable rejection and the agent re-fetches, not respawn-loops.
+                if task is None:
+                    raise ValueError(
+                        f"INVALID_STATE: '{action_name}' in '{intent_name}' returned "
+                        "no task — its source status was invalid, most likely because "
+                        "a concurrent transition changed the task between the "
+                        "precondition gate and execution. Re-fetch with "
+                        "evidence(task_id) and re-issue your verb."
+                    )
         for side_effect_name in intent.side_effects:
             await self._dispatch_side_effect(side_effect_name, task, agent)
         return task
