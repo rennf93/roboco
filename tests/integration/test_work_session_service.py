@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
-from roboco.db.tables import AgentTable, ProjectTable, TaskTable
+from roboco.db.tables import AgentTable, ProjectTable, TaskTable, WorkSessionTable
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import (
     TaskNature,
@@ -21,6 +21,7 @@ from roboco.models.work_session import (
 )
 from roboco.services.base import ConflictError, NotFoundError, ValidationError
 from roboco.services.work_session import WorkSessionService
+from sqlalchemy.exc import IntegrityError
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -461,3 +462,91 @@ async def test_has_unpushed_commits_false_after_pr(ws_setup: dict) -> None:
     await svc.add_commit(ws.id, "abc123")
     await svc.create_pr(ws.id, 1, "u")
     assert await svc.has_unpushed_commits(ws.id) is False
+
+
+# ---------------------------------------------------------------------------
+# Single-active-per-task invariant (migration 047) — the i_will_plan wedge fix
+# ---------------------------------------------------------------------------
+
+
+async def _second_agent(db_session: AsyncSession) -> AgentTable:
+    """A distinct agent to simulate a re-claim by someone else."""
+    agent = AgentTable(
+        id=uuid4(),
+        name="Dev2",
+        slug=f"be-dev-{uuid4().hex[:8]}",
+        role=AgentRole.DEVELOPER,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="dev",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(agent)
+    await db_session.flush()
+    return agent
+
+
+@pytest.mark.asyncio
+async def test_create_supersedes_other_agents_active_session(
+    ws_setup: dict, db_session: AsyncSession
+) -> None:
+    """A re-claim by a different agent abandons the stale session (no dup ACTIVE)."""
+    svc = ws_setup["svc"]
+    first = await svc.create(_payload(ws_setup))  # agent A
+    agent_b = await _second_agent(db_session)
+    second = await svc.create(
+        WorkSessionCreate(
+            project_id=ws_setup["project_id"],
+            task_id=ws_setup["task_id"],
+            agent_id=agent_b.id,
+            branch_name=f"feature/x-{uuid4().hex[:6]}",
+            base_branch="main",
+            target_branch="main",
+        )
+    )
+    # The prior holder's session is abandoned; exactly one ACTIVE remains.
+    refreshed_first = await svc.get(first.id)
+    assert refreshed_first is not None
+    assert refreshed_first.status == WorkSessionStatus.ABANDONED
+    active = await svc.get_active_for_task(ws_setup["task_id"])
+    assert active is not None
+    assert active.id == second.id
+
+
+@pytest.mark.asyncio
+async def test_supersede_helper_keeps_named_agent(ws_setup: dict) -> None:
+    svc = ws_setup["svc"]
+    keep = await svc.create(_payload(ws_setup))  # agent A
+    n = await svc.supersede_active_sessions_for_task(
+        ws_setup["task_id"], keep_agent_id=ws_setup["agent_id"]
+    )
+    assert n == 0  # nothing to supersede — A is the kept agent
+    refreshed = await svc.get(keep.id)
+    assert refreshed is not None
+    assert refreshed.status == WorkSessionStatus.ACTIVE
+
+
+@pytest.mark.asyncio
+async def test_partial_unique_index_blocks_two_active_for_task(
+    ws_setup: dict, db_session: AsyncSession
+) -> None:
+    """The DB backstop: a second ACTIVE row for one task violates the index."""
+    svc = ws_setup["svc"]
+    await svc.create(_payload(ws_setup))  # one ACTIVE session
+    agent_b = await _second_agent(db_session)
+    # Bypass the service supersede and force a raw duplicate ACTIVE row.
+    dup = WorkSessionTable(
+        project_id=ws_setup["project_id"],
+        task_id=ws_setup["task_id"],
+        agent_id=agent_b.id,
+        branch_name="feature/dup",
+        base_branch="main",
+        target_branch="main",
+        status=WorkSessionStatus.ACTIVE,
+    )
+    db_session.add(dup)
+    with pytest.raises(IntegrityError):
+        await db_session.flush()

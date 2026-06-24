@@ -24,6 +24,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -774,6 +775,16 @@ class WorkSessionTable(Base):
         Index("ix_work_sessions_project_status", "project_id", "status"),
         Index("ix_work_sessions_task", "task_id"),
         Index("ix_work_sessions_agent_status", "agent_id", "status"),
+        # A task is owned by one agent at a time → at most one ACTIVE session.
+        # Without this, a re-claim by a different agent left duplicate ACTIVE
+        # rows and get_active_for_task crashed with MultipleResultsFound,
+        # wedging i_will_plan into a respawn loop. Mirrored by migration 047.
+        Index(
+            "uq_work_sessions_one_active_per_task",
+            "task_id",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+        ),
     )
 
 

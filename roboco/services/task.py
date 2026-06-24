@@ -2147,23 +2147,46 @@ class TaskService(BaseService):
             )
             return None
 
-        # Check if session already exists for this task+agent
+        # Check if session already exists for this task+agent (resilient to any
+        # legacy duplicate ACTIVE rows — see
+        # WorkSessionService.get_active_for_task).
         existing = await self.session.execute(
-            select(WorkSessionTable).where(
+            select(WorkSessionTable)
+            .where(
                 and_(
                     WorkSessionTable.task_id == task.id,
                     WorkSessionTable.agent_id == agent_id,
                     WorkSessionTable.status == WorkSessionStatus.ACTIVE,
                 )
             )
+            .order_by(WorkSessionTable.started_at.desc())
         )
-        if existing.scalar_one_or_none():
+        if existing.scalars().first():
             self.log.debug(
                 "Work session already exists",
                 task_id=str(task.id),
                 agent_id=str(agent_id),
             )
             return None
+
+        # Single-active-per-task invariant: close any OTHER agent's stale ACTIVE
+        # session for this task before opening a new one. A re-claim by a
+        # different agent (pool release, reaper unclaim, escalation redirect)
+        # otherwise left duplicate ACTIVE rows that crashed get_active_for_task
+        # with MultipleResultsFound — the i_will_plan respawn-loop wedge.
+        stale = await self.session.execute(
+            select(WorkSessionTable).where(
+                and_(
+                    WorkSessionTable.task_id == task.id,
+                    WorkSessionTable.agent_id != agent_id,
+                    WorkSessionTable.status == WorkSessionStatus.ACTIVE,
+                )
+            )
+        )
+        for prior in stale.scalars().all():
+            prior.status = WorkSessionStatus.ABANDONED
+            prior.ended_at = datetime.now(UTC)
+        await self.session.flush()
 
         # Determine target branch:
         # - For subtasks: merge into parent task's branch
