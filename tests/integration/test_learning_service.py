@@ -121,6 +121,41 @@ async def test_team_scope_role_uppercase_via_agent_role_enum(
 
 
 @pytest.mark.asyncio
+async def test_org_scope_excludes_human_roles(
+    shared_session: AsyncSession,
+) -> None:
+    """Human / human-driven roles are never learning recipients, even at ORG
+    scope: knowledge-share is a signal for agents, not noise in the human's inbox.
+    """
+    author = _make_agent(AgentRole.DEVELOPER)
+    peer = _make_agent(AgentRole.QA)
+    ceo = _make_agent(AgentRole.CEO)
+    secretary = _make_agent(AgentRole.SECRETARY)
+    shared_session.add_all([author, peer, ceo, secretary])
+    await shared_session.flush()
+
+    svc = LearningPropagationService()
+    await svc.initialize(_StubOptimal())
+    learning = await svc.record_learning(
+        RecordLearningParams(
+            agent_id=cast("uuid.UUID", author.id),
+            agent_role="developer",
+            content="A useful pattern worth sharing org-wide",
+            learning_type=LearningType.PATTERN,
+            scope=LearningScope.ORG,
+        )
+    )
+    notified_ids = {
+        n.target_agent_id
+        for n in svc._notification_queue
+        if n.learning_id == learning.learning_id
+    }
+    assert peer.id in notified_ids
+    assert ceo.id not in notified_ids
+    assert secretary.id not in notified_ids
+
+
+@pytest.mark.asyncio
 async def test_team_scope_invalid_role_skips_filter(
     shared_session: AsyncSession,
 ) -> None:

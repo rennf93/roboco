@@ -16,7 +16,15 @@ from uuid import UUID
 
 import structlog
 
+from roboco.foundation.identity import Role as _Role
 from roboco.models.optimal import IndexType, SearchResult
+
+# Human / human-driven roles are never agent learning recipients: the CEO is the
+# human operator, and the prompter (intake) + secretary act only under direct CEO
+# command, so a knowledge-share ping to them is inbox noise, not an agent signal.
+# Resolved from the foundation enum at import time so a test that patches the
+# models.base AgentRole alias can't break this constant.
+_HUMAN_ONLY_ROLES = (_Role.CEO, _Role.PROMPTER, _Role.SECRETARY)
 
 logger = structlog.get_logger()
 
@@ -201,18 +209,21 @@ class LearningPropagationService:
         from roboco.db.base import get_db_context
         from roboco.db.tables import AgentTable
         from roboco.models import NotificationPriority, NotificationType
+        from roboco.models.base import AgentRole
         from roboco.models.notification import CreateNotificationParams
         from roboco.services.notification import NotificationService
 
         try:
             async with get_db_context() as db:
-                # Build query based on scope
-                query = select(AgentTable).where(AgentTable.id != learning.agent_id)
+                # Build query based on scope; never the author, never a human role.
+                query = (
+                    select(AgentTable)
+                    .where(AgentTable.id != learning.agent_id)
+                    .where(AgentTable.role.notin_(_HUMAN_ONLY_ROLES))
+                )
 
                 if learning.scope == LearningScope.TEAM:
                     # Only notify agents with the same role
-                    from roboco.models.base import AgentRole
-
                     try:
                         role_enum = AgentRole(learning.agent_role.upper())
                         query = query.where(AgentTable.role == role_enum)
