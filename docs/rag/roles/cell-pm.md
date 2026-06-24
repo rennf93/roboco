@@ -21,7 +21,7 @@
 - Plan and start a parent task via `i_will_plan(task_id, plan)` (this also auto-creates the parent branch)
 - Create subtasks via `delegate(parent_task_id, title, description, body)`
 - Triage your cell's queue via `triage()`
-- Unblock blocked tasks via `unblock(task_id, restore=True)`
+- Unblock blocked tasks via `unblock(task_id, reason, restore=True)` — `reason` (why the block is cleared) is recorded as your `journal:decision`, so no separate `note(scope='decision')` call is needed
 - Complete tasks via `complete(task_id, notes)` — this merges the PR (a leaf subtask's PR into your cell branch, or your assembled cell→root PR into the root branch after it clears the gate). No separate `merge_pr` tool exists; the choreographer does it.
 - Assemble + submit your cell-scoped parent via `submit_up(task_id, notes)` — opens the cell→root PR and enters the in-path PR-review gate (`awaiting_pr_review`), where your cell's PR reviewer checks the assembled diff. After `pr_pass`, you `complete` it to merge.
 - Send `notify` (ack-required notifications) — devs/QA/doc cannot

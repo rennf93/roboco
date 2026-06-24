@@ -368,12 +368,16 @@ def test_unblock_with_restore_true(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_client = _make_fake_client({"status": "in_progress"})
 
     with patch("httpx.Client", return_value=fake_client):
-        result = srv.unblock("task-uuid")
+        result = srv.unblock("task-uuid", "block resolved upstream; restoring")
 
     assert result["status"] == "in_progress"
     args, kwargs = fake_client.post.call_args
     assert "/api/v1/flow/cell_pm/unblock" in args[0]
-    assert kwargs["json"] == {"task_id": "task-uuid", "restore": True}
+    assert kwargs["json"] == {
+        "task_id": "task-uuid",
+        "reason": "block resolved upstream; restoring",
+        "restore": True,
+    }
 
 
 def test_unblock_with_restore_false(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -384,11 +388,17 @@ def test_unblock_with_restore_false(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_client = _make_fake_client({"status": "in_progress"})
 
     with patch("httpx.Client", return_value=fake_client):
-        result = srv.unblock("task-uuid", restore=False)
+        result = srv.unblock(
+            "task-uuid", "block resolved upstream; restoring", restore=False
+        )
 
     assert result["status"] == "in_progress"
     _args, kwargs = fake_client.post.call_args
-    assert kwargs["json"] == {"task_id": "task-uuid", "restore": False}
+    assert kwargs["json"] == {
+        "task_id": "task-uuid",
+        "reason": "block resolved upstream; restoring",
+        "restore": False,
+    }
 
 
 def test_complete_passes_notes(monkeypatch: pytest.MonkeyPatch) -> None:

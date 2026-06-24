@@ -948,6 +948,37 @@ class JournalService(BaseService):
         )
         return await self.add_struggle(agent_id, params)
 
+    async def write_decision(
+        self,
+        *,
+        agent_id: UUID,
+        task_id: UUID,
+        content: str,
+    ) -> JournalEntry | None:
+        """Write a DECISION_LOG entry for (agent, task) with `content` as the
+        rationale body. Title is derived from the first line of content
+        (truncated to 100 chars).
+
+        Mirrors ``write_struggle``: lets a PM verb persist a decision from
+        its own rationale argument (the write-then-gate pattern) so the
+        journal:decision tracing gate is satisfied without a separate
+        note(scope='decision') call. The ``content`` becomes both the
+        rationale and the chosen-summary so the entry reads coherently in
+        journal lists and RAG retrieval.
+        """
+        first_line = content.strip().splitlines()[0] if content.strip() else "Decision"
+        title = first_line[:100]
+        params = DecisionLogParams(
+            title=title,
+            context="",
+            options=[],
+            chosen=title,
+            rationale=content,
+            consequences=[],
+            task_id=task_id,
+        )
+        return await self.add_decision_log(agent_id, params)
+
     async def write_entry(
         self,
         *,

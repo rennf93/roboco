@@ -119,7 +119,7 @@ async def test_unblock_dispatches_task_id_with_restore_true() -> None:
 
     resp = client.post(
         "/api/v1/flow/main_pm/unblock",
-        json={"task_id": _TASK_ID},
+        json={"task_id": _TASK_ID, "reason": "block resolved upstream; restoring"},
         headers=_HEADERS,
     )
 
@@ -127,6 +127,7 @@ async def test_unblock_dispatches_task_id_with_restore_true() -> None:
     mock_chore.unblock.assert_awaited_once()
     call_kwargs = mock_chore.unblock.call_args.kwargs
     assert call_kwargs["restore"] is True
+    assert mock_chore.unblock.call_args.args[2] == "block resolved upstream; restoring"
 
 
 @pytest.mark.asyncio

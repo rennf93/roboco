@@ -152,7 +152,9 @@ async def unblock(
     x_agent_id: _AgentIdHeader,
     choreographer: _ChoreographerDep,
 ) -> dict:
-    env = await choreographer.unblock(x_agent_id, body.task_id, restore=body.restore)
+    env = await choreographer.unblock(
+        x_agent_id, body.task_id, body.reason, restore=body.restore
+    )
     return envelope_to_response(env, request)
 
 

@@ -857,7 +857,7 @@ async def test_unblock_task_not_found() -> None:
     task_svc.get.return_value = None
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
-    env = await c.unblock(pm_id, task_id)
+    env = await c.unblock(pm_id, task_id, "block resolved upstream; restoring")
     body = env.as_dict()
     assert body["error"] == "not_found"
 

@@ -420,9 +420,14 @@ def triage_all() -> dict[str, Any]:
     return _post(_role_path("triage_all"), {})
 
 
-def unblock(task_id: str, restore: bool = True) -> dict[str, Any]:
-    """PM: unblock a task. restore=True (default) restores pre_block_state."""
-    return _post(_role_path("unblock"), {"task_id": task_id, "restore": restore})
+def unblock(task_id: str, reason: str, restore: bool = True) -> dict[str, Any]:
+    """PM: unblock a task. `reason` states why the block is cleared and is
+    recorded as your decision (no separate note needed). restore=True
+    (default) restores pre_block_state."""
+    return _post(
+        _role_path("unblock"),
+        {"task_id": task_id, "reason": reason, "restore": restore},
+    )
 
 
 def complete(task_id: str, notes: str) -> dict[str, Any]:

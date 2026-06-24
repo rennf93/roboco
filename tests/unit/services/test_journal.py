@@ -115,6 +115,44 @@ async def test_write_struggle_handles_empty_content_gracefully() -> None:
     assert params.title == "Struggle"
 
 
+@pytest.mark.asyncio
+async def test_write_decision_calls_add_decision_log_with_task_id() -> None:
+    """write_decision delegates to add_decision_log with a DECISION_LOG entry.
+
+    Title comes from the first content line (truncated to 100 chars); the
+    full content is carried in the rationale field so the auto-recorded
+    decision reads coherently in journal lists and RAG retrieval.
+    """
+    svc = JournalService(MagicMock(flush=AsyncMock()))
+    add_decision_mock = AsyncMock(
+        return_value=MagicMock(type=JournalEntryType.DECISION_LOG)
+    )
+    _bind(svc, "add_decision_log", add_decision_mock)
+    agent_id = uuid4()
+    task_id = uuid4()
+    content = "Completing PR #120: all 3 acceptance criteria verified\nmore detail"
+    out = await svc.write_decision(agent_id=agent_id, task_id=task_id, content=content)
+    assert out is not None
+    add_decision_mock.assert_awaited_once()
+    args, _kwargs = add_decision_mock.call_args
+    assert args[0] == agent_id
+    params = args[1]
+    assert params.task_id == task_id
+    assert params.title == "Completing PR #120: all 3 acceptance criteria verified"
+    assert content in params.rationale
+
+
+@pytest.mark.asyncio
+async def test_write_decision_handles_empty_content_gracefully() -> None:
+    svc = JournalService(MagicMock(flush=AsyncMock()))
+    add_decision_mock = AsyncMock(return_value=MagicMock())
+    _bind(svc, "add_decision_log", add_decision_mock)
+    await svc.write_decision(agent_id=uuid4(), task_id=uuid4(), content="")
+    args, _kwargs = add_decision_mock.call_args
+    params = args[1]
+    assert params.title == "Decision"
+
+
 # ---------------------------------------------------------------------------
 # latest_decision_at — windowed-satisfaction support for the PM-decision gate
 # (C8). Returns the `created_at` of the newest DECISION_LOG entry for an

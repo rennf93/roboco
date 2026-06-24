@@ -95,6 +95,6 @@ Include:
 2. Investigate: read the task, journals, and channel messages
 3. Decide, or escalate further with `escalate_up`
 4. Communicate the decision (`say` / `dm` / `notify`)
-5. Unblock if needed: `unblock(task_id)`
+5. Unblock if needed: `unblock(task_id, reason)`
 
-CRITICAL: Verbal resolution is NOT enough. To clear a block you MUST call `unblock(task_id)`.
+CRITICAL: Verbal resolution is NOT enough. To clear a block you MUST call `unblock(task_id, reason)`. The `reason` (why you are clearing the block) is recorded as your `journal:decision` — no separate `note(scope='decision')` call is required.

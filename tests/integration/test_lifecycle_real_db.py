@@ -915,7 +915,9 @@ async def test_block_then_unblock_restore(
     assert blocked.assigned_to == cell_pm_agent.id
     assert blocked.blocker_raised_by == dev_agent.id
 
-    env = await c.unblock(cell_pm_agent.id, task.id, restore=True)
+    env = await c.unblock(
+        cell_pm_agent.id, task.id, "block resolved upstream; restoring", restore=True
+    )
     assert env.error is None, f"unblock failed: {env.message}"
     assert env.status == Status.IN_PROGRESS.value
 

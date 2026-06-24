@@ -59,7 +59,9 @@ delegate(parent_task_id, title, description, assigned_to, team, task_type,
                                 # create a subtask; covers_parent_criteria maps
                                 # it to the parent ACs it is responsible for
 reassign(task_id, assigned_to)  # move a subtask to a different agent
-unblock(task_id)                # blocked -> in_progress (PM only)
+unblock(task_id, reason)        # blocked -> in_progress (PM only); reason is
+                                # recorded as your journal:decision (no separate
+                                # note needed)
 submit_up(task_id, notes)       # open cell->root PR; -> awaiting_pr_review
                                 # (the cell PR reviewer gates it; after pr_pass
                                 #  the same Cell PM completes + merges)

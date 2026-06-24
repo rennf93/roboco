@@ -154,7 +154,9 @@ async def test_unblock_restores_pre_block_state() -> None:
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
-    env = await c.unblock(pm_id, task_id, restore=True)
+    env = await c.unblock(
+        pm_id, task_id, "block resolved upstream; restoring", restore=True
+    )
     assert env.error is None
     assert env.status == "awaiting_documentation"
     task_svc.unblock_with_restore.assert_awaited_once_with(pm_id, task_id, restore=True)
@@ -182,7 +184,7 @@ async def test_unblock_default_restores() -> None:
     c = Choreographer(deps)
 
     # restore omitted -> defaults to True
-    env = await c.unblock(pm_id, task_id)
+    env = await c.unblock(pm_id, task_id, "block resolved upstream; restoring")
     assert env.status == "awaiting_qa"
 
 
@@ -199,7 +201,7 @@ async def test_unblock_blocks_without_journal_decision() -> None:
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
-    env = await c.unblock(pm_id, task_id)
+    env = await c.unblock(pm_id, task_id, "block resolved upstream; restoring")
     body = env.as_dict()
     assert body["error"] == "tracing_gap"
     assert "journal:decision" in body["missing"]
@@ -215,7 +217,7 @@ async def test_unblock_wrong_state_returns_invalid_state() -> None:
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
-    env = await c.unblock(pm_id, task_id)
+    env = await c.unblock(pm_id, task_id, "block resolved upstream; restoring")
     body = env.as_dict()
     assert body["error"] == "invalid_state"
 
@@ -241,7 +243,9 @@ async def test_unblock_restore_false_returns_legacy_message() -> None:
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
-    env = await c.unblock(pm_id, task_id, restore=False)
+    env = await c.unblock(
+        pm_id, task_id, "block resolved upstream; restoring", restore=False
+    )
     body = env.as_dict()
     assert body["status"] == "in_progress"
     assert "re-engage" in body["next"].lower()
@@ -267,7 +271,7 @@ async def test_unblock_refused_while_a_dependency_is_unfinished() -> None:
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
-    env = await c.unblock(pm_id, task_id)
+    env = await c.unblock(pm_id, task_id, "block resolved upstream; restoring")
     body = env.as_dict()
 
     assert body["error"] == "invalid_state"

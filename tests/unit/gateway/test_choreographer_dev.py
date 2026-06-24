@@ -559,12 +559,15 @@ async def test_i_am_done_blocks_when_journal_reflect_missing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_i_am_done_not_assigned_returns_tracing_gap() -> None:
-    """Spec's PRECONDITION_OWNERSHIP rejects with tracing_gap (owns_task).
+async def test_i_am_done_reassigned_steers_to_give_me_work() -> None:
+    """A stale agent (task reassigned away) gets a clear not_authorized that
+    steers to give_me_work — NOT the owns_task tracing_gap it would retry.
 
-    Pre-spec migration the verb returned not_authorized via an inline
-    ownership check; that's now driven by the spec's extra precondition
-    so the rejection_kind is tracing_gap.
+    A reassignment short-circuit runs before the spec gate (matching
+    resume/unclaim), so a superseded agent is told plainly that the task is
+    no longer its own and to fetch new work, instead of reading the
+    PRECONDITION_OWNERSHIP tracing_gap as a fixable precondition and looping
+    i_am_done forever (the observed owns_task burn-loop).
     """
     agent_id = uuid4()
     other_agent = uuid4()
@@ -587,8 +590,9 @@ async def test_i_am_done_not_assigned_returns_tracing_gap() -> None:
 
     env = await c.i_am_done(agent_id, task_id, "completed the work")
     body = env.as_dict()
-    assert body["error"] == "tracing_gap"
-    assert "owns_task" in body["missing"]
+    assert body["error"] == "not_authorized"
+    assert "no longer assigned" in (body.get("message") or "").lower()
+    assert "give_me_work" in (body.get("remediate") or "")
 
 
 @pytest.mark.asyncio

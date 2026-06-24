@@ -1495,33 +1495,16 @@ class Choreographer:
                 ),
                 context_briefing=briefing,
             ).with_introspection(task=t, role=role_str)
-        try:
-            role = spec_module.Role(role_str)
-        except ValueError:
-            return await self._emit_rejection(
-                Envelope.not_authorized(
-                    message=f"unknown role '{role_str}'",
-                    remediate="role is not declared in the lifecycle spec",
-                    context_briefing=briefing,
-                ).with_introspection(task=t, role=role_str),
-                agent_id=agent_id,
-                task_id=task_id,
-                verb="open_pr",
-            )
         spec_ctx = spec_module.Context(
             actor_id=agent_id,
             actor_slug=getattr(agent, "slug", None) if agent is not None else None,
             original_developer_slug=_extract_original_developer(t),
         )
-        decision = spec_module.can_invoke_intent(role, "open_pr", t, spec_ctx)
-        if not decision.allowed:
+        if rejection := self._open_pr_preflight_rejection(
+            agent_id, task_id, t, role_str, briefing, spec_ctx
+        ):
             return await self._emit_rejection(
-                Envelope.from_decision(decision, briefing=briefing).with_introspection(
-                    task=t, role=role_str
-                ),
-                agent_id=agent_id,
-                task_id=task_id,
-                verb="open_pr",
+                rejection, agent_id=agent_id, task_id=task_id, verb="open_pr"
             )
         await self._touch(task_id)
         runner = self._verb_runner()
@@ -1529,11 +1512,7 @@ class Choreographer:
             await runner.run_intent("open_pr", t, agent, spec_ctx)
         except Exception as exc:
             return await self._emit_rejection(
-                Envelope.invalid_state(
-                    message=f"verb runner failed: {exc}",
-                    remediate="check workspace + retry; if persistent, escalate",
-                    context_briefing=briefing,
-                ).with_introspection(task=t, role=role_str),
+                self._open_pr_failure_env(exc, t, briefing, role_str),
                 agent_id=agent_id,
                 task_id=task_id,
                 verb="open_pr",
@@ -1541,6 +1520,88 @@ class Choreographer:
         return await self._open_pr_success_envelope(
             agent_id, task_id, t, briefing, role_str
         )
+
+    def _open_pr_preflight_rejection(
+        self,
+        agent_id: UUID,
+        task_id: UUID,
+        t: Any,
+        role_str: str,
+        briefing: dict[str, Any],
+        spec_ctx: Any,
+    ) -> Envelope | None:
+        """Role + reassignment + spec-gate rejection for open_pr (or None).
+
+        A stale/superseded agent (task reassigned away) is steered to
+        give_me_work with a clear not_authorized BEFORE the spec gate would
+        emit an owns_task tracing_gap the agent retries forever (same pattern
+        as i_am_done / resume).
+        """
+        try:
+            role = spec_module.Role(role_str)
+        except ValueError:
+            return Envelope.not_authorized(
+                message=f"unknown role '{role_str}'",
+                remediate="role is not declared in the lifecycle spec",
+                context_briefing=briefing,
+            ).with_introspection(task=t, role=role_str)
+        reassigned = self._reassigned_rejection(
+            _ReassignedCtx(
+                task=t,
+                agent_id=agent_id,
+                task_id=task_id,
+                role_str=role_str,
+                briefing=briefing,
+                upstream_hint=(
+                    "this task was reassigned away from you; you are no longer "
+                    "its owner. Call give_me_work() to find your current task, "
+                    "or i_am_idle() if there is none. Do NOT retry open_pr."
+                ),
+            )
+        )
+        if reassigned is not None:
+            return reassigned
+        decision = spec_module.can_invoke_intent(role, "open_pr", t, spec_ctx)
+        if not decision.allowed:
+            return Envelope.from_decision(
+                decision, briefing=briefing
+            ).with_introspection(task=t, role=role_str)
+        return None
+
+    @staticmethod
+    def _open_pr_failure_env(
+        exc: Exception, t: Any, briefing: dict[str, Any], role_str: str
+    ) -> Envelope:
+        """Map an open_pr runner failure to its rejection envelope.
+
+        Empty-diff subtask: a branch with zero commits relative to its base
+        makes GitHub 422 with "No commits between ...". open_pr can never
+        succeed here (an overlapping-decomposition leaf whose work was
+        delivered by the parent), so a generic invalid_state "retry" loops the
+        dev forever (15x on one task in a single run). Steer to a terminal
+        i_am_blocked hand-off so the PM completes/cancels the redundant leaf;
+        every other failure keeps the generic retry hint.
+        """
+        if "No commits between" in str(exc):
+            return Envelope.invalid_state(
+                message=(
+                    "this branch has no commits relative to its base — there is "
+                    "nothing to open a PR for"
+                ),
+                remediate=(
+                    "do NOT retry open_pr — your branch has no diff, so this "
+                    "leaf's work was almost certainly delivered by its parent "
+                    "task. Call i_am_blocked(reason='no commits to PR — work "
+                    "delivered via parent') so your PM can complete or cancel "
+                    "this redundant leaf."
+                ),
+                context_briefing=briefing,
+            ).with_introspection(task=t, role=role_str)
+        return Envelope.invalid_state(
+            message=f"verb runner failed: {exc}",
+            remediate="check workspace + retry; if persistent, escalate",
+            context_briefing=briefing,
+        ).with_introspection(task=t, role=role_str)
 
     async def _open_pr_success_envelope(
         self,
@@ -1646,12 +1707,35 @@ class Choreographer:
         # standard tracing/field gates beforehand.
         if str(t.status) == "verifying" and t.assigned_to == agent_id:
             return await self._i_am_done_resume_from_verifying(ctx)
+        # Stale/superseded agent: the task was reassigned out from under this
+        # agent (PM reassign / reaper unclaim / escalation redirect) while its
+        # container kept running. Without this, the spec gate's
+        # PRECONDITION_OWNERSHIP emits an owns_task *tracing_gap*, which the
+        # agent reads as a fixable precondition and retries i_am_done forever
+        # (41 such loops in one run). A clear "no longer yours" not_authorized
+        # steers to give_me_work — terminal for this agent. (resume/unclaim
+        # already do this; i_am_done did not.) Folded into the soup/spec return
+        # below to stay within the return-count budget.
+        reassigned = self._reassigned_rejection(
+            _ReassignedCtx(
+                task=t,
+                agent_id=agent_id,
+                task_id=task_id,
+                role_str=role_str,
+                briefing=briefing,
+                upstream_hint=(
+                    "this task was reassigned away from you; you are no longer "
+                    "its owner. Call give_me_work() to find your current task, "
+                    "or i_am_idle() if there is none. Do NOT retry i_am_done."
+                ),
+            )
+        )
         # i_am_done notes is optional and supplementary (the real summary lives
         # in commits + journal:reflect), so guard it lightly — a banned token
         # ('wip'/'x') is soup, but a terse real word like 'done' is fine.
         soup = self._free_text_soup(checks=(("notes", notes, 4),))
         decision = spec_module.can_invoke_intent(role, "i_am_done", t, spec_ctx)
-        if env := self._soup_or_decision_env(soup, decision, briefing):
+        if env := (reassigned or self._soup_or_decision_env(soup, decision, briefing)):
             return await self._reject_i_am_done(ctx, env)
         if gate_rejection := await self._i_am_done_gate(ctx):
             return gate_rejection
@@ -2145,6 +2229,48 @@ class Choreographer:
         if result.passed:
             return None
         return await self._build_tracing_gap(agent_id, task_id, result.missing, task=t)
+
+    async def _ensure_pm_decision(
+        self, agent_id: UUID, task_id: UUID, rationale: str | None
+    ) -> None:
+        """Auto-record a journal:decision from a PM verb's own rationale.
+
+        The write-then-gate pattern (mirrors i_am_blocked → write_struggle):
+        a PM verb that already carries a substantive rationale — complete /
+        submit_up / submit_root ``notes``, escalate ``reason``, or a
+        synthesized unblock context line — records it as the decision
+        *before* the journal:decision tracing gate runs. A loaded or weak
+        model that forgot the separate note(scope='decision') call then no
+        longer stalls in a tracing_gap → respawn loop; the gate still runs
+        as defense-in-depth and now passes off the just-written entry.
+
+        Idempotent within the decision window: when a fresh decision already
+        satisfies the gate, no duplicate is written. Best-effort — a journal
+        write failure is logged and swallowed so the verb falls through to
+        the normal gate (which rejects as before), never crashing the verb.
+        """
+        from roboco.config import settings as _settings
+
+        text = (rationale or "").strip()
+        if not text:
+            return
+        try:
+            latest = await self.journal.latest_decision_at(agent_id, task_id)
+            window = _settings.pm_decision_window_seconds
+            if (
+                latest is not None
+                and (datetime.now(UTC) - latest).total_seconds() <= window
+            ):
+                return
+            await self.journal.write_decision(
+                agent_id=agent_id, task_id=task_id, content=text
+            )
+        except Exception as exc:  # best-effort; gate rejects normally on failure
+            logger.warning(
+                "auto-record pm decision failed",
+                error=str(exc),
+                task_id=str(task_id),
+            )
 
     async def _check_pm_decision_required(
         self, verb: str, agent_id: UUID, task_id: UUID, t: Any
@@ -3696,6 +3822,14 @@ class Choreographer:
                 task_id=parent_task_id,
                 verb="delegate",
             )
+        # Write-then-gate: the delegated subtask's title + description (the
+        # PM's own articulation of the work) is recorded as the
+        # journal:decision the tracing guard below requires.
+        await self._ensure_pm_decision(
+            pm_agent_id,
+            parent_task_id,
+            f"Delegating subtask '{inputs.title}': {inputs.description}",
+        )
         # Spec gate passed. Run delegate-specific guards the spec doesn't
         # model: tracing (journal:decision), chain validation, enum
         # coercion + assignee-vs-task_type, and parent-ownership/subtask-cap.
@@ -4885,6 +5019,9 @@ class Choreographer:
         because its remediation enumerates the non-terminal subtask ids
         — strictly richer than the foundation hint.
         """
+        # Write-then-gate: the bubble-up rationale (notes, already validated
+        # >= min by the ownership guard) becomes the journal:decision.
+        await self._ensure_pm_decision(pm_agent_id, task_id, notes)
         if env := await self._check_submit_up_gates(pm_agent_id, task_id, notes):
             return env
         if env := await self._subtasks_not_terminal_envelope(
@@ -5020,9 +5157,11 @@ class Choreographer:
         )
 
     async def unblock(
-        self, pm_agent_id: UUID, task_id: UUID, *, restore: bool = True
+        self, pm_agent_id: UUID, task_id: UUID, reason: str, *, restore: bool = True
     ) -> Envelope:
-        """PM unblocks task; restore=True (default) returns to pre_block_state."""
+        """PM unblocks task; ``reason`` documents why the block is cleared and
+        is recorded as the journal:decision the gate requires. restore=True
+        (default) returns to pre_block_state."""
         t = await self.task.get(task_id)
         if t is None:
             return await self._emit_rejection(
@@ -5073,6 +5212,11 @@ class Choreographer:
                 verb="unblock",
             )
 
+        # Write-then-gate: the PM's unblock reason is recorded as the
+        # journal:decision the gate below requires, so a PM that didn't
+        # pre-call note(scope='decision') doesn't stall in a tracing_gap
+        # respawn loop.
+        await self._ensure_pm_decision(pm_agent_id, task_id, reason)
         if env := await self._check_pm_decision_required(
             "unblock", pm_agent_id, task_id, t
         ):
@@ -5167,6 +5311,9 @@ class Choreographer:
                 ),
                 context_briefing=await self._briefing_for(pm_agent_id, task_id),
             )
+        # Write-then-gate: the PM's merge rationale (notes) becomes the
+        # journal:decision the gate requires — no separate note() call needed.
+        await self._ensure_pm_decision(pm_agent_id, task_id, notes)
         if env := await self._check_complete_gates(pm_agent_id, task_id, notes):
             return env
         if env := (
@@ -5589,6 +5736,9 @@ class Choreographer:
                     main_pm_agent_id, root_task_id
                 ),
             )
+        # Write-then-gate: the Main PM's root-close rationale (notes) becomes
+        # the journal:decision the gate requires.
+        await self._ensure_pm_decision(main_pm_agent_id, root_task_id, notes)
         if env := await self._check_complete_gates(
             main_pm_agent_id, root_task_id, notes
         ):
@@ -5821,6 +5971,9 @@ class Choreographer:
                 verb="escalate_up",
             )
 
+        # Write-then-gate: the escalation reason becomes the journal:decision
+        # the preflight gate requires.
+        await self._ensure_pm_decision(pm_agent_id, task_id, reason)
         preflight = await self._escalate_up_preflight(
             pm_agent_id, t, me, briefing, role_str
         )
@@ -5994,6 +6147,9 @@ class Choreographer:
         # Verb-body preflight: journal:decision presence, then the parent-AC
         # backstop (a root may not escalate to the CEO with parent ACs that no
         # completed subtask covered — inert until coverage is declared).
+        # Write-then-gate: the escalation reason becomes the journal:decision
+        # the gate below requires.
+        await self._ensure_pm_decision(agent_id, task_id, reason)
         env = await self._check_pm_decision_required(
             "escalate_to_ceo", agent_id, task_id, t
         ) or await self._parent_acs_covered_envelope(

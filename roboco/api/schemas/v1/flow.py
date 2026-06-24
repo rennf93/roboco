@@ -174,6 +174,14 @@ class TriageRequest(BaseModel):
 
 class UnblockRequest(BaseModel):
     task_id: UUID
+    reason: str = Field(
+        ...,
+        min_length=10,
+        description=(
+            "Why the block is cleared — recorded as the PM's journal:decision "
+            "so no separate note(scope='decision') call is needed."
+        ),
+    )
     restore: bool = True
 
 

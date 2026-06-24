@@ -117,7 +117,14 @@ async def test_open_pr_pushes_and_opens_pr() -> None:
 
 
 @pytest.mark.asyncio
-async def test_open_pr_rejects_when_not_assigned() -> None:
+async def test_open_pr_reassigned_steers_to_give_me_work() -> None:
+    """A stale agent (task reassigned away) gets a clear not_authorized that
+    steers to give_me_work — NOT the owns_task tracing_gap it would retry.
+
+    The reassignment short-circuit runs before the spec gate, so the agent
+    never sees the misleading 'fixable precondition' framing that drove the
+    observed open_pr owns_task retry-loops.
+    """
     aid = uuid4()
     other = uuid4()
     tid = uuid4()
@@ -141,10 +148,48 @@ async def test_open_pr_rejects_when_not_assigned() -> None:
 
     git_svc.push_branch.assert_not_awaited()
     git_svc.create_pr.assert_not_awaited()
-    # Spec's PRECONDITION_OWNERSHIP surfaces as tracing_gap (owns_task missing)
-    # rather than the previous bespoke not_authorized message.
-    assert env.error == "tracing_gap"
-    assert env.missing == ["owns_task"]
+    assert env.error == "not_authorized"
+    assert "no longer assigned" in (env.message or "").lower()
+    assert "give_me_work" in (env.remediate or "")
+
+
+@pytest.mark.asyncio
+async def test_open_pr_empty_diff_steers_to_blocked_not_retry() -> None:
+    """An empty-diff subtask (branch has no commits vs base → GitHub 422
+    'No commits between') gets a terminal i_am_blocked steer, not a generic
+    'retry' invalid_state that loops the dev forever."""
+    aid = uuid4()
+    tid = uuid4()
+    t = MagicMock(
+        id=tid,
+        status="in_progress",
+        assigned_to=aid,
+        plan="x",
+        commits=[{"sha": "abc"}],
+        pr_number=None,
+        parent_task_id=None,
+        branch_name="feature/backend/abc12345",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.side_effect = [t, t]
+    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    _wire_savepoint(task_svc)
+    git_svc = AsyncMock()
+    git_svc.push_branch.return_value = ("feature/backend/abc12345", 1)
+    git_svc.create_pr.side_effect = Exception(
+        'GitHub API refused PR creation (422): {"message":"Validation Failed",'
+        '"errors":[{"message":"No commits between feature/backend/abc12345 and '
+        'feature/backend/abc12345--child"}]}'
+    )
+    deps = _make_deps(task=task_svc, git=git_svc)
+    c = Choreographer(deps)
+
+    env = await c.open_pr(aid, tid)
+
+    assert env.error == "invalid_state"
+    assert "no commits" in (env.message or "").lower()
+    assert "i_am_blocked" in (env.remediate or "")
+    assert "do not retry" in (env.remediate or "").lower()
 
 
 @pytest.mark.asyncio
