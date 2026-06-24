@@ -61,6 +61,30 @@ function prReviewBadge(task: Task): React.ReactNode {
   return <Badge className={`ml-2 ${v.cls} text-white`}>{v.label}</Badge>;
 }
 
+// The card background mirrors the PR reviewer's verdict, so a FAILED review reads
+// as red — not the neutral teal that made a failure look green/passing at a glance.
+function prReviewCardBg(task: Task): string {
+  const verdict = (
+    task.notes_structured as
+      | { pr_review?: { verdict?: string } }
+      | null
+      | undefined
+  )?.pr_review?.verdict;
+  const map: Record<string, string> = {
+    approved:
+      "bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-800",
+    passed:
+      "bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-800",
+    changes_requested:
+      "bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800",
+    failed: "bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800",
+  };
+  return (
+    (verdict ? map[verdict] : undefined) ??
+    "bg-teal-50 dark:bg-teal-950 border border-teal-200 dark:border-teal-800"
+  );
+}
+
 interface NoteCardProps {
   task: Task;
   field: NoteField;
@@ -332,7 +356,7 @@ export function TabNotes({ task }: TabNotesProps) {
         title="PR Reviewer Notes"
         icon={<GitPullRequest className="h-5 w-5" />}
         badge={prReviewBadge(task)}
-        bgClass="bg-teal-50 dark:bg-teal-950 border border-teal-200 dark:border-teal-800"
+        bgClass={prReviewCardBg(task)}
       />
 
       {/* Auditor Notes */}

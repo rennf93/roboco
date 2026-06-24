@@ -16,6 +16,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **Hitting the Claude session limit now parks the workforce instead of crash-looping it.** When the org's Claude usage ("5-hour") limit is reached, each agent container exits with a 429 rejection; the orchestrator was treating that like any crash and immediately respawning the agent straight back into the limit, over and over, across the whole fleet. It already parks the provider on a persistent server *overload* (529/500/503) and revives the parked work once it recovers — but that detection only matched the overload signatures, not the session-limit 429. The same park-and-resume break now also recognizes the session limit: the provider is parked, dispatch goes quiet, and the background probe loop brings the agents back automatically when the window resets — no churn, no wasted respawns.
 
+- **A failed PR review no longer looks green.** On a task's detail page, the "PR Reviewer Notes" card was painted a fixed teal/green background regardless of the review verdict, so a `Failed` review — red badge and all — sat inside a green card and could read as passing at a glance. The card background now mirrors the verdict the way the QA Notes card already does: red on a failed review, green on approved/passed, amber on changes-requested, and neutral before a verdict is in.
+
 ## [0.10.0] - 2026-06-23
 
 ### Added
