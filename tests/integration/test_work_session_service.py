@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -469,10 +469,11 @@ async def test_has_unpushed_commits_false_after_pr(ws_setup: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _second_agent(db_session: AsyncSession) -> AgentTable:
-    """A distinct agent to simulate a re-claim by someone else."""
+async def _second_agent(db_session: AsyncSession) -> UUID:
+    """Insert a distinct agent (re-claim by someone else); return its id."""
+    aid = uuid4()
     agent = AgentTable(
-        id=uuid4(),
+        id=aid,
         name="Dev2",
         slug=f"be-dev-{uuid4().hex[:8]}",
         role=AgentRole.DEVELOPER,
@@ -486,7 +487,7 @@ async def _second_agent(db_session: AsyncSession) -> AgentTable:
     )
     db_session.add(agent)
     await db_session.flush()
-    return agent
+    return aid
 
 
 @pytest.mark.asyncio
@@ -496,12 +497,12 @@ async def test_create_supersedes_other_agents_active_session(
     """A re-claim by a different agent abandons the stale session (no dup ACTIVE)."""
     svc = ws_setup["svc"]
     first = await svc.create(_payload(ws_setup))  # agent A
-    agent_b = await _second_agent(db_session)
+    agent_b_id = await _second_agent(db_session)
     second = await svc.create(
         WorkSessionCreate(
             project_id=ws_setup["project_id"],
             task_id=ws_setup["task_id"],
-            agent_id=agent_b.id,
+            agent_id=agent_b_id,
             branch_name=f"feature/x-{uuid4().hex[:6]}",
             base_branch="main",
             target_branch="main",
@@ -536,12 +537,12 @@ async def test_partial_unique_index_blocks_two_active_for_task(
     """The DB backstop: a second ACTIVE row for one task violates the index."""
     svc = ws_setup["svc"]
     await svc.create(_payload(ws_setup))  # one ACTIVE session
-    agent_b = await _second_agent(db_session)
+    agent_b_id = await _second_agent(db_session)
     # Bypass the service supersede and force a raw duplicate ACTIVE row.
     dup = WorkSessionTable(
         project_id=ws_setup["project_id"],
         task_id=ws_setup["task_id"],
-        agent_id=agent_b.id,
+        agent_id=agent_b_id,
         branch_name="feature/dup",
         base_branch="main",
         target_branch="main",

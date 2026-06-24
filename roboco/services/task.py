@@ -2095,6 +2095,31 @@ class TaskService(BaseService):
     # GIT WORK SESSION INTEGRATION
     # =========================================================================
 
+    async def _supersede_other_active_sessions(
+        self, task_id: UUID, keep_agent_id: UUID
+    ) -> None:
+        """Abandon any ACTIVE work session for a task owned by a different agent.
+
+        Enforces the single-active-per-task invariant at claim time: a re-claim
+        by a different agent (pool release, reaper unclaim, escalation redirect)
+        otherwise left the prior holder's ACTIVE row open, and the duplicate
+        ACTIVE rows crashed ``WorkSessionService.get_active_for_task`` with
+        ``MultipleResultsFound`` — the i_will_plan respawn-loop wedge.
+        """
+        stale = await self.session.execute(
+            select(WorkSessionTable).where(
+                and_(
+                    WorkSessionTable.task_id == task_id,
+                    WorkSessionTable.agent_id != keep_agent_id,
+                    WorkSessionTable.status == WorkSessionStatus.ACTIVE,
+                )
+            )
+        )
+        for prior in stale.scalars().all():
+            prior.status = WorkSessionStatus.ABANDONED
+            prior.ended_at = datetime.now(UTC)
+        await self.session.flush()
+
     async def _create_work_session_if_needed(
         self,
         task: TaskTable,
@@ -2170,23 +2195,10 @@ class TaskService(BaseService):
             return None
 
         # Single-active-per-task invariant: close any OTHER agent's stale ACTIVE
-        # session for this task before opening a new one. A re-claim by a
-        # different agent (pool release, reaper unclaim, escalation redirect)
-        # otherwise left duplicate ACTIVE rows that crashed get_active_for_task
-        # with MultipleResultsFound — the i_will_plan respawn-loop wedge.
-        stale = await self.session.execute(
-            select(WorkSessionTable).where(
-                and_(
-                    WorkSessionTable.task_id == task.id,
-                    WorkSessionTable.agent_id != agent_id,
-                    WorkSessionTable.status == WorkSessionStatus.ACTIVE,
-                )
-            )
-        )
-        for prior in stale.scalars().all():
-            prior.status = WorkSessionStatus.ABANDONED
-            prior.ended_at = datetime.now(UTC)
-        await self.session.flush()
+        # session for this task before opening a new one (a re-claim by a
+        # different agent otherwise left duplicate ACTIVE rows that crashed
+        # get_active_for_task with MultipleResultsFound — the respawn-loop wedge).
+        await self._supersede_other_active_sessions(cast("UUID", task.id), agent_id)
 
         # Determine target branch:
         # - For subtasks: merge into parent task's branch
