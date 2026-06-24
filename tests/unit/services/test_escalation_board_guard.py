@@ -20,7 +20,9 @@ import pytest
 from roboco.models.base import AgentRole, TaskStatus, TaskType, Team
 from roboco.services.task import (
     TaskService,
+    _board_cannot_own,
     _is_cell_team_task,
+    _is_coordination_task,
     _is_descendant_executable_task,
 )
 
@@ -117,8 +119,80 @@ def test_documentation_task_type_as_raw_string_is_flagged() -> None:
 
 
 # ---------------------------------------------------------------------------
+# _is_coordination_task (pure) — Main-PM coordination roots / root-subtasks
+# ---------------------------------------------------------------------------
+
+
+def test_main_pm_root_is_coordination_task() -> None:
+    # A top-level delivery coordination root (no parent, main_pm team). The two
+    # descendant predicates miss it (they require parent_task_id); this catches it.
+    task = MagicMock(parent_task_id=None, team=Team.MAIN_PM)
+    assert _is_coordination_task(task) is True
+    assert _board_cannot_own(task) is True
+
+
+def test_main_pm_root_subtask_is_coordination_task() -> None:
+    # A MegaTask root-subtask is parented under the umbrella but still main_pm.
+    task = MagicMock(parent_task_id=uuid4(), team=Team.MAIN_PM)
+    assert _is_coordination_task(task) is True
+
+
+def test_main_pm_team_as_raw_string_is_coordination_task() -> None:
+    task = MagicMock(parent_task_id=None, team="main_pm")
+    assert _is_coordination_task(task) is True
+
+
+def test_board_root_is_not_coordination_task() -> None:
+    # A board/product root (e.g. a product root the PO reviews) is board-ownable.
+    task = MagicMock(parent_task_id=None, team=Team.BOARD)
+    assert _is_coordination_task(task) is False
+    assert _board_cannot_own(task) is False
+
+
+def test_cell_root_is_not_coordination_task() -> None:
+    task = MagicMock(parent_task_id=None, team=Team.FRONTEND)
+    assert _is_coordination_task(task) is False
+
+
+# ---------------------------------------------------------------------------
 # apply_escalation board-role divert
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_apply_escalation_diverts_main_pm_coordination_root_from_board() -> None:
+    # The confirmed catch-22: a Main PM's i_am_blocked on its own coordination
+    # ROOT escalated up the chain to product-owner (a board role). The root is
+    # neither a descendant nor a cell task, so the old guard missed it and the
+    # whole root was reassigned to the board, which respawn-looped on a blocker it
+    # could not unblock. It must now divert to the pool instead.
+    svc = _service()
+    target_id = uuid4()
+    task = MagicMock(
+        id=uuid4(),
+        parent_task_id=None,
+        team=Team.MAIN_PM,
+        task_type=TaskType.CODE,
+        assigned_to=uuid4(),
+        blocker_raised_by=None,
+        status=TaskStatus.IN_PROGRESS,
+    )
+    _bind(svc, "_is_board_advisory_agent", AsyncMock(return_value=True))
+    release_mock = AsyncMock()
+    _bind(svc, "_release_code_task_to_pool", release_mock)
+
+    await svc.apply_escalation(
+        task=task,
+        target_agent_id=target_id,
+        escalator_slug="main-pm",
+        target_slug="product-owner",
+        reason="root blocked: branch behind master",
+    )
+
+    # Diverted — NOT blocked-and-reassigned onto the board.
+    release_mock.assert_awaited_once()
+    assert task.status == TaskStatus.IN_PROGRESS
+    assert task.assigned_to != target_id
 
 
 @pytest.mark.asyncio

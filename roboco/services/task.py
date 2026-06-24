@@ -140,6 +140,43 @@ def _is_cell_team_task(task: TaskTable) -> bool:
     return str(team_value) in _CELL_TEAMS
 
 
+def _is_coordination_task(task: TaskTable) -> bool:
+    """True for a Main-PM-owned coordination task (delivery root or batch
+    root-subtask).
+
+    A board/advisory role can no more OWN a coordination task than a cell task:
+    it has no verb to delegate, submit, unblock, or complete it. The escalation
+    chain points main-pm at product-owner, so a Main PM's ``i_am_blocked`` /
+    escalate on its own coordination root used to reassign the WHOLE root to the
+    board — which can only notify / triage / i_am_idle. The blocker dispatcher
+    then respawned that board role forever to "resolve" a blocker it physically
+    cannot unblock (a catch-22 that burned thousands of tool calls on a single
+    root). Keyed on the ``main_pm`` team, which is set on every coordination root
+    and MegaTask root-subtask, so it holds whether the task is a top-level root
+    or parented under an umbrella. The two predicates above both require a
+    descendant (``parent_task_id`` set), so a top-level coordination root slipped
+    through them — this closes that gap.
+    """
+    team_value = getattr(task.team, "value", task.team)
+    return str(team_value) == Team.MAIN_PM.value
+
+
+def _board_cannot_own(task: TaskTable) -> bool:
+    """True when a board/advisory role must NOT become the owner of ``task``.
+
+    The single invariant behind the escalation / reassign / revival board guards:
+    a board role (product-owner / head-marketing / auditor) has no verb to build,
+    document, delegate, submit, unblock, or complete delivery work. It covers
+    cell-executed descendants, a cell's own coordination/planning descendants,
+    AND Main-PM coordination roots — every task shape a board role cannot drive.
+    """
+    return (
+        _is_descendant_executable_task(task)
+        or _is_cell_team_task(task)
+        or _is_coordination_task(task)
+    )
+
+
 # Notes fields (dev_notes, qa_notes, quick_context) are append-only —
 # every revision cycle adds more. Cap total size so a task that cycles
 # dozens of times doesn't grow into megabytes. When we exceed the cap,
@@ -4389,16 +4426,21 @@ class TaskService(BaseService):
         and the orchestrator re-spawns them. Without this, escalation
         loses the dev's identity permanently.
 
-        Invariant: a descendant executable task (code / documentation /
-        design) is NEVER assigned to a board/advisory role (they cannot own
-        cell-executed work). Such an escalation is diverted to a pool release so
-        a role-matched cell agent reclaims it. Enforced here — the single write
-        primitive — so both the gateway ``escalate`` verb and the HTTP escalate
-        route are covered.
+        Invariant: a board/advisory role is NEVER assigned a task it cannot own
+        — a descendant executable task (code / documentation / design), a cell's
+        own coordination/planning descendant, OR a Main-PM coordination root
+        (see ``_board_cannot_own``). They have no verb to build, delegate,
+        unblock, or complete such work. The escalation chain points main-pm at
+        product-owner, so without the coordination-root arm a Main PM's
+        ``i_am_blocked`` on its own root reassigned the whole root to the board,
+        which then respawn-looped on a blocker it could not resolve. Such an
+        escalation is diverted to a pool release so a role-matched agent reclaims
+        it. Enforced here — the single write primitive — so both the gateway
+        ``escalate`` verb and the HTTP escalate route are covered.
         """
-        if (
-            _is_descendant_executable_task(task) or _is_cell_team_task(task)
-        ) and await self._is_board_advisory_agent(target_agent_id):
+        if _board_cannot_own(task) and await self._is_board_advisory_agent(
+            target_agent_id
+        ):
             await self._release_code_task_to_pool(
                 task=task,
                 escalator_slug=escalator_slug,
@@ -5100,9 +5142,7 @@ class TaskService(BaseService):
         """
         owner = cast("Any", task.claimed_by or task.assigned_to)
         needs_rehome = owner is None or await self._is_board_advisory_agent(owner)
-        if needs_rehome and (
-            _is_descendant_executable_task(task) or _is_cell_team_task(task)
-        ):
+        if needs_rehome and _board_cannot_own(task):
             await self._divert_owned_task_to_pool(
                 task,
                 note=(
@@ -6723,7 +6763,7 @@ class TaskService(BaseService):
         # guard never fires for them.
         if (
             new_assignee is not None
-            and (_is_descendant_executable_task(task) or _is_cell_team_task(task))
+            and _board_cannot_own(task)
             and await self._is_board_advisory_agent(new_assignee)
         ):
             await self._divert_owned_task_to_pool(
@@ -6769,9 +6809,9 @@ class TaskService(BaseService):
             return None
         # Invariant backstop (mirrors `reassign`): an active claim must not be
         # handed to a board/advisory role on a cell task — divert to the pool.
-        if (
-            _is_descendant_executable_task(task) or _is_cell_team_task(task)
-        ) and await self._is_board_advisory_agent(new_assignee):
+        if _board_cannot_own(task) and await self._is_board_advisory_agent(
+            new_assignee
+        ):
             await self._divert_owned_task_to_pool(
                 task,
                 note=(
@@ -7262,9 +7302,10 @@ class TaskService(BaseService):
             task,
             note=(
                 f"\n\n[ESCALATION REDIRECTED] {escalator_slug} escalated this"
-                f" executable task toward {blocked_target_slug} (a board/advisory"
-                f" role that cannot own cell-executed work). Released to the pool"
-                f" for a role-matched claim instead."
+                f" task toward {blocked_target_slug} (a board/advisory role that"
+                f" cannot own delivery / coordination work — no build, delegate,"
+                f" unblock, or complete verb). Released to the pool for a"
+                f" role-matched claim instead."
                 f"\nReason: {reason}"
             ),
         )
