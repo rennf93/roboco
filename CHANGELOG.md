@@ -18,6 +18,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **A failed PR review no longer looks green.** On a task's detail page, the "PR Reviewer Notes" card was painted a fixed teal/green background regardless of the review verdict, so a `Failed` review — red badge and all — sat inside a green card and could read as passing at a glance. The card background now mirrors the verdict the way the QA Notes card already does: red on a failed review, green on approved/passed, amber on changes-requested, and neutral before a verdict is in.
 
+- **The CEO and other human roles no longer get spammed with agent "learnings."** Whenever an agent recorded a learning, RoboCo broadcast it as a knowledge-share notification — and the recipient query swept in the human roles too (the CEO, plus the human-driven prompter and secretary). Agent knowledge-sharing is a signal for *agents*; in a human's inbox it is just noise. Those roles are now excluded from learning broadcasts.
+
 ## [0.10.0] - 2026-06-23
 
 ### Added
