@@ -894,6 +894,19 @@ class GitService(BaseService):
             timeout=_network_git_timeout(),
         )
 
+        # The dev workspace is one persistent clone shared across this dev's
+        # tasks, so a finished/abandoned prior task can leave it dirty and on a
+        # sibling branch. Without a clean tree the base + feature checkouts below
+        # fail; and because this git work is a side-effect that runs AFTER the
+        # claim's DB transition has committed, a failed checkout leaves the
+        # workspace on the wrong branch while the task is already marked
+        # assigned — so the dev's next commit is rejected with BRANCH_MISMATCH.
+        # This runs only on a FRESH claim (resume short-circuits in _dev_reentry
+        # before reaching here), so any uncommitted changes are abandoned cruft
+        # from a finished task — safe to discard. `reset --hard` clears tracked
+        # changes; the gitignored .venv (and other ignored files) are untouched.
+        await self._run_git(workspace, ["reset", "--hard"], check=False)
+
         base_branch = await self._checkout_base_with_fallback(
             workspace, base_branch, default_branch, task_id
         )

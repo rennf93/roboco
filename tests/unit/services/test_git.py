@@ -629,8 +629,15 @@ async def test_create_branch_keeps_existing_branch_that_has_work() -> None:
     calls = await _run_create_branch_with_existing_branch(
         svc, "feature/frontend/abc12345--def67890", unique_commits="3"
     )
-    assert not any(c[:2] == ["reset", "--hard"] for c in calls), (
-        "a branch with real work must never be reset"
+    # The fresh-claim tree-clean (a BARE `reset --hard`) is expected — it discards
+    # only uncommitted cruft from a prior task in the shared clone, never commits.
+    assert ["reset", "--hard"] in calls
+    # But the RE-POINT reset (`reset --hard <base>`, which throws commits away)
+    # must NEVER fire for a branch carrying its own work.
+    # `c[2:]` truthy == there is a ref arg after "reset --hard" → it re-points.
+    repoint_resets = [c for c in calls if c[:2] == ["reset", "--hard"] and c[2:]]
+    assert not repoint_resets, (
+        "a branch with real work must never be re-pointed onto base"
     )
 
 

@@ -22,6 +22,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **A gateway verb on a vanished task/agent fails cleanly instead of crashing cryptically.** The verb runner's atomic steps dereference `task.id` / `agent.id` with no guard, so a verb invoked when the task or agent could not be resolved (e.g. a task forced into an unexpected state out-of-band) crashed with an opaque `'NoneType' object has no attribute 'id'`. The runner now fails fast with an actionable `INVALID_STATE` error that tells the agent to re-fetch and re-issue its claim verb.
 
+- **A dev claiming a new task no longer gets stuck on `BRANCH_MISMATCH`.** Each developer has one persistent clone shared across all their tasks, so a finished or abandoned prior task could leave the clone dirty and sitting on a sibling task's branch. The claim's git work (creating/checking out the new task's branch) runs as a side-effect *after* the claim's DB transition commits — so when the checkout failed on that dirty tree, the task was already marked assigned while the workspace stayed on the wrong branch, and the dev's next commit was rejected with `BRANCH_MISMATCH` (stalling, then blocking, the task). The claim now does a `git reset --hard` to clean the tree before the checkouts. It runs only on a fresh claim (resume short-circuits earlier), so the discarded changes are abandoned cruft from a finished task — never committed work, and never the gitignored `.venv`.
+
 ## [0.10.0] - 2026-06-23
 
 ### Added
