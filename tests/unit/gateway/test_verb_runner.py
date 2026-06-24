@@ -54,6 +54,25 @@ async def test_runner_runs_composed_actions_in_order() -> None:
 
 
 @pytest.mark.asyncio
+async def test_runner_rejects_none_task_or_agent() -> None:
+    """A None task/agent fails loud with a clean error, not a NoneType crash.
+
+    The atomic handlers dereference task.id / agent.id; without the guard a
+    missing one crashes with "'NoneType' object has no attribute 'id'" (observed
+    when a task was forced into an unexpected state out-of-band).
+    """
+    runner = VerbRunner(task_service=AsyncMock(), git_service=AsyncMock())
+    ctx = spec.Context(plan="p")
+    agent = MagicMock(id=uuid4(), role="cell_pm")
+    task = MagicMock(id=uuid4(), status="in_progress")
+
+    with pytest.raises(ValueError, match="INVALID_STATE"):
+        await runner.run_intent("i_will_plan", None, agent, ctx)
+    with pytest.raises(ValueError, match="INVALID_STATE"):
+        await runner.run_intent("i_will_plan", task, None, ctx)
+
+
+@pytest.mark.asyncio
 async def test_runner_runs_side_effects_after_db_commit() -> None:
     """For open_pr: composes is empty; side_effects (push_branch, create_pr) run."""
     task_svc = AsyncMock()

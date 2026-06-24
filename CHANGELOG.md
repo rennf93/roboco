@@ -20,6 +20,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **The CEO and other human roles no longer get spammed with agent "learnings."** Whenever an agent recorded a learning, RoboCo broadcast it as a knowledge-share notification — and the recipient query swept in the human roles too (the CEO, plus the human-driven prompter and secretary). Agent knowledge-sharing is a signal for *agents*; in a human's inbox it is just noise. Those roles are now excluded from learning broadcasts.
 
+- **A gateway verb on a vanished task/agent fails cleanly instead of crashing cryptically.** The verb runner's atomic steps dereference `task.id` / `agent.id` with no guard, so a verb invoked when the task or agent could not be resolved (e.g. a task forced into an unexpected state out-of-band) crashed with an opaque `'NoneType' object has no attribute 'id'`. The runner now fails fast with an actionable `INVALID_STATE` error that tells the agent to re-fetch and re-issue its claim verb.
+
 ## [0.10.0] - 2026-06-23
 
 ### Added
