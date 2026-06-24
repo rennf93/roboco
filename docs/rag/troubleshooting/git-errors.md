@@ -49,6 +49,28 @@ If your workspace is dirty, the verb returns an envelope telling you to either `
 
 **Fix:** `commit(message=..., files=...)` at least once, then call `open_pr(task_id)` again.
 
+## Branch Behind Its Base / master
+
+**Symptom:** `roboco_git_status` shows `behind > 0` against the base branch when you go to submit.
+
+**Cause:** The base (cell branch or master) advanced after your branch was cut, so your branch is stale.
+
+**Fix:** You have no rebase verb — do **not** create a rebase task or improvise with shell git. Bringing the branch current is a platform/PM action. Escalate: devs `i_am_blocked(reason="branch behind base — needs rebase")`; PMs `escalate_up(...)`.
+
+## src refspec does not match any (during open_pr)
+
+**Error:** `src refspec '<branch>' does not match any`
+
+**Cause:** A re-provisioned or shared clone can be missing the local branch ref even though the commits are already on origin.
+
+**Fix:** Just call `open_pr(task_id)` again — the gateway recovers the ref from origin, or returns an explicit "unclaim and re-claim to rebuild" instruction. Follow whichever the envelope gives you; don't switch branches by hand.
+
+## Updates were rejected / non-fast-forward (on push)
+
+**Cause:** Your branch is behind its remote, so the push can't fast-forward.
+
+**Fix:** Escalate rather than improvise — devs `i_am_blocked(...)`, PMs `escalate_up(...)`. There is no agent-layer pull/rebase to reconcile it.
+
 ## NO_PR on pass / fail
 
 **Cause:** The PR was never created — usually because `open_pr(task_id)` did not run cleanly.

@@ -118,6 +118,8 @@ Note: the Next.js control panel now lives at `roboco/panel/` inside this repo (n
 
 On a Python workspace, `WorkspaceService` runs `uv sync --extra dev` (not plain `uv sync`) so the clone's `.venv` carries the full gate toolchain (ruff/mypy/xenon/pytest) — the lint/type/complexity tools live in the `dev` **extra**, which plain `uv sync` skips. Without it an agent's `make quality` fails on `ruff: command not found` and the agent can't gate its own work.
 
+Because the clone is shared across a dev's tasks, a **fresh claim** git-resets the workspace to a clean tree (`git reset --hard`) before checking out the new task's branch — discarding abandoned uncommitted cruft from a finished task while preserving all commits and the gitignored `.venv`. A resume short-circuits before this, so committed work is never reset.
+
 ## Git Workflow
 
 ### Branch Naming Convention
@@ -154,6 +156,10 @@ When a developer claims a task, a **WorkSession** is created that tracks:
 - Files modified
 - PR number/URL when created
 - Merge status and who merged
+
+A task has at most **one active WorkSession**: re-claiming a task (pool release, reaper unclaim, escalation redirect) supersedes any prior agent's stale active session, enforced both at the service layer and by a DB partial-unique index (migration 047). Without it, duplicate active sessions made the one-row active lookup raise and crashed the claim/plan flow into a respawn loop.
+
+A developer's clone is shared across all their tasks, so push and PR-head operate on the task's **recorded branch by name**, independent of the clone's current checkout — fixing the `BRANCH_MISMATCH` / "No commits between" failures when the clone was parked on a later task's branch. A missing local task-branch ref is first recovered from `origin/<branch>` before the push-by-name.
 
 ### Git Credentials
 
@@ -243,6 +249,8 @@ All status transitions are validated through the enforcement layer. Key restrict
 
 **Unclaim Operation**: Agents can release claimed tasks back to the pool using `unclaim()`. This transitions `claimed` → `pending` and optionally reassigns to another agent.
 
+**Board never owns a coordination root**: a Board role (Product Owner / Head of Marketing) is never assigned a Main-PM coordination root (delivery root or MegaTask root-subtask) via escalation or reassignment — Board roles have no `unblock` verb, so such a hand-off would deadlock. The transition is diverted to the pool for a role-matched Main-PM reclaim.
+
 ### Git Integration Requirements
 
 All tasks follow git workflow. PR is created BEFORE QA review (not after) so QA can review the real PR diff on GitHub and downstream PM/CEO approval chain off a PR that already exists:
@@ -309,6 +317,8 @@ commits: list[CommitRef] # All commits made for this task
 
 The Auditor has silent read access to ALL channels.
 
+Agent learnings (`note` scope='learning') broadcast as knowledge-share notifications only to other **agents** — the human / human-driven roles (CEO, prompter, secretary) are excluded, since agent knowledge-sharing is noise in a human's inbox.
+
 ## Key Principles
 
 1. **Everything is a task** - All work is tracked and documented
@@ -343,7 +353,7 @@ Each agent gets a **spawn manifest** at `/app/tool-manifest.json` listing the ve
 | prompter      | (none beyond `i_am_idle` — not a delivery-lifecycle role; intake interviewer, human-only)        |
 | secretary     | (none beyond `i_am_idle` — human-only chief-of-staff; reads company state + runs gated CEO directives) |
 
-Content tools (do_server) — most roles: `commit`, `note`, `say`, `dm`, `evidence`. Auditor is restricted to `note` (scope=reflect) + `evidence`. The `pr_reviewer` posts its change-request on the PR itself (no agent comms). The `prompter` (intake) and `secretary` are restricted to `note` + `evidence` — human-only, no `say`/`dm`/`notify`.
+Content tools (do_server) — most roles: `commit`, `note`, `say`, `dm`, `evidence`. Auditor is restricted to `note` (scope=reflect) + `evidence`. The `pr_reviewer` posts its change-request on the PR itself (no agent comms). The `prompter` (intake) and `secretary` are restricted to `note` + `evidence` — human-only, no `say`/`dm`/`notify`. The `note`/journal write returns as soon as the entry is persisted; RAG indexing (Ollama embedding) runs fire-and-forget, so the tool no longer times out under concurrent load.
 
 ### MCP servers running per agent container
 
@@ -359,7 +369,7 @@ Every verb returns a standardized **Envelope**:
 - ok: `{status, task_id, next, evidence?, context_briefing}`
 - error: `{error, message, remediate, missing}`
 
-The `next` field tells the agent what to call next; the `remediate` field on errors tells them exactly how to fix and retry. Agents should not guess state — trust the response.
+The `next` field tells the agent what to call next; the `remediate` field on errors tells them exactly how to fix and retry. Agents should not guess state — trust the response. The verb runner re-checks the task after each composed atomic action and, on a concurrent mid-verb state change, fails fast with a clean `INVALID_STATE` (re-fetch + re-issue) rather than crashing on a `None` dereference.
 
 ## Agent Providers
 
@@ -373,7 +383,7 @@ Agent backends are pluggable. `roboco/llm/providers/` defines an `AgentProvider`
 
 **Self-healing CI loop (default-off).** RoboCo can watch its own repository's CI (a single named workflow) and, on a detected regression, open a fix task that is held out of dispatch until the CEO approves it (it terminates at `awaiting_ceo_approval`), then dispatch it through the normal delivery flow. It is dormant by default and armed by `ROBOCO_SELF_HEAL_ENABLED` plus a second opt-in `ROBOCO_SELF_HEAL_ORIGINATE_ENABLED`; origination is bounded by `ROBOCO_SELF_HEAL_MAX_OPEN_TASKS` / `_MAX_PER_CYCLE` so it can't flood the backlog. It never auto-merges or self-deploys (`roboco/services/self_heal_engine.py`).
 
-**Feature flags / company-in-a-box.** Env-gated, default-off subsystems toggle from the panel's Settings → Feature Flags card (`panel/src/components/settings/feature-flags-card.tsx`) instead of hand-editing env: web research (`ROBOCO_RESEARCH_ENABLED`), the strategy engine (`ROBOCO_STRATEGY_ENGINE_ENABLED`), pitch provisioning (`ROBOCO_PROVISIONING_*`), external / internal PR review, the agent-runtime toolchain match (`ROBOCO_TOOLCHAIN_MATCH_ENABLED`), the architectural-conventions standard (`ROBOCO_CONVENTIONS_ENABLED`), and the self-heal flags above. A toggle persists in the settings store and takes effect on the next backend restart; an unset flag falls back to its environment / config default.
+**Feature flags / company-in-a-box.** Env-gated, default-off subsystems toggle from the panel's Settings → Feature Flags card (`panel/src/components/settings/feature-flags-card.tsx`) instead of hand-editing env: web research (`ROBOCO_RESEARCH_ENABLED`), the strategy engine (`ROBOCO_STRATEGY_ENGINE_ENABLED`), pitch provisioning (`ROBOCO_PROVISIONING_*`), external / internal PR review, the agent-runtime toolchain match (`ROBOCO_TOOLCHAIN_MATCH_ENABLED`), the architectural-conventions standard (`ROBOCO_CONVENTIONS_ENABLED`), gateway-health recovery (`ROBOCO_GATEWAY_HEALTH_ENABLED`), and the self-heal flags above. A toggle persists in the settings store and takes effect on the next backend restart; an unset flag falls back to its environment / config default.
 
 ## Architectural Conventions Standard
 
@@ -491,7 +501,7 @@ Server-side events reach these sockets through `roboco/api/websocket_bridge.py`,
 ### Rate limiting & usage
 
 - **Provider rate limits** are tracked in Redis (`RateLimitStateTracker`, `roboco/services/gateway/`). On a provider 429 an agent calls `i_am_blocked(reason="rate_limited")`; the spawn gate then **queues** (never drops) further work for that provider, and a background probe-and-resume loop in the orchestrator clears the limit and revives parked agents when it lifts.
-- **Provider overloads** reuse the same park-and-probe break. A persistent model-API overload (HTTP 529 / 500 / 503 — the SDK already retries transient ones) parks the provider exactly like a 429 instead of crash-retrying the agent straight back into the overload and burning tokens; the overload is detected orchestrator-side from the dead container's log markers, and the background loop revives the parked work when it recovers. Gated by `ROBOCO_OVERLOAD_BREAK_ENABLED` (default-on).
+- **Provider overloads** reuse the same park-and-probe break. A persistent model-API overload (HTTP 529 / 500 / 503 — the SDK already retries transient ones) parks the provider exactly like a 429 instead of crash-retrying the agent straight back into the overload and burning tokens; the overload is detected orchestrator-side from the dead container's log markers, and the background loop revives the parked work when it recovers. The same break also catches the **Claude session-limit** 429 (the org's 5-hour usage window): an agent exiting with a 0-token session-limit rejection parks the provider and is auto-revived when the window resets, instead of fleet-wide crash-respawning straight back into the limit. Gated by `ROBOCO_OVERLOAD_BREAK_ENABLED` (default-on).
 - **Gateway-health recovery** closes a blind spot in the stale-claim reaper: the heartbeat is bumped only by gateway verbs, so a broken-but-alive agent (a corrupted `/app/.venv` so no gateway tool imports) goes heartbeat-stale yet keeps its container up, and the reaper's live-skip would protect it forever. On a stale-heartbeat live container the reaper now probes the gateway out-of-band (`_probe_gateway_health` → `docker exec` the gateway venv imports) and, once broken past `ROBOCO_GATEWAY_HEALTH_GRACE_SECONDS` (a transient probe miss is tolerated), kills + evicts it (`_maybe_recover_broken_gateway`) so it falls through to release + respawn; healthy or inconclusive probes spare it. Gated by `ROBOCO_GATEWAY_HEALTH_ENABLED` (default-on). It is the third leg beside the shipped bash-guard `/app` block (prevents the self-corruption) and the reaper Docker-liveness fallback (stops over-reaping live containers).
 - **PM coordinator concurrency.** A Main / Cell PM plans and delegates many root tasks in parallel — the actual work then runs in the delegated children/cells, not in the PM's own hands. The claim-time concurrency guards that keep a *developer* to one task at a time (`already_active` / `paused`, in `roboco/services/gateway/claim_guards.py`) are therefore **skipped for the coordinator PM roles** (`_COORDINATOR_ROLES = {main_pm, cell_pm}`, consulted in `_run_claim_guards`); only a genuine upstream **sequence dependency** (`unmet_dependency`, which parks the task back to `pending`) holds a PM's root back. Without this a single PM that claimed one root could never plan a second — it thrashed between its claimed roots and respawned forever, burning tokens for zero progress (the live `i_am_idle`-auto-paused-umbrella deadlock). The `paused` guard also excludes the target task itself, so a PM re-entering its own paused umbrella never self-blocks.
 - **Token usage** is captured per agent session from the Claude Code transcript via the SDK server's `/usage/sync` (hook → orchestrator finalize → `agent_spawn_sessions` → `daily_usage_rollups` → dashboard). Cost uses provider-aware pricing in `roboco/billing/pricing.py` (Anthropic priced; local/Ollama intentionally `$0`). The token sweep also publishes `USAGE_SNAPSHOT` to `/ws/system`, so the dashboard's "Token Usage & Cost" panel updates live and falls back to HTTP polling when the stream is down.

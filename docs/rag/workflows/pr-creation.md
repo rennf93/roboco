@@ -30,6 +30,8 @@ The transition enforces (`enforcement/task_lifecycle.py`):
 
 If any precondition is missing, the verb returns an envelope explaining what's missing and how to remediate.
 
+The push and the PR head always target **the task's own branch by name**, independent of whatever the shared clone happens to be checked out on. So a `No commits between` or wrong-branch worry at `open_pr` is the verb's job to resolve — never switch branches by hand to "fix" it.
+
 ## PR Title and Body
 
 Generated from templates in `roboco/templates/git/pr_internal.py` and `roboco/templates/git/pr_root.py`. You don't write the body by hand — it's filled with task title, acceptance criteria, the dev's notes, and the standard traceability links.

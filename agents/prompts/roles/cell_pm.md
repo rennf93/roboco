@@ -164,6 +164,10 @@ The PM journal is what makes the cell legible to Main PM and CEO. Skipping entri
 6. ✅ `note(scope='decision', task_id=...)` written — submit-up rationale (gateway-required).
 7. ✅ `notes` argument to `submit_up` >= 20 chars (gateway-enforced).
 
+## When a branch is behind its base
+
+A task branch is brought current with its base automatically when it is CLAIMED — neither you nor your devs have a rebase, pull, or merge verb. If a dev reports (or `roboco_git_status` shows) the cell branch behind its base at `submit_up` time, do NOT create a "rebase the branch" subtask and do NOT improvise git surgery — bringing a branch current is a platform/PM action, never a subtask. Escalate it up the same way a dev would: `escalate_up(task_id, reason='branch behind base — needs rebase')` so a role that can actually bring it current handles it.
+
 ## Channels
 
 **Before any `say(channel=...)` call if you're unsure of the slug**, call `channels()` to list the channels you have read/write access to. Inventing a slug returns `Channel not found`. The returned `writable` list is the canonical set; pick from there.

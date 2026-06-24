@@ -8,7 +8,8 @@ When something goes wrong, the failure is almost always one of a handful of thin
 |---------|-------------------|-----|
 | Agents spawn but do nothing useful (tool-discovery churn) | The role's tool-manifest didn't mount; the agent falls back to discovering verbs | Check the manifest mount (below) |
 | Agent containers respawn in a loop, MCP servers stuck "pending" | MCP server launched without `--no-sync` against a workspace clone | Already fixed in the orchestrator; verify your image is current (below) |
-| A provider's agents go quiet all at once | The provider is **parked-and-probing** after a 429/overload — not hung | Wait; it self-resumes. See [Resilience](../models/resilience.md) |
+| A provider's agents go quiet all at once | The provider is **parked-and-probing** after a 429 / overload / session-limit — not hung | Wait; it self-resumes. See [Resilience](../models/resilience.md) |
+| A task sits **blocked: "branch behind base / needs rebase"** | The agent's branch fell behind its base while it worked; there is no agent-layer rebase verb, so the agent escalates instead of improvising | Rebase it yourself from the panel **Git** tab (below) |
 | KB / `ask_mentor` returns nothing | Ollama unhealthy or models not pulled | Check `ollama-init` logs (below) |
 | Agent containers exit immediately | `~/.claude` not mounted, or a Grok token expired | Check the mount / refresh the token (below) |
 | Clone fails, agent can't reach the repo | Missing or invalid project PAT, or HTTPS URL with no token | Set the project token (below) |
@@ -31,7 +32,7 @@ The fix is already in the code: every MCP server is launched with `uv run --no-s
 
 ## A "quiet" provider is parked, not hung
 
-If every agent on one provider goes silent at the same moment, it is almost never a crash. On a provider 429, or a persistent overload (HTTP 529/500/503), RoboCo **parks** that provider's work and runs a background probe that resumes it the moment the provider recovers — it does not crash-retry into the wall and burn tokens. You'll see an amber banner in the panel; the work revives on its own.
+If every agent on one provider goes silent at the same moment, it is almost never a crash. On a provider 429, a persistent overload (HTTP 529/500/503), or a Claude session-limit (the rolling 5-hour usage window), RoboCo **parks** that provider's work and runs a background probe that resumes it the moment the provider recovers — it does not crash-retry into the wall and burn tokens. You'll see an amber banner in the panel; the work revives on its own.
 
 !!! note "Don't restart to 'unstick' it"
     Restarting the orchestrator throws away the park-and-probe state and the parked agents' context. Leave it alone — it self-heals. The full mechanism, the banner, and the `ROBOCO_OVERLOAD_BREAK_ENABLED` flag are documented in [Resilience](../models/resilience.md).
@@ -72,6 +73,10 @@ When the orchestrator won't come up at all on a fresh deploy:
 - **`ROBOCO_ENCRYPTION_KEY` must be set.** It defaults to empty in config, but the orchestrator refuses to start without it. Generate one with `python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'` and set it in your `.env`. It is load-bearing and must never change after first use.
 - **Migrations.** Schema changes ship as Alembic migrations under `alembic/versions/`. The API applies them on startup (and falls back to `create_all` on a fresh DB), but after pulling a change that adds a migration you can apply it explicitly with `docker compose exec orchestrator alembic upgrade head`.
 - **Startup is slow on purpose.** The FastAPI lifespan does ~30–60s of document indexing before the API answers, and the orchestrator polls `/health` for up to 120s before starting its dispatch loop. An "All connection attempts failed" early in the logs usually just means a dependent service hadn't finished its healthcheck yet — give the startup sequence time before treating it as an error.
+
+## A task is stuck on a branch behind its base
+
+Agents have no rebase, pull, or merge verb — a task branch is brought current with its base only at claim. If the base (a cell branch, or master) moves forward while the agent works, the branch falls behind, and the agent escalates rather than improvising git surgery: the task surfaces **blocked** with a reason like *"branch behind base — needs rebase."* That escalation is by design — bringing the branch current is your call, not a unit of work the company decomposes. Rebase it from the panel **Git** tab — select the branch and **Rebase** it onto its base (or master) — and the task resumes on the next dispatch. (Automatic rebase-at-spawn, so a stale branch never reaches you at all, is on the roadmap.)
 
 ## Next
 

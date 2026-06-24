@@ -28,6 +28,7 @@ When a provider pushes back, retrying immediately just burns tokens against a wa
 
 - A **rate limit (HTTP 429)** parks the provider. The agent reports `i_am_blocked(reason="rate_limited")`, the spawn gate stops launching new work for that provider, and a background loop probes for recovery.
 - A **persistent overload (HTTP 529 / 500 / 503)** parks the same way. The model SDK already retries genuinely transient blips; a *persistent* overload is detected from the dead container's log markers and parked rather than crash-retried straight back into the overload. This is gated by `ROBOCO_OVERLOAD_BREAK_ENABLED`, which is **on by default**.
+- A **Claude session limit** — the org's rolling 5-hour usage window — parks the same way. Hitting it terminates the agent container with a 429 before the agent can report it, so RoboCo detects it from the dead container's exit (like an overload) and parks the provider instead of crash-respawning the whole fleet straight back into the limit; the queued work auto-revives when the window resets. Also covered by `ROBOCO_OVERLOAD_BREAK_ENABLED`.
 
 The crucial property: **work is queued, never dropped.** Parked tasks wait; the background probe-and-resume loop requires a real `2xx` from the provider before it lifts the park and revives the parked agents. When the provider recovers, the queued work flows again on its own — you don't restart anything.
 
