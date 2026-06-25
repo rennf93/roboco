@@ -123,3 +123,87 @@ class GitHubCITelemetrySource:
 def get_ci_telemetry_source(session: AsyncSession) -> GitHubCITelemetrySource:
     """Construct the GitHub-CI telemetry source bound to ``session``."""
     return GitHubCITelemetrySource(session)
+
+
+class MultiProjectCITelemetrySource:
+    """CI health for EVERY opted-in project (multi-repo CI-watch).
+
+    The fan-out generalization of ``GitHubCITelemetrySource``: instead of
+    RoboCo's single own repo, it reads the latest completed CI run for each
+    project the operator opted into (``ci_watch_enabled``), reusing the exact
+    hardened per-project ``GitService.get_latest_ci_conclusion`` (do NOT
+    reimplement — it carries the default-branch ``master`` fix, head-sha run
+    selection, and bounded retry).
+
+    Per-project isolation: one project's GitHub error or missing signal never
+    aborts the sweep and is never read as a passing build — that project simply
+    contributes no sample, so the engine opens no task for it (a None signal is
+    "unknown", not "green"). Only a real conclusion yields a sample: failing →
+    breaching (value 1.0), passing → non-breaching (0.0).
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def fetch(self, projects: list[object]) -> list[TelemetrySample]:
+        git = GitService(self.session)
+        default_workflow = settings.ci_watch_default_workflow.strip()
+        samples: list[TelemetrySample] = []
+        for project in projects:
+            slug = str(getattr(project, "slug", "") or "").strip()
+            if not slug:
+                continue
+            workflow = (
+                str(getattr(project, "ci_watch_workflow", None) or default_workflow)
+            ).strip() or None
+            sample = await self._sample_for(git, slug, workflow)
+            if sample is not None:
+                samples.append(sample)
+        return samples
+
+    async def _sample_for(
+        self, git: GitService, slug: str, workflow: str | None
+    ) -> TelemetrySample | None:
+        """One project's sample, or None on an unreadable/absent signal."""
+        try:
+            ci = await git.get_latest_ci_conclusion(slug, workflow=workflow)
+        except Exception as e:  # per-project isolation — never abort the sweep
+            logger.warning(
+                "ci-watch: telemetry fetch failed for project",
+                project_slug=slug,
+                error=str(e),
+            )
+            return None
+        if ci is None:
+            # No signal is not "green" — emit nothing so the engine opens no
+            # task (and never masks a failure as a pass). Loud so it's
+            # diagnosable, mirroring the self-heal source.
+            logger.warning(
+                "ci-watch: no CI signal for project — skipping",
+                project_slug=slug,
+                workflow=workflow,
+            )
+            return None
+        conclusion = (ci.get("conclusion") or "").lower()
+        failed = conclusion in FAILURE_CONCLUSIONS
+        run_name = ci.get("run_name") or ""
+        detail = f"CI on {slug}@{ci.get('branch')} concluded '{conclusion}'"
+        if run_name:
+            detail += f" ({run_name})"
+        return TelemetrySample(
+            signal_name=f"ci_conclusion:{slug}",
+            value=1.0 if failed else 0.0,
+            threshold=1.0,
+            window="latest_completed_run",
+            repo_hint=slug,
+            observed_at=str(ci.get("completed_at") or ""),
+            raw_ref=str(ci.get("run_url") or ""),
+            detail=detail,
+        )
+
+
+def get_multi_ci_telemetry_source(
+    session: AsyncSession,
+) -> MultiProjectCITelemetrySource:
+    """Construct the multi-project CI-watch telemetry source bound to ``session``."""
+    return MultiProjectCITelemetrySource(session)
