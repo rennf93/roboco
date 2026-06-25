@@ -73,6 +73,38 @@ pnpm lint
 pnpm typecheck
 ```
 
+## Type Narrowing and mypy
+
+When you assign `None` to an attribute inside a test function, mypy narrows that attribute's type to `None`, and does **not** invalidate this narrowing after a function call — even when the called function takes the object as `Any` or modifies it.
+
+**Problem:** This causes mypy to treat subsequent assertions as unreachable, failing the quality gate.
+
+```python
+# ❌ BAD: mypy narrows notes to None and treats the assertion as unreachable
+def test_example() -> None:
+    t = _Task()
+    t.notes = None  # mypy narrows type to None
+    process(t)      # Even though process may write to t.notes
+    assert t.notes is not None  # [unreachable] — mypy sees this as always False
+```
+
+**Solution:** Use a helper class whose `__init__` declares the attribute with its full union type, so mypy uses the declared type (not a narrowed literal) when accessed in your test:
+
+```python
+# ✅ GOOD: Annotation-typed class preserves union type
+class _TaskWithNoNotes:
+    """Variant where notes starts as None (no prior state)."""
+    
+    def __init__(self) -> None:
+        self.id = uuid4()
+        self.notes: dict[str, Any] | None = None  # Declared as union, not narrowed
+        
+def test_example() -> None:
+    t = _TaskWithNoNotes()  # Use the helper instead
+    process(t)
+    assert t.notes is not None  # ✅ Reachable — mypy sees the union type
+```
+
 ## Quality Gates
 
 All tests MUST pass before:
