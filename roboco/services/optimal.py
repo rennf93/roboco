@@ -40,12 +40,14 @@ from roboco.services.optimal_brain.indexes import (
     ErrorsIndexPlugin,
     JournalsIndexPlugin,
     LearningsIndexPlugin,
+    PlaybooksIndexPlugin,
     ReviewsIndexPlugin,
     StandardsIndexPlugin,
 )
 from roboco.services.optimal_brain.indexes.learnings import (
     RecordLearningParams as LearningParams,
 )
+from roboco.services.optimal_brain.indexes.playbooks import IndexPlaybookParams
 from roboco.services.optimal_brain.indexes.reviews import (
     RecordReviewParams as ReviewParams,
 )
@@ -144,6 +146,7 @@ PLUGIN_REGISTRY: dict[IndexType, type[BaseIndexPlugin]] = {
     IndexType.DECISIONS: DecisionsIndexPlugin,
     IndexType.REVIEWS: ReviewsIndexPlugin,
     IndexType.LEARNINGS: LearningsIndexPlugin,
+    IndexType.PLAYBOOKS: PlaybooksIndexPlugin,
 }
 
 
@@ -840,6 +843,36 @@ class OptimalService:
                 "entry_id": str(params.entry_id) if params.entry_id else None,
                 "agent_id": str(params.agent_id) if params.agent_id else None,
                 "entry_type": params.entry_type,
+                "tags": params.tags,
+            },
+        )
+
+    async def index_playbook(self, params: IndexPlaybookParams) -> None:
+        """Index an approved playbook into the PLAYBOOKS index (best-effort)."""
+        plugin = self._get_plugin(IndexType.PLAYBOOKS)
+        if isinstance(plugin, PlaybooksIndexPlugin):
+            result = await plugin.index_playbook(params)
+        else:
+            result = await plugin.ingest(
+                content=f"{params.title}\n{params.problem}\n{params.procedure}",
+                doc_id=params.playbook_id,
+            )
+        if not result.success:
+            logger.warning(
+                "Playbook indexing failed; skipping tracking row",
+                playbook_id=params.playbook_id,
+                error=result.error,
+            )
+            return
+        await self._track_indexed_document(
+            IndexType.PLAYBOOKS,
+            source=f"roboco://playbooks/{params.playbook_id}",
+            title=f"Playbook: {params.title}",
+            preview=params.problem[:500] if params.problem else None,
+            metadata={
+                "playbook_id": params.playbook_id,
+                "team": params.team,
+                "scope": params.scope,
                 "tags": params.tags,
             },
         )

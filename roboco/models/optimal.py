@@ -25,6 +25,7 @@ class IndexType(StrEnum):
     DECISIONS = "decisions"  # Architectural and design decisions
     REVIEWS = "reviews"  # Code review feedback
     LEARNINGS = "learnings"  # Cross-agent learnings (shareable)
+    PLAYBOOKS = "playbooks"  # Curated, Auditor-approved reusable procedures
 
 
 @dataclass
