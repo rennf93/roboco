@@ -878,22 +878,45 @@ class TaskService(BaseService):
     async def external_review_task_exists(
         self, project_id: UUID, pr_number: int, head_sha: str | None = None
     ) -> bool:
-        """True if this (project, external PR) at this head commit is already reviewed.
+        """True if this REPO's external PR at this head commit is already reviewed.
 
-        De-dupe key for inbound external-PR ingestion. Re-review is driven by the
-        PR's head commit: a review task records the SHA it covered as an
-        ``external_pr_head=<sha>`` marker in ``quick_context``. So:
+        De-dupe key for inbound external-PR ingestion. The scope is the **repo**
+        (``git_url``), not a single project: a monorepo registers several
+        cell-projects on one repo (the poll already collapses to one canonical
+        project per repo), and a review task may be re-pointed to a sibling
+        project — so a project-scoped check would open a second review per
+        cell-project / after a re-point. Re-review is driven by the PR's head
+        commit, recorded as an ``external_pr_head=<sha>`` marker. So:
 
-        - no review task for this PR yet -> False (ingest the first review);
-        - a task already covers THIS ``head_sha`` -> True (skip — nothing changed);
-        - a legacy/markerless task exists, or ``head_sha`` is unknown -> True
-          (can't prove it changed, so don't re-review / don't spam);
-        - tasks exist but all cover OTHER SHAs -> False (the PR got new commits —
-          open a fresh review for the change).
+        - no review task for this PR on any project in this repo -> False;
+        - a task already covers THIS ``head_sha`` -> True (nothing changed);
+        - a legacy/markerless task exists, or ``head_sha`` is unknown -> True;
+        - tasks exist but all cover OTHER SHAs -> False (new commits — re-review).
         """
+        # Resolve every project sharing this project's repo (git_url) so the
+        # dedupe spans the whole monorepo, not just the one project. An unknown
+        # project_id falls back to itself (can't widen).
+        git_url = (
+            await self.session.execute(
+                select(ProjectTable.git_url).where(ProjectTable.id == project_id)
+            )
+        ).scalar_one_or_none()
+        if git_url:
+            sibling_ids = (
+                (
+                    await self.session.execute(
+                        select(ProjectTable.id).where(ProjectTable.git_url == git_url)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            scope_ids = list(sibling_ids) or [project_id]
+        else:
+            scope_ids = [project_id]
         result = await self.session.execute(
             select(TaskTable.orchestration_markers).where(
-                TaskTable.project_id == project_id,
+                TaskTable.project_id.in_(scope_ids),
                 TaskTable.source.in_(PR_REVIEW_SOURCES),
                 TaskTable.pr_number == pr_number,
             )
