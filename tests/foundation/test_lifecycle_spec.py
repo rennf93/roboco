@@ -623,7 +623,7 @@ def test_can_invoke_intent_open_pr_passes_when_owner_with_commits() -> None:
 
 
 def test_can_invoke_intent_open_pr_rejects_non_owner() -> None:
-    """Non-owner trying open_pr → tracing_gap with owns_task missing."""
+    """Non-owner trying open_pr → not_authorized (PRECONDITION_OWNERSHIP)."""
     owner_id = uuid4()
     intruder_id = uuid4()
     task = _stub_task(
@@ -639,8 +639,7 @@ def test_can_invoke_intent_open_pr_rejects_non_owner() -> None:
         context=spec.Context(actor_id=intruder_id),
     )
     assert d.allowed is False
-    assert d.rejection_kind == "tracing_gap"
-    assert "owns_task" in d.missing
+    assert d.rejection_kind == "not_authorized"
 
 
 # ---------------------------------------------------------------------------
