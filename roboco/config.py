@@ -477,6 +477,45 @@ class Settings(BaseSettings):
         description="Max self-heal fix tasks the loop may originate in one cycle.",
     )
 
+    # Multi-repo CI-watch — generalizes the single-repo self-heal CI loop to any
+    # opted-in project (per-project `ci_watch_enabled` column). Default-off;
+    # never auto-merges (fix tasks ride the normal delivery + PR-review gate).
+    ci_watch_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for the multi-repo CI-watch loop. OFF by default; "
+            "when off the loop does not run and no CI telemetry is fetched. "
+            "Generalizes self-heal to every project with ci_watch_enabled set."
+        ),
+    )
+    ci_watch_default_workflow: str = Field(
+        default="ci.yml",
+        description=(
+            "Default GitHub Actions workflow file to scope the CI signal to when "
+            "a watched project does not set its own ci_watch_workflow. Empty "
+            "reads the latest run across ALL workflows on the default branch, "
+            "which on a multi-workflow repo lets a green run mask a red CI run."
+        ),
+    )
+    ci_watch_interval_seconds: int = Field(
+        default=1800,
+        ge=60,
+        description="Seconds between CI-watch telemetry assessment passes.",
+    )
+    ci_watch_max_open_tasks: int = Field(
+        default=3,
+        ge=1,
+        description=(
+            "Rolling cap on concurrently-open ci_watch tasks across all repos; "
+            "the loop originates nothing more while this many are still open."
+        ),
+    )
+    ci_watch_max_per_cycle: int = Field(
+        default=1,
+        ge=1,
+        description="Max ci_watch fix tasks the loop may originate in one cycle.",
+    )
+
     # ==========================================================================
     # Workspaces (Multi-Agent Git)
     # ==========================================================================
