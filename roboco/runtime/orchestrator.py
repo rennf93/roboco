@@ -721,6 +721,7 @@ class AgentOrchestrator:
         self._strategy_engine_task: asyncio.Task | None = None
         self._external_pr_poll_task: asyncio.Task | None = None
         self._self_heal_task: asyncio.Task | None = None
+        self._ci_watch_task: asyncio.Task | None = None
         # Provider registry: maps a ModelProvider to a dedicated AgentProvider
         # backend. Only providers needing a non-Claude-Code runtime are
         # registered (currently GROK, which speaks the OpenAI protocol). Agents
@@ -831,6 +832,7 @@ class AgentOrchestrator:
         self._strategy_engine_task = asyncio.create_task(self._strategy_engine_loop())
         self._external_pr_poll_task = asyncio.create_task(self._external_pr_poll_loop())
         self._self_heal_task = asyncio.create_task(self._self_heal_loop())
+        self._ci_watch_task = asyncio.create_task(self._ci_watch_loop())
 
         logger.info(
             "Orchestrator started",
@@ -877,6 +879,11 @@ class AgentOrchestrator:
             self._self_heal_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._self_heal_task
+
+        if self._ci_watch_task:
+            self._ci_watch_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._ci_watch_task
 
         # Stop all agents
         for agent_id in list(self._instances.keys()):
@@ -5574,6 +5581,65 @@ Start by:
                 break
             except Exception:
                 logger.exception("self-heal cycle failed")
+
+    async def _ci_watch_loop(self) -> None:
+        """Multi-repo CI-watch: watch every opted-in project's CI, open fix tasks.
+
+        Dormant by default — returns immediately unless ``ci_watch_enabled``, so
+        a standard deployment adds zero behaviour. It generalizes the single-repo
+        self-heal loop (which is untouched) to every project with
+        ``ci_watch_enabled`` set; like self-heal it only OPENS a fix task and
+        never starts / approves / merges / deploys. The per-cycle session commits
+        any opened task here.
+        """
+        if not settings.ci_watch_enabled:
+            return
+        interval = settings.ci_watch_interval_seconds
+        while self._running:
+            try:
+                await asyncio.sleep(interval)
+                await self._run_ci_watch_cycle()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("ci-watch cycle failed")
+
+    async def _run_ci_watch_cycle(self) -> None:
+        """One CI-watch pass: load the watch set, run the engine, commit.
+
+        Extracted from the loop so it is testable without the sleep. A loud
+        warning fires when CI-watch is armed but no project opted in (so a
+        misconfiguration isn't mistaken for "all green").
+        """
+        from roboco.db import get_db_context
+        from roboco.services.ci_watch_engine import get_ci_watch_engine
+
+        async with get_db_context() as db:
+            watch_set = await self._load_ci_watch_set(db)
+            if not watch_set:
+                logger.warning(
+                    "ci-watch enabled but no project has ci_watch_enabled — "
+                    "nothing to watch"
+                )
+                return
+            await get_ci_watch_engine(db).run_cycle(watch_set)
+            await db.commit()
+
+    async def _load_ci_watch_set(self, db: Any) -> list[Any]:
+        """Opted-in projects (``ci_watch_enabled`` + a git_url), one per repo.
+
+        Collapsing to one canonical project per repo means a monorepo's several
+        cell-projects are watched as a single repo, not N times.
+        """
+        from roboco.services.project import get_project_service
+
+        projects = await get_project_service(db).list_all(active_only=True)
+        watched = [
+            p
+            for p in projects
+            if getattr(p, "ci_watch_enabled", False) and getattr(p, "git_url", None)
+        ]
+        return self._projects_one_per_repo(watched)
 
     @staticmethod
     def _repo_key(git_url: str) -> str:
