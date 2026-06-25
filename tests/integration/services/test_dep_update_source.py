@@ -7,8 +7,8 @@ monorepo gets at most one open dependency-update task across its cell-projects.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-from uuid import uuid4
+from typing import TYPE_CHECKING, cast
+from uuid import UUID, uuid4
 
 import pytest
 from roboco.db.tables import AgentTable, ProjectTable
@@ -87,7 +87,7 @@ async def _make_task(
             task_type=TaskType.CODE,
             nature=TaskNature.TECHNICAL,
             estimated_complexity=Complexity.MEDIUM,
-            project_id=project.id,
+            project_id=cast("UUID", project.id),
             status=TaskStatus.PENDING,
             source=source,
             confirmed_by_human=True,

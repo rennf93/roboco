@@ -44,7 +44,7 @@ async def test_load_watch_set_filters_enabled_one_per_repo() -> None:
     assert watch[0].git_url == "https://x/a.git"
 
 
-def _db_ctx(db: Any):
+def _db_ctx(db: Any) -> Any:
     @asynccontextmanager
     async def _ctx() -> Any:
         yield db

@@ -32,6 +32,8 @@ SELF_HEAL_FP = "self_heal_fp"
 DISMISSED = "dismissed"
 ESCALATION = "escalation"
 APPROVE_AND_START_NOTES = "approve_and_start_notes"
+RELEASE_REPORT = "release_report"
+RELEASE_REQUIRED_CHANGES = "release_required_changes"
 
 
 def get_marker(task: HasMarkers, key: str, default: Any = None) -> Any:
@@ -103,6 +105,27 @@ def get_self_heal_fingerprint(task: HasMarkers) -> str | None:
 
 def set_self_heal_fingerprint(task: HasMarkers, fingerprint: str) -> None:
     set_marker(task, SELF_HEAL_FP, fingerprint)
+
+
+# --- release proposal ------------------------------------------------------ #
+
+
+def get_release_report(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, RELEASE_REPORT)
+    return val if isinstance(val, dict) else None
+
+
+def set_release_report(task: HasMarkers, report: dict[str, Any]) -> None:
+    set_marker(task, RELEASE_REPORT, report)
+
+
+def get_release_required_changes(task: HasMarkers) -> str | None:
+    val = get_marker(task, RELEASE_REQUIRED_CHANGES)
+    return str(val) if val else None
+
+
+def set_release_required_changes(task: HasMarkers, text: str) -> None:
+    set_marker(task, RELEASE_REQUIRED_CHANGES, text)
 
 
 # --- external PR head ------------------------------------------------------ #

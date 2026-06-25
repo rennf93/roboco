@@ -343,6 +343,49 @@ def evidence(task_id: str) -> dict[str, Any]:
     return _post("/api/v1/do/evidence", {"task_id": task_id})
 
 
+def draft_playbook(
+    title: str,
+    problem: str,
+    procedure: str,
+    tags: list[str] | None = None,
+    source_task_id: str | None = None,
+) -> dict[str, Any]:
+    """Draft a reusable playbook (when-to-use + procedure) for the company KB.
+
+    A learning records "this happened"; a playbook records "here is how to do X".
+    Delivery roles draft; the Auditor approves. tags aid retrieval;
+    source_task_id links the task that inspired it.
+    """
+    return _post(
+        "/api/v1/do/draft_playbook",
+        {
+            "title": title,
+            "problem": problem,
+            "procedure": procedure,
+            "tags": tags or [],
+            "source_task_id": source_task_id,
+        },
+    )
+
+
+def approve_playbook(playbook_id: str) -> dict[str, Any]:
+    """Auditor only: approve a draft playbook so it is indexed + auto-suggested."""
+    return _post("/api/v1/do/approve_playbook", {"playbook_id": playbook_id})
+
+
+def reject_playbook(playbook_id: str, reason: str) -> dict[str, Any]:
+    """Auditor only: reject a playbook (archive it) with a reason."""
+    return _post(
+        "/api/v1/do/reject_playbook",
+        {"playbook_id": playbook_id, "reason": reason},
+    )
+
+
+def archive_playbook(playbook_id: str) -> dict[str, Any]:
+    """Auditor only: archive (retire) an existing playbook."""
+    return _post("/api/v1/do/archive_playbook", {"playbook_id": playbook_id})
+
+
 # ---------- Wave 1 — pre-gateway parity ----------
 
 
@@ -559,6 +602,10 @@ _TOOLS: dict[str, Any] = {
     "channels": channels,
     "pr_update": pr_update,
     "read_messages": read_messages,
+    "draft_playbook": draft_playbook,
+    "approve_playbook": approve_playbook,
+    "reject_playbook": reject_playbook,
+    "archive_playbook": archive_playbook,
 }
 
 

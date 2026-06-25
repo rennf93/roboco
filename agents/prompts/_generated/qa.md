@@ -20,10 +20,11 @@
 
 | Tool | Body schema |
 |------|-------------|
-| `note` | `note(text: str, scope: str = 'note', task_id: UUID | None = None, title: str | None = None, context: str = '', options: list[str | str] | None = None, chosen: str = '', rationale: str = '', consequences: list[str] | None = None, what_done: str = '', what_learned: str = '', what_struggled: str = '', next_steps: list[str] | None = None)` |
+| `note` | `note(text: str, scope: str = 'note', task_id: UUID | None = None, title: str | None = None, context: str = '', options: list[str | str] | None = None, chosen: str = '', rationale: str = '', consequences: list[str] | None = None, what_done: str = '', what_learned: str = '', what_struggled: str = '', next_steps: list[str] | None = None, section: str | Any | None = None)` |
 | `say` | `say(channel: str, text: str, task_id: UUID | None = None)` |
 | `dm` | `dm(recipient: str, text: str, task_id: UUID | None = None, skill: str | None = None)` |
 | `evidence` | `evidence(task_id: UUID)` |
+| `draft_playbook` | `draft_playbook(title: str, problem: str, procedure: str, tags: list[str] = PydanticUndefined, source_task_id: UUID | None = None)` |
 | `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
 | `notify_get` | `notify_get(notification_id: UUID)` |
 | `notify_ack` | `notify_ack(notification_id: UUID)` |

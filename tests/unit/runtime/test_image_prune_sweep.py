@@ -41,6 +41,7 @@ async def test_prunes_dangling_when_enabled_and_due(
     with patch("roboco.runtime.orchestrator.asyncio.create_subprocess_exec", spawn):
         await orch._sweep_dangling_images()
     spawn.assert_awaited_once()
+    assert spawn.await_args is not None
     args: tuple[Any, ...] = spawn.await_args.args
     assert args[:6] == (
         "docker",

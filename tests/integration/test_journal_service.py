@@ -509,6 +509,54 @@ async def test_create_entry_learning_calls_record_learning(
     mock_optimal.record_learning.assert_awaited()
 
 
+@pytest.mark.asyncio
+async def test_nonprivate_entry_is_indexed_to_shared_corpus(
+    journal_setup: dict,
+) -> None:
+    """A non-private reflection is embedded into the shared JOURNALS index."""
+    svc = journal_setup["svc"]
+    journal = await svc.get_or_create_journal(journal_setup["agent_id"])
+    mock_optimal = _AsyncMock()
+    mock_optimal.index_journal_entry = _AsyncMock(return_value=None)
+    svc._optimal_service = mock_optimal
+
+    await svc.create_entry(
+        JournalEntryCreate(
+            journal_id=journal.id,
+            type=JournalEntryType.DECISION_LOG,
+            title="t",
+            content="a shareable decision",
+            is_private=False,
+        )
+    )
+    await drain_rag_index_tasks()
+    mock_optimal.index_journal_entry.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_private_entry_not_indexed_to_shared_corpus(
+    journal_setup: dict,
+) -> None:
+    """A PRIVATE reflection must NOT enter the cross-agent JOURNALS index."""
+    svc = journal_setup["svc"]
+    journal = await svc.get_or_create_journal(journal_setup["agent_id"])
+    mock_optimal = _AsyncMock()
+    mock_optimal.index_journal_entry = _AsyncMock(return_value=None)
+    svc._optimal_service = mock_optimal
+
+    await svc.create_entry(
+        JournalEntryCreate(
+            journal_id=journal.id,
+            type=JournalEntryType.DECISION_LOG,
+            title="t",
+            content="a private reflection",
+            is_private=True,
+        )
+    )
+    await drain_rag_index_tasks()
+    mock_optimal.index_journal_entry.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # list_entries — filter by task_id
 # ---------------------------------------------------------------------------

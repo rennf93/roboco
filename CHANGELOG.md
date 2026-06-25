@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-06-26
+
+### Added
+
+- **Gated release manager — RoboCo prepares its own releases, you approve them.** Cutting a release was a manual, error-prone checklist (enumerate changes, derive the semver bump, update the CHANGELOG, bump eight version refs, gate, tag, publish). A default-off background loop now runs a fully deterministic readiness sweep — diff since the last tag, conventional-commit classification, the semver bump, version-reference completeness (the "you forgot to bump file X" guard), CHANGELOG completeness, docs drift, migration single-head, and the CI gate state — and, past a threshold with a green gate, opens ONE **release proposal** held for the CEO. The proposal is held (never dispatched to an agent); you approve or reject-with-changes in the panel, and only on approval does a **fail-closed** executor write the bumps + CHANGELOG, run `make quality` (aborting before any commit on red), commit + push, wait for green CI (aborting before publish on red), then publish the GitHub release. Correctness is code, not agent judgment; the only generative step is the CHANGELOG prose, which you review; it never publishes without you. Default-off (`ROBOCO_RELEASE_MANAGER_ENABLED`).
+- **Organizational memory loop — agents stop re-learning what the company already knows.** Three parts behind one default-off flag (`ROBOCO_ORG_MEMORY_ENABLED`). ① At task completion the company distills ONE high-signal lesson (Problem → Approach → Gotcha, ≤120 words) via the local model instead of dumping noisy raw notes, and private journal reflections are kept out of the shared knowledge corpus. ② The keystone: when an agent claims a task, the briefing is auto-injected with the top relevant past lessons and approved playbooks for work like this (role-shaped query, relevance-floored so nothing low-signal is added) — the agent never has to think to ask. ③ A first-class, curated **playbook** library: delivery agents draft playbooks via a new `draft_playbook` gateway verb, the Auditor approves / rejects / archives them (a bounded, deliberate expansion of its surface — curation, not agent comms), and approved playbooks are embedded into a new `PLAYBOOKS` knowledge index and surfaced in a panel review queue. Adds the `playbooks` table (migration 050). Distillation and retrieval run on the local model only and are best-effort — a failure never blocks a completion or a claim.
+
+### Fixed
+
+- **Pitch auto-provisioning is now idempotent — a re-approval no longer collides.** When a pitch's approval partially failed and its DB writes rolled back while the created GitHub repos survived, re-approving it tried to re-create the repos and re-insert the product → project cell mappings, hitting a duplicate-key crash on `(product_id, team)` and leaving an orphaned product that could not be cleaned up. Provisioning now reuses an existing Project (by slug) and an existing Product (by slug, refreshing its cell map with delete-before-insert ordering) instead of re-creating them, so a re-approval converges cleanly. First-time provisioning is unchanged.
+- **The `mypy roboco/ tests/` quality gate is green again.** A batch of test files carried type errors that turned the gate red (SQLAlchemy `<row>.id` passed where `uuid.UUID` was expected, a couple of missing return annotations, an invariant-`list` argument, and a `None`-attribute access). Each is now typed correctly so the full gate passes. (The deeper cause — many ORM columns annotated `Mapped[UUID]` against SQLAlchemy's `UUID` type rather than `uuid.UUID` — is noted for a separate, dedicated cleanup.)
+
 ## [0.12.0] - 2026-06-25
 
 ### Added

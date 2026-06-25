@@ -51,6 +51,7 @@ CHUNK_TABLES = (
     "chunks_decisions",
     "chunks_reviews",
     "chunks_learnings",
+    "chunks_playbooks",
 )
 
 # SQL array literal of the table names (validated identifiers from the tuple).

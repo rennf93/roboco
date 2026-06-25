@@ -432,6 +432,12 @@ CI_WATCH_SOURCE = "ci_watch"
 # lifecycle (+ PR-review gate) and is never auto-merged.
 DEP_UPDATE_SOURCE = "dep_update"
 
+# Source tag for a gated release proposal: opened by the release-manager engine
+# when accumulated unreleased changes pass the threshold + the gate is green.
+# Unlike the sources above it is NEVER dispatched — it is HELD for the CEO
+# (confirmed_by_human=False) and acted on by the release routes + executor.
+RELEASE_MANAGER_SOURCE = "release_manager"
+
 
 def extract_self_heal_fingerprint(task: Any) -> str | None:
     """The self-heal dedupe fingerprint from a task's markers, or None.
@@ -1074,6 +1080,21 @@ class TaskService(BaseService):
                 ProjectTable, TaskTable.project_id == ProjectTable.id
             ).where(ProjectTable.git_url == git_url)
         result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def list_open_release_proposals(self) -> list[TaskTable]:
+        """Non-terminal release-manager proposals — the one-open-at-a-time basis.
+
+        The release manager holds at most one proposal open at a time; while one
+        is awaiting the CEO the loop originates no second. A proposal leaves this
+        set when the CEO approves (it completes) or rejects-and-cancels it.
+        """
+        result = await self.session.execute(
+            select(TaskTable).where(
+                TaskTable.source == RELEASE_MANAGER_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+        )
         return list(result.scalars().all())
 
     async def list_external_pr_reviews_awaiting_decision(self) -> list[TaskTable]:
@@ -2471,6 +2492,45 @@ class TaskService(BaseService):
             )
         return learnings
 
+    async def _completion_learnings_for(
+        self, snapshot: _CompletionSnapshot, acceptance_criteria: list[str]
+    ) -> list[tuple[str, Any]]:
+        """Org-memory ON -> one distilled lesson; OFF -> the legacy raw capture.
+
+        When ``org_memory_enabled`` the noisy raw-notes / duration / commit-count
+        entries are replaced by a single local-LLM-distilled lesson (skipped when
+        the distiller returns None, so junk is never stored). Flag off keeps the
+        legacy behavior byte-for-byte.
+        """
+        from roboco.config import settings
+
+        if not settings.org_memory_enabled:
+            return self._collect_completion_learnings(snapshot)
+
+        from roboco.services.learning import LearningType
+        from roboco.services.memory_distiller import LessonInput, MemoryDistiller
+
+        commit_messages: list[str] = []
+        for commit in snapshot.commits:
+            msg = (
+                commit.get("message")
+                if isinstance(commit, dict)
+                else getattr(commit, "message", None)
+            )
+            if msg:
+                commit_messages.append(str(msg))
+
+        lesson = await MemoryDistiller().distill(
+            LessonInput(
+                title=snapshot.task_title or "",
+                acceptance_criteria=acceptance_criteria,
+                dev_notes=snapshot.dev_notes,
+                qa_notes=snapshot.qa_notes,
+                commit_messages=commit_messages,
+            )
+        )
+        return [(lesson, LearningType.SOLUTION)] if lesson else []
+
     async def _extract_completion_learnings(
         self, task: TaskTable, agent_id: UUID | None
     ) -> None:
@@ -2491,20 +2551,22 @@ class TaskService(BaseService):
         dev_notes = task.dev_notes
         qa_notes = task.qa_notes
         assigned_to = task.assigned_to
+        acceptance_criteria = list(task.acceptance_criteria or [])
 
         try:
             learning_svc = await get_learning_service()
             scope = self._determine_learning_scope(task_team)
-            learnings = self._collect_completion_learnings(
-                _CompletionSnapshot(
-                    task_title=task_title,
-                    started_at=started_at,
-                    completed_at=completed_at,
-                    estimated_complexity=estimated_complexity,
-                    commits=commits,
-                    dev_notes=dev_notes,
-                    qa_notes=qa_notes,
-                )
+            snapshot = _CompletionSnapshot(
+                task_title=task_title,
+                started_at=started_at,
+                completed_at=completed_at,
+                estimated_complexity=estimated_complexity,
+                commits=commits,
+                dev_notes=dev_notes,
+                qa_notes=qa_notes,
+            )
+            learnings = await self._completion_learnings_for(
+                snapshot, acceptance_criteria
             )
             for content, ltype in learnings:
                 await learning_svc.record_learning(

@@ -219,3 +219,32 @@ class PRUpdateRequest(BaseModel):
                 "at least one of title, body, or reviewers must be provided"
             )
         return self
+
+
+class DraftPlaybookRequest(BaseModel):
+    """Draft a curated playbook (when-to-use + procedure) for the KB."""
+
+    title: str = Field(..., min_length=1)
+    problem: str = Field(..., min_length=1)
+    procedure: str = Field(..., min_length=1)
+    tags: list[str] = Field(default_factory=list)
+    source_task_id: UUID | None = None
+
+
+class ApprovePlaybookRequest(BaseModel):
+    """Auditor approves a draft playbook (-> approved + indexed)."""
+
+    playbook_id: UUID
+
+
+class RejectPlaybookRequest(BaseModel):
+    """Auditor rejects a playbook (-> archived) with a reason."""
+
+    playbook_id: UUID
+    reason: str = Field(..., min_length=1)
+
+
+class ArchivePlaybookRequest(BaseModel):
+    """Auditor archives a playbook (-> archived)."""
+
+    playbook_id: UUID

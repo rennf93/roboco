@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     # ==========================================================================
     # Application
     # ==========================================================================
-    app_version: str = "0.12.0"
+    app_version: str = "0.13.0"
     debug: bool = False
     environment: str = Field(
         default="development", pattern="^(development|staging|production)$"
@@ -546,6 +546,57 @@ class Settings(BaseSettings):
         description="Max dep_update tasks the loop may originate in one cycle.",
     )
 
+    # Gated release manager — at a logical point (accumulated unreleased changes
+    # past a threshold + green gate) the Secretary runs a deterministic readiness
+    # sweep and PROPOSES a release for the CEO to approve/reject. Default-off;
+    # never publishes without CEO approval (mirrors the self-heal CEO-gate).
+    release_manager_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for the gated release manager. OFF by default; when "
+            "off the background loop does not run and no release is proposed. "
+            "Even when on it only PROPOSES — the CEO approves before any publish."
+        ),
+    )
+    release_min_commits: int = Field(
+        default=8,
+        ge=1,
+        description=(
+            "Minimum unreleased commits since the last tag before the release "
+            "manager proposes a release (a feat/security change also qualifies)."
+        ),
+    )
+    release_manager_interval_seconds: int = Field(
+        default=3600,
+        ge=60,
+        description="Seconds between release-readiness assessment passes.",
+    )
+
+    # Organizational-memory loop — distill a high-signal lesson at task
+    # completion, index journal reflections, and auto-inject similar past
+    # lessons/playbooks into the agent briefing on claim. Default-off; when off
+    # capture falls back to today's behavior and nothing is auto-injected.
+    org_memory_enabled: bool = Field(
+        default=False,
+        description=(
+            "Organizational memory loop (default off): distill a lesson at task "
+            "completion, index journal reflections, and auto-inject similar past "
+            "lessons/playbooks into the agent briefing on claim."
+        ),
+    )
+    org_memory_top_k: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        description="Max institutional-memory items injected into a briefing.",
+    )
+    org_memory_min_score: float = Field(
+        default=0.6,
+        ge=0.0,
+        le=1.0,
+        description="Cosine-similarity floor for injected memory; below it, none.",
+    )
+
     # ==========================================================================
     # Workspaces (Multi-Agent Git)
     # ==========================================================================
@@ -617,7 +668,7 @@ class Settings(BaseSettings):
     agent_image_tag: str = Field(
         default="",
         description=(
-            "Tag for pre-built agent images (e.g. 'latest' or '0.12.0'). Empty "
+            "Tag for pre-built agent images (e.g. 'latest' or '0.13.0'). Empty "
             "leaves the tag implicit (':latest'); only meaningful with "
             "agent_image_registry set."
         ),

@@ -30,7 +30,7 @@ Two variables choose what you pull (defaults shown):
 
 ```bash
 ROBOCO_REGISTRY=ghcr.io/rennf93   # or docker.io/renzof93
-ROBOCO_VERSION=latest             # or a pinned release, e.g. 0.12.0
+ROBOCO_VERSION=latest             # or a pinned release, e.g. 0.13.0
 ```
 
 The orchestrator then spawns the **matching** pre-built agent images on demand (it reads `ROBOCO_AGENT_IMAGE_REGISTRY` / `ROBOCO_AGENT_IMAGE_TAG`, which the registry compose wires to the same registry and version). Pin `ROBOCO_VERSION` to a release tag in production so an upstream `latest` push can't silently change your fleet.

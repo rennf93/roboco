@@ -143,3 +143,18 @@ def build_context_briefing(inputs: BriefingInputs) -> dict[str, Any]:
         "task_handoff": inputs.task_handoff,
         "company_goals": inputs.company_goals,
     }
+
+
+def shape_memory_query(role: str, title: str, task_type: str) -> str:
+    """Role-shape the institutional-memory query so each role retrieves what it
+    actually needs: implementation lessons for a dev, decomposition lessons for a
+    PM, defect patterns for QA, doc patterns for a documenter."""
+    if role == "developer":
+        return f"implementation lessons and playbooks for {title} ({task_type})"
+    if role in ("cell_pm", "main_pm"):
+        return f"decomposition and planning lessons for {title}"
+    if role == "qa":
+        return f"recurring defects and review feedback for {task_type}"
+    if role == "documenter":
+        return f"documentation patterns for {task_type}"
+    return f"lessons and playbooks for {title}"

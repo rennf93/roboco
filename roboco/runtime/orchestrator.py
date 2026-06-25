@@ -60,7 +60,7 @@ from roboco.models.runtime import (
     WaitingRecord,
 )
 from roboco.seeds.initial_data import AGENT_UUIDS
-from roboco.services.task import PR_REVIEW_SOURCES
+from roboco.services.task import PR_REVIEW_SOURCES, RELEASE_MANAGER_SOURCE
 
 logger = structlog.get_logger()
 
@@ -723,6 +723,7 @@ class AgentOrchestrator:
         self._self_heal_task: asyncio.Task | None = None
         self._ci_watch_task: asyncio.Task | None = None
         self._dep_update_task: asyncio.Task | None = None
+        self._release_manager_task: asyncio.Task | None = None
         # Provider registry: maps a ModelProvider to a dedicated AgentProvider
         # backend. Only providers needing a non-Claude-Code runtime are
         # registered (currently GROK, which speaks the OpenAI protocol). Agents
@@ -835,6 +836,7 @@ class AgentOrchestrator:
         self._self_heal_task = asyncio.create_task(self._self_heal_loop())
         self._ci_watch_task = asyncio.create_task(self._ci_watch_loop())
         self._dep_update_task = asyncio.create_task(self._dep_update_loop())
+        self._release_manager_task = asyncio.create_task(self._release_manager_loop())
 
         logger.info(
             "Orchestrator started",
@@ -865,6 +867,7 @@ class AgentOrchestrator:
             self._self_heal_task,
             self._ci_watch_task,
             self._dep_update_task,
+            self._release_manager_task,
         ):
             await self._cancel_background_task(task)
 
@@ -5666,6 +5669,36 @@ Start by:
             await get_dep_update_engine(db).run_cycle(projects)
             await db.commit()
 
+    async def _release_manager_loop(self) -> None:
+        """Gated release manager: at a logical point, propose a CEO-gated release.
+
+        Dormant by default — returns immediately unless ``release_manager_enabled``,
+        so a standard deployment adds zero behaviour. Each interval it runs the
+        deterministic readiness sweep and originates at most one HELD proposal for
+        the CEO; it NEVER publishes, merges, or deploys. The per-cycle session
+        commits any opened proposal here.
+        """
+        if not settings.release_manager_enabled:
+            return
+        interval = settings.release_manager_interval_seconds
+        while self._running:
+            try:
+                await asyncio.sleep(interval)
+                await self._run_release_manager_cycle()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("release-manager cycle failed")
+
+    async def _run_release_manager_cycle(self) -> None:
+        """One release-manager pass: run the engine, commit. Testable w/o the sleep."""
+        from roboco.db import get_db_context
+        from roboco.services.release_manager_engine import get_release_manager_engine
+
+        async with get_db_context() as db:
+            await get_release_manager_engine(db).run_cycle()
+            await db.commit()
+
     async def _load_dep_update_set(self, db: Any) -> list[Any]:
         """Projects with a ``dep_update_command`` + a git_url, one per repo."""
         from roboco.services.project import get_project_service
@@ -8188,6 +8221,10 @@ Start now: evidence(task_id="{task_id}")
             # PM hierarchy never routes or spawns them.
             if task.get("source") in PR_REVIEW_SOURCES:
                 continue
+            # Release proposals are HELD for the CEO — never delivery work. They
+            # are acted on by the release routes + executor, never dispatched.
+            if task.get("source") == RELEASE_MANAGER_SOURCE:
+                continue
             # Self-heal fix tasks dispatch autonomously — the loop opens them
             # confirmed + assigned to the Main PM, so they flow through the
             # assigned-PM path below like any other PM task (no CEO Approve-&-
@@ -8570,6 +8607,9 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             # External-PR review tasks belong to the pr_reviewer, never a dev —
             # _dispatch_pr_review_work owns them.
             if task.get("source") in PR_REVIEW_SOURCES:
+                continue
+            # Release proposals are CEO-gated artifacts, never dev work.
+            if task.get("source") == RELEASE_MANAGER_SOURCE:
                 continue
             await self._dev_dispatch_one(client, task)
 

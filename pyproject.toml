@@ -1,6 +1,6 @@
 [project]
 name = "roboco"
-version = "0.12.0"
+version = "0.13.0"
 description = "AI Agents Company - A virtual organization of AI agents functioning as a software development workforce"
 authors = [
     {name = "Renzo Franceschini", email = "rennf93@users.noreply.github.com"}
@@ -418,9 +418,9 @@ DEP003 = ["starlette"]
 
 [dependency-groups]
 dev = [
-    "pytest>=9.1.0",
-    "pytest-asyncio>=1.4.0",
-    "pytest-cov>=7.1.0",
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
 ]
 
 # =============================================================================

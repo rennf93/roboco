@@ -14,6 +14,7 @@ from roboco.services.optimal_brain.indexes.docs import DocsIndexPlugin
 from roboco.services.optimal_brain.indexes.errors import ErrorsIndexPlugin
 from roboco.services.optimal_brain.indexes.journals import JournalsIndexPlugin
 from roboco.services.optimal_brain.indexes.learnings import LearningsIndexPlugin
+from roboco.services.optimal_brain.indexes.playbooks import PlaybooksIndexPlugin
 from roboco.services.optimal_brain.indexes.reviews import ReviewsIndexPlugin
 from roboco.services.optimal_brain.indexes.standards import StandardsIndexPlugin
 
@@ -27,6 +28,7 @@ __all__ = [
     "IndexConfig",
     "JournalsIndexPlugin",
     "LearningsIndexPlugin",
+    "PlaybooksIndexPlugin",
     "ReviewsIndexPlugin",
     "StandardsIndexPlugin",
 ]

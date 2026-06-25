@@ -250,6 +250,12 @@ _VALID_NOTIFY_PRIORITIES: frozenset[str] = frozenset(p.value for p in _comms.Pri
 # The Board roles that may author a pitch (a product proposal for CEO approval).
 _PITCH_ROLES: frozenset[str] = frozenset({"product_owner", "head_marketing"})
 
+# Playbook curation RBAC: delivery roles DRAFT; only the Auditor CURATES.
+_DRAFT_PLAYBOOK_ROLES: frozenset[str] = frozenset(
+    {"developer", "qa", "documenter", "cell_pm", "main_pm"}
+)
+_CURATE_PLAYBOOK_ROLES: frozenset[str] = frozenset({"auditor"})
+
 
 def _coerce_pitch_cells(target_cells: list[str]) -> list[Any]:
     """Validate target-cell slugs into Team values; raise ValueError on a bad one."""
@@ -626,6 +632,126 @@ class ContentActions:
             task_id=str(task_id) if task_id else None,
             next="continue",
             context_briefing={},
+        )
+
+    async def _caller_role(self, agent_id: UUID) -> str:
+        agent = await self.task.agent_for(agent_id)
+        return str(agent.role) if agent is not None else ""
+
+    async def draft_playbook(
+        self,
+        *,
+        agent_id: UUID,
+        title: str,
+        problem: str,
+        procedure: str,
+        tags: list[str] | None = None,
+        source_task_id: UUID | None = None,
+    ) -> Envelope:
+        """Draft a curated playbook (delivery roles); the Auditor approves it."""
+        role = await self._caller_role(agent_id)
+        if role not in _DRAFT_PLAYBOOK_ROLES:
+            return Envelope.not_authorized(
+                message=f"role {role!r} may not draft a playbook",
+                remediate="Only delivery roles draft playbooks; the Auditor curates.",
+                context_briefing={},
+            )
+        from roboco.models.playbook import PlaybookCreate
+        from roboco.services.base import ConflictError
+        from roboco.services.playbook import get_playbook_service
+
+        try:
+            playbook = await get_playbook_service(self.task.session).draft(
+                PlaybookCreate(
+                    title=title,
+                    problem=problem,
+                    procedure=procedure,
+                    tags=tags or [],
+                    source_task_id=source_task_id,
+                ),
+                created_by=agent_id,
+            )
+        except ConflictError as exc:
+            return Envelope.invalid_state(
+                message=str(exc),
+                remediate="Use a more distinct title (the slug must be unique).",
+                context_briefing={},
+            )
+        return Envelope.ok(
+            status="playbook_drafted",
+            task_id=None,
+            next="continue",
+            context_briefing={
+                "playbook_id": str(playbook.id),
+                "playbook_status": "draft",
+            },
+        )
+
+    async def approve_playbook(self, *, agent_id: UUID, playbook_id: UUID) -> Envelope:
+        """Auditor approves a draft playbook (-> approved + indexed)."""
+        return await self._curate_playbook(
+            agent_id=agent_id, playbook_id=playbook_id, action="approve"
+        )
+
+    async def reject_playbook(
+        self, *, agent_id: UUID, playbook_id: UUID, reason: str
+    ) -> Envelope:
+        """Auditor rejects a playbook (-> archived, with a reason)."""
+        return await self._curate_playbook(
+            agent_id=agent_id,
+            playbook_id=playbook_id,
+            action="reject",
+            reason=reason,
+        )
+
+    async def archive_playbook(self, *, agent_id: UUID, playbook_id: UUID) -> Envelope:
+        """Auditor archives a playbook (-> archived)."""
+        return await self._curate_playbook(
+            agent_id=agent_id,
+            playbook_id=playbook_id,
+            action="reject",
+            reason="archived",
+        )
+
+    async def _curate_playbook(
+        self,
+        *,
+        agent_id: UUID,
+        playbook_id: UUID,
+        action: str,
+        reason: str = "",
+    ) -> Envelope:
+        """Shared Auditor-only curation path for approve / reject / archive."""
+        role = await self._caller_role(agent_id)
+        if role not in _CURATE_PLAYBOOK_ROLES:
+            return Envelope.not_authorized(
+                message=f"role {role!r} may not curate playbooks",
+                remediate="Only the Auditor approves/rejects/archives playbooks.",
+                context_briefing={},
+            )
+        from roboco.services.base import NotFoundError
+        from roboco.services.playbook import get_playbook_service
+
+        svc = get_playbook_service(self.task.session)
+        try:
+            if action == "approve":
+                playbook = await svc.approve(playbook_id, approver_id=agent_id)
+                status = "playbook_approved"
+            else:
+                playbook = await svc.reject(
+                    playbook_id, approver_id=agent_id, reason=reason or action
+                )
+                status = "playbook_archived"
+        except NotFoundError:
+            return Envelope.not_found(message=f"playbook {playbook_id} not found")
+        return Envelope.ok(
+            status=status,
+            task_id=None,
+            next="continue",
+            context_briefing={
+                "playbook_id": str(playbook.id),
+                "playbook_status": str(playbook.status),
+            },
         )
 
     async def _record_section_handoff(
