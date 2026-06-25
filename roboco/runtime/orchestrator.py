@@ -813,6 +813,12 @@ class AgentOrchestrator:
         # this, the next claim attempt fails non-idempotent on `git checkout -b`.
         await self._reconcile_orphan_claims_on_startup()
 
+        # Re-adopt agent containers that survived this orchestrator restart, so
+        # the spawn gate + reaper see them as live immediately (no double-spawn,
+        # no over-reap). Inert when nothing is running. Must run before the
+        # dispatcher/reaper loops launch below.
+        await self._readopt_running_agents()
+
         # Note: Per-agent settings are now generated at spawn time
         # via _generate_agent_settings() - no shared settings needed
 
@@ -7242,6 +7248,44 @@ Start now: evidence(task_id="{task_id}")
             return False
         instance = instances.get(self._resolve_agent_slug(str(owner)))
         return instance is not None and instance.state == AgentState.ACTIVE
+
+    async def _readopt_running_agents(self) -> int:
+        """Re-adopt still-running agent containers into ``_instances`` at startup.
+
+        An orchestrator restart loses the in-memory ``_instances`` registry while
+        the agent containers keep running. The reaper has a Docker-liveness
+        fallback for that (``_assignee_container_running``), but the spawn gate's
+        ``_is_agent_active`` does NOT — so after a restart it sees a live agent as
+        inactive and can double-spawn it onto work its forgotten-but-running
+        container is already doing. Probe each known agent slug's container (the
+        same ``docker inspect`` the reaper uses) and register a minimal ACTIVE
+        instance for any that is running and not already tracked, so both the
+        reaper's live-skip and the spawn gate see the live agent immediately.
+        Inert when nothing is running (degrades to today's cold start) and
+        best-effort: a probe error leaves that slot untracked (the reaper's own
+        fallback still covers it). Returns the number re-adopted.
+        """
+        readopted = 0
+        for slug in AGENT_IMAGES:
+            if slug in self._instances:
+                continue
+            try:
+                is_running, _ = await self._inspect_container_state(
+                    f"roboco-agent-{slug}"
+                )
+            except Exception:
+                continue
+            if not is_running:
+                continue
+            self._instances[slug] = AgentInstance(
+                agent_id=slug, state=AgentState.ACTIVE
+            )
+            readopted += 1
+        if readopted:
+            logger.info(
+                "re-adopted running agent containers at startup", count=readopted
+            )
+        return readopted
 
     async def _assignee_container_running(self, task: Any) -> bool:
         """Docker-liveness fallback for the reaper on an instance-registry MISS.
