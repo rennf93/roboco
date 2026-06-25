@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **An integration branch is no longer deleted out from under in-flight work (the "branch gone from origin" zombification).** After a PR merged, the post-merge cleanup deleted its head branch unconditionally — so merging a cell→root PR deleted the cell branch while a sibling leaf PR was still targeting it as its base, and the CEO's root→master merge deleted the `feature/main_pm/{root}` integration branch. The dependent PRs then had no base, every later git op against the vanished branch failed, and the task zombified (the symptom an earlier fix only made non-fatal). The remote-branch delete chokepoint now first checks whether any **open PR still targets the branch as its base** — an active integration target — and preserves it if so; it fails safe (on any error it keeps the branch, since cleanup is best-effort but stranding is not). True leaf branches with no open dependents are still cleaned up as before.
+
 ## [0.11.1] - 2026-06-25
 
 ### Fixed

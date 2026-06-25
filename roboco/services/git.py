@@ -2557,16 +2557,54 @@ class GitService(BaseService):
             )
             return None
 
+    async def _branch_has_open_dependents(
+        self, owner: str, repo: str, branch: str, git_token: str
+    ) -> bool:
+        """True if any OPEN PR still targets ``branch`` as its base.
+
+        Such a branch is an active integration target — a leaf still merging
+        into its cell branch, or a cell still merging into the
+        ``feature/main_pm/{root}`` integration branch. Deleting it strands those
+        in-flight child PRs (their base vanishes), which is the run-zombifying
+        "branch gone from origin" wedge. Fails SAFE: on any error returns True
+        so the branch is preserved (cleanup is best-effort; stranding is not).
+        """
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(
+                    f"https://api.github.com/repos/{owner}/{repo}/pulls",
+                    params={"base": branch, "state": "open", "per_page": 1},
+                    headers={
+                        "Authorization": f"Bearer {git_token}",
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                )
+            if not resp.is_success:
+                return True
+            return bool(resp.json())
+        except httpx.HTTPError:
+            return True
+
     async def _delete_remote_branch_best_effort(
         self, owner: str, repo: str, branch: str, git_token: str
     ) -> None:
         """Best-effort: delete a remote branch by name.
 
-        Silently swallows errors — cleanup is not critical. Skips
-        branches that look like project defaults (main / master /
-        develop) as a last-chance safety net against bad input.
+        Silently swallows errors — cleanup is not critical. Skips branches that
+        look like project defaults (main / master / develop) and any branch that
+        still has open dependent PRs (an active integration target — deleting it
+        would strand in-flight child work).
         """
         if branch in ("main", "master", "develop", ""):
+            return
+        if await self._branch_has_open_dependents(owner, repo, branch, git_token):
+            self.log.info(
+                "branch delete skipped: open dependent PRs target it as base",
+                branch=branch,
+                owner=owner,
+                repo=repo,
+            )
             return
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
