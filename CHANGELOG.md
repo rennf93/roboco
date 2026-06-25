@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **The orchestrator now reclaims dangling Docker images on its own.** Every rebuild of an agent image orphans the prior build's layers as an untagged `<none>` image; across many deploys these pile up (the operator hit ~80). The background sweeper now runs `docker image prune` for dangling images only — throttled to roughly every six hours — so they don't accumulate. It is deliberately conservative: only *dangling* images are removed (a tagged image, or one backing a running container, is never dangling), it is best-effort (a failure is logged, never raised), and it can be turned off with `ROBOCO_IMAGE_PRUNE_ENABLED=false`.
+
 ### Fixed
 
 - **Completing a task whose PR is already merged no longer loops.** A merge request against an already-merged PR returns the same `405` from GitHub as a genuine "not mergeable" conflict, so the completion path treated an already-landed PR as a conflict and tried to rebase / close-superseded / escalate it — bouncing the task between blocked and unblocked forever (the case where a prior cycle, a sibling, or the CEO had already merged it). The merge now disambiguates: if the PR reports as merged, the merge is treated as idempotent success and completion proceeds; only a PR that is genuinely unmerged raises the conflict.

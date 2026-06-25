@@ -714,6 +714,7 @@ class AgentOrchestrator:
         self._sweeper_task: asyncio.Task | None = None
         # Last time the transcript-retention prune ran (throttled in the sweep).
         self._last_transcript_prune: datetime | None = None
+        self._last_image_prune: datetime | None = None
         # Rate-limit probe loop: 30-second interval, scans Redis for all
         # rate-limited providers and resolves waiting agents on success.
         self._rate_limit_probe_task: asyncio.Task | None = None
@@ -5009,6 +5010,10 @@ Start by:
         # operator's bind-mounted ~/.claude doesn't grow without bound.
         await self._sweep_transcript_retention()
 
+        # Prune dangling (<none>) Docker images left by agent-image rebuilds
+        # (throttled internally to ~6h) so deploys don't pile up orphaned layers.
+        await self._sweep_dangling_images()
+
         # Close-on-land for landed supersedes — runs here (always-on sweeper)
         # rather than the default-off external-PR poll loop, so a supersede that
         # lands after external_pr_enabled is toggled off is still reconciled.
@@ -5037,6 +5042,49 @@ Start by:
             except Exception as e:
                 await db.rollback()
                 logger.warning("Supersede close-on-land sweep failed", error=str(e))
+
+    async def _sweep_dangling_images(self) -> None:
+        """Prune dangling (<none>) Docker images left by agent-image rebuilds.
+
+        Each rebuild of an agent image orphans the prior build's layers as an
+        untagged ``<none>`` image; over many deploys these pile up (the operator
+        saw ~80). Pruning only DANGLING images is safe — a tagged image, or one
+        backing a running container, is never dangling. Throttled to
+        ``settings.image_prune_interval_seconds`` (default 6h) and gated by
+        ``settings.image_prune_enabled`` (default on). Best-effort: any failure
+        is logged, never raised into the sweeper.
+        """
+        if not settings.image_prune_enabled:
+            return
+        now = datetime.now(UTC)
+        last = self._last_image_prune
+        if (
+            last is not None
+            and (now - last).total_seconds() < settings.image_prune_interval_seconds
+        ):
+            return
+        self._last_image_prune = now
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "docker",
+                "image",
+                "prune",
+                "-f",
+                "--filter",
+                "dangling=true",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await proc.communicate()
+            if proc.returncode == 0:
+                summary = stdout.decode().strip().splitlines()[-1:] if stdout else []
+                logger.info(
+                    "pruned dangling images", reclaimed=summary[0] if summary else ""
+                )
+            else:
+                logger.warning("dangling-image prune returned non-zero")
+        except Exception as e:
+            logger.warning("dangling-image prune failed (best-effort)", error=str(e))
 
     async def _sweep_transcript_retention(self) -> None:
         """Prune agent transcripts older than the retention window.

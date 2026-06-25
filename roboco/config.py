@@ -608,6 +608,23 @@ class Settings(BaseSettings):
             "when present; this is the fallback used before one is set."
         ),
     )
+    image_prune_enabled: bool = Field(
+        default=True,
+        description=(
+            "Whether the orchestrator background sweep prunes dangling (<none>) "
+            "Docker images. Each agent-image rebuild orphans the prior build's "
+            "layers as an untagged image; over many deploys these pile up. "
+            "Only DANGLING images are removed — a tagged image or one backing a "
+            "running container is never dangling. Disable to keep them."
+        ),
+    )
+    image_prune_interval_seconds: int = Field(
+        default=21600,
+        ge=300,
+        description=(
+            "Minimum seconds between dangling-image prune passes (default 6h)."
+        ),
+    )
     transcript_prune_enabled: bool = Field(
         default=True,
         description=(
