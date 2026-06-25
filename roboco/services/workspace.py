@@ -24,8 +24,10 @@ import json
 import math
 import os
 import re
+import shlex
 import shutil
 import subprocess
+import tempfile
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -41,6 +43,10 @@ from roboco.models.base import Team
 from roboco.services.toolchain import resolve_target_python
 
 logger = get_logger(__name__)
+
+# Lockfile paths the dep-update probe inspects when a project sets no explicit
+# dep_update_paths — the two RoboCo's stack uses.
+_DEP_LOCK_DEFAULTS = ("uv.lock", "pnpm-lock.yaml")
 
 # A healthy loose ref file holds either an object id (sha1 = 40 hex, sha256 = 64
 # hex) or a symbolic ref ("ref: refs/..."). Anything else is debris — used to
@@ -1266,6 +1272,98 @@ class WorkspaceService:
             command=label,
         )
         return True
+
+    async def dry_upgrade_changes_lockfile(self, project: Any) -> bool:
+        """Read-only probe: would a dependency upgrade change this repo's lockfiles?
+
+        Clones the project's read clone into a throwaway dir, runs
+        ``project.dep_update_command`` there, and reports whether any lockfile
+        path is dirty. The read clone is never mutated and nothing is committed
+        or pushed. Returns False (don't originate) on a null command or any
+        probe/command error — fail-safe — and logs loudly. The throwaway is
+        always removed.
+        """
+        command = str(getattr(project, "dep_update_command", None) or "").strip()
+        if not command:
+            return False
+        slug = str(getattr(project, "slug", "") or "")
+        try:
+            read_clone = await self.ensure_read_clone(slug)
+        except WorkspaceError as exc:
+            logger.warning(
+                "dep-update probe: read clone unavailable",
+                project=slug,
+                error=str(exc),
+            )
+            return False
+        lock_paths = list(
+            getattr(project, "dep_update_paths", None) or _DEP_LOCK_DEFAULTS
+        )
+        tmp = Path(tempfile.mkdtemp(prefix="dep-probe-"))
+        try:
+            return await asyncio.to_thread(
+                self._probe_lockfile_change, read_clone, tmp, command, lock_paths
+            )
+        except Exception as exc:
+            logger.warning(
+                "dep-update probe failed; not originating",
+                project=slug,
+                error=str(exc),
+            )
+            return False
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    @staticmethod
+    def _probe_lockfile_change(
+        read_clone: Path, tmp: Path, command: str, lock_paths: list[str]
+    ) -> bool:
+        """Sync core of the dep-update probe (run in a thread). True if dirty.
+
+        Isolated local clone (``--no-hardlinks``) so the read clone is never
+        touched; runs the upgrade with no shell (``shlex.split``); a non-zero
+        upgrade yields False (fail-safe, don't originate on a broken probe).
+        """
+        clone_dir = tmp / "repo"
+        timeout = settings.workspace_dep_install_timeout_seconds
+        subprocess.run(
+            [
+                "git",
+                "clone",
+                "--local",
+                "--no-hardlinks",
+                str(read_clone),
+                str(clone_dir),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=True,
+        )
+        upgrade = subprocess.run(
+            shlex.split(command),
+            cwd=str(clone_dir),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+        if upgrade.returncode != 0:
+            logger.warning(
+                "dep-update probe: upgrade command non-zero; not originating",
+                command=command,
+                stderr=upgrade.stderr.strip()[:2000],
+            )
+            return False
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--", *lock_paths],
+            cwd=str(clone_dir),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+        return bool(status.stdout.strip())
 
     async def workspace_exists(
         self,
