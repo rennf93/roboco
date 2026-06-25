@@ -17,14 +17,14 @@
 | `resume` | `resume(task_id: UUID)` |
 | `submit_up` | `submit_up(task_id: UUID, notes: str)` |
 | `triage` | `triage()` |
-| `unblock` | `unblock(task_id: UUID, restore: bool = True)` |
+| `unblock` | `unblock(task_id: UUID, reason: str, restore: bool = True)` |
 | `unclaim` | `unclaim(task_id: UUID)` |
 
 ### Content (do) tools
 
 | Tool | Body schema |
 |------|-------------|
-| `note` | `note(text: str, scope: str = 'note', task_id: UUID | None = None, title: str | None = None, context: str = '', options: list[str | str] | None = None, chosen: str = '', rationale: str = '', consequences: list[str] | None = None, what_done: str = '', what_learned: str = '', what_struggled: str = '', next_steps: list[str] | None = None)` |
+| `note` | `note(text: str, scope: str = 'note', task_id: UUID | None = None, title: str | None = None, context: str = '', options: list[str | str] | None = None, chosen: str = '', rationale: str = '', consequences: list[str] | None = None, what_done: str = '', what_learned: str = '', what_struggled: str = '', next_steps: list[str] | None = None, section: str | Any | None = None)` |
 | `say` | `say(channel: str, text: str, task_id: UUID | None = None)` |
 | `dm` | `dm(recipient: str, text: str, task_id: UUID | None = None, skill: str | None = None)` |
 | `notify` | `notify(target: str, text: str, priority: str = 'normal', task_id: UUID | None = None)` |
@@ -32,6 +32,7 @@
 | `open_session` | `open_session(task_id: UUID, channel: str, topic: str, relationship_type: str = 'discussion', group_id: UUID | None = None)` |
 | `link_session` | `link_session(session_id: UUID, task_id: UUID, is_primary: bool = False, relationship_type: str = 'discussion')` |
 | `pr_update` | `pr_update(see do_server)` |
+| `draft_playbook` | `draft_playbook(title: str, problem: str, procedure: str, tags: list[str] = PydanticUndefined, source_task_id: UUID | None = None)` |
 | `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
 | `notify_get` | `notify_get(notification_id: UUID)` |
 | `notify_ack` | `notify_ack(notification_id: UUID)` |

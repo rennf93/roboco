@@ -48,12 +48,21 @@ _DEV_DO = (
     "evidence",
     "progress",
     "pr_update",
+    "draft_playbook",
     *_NOTIFY_RECEIVER,
     *_CHANNEL_DISCOVERY,
 )
 
 _QA_FLOW = spec.intents_for_role(spec.Role.QA)
-_QA_DO = ("note", "say", "dm", "evidence", *_NOTIFY_RECEIVER, *_CHANNEL_DISCOVERY)
+_QA_DO = (
+    "note",
+    "say",
+    "dm",
+    "evidence",
+    "draft_playbook",
+    *_NOTIFY_RECEIVER,
+    *_CHANNEL_DISCOVERY,
+)
 
 _DOC_FLOW = spec.intents_for_role(spec.Role.DOCUMENTER)
 _DOC_DO = (
@@ -64,6 +73,7 @@ _DOC_DO = (
     "evidence",
     "progress",
     "pr_update",
+    "draft_playbook",
     *_NOTIFY_RECEIVER,
     *_CHANNEL_DISCOVERY,
 )
@@ -78,6 +88,7 @@ _CELL_PM_DO = (
     "open_session",
     "link_session",
     "pr_update",
+    "draft_playbook",
     *_NOTIFY_RECEIVER,
     *_CHANNEL_DISCOVERY,
 )
@@ -92,6 +103,7 @@ _MAIN_PM_DO = (
     "open_session",
     "link_session",
     "pr_update",
+    "draft_playbook",
     *_NOTIFY_RECEIVER,
     *_CHANNEL_DISCOVERY,
 )
@@ -113,7 +125,19 @@ _BOARD_DO = (
 _AUDITOR_FLOW = spec.intents_for_role(spec.Role.AUDITOR)
 # Auditor reads, does not chat or escalate. notify_list/get for inbox visibility;
 # no ack (silent observer — wouldn't ack notifications). channels for read map.
-_AUDITOR_DO = ("note", "evidence", "notify_list", "notify_get", *_CHANNEL_DISCOVERY)
+# The Auditor is the playbook quality gate — a deliberate, bounded expansion of
+# its surface (approve/reject/archive are KB curation actions, not agent comms,
+# so the no-say/no-dm restriction is preserved).
+_AUDITOR_DO = (
+    "note",
+    "evidence",
+    "approve_playbook",
+    "reject_playbook",
+    "archive_playbook",
+    "notify_list",
+    "notify_get",
+    *_CHANNEL_DISCOVERY,
+)
 
 # PR reviewer: a read-only reviewer of inbound external/fork PRs. Flow verbs come
 # from the lifecycle spec (a dedicated review trio, not QA's). It reads diffs and

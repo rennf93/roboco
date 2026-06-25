@@ -8,9 +8,12 @@ from fastapi import APIRouter, Depends, Header, Request
 from roboco.api.deps import get_content_actions
 from roboco.api.routes.v1._role_dep import envelope_to_response
 from roboco.api.schemas.v1.do import (
+    ApprovePlaybookRequest,
+    ArchivePlaybookRequest,
     ChannelsRequest,
     CommitRequest,
     DmRequest,
+    DraftPlaybookRequest,
     EvidenceRequest,
     LinkSessionRequest,
     NoteRequest,
@@ -23,6 +26,7 @@ from roboco.api.schemas.v1.do import (
     ProgressRequest,
     PRUpdateRequest,
     ReadMessagesRequest,
+    RejectPlaybookRequest,
     SayRequest,
 )
 from roboco.services.gateway.content_actions import ContentActions
@@ -292,5 +296,62 @@ async def do_pr_update(
         title=body.title,
         body=body.body,
         reviewers=body.reviewers,
+    )
+    return envelope_to_response(env, request)
+
+
+@router.post("/draft_playbook")
+async def do_draft_playbook(
+    request: Request,
+    body: DraftPlaybookRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.draft_playbook(
+        agent_id=x_agent_id,
+        title=body.title,
+        problem=body.problem,
+        procedure=body.procedure,
+        tags=body.tags,
+        source_task_id=body.source_task_id,
+    )
+    return envelope_to_response(env, request)
+
+
+@router.post("/approve_playbook")
+async def do_approve_playbook(
+    request: Request,
+    body: ApprovePlaybookRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.approve_playbook(
+        agent_id=x_agent_id, playbook_id=body.playbook_id
+    )
+    return envelope_to_response(env, request)
+
+
+@router.post("/reject_playbook")
+async def do_reject_playbook(
+    request: Request,
+    body: RejectPlaybookRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.reject_playbook(
+        agent_id=x_agent_id, playbook_id=body.playbook_id, reason=body.reason
+    )
+    return envelope_to_response(env, request)
+
+
+@router.post("/archive_playbook")
+async def do_archive_playbook(
+    request: Request,
+    body: ArchivePlaybookRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.archive_playbook(
+        agent_id=x_agent_id, playbook_id=body.playbook_id
     )
     return envelope_to_response(env, request)
