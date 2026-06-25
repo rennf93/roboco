@@ -714,12 +714,15 @@ class AgentOrchestrator:
         self._sweeper_task: asyncio.Task | None = None
         # Last time the transcript-retention prune ran (throttled in the sweep).
         self._last_transcript_prune: datetime | None = None
+        self._last_image_prune: datetime | None = None
         # Rate-limit probe loop: 30-second interval, scans Redis for all
         # rate-limited providers and resolves waiting agents on success.
         self._rate_limit_probe_task: asyncio.Task | None = None
         self._strategy_engine_task: asyncio.Task | None = None
         self._external_pr_poll_task: asyncio.Task | None = None
         self._self_heal_task: asyncio.Task | None = None
+        self._ci_watch_task: asyncio.Task | None = None
+        self._dep_update_task: asyncio.Task | None = None
         # Provider registry: maps a ModelProvider to a dedicated AgentProvider
         # backend. Only providers needing a non-Claude-Code runtime are
         # registered (currently GROK, which speaks the OpenAI protocol). Agents
@@ -830,6 +833,8 @@ class AgentOrchestrator:
         self._strategy_engine_task = asyncio.create_task(self._strategy_engine_loop())
         self._external_pr_poll_task = asyncio.create_task(self._external_pr_poll_loop())
         self._self_heal_task = asyncio.create_task(self._self_heal_loop())
+        self._ci_watch_task = asyncio.create_task(self._ci_watch_loop())
+        self._dep_update_task = asyncio.create_task(self._dep_update_loop())
 
         logger.info(
             "Orchestrator started",
@@ -837,45 +842,31 @@ class AgentOrchestrator:
             internal_api_url=self._api_url,
         )
 
+    async def _cancel_background_task(self, task: asyncio.Task | None) -> None:
+        """Cancel one background loop task and await its teardown (idempotent)."""
+        if task is None:
+            return
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
     async def stop(self) -> None:
         """Stop the orchestrator and all agents."""
         self._running = False
 
-        # Cancel background tasks
-        if self._health_task:
-            self._health_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._health_task
-
-        if self._dispatcher_task:
-            self._dispatcher_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._dispatcher_task
-
-        if self._sweeper_task:
-            self._sweeper_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._sweeper_task
-
-        if self._rate_limit_probe_task:
-            self._rate_limit_probe_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._rate_limit_probe_task
-
-        if self._strategy_engine_task:
-            self._strategy_engine_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._strategy_engine_task
-
-        if self._external_pr_poll_task:
-            self._external_pr_poll_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._external_pr_poll_task
-
-        if self._self_heal_task:
-            self._self_heal_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._self_heal_task
+        # Cancel every background loop, then stop the agents.
+        for task in (
+            self._health_task,
+            self._dispatcher_task,
+            self._sweeper_task,
+            self._rate_limit_probe_task,
+            self._strategy_engine_task,
+            self._external_pr_poll_task,
+            self._self_heal_task,
+            self._ci_watch_task,
+            self._dep_update_task,
+        ):
+            await self._cancel_background_task(task)
 
         # Stop all agents
         for agent_id in list(self._instances.keys()):
@@ -5009,6 +5000,10 @@ Start by:
         # operator's bind-mounted ~/.claude doesn't grow without bound.
         await self._sweep_transcript_retention()
 
+        # Prune dangling (<none>) Docker images left by agent-image rebuilds
+        # (throttled internally to ~6h) so deploys don't pile up orphaned layers.
+        await self._sweep_dangling_images()
+
         # Close-on-land for landed supersedes — runs here (always-on sweeper)
         # rather than the default-off external-PR poll loop, so a supersede that
         # lands after external_pr_enabled is toggled off is still reconciled.
@@ -5037,6 +5032,49 @@ Start by:
             except Exception as e:
                 await db.rollback()
                 logger.warning("Supersede close-on-land sweep failed", error=str(e))
+
+    async def _sweep_dangling_images(self) -> None:
+        """Prune dangling (<none>) Docker images left by agent-image rebuilds.
+
+        Each rebuild of an agent image orphans the prior build's layers as an
+        untagged ``<none>`` image; over many deploys these pile up (the operator
+        saw ~80). Pruning only DANGLING images is safe — a tagged image, or one
+        backing a running container, is never dangling. Throttled to
+        ``settings.image_prune_interval_seconds`` (default 6h) and gated by
+        ``settings.image_prune_enabled`` (default on). Best-effort: any failure
+        is logged, never raised into the sweeper.
+        """
+        if not settings.image_prune_enabled:
+            return
+        now = datetime.now(UTC)
+        last = self._last_image_prune
+        if (
+            last is not None
+            and (now - last).total_seconds() < settings.image_prune_interval_seconds
+        ):
+            return
+        self._last_image_prune = now
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "docker",
+                "image",
+                "prune",
+                "-f",
+                "--filter",
+                "dangling=true",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await proc.communicate()
+            if proc.returncode == 0:
+                summary = stdout.decode().strip().splitlines()[-1:] if stdout else []
+                logger.info(
+                    "pruned dangling images", reclaimed=summary[0] if summary else ""
+                )
+            else:
+                logger.warning("dangling-image prune returned non-zero")
+        except Exception as e:
+            logger.warning("dangling-image prune failed (best-effort)", error=str(e))
 
     async def _sweep_transcript_retention(self) -> None:
         """Prune agent transcripts older than the retention window.
@@ -5526,6 +5564,120 @@ Start by:
                 break
             except Exception:
                 logger.exception("self-heal cycle failed")
+
+    async def _ci_watch_loop(self) -> None:
+        """Multi-repo CI-watch: watch every opted-in project's CI, open fix tasks.
+
+        Dormant by default — returns immediately unless ``ci_watch_enabled``, so
+        a standard deployment adds zero behaviour. It generalizes the single-repo
+        self-heal loop (which is untouched) to every project with
+        ``ci_watch_enabled`` set; like self-heal it only OPENS a fix task and
+        never starts / approves / merges / deploys. The per-cycle session commits
+        any opened task here.
+        """
+        if not settings.ci_watch_enabled:
+            return
+        interval = settings.ci_watch_interval_seconds
+        while self._running:
+            try:
+                await asyncio.sleep(interval)
+                await self._run_ci_watch_cycle()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("ci-watch cycle failed")
+
+    async def _run_ci_watch_cycle(self) -> None:
+        """One CI-watch pass: load the watch set, run the engine, commit.
+
+        Extracted from the loop so it is testable without the sleep. A loud
+        warning fires when CI-watch is armed but no project opted in (so a
+        misconfiguration isn't mistaken for "all green").
+        """
+        from roboco.db import get_db_context
+        from roboco.services.ci_watch_engine import get_ci_watch_engine
+
+        async with get_db_context() as db:
+            watch_set = await self._load_ci_watch_set(db)
+            if not watch_set:
+                logger.warning(
+                    "ci-watch enabled but no project has ci_watch_enabled — "
+                    "nothing to watch"
+                )
+                return
+            await get_ci_watch_engine(db).run_cycle(watch_set)
+            await db.commit()
+
+    async def _load_ci_watch_set(self, db: Any) -> list[Any]:
+        """Opted-in projects (``ci_watch_enabled`` + a git_url), one per repo.
+
+        Collapsing to one canonical project per repo means a monorepo's several
+        cell-projects are watched as a single repo, not N times.
+        """
+        from roboco.services.project import get_project_service
+
+        projects = await get_project_service(db).list_all(active_only=True)
+        watched = [
+            p
+            for p in projects
+            if getattr(p, "ci_watch_enabled", False) and getattr(p, "git_url", None)
+        ]
+        return self._projects_one_per_repo(watched)
+
+    async def _dep_update_loop(self) -> None:
+        """Dependency-update bot: probe opted-in projects, open update tasks.
+
+        Dormant by default — returns immediately unless ``dep_update_enabled``.
+        Each interval (default weekly) it loads projects with a
+        ``dep_update_command``, collapses to one per repo, and runs
+        ``DepUpdateEngine.run_cycle``; it only OPENS a task and never starts /
+        approves / merges / deploys. Separate from the self-heal and CI-watch
+        loops.
+        """
+        if not settings.dep_update_enabled:
+            return
+        interval = settings.dep_update_interval_seconds
+        while self._running:
+            try:
+                await asyncio.sleep(interval)
+                await self._run_dep_update_cycle()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("dep-update cycle failed")
+
+    async def _run_dep_update_cycle(self) -> None:
+        """One dep-update pass: load eligible projects, run the engine, commit.
+
+        Extracted from the loop so it is testable without the sleep. Warns when
+        the bot is armed but no project has a ``dep_update_command`` set.
+        """
+        from roboco.db import get_db_context
+        from roboco.services.dep_update_engine import get_dep_update_engine
+
+        async with get_db_context() as db:
+            projects = await self._load_dep_update_set(db)
+            if not projects:
+                logger.warning(
+                    "dep-update enabled but no project has a dep_update_command — "
+                    "nothing to probe"
+                )
+                return
+            await get_dep_update_engine(db).run_cycle(projects)
+            await db.commit()
+
+    async def _load_dep_update_set(self, db: Any) -> list[Any]:
+        """Projects with a ``dep_update_command`` + a git_url, one per repo."""
+        from roboco.services.project import get_project_service
+
+        projects = await get_project_service(db).list_all(active_only=True)
+        eligible = [
+            p
+            for p in projects
+            if str(getattr(p, "dep_update_command", None) or "").strip()
+            and getattr(p, "git_url", None)
+        ]
+        return self._projects_one_per_repo(eligible)
 
     @staticmethod
     def _repo_key(git_url: str) -> str:

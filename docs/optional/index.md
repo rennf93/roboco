@@ -20,6 +20,8 @@ You toggle these from **Settings → Feature Flags** in the panel rather than ha
 | [Pitch provisioning](pitch-provisioning.md) | `ROBOCO_PROVISIONING_TOKEN` (+ org) | inert until set | On pitch approval, auto-creates repos and seeds a build task. |
 | [External / internal PR review](pr-review.md) | `ROBOCO_EXTERNAL_PR_ENABLED` / `ROBOCO_INTERNAL_PR_ENABLED` | off | Reviews inbound external/fork PRs and untied org-repo PRs. |
 | [Self-healing CI](self-heal.md) | `ROBOCO_SELF_HEAL_ENABLED` (+ originate) | off | Watches RoboCo's own CI and, optionally, queues a CEO-gated fix task. |
+| [Multi-repo CI-watch](autonomous-maintenance.md) | `ROBOCO_CI_WATCH_ENABLED` (+ per-project) | off | Watches each opted-in project's CI and opens one fix task when it goes red; never auto-merges. |
+| [Dependency-update bot](autonomous-maintenance.md) | `ROBOCO_DEP_UPDATE_ENABLED` (+ per-project) | off | Read-only checks whether an upgrade changes a project's lockfiles and opens an update task; never auto-merges. |
 
 !!! note "Always-on resilience"
-    Provider overload parking (`ROBOCO_OVERLOAD_BREAK_ENABLED`) is **on by default** — it's not something you enable, it's a safety net. See [Resilience](../models/resilience.md).
+    Provider overload parking (`ROBOCO_OVERLOAD_BREAK_ENABLED`) and the dangling-image prune (`ROBOCO_IMAGE_PRUNE_ENABLED`) are **on by default** — they're not things you enable, they're safety nets you can disable. See [Resilience](../models/resilience.md).

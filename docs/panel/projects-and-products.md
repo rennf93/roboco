@@ -8,7 +8,7 @@ A project is one git repository plus the configuration that tells the company ho
 
 - **New** opens the create dialog — name, slug, git URL, GitHub token, assigned cell, default branch, and optional per-project gate commands.
 - The list supports **search**, a **cell filter**, and a **show-inactive** toggle so retired repos stay out of the way without being deleted.
-- **Edit** reopens the same form to rotate the token, change the gate commands, or flip the assigned cell. The edit dialog also hosts the per-project **Conventions** tab — see [Architectural conventions](../optional/conventions.md).
+- **Edit** reopens the same form to rotate the token, change the gate commands, or flip the assigned cell. The edit dialog also hosts the per-project **Conventions** tab — see [Architectural conventions](../optional/conventions.md) — and an **Autonomous Maintenance** section to opt the project into CI-watch (with an optional workflow file) and the dependency-update bot (its command and optional lockfile paths) — see [Autonomous maintenance](../optional/autonomous-maintenance.md).
 
 The field-by-field detail — what each field means, the token scopes you need, the encryption guarantee, and the default-branch gotcha — lives in [Register your first project](../get-started/first-project.md). Read that page before you create a repo; this page doesn't repeat it.
 

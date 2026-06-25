@@ -213,6 +213,11 @@ async def update_project(
         format_command=data.format_command,
         typecheck_command=data.typecheck_command,
         build_command=data.build_command,
+        quality_command=data.quality_command,
+        ci_watch_enabled=data.ci_watch_enabled,
+        ci_watch_workflow=data.ci_watch_workflow,
+        dep_update_command=data.dep_update_command,
+        dep_update_paths=data.dep_update_paths,
         is_active=data.is_active,
     )
 

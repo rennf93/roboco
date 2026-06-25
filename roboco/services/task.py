@@ -421,6 +421,17 @@ PR_REVIEW_SOURCES = ("external_pr", "internal_pr")
 # Approve-&-Starts it; the loop itself never starts/approves/merges it.
 SELF_HEAL_SOURCE = "self_heal"
 
+# Source tag for a multi-repo CI-watch fix task: opened when an OPTED-IN
+# project's CI regresses on its default branch. Like self_heal it rides the
+# normal delivery lifecycle (+ PR-review gate) and is never auto-merged; unlike
+# self_heal it can target any watched project, not just RoboCo's own repo.
+CI_WATCH_SOURCE = "ci_watch"
+
+# Source tag for a dependency-update task: opened by the dep-update bot when an
+# opted-in project has dependency updates available. Rides the normal delivery
+# lifecycle (+ PR-review gate) and is never auto-merged.
+DEP_UPDATE_SOURCE = "dep_update"
+
 
 def extract_self_heal_fingerprint(task: Any) -> str | None:
     """The self-heal dedupe fingerprint from a task's markers, or None.
@@ -867,22 +878,45 @@ class TaskService(BaseService):
     async def external_review_task_exists(
         self, project_id: UUID, pr_number: int, head_sha: str | None = None
     ) -> bool:
-        """True if this (project, external PR) at this head commit is already reviewed.
+        """True if this REPO's external PR at this head commit is already reviewed.
 
-        De-dupe key for inbound external-PR ingestion. Re-review is driven by the
-        PR's head commit: a review task records the SHA it covered as an
-        ``external_pr_head=<sha>`` marker in ``quick_context``. So:
+        De-dupe key for inbound external-PR ingestion. The scope is the **repo**
+        (``git_url``), not a single project: a monorepo registers several
+        cell-projects on one repo (the poll already collapses to one canonical
+        project per repo), and a review task may be re-pointed to a sibling
+        project — so a project-scoped check would open a second review per
+        cell-project / after a re-point. Re-review is driven by the PR's head
+        commit, recorded as an ``external_pr_head=<sha>`` marker. So:
 
-        - no review task for this PR yet -> False (ingest the first review);
-        - a task already covers THIS ``head_sha`` -> True (skip — nothing changed);
-        - a legacy/markerless task exists, or ``head_sha`` is unknown -> True
-          (can't prove it changed, so don't re-review / don't spam);
-        - tasks exist but all cover OTHER SHAs -> False (the PR got new commits —
-          open a fresh review for the change).
+        - no review task for this PR on any project in this repo -> False;
+        - a task already covers THIS ``head_sha`` -> True (nothing changed);
+        - a legacy/markerless task exists, or ``head_sha`` is unknown -> True;
+        - tasks exist but all cover OTHER SHAs -> False (new commits — re-review).
         """
+        # Resolve every project sharing this project's repo (git_url) so the
+        # dedupe spans the whole monorepo, not just the one project. An unknown
+        # project_id falls back to itself (can't widen).
+        git_url = (
+            await self.session.execute(
+                select(ProjectTable.git_url).where(ProjectTable.id == project_id)
+            )
+        ).scalar_one_or_none()
+        if git_url:
+            sibling_ids = (
+                (
+                    await self.session.execute(
+                        select(ProjectTable.id).where(ProjectTable.git_url == git_url)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            scope_ids = list(sibling_ids) or [project_id]
+        else:
+            scope_ids = [project_id]
         result = await self.session.execute(
             select(TaskTable.orchestration_markers).where(
-                TaskTable.project_id == project_id,
+                TaskTable.project_id.in_(scope_ids),
                 TaskTable.source.in_(PR_REVIEW_SOURCES),
                 TaskTable.pr_number == pr_number,
             )
@@ -997,6 +1031,49 @@ class TaskService(BaseService):
                 TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
             )
         )
+        return list(result.scalars().all())
+
+    async def list_open_ci_watch_tasks(
+        self, git_url: str | None = None
+    ) -> list[TaskTable]:
+        """Non-terminal ci_watch fix tasks — the dedupe + open-cap basis.
+
+        Optionally scoped to one repo by ``git_url``: a monorepo registers
+        several cell-projects on ONE git_url, so CI-watch dedupe must key on the
+        repo, not the project slug — otherwise a red monorepo would open one fix
+        task per cell-project. While an open task exists for a repo the loop must
+        not originate a second; the rolling open-task cap counts these.
+        """
+        stmt = select(TaskTable).where(
+            TaskTable.source == CI_WATCH_SOURCE,
+            TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+        )
+        if git_url is not None:
+            stmt = stmt.join(
+                ProjectTable, TaskTable.project_id == ProjectTable.id
+            ).where(ProjectTable.git_url == git_url)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def list_open_dep_update_tasks(
+        self, git_url: str | None = None
+    ) -> list[TaskTable]:
+        """Non-terminal dep_update tasks — the dedupe + open-cap basis.
+
+        Optionally scoped to one repo by ``git_url`` so a monorepo (several
+        cell-projects, one git_url) gets at most one open dependency-update task,
+        not one per cell-project. While an open task exists for a repo the bot
+        must not originate a second; the rolling open-task cap counts these.
+        """
+        stmt = select(TaskTable).where(
+            TaskTable.source == DEP_UPDATE_SOURCE,
+            TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+        )
+        if git_url is not None:
+            stmt = stmt.join(
+                ProjectTable, TaskTable.project_id == ProjectTable.id
+            ).where(ProjectTable.git_url == git_url)
+        result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
     async def list_external_pr_reviews_awaiting_decision(self) -> list[TaskTable]:

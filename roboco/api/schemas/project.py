@@ -44,6 +44,12 @@ class ProjectResponse(BaseModel):
     build_command: str | None = None
     quality_command: str | None = None
 
+    # Autonomous maintenance opt-in
+    ci_watch_enabled: bool = False
+    ci_watch_workflow: str | None = None
+    dep_update_command: str | None = None
+    dep_update_paths: list[str] | None = None
+
     # Runtime state
     workspace_path: str | None = None
     last_synced_at: datetime | None = None
@@ -130,6 +136,12 @@ class ProjectUpdateRequest(BaseModel):
     build_command: str | None = None
     quality_command: str | None = None
 
+    # Autonomous maintenance opt-in
+    ci_watch_enabled: bool | None = None
+    ci_watch_workflow: str | None = None
+    dep_update_command: str | None = None
+    dep_update_paths: list[str] | None = None
+
     # State
     is_active: bool | None = None
 
@@ -210,6 +222,10 @@ def project_to_response(project: "ProjectTable") -> ProjectResponse:
         typecheck_command=project.typecheck_command,
         build_command=project.build_command,
         quality_command=project.quality_command,
+        ci_watch_enabled=bool(project.ci_watch_enabled),
+        ci_watch_workflow=project.ci_watch_workflow,
+        dep_update_command=project.dep_update_command,
+        dep_update_paths=project.dep_update_paths,
         workspace_path=project.workspace_path,
         last_synced_at=project.last_synced_at,
         head_commit=project.head_commit,

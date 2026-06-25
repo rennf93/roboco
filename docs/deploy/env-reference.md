@@ -212,6 +212,7 @@ These gate the env-toggled capabilities. Each is inert when off. See [Optional c
 | `ROBOCO_OVERLOAD_BREAK_ENABLED` | `true` | Park a provider on a persistent overload (HTTP 529/500/503) the way a 429 is parked, instead of crash-retrying. |
 | `ROBOCO_GATEWAY_HEALTH_ENABLED` | `true` | Probe a stale-heartbeat-but-live agent's gateway and kill + respawn it when the gateway is broken (a corrupted `/app` venv firing no verb), instead of the reaper protecting it forever. Off => spare live containers on verb-heartbeat liveness alone. |
 | `ROBOCO_GATEWAY_HEALTH_GRACE_SECONDS` | `180` | How long an agent gateway may probe as broken before recovery — tolerates a transient probe miss. |
+| `ROBOCO_IMAGE_PRUNE_ENABLED` | `true` | Background sweep prunes dangling (`<none>`) Docker images left by agent-image rebuilds, throttled ~6h. Only dangling images are removed — a tagged image or one backing a running container is never touched. Not a feature flag; disable to manage image cleanup yourself. |
 
 ### Strategy engine — default **off**
 
@@ -242,6 +243,29 @@ These gate the env-toggled capabilities. Each is inert when off. See [Optional c
 | `ROBOCO_SELF_HEAL_INTERVAL_SECONDS` | `1800` | Seconds between telemetry passes. |
 | `ROBOCO_SELF_HEAL_MAX_OPEN_TASKS` | `3` | Rolling cap on concurrently-open self-heal tasks. |
 | `ROBOCO_SELF_HEAL_MAX_PER_CYCLE` | `1` | Max self-heal tasks originated in one cycle. |
+
+### Multi-repo CI-watch — default **off**
+
+The global switch arms the engine; each project opts in via `ci_watch_enabled` (+ optional `ci_watch_workflow`) in the edit-project dialog.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `ROBOCO_CI_WATCH_ENABLED` | `false` | Master switch for watching opted-in projects' CI. When off the engine never runs and no CI telemetry is fetched. |
+| `ROBOCO_CI_WATCH_DEFAULT_WORKFLOW` | `ci.yml` | Workflow file to scope the CI signal to when a project sets no `ci_watch_workflow` of its own. |
+| `ROBOCO_CI_WATCH_INTERVAL_SECONDS` | `1800` | Seconds between CI-watch passes. |
+| `ROBOCO_CI_WATCH_MAX_OPEN_TASKS` | `3` | Rolling cap on concurrently-open CI-watch fix tasks per repo. |
+| `ROBOCO_CI_WATCH_MAX_PER_CYCLE` | `1` | Max CI-watch fix tasks opened in one cycle. |
+
+### Dependency-update bot — default **off**
+
+The global switch arms the engine; each project opts in via `dep_update_command` (+ optional `dep_update_paths`) in the edit-project dialog. Detection is read-only — the command runs in a throwaway clone and only the lockfiles are diffed; the real repo is never mutated.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `ROBOCO_DEP_UPDATE_ENABLED` | `false` | Master switch for the dependency-update bot. When off nothing runs and no throwaway clone is made. |
+| `ROBOCO_DEP_UPDATE_INTERVAL_SECONDS` | `604800` | Seconds between dependency-update passes (default weekly). |
+| `ROBOCO_DEP_UPDATE_MAX_OPEN_TASKS` | `3` | Rolling cap on concurrently-open update-dependencies tasks per repo. |
+| `ROBOCO_DEP_UPDATE_MAX_PER_CYCLE` | `1` | Max update-dependencies tasks opened in one cycle. |
 
 ## Next
 

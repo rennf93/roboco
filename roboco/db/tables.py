@@ -497,6 +497,22 @@ class ProjectTable(Base):
     # lint/typecheck pair — e.g. "make gate".
     quality_command: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
+    # Autonomous maintenance opt-in (multi-repo CI-watch). Default-off: a
+    # project is watched only when ci_watch_enabled is set; ci_watch_workflow
+    # scopes the CI signal to one workflow file (null → the engine default).
+    ci_watch_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
+    )
+    ci_watch_workflow: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    # Dependency-update bot opt-in. A project participates only when
+    # dep_update_command is set (e.g. "uv lock --upgrade"); dep_update_paths are
+    # the lockfile globs the probe inspects (null → infer uv.lock/pnpm-lock.yaml).
+    dep_update_command: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    dep_update_paths: Mapped[list[str] | None] = mapped_column(
+        ARRAY(String), nullable=True
+    )
+
     # Access Control
     assigned_cell: Mapped[Team] = mapped_column(_str_enum(Team), nullable=False)
     allowed_agents: Mapped[list[PyUUID] | None] = mapped_column(

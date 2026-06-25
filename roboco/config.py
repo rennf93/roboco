@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     # ==========================================================================
     # Application
     # ==========================================================================
-    app_version: str = "0.11.1"
+    app_version: str = "0.12.0"
     debug: bool = False
     environment: str = Field(
         default="development", pattern="^(development|staging|production)$"
@@ -477,6 +477,75 @@ class Settings(BaseSettings):
         description="Max self-heal fix tasks the loop may originate in one cycle.",
     )
 
+    # Multi-repo CI-watch — generalizes the single-repo self-heal CI loop to any
+    # opted-in project (per-project `ci_watch_enabled` column). Default-off;
+    # never auto-merges (fix tasks ride the normal delivery + PR-review gate).
+    ci_watch_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for the multi-repo CI-watch loop. OFF by default; "
+            "when off the loop does not run and no CI telemetry is fetched. "
+            "Generalizes self-heal to every project with ci_watch_enabled set."
+        ),
+    )
+    ci_watch_default_workflow: str = Field(
+        default="ci.yml",
+        description=(
+            "Default GitHub Actions workflow file to scope the CI signal to when "
+            "a watched project does not set its own ci_watch_workflow. Empty "
+            "reads the latest run across ALL workflows on the default branch, "
+            "which on a multi-workflow repo lets a green run mask a red CI run."
+        ),
+    )
+    ci_watch_interval_seconds: int = Field(
+        default=1800,
+        ge=60,
+        description="Seconds between CI-watch telemetry assessment passes.",
+    )
+    ci_watch_max_open_tasks: int = Field(
+        default=3,
+        ge=1,
+        description=(
+            "Rolling cap on concurrently-open ci_watch tasks across all repos; "
+            "the loop originates nothing more while this many are still open."
+        ),
+    )
+    ci_watch_max_per_cycle: int = Field(
+        default=1,
+        ge=1,
+        description="Max ci_watch fix tasks the loop may originate in one cycle.",
+    )
+
+    # Dependency-update bot — periodically detects available dependency updates
+    # per opted-in project (a read-clone lockfile-diff probe) and opens an
+    # "update dependencies" task. Default-off; never auto-merges (rides the
+    # normal delivery + PR-review gate).
+    dep_update_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for the dependency-update bot. OFF by default; when "
+            "off the loop does not run and no probe is executed. Only projects "
+            "with a dep_update_command set participate."
+        ),
+    )
+    dep_update_interval_seconds: int = Field(
+        default=604800,
+        ge=300,
+        description="Seconds between dependency-update probe passes (default weekly).",
+    )
+    dep_update_max_open_tasks: int = Field(
+        default=3,
+        ge=1,
+        description=(
+            "Rolling cap on concurrently-open dep_update tasks across all repos."
+        ),
+    )
+    dep_update_max_per_cycle: int = Field(
+        default=1,
+        ge=1,
+        description="Max dep_update tasks the loop may originate in one cycle.",
+    )
+
     # ==========================================================================
     # Workspaces (Multi-Agent Git)
     # ==========================================================================
@@ -548,7 +617,7 @@ class Settings(BaseSettings):
     agent_image_tag: str = Field(
         default="",
         description=(
-            "Tag for pre-built agent images (e.g. 'latest' or '0.11.1'). Empty "
+            "Tag for pre-built agent images (e.g. 'latest' or '0.12.0'). Empty "
             "leaves the tag implicit (':latest'); only meaningful with "
             "agent_image_registry set."
         ),
@@ -567,6 +636,23 @@ class Settings(BaseSettings):
             "transcripts older than this. Panel-editable: a stored "
             "`transcript_retention_days` system setting overrides this default "
             "when present; this is the fallback used before one is set."
+        ),
+    )
+    image_prune_enabled: bool = Field(
+        default=True,
+        description=(
+            "Whether the orchestrator background sweep prunes dangling (<none>) "
+            "Docker images. Each agent-image rebuild orphans the prior build's "
+            "layers as an untagged image; over many deploys these pile up. "
+            "Only DANGLING images are removed — a tagged image or one backing a "
+            "running container is never dangling. Disable to keep them."
+        ),
+    )
+    image_prune_interval_seconds: int = Field(
+        default=21600,
+        ge=300,
+        description=(
+            "Minimum seconds between dangling-image prune passes (default 6h)."
         ),
     )
     transcript_prune_enabled: bool = Field(

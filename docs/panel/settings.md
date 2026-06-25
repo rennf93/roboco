@@ -14,6 +14,8 @@ The Feature Flags card is the operator's master switchboard for the optional, de
 | Strategy engine | Generating and maintaining strategy artifacts (drives the Command Center's Strategy Signals). |
 | Self-healing | Watching RoboCo's own CI and notifying you on a regression. |
 | Self-heal originate | Also opening a *pending* fix task for a regression — needs self-healing on, and the task waits for your approval. |
+| Multi-repo CI-watch | Watching each opted-in project's CI and opening one fix task when it goes red. |
+| Dependency-update bot | Read-only checking whether an upgrade changes a project's lockfiles, and opening an update task when it would. |
 | Pitch provisioning | Auto-provisioning projects from approved [pitches](./business.md). |
 | Toolchain match | Provisioning each agent workspace with the target project's own Python and blocking gates when its tests can't run. |
 | Conventions | Enforcing the per-project architectural standard (`.roboco/conventions.yml`). |
@@ -21,6 +23,9 @@ The Feature Flags card is the operator's master switchboard for the optional, de
 | Transcript prune | Running the background sweep that prunes old transcripts. |
 
 Each subsystem has a full page in the [optional subsystems section](../optional/index.md) — what it does, the exact `ROBOCO_*` env var behind it, and what turning it on changes.
+
+!!! note "The Multi-repo CI-watch and Dependency-update flags are global switches"
+    Both are off by default and need a per-project opt-in to do anything. The global flag here arms the engine; you then opt each project in from the **edit-project dialog → "Autonomous Maintenance" section**: turn on CI-watch and (optionally) name its workflow file (`ci_watch_workflow`, default `ci.yml`), and/or set the dependency-update command (`dep_update_command`, e.g. `uv lock --upgrade` / `pnpm update`) with optional comma-separated lockfile paths (`dep_update_paths`). See [Autonomous maintenance](../optional/autonomous-maintenance.md).
 
 !!! warning "Flags take effect on the next backend restart"
     Toggling a flag persists the choice server-side, but it does **not** hot-reload — the backend reads it at startup. The toast says as much: "takes effect on next restart." A flag you've never set falls back to its environment / config default. So: flip it here, then restart the orchestrator for it to take hold.

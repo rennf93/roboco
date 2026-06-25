@@ -38,6 +38,10 @@ The crucial property: **work is queued, never dropped.** Parked tasks wait; the 
 !!! tip "Parked is not stuck"
     If a run goes quiet, check the banner before assuming something broke. A parked provider with a counting-down timer is RoboCo waiting out a rate limit on purpose. The work is held and will resume — there's nothing for you to do.
 
+## Disk housekeeping: dangling-image prune
+
+Every agent-image rebuild leaves the previous build behind as a dangling (`<none>`) Docker image. Left alone they pile up and eat disk. The orchestrator's background sweep prunes them on a throttle (~6h): it removes **only** dangling images — a tagged image, or one still backing a running container, is never touched. It is gated by `ROBOCO_IMAGE_PRUNE_ENABLED`, which is **on by default**. This isn't a feature flag you opt into; it's an always-on safety net you can disable if you'd rather manage image cleanup yourself.
+
 ## Next
 
 - These guardrails are part of the broader [agent gateway](../company/agent-gateway.md) — agents are structurally constrained, not trusted to behave.

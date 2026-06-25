@@ -1128,6 +1128,11 @@ export interface Project {
   typecheck_command: string | null;
   build_command: string | null;
   quality_command: string | null;
+  // Autonomous maintenance opt-in
+  ci_watch_enabled: boolean;
+  ci_watch_workflow: string | null;
+  dep_update_command: string | null;
+  dep_update_paths: string[] | null;
   // Runtime state
   workspace_path: string | null;
   last_synced_at: string | null;
@@ -1170,6 +1175,11 @@ export interface ProjectUpdate {
   typecheck_command?: string;
   build_command?: string;
   quality_command?: string;
+  // Autonomous maintenance opt-in
+  ci_watch_enabled?: boolean;
+  ci_watch_workflow?: string;
+  dep_update_command?: string;
+  dep_update_paths?: string[];
 }
 
 export interface ProjectSummary {
