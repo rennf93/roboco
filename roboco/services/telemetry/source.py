@@ -23,6 +23,8 @@ from roboco.logging import get_logger
 from roboco.services.git import GitService
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = get_logger(__name__)
@@ -145,7 +147,7 @@ class MultiProjectCITelemetrySource:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def fetch(self, projects: list[object]) -> list[TelemetrySample]:
+    async def fetch(self, projects: Sequence[object]) -> list[TelemetrySample]:
         git = GitService(self.session)
         default_workflow = settings.ci_watch_default_workflow.strip()
         samples: list[TelemetrySample] = []

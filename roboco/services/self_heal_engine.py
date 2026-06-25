@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from roboco.config import settings
 from roboco.foundation import identity as _foundation
@@ -43,8 +43,6 @@ from roboco.services.task import (
 from roboco.services.telemetry import get_ci_telemetry_source
 
 if TYPE_CHECKING:
-    from uuid import UUID
-
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from roboco.services.telemetry import TelemetrySource
@@ -190,7 +188,7 @@ class SelfHealEngine(BaseService):
                     task_type=TaskType.CODE,
                     nature=TaskNature.TECHNICAL,
                     estimated_complexity=Complexity.MEDIUM,
-                    project_id=cast("UUID", project.id),
+                    project_id=project.id,
                     status=TaskStatus.PENDING,
                     source=SELF_HEAL_SOURCE,
                     confirmed_by_human=True,
