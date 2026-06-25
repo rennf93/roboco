@@ -566,6 +566,11 @@ class Settings(BaseSettings):
             "manager proposes a release (a feat/security change also qualifies)."
         ),
     )
+    release_manager_interval_seconds: int = Field(
+        default=3600,
+        ge=60,
+        description="Seconds between release-readiness assessment passes.",
+    )
 
     # ==========================================================================
     # Workspaces (Multi-Agent Git)

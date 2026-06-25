@@ -9,12 +9,14 @@ from roboco.config import Settings
 from roboco.services.settings import FEATURE_FLAGS, validate_setting
 
 _DEFAULT_MIN_COMMITS = 8
+_DEFAULT_INTERVAL = 3600
 
 
 def test_release_manager_disabled_by_default() -> None:
     s = Settings()
     assert s.release_manager_enabled is False
     assert s.release_min_commits == _DEFAULT_MIN_COMMITS
+    assert s.release_manager_interval_seconds == _DEFAULT_INTERVAL
 
 
 def test_release_manager_reads_env_var() -> None:

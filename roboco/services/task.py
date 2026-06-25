@@ -432,6 +432,12 @@ CI_WATCH_SOURCE = "ci_watch"
 # lifecycle (+ PR-review gate) and is never auto-merged.
 DEP_UPDATE_SOURCE = "dep_update"
 
+# Source tag for a gated release proposal: opened by the release-manager engine
+# when accumulated unreleased changes pass the threshold + the gate is green.
+# Unlike the sources above it is NEVER dispatched — it is HELD for the CEO
+# (confirmed_by_human=False) and acted on by the release routes + executor.
+RELEASE_MANAGER_SOURCE = "release_manager"
+
 
 def extract_self_heal_fingerprint(task: Any) -> str | None:
     """The self-heal dedupe fingerprint from a task's markers, or None.
@@ -1074,6 +1080,21 @@ class TaskService(BaseService):
                 ProjectTable, TaskTable.project_id == ProjectTable.id
             ).where(ProjectTable.git_url == git_url)
         result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def list_open_release_proposals(self) -> list[TaskTable]:
+        """Non-terminal release-manager proposals — the one-open-at-a-time basis.
+
+        The release manager holds at most one proposal open at a time; while one
+        is awaiting the CEO the loop originates no second. A proposal leaves this
+        set when the CEO approves (it completes) or rejects-and-cancels it.
+        """
+        result = await self.session.execute(
+            select(TaskTable).where(
+                TaskTable.source == RELEASE_MANAGER_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+        )
         return list(result.scalars().all())
 
     async def list_external_pr_reviews_awaiting_decision(self) -> list[TaskTable]:

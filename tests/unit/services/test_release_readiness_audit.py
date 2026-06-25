@@ -8,10 +8,12 @@ the real repo at the bottom.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 from roboco.services.release_readiness import (
     CommitInfo,
+    ReleaseReadinessReport,
     ReleaseRepoSnapshot,
     assess,
     gather_snapshot,
@@ -23,26 +25,25 @@ _DRIFTED = 26
 
 
 def _snap(**overrides: object) -> ReleaseRepoSnapshot:
-    base: dict[str, object] = {
-        "current_version": "0.12.0",
-        "last_tag": "v0.12.0",
-        "commits": [CommitInfo(sha="a1", subject="feat: add a thing", pr_number=1)],
-        "tracked_files_with_version": ["pyproject.toml"],
-        "canonical_bump_files": ["pyproject.toml"],
-        "changelog_text": "## [Unreleased]\n### Added\n- add a thing (#1)\n",
-        "new_migrations": [],
-        "migration_head_count": 1,
-        "master_ci_conclusion": "success",
-        "declared_agent_count": _DECLARED,
-        "actual_agent_count": _DECLARED,
-        "verb_tables_stale": False,
-    }
-    base.update(overrides)
-    return ReleaseRepoSnapshot(**base)  # type: ignore[arg-type]
+    base = ReleaseRepoSnapshot(
+        current_version="0.12.0",
+        last_tag="v0.12.0",
+        commits=[CommitInfo(sha="a1", subject="feat: add a thing", pr_number=1)],
+        tracked_files_with_version=["pyproject.toml"],
+        canonical_bump_files=["pyproject.toml"],
+        changelog_text="## [Unreleased]\n### Added\n- add a thing (#1)\n",
+        new_migrations=[],
+        migration_head_count=1,
+        master_ci_conclusion="success",
+        declared_agent_count=_DECLARED,
+        actual_agent_count=_DECLARED,
+        verb_tables_stale=False,
+    )
+    return replace(base, **overrides)
 
 
-def _categories(report: object) -> set[str]:
-    return {gap.category for gap in report.gaps}  # type: ignore[attr-defined]
+def _categories(report: ReleaseReadinessReport) -> set[str]:
+    return {gap.category for gap in report.gaps}
 
 
 def test_assess_proposes_next_version_and_bump() -> None:

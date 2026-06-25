@@ -16,7 +16,7 @@ import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 BumpKind = Literal["major", "minor", "patch"]
 
@@ -514,3 +514,36 @@ def _read_changelog(root: Path) -> str:
         return (root / "CHANGELOG.md").read_text(encoding="utf-8")
     except OSError:
         return ""
+
+
+def report_to_dict(report: ReleaseReadinessReport) -> dict[str, Any]:
+    """Serialize a report to a plain dict for JSONB storage on the proposal task."""
+    return {
+        "proposed_version": report.proposed_version,
+        "bump_kind": report.bump_kind,
+        "change_summary": list(report.change_summary),
+        "drafted_changelog": report.drafted_changelog,
+        "version_bump_plan": list(report.version_bump_plan),
+        "gaps": [
+            {"category": gap.category, "detail": gap.detail} for gap in report.gaps
+        ],
+        "migration_notes": list(report.migration_notes),
+        "gate_state": report.gate_state,
+    }
+
+
+def report_from_dict(data: dict[str, Any]) -> ReleaseReadinessReport:
+    """Rebuild a report from its stored dict (the inverse of ``report_to_dict``)."""
+    return ReleaseReadinessReport(
+        proposed_version=data["proposed_version"],
+        bump_kind=data["bump_kind"],
+        change_summary=list(data.get("change_summary", [])),
+        drafted_changelog=data.get("drafted_changelog", ""),
+        version_bump_plan=list(data.get("version_bump_plan", [])),
+        gaps=[
+            Gap(category=g["category"], detail=g["detail"])
+            for g in data.get("gaps", [])
+        ],
+        migration_notes=list(data.get("migration_notes", [])),
+        gate_state=data.get("gate_state", "unknown"),
+    )
