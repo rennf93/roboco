@@ -101,6 +101,14 @@ class Project(TimestampMixin):
     )
     head_commit: str | None = Field(default=None, description="Current HEAD commit SHA")
 
+    # Autonomous maintenance opt-in (multi-repo CI-watch)
+    ci_watch_enabled: bool = Field(
+        default=False, description="Watch this project's CI and auto-open fix tasks"
+    )
+    ci_watch_workflow: str | None = Field(
+        default=None, description="Workflow file to scope the CI-watch signal to"
+    )
+
     # Metadata
     created_by: UUID = Field(..., description="PM who registered the project")
     is_active: bool = Field(default=True, description="Whether project is active")
