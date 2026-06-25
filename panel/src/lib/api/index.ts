@@ -22,3 +22,5 @@ export type {
   ReleaseGap,
   ReleaseExecuteResult,
 } from "./release";
+export { playbooksApi } from "./playbooks";
+export type { Playbook } from "./playbooks";

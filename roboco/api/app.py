@@ -31,6 +31,7 @@ from roboco.api.routes.notifications import router as notifications_router
 from roboco.api.routes.optimal import router as optimal_router
 from roboco.api.routes.orchestrator import router as orchestrator_router
 from roboco.api.routes.pitch import router as pitch_router
+from roboco.api.routes.playbooks import router as playbooks_router
 from roboco.api.routes.product import router as product_router
 from roboco.api.routes.project import router as project_router
 from roboco.api.routes.prompter_live import router as prompter_live_router
@@ -306,6 +307,13 @@ def create_app() -> FastAPI:
         release_router,
         prefix=f"{api_prefix}/release",
         tags=["Release"],
+    )
+
+    # Playbooks — the Auditor (or CEO) curates the drafted playbook library.
+    app.include_router(
+        playbooks_router,
+        prefix=f"{api_prefix}/playbooks",
+        tags=["Playbooks"],
     )
 
     # Pitches — Board proposals + CEO approve -> auto-provision origination path.
