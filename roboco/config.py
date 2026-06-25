@@ -572,6 +572,31 @@ class Settings(BaseSettings):
         description="Seconds between release-readiness assessment passes.",
     )
 
+    # Organizational-memory loop — distill a high-signal lesson at task
+    # completion, index journal reflections, and auto-inject similar past
+    # lessons/playbooks into the agent briefing on claim. Default-off; when off
+    # capture falls back to today's behavior and nothing is auto-injected.
+    org_memory_enabled: bool = Field(
+        default=False,
+        description=(
+            "Organizational memory loop (default off): distill a lesson at task "
+            "completion, index journal reflections, and auto-inject similar past "
+            "lessons/playbooks into the agent briefing on claim."
+        ),
+    )
+    org_memory_top_k: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        description="Max institutional-memory items injected into a briefing.",
+    )
+    org_memory_min_score: float = Field(
+        default=0.6,
+        ge=0.0,
+        le=1.0,
+        description="Cosine-similarity floor for injected memory; below it, none.",
+    )
+
     # ==========================================================================
     # Workspaces (Multi-Agent Git)
     # ==========================================================================
