@@ -70,12 +70,23 @@ function EditProjectForm({
   const [qualityCommand, setQualityCommand] = useState(
     project.quality_command || "",
   );
+  const [ciWatchEnabled, setCiWatchEnabled] = useState(project.ci_watch_enabled);
+  const [ciWatchWorkflow, setCiWatchWorkflow] = useState(
+    project.ci_watch_workflow || "",
+  );
+  const [depUpdateCommand, setDepUpdateCommand] = useState(
+    project.dep_update_command || "",
+  );
+  const [depUpdatePaths, setDepUpdatePaths] = useState(
+    (project.dep_update_paths || []).join(", "),
+  );
 
   // Token handling
   const [newToken, setNewToken] = useState("");
   const [clearToken, setClearToken] = useState(false);
 
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showAutonomy, setShowAutonomy] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -98,6 +109,15 @@ function EditProjectForm({
       typecheck_command: typecheckCommand || undefined,
       build_command: buildCommand || undefined,
       quality_command: qualityCommand || undefined,
+      ci_watch_enabled: ciWatchEnabled,
+      ci_watch_workflow: ciWatchWorkflow || undefined,
+      dep_update_command: depUpdateCommand || undefined,
+      dep_update_paths: depUpdatePaths.trim()
+        ? depUpdatePaths
+            .split(",")
+            .map((p) => p.trim())
+            .filter(Boolean)
+        : undefined,
     };
 
     // Handle token update
@@ -335,6 +355,77 @@ function EditProjectForm({
               <p className="text-xs text-muted-foreground">
                 Fast pre-submit gate (lint + types + complexity, no tests) run
                 in the dev&apos;s workspace at hand-off to QA.
+              </p>
+            </div>
+          </>
+        )}
+
+        {/* Autonomous Maintenance Toggle */}
+        <Button
+          type="button"
+          variant="ghost"
+          className="justify-start px-0 text-muted-foreground"
+          onClick={() => setShowAutonomy(!showAutonomy)}
+        >
+          {showAutonomy ? "Hide" : "Show"} Autonomous Maintenance
+        </Button>
+
+        {showAutonomy && (
+          <>
+            <div className="flex items-center justify-between">
+              <Label htmlFor="ci_watch_enabled">
+                CI-watch (open a fix task when CI goes red)
+              </Label>
+              <Switch
+                id="ci_watch_enabled"
+                checked={ciWatchEnabled}
+                onCheckedChange={setCiWatchEnabled}
+              />
+            </div>
+
+            <div className="grid gap-2">
+              <Label htmlFor="ci_watch_workflow">CI-watch Workflow</Label>
+              <Input
+                id="ci_watch_workflow"
+                value={ciWatchWorkflow}
+                onChange={(e) => setCiWatchWorkflow(e.target.value)}
+                placeholder="ci.yml"
+              />
+              <p className="text-xs text-muted-foreground">
+                Workflow file to scope the CI signal to. Leave blank to use the
+                engine default.
+              </p>
+            </div>
+
+            <div className="grid gap-2">
+              <Label htmlFor="dep_update_command">
+                Dependency-Update Command
+              </Label>
+              <Input
+                id="dep_update_command"
+                value={depUpdateCommand}
+                onChange={(e) => setDepUpdateCommand(e.target.value)}
+                placeholder="uv lock --upgrade"
+              />
+              <p className="text-xs text-muted-foreground">
+                Set to opt this project into the weekly dependency-update bot;
+                leave blank to opt out.
+              </p>
+            </div>
+
+            <div className="grid gap-2">
+              <Label htmlFor="dep_update_paths">
+                Dependency-Update Lockfile Paths
+              </Label>
+              <Input
+                id="dep_update_paths"
+                value={depUpdatePaths}
+                onChange={(e) => setDepUpdatePaths(e.target.value)}
+                placeholder="uv.lock, pnpm-lock.yaml"
+              />
+              <p className="text-xs text-muted-foreground">
+                Comma-separated lockfile paths to watch. Leave blank to infer
+                uv.lock / pnpm-lock.yaml.
               </p>
             </div>
           </>
