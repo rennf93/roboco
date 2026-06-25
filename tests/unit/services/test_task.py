@@ -673,6 +673,46 @@ async def test_uncovered_parent_acs_empty_when_all_covered() -> None:
 
 
 @pytest.mark.asyncio
+async def test_uncovered_parent_acs_recognizes_text_declared_coverage() -> None:
+    # Regression (phantom re-delegation): a PM may declare covers_parent_criteria
+    # by the criterion's full TEXT instead of its id. Matching is by id, so a
+    # COMPLETED child that declared coverage by text used to read "uncovered" —
+    # and the PM re-delegated the already-finished work as an empty phantom
+    # subtask (0 commits, no PR) that could never close. _parent_ac_ref_sets now
+    # normalizes text -> id so coverage counts regardless of how it was declared.
+    parent = _build_task(
+        acceptance_criteria=["crit a", "crit b"],
+        acceptance_criteria_ids=["id-a", "id-b"],
+    )
+    svc = _svc_with_children(
+        parent,
+        [
+            (TaskStatus.COMPLETED, ["crit a"]),  # declared by TEXT, not "id-a"
+            (TaskStatus.COMPLETED, ["id-b"]),  # declared by id
+        ],
+    )
+    assert await svc.uncovered_parent_acceptance_criteria(parent.id) == []
+
+
+@pytest.mark.asyncio
+async def test_parent_ac_coverage_normalizes_text_refs() -> None:
+    # A text-declared coverage ref from a COMPLETED child surfaces as
+    # claimed+verified, same as an id-declared one.
+    parent = _build_task(
+        acceptance_criteria=["crit a", "crit b"],
+        acceptance_criteria_ids=["id-a", "id-b"],
+    )
+    svc = _svc_with_children(parent, [(TaskStatus.COMPLETED, ["crit a"])])
+    cov = await svc.parent_ac_coverage(parent.id)
+    assert cov[0] == {
+        "id": "id-a",
+        "text": "crit a",
+        "claimed": True,
+        "verified": True,
+    }
+
+
+@pytest.mark.asyncio
 async def test_parent_ac_coverage_maps_claimed_and_verified() -> None:
     # Per-criterion visibility: a COMPLETED child both claims and verifies its
     # criterion; an in-flight child only claims; an untouched criterion is

@@ -6577,13 +6577,35 @@ class TaskService(BaseService):
         verified: set[str] = set()
         any_declared = False
         for status, refs in result.all():
-            refset = set(refs or [])
+            refset = self._normalize_ac_refs(parent, refs)
             any_declared = any_declared or bool(refset)
             if status != TaskStatus.CANCELLED:
                 claimed |= refset
             if status == TaskStatus.COMPLETED:
                 verified |= refset
         return parent, claimed, verified, any_declared
+
+    @staticmethod
+    def _normalize_ac_refs(parent: TaskTable, refs: list[str] | None) -> set[str]:
+        """Resolve a child's parent_ac_refs to parent criterion ids.
+
+        A PM may declare covers_parent_criteria by either a criterion's stable
+        id OR its full text — both happen. Coverage is matched by id (see
+        _criteria_texts_not_in), so without this a text-declared ref from a
+        COMPLETED child reads "uncovered" and the PM re-delegates the already-
+        finished work as an empty phantom subtask (0 commits, no PR) that can
+        never close — observed live looping for hours. Map text -> id (via the
+        parent's own criteria) so coverage counts regardless of how it was
+        declared. An unknown ref (neither id nor a current criterion text)
+        passes through and matches nothing, exactly as before.
+        """
+        ac_ids = parent.acceptance_criteria_ids or []
+        valid_ids = set(ac_ids)
+        ac_texts = parent.acceptance_criteria or []
+        text_to_id = {
+            text: ac_ids[idx] for idx, text in enumerate(ac_texts) if idx < len(ac_ids)
+        }
+        return {(r if r in valid_ids else text_to_id.get(r, r)) for r in (refs or [])}
 
     @staticmethod
     def _criteria_texts_not_in(parent: TaskTable, covered: set[str]) -> list[str]:
