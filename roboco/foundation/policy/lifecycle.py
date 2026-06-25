@@ -150,12 +150,18 @@ class Precondition:
     human-readable hint surfaced verbatim on rejection. `missing_token`
     is what shows up in the `tracing_gap.missing[]` field of the
     envelope (so agents can do exact-string checks).
+
+    `rejection_kind` controls which Decision flavor is returned when
+    this precondition fails. The default `'tracing_gap'` surfaces a
+    missing-token list. Use `'not_authorized'` for ownership / identity
+    gates whose failure is an authorization issue, not a tracing gap.
     """
 
     key: str
     check: Callable[[Any, Any, Any], bool]
     remediate: str
     missing_token: str
+    rejection_kind: RejectionKind = "tracing_gap"
 
 
 @dataclass(frozen=True)
@@ -887,6 +893,7 @@ PRECONDITION_OWNERSHIP = Precondition(
     check=_p_owns_task,
     remediate="task is not assigned to you; call give_me_work() to find your work",
     missing_token="owns_task",
+    rejection_kind="not_authorized",
 )
 
 
@@ -1451,7 +1458,13 @@ def can_invoke_action(
 def _check_intent_preconditions(
     spec_intent: IntentSpec, task: Any, ctx: Context
 ) -> Decision | None:
-    """Verb-level extra_preconditions gate. Returns rejection or None."""
+    """Verb-level extra_preconditions gate. Returns rejection or None.
+
+    If the first failing precondition has ``rejection_kind='not_authorized'``
+    (e.g. PRECONDITION_OWNERSHIP), return ``Decision.reject(kind='not_authorized')``
+    so the envelope correctly signals an authorization failure rather than a
+    tracing gap. All other failures return the standard ``Decision.tracing_gap``.
+    """
     missing = [
         p.missing_token
         for p in spec_intent.extra_preconditions
@@ -1462,6 +1475,12 @@ def _check_intent_preconditions(
     first_missing = next(
         p for p in spec_intent.extra_preconditions if p.missing_token == missing[0]
     )
+    if first_missing.rejection_kind == "not_authorized":
+        return Decision.reject(
+            kind="not_authorized",
+            message=first_missing.remediate,
+            remediate=first_missing.remediate,
+        )
     return Decision.tracing_gap(missing=missing, remediate=first_missing.remediate)
 
 
