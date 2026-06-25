@@ -76,12 +76,17 @@ def _patch_topology(monkeypatch: pytest.MonkeyPatch) -> dict[str, MagicMock]:
     proj.id = uuid4()
     project_svc = MagicMock()
     project_svc.create = AsyncMock(return_value=proj)
+    # Default: nothing pre-exists, so provisioning takes the create path. The
+    # idempotency tests override these to return an existing row.
+    project_svc.get_by_slug = AsyncMock(return_value=None)
     monkeypatch.setattr(pitch_module, "get_project_service", lambda _s: project_svc)
 
     prod = MagicMock()
     prod.id = uuid4()
     product_svc = MagicMock()
     product_svc.create = AsyncMock(return_value=prod)
+    product_svc.get_by_slug = AsyncMock(return_value=None)
+    product_svc.update = AsyncMock(return_value=prod)
     monkeypatch.setattr(pitch_module, "get_product_service", lambda _s: product_svc)
 
     task = MagicMock()
@@ -215,3 +220,49 @@ async def test_approve_blocked_when_provisioning_disabled(
         await svc.approve(
             uuid4(), "x", uuid4(), provisioning=_FakeProvisioning(enabled=False)
         )
+
+
+@pytest.mark.asyncio
+async def test_approve_reuses_existing_project(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Re-approval after a partial provision reuses a committed Project by slug —
+    no repo re-create, no slug collision (idempotent provisioning)."""
+    svcs = _patch_topology(monkeypatch)
+    existing = MagicMock()
+    existing.id = uuid4()
+    svcs["project"].get_by_slug = AsyncMock(return_value=existing)
+    svc = PitchService(_session())
+    monkeypatch.setattr(
+        svc, "get", AsyncMock(return_value=_pitch(target_cells=["backend"]))
+    )
+    prov = _FakeProvisioning()
+    await svc.approve(
+        uuid4(), "ship it, aligned with the charter", uuid4(), provisioning=prov
+    )
+    assert prov.created == []  # repo NOT re-created
+    svcs["project"].create.assert_not_awaited()  # Project reused, not re-created
+
+
+@pytest.mark.asyncio
+async def test_approve_reuses_existing_product(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Multi-cell re-approval reuses the committed Product and refreshes its cell
+    map (no uq_product_projects_product_team collision)."""
+    svcs = _patch_topology(monkeypatch)
+    existing = MagicMock()
+    existing.id = uuid4()
+    svcs["product"].get_by_slug = AsyncMock(return_value=existing)
+    svc = PitchService(_session())
+    monkeypatch.setattr(
+        svc, "get", AsyncMock(return_value=_pitch(target_cells=["backend", "frontend"]))
+    )
+    await svc.approve(
+        uuid4(),
+        "ship it, aligned with the charter",
+        uuid4(),
+        provisioning=_FakeProvisioning(),
+    )
+    svcs["product"].update.assert_awaited_once()  # reused + cell map refreshed
+    svcs["product"].create.assert_not_awaited()  # NOT re-created

@@ -24,7 +24,7 @@ from roboco.db.tables import PitchTable
 from roboco.foundation.identity import Team
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType
 from roboco.models.pitch import PitchCreate, PitchStatus
-from roboco.models.product import ProductCellMapping, ProductCreate
+from roboco.models.product import ProductCellMapping, ProductCreate, ProductUpdate
 from roboco.models.project import ProjectCreate
 from roboco.models.task import TaskCreateRequest
 from roboco.services.agent import get_agent_service
@@ -173,20 +173,27 @@ class PitchService(BaseService):
         cell_mappings: list[ProductCellMapping] = []
         for cell in cells:
             repo_name = f"{pitch.slug}-{cell.value}" if multi else pitch.slug
-            repo = await prov.create_repo(
-                repo_name, pitch.problem, private=settings.provisioning_repo_private
-            )
-            project = await project_svc.create(
-                ProjectCreate(
-                    name=repo_name,
-                    slug=repo_name,
-                    git_url=repo.clone_url,
-                    assigned_cell=cell,
-                    git_token=settings.provisioning_token or None,
-                ),
-                created_by=decided_by,
-            )
-            project_id = require_uuid(project.id)
+            # Idempotent: a prior (partially-rolled-back) approval may have left
+            # the repo + Project committed. Reuse an existing Project by slug
+            # instead of re-creating the repo and colliding on the unique slug.
+            existing = await project_svc.get_by_slug(repo_name)
+            if existing is not None:
+                project_id = require_uuid(existing.id)
+            else:
+                repo = await prov.create_repo(
+                    repo_name, pitch.problem, private=settings.provisioning_repo_private
+                )
+                project = await project_svc.create(
+                    ProjectCreate(
+                        name=repo_name,
+                        slug=repo_name,
+                        git_url=repo.clone_url,
+                        assigned_cell=cell,
+                        git_token=settings.provisioning_token or None,
+                    ),
+                    created_by=decided_by,
+                )
+                project_id = require_uuid(project.id)
             project_ids.append(project_id)
             cell_mappings.append(ProductCellMapping(team=cell, project_id=project_id))
         return project_ids, cell_mappings
@@ -200,7 +207,19 @@ class PitchService(BaseService):
     ) -> tuple[UUID | None, UUID | None]:
         """Return (seed_project_id, seed_product_id). Multi-cell -> a Product."""
         if len(cell_mappings) > 1:
-            product = await get_product_service(self.session).create(
+            product_svc = get_product_service(self.session)
+            # Idempotent: reuse an existing Product (same slug) from a prior
+            # partial provision and refresh its cell map (ProductService.update
+            # → _replace_cells flushes the DELETEs before the INSERTs, so the
+            # mappings never collide on uq_product_projects_product_team) rather
+            # than creating a duplicate and crashing the re-approval.
+            existing = await product_svc.get_by_slug(pitch.slug)
+            if existing is not None:
+                updated = await product_svc.update(
+                    require_uuid(existing.id), ProductUpdate(cells=cell_mappings)
+                )
+                return None, require_uuid((updated or existing).id)
+            product = await product_svc.create(
                 ProductCreate(
                     name=pitch.title,
                     slug=pitch.slug,
