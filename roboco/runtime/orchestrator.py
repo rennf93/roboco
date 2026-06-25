@@ -5890,6 +5890,35 @@ Start by:
             return ""
         return out.decode(errors="replace")
 
+    def _transcript_tail_text(self, agent_id: str, lines: int = 80) -> str:
+        """Return the last ``lines`` of the newest Claude transcript for *agent_id*.
+
+        The SDK server redirects its runtime log to ``/tmp/sdk-server.log`` inside
+        the container, so session-limit markers such as "hit your session limit"
+        and "five_hour" do not reach ``docker logs``. The durable Claude
+        transcript on the host (mounted into the orchestrator at ``~/.claude``)
+        contains those same events, so we search it as a fallback when deciding
+        whether to park the provider. Returns "" when no transcript is found or it
+        cannot be read.
+        """
+        from pathlib import Path
+
+        projects = Path.home() / ".claude" / "projects"
+        try:
+            jsonl = [
+                f
+                for d in projects.glob(f"*-{agent_id}")
+                if d.is_dir()
+                for f in d.glob("*.jsonl")
+            ]
+            if not jsonl:
+                return ""
+            newest = max(jsonl, key=lambda f: f.stat().st_mtime)
+            text = newest.read_text(encoding="utf-8", errors="replace")
+            return "\n".join(text.splitlines()[-lines:])
+        except OSError:
+            return ""
+
     async def _provider_overload_park_target(
         self, agent_id: str, instance: Any
     ) -> str | None:
@@ -5933,7 +5962,11 @@ Start by:
         if provider_type not in (None, ModelProvider.ANTHROPIC.value):
             return None
         tail = await self._tail_container_logs(f"roboco-agent-{agent_id}")
-        lowered = tail.lower()
+        # The SDK server writes to /tmp/sdk-server.log, not stdout, so the
+        # session-limit markers may not appear in docker logs. Search the durable
+        # Claude transcript on the host as well.
+        transcript_tail = self._transcript_tail_text(agent_id)
+        lowered = (tail + "\n" + transcript_tail).lower()
         if any(marker in lowered for marker in _ANTHROPIC_RATE_LIMIT_MARKERS):
             return ModelProvider.ANTHROPIC.value
         return None

@@ -46,8 +46,13 @@ def _instance(provider_type: str | None = "anthropic") -> AgentInstance:
 
 
 @pytest.fixture
-def orch() -> AgentOrchestrator:
-    return AgentOrchestrator.__new__(AgentOrchestrator)
+def orch(monkeypatch: pytest.MonkeyPatch) -> AgentOrchestrator:
+    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    # Tests for parking detection control docker logs directly; keep the durable
+    # transcript fallback empty by default so dev environments with stray
+    # transcripts do not make the tests flaky.
+    monkeypatch.setattr(orch, "_transcript_tail_text", lambda _a, _lines=80: "")
+    return orch
 
 
 class _FakeTracker:
@@ -218,6 +223,22 @@ async def test_detects_session_limit_marker_for_anthropic(
     monkeypatch.setattr(settings, "overload_break_enabled", True)
     monkeypatch.setattr(
         orch, "_tail_container_logs", AsyncMock(return_value=_SESSION_LIMIT_LOG)
+    )
+    assert (
+        await orch._provider_rate_limit_park_target("be-dev-1", _instance())
+        == "anthropic"
+    )
+
+
+@pytest.mark.asyncio
+async def test_detects_session_limit_marker_in_transcript(
+    orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Docker logs miss the SDK-server log; the durable transcript still has it."""
+    monkeypatch.setattr(settings, "overload_break_enabled", True)
+    monkeypatch.setattr(orch, "_tail_container_logs", AsyncMock(return_value=""))
+    monkeypatch.setattr(
+        orch, "_transcript_tail_text", lambda _a, _lines=80: _SESSION_LIMIT_LOG
     )
     assert (
         await orch._provider_rate_limit_park_target("be-dev-1", _instance())
