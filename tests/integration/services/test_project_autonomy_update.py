@@ -7,8 +7,8 @@ operator can't opt a project in.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-from uuid import uuid4
+from typing import TYPE_CHECKING, cast
+from uuid import UUID, uuid4
 
 import pytest
 from roboco.db.tables import AgentTable, ProjectTable
@@ -55,7 +55,7 @@ async def test_update_sets_autonomy_opt_ins(db_session: AsyncSession) -> None:
     svc = get_project_service(db_session)
 
     await svc.update(
-        project.id,
+        cast("UUID", project.id),
         ProjectUpdate(
             ci_watch_enabled=True,
             ci_watch_workflow="ci.yml",
@@ -64,7 +64,7 @@ async def test_update_sets_autonomy_opt_ins(db_session: AsyncSession) -> None:
         ),
     )
 
-    reloaded = await svc.get(project.id)
+    reloaded = await svc.get(cast("UUID", project.id))
     assert reloaded is not None
     assert reloaded.ci_watch_enabled is True
     assert reloaded.ci_watch_workflow == "ci.yml"

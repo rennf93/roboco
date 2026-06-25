@@ -32,7 +32,7 @@ def _ci(conclusion: str) -> dict[str, Any]:
 
 @pytest.mark.asyncio
 async def test_fanout_red_green_and_none() -> None:
-    projects = [_project("red"), _project("green"), _project("nosig")]
+    projects: list[object] = [_project("red"), _project("green"), _project("nosig")]
 
     async def conclusion(slug: str, **_kwargs: Any) -> Any:
         return {"red": _ci("failure"), "green": _ci("success"), "nosig": None}[slug]
@@ -50,7 +50,7 @@ async def test_fanout_red_green_and_none() -> None:
 
 @pytest.mark.asyncio
 async def test_per_project_error_isolated() -> None:
-    projects = [_project("boom"), _project("ok")]
+    projects: list[object] = [_project("boom"), _project("ok")]
 
     async def conclusion(slug: str, **_kwargs: Any) -> Any:
         if slug == "boom":
@@ -72,7 +72,10 @@ async def test_per_project_workflow_passthrough(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings, "ci_watch_default_workflow", "ci.yml")
-    projects = [_project("custom", workflow="release.yml"), _project("default")]
+    projects: list[object] = [
+        _project("custom", workflow="release.yml"),
+        _project("default"),
+    ]
     git = MagicMock()
     git.get_latest_ci_conclusion = AsyncMock(return_value=_ci("success"))
     with patch("roboco.services.telemetry.source.GitService", return_value=git):

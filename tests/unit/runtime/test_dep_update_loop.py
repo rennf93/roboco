@@ -44,7 +44,7 @@ async def test_load_set_filters_command_one_per_repo() -> None:
     assert eligible[0].git_url == "https://x/a.git"
 
 
-def _db_ctx(db: Any):
+def _db_ctx(db: Any) -> Any:
     @asynccontextmanager
     async def _ctx() -> Any:
         yield db

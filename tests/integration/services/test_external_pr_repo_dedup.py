@@ -8,8 +8,8 @@ once per cell-project after a re-point). Re-review on a new head SHA still works
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
-from uuid import uuid4
+from typing import TYPE_CHECKING, Any, cast
+from uuid import UUID, uuid4
 
 import pytest
 from roboco.db.tables import AgentTable, ProjectTable
@@ -72,12 +72,18 @@ async def test_sibling_project_same_pr_is_deduped(db_session: AsyncSession) -> N
     svc = get_task_service(db_session)
 
     first = await svc.ingest_external_pr(
-        project_id=fe.id, pr=_pr("abc123"), created_by=SYSTEM_UUID, team=Team.FRONTEND
+        project_id=cast("UUID", fe.id),
+        pr=_pr("abc123"),
+        created_by=SYSTEM_UUID,
+        team=Team.FRONTEND,
     )
     assert first is not None  # first review opens
     # Same PR + same head, sibling project on the SAME repo → no second review.
     dup = await svc.ingest_external_pr(
-        project_id=be.id, pr=_pr("abc123"), created_by=SYSTEM_UUID, team=Team.BACKEND
+        project_id=cast("UUID", be.id),
+        pr=_pr("abc123"),
+        created_by=SYSTEM_UUID,
+        team=Team.BACKEND,
     )
     assert dup is None
 
@@ -88,12 +94,16 @@ async def test_exists_is_repo_scoped(db_session: AsyncSession) -> None:
     be = await _seed(db_session, "gca-backend", _REPO)
     svc = get_task_service(db_session)
     await svc.ingest_external_pr(
-        project_id=fe.id, pr=_pr("abc123"), created_by=SYSTEM_UUID, team=Team.FRONTEND
+        project_id=cast("UUID", fe.id),
+        pr=_pr("abc123"),
+        created_by=SYSTEM_UUID,
+        team=Team.FRONTEND,
     )
 
     # The sibling project sees the existing review (the fix); a new head SHA does not.
-    assert await svc.external_review_task_exists(be.id, 131, "abc123") is True
-    assert await svc.external_review_task_exists(be.id, 131, "newsha") is False
+    be_id = cast("UUID", be.id)
+    assert await svc.external_review_task_exists(be_id, 131, "abc123") is True
+    assert await svc.external_review_task_exists(be_id, 131, "newsha") is False
 
 
 @pytest.mark.asyncio
@@ -102,11 +112,17 @@ async def test_different_repo_not_deduped(db_session: AsyncSession) -> None:
     other = await _seed(db_session, "other", _OTHER_REPO)
     svc = get_task_service(db_session)
     await svc.ingest_external_pr(
-        project_id=fe.id, pr=_pr("abc123"), created_by=SYSTEM_UUID, team=Team.FRONTEND
+        project_id=cast("UUID", fe.id),
+        pr=_pr("abc123"),
+        created_by=SYSTEM_UUID,
+        team=Team.FRONTEND,
     )
 
     # A genuinely different repo with the same PR number is reviewed independently.
     created = await svc.ingest_external_pr(
-        project_id=other.id, pr=_pr("abc123"), created_by=SYSTEM_UUID, team=Team.BACKEND
+        project_id=cast("UUID", other.id),
+        pr=_pr("abc123"),
+        created_by=SYSTEM_UUID,
+        team=Team.BACKEND,
     )
     assert created is not None
