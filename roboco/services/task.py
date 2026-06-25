@@ -421,6 +421,12 @@ PR_REVIEW_SOURCES = ("external_pr", "internal_pr")
 # Approve-&-Starts it; the loop itself never starts/approves/merges it.
 SELF_HEAL_SOURCE = "self_heal"
 
+# Source tag for a multi-repo CI-watch fix task: opened when an OPTED-IN
+# project's CI regresses on its default branch. Like self_heal it rides the
+# normal delivery lifecycle (+ PR-review gate) and is never auto-merged; unlike
+# self_heal it can target any watched project, not just RoboCo's own repo.
+CI_WATCH_SOURCE = "ci_watch"
+
 
 def extract_self_heal_fingerprint(task: Any) -> str | None:
     """The self-heal dedupe fingerprint from a task's markers, or None.
@@ -997,6 +1003,28 @@ class TaskService(BaseService):
                 TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
             )
         )
+        return list(result.scalars().all())
+
+    async def list_open_ci_watch_tasks(
+        self, git_url: str | None = None
+    ) -> list[TaskTable]:
+        """Non-terminal ci_watch fix tasks — the dedupe + open-cap basis.
+
+        Optionally scoped to one repo by ``git_url``: a monorepo registers
+        several cell-projects on ONE git_url, so CI-watch dedupe must key on the
+        repo, not the project slug — otherwise a red monorepo would open one fix
+        task per cell-project. While an open task exists for a repo the loop must
+        not originate a second; the rolling open-task cap counts these.
+        """
+        stmt = select(TaskTable).where(
+            TaskTable.source == CI_WATCH_SOURCE,
+            TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+        )
+        if git_url is not None:
+            stmt = stmt.join(
+                ProjectTable, TaskTable.project_id == ProjectTable.id
+            ).where(ProjectTable.git_url == git_url)
+        result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
     async def list_external_pr_reviews_awaiting_decision(self) -> list[TaskTable]:
