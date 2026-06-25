@@ -20,6 +20,7 @@ from roboco.models.permissions import AgentContext
 from roboco.services.release_executor import ReleaseResult
 from roboco.services.release_readiness import ReleaseReadinessReport, report_to_dict
 from roboco.services.task import RELEASE_MANAGER_SOURCE
+from sqlalchemy import delete
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -117,6 +118,14 @@ async def ceo_client(db_session: AsyncSession) -> AsyncIterator[AsyncClient]:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
+    # The approve/reject routes call db.commit() (real behavior), so a held
+    # proposal persists past the per-test rollback. list_open_release_proposals()
+    # is global (source-scoped, all projects), so clean up to avoid leaking into
+    # the engine tests that assert on it.
+    await db_session.execute(
+        delete(TaskTable).where(TaskTable.source == RELEASE_MANAGER_SOURCE)
+    )
+    await db_session.commit()
     app.dependency_overrides.clear()
 
 

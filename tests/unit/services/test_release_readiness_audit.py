@@ -8,6 +8,7 @@ the real repo at the bottom.
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -158,7 +159,8 @@ def test_drafted_changelog_is_keepachangelog_and_single_line() -> None:
 def test_gather_snapshot_reads_the_real_repo() -> None:
     root = Path(__file__).resolve().parents[3]
     snap = gather_snapshot(root, master_ci_conclusion=None)
-    assert snap.current_version == "0.12.0"
+    # The repo version moves with each release — assert it's a semver, not a literal.
+    assert re.fullmatch(r"\d+\.\d+\.\d+", snap.current_version)
     assert snap.last_tag is not None
     assert isinstance(snap.commits, list)
     assert "pyproject.toml" in snap.canonical_bump_files
