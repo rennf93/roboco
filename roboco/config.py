@@ -546,6 +546,27 @@ class Settings(BaseSettings):
         description="Max dep_update tasks the loop may originate in one cycle.",
     )
 
+    # Gated release manager — at a logical point (accumulated unreleased changes
+    # past a threshold + green gate) the Secretary runs a deterministic readiness
+    # sweep and PROPOSES a release for the CEO to approve/reject. Default-off;
+    # never publishes without CEO approval (mirrors the self-heal CEO-gate).
+    release_manager_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for the gated release manager. OFF by default; when "
+            "off the background loop does not run and no release is proposed. "
+            "Even when on it only PROPOSES — the CEO approves before any publish."
+        ),
+    )
+    release_min_commits: int = Field(
+        default=8,
+        ge=1,
+        description=(
+            "Minimum unreleased commits since the last tag before the release "
+            "manager proposes a release (a feat/security change also qualifies)."
+        ),
+    )
+
     # ==========================================================================
     # Workspaces (Multi-Agent Git)
     # ==========================================================================
