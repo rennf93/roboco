@@ -42,9 +42,7 @@ def _report() -> ReleaseReadinessReport:
     )
 
 
-async def _seed_agent(
-    session: AsyncSession, role: AgentRole, slug: str
-) -> AgentTable:
+async def _seed_agent(session: AsyncSession, role: AgentRole, slug: str) -> AgentTable:
     agent = AgentTable(
         id=uuid4(),
         name=slug,
@@ -98,9 +96,7 @@ async def _seed_proposal(session: AsyncSession) -> TaskTable:
     return task
 
 
-def _build_app(
-    db_session: AsyncSession, role: AgentRole, agent_id: UUID
-) -> FastAPI:
+def _build_app(db_session: AsyncSession, role: AgentRole, agent_id: UUID) -> FastAPI:
     app = FastAPI()
     app.include_router(release_router, prefix="/api/release")
 

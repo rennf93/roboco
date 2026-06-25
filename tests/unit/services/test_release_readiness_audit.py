@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 from roboco.services.release_readiness import (
     CommitInfo,
@@ -24,7 +25,7 @@ _DECLARED = 25
 _DRIFTED = 26
 
 
-def _snap(**overrides: object) -> ReleaseRepoSnapshot:
+def _snap(**overrides: Any) -> ReleaseRepoSnapshot:
     base = ReleaseRepoSnapshot(
         current_version="0.12.0",
         last_tag="v0.12.0",

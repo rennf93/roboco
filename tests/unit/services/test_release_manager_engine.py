@@ -19,8 +19,9 @@ from roboco.foundation.policy.content import markers
 from roboco.models.base import AgentRole, AgentStatus, Team
 from roboco.models.base import TaskStatus as TS
 from roboco.services.notification import NotificationService
-from roboco.services.release_manager_engine import ReleaseManagerEngine
+from roboco.services.release_manager_engine import ReleaseAssessor, ReleaseManagerEngine
 from roboco.services.release_readiness import (
+    BumpKind,
     Gap,
     ReleaseReadinessReport,
     report_from_dict,
@@ -41,7 +42,7 @@ _VERSION = "0.13.0"
 
 def _report(
     *,
-    bump: str = "minor",
+    bump: BumpKind = "minor",
     gate: str = "green",
     kind: str = "feat",
     n_commits: int = 10,
@@ -59,7 +60,7 @@ def _report(
     )
 
 
-def _assessor(report: ReleaseReadinessReport | None):
+def _assessor(report: ReleaseReadinessReport | None) -> ReleaseAssessor:
     async def _a() -> ReleaseReadinessReport | None:
         return report
 

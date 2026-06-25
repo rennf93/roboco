@@ -115,6 +115,9 @@ The fan-out generalizations of self-heal — they watch any opted-in project, no
 | `ROBOCO_DEP_UPDATE_INTERVAL_SECONDS` | `604800` | Seconds between dependency-update passes (default weekly) |
 | `ROBOCO_DEP_UPDATE_MAX_OPEN_TASKS` | `3` | Rolling cap on concurrently-open dep_update tasks |
 | `ROBOCO_DEP_UPDATE_MAX_PER_CYCLE` | `1` | Max dep_update tasks originated per cycle |
+| `ROBOCO_RELEASE_MANAGER_ENABLED` | `false` | Master switch for the gated release manager; off = the loop never runs. Even on it only PROPOSES — the CEO approves before any publish |
+| `ROBOCO_RELEASE_MIN_COMMITS` | `8` | Minimum unreleased commits since the last tag before a release is proposed (a feat/security change also qualifies) |
+| `ROBOCO_RELEASE_MANAGER_INTERVAL_SECONDS` | `3600` | Seconds between release-readiness assessment passes |
 | `ROBOCO_IMAGE_PRUNE_ENABLED` | `true` | Background sweep prunes dangling (`<none>`) Docker images from agent-image rebuilds (only dangling; ~6h throttle). Always-on safety net, not a feature flag |
 | `ROBOCO_IMAGE_PRUNE_INTERVAL_SECONDS` | `21600` | Minimum seconds between dangling-image prune passes |
 

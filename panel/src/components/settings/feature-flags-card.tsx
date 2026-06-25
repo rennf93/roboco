@@ -34,6 +34,12 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
   transcript_prune_enabled: "Run the background sweep that prunes old transcripts.",
   gateway_health_enabled:
     "Recover an agent whose MCP gateway has broken (it can run no tools) while its container stays up — kill + respawn it instead of shielding it from the reaper forever.",
+  ci_watch_enabled:
+    "Watch every opted-in project's CI and open a fix task when its default branch goes red (per-project opt-in; never auto-merges).",
+  dep_update_enabled:
+    "Periodically probe opted-in projects for dependency updates and open an update task when a lockfile would change (per-project opt-in; never auto-merges).",
+  release_manager_enabled:
+    "Run the deterministic release-readiness sweep and propose a release for you to approve or reject — it never publishes without your approval, and the executor is fail-closed on a red gate.",
 };
 
 export function FeatureFlagsCard() {
