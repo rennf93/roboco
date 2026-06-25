@@ -2530,6 +2530,33 @@ class GitService(BaseService):
         log_result = await self._run_git(workspace, ["log", "-1", "--format=%H"])
         return log_result.stdout.strip()
 
+    async def _sync_target_branch_best_effort(
+        self, workspace: Path, target_branch: str, git_token: str
+    ) -> str | None:
+        """Post-merge local sync of ``target_branch`` — best-effort, never raises.
+
+        Callers reach this only AFTER the authoritative GitHub merge has already
+        landed (``merge_pull_request`` / ``pr_merge`` raise if it did not), so
+        refreshing the local workspace copy of the target branch is cosmetic.
+        If the branch is gone from origin — e.g. an integration (cell/root)
+        branch deleted after a sibling cell→root merge, stranding a late
+        straggler leaf — ``_sync_target_branch`` raises ``fetch origin <branch>
+        — couldn't find remote ref``. Letting that propagate turned an
+        already-completed merge into a retryable ``SERVICE_ERROR`` that re-blocked
+        the task and respawn-looped the PM. Swallow + log instead: the merge is
+        done; the local sync is not worth failing on.
+        """
+        try:
+            return await self._sync_target_branch(workspace, target_branch, git_token)
+        except GitError as exc:
+            self.log.warning(
+                "post-merge target-branch sync failed; merge already landed,"
+                " continuing without local sync",
+                target_branch=target_branch,
+                error=str(exc),
+            )
+            return None
+
     async def _delete_remote_branch_best_effort(
         self, owner: str, repo: str, branch: str, git_token: str
     ) -> None:
@@ -2687,6 +2714,9 @@ class GitService(BaseService):
         await self._delete_pr_branch_best_effort(owner, repo, pr_number, git_token)
 
         target_branch = await self._project_default_branch(project_slug)
+        # Default branch always exists on origin, so the plain sync is correct
+        # here. The best-effort variant guards the agent-facing pr_merge path,
+        # whose target can be an integration branch deleted from origin.
         merge_commit = await self._sync_target_branch(
             workspace, target_branch, git_token
         )
@@ -3317,7 +3347,9 @@ class GitService(BaseService):
             )
         )
         await self._delete_pr_branch_best_effort(owner, repo, pr_number, git_token)
-        merge_commit = await self._sync_target_branch(workspace, target, git_token)
+        merge_commit = await self._sync_target_branch_best_effort(
+            workspace, target, git_token
+        )
 
         if task.work_session_id:
             ws_service = get_work_session_service(self.session)

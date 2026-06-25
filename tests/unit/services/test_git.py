@@ -885,3 +885,47 @@ async def test_sync_target_branch_raises_when_origin_also_missing() -> None:
         await svc._sync_target_branch(
             Path("/tmp/ws"), "feature/backend/parent", "token"
         )
+
+
+# ---------------------------------------------------------------------------
+# _sync_target_branch_best_effort — post-merge local sync must never re-block
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sync_target_branch_best_effort_swallows_missing_branch() -> None:
+    """A post-merge local sync of a target branch gone from origin must NOT raise.
+
+    ``pr_merge`` / ``merge_pull_request`` reach the post-merge sync only after the
+    authoritative GitHub merge already succeeded, so updating the local workspace
+    copy of the (possibly-deleted) target branch is cosmetic. Letting it raise
+    re-blocks the just-merged task and respawn-loops the PM — the live failure
+    where an integration branch deleted from origin made ``complete()`` loop on
+    ``fetch origin <cell-branch> — fatal: couldn't find remote ref``.
+    """
+    svc = _service()
+    _bind(
+        svc,
+        "_sync_target_branch",
+        AsyncMock(
+            side_effect=GitCommandError(
+                "fetch origin feature/backend/31ae12fc--0e49e04e",
+                "fatal: couldn't find remote ref feature/backend/31ae12fc--0e49e04e",
+            )
+        ),
+    )
+    result = await svc._sync_target_branch_best_effort(
+        Path("/tmp/ws"), "feature/backend/31ae12fc--0e49e04e", "token"
+    )
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_sync_target_branch_best_effort_returns_sha_on_success() -> None:
+    """On success it passes the synced tip sha straight through."""
+    svc = _service()
+    _bind(svc, "_sync_target_branch", AsyncMock(return_value="merged-tip-sha"))
+    result = await svc._sync_target_branch_best_effort(
+        Path("/tmp/ws"), "feature/backend/parent", "token"
+    )
+    assert result == "merged-tip-sha"
