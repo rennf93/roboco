@@ -336,7 +336,12 @@ class JournalService(BaseService):
         async def _index() -> None:
             try:
                 optimal = await self._get_optimal_service()
-                await optimal.index_journal_entry(params)
+                # Private reflections stay OUT of the shared RAG corpus — the
+                # JOURNALS index is searchable across agents, so indexing a
+                # private entry would leak it. A private learning, if any, is
+                # still recorded below as non-shareable (shareable=not is_private).
+                if not is_private:
+                    await optimal.index_journal_entry(params)
                 if params.entry_type == JournalEntryType.LEARNING.value:
                     from roboco.services.optimal_brain.indexes.learnings import (
                         RecordLearningParams,
