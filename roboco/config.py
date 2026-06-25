@@ -516,6 +516,36 @@ class Settings(BaseSettings):
         description="Max ci_watch fix tasks the loop may originate in one cycle.",
     )
 
+    # Dependency-update bot — periodically detects available dependency updates
+    # per opted-in project (a read-clone lockfile-diff probe) and opens an
+    # "update dependencies" task. Default-off; never auto-merges (rides the
+    # normal delivery + PR-review gate).
+    dep_update_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for the dependency-update bot. OFF by default; when "
+            "off the loop does not run and no probe is executed. Only projects "
+            "with a dep_update_command set participate."
+        ),
+    )
+    dep_update_interval_seconds: int = Field(
+        default=604800,
+        ge=300,
+        description="Seconds between dependency-update probe passes (default weekly).",
+    )
+    dep_update_max_open_tasks: int = Field(
+        default=3,
+        ge=1,
+        description=(
+            "Rolling cap on concurrently-open dep_update tasks across all repos."
+        ),
+    )
+    dep_update_max_per_cycle: int = Field(
+        default=1,
+        ge=1,
+        description="Max dep_update tasks the loop may originate in one cycle.",
+    )
+
     # ==========================================================================
     # Workspaces (Multi-Agent Git)
     # ==========================================================================
