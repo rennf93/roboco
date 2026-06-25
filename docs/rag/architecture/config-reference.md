@@ -100,6 +100,24 @@ RoboCo watching its own repo's CI. All default-off / dormant.
 | `ROBOCO_SELF_HEAL_MAX_OPEN_TASKS` | `3` | Rolling cap on concurrently-open self-heal tasks |
 | `ROBOCO_SELF_HEAL_MAX_PER_CYCLE` | `1` | Max fix tasks originated per cycle |
 
+## Autonomous maintenance
+
+The fan-out generalizations of self-heal — they watch any opted-in project, not just RoboCo's own. All default-off; neither ever auto-merges (every task rides the normal delivery + PR-review gate). Per-project opt-in lives on the project row (set in the panel's edit-project dialog), not in env.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ROBOCO_CI_WATCH_ENABLED` | `false` | Master switch for multi-repo CI-watch; off = the loop never runs. Per-project opt-in via `projects.ci_watch_enabled` |
+| `ROBOCO_CI_WATCH_DEFAULT_WORKFLOW` | `ci.yml` | Workflow file the CI signal is scoped to when a project sets no `ci_watch_workflow` |
+| `ROBOCO_CI_WATCH_INTERVAL_SECONDS` | `1800` | Seconds between CI-watch passes |
+| `ROBOCO_CI_WATCH_MAX_OPEN_TASKS` | `3` | Rolling cap on concurrently-open ci_watch tasks |
+| `ROBOCO_CI_WATCH_MAX_PER_CYCLE` | `1` | Max ci_watch fix tasks originated per cycle |
+| `ROBOCO_DEP_UPDATE_ENABLED` | `false` | Master switch for the dependency-update bot; off = the loop never runs. Per-project opt-in via `projects.dep_update_command` |
+| `ROBOCO_DEP_UPDATE_INTERVAL_SECONDS` | `604800` | Seconds between dependency-update passes (default weekly) |
+| `ROBOCO_DEP_UPDATE_MAX_OPEN_TASKS` | `3` | Rolling cap on concurrently-open dep_update tasks |
+| `ROBOCO_DEP_UPDATE_MAX_PER_CYCLE` | `1` | Max dep_update tasks originated per cycle |
+| `ROBOCO_IMAGE_PRUNE_ENABLED` | `true` | Background sweep prunes dangling (`<none>`) Docker images from agent-image rebuilds (only dangling; ~6h throttle). Always-on safety net, not a feature flag |
+| `ROBOCO_IMAGE_PRUNE_INTERVAL_SECONDS` | `21600` | Minimum seconds between dangling-image prune passes |
+
 ## Security
 
 | Variable | Default | Description |
