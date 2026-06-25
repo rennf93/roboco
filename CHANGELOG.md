@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **Mypy [unreachable] error in test_pr_gate_records_verdict resolved.** A test assigned `t.notes_structured = None` in the function body, causing mypy to narrow the attribute type to `None`. Since the test's helper function took the object as `Any`, mypy did not reset its narrowing after the call, treating `assert t.notes_structured is not None` as statically always-False and marking the next line as `[unreachable]`, failing the quality gate. Fixed by introducing `_TaskWithNoNotes` — a helper class that declares `notes_structured: dict[str, Any] | None = None` in `__init__` — so mypy uses the declared union type rather than a narrowed literal. All tests pass with no suppressions. This pattern is documented in the testing standards for future reference.
+
 ## [0.11.1] - 2026-06-25
 
 ### Fixed
