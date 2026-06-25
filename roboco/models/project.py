@@ -109,6 +109,16 @@ class Project(TimestampMixin):
         default=None, description="Workflow file to scope the CI-watch signal to"
     )
 
+    # Dependency-update bot opt-in
+    dep_update_command: str | None = Field(
+        default=None,
+        description="Command to refresh lockfiles, e.g. 'uv lock --upgrade'",
+    )
+    dep_update_paths: list[str] | None = Field(
+        default=None,
+        description="Lockfile globs to inspect (null → infer uv.lock/pnpm-lock.yaml)",
+    )
+
     # Metadata
     created_by: UUID = Field(..., description="PM who registered the project")
     is_active: bool = Field(default=True, description="Whether project is active")
