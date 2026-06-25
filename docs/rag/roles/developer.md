@@ -69,7 +69,7 @@ There is **no** `roboco_git_commit / _push / _create_pr / _merge_pr / _checkout`
 
 - Branches are auto-created on `i_will_work_on()`.
 - Don't checkout branches by hand — call the verb on the right task.
-- If you see a `BRANCH_MISMATCH` envelope, you're on the wrong task. Use `give_me_work()` again or `unclaim` and re-pick the intended task.
+- A drifted clone (after a respawn/resume) is now auto-recovered onto your task branch before you commit — you normally won't see `BRANCH_MISMATCH` at all. If you still do, uncommitted changes are blocking the switch: `commit(...)` your work (or `i_am_blocked` if the changes aren't yours), then continue.
 
 ## Before Submitting to QA
 

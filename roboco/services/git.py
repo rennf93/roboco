@@ -664,21 +664,69 @@ class GitService(BaseService):
     async def _assert_on_task_branch(
         self, workspace: Path, task_branch: str | None
     ) -> None:
-        """Reject ops when the workspace is on a branch other than the task's."""
+        """Ensure the workspace is on the task's branch, recovering a resumed
+        clone that drifted — instead of hard-failing.
+
+        A dev/documenter/QA clone is shared across tasks; on a respawn/resume it
+        can sit on a sibling task's branch, or a re-provisioned clone can lack
+        the task branch as a local ref (commits only on origin). The
+        fresh-claim path git-reset-hards the clone, but resume short-circuits
+        before it — so the agent's next commit hit BRANCH_MISMATCH and the task
+        wedged in a blocked respawn loop (the documented resume deadlock). This
+        now fetches + checks out the task branch (recreating a missing local ref
+        from origin) and only raises if it genuinely cannot switch (uncommitted
+        changes block it). It NEVER discards local work — checkout, not reset, so
+        a resumed agent's unpushed commits are preserved.
+        """
         if not task_branch:
             return
         current_branch = await self.get_current_branch(workspace)
-        if current_branch and current_branch != task_branch:
-            raise ValidationError(
-                f"BRANCH_MISMATCH: Workspace is on '{current_branch}' but "
-                f"task requires '{task_branch}'. The branch is checked out "
-                f"into your clone by your role's claim verb: "
-                f"`i_will_work_on(task_id)` (devs), "
-                f"`i_will_plan(task_id, plan)` (PMs), "
-                f"`claim_doc_task(task_id)` (documenters), "
-                f"`claim_review(task_id)` (QA). Re-call your role's claim "
-                f"verb on this task instead of switching branches by hand."
+        if not current_branch or current_branch == task_branch:
+            return
+        # Resumed/re-provisioned clone parked on the wrong branch — try to
+        # recover onto the task branch before rejecting.
+        token = await self._token_for_workspace(workspace)
+        local = await self._run_git(
+            workspace,
+            ["rev-parse", "--verify", "--quiet", f"refs/heads/{task_branch}"],
+            check=False,
+        )
+        if local.returncode != 0:
+            # Local ref absent (re-provisioned clone) — recover it from origin.
+            await self._run_git(
+                workspace,
+                ["fetch", "origin", task_branch],
+                token=token,
+                check=False,
+                timeout=_network_git_timeout(),
             )
+            await self._run_git(
+                workspace,
+                ["branch", task_branch, f"origin/{task_branch}"],
+                check=False,
+            )
+        switched = await self._run_git(
+            workspace, ["checkout", task_branch], check=False
+        )
+        if (
+            switched.returncode == 0
+            and await self.get_current_branch(workspace) == task_branch
+        ):
+            self.log.info(
+                "recovered workspace onto task branch on resume",
+                task_branch=task_branch,
+                from_branch=current_branch,
+            )
+            return
+        raise ValidationError(
+            f"BRANCH_MISMATCH: Workspace is on '{current_branch}' but task "
+            f"requires '{task_branch}', and it could not be switched "
+            f"automatically (uncommitted changes likely block the switch). "
+            f"Re-call your role's claim verb on this task "
+            f"(`i_will_work_on` / `i_will_plan` / `claim_doc_task` / "
+            f"`claim_review`); if it persists, unclaim and re-claim to rebuild "
+            f"the clone, then replay your commits."
+        )
 
     async def _link_commit_to_task(
         self,

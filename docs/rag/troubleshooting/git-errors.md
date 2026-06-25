@@ -33,15 +33,16 @@ Notes:
 
 **Error envelope:** `Workspace is on '<other-branch>' but task requires '<task-branch>'`
 
-**Cause:** You're trying to act on task A while your workspace is still on task B's branch.
+**Cause:** You're trying to act on task A while your workspace is still on task B's branch — usually after a respawn/resume on a shared clone, or a re-provisioned clone that no longer has your task's branch locally.
 
-**Fix:** Don't checkout by hand — there is no `roboco_git_checkout` tool. Call the verb on the *intended* task instead:
+**Auto-recovery first:** a commit-time check now *recovers* this for you — it re-checks out your task's branch (recreating a missing local ref from origin) before acting, without ever discarding your local commits. So you normally won't see this error on resume at all; just continue your work.
 
-- Devs: `i_will_work_on(task_id)` switches to that task's branch
-- PMs: `i_will_plan(task_id, plan)` switches to that parent task's branch
-- QA: `claim_review(task_id)` switches to the dev's branch under review
+**When you still see it:** the only case left is **uncommitted changes blocking the switch** (the clone can't move off its current branch). Then:
 
-If your workspace is dirty, the verb returns an envelope telling you to either `commit(...)` first or escalate via `i_am_blocked`.
+- `commit(message=..., files=...)` your in-progress work, or escalate via `i_am_blocked` if the changes aren't yours / are conflicting.
+- Re-call your role's claim verb on the intended task: `i_will_work_on(task_id)` (devs), `i_will_plan(task_id, plan)` (PMs), `claim_doc_task(task_id)` (documenters), `claim_review(task_id)` (QA).
+
+Don't checkout by hand — there is no `roboco_git_checkout` tool.
 
 ## NO_COMMITS on open_pr
 
