@@ -10,6 +10,7 @@ import { RecentActivityFeed } from "./recent-activity-feed";
 import { QuickActionsBar } from "./quick-actions-bar";
 import { CeoApprovalQueue } from "./ceo-approval-queue";
 import { PrReviewQueue } from "./pr-review-queue";
+import { ReleaseProposalCard } from "./release-proposal-card";
 import { StrategySignalsPanel } from "./strategy-signals-panel";
 import type { Activity } from "./activity-item";
 import { Button } from "@/components/ui/button";
@@ -88,6 +89,9 @@ export function CommandCenter() {
 
       {/* External-PR review decision queue (hidden when empty) */}
       <PrReviewQueue />
+
+      {/* Gated release proposal (hidden when none open) */}
+      <ReleaseProposalCard />
 
       {/* Metrics, Alerts, and Usage Row */}
       <div className="grid grid-cols-1 lg:grid-cols-3 xl:grid-cols-3 2xl:grid-cols-3 gap-6">

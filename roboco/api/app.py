@@ -35,6 +35,7 @@ from roboco.api.routes.product import router as product_router
 from roboco.api.routes.project import router as project_router
 from roboco.api.routes.prompter_live import router as prompter_live_router
 from roboco.api.routes.provider import router as provider_router
+from roboco.api.routes.release import router as release_router
 from roboco.api.routes.research import router as research_router
 from roboco.api.routes.secretary import router as secretary_router
 from roboco.api.routes.secretary_live import router as secretary_live_router
@@ -298,6 +299,13 @@ def create_app() -> FastAPI:
         cockpit_router,
         prefix=f"{api_prefix}/cockpit",
         tags=["Cockpit"],
+    )
+
+    # Release manager — the CEO approves/rejects a held release proposal.
+    app.include_router(
+        release_router,
+        prefix=f"{api_prefix}/release",
+        tags=["Release"],
     )
 
     # Pitches — Board proposals + CEO approve -> auto-provision origination path.

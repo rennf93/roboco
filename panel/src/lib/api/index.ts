@@ -15,3 +15,10 @@ export { streamApi } from "./stream";
 export { groupsApi } from "./groups";
 export { settingsApi } from "./settings";
 export { companyGoalsApi } from "./company-goals";
+export { releaseApi } from "./release";
+export type {
+  ReleaseProposal,
+  ReleaseReport,
+  ReleaseGap,
+  ReleaseExecuteResult,
+} from "./release";
