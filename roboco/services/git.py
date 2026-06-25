@@ -3355,15 +3355,52 @@ class GitService(BaseService):
                 ctx.owner, ctx.repo, ctx.pr_number, ctx.git_token, "squash"
             )
         if not resp.is_success:
-            # A merge refusal (typically 405 "not mergeable") means the branch
-            # conflicts with the base — a sibling landed overlapping work first.
-            # Raise the specific subclass so the completion path can rebase /
-            # close-superseded / escalate instead of failing into a respawn loop.
+            # A merge PUT on an ALREADY-MERGED PR returns the same 405 as a
+            # genuine "not mergeable" conflict. An already-merged PR (a prior
+            # cycle, a sibling, or the CEO already landed it) is idempotent
+            # success — NOT a conflict to rebase/escalate. Treating it as one is
+            # the cell_pm_complete block<->unblock respawn loop, so disambiguate
+            # before raising.
+            if await self._pr_is_merged(
+                ctx.owner, ctx.repo, ctx.pr_number, ctx.git_token
+            ):
+                return resp
+            # A real merge refusal (typically 405 "not mergeable") means the
+            # branch conflicts with the base — a sibling landed overlapping work
+            # first. Raise the specific subclass so the completion path can
+            # rebase / close-superseded / escalate instead of respawn-looping.
             raise MergeConflictError(
                 f"GitHub API refused PR merge ({resp.status_code}): {resp.text[:200]}",
                 {"owner": ctx.owner, "repo": ctx.repo, "pr": ctx.pr_number},
             )
         return resp
+
+    async def _pr_is_merged(
+        self, owner: str, repo: str, pr_number: int, git_token: str
+    ) -> bool:
+        """True if PR ``pr_number`` is already merged on GitHub.
+
+        Disambiguates an already-merged PR from a genuine conflict (both surface
+        as a 405 on the merge PUT): an already-merged PR is idempotent success,
+        not something to rebase/escalate. Best-effort — returns False on any
+        error so an indeterminate state falls through to the existing conflict
+        handling rather than masking a real failure.
+        """
+        try:
+            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
+                resp = await client.get(
+                    f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}",
+                    headers={
+                        "Authorization": f"Bearer {git_token}",
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                )
+        except httpx.HTTPError:
+            return False
+        if not resp.is_success:
+            return False
+        return bool(resp.json().get("merged"))
 
     async def pr_merge(
         self,
