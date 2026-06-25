@@ -172,3 +172,7 @@ class ProjectUpdate(RobocoBase):
     assigned_cell: Team | None = None
     allowed_agents: list[UUID] | None = None
     is_active: bool | None = None
+    ci_watch_enabled: bool | None = None
+    ci_watch_workflow: str | None = None
+    dep_update_command: str | None = None
+    dep_update_paths: list[str] | None = None
