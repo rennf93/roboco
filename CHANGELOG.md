@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-06-25
+
 ### Added
 
 - **Dependency-update bot — the company keeps its own dependencies current.** A default-off, per-project engine that periodically (weekly by default) checks whether a dependency upgrade would change a project's lockfiles and, if so, opens one "update dependencies" task into that project — which flows through the normal dev → QA → PR-review → CEO-merge pipeline and **never auto-merges**. Detection is read-only: it runs the project's configured `dep_update_command` (e.g. `uv lock --upgrade` / `pnpm update`) in a throwaway clone of a read-only copy and checks whether any lockfile path got dirty — the read clone is never mutated and nothing is committed or pushed. Fail-safe: a missing or failing command opens nothing. Bounded and deduped per repo (one open update task per git URL) with per-cycle and rolling caps. A project participates only when its `dep_update_command` is set (panel → project settings). Default-off (`ROBOCO_DEP_UPDATE_ENABLED`). Adds `projects.dep_update_command` / `dep_update_paths` (migration 049), the `WorkspaceService.dry_upgrade_changes_lockfile` probe, `DepUpdateEngine`, and a dedicated orchestrator loop.
