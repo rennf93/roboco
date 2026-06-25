@@ -319,3 +319,45 @@ class EvidenceRepo:
             }
             for row in result.all()
         ]
+
+    async def similar_memory(
+        self, *, query: str, top_k: int, min_score: float
+    ) -> list[dict[str, Any]]:
+        """Top-K institutional memory (distilled lessons + approved playbooks) for
+        ``query``, above the relevance floor. Best-effort: any RAG failure (or a
+        local embed hiccup) returns [] so the briefing path never breaks. Only
+        results scoring >= ``min_score`` are kept — below the floor nothing is
+        injected (identical to today's briefing, no bloat)."""
+        from roboco.models.optimal import IndexType, QueryContext
+        from roboco.services.optimal import get_optimal_service
+
+        try:
+            optimal = await get_optimal_service()
+            results = await optimal.search(
+                query=query,
+                context=QueryContext(
+                    index_types=[IndexType.LEARNINGS, IndexType.PLAYBOOKS]
+                ),
+                top_k=top_k,
+            )
+        except Exception:
+            return []
+
+        items: list[dict[str, Any]] = []
+        for result in results:
+            if result.score < min_score:
+                continue
+            kind = (
+                "playbook" if result.index_type == IndexType.PLAYBOOKS else "learning"
+            )
+            items.append(
+                {
+                    "kind": kind,
+                    "summary": result.content[:300],
+                    "source": result.source,
+                    "score": round(result.score, 3),
+                }
+            )
+            if len(items) >= top_k:
+                break
+        return items

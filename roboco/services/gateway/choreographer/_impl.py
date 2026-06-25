@@ -36,6 +36,7 @@ from roboco.services.gateway.evidence_builder import (
     build_context_briefing,
     build_evidence_for_task,
     build_task_handoff,
+    shape_memory_query,
 )
 from roboco.services.gateway.merge_chain import resolve_parent_branch
 from roboco.services.gateway.remediation import (
@@ -832,6 +833,11 @@ class Choreographer:
             company_goals=await repo.company_goals(),
         )
         briefing = build_context_briefing(inputs)
+        memory = await self._institutional_memory(agent_id, task)
+        if memory:
+            # "What the company already knows about work like this" — distilled
+            # lessons + approved playbooks, pushed so the agent never has to ask.
+            briefing = {**briefing, "institutional_memory": memory}
         if include_ac_coverage and task_id is not None:
             coverage = await self.task.parent_ac_coverage(task_id)
             if coverage:
@@ -847,6 +853,35 @@ class Choreographer:
                     ],
                 }
         return briefing
+
+    async def _institutional_memory(
+        self, agent_id: UUID, task: Any | None
+    ) -> list[dict[str, Any]]:
+        """Org-memory keystone: top-K relevant past lessons/playbooks for this
+        claim, role-shaped and relevance-floored. Empty unless
+        ``org_memory_enabled`` and a task is in hand (nothing to query on
+        otherwise). Best-effort — never breaks the briefing."""
+        from roboco.config import settings as _settings
+
+        if not _settings.org_memory_enabled or task is None:
+            return []
+        agent = await self.task.agent_for(agent_id)
+        role = str(agent.role) if agent is not None else ""
+        title = str(getattr(task, "title", "") or "")
+        raw_type = getattr(task, "task_type", None)
+        if raw_type is None:
+            task_type = ""
+        elif hasattr(raw_type, "value"):
+            task_type = str(raw_type.value)
+        else:
+            task_type = str(raw_type)
+        query = shape_memory_query(role, title, task_type)
+        memory: list[dict[str, Any]] = await self._deps.evidence_repo.similar_memory(
+            query=query,
+            top_k=_settings.org_memory_top_k,
+            min_score=_settings.org_memory_min_score,
+        )
+        return memory
 
     # PM coordinator roles plan + delegate many roots in parallel; the actual
     # work then runs in the delegated children/cells, not in the PM's own hands.
