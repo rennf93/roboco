@@ -25,6 +25,7 @@ from roboco.config import settings
 from roboco.foundation import identity as _foundation
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
 from roboco.services.base import BaseService
+from roboco.services.notification import NotificationService
 from roboco.services.task import (
     CI_WATCH_SOURCE,
     TaskCreateRequest,
@@ -39,6 +40,14 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from roboco.db.tables import TaskTable
+
+
+def _cell_pm_slug_for(team: Any) -> str | None:
+    """The cell PM slug owning ``team`` (e.g. Team.BACKEND → 'be-pm'), or None."""
+    for row in _foundation.AGENTS.values():
+        if row.role == _foundation.Role.CELL_PM and row.team == team:
+            return row.slug
+    return None
 
 
 class CiWatchEngine(BaseService):
@@ -93,7 +102,36 @@ class CiWatchEngine(BaseService):
                 task_id=str(task.id),
                 repo=sample.repo_hint,
             )
+            await self._notify_cell_pm(project, sample)
         return created
+
+    async def _notify_cell_pm(self, project: Any, sample: Any) -> None:
+        """Notify the red project's cell PM that a fix task was opened.
+
+        Routed to the project's own cell PM (not the CEO — a delivery/client
+        repo's red CI is a cell concern), once per project per cycle (the engine
+        opens at most one task per repo per cycle). Best-effort: a notification
+        failure never rolls back the origination.
+        """
+        team = getattr(project, "assigned_cell", None)
+        pm_slug = _cell_pm_slug_for(team) if team is not None else None
+        if not pm_slug:
+            return
+        try:
+            await NotificationService().send_ack_notification(
+                from_agent="system",
+                to_agent=pm_slug,
+                body=(
+                    f"[ci-watch] CI is red on {sample.repo_hint}. A fix task was "
+                    f"opened automatically and is ready to start.\n\n{sample.detail}"
+                ),
+            )
+        except Exception as exc:
+            self.log.warning(
+                "ci-watch cell-PM notify failed (best-effort)",
+                repo=sample.repo_hint,
+                error=str(exc),
+            )
 
     async def _should_open(self, task_svc: TaskService, project: Any) -> bool:
         """True when ``project`` resolves and has no open ci_watch task yet.
