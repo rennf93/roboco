@@ -109,6 +109,14 @@ class SubstituteReason(StrEnum):
     BLOCKED_EXTERNAL = "blocked_external"  # Need skills outside agent's capabilities
 
 
+class PlaybookStatus(StrEnum):
+    """Curated-playbook lifecycle: draft -> approved (by the Auditor) / archived."""
+
+    DRAFT = "draft"
+    APPROVED = "approved"
+    ARCHIVED = "archived"
+
+
 class SessionStatus(StrEnum):
     """Session states."""
 

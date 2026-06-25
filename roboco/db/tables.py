@@ -662,6 +662,49 @@ class PitchTable(Base):
     )
 
 
+class PlaybookTable(Base):
+    """A curated, reusable procedure: when to use it + the steps.
+
+    A *learning* records "this happened"; a *playbook* records "here is how to do
+    X". An agent drafts one (status=draft); the Auditor approves it
+    (status=approved) and only then is it embedded into the PLAYBOOKS RAG index
+    and auto-suggested. Orthogonal to the task lifecycle — its own entity, no
+    task status. Status is a plain string (the PlaybookStatus StrEnum carries the
+    valid values at the service layer), matching the pitches convention.
+    """
+
+    __tablename__ = "playbooks"
+
+    id: Mapped[PyUUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    slug: Mapped[str] = mapped_column(
+        String(80), unique=True, nullable=False, index=True
+    )
+    problem: Mapped[str] = mapped_column(Text, nullable=False)
+    procedure: Mapped[str] = mapped_column(Text, nullable=False)
+    tags: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    team: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    scope: Mapped[str] = mapped_column(String(20), nullable=False, default="org")
+    source_task_ids: Mapped[list[str]] = mapped_column(
+        JSON, nullable=False, default=list
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="draft", index=True
+    )
+    created_by: Mapped[PyUUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    approved_by: Mapped[PyUUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    approved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 class SecretaryDirectiveTable(Base):
     """One action the Secretary took (or queued) on the CEO's behalf.
 
