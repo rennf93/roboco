@@ -45,6 +45,15 @@ class _Task:
         self.pr_reviewer_notes = "stale"
 
 
+class _TaskWithNoNotes:
+    """Variant where notes_structured starts as None (no prior verdict history)."""
+
+    def __init__(self) -> None:
+        self.id = uuid4()
+        self.notes_structured: dict[str, Any] | None = None
+        self.pr_reviewer_notes: str = ""
+
+
 def test_pr_fail_overwrites_stale_passed_verdict() -> None:
     c = _make_choreographer()
     t = _Task()
@@ -60,8 +69,10 @@ def test_pr_fail_overwrites_stale_passed_verdict() -> None:
 
 def test_pr_pass_records_passed_verdict() -> None:
     c = _make_choreographer()
-    t = _Task()
-    t.notes_structured = None
+    # Use the None-initial variant so mypy sees the broader declared type
+    # (dict[str, Any] | None) rather than a narrowed None from an in-body
+    # assignment, which would make the post-call assertions look unreachable.
+    t = _TaskWithNoNotes()
     c._record_gate_verdict(
         t, "pr_pass", "Assembled root scope is clean; every criterion is covered."
     )
