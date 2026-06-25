@@ -120,9 +120,7 @@ class PlaybookService(BaseService):
         playbook.approved_by = approver_id
         playbook.approved_at = datetime.now(UTC)
         await self.session.flush()
-        self.log.info(
-            "Playbook rejected", playbook_id=str(playbook_id), reason=reason
-        )
+        self.log.info("Playbook rejected", playbook_id=str(playbook_id), reason=reason)
         return playbook
 
     async def list_drafts(self) -> list[PlaybookTable]:

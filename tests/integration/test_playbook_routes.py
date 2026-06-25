@@ -48,7 +48,7 @@ async def _seed_draft(db_session: AsyncSession, title: str = "Retry flaky pg") -
         ),
         created_by=uuid4(),
     )
-    return pb.id  # type: ignore[return-value]
+    return pb.id
 
 
 @pytest_asyncio.fixture

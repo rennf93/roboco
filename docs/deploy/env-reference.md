@@ -275,6 +275,14 @@ The global switch arms the engine; each project opts in via `dep_update_command`
 | `ROBOCO_RELEASE_MIN_COMMITS` | `8` | Minimum unreleased commits since the last tag before a release is proposed (a feat/security change also qualifies). |
 | `ROBOCO_RELEASE_MANAGER_INTERVAL_SECONDS` | `3600` | Seconds between release-readiness assessment passes. |
 
+### Organizational memory loop (default-off)
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `ROBOCO_ORG_MEMORY_ENABLED` | `false` | Master switch for the org-memory loop. When off: legacy completion capture, no auto-inject, no playbook curation verbs. |
+| `ROBOCO_ORG_MEMORY_TOP_K` | `3` | Max institutional-memory items injected into a briefing on claim. |
+| `ROBOCO_ORG_MEMORY_MIN_SCORE` | `0.6` | Cosine-similarity floor for injected memory; below it, nothing is injected. |
+
 ## Next
 
 - **[Production deploy](./deployment.md)** — compose files, host mounts, secure mode, startup.

@@ -80,9 +80,7 @@ async def test_draft_playbook_creates_for_developer(
     created.id = uuid4()
     svc = MagicMock()
     svc.draft = AsyncMock(return_value=created)
-    monkeypatch.setattr(
-        "roboco.services.playbook.get_playbook_service", lambda _s: svc
-    )
+    monkeypatch.setattr("roboco.services.playbook.get_playbook_service", lambda _s: svc)
     env = await _actions("developer").draft_playbook(
         agent_id=uuid4(),
         title="Retry flaky pg",
@@ -109,9 +107,7 @@ async def test_approve_playbook_for_auditor(monkeypatch: pytest.MonkeyPatch) -> 
     approved.status = "approved"
     svc = MagicMock()
     svc.approve = AsyncMock(return_value=approved)
-    monkeypatch.setattr(
-        "roboco.services.playbook.get_playbook_service", lambda _s: svc
-    )
+    monkeypatch.setattr("roboco.services.playbook.get_playbook_service", lambda _s: svc)
     env = await _actions("auditor").approve_playbook(
         agent_id=uuid4(), playbook_id=uuid4()
     )
@@ -129,9 +125,7 @@ async def test_reject_playbook_archives_for_auditor(
     archived.status = "archived"
     svc = MagicMock()
     svc.reject = AsyncMock(return_value=archived)
-    monkeypatch.setattr(
-        "roboco.services.playbook.get_playbook_service", lambda _s: svc
-    )
+    monkeypatch.setattr("roboco.services.playbook.get_playbook_service", lambda _s: svc)
     env = await _actions("auditor").reject_playbook(
         agent_id=uuid4(), playbook_id=uuid4(), reason="duplicate"
     )

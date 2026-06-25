@@ -40,6 +40,8 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
     "Periodically probe opted-in projects for dependency updates and open an update task when a lockfile would change (per-project opt-in; never auto-merges).",
   release_manager_enabled:
     "Run the deterministic release-readiness sweep and propose a release for you to approve or reject — it never publishes without your approval, and the executor is fail-closed on a red gate.",
+  org_memory_enabled:
+    "Close the learn→reuse loop: distill a lesson at task completion, index journal reflections, and auto-inject similar past lessons + approved playbooks into an agent's briefing on claim.",
 };
 
 export function FeatureFlagsCard() {

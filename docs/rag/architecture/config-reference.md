@@ -118,6 +118,9 @@ The fan-out generalizations of self-heal — they watch any opted-in project, no
 | `ROBOCO_RELEASE_MANAGER_ENABLED` | `false` | Master switch for the gated release manager; off = the loop never runs. Even on it only PROPOSES — the CEO approves before any publish |
 | `ROBOCO_RELEASE_MIN_COMMITS` | `8` | Minimum unreleased commits since the last tag before a release is proposed (a feat/security change also qualifies) |
 | `ROBOCO_RELEASE_MANAGER_INTERVAL_SECONDS` | `3600` | Seconds between release-readiness assessment passes |
+| `ROBOCO_ORG_MEMORY_ENABLED` | `false` | Master switch for the org-memory loop (distill at completion, index journals, auto-inject lessons/playbooks); off = legacy capture, no inject |
+| `ROBOCO_ORG_MEMORY_TOP_K` | `3` | Max institutional-memory items injected into a briefing on claim |
+| `ROBOCO_ORG_MEMORY_MIN_SCORE` | `0.6` | Cosine-similarity floor for injected memory; below it nothing is injected |
 | `ROBOCO_IMAGE_PRUNE_ENABLED` | `true` | Background sweep prunes dangling (`<none>`) Docker images from agent-image rebuilds (only dangling; ~6h throttle). Always-on safety net, not a feature flag |
 | `ROBOCO_IMAGE_PRUNE_INTERVAL_SECONDS` | `21600` | Minimum seconds between dangling-image prune passes |
 
