@@ -17,16 +17,22 @@ respawn-loops on it (observed live 2026-06-25 on the ``0e49e04e`` cell root,
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 
 import pytest
 from roboco.foundation.policy import lifecycle as spec
 from roboco.models.base import TaskStatus
 from roboco.services.task import _default_claim_statuses, _get_valid_claim_statuses
 
+if TYPE_CHECKING:
+    from roboco.db.tables import AgentTable
+
 
 @pytest.mark.parametrize("role", ["cell_pm", "main_pm"])
 def test_pm_runtime_claim_statuses_include_needs_revision(role: str) -> None:
-    agent = SimpleNamespace(role=role)
+    # _get_valid_claim_statuses only reads ``agent.role`` — a lightweight
+    # role-bearing stand-in is enough; cast keeps it type-clean (no AgentTable row).
+    agent = cast("AgentTable", SimpleNamespace(role=role))
     assert TaskStatus.NEEDS_REVISION in _get_valid_claim_statuses(
         agent, allow_reassign=False
     )
