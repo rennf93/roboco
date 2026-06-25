@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from sqlalchemy import select
 
+from roboco.config import settings
 from roboco.db.tables import PlaybookTable
 from roboco.models.base import PlaybookStatus
 from roboco.services.base import BaseService, ConflictError, NotFoundError
@@ -73,8 +74,42 @@ class PlaybookService(BaseService):
         playbook.approved_by = approver_id
         playbook.approved_at = datetime.now(UTC)
         await self.session.flush()
+        await self._index_approved(playbook)
         self.log.info("Playbook approved", playbook_id=str(playbook_id))
         return playbook
+
+    async def _index_approved(self, playbook: PlaybookTable) -> None:
+        """Embed an approved playbook into the PLAYBOOKS RAG index (best-effort).
+
+        Gated on ``org_memory_enabled`` so the feature is fully inert when off;
+        a failure (e.g. the embedder is down) never blocks the approval.
+        """
+        if not settings.org_memory_enabled:
+            return
+        try:
+            from roboco.services.optimal import get_optimal_service
+            from roboco.services.optimal_brain.indexes.playbooks import (
+                IndexPlaybookParams,
+            )
+
+            optimal = await get_optimal_service()
+            await optimal.index_playbook(
+                IndexPlaybookParams(
+                    playbook_id=str(playbook.id),
+                    title=playbook.title,
+                    problem=playbook.problem,
+                    procedure=playbook.procedure,
+                    tags=list(playbook.tags or []),
+                    team=playbook.team,
+                    scope=playbook.scope,
+                )
+            )
+        except Exception as exc:
+            self.log.warning(
+                "Playbook index-on-approve failed (best-effort)",
+                playbook_id=str(playbook.id),
+                error=str(exc),
+            )
 
     async def reject(
         self, playbook_id: UUID, approver_id: UUID, reason: str

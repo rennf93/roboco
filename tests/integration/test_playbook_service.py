@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from roboco.config import settings as cfg
 from roboco.models.base import PlaybookStatus
 from roboco.models.playbook import PlaybookCreate
 from roboco.services.base import ConflictError, NotFoundError
@@ -94,3 +96,50 @@ async def test_source_task_id_is_recorded(db_session: AsyncSession) -> None:
     task_id = uuid4()
     pb = await svc.draft(_create(source_task_id=task_id), created_by=uuid4())
     assert str(task_id) in pb.source_task_ids
+
+
+@pytest.mark.asyncio
+async def test_approve_indexes_when_org_memory_on(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cfg, "org_memory_enabled", True)
+    fake_optimal = AsyncMock()
+    fake_optimal.index_playbook = AsyncMock()
+    monkeypatch.setattr(
+        "roboco.services.optimal.get_optimal_service",
+        AsyncMock(return_value=fake_optimal),
+    )
+    svc = PlaybookService(db_session)
+    pb = await svc.draft(_create(title="Index me"), created_by=uuid4())
+    await svc.approve(pb.id, approver_id=uuid4())
+    fake_optimal.index_playbook.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_approve_does_not_index_when_off(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cfg, "org_memory_enabled", False)
+    getter = AsyncMock()
+    monkeypatch.setattr("roboco.services.optimal.get_optimal_service", getter)
+    svc = PlaybookService(db_session)
+    pb = await svc.draft(_create(title="Do not index"), created_by=uuid4())
+    await svc.approve(pb.id, approver_id=uuid4())
+    getter.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_approve_survives_index_failure(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cfg, "org_memory_enabled", True)
+    fake_optimal = AsyncMock()
+    fake_optimal.index_playbook = AsyncMock(side_effect=RuntimeError("ollama down"))
+    monkeypatch.setattr(
+        "roboco.services.optimal.get_optimal_service",
+        AsyncMock(return_value=fake_optimal),
+    )
+    svc = PlaybookService(db_session)
+    pb = await svc.draft(_create(title="Resilient"), created_by=uuid4())
+    approved = await svc.approve(pb.id, approver_id=uuid4())  # must not raise
+    assert approved.status == PlaybookStatus.APPROVED
