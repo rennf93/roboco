@@ -722,6 +722,7 @@ class AgentOrchestrator:
         self._external_pr_poll_task: asyncio.Task | None = None
         self._self_heal_task: asyncio.Task | None = None
         self._ci_watch_task: asyncio.Task | None = None
+        self._dep_update_task: asyncio.Task | None = None
         # Provider registry: maps a ModelProvider to a dedicated AgentProvider
         # backend. Only providers needing a non-Claude-Code runtime are
         # registered (currently GROK, which speaks the OpenAI protocol). Agents
@@ -833,6 +834,7 @@ class AgentOrchestrator:
         self._external_pr_poll_task = asyncio.create_task(self._external_pr_poll_loop())
         self._self_heal_task = asyncio.create_task(self._self_heal_loop())
         self._ci_watch_task = asyncio.create_task(self._ci_watch_loop())
+        self._dep_update_task = asyncio.create_task(self._dep_update_loop())
 
         logger.info(
             "Orchestrator started",
@@ -840,50 +842,31 @@ class AgentOrchestrator:
             internal_api_url=self._api_url,
         )
 
+    async def _cancel_background_task(self, task: asyncio.Task | None) -> None:
+        """Cancel one background loop task and await its teardown (idempotent)."""
+        if task is None:
+            return
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
     async def stop(self) -> None:
         """Stop the orchestrator and all agents."""
         self._running = False
 
-        # Cancel background tasks
-        if self._health_task:
-            self._health_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._health_task
-
-        if self._dispatcher_task:
-            self._dispatcher_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._dispatcher_task
-
-        if self._sweeper_task:
-            self._sweeper_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._sweeper_task
-
-        if self._rate_limit_probe_task:
-            self._rate_limit_probe_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._rate_limit_probe_task
-
-        if self._strategy_engine_task:
-            self._strategy_engine_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._strategy_engine_task
-
-        if self._external_pr_poll_task:
-            self._external_pr_poll_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._external_pr_poll_task
-
-        if self._self_heal_task:
-            self._self_heal_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._self_heal_task
-
-        if self._ci_watch_task:
-            self._ci_watch_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._ci_watch_task
+        # Cancel every background loop, then stop the agents.
+        for task in (
+            self._health_task,
+            self._dispatcher_task,
+            self._sweeper_task,
+            self._rate_limit_probe_task,
+            self._strategy_engine_task,
+            self._external_pr_poll_task,
+            self._self_heal_task,
+            self._ci_watch_task,
+            self._dep_update_task,
+        ):
+            await self._cancel_background_task(task)
 
         # Stop all agents
         for agent_id in list(self._instances.keys()):
@@ -5640,6 +5623,61 @@ Start by:
             if getattr(p, "ci_watch_enabled", False) and getattr(p, "git_url", None)
         ]
         return self._projects_one_per_repo(watched)
+
+    async def _dep_update_loop(self) -> None:
+        """Dependency-update bot: probe opted-in projects, open update tasks.
+
+        Dormant by default — returns immediately unless ``dep_update_enabled``.
+        Each interval (default weekly) it loads projects with a
+        ``dep_update_command``, collapses to one per repo, and runs
+        ``DepUpdateEngine.run_cycle``; it only OPENS a task and never starts /
+        approves / merges / deploys. Separate from the self-heal and CI-watch
+        loops.
+        """
+        if not settings.dep_update_enabled:
+            return
+        interval = settings.dep_update_interval_seconds
+        while self._running:
+            try:
+                await asyncio.sleep(interval)
+                await self._run_dep_update_cycle()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("dep-update cycle failed")
+
+    async def _run_dep_update_cycle(self) -> None:
+        """One dep-update pass: load eligible projects, run the engine, commit.
+
+        Extracted from the loop so it is testable without the sleep. Warns when
+        the bot is armed but no project has a ``dep_update_command`` set.
+        """
+        from roboco.db import get_db_context
+        from roboco.services.dep_update_engine import get_dep_update_engine
+
+        async with get_db_context() as db:
+            projects = await self._load_dep_update_set(db)
+            if not projects:
+                logger.warning(
+                    "dep-update enabled but no project has a dep_update_command — "
+                    "nothing to probe"
+                )
+                return
+            await get_dep_update_engine(db).run_cycle(projects)
+            await db.commit()
+
+    async def _load_dep_update_set(self, db: Any) -> list[Any]:
+        """Projects with a ``dep_update_command`` + a git_url, one per repo."""
+        from roboco.services.project import get_project_service
+
+        projects = await get_project_service(db).list_all(active_only=True)
+        eligible = [
+            p
+            for p in projects
+            if str(getattr(p, "dep_update_command", None) or "").strip()
+            and getattr(p, "git_url", None)
+        ]
+        return self._projects_one_per_repo(eligible)
 
     @staticmethod
     def _repo_key(git_url: str) -> str:
