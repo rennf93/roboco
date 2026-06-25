@@ -427,6 +427,11 @@ SELF_HEAL_SOURCE = "self_heal"
 # self_heal it can target any watched project, not just RoboCo's own repo.
 CI_WATCH_SOURCE = "ci_watch"
 
+# Source tag for a dependency-update task: opened by the dep-update bot when an
+# opted-in project has dependency updates available. Rides the normal delivery
+# lifecycle (+ PR-review gate) and is never auto-merged.
+DEP_UPDATE_SOURCE = "dep_update"
+
 
 def extract_self_heal_fingerprint(task: Any) -> str | None:
     """The self-heal dedupe fingerprint from a task's markers, or None.
@@ -1018,6 +1023,27 @@ class TaskService(BaseService):
         """
         stmt = select(TaskTable).where(
             TaskTable.source == CI_WATCH_SOURCE,
+            TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+        )
+        if git_url is not None:
+            stmt = stmt.join(
+                ProjectTable, TaskTable.project_id == ProjectTable.id
+            ).where(ProjectTable.git_url == git_url)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def list_open_dep_update_tasks(
+        self, git_url: str | None = None
+    ) -> list[TaskTable]:
+        """Non-terminal dep_update tasks — the dedupe + open-cap basis.
+
+        Optionally scoped to one repo by ``git_url`` so a monorepo (several
+        cell-projects, one git_url) gets at most one open dependency-update task,
+        not one per cell-project. While an open task exists for a repo the bot
+        must not originate a second; the rolling open-task cap counts these.
+        """
+        stmt = select(TaskTable).where(
+            TaskTable.source == DEP_UPDATE_SOURCE,
             TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
         )
         if git_url is not None:
