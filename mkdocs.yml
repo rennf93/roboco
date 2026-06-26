@@ -157,6 +157,7 @@ nav:
       - operations/index.md
       - Cost & usage: operations/cost-and-usage.md
       - Health & metrics: operations/health-and-metrics.md
+      - Quality gates investigation (2026-06-26): operations/quality-gates-investigation-2026-06-26.md
   - Optional Subsystems:
       - optional/index.md
       - Architectural Conventions: optional/conventions.md
