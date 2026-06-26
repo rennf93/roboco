@@ -14,6 +14,7 @@ When something goes wrong, the failure is almost always one of a handful of thin
 | Agent containers exit immediately | `~/.claude` not mounted, or a Grok token expired | Check the mount / refresh the token (below) |
 | Clone fails, agent can't reach the repo | Missing or invalid project PAT, or HTTPS URL with no token | Set the project token (below) |
 | Orchestrator won't start | `ROBOCO_ENCRYPTION_KEY` unset, or a pending migration | First-run checklist (below) |
+| `make quality` is red on `pytest --cov-fail-under=80` (Total coverage < 80%) | New code shipped with integration-test-only coverage — the unit-coverage gate cannot credit it. Known offender: `1537234 Feat/autonomous maintenance (#264)` on master as of 2026-06-26. | See the [CI coverage-gate diagnosis post-mortem](../ci/CI_DIAGNOSIS_2026-06-26.md) for the offending commit, per-module coverage evidence, and three ranked fix-direction options. |
 
 ## Agents spawn but do nothing
 
@@ -77,6 +78,17 @@ When the orchestrator won't come up at all on a fresh deploy:
 ## A task is stuck on a branch behind its base
 
 Agents have no rebase, pull, or merge verb — a task branch is brought current with its base only at claim. If the base (a cell branch, or master) moves forward while the agent works, the branch falls behind, and the agent escalates rather than improvising git surgery: the task surfaces **blocked** with a reason like *"branch behind base — needs rebase."* That escalation is by design — bringing the branch current is your call, not a unit of work the company decomposes. Rebase it from the panel **Git** tab — select the branch and **Rebase** it onto its base (or master) — and the task resumes on the next dispatch. (Automatic rebase-at-spawn, so a stale branch never reaches you at all, is on the roadmap.)
+
+## The unit-coverage gate is red
+
+`make quality` runs `pytest --cov=roboco --cov-report=term-missing --cov-fail-under=80` as part of the `quality` CI job (see `.github/workflows/ci.yml`). The gate is intentionally a **unit-coverage gate** — `[tool.coverage.run]` in `pyproject.toml` omits modules that require live infrastructure (Ollama, the Docker daemon, the runtime/orchestrator, MCP server entry points, the WebSocket route, the event-stream bus, `services/git.py`, `services/workspace.py`, `services/notification_delivery.py`, `cli.py`, and `alembic/*`), and `make quality` does not pass `-m integration`. If new code lands with integration-only coverage, the gate can drop below 80%.
+
+A canonical worked example — the **2026-06-26 master regression** — is documented end-to-end in the per-incident post-mortem:
+
+- **[CI coverage-gate diagnosis — 2026-06-26](../ci/CI_DIAGNOSIS_2026-06-26.md)** — names the failing job (`quality` Python gate, NOT `panel`), the failing sub-step (`pytest --cov-fail-under=80` → `Total coverage: 70.93%` vs. 80% required, exit 1), and pins the offending commit to **`1537234 Feat/autonomous maintenance (#264)`** (six new modules with integration-only coverage accounting for ~3,500 uncovered lines). Includes per-file coverage evidence, three ranked fix-direction options for the follow-up fix-dev task, and the exact local command sequence to reproduce.
+
+!!! tip "Pattern: new module + integration tests only = red gate"
+    When a feature ships with files under `tests/integration/services/` but nothing under `tests/unit/services/`, every line in the new module is uncovered by the unit-coverage runner. The fix is usually to back the integration tests up with stubbed-DB / stubbed-telemetry unit tests (the `tests/unit/runtime/test_*_loop_dormant.py` style is the template), NOT to lower `--cov-fail-under` or add masking suppression.
 
 ## Next
 
