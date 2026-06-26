@@ -16,4 +16,10 @@ RoboCo measures what the company spends and how it's performing, and shows both 
 
     The health and readiness probes, and the delivery-performance metrics — velocity, blockers, and team health.
 
+-   **[Non-coverage `make quality` investigation (2026-06-26)](quality-gates-investigation-2026-06-26.md)**
+
+    ---
+
+    Gate-by-gate result of an investigation into the non-coverage `make quality` gates on master HEAD at `e2f7097` — all 14 gates exit 0, no fix needed in this scope.
+
 </div>
