@@ -391,9 +391,11 @@ def build_intake_options(
         "propose_draft",
         "Submit the finished task draft for the human to review and confirm. Call "
         "this once the spec is complete. Pass a JSON object: title, objective, "
-        "what_this_builds[], the_work[] ({team, summary, items}), notes[], "
-        "acceptance_criteria[], team, scale, task_type, nature, "
-        "estimated_complexity, priority.",
+        "what_this_builds[], the_work[] ({team, summary, items, project_id}), "
+        "notes[], acceptance_criteria[], team, scale, task_type, nature, "
+        "estimated_complexity, priority. A multi-cell task (be+fe, fe+uxui) puts "
+        "one entry per cell in the_work, each with its cell's project_id (the "
+        "per-cell repo); the system builds the cell->project map from them.",
         {"draft": dict},
     )
     async def _propose_draft(_args: dict[str, Any]) -> dict[str, Any]:
@@ -411,9 +413,11 @@ def build_intake_options(
         "and confirm together. Use this (instead of propose_draft) when the CEO "
         "asked for multiple tasks across the scoped repos. Pass {drafts: [draft, "
         "...], title: '...'} where each draft has the same fields as propose_draft "
-        "PLUS its own project_id (which repo it targets) and collision surface "
-        "(intends_to_touch[], adds_migration, touches_shared) so the system can "
-        "sequence them into conflict-free waves.",
+        "PLUS a collision surface (intends_to_touch[], adds_migration, "
+        "touches_shared) so the system can sequence them into conflict-free waves. "
+        "Each draft targets its repos via the per-cell project_id on its the_work[] "
+        "entries (a multi-cell task has one project_id per cell; a single-cell task "
+        "may use one the_work entry or a top-level project_id).",
         {"drafts": list, "title": str},
     )
     async def _propose_batch(_args: dict[str, Any]) -> dict[str, Any]:

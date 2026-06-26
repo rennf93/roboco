@@ -21,6 +21,7 @@ from roboco.models.base import (
     Team,
     TimestampMixin,
 )
+from roboco.models.product import ProductCellMapping
 
 # =============================================================================
 # SUPPORTING MODELS
@@ -166,6 +167,13 @@ class Task(TimestampMixin):
     product_id: UUID | None = Field(
         default=None,
         description="Product this task belongs to (additive; drives subtask routing)",
+    )
+    cell_projects: list[ProductCellMapping] = Field(
+        default_factory=list,
+        description=(
+            "Ad-hoc per-cell project map (a MegaTask root-subtask spanning "
+            "multiple cells); empty for a project/product-targeted task"
+        ),
     )
     branch_name: str | None = Field(
         default=None, description="Branch created for this task"
@@ -373,21 +381,31 @@ class TaskCreate(RobocoBase):
     task_type: TaskType = Field(...)
     nature: TaskNature = Field(...)
     # A task targets a single repo (project_id) OR fans out across cells via a
-    # product (product_id, a cell->project map). Exactly one is needed; a
-    # board/coordination task uses product_id and has no project of its own.
+    # product (product_id, a cell->project map) OR carries an ad-hoc per-cell
+    # map (cell_projects — a MegaTask root-subtask spanning multiple cells).
+    # Exactly one is needed; a board/coordination task uses product_id and has
+    # no project of its own.
     project_id: UUID | None = None
     product_id: UUID | None = None
+    cell_projects: list[ProductCellMapping] = Field(default_factory=list)
 
     # Prompter origin tracking
     source: str = Field(default="manual")
     confirmed_by_human: bool = Field(default=False)
 
     @model_validator(mode="after")
-    def _project_or_product(self) -> "TaskCreate":
-        if self.project_id is None and self.product_id is None:
+    def _exactly_one_target(self) -> "TaskCreate":
+        targets = (
+            self.project_id is not None,
+            self.product_id is not None,
+            bool(self.cell_projects),
+        )
+        if sum(targets) != 1:
             raise ValueError(
-                "a task needs either a project_id (the repo it targets) or a "
-                "product_id (a cell->project map for a fan-out task)"
+                "a task needs exactly one target: a project_id (the repo it "
+                "targets), a product_id (a cell->project map for a fan-out "
+                "task), or cell_projects (an ad-hoc per-cell map for a "
+                "multi-cell coordination root)"
             )
         return self
 
@@ -456,6 +474,12 @@ class TaskCreateRequest:
     # cells' subtasks resolve their own project from it.
     project_id: UUID | None = None
     product_id: UUID | None = None
+    # Ad-hoc per-cell project map (mirrors a Product's cells but owned by the
+    # task): a MegaTask root-subtask spanning multiple cells (and possibly mixing
+    # per-cell projects from different products / OSS libs) sets this instead of
+    # project_id/product_id. The root cuts feature/main_pm/{root} per repo and
+    # opens a root->master PR per repo exactly like a Product fan-out root.
+    cell_projects: list[ProductCellMapping] = field(default_factory=list)
 
     # Ordering and dependencies
     sequence: int = 0  # Order within siblings (lower = first)

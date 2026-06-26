@@ -444,6 +444,18 @@ class TaskTable(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+    # Per-cell project map for an ad-hoc (non-Product) coordination root —
+    # mirrors product_projects but is owned by the task itself, so a MegaTask
+    # root-subtask can target a per-cell map mixing projects from different
+    # products / OSS libs. selectin so the fan-out resolvers see the map on
+    # any task fetch; passive_deletes trusts the ON DELETE CASCADE FK.
+    cell_projects: Mapped[list["TaskCellProjectTable"]] = relationship(
+        "TaskCellProjectTable",
+        back_populates="task",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        lazy="selectin",
+    )
 
     __table_args__ = (
         # Composite indexes for common queries
@@ -614,6 +626,50 @@ class ProductProjectTable(Base):
 
     __table_args__ = (
         UniqueConstraint("product_id", "team", name="uq_product_projects_product_team"),
+    )
+
+
+class TaskCellProjectTable(Base):
+    """One Project per cell for an ad-hoc (non-Product) coordination root.
+
+    Mirrors ``product_projects`` but the map is owned by the task, not a Product:
+    a MegaTask root-subtask that spans multiple cells (and may mix per-cell
+    projects from different products / OSS libs) carries its per-cell routing
+    here instead of a ``product_id``. The root itself does git per repo (it cuts
+    ``feature/main_pm/{root}`` and opens a root->master PR per repo exactly like a
+    Product fan-out root); the cell children each resolve their project from this
+    map via ``_resolve_subtask_project``. ``UNIQUE (task_id, team)`` enforces one
+    project per cell per task.
+    """
+
+    __tablename__ = "task_cell_projects"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    task_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("tasks.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    team: Mapped[Team] = mapped_column(_str_enum(Team), nullable=False)
+    project_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+
+    task: Mapped["TaskTable"] = relationship(
+        "TaskTable", back_populates="cell_projects"
+    )
+    project: Mapped["ProjectTable"] = relationship(
+        "ProjectTable", foreign_keys=[project_id], lazy="joined"
+    )
+
+    __table_args__ = (
+        UniqueConstraint("task_id", "team", name="uq_task_cell_projects_task_team"),
     )
 
 

@@ -185,6 +185,24 @@ async def _resolve_assigned_to_slug(
     return data.model_copy(update={"assigned_to": str(agent_row.id)})
 
 
+def _first_cell_map_project_id(task: Any) -> UUID | None:
+    """First distinct project_id from a task's ad-hoc per-cell map.
+
+    Mirrors the product-root ``distinct_project_ids(...)[0]`` first-project
+    resolution: dedupes by project_id (a monorepo mapped across cells shares
+    one project), ordered by cell team for determinism. Returns None when the
+    task carries no cell map.
+    """
+    cell_map = getattr(task, "cell_projects", None) or []
+    seen: set[UUID] = set()
+    for mapping in sorted(cell_map, key=lambda m: m.team.value):
+        pid = UUID(str(mapping.project_id))
+        if pid not in seen:
+            seen.add(pid)
+            return pid
+    return None
+
+
 async def _project_for_complete(task: Any, db: AsyncSession) -> Any:
     """Resolve the project for complete_task's pre-merge step.
 
@@ -203,6 +221,9 @@ async def _project_for_complete(task: Any, db: AsyncSession) -> Any:
         pids = await product_service.distinct_project_ids(UUID(str(task.product_id)))
         if pids:
             return await project_service.get(pids[0])
+    cell_pid = _first_cell_map_project_id(task)
+    if cell_pid is not None:
+        return await project_service.get(cell_pid)
     return None
 
 
@@ -279,13 +300,17 @@ async def _resolve_project_for_merge(task: Any, db: AsyncSession) -> Any:
             )
         resolved_id = project_ids[0]
     else:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "NO_PROJECT: Task has neither project_id nor product_id; "
-                "cannot resolve workspace for merge. Set project_id on the task first."
-            ),
-        )
+        cell_pid = _first_cell_map_project_id(task)
+        if cell_pid is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "NO_PROJECT: Task has neither project_id, product_id, nor a "
+                    "cell->project map; cannot resolve workspace for merge. Set a "
+                    "target on the task first."
+                ),
+            )
+        resolved_id = cell_pid
     project = await project_service.get(resolved_id)
     if not project:
         raise HTTPException(

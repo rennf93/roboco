@@ -4709,13 +4709,21 @@ class Choreographer:
     ) -> UUID:
         """Resolve the project a delegated subtask lands in.
 
-        Priority: explicit inputs.project_id -> the parent's Product map for
-        this cell -> the parent's own project. Raises TaskCompletenessError only
-        for a fan-out parent (product, no own project) whose product has no
-        mapping for this cell — i.e. the subtask would have no repo to land in.
+        Priority: explicit inputs.project_id -> the parent's ad-hoc cell_projects
+        map for this cell -> the parent's Product map for this cell -> the
+        parent's own project. Raises TaskCompletenessError only for a fan-out
+        parent (product or cell map, no own project) whose map has no mapping for
+        this cell — i.e. the subtask would have no repo to land in.
         """
         if inputs.project_id is not None:
             return inputs.project_id
+        # Ad-hoc per-cell map (a multi-cell MegaTask root-subtask): mirror the
+        # product.project_for lookup but read the map off the parent task itself.
+        parent_cell_map = getattr(parent, "cell_projects", None)
+        if parent_cell_map:
+            for mapping in parent_cell_map:
+                if mapping.team == inputs.team:
+                    return UUID(str(mapping.project_id))
         parent_product_id = getattr(parent, "product_id", None)
         if self.product is not None and parent_product_id is not None:
             mapped = await self.product.project_for(parent_product_id, inputs.team)
@@ -4730,8 +4738,8 @@ class Choreographer:
             field_hints={
                 "project_id": (
                     f"no project for team {inputs.team!r}: add a "
-                    f"{inputs.team}->project mapping to the parent's product, or "
-                    "pass an explicit project_id on delegate"
+                    f"{inputs.team}->project mapping to the parent's cell map or "
+                    "product, or pass an explicit project_id on delegate"
                 )
             },
             message=f"cannot resolve a project for the {inputs.team} subtask",

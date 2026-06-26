@@ -315,19 +315,23 @@ def _read_project_slug(task: dict[str, Any]) -> str | None:
 def _is_coordination_task(task: dict[str, Any]) -> bool:
     """True for a task that does no git of its own.
 
-    Two shapes qualify: a board/fan-out coordination root (carries a product, no
-    repo — its cell subtasks resolve a real project from the product's
-    cell->project map), and a MegaTask umbrella (carries a batch_id, top-level —
-    its root-subtasks each carry their own branch/PR). Such a task has no
+    Three shapes qualify: a board/fan-out coordination root (carries a product,
+    no repo — its cell subtasks resolve a real project from the product's
+    cell->project map), an ad-hoc per-cell map coordination root (carries a
+    ``cell_projects`` map but no project/product — a multi-cell MegaTask
+    root-subtask), and a MegaTask umbrella (carries a batch_id, top-level — its
+    root-subtasks each carry their own branch/PR). Such a task has no
     project_slug, branch_name, or git token, and must NOT be git-gated at the
     spawn-readiness or stuck-detection checks the way a code task is. A task with
-    none of project / product / batch is genuinely unroutable and stays gated.
+    none of project / product / cell-map / batch is genuinely unroutable and
+    stays gated.
     """
     return is_branchless_coordination(
         project_id=task.get("project_id"),
         product_id=task.get("product_id"),
         batch_id=task.get("batch_id"),
         parent_task_id=task.get("parent_task_id"),
+        has_cell_projects=bool(task.get("cell_projects")),
     )
 
 
@@ -2640,11 +2644,14 @@ class AgentOrchestrator:
         task_id: str | None,
         product_id: str | None,
     ) -> list[Any]:
-        """The in-scope projects for the ambient block (single repo or product)."""
-        if product_id is None and task_id is not None:
-            product_id = await self._ambient_product_for_task(db, task_id)
+        """The in-scope projects for the ambient block (single repo, product, or
+        ad-hoc cell map)."""
         if product_id is not None:
             return await self._ambient_product_projects(db, product_id)
+        if task_id is not None:
+            projects = await self._ambient_projects_for_task(db, task_id)
+            if projects:
+                return projects
         if project_slug:
             from roboco.services.project import get_project_service
 
@@ -2653,15 +2660,35 @@ class AgentOrchestrator:
         return []
 
     @staticmethod
-    async def _ambient_product_for_task(db: Any, task_id: str) -> str | None:
+    async def _ambient_projects_for_task(db: Any, task_id: str) -> list[Any]:
+        """The in-scope projects for a task's ambient block, from its product OR
+        its ad-hoc ``cell_projects`` map. Empty for a plain project task (the
+        project_slug branch handles those) or a not-yet-mapped coordination root.
+        """
         from uuid import UUID
 
+        from roboco.services.project import get_project_service
         from roboco.services.task import get_task_service
 
         task = await get_task_service(db).get(UUID(task_id))
-        if task is not None and task.product_id is not None:
-            return str(task.product_id)
-        return None
+        if task is None:
+            return []
+        project_service = get_project_service(db)
+        if task.product_id is not None:
+            from roboco.services.product import get_product_service
+
+            ids = await get_product_service(db).distinct_project_ids(
+                UUID(str(task.product_id))
+            )
+            resolved = [await project_service.get(pid) for pid in ids]
+            return [p for p in resolved if p is not None]
+        # Ad-hoc per-cell map: resolve the distinct projects the map spans (de-dupe
+        # by project_id — a monorepo mapped across cells yields one project).
+        distinct_ids: dict[Any, None] = {}
+        for mapping in sorted(task.cell_projects, key=lambda m: m.team.value):
+            distinct_ids.setdefault(UUID(str(mapping.project_id)), None)
+        resolved = [await project_service.get(pid) for pid in distinct_ids]
+        return [p for p in resolved if p is not None]
 
     @staticmethod
     async def _ambient_product_projects(db: Any, product_id: str) -> list[Any]:
@@ -6808,13 +6835,13 @@ Start by:
             return (
                 f"Task {task_id} has inadequate description ({len(description)} chars)"
             )
-        # A coordination task carries a product instead of a repo; only a task
-        # with neither is genuinely unroutable.
+        # A coordination task carries a product or an ad-hoc cell map instead of a
+        # repo; only a task with neither is genuinely unroutable.
         if not task.get("project_id") and not _is_coordination_task(task):
             await self._auto_block_task(
-                client, task_id, "Task needs a project_id or product_id"
+                client, task_id, "Task needs a project_id, product_id, or cell map"
             )
-            return f"Task {task_id} needs a project or product"
+            return f"Task {task_id} needs a project, product, or cell map"
         return None
 
     async def _check_dependencies_terminal(

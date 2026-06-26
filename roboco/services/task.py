@@ -20,6 +20,7 @@ from roboco.db.tables import (
     JournalTable,
     ProjectTable,
     SessionTaskTable,
+    TaskCellProjectTable,
     TaskTable,
     WorkSessionTable,
 )
@@ -564,6 +565,7 @@ class TaskService(BaseService):
                 product_id=task.product_id,
                 batch_id=task.batch_id,
                 parent_task_id=task.parent_task_id,
+                has_cell_projects=bool(task.cell_projects),
             ),
             # An external-PR review task reviews someone else's PR read-only —
             # no branch of its own — so it is branch-gate exempt.
@@ -743,18 +745,22 @@ class TaskService(BaseService):
     def _require_target_or_umbrella(req: TaskCreateRequest) -> None:
         """Service-layer invariant (covers every create path — API, a2a, gateway).
 
-        A task targets a single repo (``project_id``) or fans out across cells via
-        a product (``product_id``) — it must have one or the other, EXCEPT a
-        MegaTask umbrella, which targets neither (it groups N root-subtasks that
-        each carry their own project) and is branchless.
+        A task targets a single repo (``project_id``), fans out across cells via a
+        product (``product_id``), or carries an ad-hoc per-cell map
+        (``cell_projects``) — it must have exactly one, EXCEPT a MegaTask umbrella,
+        which targets neither (it groups N root-subtasks that each carry their own
+        project) and is branchless.
         """
         if req.project_id is not None or req.product_id is not None:
+            return
+        if req.cell_projects:
             return
         if is_batch_umbrella(batch_id=req.batch_id, parent_task_id=req.parent_task_id):
             return
         raise ValueError(
-            "task needs a project_id (the repo it targets) or a product_id "
-            "(a cell->project map for a fan-out task)"
+            "task needs a project_id (the repo it targets), a product_id "
+            "(a cell->project map for a fan-out task), or cell_projects "
+            "(an ad-hoc per-cell map for a multi-cell coordination root)"
         )
 
     async def _validate_batch_membership(self, req: TaskCreateRequest) -> None:
@@ -773,11 +779,12 @@ class TaskService(BaseService):
             parent_task_id=req.parent_task_id,
             project_id=req.project_id,
             product_id=req.product_id,
+            has_cell_projects=bool(req.cell_projects),
         ):
             raise ValueError(
                 "batch_id is only valid on a MegaTask umbrella (targets neither "
-                "project nor product) or a root-subtask (targets exactly one); "
-                "refusing a stray batch_id on any other task."
+                "project, product, nor a cell map) or a root-subtask (targets "
+                "exactly one); refusing a stray batch_id on any other task."
             )
         if req.parent_task_id is None:
             return  # a well-formed umbrella
@@ -842,6 +849,22 @@ class TaskService(BaseService):
         )
         self.session.add(task)
         await self.session.flush()
+
+        # Persist the ad-hoc per-cell project map (a MegaTask root-subtask
+        # spanning multiple cells). Added as explicit rows with the flushed
+        # task id rather than via the `cell_projects` collection (which is
+        # unloaded on a freshly-built task — mutating it would trigger a lazy
+        # load). Unique (task_id, team) is enforced by the table; a caller
+        # passing duplicate teams raises IntegrityError here, which is the
+        # right failure for a malformed request.
+        for mapping in req.cell_projects:
+            self.session.add(
+                TaskCellProjectTable(
+                    task_id=cast("UUID", task.id),
+                    team=mapping.team,
+                    project_id=mapping.project_id,
+                )
+            )
 
         # Inherit parent task's primary session for subtasks
         if req.parent_task_id:
@@ -1558,12 +1581,13 @@ class TaskService(BaseService):
 
         if not task.project_id:
             # A coordination/fan-out task carries a product (a cell->project
-            # map) but no repo of its own. Per the CEO-locked branch model it is
-            # the Main-PM integration point: it cuts feature/main_pm/{root} off
-            # master in EACH repo the product spans, so cells branch off it
-            # (not off master) and only the CEO merges the root into master.
-            # Only a task with neither project nor product is misconfigured.
-            if task.product_id:
+            # map) or an ad-hoc cell_projects map but no repo of its own. Per
+            # the CEO-locked branch model it is the Main-PM integration point:
+            # it cuts feature/main_pm/{root} off master in EACH repo the map
+            # spans, so cells branch off it (not off master) and only the CEO
+            # merges the root into master. Only a task with neither project,
+            # product, nor a cell map is misconfigured.
+            if task.product_id or task.cell_projects:
                 return await self._ensure_coordination_root_branches(task, agent_id)
             # A MegaTask umbrella is branchless by design: it spans many projects
             # (no single master to branch off) and assembles no PR of its own —
@@ -1574,9 +1598,9 @@ class TaskService(BaseService):
             ):
                 return ""
             raise ValueError(
-                "Task requires a project_id (a repo) or a product_id (a "
-                "cell->project map) to create a branch. Assign one before "
-                "claiming."
+                "Task requires a project_id (a repo), a product_id, or a "
+                "cell_projects map (a cell->project map) to create a branch. "
+                "Assign one before claiming."
             )
 
         return await self._auto_create_branch(task, agent_id)
@@ -1762,33 +1786,55 @@ class TaskService(BaseService):
         )
         return branch_name
 
+    async def _distinct_projects_for_task(self, task: TaskTable) -> list[UUID]:
+        """The distinct projects a coordination root's map spans — one
+        ``feature/main_pm/{root}`` integration branch each.
+
+        A coordination root carries EITHER a product (``product_id`` → its
+        ``product_projects`` map) OR an ad-hoc per-cell map (``cell_projects``).
+        Both yield the same thing: the distinct project_ids the root spans,
+        de-duped (a monorepo mapped across cells yields one project per distinct
+        project, in team order). Empty when the root has neither (the umbrella,
+        which never reaches here, or a not-yet-mapped product — caller returns
+        ``""`` so delegation falls back to the parent's project).
+        """
+        from roboco.services.product import get_product_service
+
+        if task.product_id is not None:
+            return await get_product_service(self.session).distinct_project_ids(
+                UUID(str(task.product_id))
+            )
+        # Ad-hoc cell_projects map: de-dupe by project_id, in team order (mirrors
+        # ProductService.distinct_project_ids' ordering + dedup semantics).
+        seen: dict[UUID, None] = {}
+        for mapping in sorted(task.cell_projects, key=lambda m: m.team.value):
+            seen.setdefault(UUID(str(mapping.project_id)), None)
+        return list(seen)
+
     async def _ensure_coordination_root_branches(
         self,
         task: TaskTable,
         agent_id: UUID,
     ) -> str:
-        """Cut the Main-PM integration branch in every repo the product spans.
+        """Cut the Main-PM integration branch in every repo the map spans.
 
-        The coordination root carries a product (a cell->repo map) but no
-        project of its own. Per the CEO-locked model, the Main-PM root branches
-        ``feature/main_pm/{root}`` OFF master in each distinct repo; cells then
-        branch off it (via the parent-branch resolution) instead of off master,
-        so cell work never targets master — only the CEO merges the root branch
-        into master, per repo. Monorepo => one branch; multi-repo => N.
+        The coordination root carries a product (a cell->repo map) or an ad-hoc
+        ``cell_projects`` map, but no project of its own. Per the CEO-locked model,
+        the Main-PM root branches ``feature/main_pm/{root}`` OFF master in each
+        distinct repo the map spans; cells then branch off it (via the
+        parent-branch resolution) instead of off master, so cell work never
+        targets master — only the CEO merges the root branch into master, per
+        repo. Monorepo => one branch; multi-repo => N.
 
         Returns the shared branch name (identical across repos), or ``""`` when
-        the product has no cell->repo map yet (delegation then falls back to the
-        parent's project per the routing spec, and the root stays branchless).
+        the map has no projects yet (delegation then falls back to the parent's
+        project per the routing spec, and the root stays branchless).
         """
-        from roboco.services.product import get_product_service
         from roboco.services.project import get_project_service
 
-        product_service = get_product_service(self.session)
         project_service = get_project_service(self.session)
 
-        project_ids = await product_service.distinct_project_ids(
-            UUID(str(task.product_id))
-        )
+        project_ids = await self._distinct_projects_for_task(task)
         branch_name = ""
         for project_id in project_ids:
             project = await project_service.get(project_id)
@@ -1840,11 +1886,12 @@ class TaskService(BaseService):
             parent_task_id=getattr(task, "parent_task_id", None),
             project_id=getattr(task, "project_id", None),
             product_id=getattr(task, "product_id", None),
+            has_cell_projects=bool(getattr(task, "cell_projects", None)),
         ):
             raise ValueError(
                 "this update would break the task's MegaTask shape: a batch "
-                "member must stay an umbrella (targets neither project nor "
-                "product) or a root-subtask (exactly one target, parented)."
+                "member must stay an umbrella (targets neither project, product, "
+                "nor a cell map) or a root-subtask (exactly one target, parented)."
             )
 
     async def update(
@@ -5043,6 +5090,7 @@ class TaskService(BaseService):
             product_id=task.product_id,
             batch_id=task.batch_id,
             parent_task_id=task.parent_task_id,
+            has_cell_projects=bool(task.cell_projects),
         )
         if not is_coordination_root:
             self._validate_and_set_status(task, TaskStatus.NEEDS_REVISION, "ceo")

@@ -476,13 +476,25 @@ class PRReviewerMixin(_Base):
             project = await project_service.get(t.project_id)
             return project.slug if project is not None else None
         product_id = getattr(t, "product_id", None)
-        if product_id is None:
-            return None
-        from roboco.services.product import get_product_service
+        if product_id is not None:
+            from roboco.services.product import get_product_service
 
-        product_service = get_product_service(self.task.session)
-        project_ids = await product_service.distinct_project_ids(UUID(str(product_id)))
-        if not project_ids:
-            return None
-        project = await project_service.get(project_ids[0])
-        return project.slug if project is not None else None
+            product_service = get_product_service(self.task.session)
+            project_ids = await product_service.distinct_project_ids(
+                UUID(str(product_id))
+            )
+            if not project_ids:
+                return None
+            project = await project_service.get(project_ids[0])
+            return project.slug if project is not None else None
+        # Ad-hoc per-cell map root-subtask: mirror the product root's first-project
+        # resolution so the gate verdict reaches the PR in the mapped repo.
+        cell_map = getattr(t, "cell_projects", None) or []
+        seen: set[UUID] = set()
+        for mapping in sorted(cell_map, key=lambda m: m.team.value):
+            pid = UUID(str(mapping.project_id))
+            if pid not in seen:
+                seen.add(pid)
+                project = await project_service.get(pid)
+                return project.slug if project is not None else None
+        return None

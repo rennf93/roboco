@@ -30,6 +30,7 @@ from roboco.api.schemas.tasks import (
     transform_update_data,
 )
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
+from roboco.models.product import ProductCellMapping
 
 _ORDER_DEFAULT = 0
 
@@ -291,6 +292,7 @@ def _stub_task(*, with_project: bool = False) -> SimpleNamespace:
         task_type=TaskType.CODE,
         project_id=uuid4(),
         product_id=None,
+        cell_projects=[],
         project=(SimpleNamespace(slug="proj-1") if with_project else None),
         docs_complete=False,
         pr_created=False,
@@ -346,6 +348,38 @@ def test_task_to_response_includes_slug_when_project_loaded() -> None:
     with patch("roboco.api.schemas.tasks.sa_inspect", return_value=fake_inspector):
         resp = task_to_response(stub)  # type: ignore[arg-type]
     assert resp.project_slug == "proj-1"
+
+
+def test_task_to_response_serializes_cell_projects_when_loaded() -> None:
+    """An ad-hoc per-cell map (a multi-cell MegaTask root-subtask) round-trips
+    into the response when the relationship is loaded."""
+    be_proj, fe_proj = uuid4(), uuid4()
+    stub = _stub_task()
+    stub.project_id = None
+    stub.product_id = None
+    stub.cell_projects = [
+        SimpleNamespace(team=Team.BACKEND, project_id=be_proj),
+        SimpleNamespace(team=Team.FRONTEND, project_id=fe_proj),
+    ]
+    fake_inspector = MagicMock()
+    fake_inspector.unloaded = set()  # cell_projects IS loaded
+    with patch("roboco.api.schemas.tasks.sa_inspect", return_value=fake_inspector):
+        resp = task_to_response(stub)  # type: ignore[arg-type]
+    assert resp.cell_projects == [
+        ProductCellMapping(team=Team.BACKEND, project_id=be_proj),
+        ProductCellMapping(team=Team.FRONTEND, project_id=fe_proj),
+    ]
+
+
+def test_task_to_response_omits_cell_projects_when_unloaded() -> None:
+    """A freshly-created task whose cell_projects relationship is unloaded
+    serializes to [] rather than triggering a lazy load."""
+    stub = _stub_task()
+    fake_inspector = MagicMock()
+    fake_inspector.unloaded = {"cell_projects"}
+    with patch("roboco.api.schemas.tasks.sa_inspect", return_value=fake_inspector):
+        resp = task_to_response(stub)  # type: ignore[arg-type]
+    assert resp.cell_projects == []
 
 
 def test_task_to_response_serializes_all_note_sections() -> None:

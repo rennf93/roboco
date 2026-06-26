@@ -2965,15 +2965,26 @@ class GitService(BaseService):
         if task.project_id is not None:
             return await project_service.get(UUID(str(task.project_id)))
         product_id = getattr(task, "product_id", None)
-        if product_id is None:
-            return None
-        from roboco.services.product import get_product_service
+        if product_id is not None:
+            from roboco.services.product import get_product_service
 
-        product_service = get_product_service(self.session)
-        project_ids = await product_service.distinct_project_ids(UUID(str(product_id)))
-        if not project_ids:
-            return None
-        return await project_service.get(project_ids[0])
+            product_service = get_product_service(self.session)
+            project_ids = await product_service.distinct_project_ids(
+                UUID(str(product_id))
+            )
+            if not project_ids:
+                return None
+            return await project_service.get(project_ids[0])
+        # Ad-hoc per-cell map root-subtask: mirror the product root's first-project
+        # resolution so root-level git ops resolve a workspace for the mapped repo.
+        cell_map = getattr(task, "cell_projects", None) or []
+        seen: set[UUID] = set()
+        for mapping in sorted(cell_map, key=lambda m: m.team.value):
+            pid = UUID(str(mapping.project_id))
+            if pid not in seen:
+                seen.add(pid)
+                return await project_service.get(pid)
+        return None
 
     @staticmethod
     def _fast_gate_commands(project: Any) -> list[tuple[str, str]]:

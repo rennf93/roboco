@@ -993,10 +993,66 @@ async def test_ensure_branch_coordination_root_no_cell_map_stays_branchless() ->
 
 
 @pytest.mark.asyncio
-async def test_ensure_branch_raises_when_neither_project_nor_product() -> None:
-    """A task with neither a project nor a product is genuinely misconfigured."""
+async def test_ensure_branch_cell_map_root_cuts_integration_branch_per_project() -> (
+    None
+):
+    """An ad-hoc cell_projects root cuts feature/main_pm/{root} in each distinct
+    project the map spans — the product-root path with the map sourced from the
+    task instead of a Product."""
     svc = TaskService(MagicMock())
-    task = MagicMock(branch_name=None, project_id=None, product_id=None)
+    be_proj, fe_proj = uuid4(), uuid4()
+    cell_map = [
+        SimpleNamespace(team=Team.BACKEND, project_id=be_proj),
+        SimpleNamespace(team=Team.FRONTEND, project_id=fe_proj),
+    ]
+    task = MagicMock(
+        branch_name=None,
+        project_id=None,
+        product_id=None,
+        batch_id=uuid4(),
+        parent_task_id=uuid4(),
+        cell_projects=cell_map,
+    )
+    create_in_project = AsyncMock(return_value="feature/main_pm/root1234")
+    _bind(svc, "_create_branch_in_project", create_in_project)
+    project_svc = MagicMock(get=AsyncMock(return_value=MagicMock()))
+    with patch("roboco.services.project.get_project_service", return_value=project_svc):
+        result = await svc._ensure_branch_for_task(task, uuid4())
+    assert result == "feature/main_pm/root1234"
+    # one integration branch per distinct project in the map (here 2 cells, 2 projects)
+    assert create_in_project.await_count == len(cell_map)
+
+
+@pytest.mark.asyncio
+async def test_distinct_projects_for_task_dedupes_cell_map_by_project_id() -> None:
+    """Two cells mapping at the same project (the monorepo case) yield ONE
+    integration branch, not two — mirroring product distinct_project_ids."""
+    svc = TaskService(MagicMock())
+    shared = uuid4()
+    task = MagicMock(
+        project_id=None,
+        product_id=None,
+        cell_projects=[
+            SimpleNamespace(team=Team.FRONTEND, project_id=shared),
+            SimpleNamespace(team=Team.BACKEND, project_id=shared),
+        ],
+    )
+    ids = await svc._distinct_projects_for_task(task)
+    assert ids == [shared]
+
+
+@pytest.mark.asyncio
+async def test_ensure_branch_raises_when_neither_project_nor_product() -> None:
+    """A task with neither a project, a product, nor a cell map is misconfigured."""
+    svc = TaskService(MagicMock())
+    task = MagicMock(
+        branch_name=None,
+        project_id=None,
+        product_id=None,
+        cell_projects=[],
+        batch_id=None,
+        parent_task_id=None,
+    )
     with pytest.raises(ValueError, match="project_id"):
         await svc._ensure_branch_for_task(task, uuid4())
 
