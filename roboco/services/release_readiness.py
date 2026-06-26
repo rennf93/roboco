@@ -380,6 +380,12 @@ def _pyproject_version(root: Path) -> str:
 
 def _last_tag(root: Path) -> str | None:
     tag = _run_git(root, ["describe", "--tags", "--abbrev=0"]).strip()
+    if not tag:
+        # Tags may not be present in shallow clones or agent workspace clones.
+        # Attempt a silent fetch; if the remote is unreachable the second describe
+        # still returns empty and we legitimately return None.
+        _run_git(root, ["fetch", "--tags", "--quiet", "origin"])
+        tag = _run_git(root, ["describe", "--tags", "--abbrev=0"]).strip()
     return tag or None
 
 
