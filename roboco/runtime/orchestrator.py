@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, cast
 import httpx
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine
+    from collections.abc import Callable, Coroutine, Iterable
     from uuid import UUID
 
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -809,6 +809,12 @@ class AgentOrchestrator:
         # Restore any WaitingRecord rows left by a prior orchestrator run so
         # agents that were WAITING_LONG at shutdown can still be resolved.
         await self.restore_waiting_records()
+
+        # Restore the PM-respawn loop counter so a task wedged at the strike
+        # threshold trips immediately after a restart instead of resetting to
+        # count=1 and re-burning the whole budget. Validates against live tasks
+        # (drops terminal/missing rows); inert when the table is empty.
+        await self.restore_respawn_tracker()
 
         # Self-heal: roll back orphan claims left over from a prior crash.
         # Tasks that show CLAIMED/IN_PROGRESS but have NO
@@ -3885,6 +3891,20 @@ class AgentOrchestrator:
         self._bg_tasks.add(bg)
         bg.add_done_callback(self._bg_tasks.discard)
 
+    def _schedule_respawn_persist(
+        self, agent_slug: str, task_id: str, record: dict[str, Any]
+    ) -> None:
+        """Fire-and-forget a write-through of one PM-respawn counter row.
+
+        Copies ``record`` so a later in-place mutation can't race the background
+        write, then schedules it on the strong-ref ``_bg_tasks`` set — the
+        dispatcher hot path never blocks on the DB, and a write failure degrades
+        to in-memory-only (today's behaviour).
+        """
+        self._schedule_bg(
+            self._persist_respawn_record(agent_slug, task_id, dict(record))
+        )
+
     def _schedule_intake_first_message(self, session_id: str, text: str) -> None:
         """Fire-and-forget the opening message once the container is reachable."""
         self._schedule_bg(self._deliver_when_ready(session_id, text))
@@ -4076,6 +4096,83 @@ class AgentOrchestrator:
             logger.error(
                 "Failed to delete waiting record",
                 agent_id=agent_id,
+                error=str(e),
+            )
+
+    async def _persist_respawn_record(
+        self, agent_slug: str, task_id: str, record: dict[str, Any]
+    ) -> None:
+        """Write-through one PM-respawn counter row (delete-then-insert upsert).
+
+        Best-effort, mirroring ``_persist_waiting_record``: a persistence failure
+        must never gate or un-gate a spawn, so any error is logged and swallowed.
+        The counter stays authoritative in memory regardless.
+        """
+        try:
+            from uuid import UUID as _UUID
+
+            from sqlalchemy import delete
+
+            from roboco.db.base import get_session_factory
+            from roboco.db.tables import RespawnTrackerTable
+
+            tid = _UUID(task_id)
+            session_factory = get_session_factory()
+            async with session_factory() as db:
+                await db.execute(
+                    delete(RespawnTrackerTable).where(
+                        RespawnTrackerTable.agent_slug == agent_slug,
+                        RespawnTrackerTable.task_id == tid,
+                    )
+                )
+                db.add(
+                    RespawnTrackerTable(
+                        agent_slug=agent_slug,
+                        task_id=tid,
+                        count=int(record["count"]),
+                        last_status=record.get("last_status"),
+                        last_check=record["last_check"],
+                        tracing_resets=int(record.get("tracing_resets", 0)),
+                        notified=bool(record.get("notified", False)),
+                    )
+                )
+                await db.commit()
+        except Exception as e:
+            logger.error(
+                "Failed to persist respawn record",
+                agent_id=agent_slug,
+                task_id=task_id,
+                error=str(e),
+            )
+
+    async def _clear_respawn_record(self, agent_slug: str, task_id: str) -> None:
+        """Delete one PM-respawn counter row (best-effort).
+
+        Used by the startup loader to evict a row whose task is gone or
+        terminal, so a stale counter never resurrects against a fixed task.
+        """
+        try:
+            from uuid import UUID as _UUID
+
+            from sqlalchemy import delete
+
+            from roboco.db.base import get_session_factory
+            from roboco.db.tables import RespawnTrackerTable
+
+            session_factory = get_session_factory()
+            async with session_factory() as db:
+                await db.execute(
+                    delete(RespawnTrackerTable).where(
+                        RespawnTrackerTable.agent_slug == agent_slug,
+                        RespawnTrackerTable.task_id == _UUID(task_id),
+                    )
+                )
+                await db.commit()
+        except Exception as e:
+            logger.error(
+                "Failed to clear respawn record",
+                agent_id=agent_slug,
+                task_id=task_id,
                 error=str(e),
             )
 
@@ -4824,6 +4921,83 @@ class AgentOrchestrator:
                 return count
         except Exception as e:
             logger.error("Failed to restore waiting records", error=str(e))
+            return 0
+
+    @staticmethod
+    def _partition_respawn_rows(
+        rows: "Iterable[Any]", status_by_id: dict[Any, Any]
+    ) -> tuple[dict[tuple[str, str], dict[str, Any]], list[tuple[str, Any]]]:
+        """Split persisted respawn rows into (restorable entries, stale keys).
+
+        Pure: a row is **stale** when its task is missing from ``status_by_id``
+        or terminal (completed/cancelled) — a stale counter must never resurrect
+        against a fixed/deleted task. Restorable entries are keyed
+        ``(agent_slug, str(task_id))`` to match the in-memory dict; stale keys
+        carry the raw ``task_id`` for deletion.
+        """
+        from roboco.models.base import TaskStatus
+
+        terminal = {TaskStatus.COMPLETED.value, TaskStatus.CANCELLED.value}
+        restored: dict[tuple[str, str], dict[str, Any]] = {}
+        stale: list[tuple[str, Any]] = []
+        for r in rows:
+            status = status_by_id.get(r.task_id)
+            norm = getattr(status, "value", status)
+            if status is None or norm in terminal:
+                stale.append((r.agent_slug, r.task_id))
+                continue
+            restored[(r.agent_slug, str(r.task_id))] = {
+                "count": r.count,
+                "last_status": r.last_status,
+                "last_check": r.last_check,
+                "tracing_resets": r.tracing_resets,
+                "notified": r.notified,
+            }
+        return restored, stale
+
+    async def restore_respawn_tracker(self) -> int:
+        """Load the persisted PM-respawn counter into memory on startup.
+
+        Mirrors ``restore_waiting_records``: read every ``respawn_tracker`` row,
+        keep only those whose task is still live and non-terminal, evict the
+        rest, and populate ``_pm_respawn_tracker`` so a wedged-task counter trips
+        at its persisted threshold instead of resetting to 1 and re-burning the
+        whole budget. Best-effort — any failure starts with an empty tracker
+        (exactly today's behaviour) and never blocks startup.
+        """
+        try:
+            from sqlalchemy import select
+
+            from roboco.db.base import get_session_factory
+            from roboco.db.tables import RespawnTrackerTable, TaskTable
+
+            session_factory = get_session_factory()
+            async with session_factory() as db:
+                rows = (await db.execute(select(RespawnTrackerTable))).scalars().all()
+                if not rows:
+                    return 0
+                ids = [r.task_id for r in rows]
+                live = (
+                    await db.execute(
+                        select(TaskTable.id, TaskTable.status).where(
+                            TaskTable.id.in_(ids)
+                        )
+                    )
+                ).all()
+                status_by_id = {row.id: row.status for row in live}
+                restored, stale = self._partition_respawn_rows(rows, status_by_id)
+            self._pm_respawn_tracker.update(restored)
+            for agent_slug, task_id in stale:
+                await self._clear_respawn_record(agent_slug, str(task_id))
+            if restored:
+                logger.info(
+                    "Restored PM-respawn records from database",
+                    count=len(restored),
+                    evicted=len(stale),
+                )
+            return len(restored)
+        except Exception as e:
+            logger.error("Failed to restore respawn records", error=str(e))
             return 0
 
     async def resolve_wait(
@@ -7819,6 +7993,9 @@ Start now: evidence(task_id="{task_id}")
                 "last_status": current_status,
                 "last_check": now,
             }
+            self._schedule_respawn_persist(
+                agent_slug, str(task_id), self._pm_respawn_tracker[key]
+            )
             return False
         # Same status as last spawn — could be a stuck loop OR a
         # rule-following retry. A tracing_gap normally means the agent is
@@ -7835,6 +8012,9 @@ Start now: evidence(task_id="{task_id}")
                 record["count"] = 1
                 record["last_check"] = now
                 record["notified"] = False
+                self._schedule_respawn_persist(
+                    agent_slug, str(task_id), self._pm_respawn_tracker[key]
+                )
                 return False
             logger.warning(
                 "PM respawn tracing_gap reset budget exhausted — "
@@ -7846,6 +8026,9 @@ Start now: evidence(task_id="{task_id}")
             )
         record["count"] += 1
         record["last_check"] = now
+        self._schedule_respawn_persist(
+            agent_slug, str(task_id), self._pm_respawn_tracker[key]
+        )
         if record["count"] > self._PM_RESPAWN_MAX_UNPRODUCTIVE:
             logger.warning(
                 "PM respawn loop detected — skipping spawn",
@@ -7863,6 +8046,9 @@ Start now: evidence(task_id="{task_id}")
             # an overseer once so a wedged agent isn't silently stranded.
             if not record.get("notified"):
                 record["notified"] = True
+                self._schedule_respawn_persist(
+                    agent_slug, str(task_id), self._pm_respawn_tracker[key]
+                )
                 await self._notify_stuck_agent(agent_slug, task_id, current_status)
             return True
         return False

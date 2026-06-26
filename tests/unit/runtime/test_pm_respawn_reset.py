@@ -36,6 +36,10 @@ def _new_orchestrator() -> AgentOrchestrator:
     """Bypass __init__ so tests don't need a full DI graph."""
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
     cast("Any", orch)._pm_respawn_tracker = {}
+    # The gate now write-throughs each mutation to the respawn_tracker table via
+    # _schedule_respawn_persist; these tests cover gate LOGIC only, so stub the
+    # scheduler to a no-op (persistence is covered in test_respawn_persistence).
+    cast("Any", orch)._schedule_respawn_persist = lambda *_a, **_k: None
     return orch
 
 
