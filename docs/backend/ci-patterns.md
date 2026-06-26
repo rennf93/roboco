@@ -264,3 +264,4 @@ uv run pytest tests/integration/services/test_release_readiness.py::test_gather_
 - [roboco/services/release_readiness.py](../../roboco/services/release_readiness.py) - Release readiness engine
 - [tests/integration/conftest.py](../../tests/integration/conftest.py) - Integration test fixtures
 - [Common issues](../troubleshooting/common-issues.md) - Broader troubleshooting guide
+- [CI coverage-gate diagnosis — 2026-06-26](../ci/CI_DIAGNOSIS_2026-06-26.md) - Worked example: `pytest --cov-fail-under=80` failing on master, pinned to commit `1537234 Feat/autonomous maintenance (#264)`, with per-module coverage evidence and three ranked fix-direction options

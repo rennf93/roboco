@@ -108,6 +108,15 @@ flowchart TD
 
     The per-project opt-in (`dep_update_command`, `dep_update_paths`) lives on the project, not in env — set it in the edit-project dialog.
 
+## Coverage-gate interaction
+
+Each engine — `ci_watch_engine`, `dep_update_engine`, `release_manager_engine`, `release_executor`, `release_readiness`, `memory_distiller`, `multi_ci_telemetry`, `pitch_service`, `telemetry_source`, `workspace_conventions_scaffold`, plus the per-engine loop runners — has meaningful behaviour that runs against a live Postgres + orchestrator state, so its tests live under `tests/integration/services/`. The `make quality` step runs the **unit-coverage gate** (`pytest --cov=roboco --cov-fail-under=80`) which omits the integration runner, so a module that ships with integration tests only drags total coverage.
+
+The fix pattern is to back the integration tests up with stubbed-DB / stubbed-telemetry unit tests (the `tests/unit/runtime/test_*_loop_dormant.py` style is the template). The canonical worked example is the **[2026-06-26 master coverage regression](../ci/CI_DIAGNOSIS_2026-06-26.md)** — the `Feat/autonomous maintenance (#264)` PR shipped this set of engines with integration coverage only and pushed total coverage from ~80% to 70.93%; the follow-up unit tests brought it back to 94.93%.
+
+!!! tip "When you add a new engine here"
+    Ship the integration tests AND a unit-test file that exercises the engine's logic with stubbed DB / telemetry. The unit tests are what the gate actually credits.
+
 ## What changes when each is on
 
 - With CI-watch on, a background sweep polls each opted-in project's CI on the configured interval; on a red conclusion a fix task appears in that project's backlog (bounded by the caps above) and its cell PM is notified. With the global flag off, nothing polls.
