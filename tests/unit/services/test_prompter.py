@@ -31,6 +31,7 @@ from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.base import ServiceError, ValidationError
 from roboco.services.prompter import (
     PrompterService,
+    _cell_teams,
     compose_description,
     derive_scale,
     get_prompter_service,
@@ -91,6 +92,49 @@ def test_derive_scale_single_vs_multi() -> None:
     # Non-cell teams (e.g. main_pm) do not count toward cell breadth.
     assert derive_scale([{"team": "backend"}, {"team": "main_pm"}]) == "single"
     assert derive_scale([]) == "single"
+
+
+# -----------------------------------------------------------------------------
+# the_work shape tolerance — the intake agent is an LLM and sometimes emits
+# the_work as a list of bare team-name strings ("backend") instead of the
+# documented {team, summary, items} objects. Every consumer must tolerate that
+# without raising (regression: preview-batch used to 500 with
+# "'str' object has no attribute 'get'").
+# -----------------------------------------------------------------------------
+
+def test_cell_teams_tolerates_bare_string_entries() -> None:
+    # The LLM emitted the_work as a list of team names, not objects.
+    assert _cell_teams(["backend", "frontend", "backend"]) == ["backend", "frontend"]
+    # A bare string that isn't a cell is skipped, just like a non-cell dict.
+    assert _cell_teams(["backend", "main_pm"]) == ["backend"]
+    assert _cell_teams(["nonsense"]) == []
+
+
+def test_lead_cell_team_tolerates_bare_string_entries() -> None:
+    draft = {"the_work": ["frontend", "backend"]}
+    assert PrompterService._lead_cell_team(draft, default=Team.BACKEND) is Team.FRONTEND
+    # First valid cell wins; an invalid bare string is skipped.
+    draft = {"the_work": ["nonsense", "ux_ui"]}
+    assert PrompterService._lead_cell_team(draft, default=Team.BACKEND) is Team.UX_UI
+
+
+def test_derive_scale_tolerates_bare_string_entries() -> None:
+    assert derive_scale(["backend"]) == "single"
+    assert derive_scale(["backend", "frontend"]) == "multi"
+
+
+def test_compose_description_renders_bare_string_work_entries() -> None:
+    draft = {
+        "objective": "Fix the intake batch preview.",
+        "the_work": ["backend", "frontend"],
+        "acceptance_criteria": ["Preview no longer 500s"],
+    }
+    md = compose_description(draft)
+    # Each bare string renders as a cell heading; multi-cell gets the board-led line.
+    assert "## The Work" in md
+    assert "**Backend**" in md
+    assert "**Frontend**" in md
+    assert "Board-led" in md
 
 
 def test_compose_description_single_cell_markdown() -> None:
@@ -630,3 +674,26 @@ def test_preview_batch_rejects_empty() -> None:
     service = get_prompter_service()
     with pytest.raises(ValidationError):
         service.preview_batch([])
+
+
+def test_preview_batch_tolerates_bare_string_the_work() -> None:
+    """Regression: the LLM sometimes emits the_work as bare team-name strings.
+    preview_batch must not 500 on that shape (it did: 'str' has no 'get')."""
+    service = get_prompter_service()
+    drafts: list[dict[str, Any]] = [
+        {
+            "title": "A",
+            "project_id": str(uuid4()),
+            "the_work": ["backend"],
+            "intends_to_touch": ["a.py"],
+        },
+        {
+            "title": "B",
+            "project_id": str(uuid4()),
+            "the_work": ["backend", "frontend"],
+            "intends_to_touch": ["b.py"],
+        },
+    ]
+    result = service.preview_batch(drafts)
+    assert isinstance(result["waves"], list)
+    assert isinstance(result["warnings"], list)

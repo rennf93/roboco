@@ -192,6 +192,37 @@ def _board_cannot_own(task: TaskTable) -> bool:
     )
 
 
+_PM_OWNED_CELL_TASK_TYPES: frozenset[str] = frozenset(
+    {
+        TaskType.PLANNING.value,
+        TaskType.RESEARCH.value,
+        TaskType.ADMINISTRATIVE.value,
+        TaskType.DOCUMENTATION.value,
+        TaskType.DESIGN.value,
+    }
+)
+
+
+def _is_cell_pm_owned_task(task: TaskTable) -> bool:
+    """True for a descendant cell-team task that must be owned by its cell PM.
+
+    A cell team's planning / research / administrative / documentation / design
+    work is not Main-PM work — the Main PM coordinates across cells, but each
+    cell's own non-code work belongs to that cell's PM. Assigning such a child
+    to main-pm deadlocks because the Main PM's escalation chain points up, not
+    across to the cell PM who can actually decompose it. ``code`` is excluded
+    because leaf code work is delegated by the cell PM to a developer, not
+    owned by the cell PM itself.
+    """
+    if task.parent_task_id is None:
+        return False
+    team_value = getattr(task.team, "value", task.team)
+    if str(team_value) not in _CELL_TEAMS:
+        return False
+    task_type_value = getattr(task.task_type, "value", task.task_type)
+    return str(task_type_value) in _PM_OWNED_CELL_TASK_TYPES
+
+
 # Notes fields (dev_notes, qa_notes, quick_context) are append-only —
 # every revision cycle adds more. Cap total size so a task that cycles
 # dozens of times doesn't grow into megabytes. When we exceed the cap,
@@ -826,6 +857,12 @@ class TaskService(BaseService):
             title=req.title,
             team=req.team if isinstance(req.team, str) else req.team.value,
         )
+        # NOTE: cell-team PM-owned invariants are enforced on the reassign path
+        # (`reassign` / `reassign_active_claim` → `_resolve_cell_pm_redirect`)
+        # — not at create. Direct task.assigned_to writes in the escalation
+        # chain (e.g. the orchestrator's `_dispatch_revision_coordination_roots`)
+        # bypass this; they are TODO-listed at the call sites.
+
         await self._attach_baseline_constraints(task)
         return task
 
@@ -6956,15 +6993,123 @@ class TaskService(BaseService):
                 refused_assignee=str(new_assignee),
             )
             return task
-        task.assigned_to = cast("Any", new_assignee) if new_assignee else None
-        task.claimed_by = cast("Any", new_assignee) if new_assignee else None
+        # Invariant backstop: cell-team planning/research/administrative children
+        # must be owned by their cell PM. If the caller tried to hand such a task
+        # to main-pm (or another mismatched owner), redirect to the cell PM.
+        redirect = await self._resolve_cell_pm_redirect(task, new_assignee)
+        effective_assignee = redirect.effective_assignee
+        if redirect.redirected:
+            self.log.info(
+                "Reassign redirected to cell PM",
+                task_id=str(task_id),
+                requested_assignee=str(new_assignee),
+                effective_assignee=str(effective_assignee),
+                reason=redirect.reason,
+            )
+            if redirect.dev_notes_line is not None:
+                task.dev_notes = (task.dev_notes or "") + redirect.dev_notes_line
+
+        task.assigned_to = (
+            cast("Any", effective_assignee) if effective_assignee else None
+        )
+        task.claimed_by = (
+            cast("Any", effective_assignee) if effective_assignee else None
+        )
         await self.session.flush()
         self.log.info(
             "Task reassigned",
             task_id=str(task_id),
-            new_assignee=str(new_assignee) if new_assignee else None,
+            new_assignee=str(effective_assignee) if effective_assignee else None,
         )
         return task
+
+    @dataclass(frozen=True)
+    class _CellPmRedirect:
+        """Outcome of an `_resolve_cell_pm_redirect` call.
+
+        ``effective_assignee`` is the UUID the caller should persist (possibly
+        ``None`` when the task was queued for a missing cell PM).
+        ``redirected`` is ``True`` iff ``effective_assignee`` differs from the
+        caller's requested assignee — used by callers to decide whether to log
+        a redirect. ``reason`` is a short tag that names the redirect reason
+        ("to_cell_pm", "queued_no_cell_pm"). ``dev_notes_line`` is the audit
+        text to append to ``task.dev_notes`` (only set when a redirect
+        happened) so a redirect is visible in the task body, not just in logs.
+        """
+
+        effective_assignee: UUID | None
+        redirected: bool
+        reason: str
+        dev_notes_line: str | None
+
+    async def _resolve_cell_pm_redirect(
+        self, task: TaskTable, requested_assignee: UUID | None
+    ) -> "TaskService._CellPmRedirect":
+        """Decide whether ``task`` must be redirected to its cell PM.
+
+        Returns a dataclass describing the outcome. Behavior:
+
+        - Not a cell-team PM-owned child → keep ``requested_assignee`` unchanged.
+        - No cell PM exists for the team → **queue the task** (``None``
+          assignee, ``ERROR`` log) rather than silently assigning to
+          ``requested_assignee``. The system is in a bad state; this is
+          observable in logs and the task sits in ``PENDING`` until the agent
+          table is repaired.
+        - Cell PM exists and matches → keep ``requested_assignee``.
+        - Cell PM exists and differs → redirect to the cell PM and write the
+          standard ``[ASSIGNMENT REDIRECTED]`` line to ``dev_notes`` so the
+          audit is visible in the task body.
+        """
+        noop = TaskService._CellPmRedirect(
+            effective_assignee=requested_assignee,
+            redirected=False,
+            reason="noop",
+            dev_notes_line=None,
+        )
+        if not _is_cell_pm_owned_task(task):
+            return noop
+        assert task.team is not None  # guarded by _is_cell_pm_owned_task
+        team_enum = Team(str(getattr(task.team, "value", task.team)))
+        cell_pm = await self.cell_pm_for_team(team_enum)
+        if cell_pm is None:
+            self.log.error(
+                "Cell-team PM-owned task has no cell PM agent row; "
+                "queueing without an assignee. Repair agents table.",
+                task_id=str(getattr(task, "id", None)),
+                team=team_enum.value,
+            )
+            type_value = (
+                task.task_type.value
+                if isinstance(task.task_type, TaskType)
+                else task.task_type
+            )
+            return TaskService._CellPmRedirect(
+                effective_assignee=None,
+                redirected=(requested_assignee is not None),
+                reason="queued_no_cell_pm",
+                dev_notes_line=(
+                    f"\n\n[ASSIGNMENT REDIRECTED] cell-team {team_enum.value} "
+                    f"{type_value} task queued with no assignee because no "
+                    f"cell PM agent row exists; was {requested_assignee}."
+                ),
+            )
+        if requested_assignee == cell_pm.id:
+            return noop
+        type_value = (
+            task.task_type.value
+            if isinstance(task.task_type, TaskType)
+            else task.task_type
+        )
+        return TaskService._CellPmRedirect(
+            effective_assignee=cast("UUID", cell_pm.id),
+            redirected=True,
+            reason="to_cell_pm",
+            dev_notes_line=(
+                f"\n\n[ASSIGNMENT REDIRECTED] cell-team {team_enum.value} "
+                f"{type_value} task must be owned by its cell PM; reassigned "
+                f"from {requested_assignee} to {cell_pm.slug}."
+            ),
+        )
 
     async def reassign_active_claim(
         self, task_id: UUID, new_assignee: UUID
@@ -7002,17 +7147,32 @@ class TaskService(BaseService):
                 refused_assignee=str(new_assignee),
             )
             return task
+        # Invariant backstop: an active claim on a cell-team planning/research/
+        # administrative task must land on the cell PM, not main-pm.
+        redirect = await self._resolve_cell_pm_redirect(task, new_assignee)
+        effective_assignee = redirect.effective_assignee
+        if redirect.redirected:
+            self.log.info(
+                "Active claim redirected",
+                task_id=str(task_id),
+                requested_assignee=str(new_assignee),
+                effective_assignee=str(effective_assignee),
+                reason=redirect.reason,
+            )
+            if redirect.dev_notes_line is not None:
+                task.dev_notes = (task.dev_notes or "") + redirect.dev_notes_line
+
         now = datetime.now(UTC)
-        task.assigned_to = cast("Any", new_assignee)
-        task.claimed_by = cast("Any", new_assignee)
+        task.assigned_to = cast("Any", effective_assignee)
+        task.claimed_by = cast("Any", effective_assignee)
         task.claimed_at = now
         task.last_heartbeat_at = now
-        task.active_claimant_id = cast("Any", new_assignee)
+        task.active_claimant_id = cast("Any", effective_assignee)
         await self.session.flush()
         self.log.info(
             "Active task reassigned to a fresh claimant",
             task_id=str(task_id),
-            new_assignee=str(new_assignee),
+            new_assignee=str(effective_assignee),
         )
         return task
 

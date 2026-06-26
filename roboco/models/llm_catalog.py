@@ -69,7 +69,7 @@ MODEL_CATALOG: tuple[CatalogEntry, ...] = (
     # --- Ollama Cloud (verbatim tags) ---
     # Pro plan active as of 2026-04-22. Drop any entry that stops working —
     # the catalog is the single source of truth the Settings dropdown renders from.
-    CatalogEntry("glm-5.1:cloud", ModelProvider.OLLAMA_CLOUD, "GLM 5.1"),
+    CatalogEntry("glm-5.2:cloud", ModelProvider.OLLAMA_CLOUD, "GLM 5.2"),
     CatalogEntry("kimi-k2.6:cloud", ModelProvider.OLLAMA_CLOUD, "Kimi K2.6"),
     CatalogEntry("kimi-k2.7-code:cloud", ModelProvider.OLLAMA_CLOUD, "Kimi K2.7 Code"),
     CatalogEntry("minimax-m3:cloud", ModelProvider.OLLAMA_CLOUD, "Minimax M3"),
@@ -107,8 +107,8 @@ def provider_type_for_model(model_name: str) -> ModelProvider | None:
 OLLAMA_ROLE_DEFAULTS: dict[str, str] = {
     # High-volume agentic coding — M3 is purpose-built for this.
     "developer": "minimax-m3:cloud",
-    # Deep code review — GLM 5.1 has the highest SWE-Bench and iterates thoroughly.
-    "qa": "glm-5.1:cloud",
+    # Deep code review — GLM 5.2 has the highest SWE-Bench and iterates thoroughly.
+    "qa": "glm-5.2:cloud",
     # Orchestration + tool coordination — Kimi K2.6's Agent Swarm is the exact fit.
     "cell_pm": "kimi-k2.6:cloud",
     "main_pm": "kimi-k2.6:cloud",
@@ -116,10 +116,10 @@ OLLAMA_ROLE_DEFAULTS: dict[str, str] = {
     "auditor": "kimi-k2.6:cloud",
     # Product reasoning — same profile as PM work.
     "product_owner": "kimi-k2.6:cloud",
-    # Writing with code-context — GLM 5.1's creative writing + SWE-Bench combo.
-    "documenter": "glm-5.1:cloud",
-    # Stylistic writing — GLM 5.1's creative-writing strength.
-    "head_marketing": "glm-5.1:cloud",
+    # Writing with code-context — GLM 5.2's creative writing + SWE-Bench combo.
+    "documenter": "glm-5.2:cloud",
+    # Stylistic writing — GLM 5.2's creative-writing strength.
+    "head_marketing": "glm-5.2:cloud",
     # CEO is human-in-the-loop; keep an entry in case someone forces
     # a route to it, but the Settings UI intentionally excludes it.
     "ceo": "kimi-k2.6:cloud",

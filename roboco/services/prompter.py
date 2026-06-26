@@ -704,18 +704,35 @@ def parse_readiness(content: str) -> tuple[str, ReadinessTag | None]:
     )
 
 
-def _cell_teams(the_work: list[dict[str, Any]]) -> list[str]:
+def _as_work_entry(entry: Any) -> dict[str, Any]:
+    """Normalize one ``the_work`` entry to a dict.
+
+    The intake agent is an LLM and sometimes emits ``the_work`` as a list of
+    bare team-name strings (``"backend"``) instead of the documented
+    ``{team, summary, items}`` objects. Treat a bare string as
+    ``{"team": <str>}`` so every consumer can keep calling ``.get("team")`` /
+    ``.get("items")`` instead of crashing with ``'str' has no 'get'``
+    (regression: ``preview-batch`` 500'd on this shape).
+    """
+    if isinstance(entry, str):
+        return {"team": entry.strip()}
+    if isinstance(entry, dict):
+        return entry
+    return {}
+
+
+def _cell_teams(the_work: list[Any]) -> list[str]:
     """Distinct cell teams (backend/frontend/ux_ui) present in the_work, in order."""
     cell_values = {t.value for t in CELL_TEAMS}
     seen: list[str] = []
     for entry in the_work:
-        team = str(entry.get("team", ""))
+        team = str(_as_work_entry(entry).get("team", ""))
         if team in cell_values and team not in seen:
             seen.append(team)
     return seen
 
 
-def derive_scale(the_work: list[dict[str, Any]]) -> str:
+def derive_scale(the_work: list[Any]) -> str:
     """'multi' when more than one cell participates, else 'single'."""
     return "multi" if len(_cell_teams(the_work)) > 1 else "single"
 
@@ -740,17 +757,22 @@ def _cell_label(team: str) -> str:
     return _TEAM_LABELS.get(team) or team.replace("_", " ").title() or "Work"
 
 
-def _render_work_entry(entry: dict[str, Any]) -> str:
-    """Render one cell's slice: a bold heading and its deliverables."""
-    head = f"**{_cell_label(_text(entry.get('team')))}**"
-    summary = _text(entry.get("summary"))
+def _render_work_entry(entry: Any) -> str:
+    """Render one cell's slice: a bold heading and its deliverables.
+
+    ``entry`` may be a bare team-name string (see ``_as_work_entry``); a bare
+    string renders as just the cell heading, with no summary/items.
+    """
+    e = _as_work_entry(entry)
+    head = f"**{_cell_label(_text(e.get('team')))}**"
+    summary = _text(e.get("summary"))
     if summary:
         head = f"{head} — {summary}"
-    items = _clean_list(entry.get("items"))
+    items = _clean_list(e.get("items"))
     return f"{head}\n{_bullets(items)}" if items else head
 
 
-def _render_the_work(the_work: list[dict[str, Any]]) -> str:
+def _render_the_work(the_work: list[Any]) -> str:
     """Render The Work section, with a board-led lead line when multi-cell."""
     blocks = [_render_work_entry(e) for e in the_work]
     if len(_cell_teams(the_work)) > 1:
