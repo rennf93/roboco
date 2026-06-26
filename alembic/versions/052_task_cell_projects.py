@@ -25,9 +25,13 @@ branch_labels = None
 depends_on = None
 
 # Reuse the existing Postgres "team" enum in place (created in 001_initial_schema,
-# widened since by later migrations); create_type=False so this migration never
-# tries to (re)create it.
-_TEAM_ENUM = sa.Enum(
+# widened since by later migrations). ``create_type=False`` MUST be set on the
+# postgres-native ``postgresql.ENUM``: it's that class's ``create_type`` attribute
+# that ``_check_for_name_in_memos`` reads to suppress the redundant ``CREATE TYPE``
+# on ``op.create_table`` (checkfirst=False, so the has_type probe is skipped). On
+# the generic ``sa.Enum`` the kwarg is silently dropped, so the CREATE TYPE fires
+# and crashes a real orchestrator boot ("type 'team' already exists").
+_TEAM_ENUM = postgresql.ENUM(
     "backend",
     "frontend",
     "ux_ui",

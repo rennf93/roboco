@@ -17,6 +17,7 @@ other tiers are unchanged product-root / single-project behavior.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -54,7 +55,7 @@ async def test_explicit_inputs_project_id_wins_over_cell_map() -> None:
         product_id=None,
         project_id=None,
     )
-    self_stub = SimpleNamespace(product=None)
+    self_stub: Any = SimpleNamespace(product=None)
     resolved = await Choreographer._resolve_subtask_project(
         self_stub, parent, _inputs(team=Team.BACKEND, project_id=explicit)
     )
@@ -73,7 +74,7 @@ async def test_cell_map_resolves_project_for_matching_team() -> None:
         product_id=None,
         project_id=None,
     )
-    self_stub = SimpleNamespace(product=None)
+    self_stub: Any = SimpleNamespace(product=None)
     resolved = await Choreographer._resolve_subtask_project(
         self_stub, parent, _inputs(team=Team.BACKEND)
     )
@@ -90,7 +91,7 @@ async def test_cell_map_missing_team_falls_through_to_parent_project() -> None:
         product_id=None,
         project_id=own,
     )
-    self_stub = SimpleNamespace(product=None)
+    self_stub: Any = SimpleNamespace(product=None)
     # Frontend subtask but the map only covers backend → fall to parent.project_id.
     resolved = await Choreographer._resolve_subtask_project(
         self_stub, parent, _inputs(team=Team.FRONTEND)
@@ -109,7 +110,7 @@ async def test_cell_map_only_parent_with_no_match_raises_completeness() -> None:
         product_id=None,
         project_id=None,
     )
-    self_stub = SimpleNamespace(product=None)
+    self_stub: Any = SimpleNamespace(product=None)
     with pytest.raises(TaskCompletenessError) as exc:
         await Choreographer._resolve_subtask_project(
             self_stub, parent, _inputs(team=Team.FRONTEND)

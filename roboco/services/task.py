@@ -12,7 +12,9 @@ from typing import TYPE_CHECKING, Any, ClassVar, cast
 from uuid import UUID, uuid4
 
 from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import InstanceState
 
 from roboco.db.tables import (
     AgentTable,
@@ -1555,6 +1557,37 @@ class TaskService(BaseService):
         )
         return task
 
+    async def _task_has_cell_map(self, task: TaskTable) -> bool:
+        """True iff ``task`` carries an ad-hoc per-cell project map.
+
+        The ``cell_projects`` relationship is ``lazy="selectin"`` — it loads on
+        a task *query*, not on a freshly created/flushed instance. Reading the
+        attribute on an unloaded instance fires a greenlet-less lazy SELECT that
+        rolls the async transaction back (``MissingGreenlet`` then
+        ``PendingRollbackError``), so we must NOT touch it blindly. We peek the
+        instance state (no IO): if the map is already loaded (the claim path
+        queries the task, so selectin fired) we read it directly; if it is
+        genuinely unloaded we ask the DB with an awaited count instead. A
+        non-ORM stub (unit-test MagicMock) isn't a real ``InstanceState``, so we
+        fall back to its plain ``cell_projects`` attribute.
+        """
+        # ``sa_inspect`` is typed to return ``InstanceState`` for a mapped
+        # ``TaskTable``, but unit-test stubs pass a ``MagicMock`` whose fake
+        # inspector is NOT a real ``InstanceState`` — annotate ``object`` so the
+        # non-InstanceState fallback stays reachable (and routes the stub to its
+        # plain ``cell_projects`` attribute).
+        state: object = sa_inspect(task)
+        if isinstance(state, InstanceState):
+            if "cell_projects" not in state.unloaded:
+                return bool(task.cell_projects)
+            stmt = (
+                select(func.count())
+                .select_from(TaskCellProjectTable)
+                .where(TaskCellProjectTable.task_id == task.id)
+            )
+            return (await self.session.scalar(stmt) or 0) > 0
+        return bool(task.cell_projects)
+
     async def _ensure_branch_for_task(
         self,
         task: TaskTable,
@@ -1587,7 +1620,7 @@ class TaskService(BaseService):
             # spans, so cells branch off it (not off master) and only the CEO
             # merges the root into master. Only a task with neither project,
             # product, nor a cell map is misconfigured.
-            if task.product_id or task.cell_projects:
+            if task.product_id or await self._task_has_cell_map(task):
                 return await self._ensure_coordination_root_branches(task, agent_id)
             # A MegaTask umbrella is branchless by design: it spans many projects
             # (no single master to branch off) and assembles no PR of its own —
