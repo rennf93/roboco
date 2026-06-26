@@ -1,10 +1,6 @@
 # CI Diagnosis: `make quality` coverage gate failing on roboco-api master
 
-**Task:** `2abdb848-3aac-419a-b7c9-d14de79400d3`
-**Date:** 2026-06-26
-**Author:** be-dev-2
-**Branch under diagnosis:** `feature/backend/7bd41bc4--e67b2ba0--2abdb848` @ `8b77923`
-**Baseline:** `origin/master` @ `e2f7097` (merge-base with branch tip: `4fd119f`)
+**Task:** `2abdb848-3aac-419a-b7c9-d14de79400d3` **Date:** 2026-06-26 **Author:** be-dev-2 **Branch under diagnosis:** `feature/backend/7bd41bc4--e67b2ba0--2abdb848` @ `8b77923` **Baseline:** `origin/master` @ `e2f7097` (merge-base with branch tip: `4fd119f`)
 
 This is a **diagnosis-only** document. **No code fix is proposed here** — that work is owned by the follow-up task `0dc31b39-4008-4bbe-9a6b-4e7035efc266` ("Implement root-cause fix, verify quality gates, and open PR").
 
