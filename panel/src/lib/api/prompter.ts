@@ -7,11 +7,15 @@ import type { Team, TaskType, TaskNature, Complexity } from "@/types";
 // the structured draft the agent proposes and the human confirms.
 // ---------------------------------------------------------------------------
 
-/** One cell's slice of the work — the per-cell breakdown of The Work. */
+/** One cell's slice of the work — the per-cell breakdown of The Work.
+ *  `project_id` is the per-cell repo for a multi-cell MegaTask draft (a RoboCo
+ *  project is per-cell; a monorepo is N per-cell projects sharing one git_url).
+ *  A single-cell draft keeps its project at the DraftProposal top level. */
 export interface CellWork {
   team: Team;
   summary: string;
   items: string[];
+  project_id?: string | null;
 }
 
 /** A structured task draft, mirroring the backend PrompterDraftTask. */

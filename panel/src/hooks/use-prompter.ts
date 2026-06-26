@@ -59,6 +59,26 @@ export interface BatchProposal {
 /** Which start button the human pressed on the draft card. */
 export type StartRoute = "board" | "main_pm";
 
+/** The delivery cells that carry their own per-cell project in a MegaTask draft.
+ *  A RoboCo project is per-cell (assigned_cell); a multi-cell draft puts one
+ *  the_work entry per cell, each with its cell's project_id. */
+const CELL_TEAMS: Team[] = [Team.BACKEND, Team.FRONTEND, Team.UX_UI];
+
+/** The per-cell project_ids a draft targets: one per the_work entry whose team
+ *  is a delivery cell and that carries a project_id. Empty for a legacy
+ *  single-cell draft that uses a top-level project_id instead. */
+function draftCellProjectIds(draft: DraftProposal): string[] {
+  return (draft.the_work ?? [])
+    .filter(
+      (w): w is CellWork & { project_id: string } =>
+        !!w?.team &&
+        (CELL_TEAMS as readonly string[]).includes(w.team) &&
+        typeof w.project_id === "string" &&
+        w.project_id !== "",
+    )
+    .map((w) => w.project_id);
+}
+
 export interface EditableDraft {
   title: string;
   description: string;
@@ -784,19 +804,25 @@ export function usePrompter() {
   // Confirm a MegaTask — create the umbrella + sequenced root-subtasks, reap
   // -----------------------------------------------------------------------
 
-  /** Reassign one task in the proposed MegaTask to a different project. Lets the
-   *  human fix a draft the agent put in the wrong (or no) repo before launch.
+  /** Reassign one cell of one task in the proposed MegaTask to a different
+   *  project. `entryIndex` is the the_work slot (the cell); pass -1 for a legacy
+   *  single-cell draft that has no per-cell map (sets the top-level project_id).
    *  Project does not affect the wave plan (waves derive from collision surface),
    *  so the previewed waves stay valid. */
   const updateBatchDraftProject = useCallback(
-    (index: number, projectId: string) => {
+    (index: number, entryIndex: number, projectId: string) => {
       setBatch((prev) => {
         if (!prev) return prev;
         return {
           ...prev,
-          drafts: prev.drafts.map((d, i) =>
-            i === index ? { ...d, project_id: projectId } : d,
-          ),
+          drafts: prev.drafts.map((d, i) => {
+            if (i !== index) return d;
+            if (entryIndex < 0) return { ...d, project_id: projectId };
+            const the_work = (d.the_work ?? []).map((w, wi) =>
+              wi === entryIndex ? { ...w, project_id: projectId } : w,
+            );
+            return { ...d, the_work };
+          }),
         };
       });
     },
@@ -819,18 +845,32 @@ export function usePrompter() {
         );
         return;
       }
-      // Every task must target one of the scoped repos (the agent assigns it,
-      // the human can fix it). The backend re-asserts this authoritatively.
+      // Every cell of every task must target one of the scoped repos (the agent
+      // assigns it, the human can fix it). A multi-cell draft carries its
+      // per-cell project_ids in the_work[]; a legacy single-cell draft falls back
+      // to its top-level project_id. The backend re-asserts this authoritatively.
       const scoped = scopeRef.current.projectIds;
-      const offender = batch.drafts.findIndex(
-        (d) => !d.project_id || !scoped.includes(d.project_id),
-      );
-      if (offender !== -1) {
-        toast.error(
-          `Task ${offender + 1} ("${batch.drafts[offender].title}") needs one of ` +
-            "this MegaTask's selected projects. Pick it in the review card.",
-        );
-        return;
+      const scopedSet = new Set(scoped);
+      for (let i = 0; i < batch.drafts.length; i++) {
+        const d = batch.drafts[i];
+        const pids = draftCellProjectIds(d);
+        const targets =
+          pids.length > 0 ? pids : d.project_id ? [d.project_id] : [];
+        if (targets.length === 0) {
+          toast.error(
+            `Task ${i + 1} ("${d.title}") has no project. ` +
+              "Pick one for each of its cells in the review card.",
+          );
+          return;
+        }
+        const bad = targets.find((pid) => !scopedSet.has(pid));
+        if (bad !== undefined) {
+          toast.error(
+            `Task ${i + 1} ("${d.title}") targets a project outside this ` +
+              "MegaTask's selected repos. Pick it in the review card.",
+          );
+          return;
+        }
       }
 
       launchingRef.current = true;
