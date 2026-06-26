@@ -7033,6 +7033,43 @@ class TaskService(BaseService):
         await self.session.flush()
         return task
 
+    async def _maybe_divert_board_advisory_reassign(
+        self, task: TaskTable, task_id: UUID, new_assignee: UUID | None
+    ) -> TaskTable | None:
+        """Divert a board/advisory → cell-task reassign to the pool, or None.
+
+        Invariant backstop: never plant a board/advisory role as the owner of a
+        cell task. ``apply_escalation`` guards the escalate path; this guards the
+        direct reassign setter (gateway handoffs + HTTP route). A refused
+        hand-off is diverted to the pool for a role-matched claim. Normal
+        handoff targets (qa/documenter/cell_pm) are not board roles, so the
+        guard never fires for them.
+
+        Returns the refreshed task when it diverted (the caller returns it as
+        the reassign result), or ``None`` when no diversion applies and the
+        caller should proceed with the normal handoff.
+        """
+        if not (
+            new_assignee is not None
+            and _board_cannot_own(task)
+            and await self._is_board_advisory_agent(new_assignee)
+        ):
+            return None
+        await self._divert_owned_task_to_pool(
+            task,
+            note=(
+                "\n\n[REASSIGN REDIRECTED] attempted to assign this cell task"
+                " to a board/advisory role that cannot own cell-executed work."
+                " Released to the pool for a role-matched claim instead."
+            ),
+        )
+        self.log.info(
+            "Cell task reassign to a board/advisory role diverted to pool",
+            task_id=str(task_id),
+            refused_assignee=str(new_assignee),
+        )
+        return task
+
     async def reassign(
         self, task_id: UUID, new_assignee: UUID | None
     ) -> TaskTable | None:
@@ -7049,31 +7086,14 @@ class TaskService(BaseService):
         task = await self.get(task_id)
         if task is None:
             return None
-        # Invariant backstop: never plant a board/advisory role as the owner of a
-        # cell task. `apply_escalation` guards the escalate path; this guards the
-        # direct reassign setter (gateway handoffs + HTTP route). A refused
-        # hand-off is diverted to the pool for a role-matched claim. Normal
-        # handoff targets (qa/documenter/cell_pm) are not board roles, so the
-        # guard never fires for them.
-        if (
-            new_assignee is not None
-            and _board_cannot_own(task)
-            and await self._is_board_advisory_agent(new_assignee)
-        ):
-            await self._divert_owned_task_to_pool(
-                task,
-                note=(
-                    "\n\n[REASSIGN REDIRECTED] attempted to assign this cell task"
-                    " to a board/advisory role that cannot own cell-executed work."
-                    " Released to the pool for a role-matched claim instead."
-                ),
-            )
-            self.log.info(
-                "Cell task reassign to a board/advisory role diverted to pool",
-                task_id=str(task_id),
-                refused_assignee=str(new_assignee),
-            )
-            return task
+        # Board/advisory → cell-task hand-off is diverted to the pool (see
+        # `_maybe_divert_board_advisory_reassign`); otherwise proceed with the
+        # normal handoff + cell-PM redirect.
+        diverted = await self._maybe_divert_board_advisory_reassign(
+            task, task_id, new_assignee
+        )
+        if diverted is not None:
+            return diverted
         # Invariant backstop: cell-team planning/research/administrative children
         # must be owned by their cell PM. If the caller tried to hand such a task
         # to main-pm (or another mismatched owner), redirect to the cell PM.
