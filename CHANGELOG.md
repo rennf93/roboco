@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **The PM-respawn loop breaker now survives an orchestrator restart.** The circuit breaker that stops RoboCo from respawning the same PM on the same wedged task forever (`_pm_respawn_tracker`) lived only in memory, so a deploy/crash/OOM reset a task's strike count to 1 and re-burned the whole threshold — four full agent spawns × container cost — against the still-broken task before the gate fired again. The counter is now write-through-persisted to a new `respawn_tracker` table (migration 051) on every mutation and restored at startup, validated against live tasks so a stale counter can't resurrect against a fixed one. Best-effort and inert when empty (a DB hiccup degrades to exactly the prior in-memory behaviour); it can only ever suppress a spawn, never manufacture one.
+
 ## [0.13.0] - 2026-06-26
 
 ### Added

@@ -1843,6 +1843,39 @@ class WaitingRecordTable(Base):
     __table_args__ = (Index("ix_waiting_records_waiting_for", "waiting_for"),)
 
 
+class RespawnTrackerTable(Base):
+    """Persistent backing for the orchestrator's PM-respawn loop counter.
+
+    ``AgentOrchestrator._pm_respawn_tracker`` is the circuit breaker against
+    respawning the same PM on the same task forever. Kept only in memory it
+    reset to ``count=1`` on every orchestrator restart, re-burning the whole
+    strike threshold against a still-wedged task. This mirror survives a
+    restart. Default-on; inert when empty (degrades to in-memory-only).
+
+    ``task_id`` is deliberately NOT a FK to ``tasks``: the startup loader
+    validates each row against live tasks (skipping terminal/missing ones), so
+    a stale counter can never resurrect against a fixed/deleted task and the
+    deletion authority stays in one explicit, tested place.
+    """
+
+    __tablename__ = "respawn_tracker"
+
+    agent_slug: Mapped[str] = mapped_column(String(64), primary_key=True)
+    task_id: Mapped[UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    last_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_check: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    tracing_resets: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    notified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+    __table_args__ = (Index("ix_respawn_tracker_last_check", "last_check"),)
+
+
 # =============================================================================
 # AUDIT LOG
 # =============================================================================
