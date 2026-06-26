@@ -4,7 +4,7 @@ Project API Routes
 CRUD operations for managing git projects/repositories.
 """
 
-from typing import TYPE_CHECKING, Annotated, cast
+from typing import TYPE_CHECKING, Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -221,7 +221,7 @@ async def update_project(
         is_active=data.is_active,
     )
 
-    updated = await service.update(cast("UUID", project.id), update_data)
+    updated = await service.update(project.id, update_data)
     await db.commit()
 
     if not updated:
@@ -269,7 +269,7 @@ async def delete_project(
 
     require_cell_access(agent, project.assigned_cell, "delete")
 
-    deleted = await service.delete(cast("UUID", project.id))
+    deleted = await service.delete(project.id)
     await db.commit()
 
     if not deleted:
@@ -309,7 +309,7 @@ async def set_workspace(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Project not found: {project_id}",
             ) from None
-        uuid = cast("UUID", project.id)
+        uuid = project.id
 
     updated = await service.set_workspace_path(uuid, data.workspace_path)
     await db.commit()
@@ -346,7 +346,7 @@ async def update_sync_state(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Project not found: {project_id}",
             ) from None
-        uuid = cast("UUID", project.id)
+        uuid = project.id
 
     updated = await service.update_sync_state(uuid, data.head_commit)
     await db.commit()
@@ -391,7 +391,7 @@ async def add_agent_access(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Project not found: {project_id}",
             ) from None
-        uuid = cast("UUID", project.id)
+        uuid = project.id
 
     updated = await service.add_allowed_agent(uuid, agent_id)
     await db.commit()
@@ -428,7 +428,7 @@ async def remove_agent_access(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Project not found: {project_id}",
             ) from None
-        uuid = cast("UUID", project.id)
+        uuid = project.id
 
     updated = await service.remove_allowed_agent(uuid, agent_id)
     await db.commit()
