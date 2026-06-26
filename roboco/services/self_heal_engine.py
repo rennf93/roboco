@@ -41,6 +41,7 @@ from roboco.services.task import (
     get_task_service,
 )
 from roboco.services.telemetry import get_ci_telemetry_source
+from roboco.utils.converters import require_uuid
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -188,7 +189,7 @@ class SelfHealEngine(BaseService):
                     task_type=TaskType.CODE,
                     nature=TaskNature.TECHNICAL,
                     estimated_complexity=Complexity.MEDIUM,
-                    project_id=project.id,
+                    project_id=require_uuid(project.id),
                     status=TaskStatus.PENDING,
                     source=SELF_HEAL_SOURCE,
                     confirmed_by_human=True,
