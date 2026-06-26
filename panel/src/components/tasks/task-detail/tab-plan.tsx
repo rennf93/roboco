@@ -40,7 +40,8 @@ interface TabPlanProps {
 // Risk severity colors
 const severityColors: Record<string, string> = {
   low: "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300",
-  medium: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900 dark:text-yellow-300",
+  medium:
+    "bg-yellow-100 text-yellow-700 dark:bg-yellow-900 dark:text-yellow-300",
   high: "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300",
 };
 
@@ -110,24 +111,38 @@ function ApproachSection({ task, plan }: { task: Task; plan: TaskPlan }) {
           </CardTitle>
           {isEditing ? (
             <div className="flex items-center gap-2">
-              <Tabs value={editMode} onValueChange={(v) => setEditMode(v as "write" | "preview")}>
+              <Tabs
+                value={editMode}
+                onValueChange={(v) => setEditMode(v as "write" | "preview")}
+              >
                 <TabsList className="h-8">
                   <TabsTrigger value="write" className="text-xs px-2 h-6">
-                    <Edit3 className="h-3 w-3 mr-1" />Write
+                    <Edit3 className="h-3 w-3 mr-1" />
+                    Write
                   </TabsTrigger>
                   <TabsTrigger value="preview" className="text-xs px-2 h-6">
-                    <Eye className="h-3 w-3 mr-1" />Preview
+                    <Eye className="h-3 w-3 mr-1" />
+                    Preview
                   </TabsTrigger>
                 </TabsList>
               </Tabs>
-              <Button size="sm" variant="ghost" onClick={handleCancel}><X className="h-4 w-4" /></Button>
-              <Button size="sm" onClick={handleSave} onMouseDown={(e) => e.preventDefault()} disabled={updateTask.isPending}>
-                <Check className="h-4 w-4 mr-1" />Save
+              <Button size="sm" variant="ghost" onClick={handleCancel}>
+                <X className="h-4 w-4" />
+              </Button>
+              <Button
+                size="sm"
+                onClick={handleSave}
+                onMouseDown={(e) => e.preventDefault()}
+                disabled={updateTask.isPending}
+              >
+                <Check className="h-4 w-4 mr-1" />
+                Save
               </Button>
             </div>
           ) : (
             <Button size="sm" variant="ghost" onClick={startEditing}>
-              <Edit3 className="h-4 w-4 mr-1" />Edit
+              <Edit3 className="h-4 w-4 mr-1" />
+              Edit
             </Button>
           )}
         </div>
@@ -146,13 +161,24 @@ function ApproachSection({ task, plan }: { task: Task; plan: TaskPlan }) {
               />
             ) : (
               <div className="min-h-[150px] p-3 border rounded-md bg-muted/30">
-                {editValue ? <Markdown>{editValue}</Markdown> : <p className="text-muted-foreground italic">Nothing to preview</p>}
+                {editValue ? (
+                  <Markdown>{editValue}</Markdown>
+                ) : (
+                  <p className="text-muted-foreground italic">
+                    Nothing to preview
+                  </p>
+                )}
               </div>
             )}
-            <p className="text-xs text-muted-foreground">Markdown supported. Ctrl/Cmd + Enter to save.</p>
+            <p className="text-xs text-muted-foreground">
+              Markdown supported. Ctrl/Cmd + Enter to save.
+            </p>
           </div>
         ) : (
-          <div className="cursor-pointer hover:bg-muted/30 rounded-md p-2 -m-2" onClick={startEditing}>
+          <div
+            className="cursor-pointer hover:bg-muted/30 rounded-md p-2 -m-2"
+            onClick={startEditing}
+          >
             <Markdown>{plan.approach}</Markdown>
           </div>
         )}
@@ -202,7 +228,7 @@ function SubTasksSection({ task, plan }: { task: Task; plan: TaskPlan }) {
 
   const handleToggle = async (id: string) => {
     const newSubTasks = subTasks.map((st) =>
-      st.id === id ? { ...st, completed: !st.completed } : st
+      st.id === id ? { ...st, completed: !st.completed } : st,
     );
     await updatePlan(newSubTasks);
   };
@@ -231,7 +257,7 @@ function SubTasksSection({ task, plan }: { task: Task; plan: TaskPlan }) {
       return;
     }
     const newSubTasks = subTasks.map((st) =>
-      st.id === id ? { ...st, title: editTitle.trim() } : st
+      st.id === id ? { ...st, title: editTitle.trim() } : st,
     );
     await updatePlan(newSubTasks);
     setEditingId(null);
@@ -251,10 +277,17 @@ function SubTasksSection({ task, plan }: { task: Task; plan: TaskPlan }) {
             Sub-Tasks
           </CardTitle>
           <div className="flex items-center gap-2">
-            <span className="text-sm text-muted-foreground">{completedCount}/{subTasks.length} completed</span>
+            <span className="text-sm text-muted-foreground">
+              {completedCount}/{subTasks.length} completed
+            </span>
             {!isAdding && (
-              <Button size="sm" variant="ghost" onClick={() => setIsAdding(true)}>
-                <Plus className="h-4 w-4 mr-1" />Add
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setIsAdding(true)}
+              >
+                <Plus className="h-4 w-4 mr-1" />
+                Add
               </Button>
             )}
           </div>
@@ -265,7 +298,10 @@ function SubTasksSection({ task, plan }: { task: Task; plan: TaskPlan }) {
           {subTasks
             .sort((a, b) => a.order - b.order)
             .map((subtask) => (
-              <div key={subtask.id} className="flex items-center gap-3 py-2 group">
+              <div
+                key={subtask.id}
+                className="flex items-center gap-3 py-2 group"
+              >
                 <Checkbox
                   checked={subtask.completed}
                   onCheckedChange={() => handleToggle(subtask.id)}
@@ -289,7 +325,9 @@ function SubTasksSection({ task, plan }: { task: Task; plan: TaskPlan }) {
                   <>
                     <span
                       className={`flex-1 cursor-pointer hover:bg-muted/30 px-2 py-1 -mx-2 rounded ${
-                        subtask.completed ? "line-through text-muted-foreground" : ""
+                        subtask.completed
+                          ? "line-through text-muted-foreground"
+                          : ""
                       }`}
                       onClick={() => {
                         setEditingId(subtask.id);
@@ -298,7 +336,9 @@ function SubTasksSection({ task, plan }: { task: Task; plan: TaskPlan }) {
                     >
                       {subtask.title}
                       {subtask.estimated_hours && (
-                        <Badge variant="outline" className="ml-2 text-xs">~{subtask.estimated_hours}h</Badge>
+                        <Badge variant="outline" className="ml-2 text-xs">
+                          ~{subtask.estimated_hours}h
+                        </Badge>
                       )}
                     </span>
                     <Button
@@ -330,16 +370,33 @@ function SubTasksSection({ task, plan }: { task: Task; plan: TaskPlan }) {
                 placeholder="Add sub-task..."
                 className="h-8 text-sm flex-1"
               />
-              <Button size="sm" variant="ghost" onClick={() => { setNewTitle(""); setIsAdding(false); }} className="h-7 w-7 p-0">
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  setNewTitle("");
+                  setIsAdding(false);
+                }}
+                className="h-7 w-7 p-0"
+              >
                 <X className="h-4 w-4" />
               </Button>
-              <Button size="sm" onClick={handleAdd} onMouseDown={(e) => e.preventDefault()} disabled={!newTitle.trim()} className="h-7 w-7 p-0">
+              <Button
+                size="sm"
+                onClick={handleAdd}
+                onMouseDown={(e) => e.preventDefault()}
+                disabled={!newTitle.trim()}
+                className="h-7 w-7 p-0"
+              >
                 <Check className="h-4 w-4" />
               </Button>
             </div>
           )}
           {subTasks.length === 0 && !isAdding && (
-            <p className="text-muted-foreground italic cursor-pointer hover:bg-muted/30 p-2 rounded" onClick={() => setIsAdding(true)}>
+            <p
+              className="text-muted-foreground italic cursor-pointer hover:bg-muted/30 p-2 rounded"
+              onClick={() => setIsAdding(true)}
+            >
               No sub-tasks. Click to add one.
             </p>
           )}
@@ -352,7 +409,13 @@ function SubTasksSection({ task, plan }: { task: Task; plan: TaskPlan }) {
 // ============================================================================
 // Technical Considerations Section
 // ============================================================================
-function TechConsiderationsSection({ task, plan }: { task: Task; plan: TaskPlan }) {
+function TechConsiderationsSection({
+  task,
+  plan,
+}: {
+  task: Task;
+  plan: TaskPlan;
+}) {
   const updateTask = useUpdateTask();
   const items = plan.technical_considerations;
 
@@ -422,7 +485,8 @@ function TechConsiderationsSection({ task, plan }: { task: Task; plan: TaskPlan 
           </CardTitle>
           {!isAdding && (
             <Button size="sm" variant="ghost" onClick={() => setIsAdding(true)}>
-              <Plus className="h-4 w-4 mr-1" />Add
+              <Plus className="h-4 w-4 mr-1" />
+              Add
             </Button>
           )}
         </div>
@@ -486,17 +550,34 @@ function TechConsiderationsSection({ task, plan }: { task: Task; plan: TaskPlan 
                 placeholder="Add consideration..."
                 className="h-8 text-sm flex-1"
               />
-              <Button size="sm" variant="ghost" onClick={() => { setNewItem(""); setIsAdding(false); }} className="h-7 w-7 p-0">
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  setNewItem("");
+                  setIsAdding(false);
+                }}
+                className="h-7 w-7 p-0"
+              >
                 <X className="h-4 w-4" />
               </Button>
-              <Button size="sm" onClick={handleAdd} onMouseDown={(e) => e.preventDefault()} disabled={!newItem.trim()} className="h-7 w-7 p-0">
+              <Button
+                size="sm"
+                onClick={handleAdd}
+                onMouseDown={(e) => e.preventDefault()}
+                disabled={!newItem.trim()}
+                className="h-7 w-7 p-0"
+              >
                 <Check className="h-4 w-4" />
               </Button>
             </li>
           )}
         </ul>
         {items.length === 0 && !isAdding && (
-          <p className="text-muted-foreground italic cursor-pointer hover:bg-muted/30 p-2 rounded" onClick={() => setIsAdding(true)}>
+          <p
+            className="text-muted-foreground italic cursor-pointer hover:bg-muted/30 p-2 rounded"
+            onClick={() => setIsAdding(true)}
+          >
             No technical considerations. Click to add one.
           </p>
         )}
@@ -550,7 +631,14 @@ function RisksSection({ task, plan }: { task: Task; plan: TaskPlan }) {
       setIsAdding(false);
       return;
     }
-    await updatePlan([...risks, { description: newDesc.trim(), mitigation: newMit.trim(), severity: newSeverity }]);
+    await updatePlan([
+      ...risks,
+      {
+        description: newDesc.trim(),
+        mitigation: newMit.trim(),
+        severity: newSeverity,
+      },
+    ]);
     setNewDesc("");
     setNewMit("");
     setNewSeverity("medium");
@@ -563,7 +651,11 @@ function RisksSection({ task, plan }: { task: Task; plan: TaskPlan }) {
       return;
     }
     const newRisks = [...risks];
-    newRisks[editingIdx] = { description: editDesc.trim(), mitigation: editMit.trim(), severity: editSeverity };
+    newRisks[editingIdx] = {
+      description: editDesc.trim(),
+      mitigation: editMit.trim(),
+      severity: editSeverity,
+    };
     await updatePlan(newRisks);
     setEditingIdx(null);
   };
@@ -584,7 +676,8 @@ function RisksSection({ task, plan }: { task: Task; plan: TaskPlan }) {
           </CardTitle>
           {!isAdding && (
             <Button size="sm" variant="ghost" onClick={() => setIsAdding(true)}>
-              <Plus className="h-4 w-4 mr-1" />Add
+              <Plus className="h-4 w-4 mr-1" />
+              Add
             </Button>
           )}
         </div>
@@ -619,8 +712,20 @@ function RisksSection({ task, plan }: { task: Task; plan: TaskPlan }) {
                     </SelectContent>
                   </Select>
                   <div className="flex-1" />
-                  <Button size="sm" variant="ghost" onClick={() => setEditingIdx(null)}><X className="h-4 w-4" /></Button>
-                  <Button size="sm" onClick={handleEdit} onMouseDown={(e) => e.preventDefault()}><Check className="h-4 w-4" /></Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setEditingIdx(null)}
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={handleEdit}
+                    onMouseDown={(e) => e.preventDefault()}
+                  >
+                    <Check className="h-4 w-4" />
+                  </Button>
                 </div>
               </div>
             ) : (
@@ -635,13 +740,22 @@ function RisksSection({ task, plan }: { task: Task; plan: TaskPlan }) {
                 }}
               >
                 <div className="flex items-start justify-between gap-2 mb-2">
-                  <span className="font-medium text-sm">{risk.description}</span>
+                  <span className="font-medium text-sm">
+                    {risk.description}
+                  </span>
                   <div className="flex items-center gap-2">
-                    {risk.severity && <Badge className={severityColors[risk.severity]}>{risk.severity}</Badge>}
+                    {risk.severity && (
+                      <Badge className={severityColors[risk.severity]}>
+                        {risk.severity}
+                      </Badge>
+                    )}
                     <Button
                       size="sm"
                       variant="ghost"
-                      onClick={(e) => { e.stopPropagation(); handleDelete(idx); }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDelete(idx);
+                      }}
                       className="h-7 w-7 p-0 opacity-0 group-hover:opacity-100 text-destructive"
                     >
                       <Trash2 className="h-3 w-3" />
@@ -649,10 +763,11 @@ function RisksSection({ task, plan }: { task: Task; plan: TaskPlan }) {
                   </div>
                 </div>
                 <div className="text-sm text-muted-foreground">
-                  <span className="font-medium">Mitigation:</span> {risk.mitigation || "Not specified"}
+                  <span className="font-medium">Mitigation:</span>{" "}
+                  {risk.mitigation || "Not specified"}
                 </div>
               </div>
-            )
+            ),
           )}
           {isAdding && (
             <div className="border rounded-lg p-4 space-y-3">
@@ -681,14 +796,34 @@ function RisksSection({ task, plan }: { task: Task; plan: TaskPlan }) {
                   </SelectContent>
                 </Select>
                 <div className="flex-1" />
-                <Button size="sm" variant="ghost" onClick={() => { setNewDesc(""); setNewMit(""); setIsAdding(false); }}><X className="h-4 w-4" /></Button>
-                <Button size="sm" onClick={handleAdd} onMouseDown={(e) => e.preventDefault()} disabled={!newDesc.trim()}><Check className="h-4 w-4" /></Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setNewDesc("");
+                    setNewMit("");
+                    setIsAdding(false);
+                  }}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={handleAdd}
+                  onMouseDown={(e) => e.preventDefault()}
+                  disabled={!newDesc.trim()}
+                >
+                  <Check className="h-4 w-4" />
+                </Button>
               </div>
             </div>
           )}
         </div>
         {risks.length === 0 && !isAdding && (
-          <p className="text-muted-foreground italic cursor-pointer hover:bg-muted/30 p-2 rounded" onClick={() => setIsAdding(true)}>
+          <p
+            className="text-muted-foreground italic cursor-pointer hover:bg-muted/30 p-2 rounded"
+            onClick={() => setIsAdding(true)}
+          >
             No risks identified. Click to add one.
           </p>
         )}
@@ -737,7 +872,15 @@ function OpenQuestionsSection({ task, plan }: { task: Task; plan: TaskPlan }) {
       setIsAdding(false);
       return;
     }
-    await updatePlan([...questions, { question: newQuestion.trim(), answer: null, answered_by: null, answered_at: null }]);
+    await updatePlan([
+      ...questions,
+      {
+        question: newQuestion.trim(),
+        answer: null,
+        answered_by: null,
+        answered_at: null,
+      },
+    ]);
     setNewQuestion("");
   };
 
@@ -775,7 +918,8 @@ function OpenQuestionsSection({ task, plan }: { task: Task; plan: TaskPlan }) {
           </CardTitle>
           {!isAdding && (
             <Button size="sm" variant="ghost" onClick={() => setIsAdding(true)}>
-              <Plus className="h-4 w-4 mr-1" />Add
+              <Plus className="h-4 w-4 mr-1" />
+              Add
             </Button>
           )}
         </div>
@@ -800,8 +944,20 @@ function OpenQuestionsSection({ task, plan }: { task: Task; plan: TaskPlan }) {
                 />
                 <div className="flex items-center gap-2">
                   <div className="flex-1" />
-                  <Button size="sm" variant="ghost" onClick={() => setEditingIdx(null)}><X className="h-4 w-4" /></Button>
-                  <Button size="sm" onClick={handleEdit} onMouseDown={(e) => e.preventDefault()}><Check className="h-4 w-4" /></Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setEditingIdx(null)}
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={handleEdit}
+                    onMouseDown={(e) => e.preventDefault()}
+                  >
+                    <Check className="h-4 w-4" />
+                  </Button>
                 </div>
               </div>
             ) : (
@@ -816,11 +972,16 @@ function OpenQuestionsSection({ task, plan }: { task: Task; plan: TaskPlan }) {
               >
                 <div className="flex items-start gap-2 mb-2">
                   <HelpCircle className="h-5 w-5 text-yellow-500 shrink-0 mt-0.5" />
-                  <span className="font-medium text-sm flex-1">{q.question}</span>
+                  <span className="font-medium text-sm flex-1">
+                    {q.question}
+                  </span>
                   <Button
                     size="sm"
                     variant="ghost"
-                    onClick={(e) => { e.stopPropagation(); handleDelete(idx); }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDelete(idx);
+                    }}
                     className="h-7 w-7 p-0 opacity-0 group-hover:opacity-100 text-destructive"
                   >
                     <Trash2 className="h-3 w-3" />
@@ -829,17 +990,24 @@ function OpenQuestionsSection({ task, plan }: { task: Task; plan: TaskPlan }) {
                 {q.answer ? (
                   <div className="ml-7 text-sm">
                     <div className="bg-green-50 dark:bg-green-950 text-green-800 dark:text-green-200 rounded-lg p-3">
-                      <p className="font-medium mb-1">Answered by {q.answered_by?.slice(0, 12) ?? "Unknown"}</p>
+                      <p className="font-medium mb-1">
+                        Answered by {q.answered_by?.slice(0, 12) ?? "Unknown"}
+                      </p>
                       <p>{q.answer}</p>
                     </div>
                   </div>
                 ) : (
                   <div className="ml-7">
-                    <Badge variant="outline" className="text-yellow-600 border-yellow-300">Awaiting Answer</Badge>
+                    <Badge
+                      variant="outline"
+                      className="text-yellow-600 border-yellow-300"
+                    >
+                      Awaiting Answer
+                    </Badge>
                   </div>
                 )}
               </div>
-            )
+            ),
           )}
           {isAdding && (
             <div className="border rounded-lg p-4 space-y-3">
@@ -859,14 +1027,33 @@ function OpenQuestionsSection({ task, plan }: { task: Task; plan: TaskPlan }) {
               />
               <div className="flex items-center gap-2">
                 <div className="flex-1" />
-                <Button size="sm" variant="ghost" onClick={() => { setNewQuestion(""); setIsAdding(false); }}><X className="h-4 w-4" /></Button>
-                <Button size="sm" onClick={handleAdd} onMouseDown={(e) => e.preventDefault()} disabled={!newQuestion.trim()}><Check className="h-4 w-4" /></Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setNewQuestion("");
+                    setIsAdding(false);
+                  }}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={handleAdd}
+                  onMouseDown={(e) => e.preventDefault()}
+                  disabled={!newQuestion.trim()}
+                >
+                  <Check className="h-4 w-4" />
+                </Button>
               </div>
             </div>
           )}
         </div>
         {questions.length === 0 && !isAdding && (
-          <p className="text-muted-foreground italic cursor-pointer hover:bg-muted/30 p-2 rounded" onClick={() => setIsAdding(true)}>
+          <p
+            className="text-muted-foreground italic cursor-pointer hover:bg-muted/30 p-2 rounded"
+            onClick={() => setIsAdding(true)}
+          >
             No open questions. Click to add one.
           </p>
         )}
@@ -909,7 +1096,8 @@ export function TabPlan({ task }: TabPlanProps) {
             <FileText className="h-12 w-12 mx-auto mb-4 opacity-50" />
             <p>No implementation plan has been created yet.</p>
             <p className="text-sm mt-2 mb-4">
-              A plan will be created once an agent claims and starts working on this task.
+              A plan will be created once an agent claims and starts working on
+              this task.
             </p>
             <Button onClick={createPlan} disabled={updateTask.isPending}>
               <Plus className="h-4 w-4 mr-2" />

@@ -9,7 +9,10 @@ interface OrchestratorStatusCardsProps {
   isLoading: boolean;
 }
 
-export function OrchestratorStatusCards({ status, isLoading }: OrchestratorStatusCardsProps) {
+export function OrchestratorStatusCards({
+  status,
+  isLoading,
+}: OrchestratorStatusCardsProps) {
   // Calculate running agents from by_state
   const runningCount = status?.by_state?.running || 0;
   const readyCount = status?.by_state?.ready || 0;
@@ -45,7 +48,9 @@ export function OrchestratorStatusCards({ status, isLoading }: OrchestratorStatu
           {isLoading ? (
             <Skeleton className="h-8 w-12" />
           ) : (
-            <div className="text-2xl font-bold">{status?.total_agents || 0}</div>
+            <div className="text-2xl font-bold">
+              {status?.total_agents || 0}
+            </div>
           )}
         </CardContent>
       </Card>
@@ -71,7 +76,9 @@ export function OrchestratorStatusCards({ status, isLoading }: OrchestratorStatu
           {isLoading ? (
             <Skeleton className="h-8 w-12" />
           ) : (
-            <div className="text-2xl font-bold">{status?.waiting_count || 0}</div>
+            <div className="text-2xl font-bold">
+              {status?.waiting_count || 0}
+            </div>
           )}
         </CardContent>
       </Card>

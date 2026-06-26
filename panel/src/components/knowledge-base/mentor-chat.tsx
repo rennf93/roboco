@@ -31,7 +31,10 @@ interface ChatMessage {
 }
 
 interface MentorChatProps {
-  onAsk: (question: string, conversationId?: string) => Promise<MentorAskResponse>;
+  onAsk: (
+    question: string,
+    conversationId?: string,
+  ) => Promise<MentorAskResponse>;
   isLoading: boolean;
 }
 
@@ -111,8 +114,9 @@ export function MentorChat({ onAsk, isLoading }: MentorChatProps) {
             </div>
             <h2 className="text-xl font-semibold mb-2">AI Mentor</h2>
             <p className="text-muted-foreground mb-4">
-              Your personalized mentor that knows your role, searches your journals,
-              and provides tailored guidance. Start a conversation below.
+              Your personalized mentor that knows your role, searches your
+              journals, and provides tailored guidance. Start a conversation
+              below.
             </p>
             <div className="flex justify-center gap-2 flex-wrap">
               <Badge variant="secondary" className="gap-1">
@@ -194,16 +198,23 @@ export function MentorChat({ onAsk, isLoading }: MentorChatProps) {
                       <Brain className="h-3 w-3" />
                       {msg.agentRole && (
                         <span>
-                          Role: <Badge variant="secondary" className="text-xs">{msg.agentRole}</Badge>
-                          {msg.agentTeam && <span className="ml-1">({msg.agentTeam})</span>}
+                          Role:{" "}
+                          <Badge variant="secondary" className="text-xs">
+                            {msg.agentRole}
+                          </Badge>
+                          {msg.agentTeam && (
+                            <span className="ml-1">({msg.agentTeam})</span>
+                          )}
                         </span>
                       )}
-                      {msg.journalEntriesUsed !== undefined && msg.journalEntriesUsed > 0 && (
-                        <span className="flex items-center gap-1">
-                          <BookMarked className="h-3 w-3" />
-                          {msg.journalEntriesUsed} journal{msg.journalEntriesUsed !== 1 ? "s" : ""} used
-                        </span>
-                      )}
+                      {msg.journalEntriesUsed !== undefined &&
+                        msg.journalEntriesUsed > 0 && (
+                          <span className="flex items-center gap-1">
+                            <BookMarked className="h-3 w-3" />
+                            {msg.journalEntriesUsed} journal
+                            {msg.journalEntriesUsed !== 1 ? "s" : ""} used
+                          </span>
+                        )}
                     </div>
                   )}
 
@@ -223,9 +234,14 @@ export function MentorChat({ onAsk, isLoading }: MentorChatProps) {
                         variant="ghost"
                         size="sm"
                         className="text-xs"
-                        onClick={() => setExpandedSources(expandedSources === idx ? null : idx)}
+                        onClick={() =>
+                          setExpandedSources(
+                            expandedSources === idx ? null : idx,
+                          )
+                        }
                       >
-                        {expandedSources === idx ? "Hide" : "Show"} {msg.sources.length} sources
+                        {expandedSources === idx ? "Hide" : "Show"}{" "}
+                        {msg.sources.length} sources
                       </Button>
                       {expandedSources === idx && (
                         <div className="mt-2 space-y-2">

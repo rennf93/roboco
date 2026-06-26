@@ -18,7 +18,7 @@ import { AgentRole, Team } from "@/types";
 const makeAgent = (
   id: string,
   role: AgentRole | null,
-  team: Team | null
+  team: Team | null,
 ): AgentDefinition => ({ id, name: id, role, team });
 
 // ---------------------------------------------------------------------------
@@ -279,7 +279,7 @@ describe("getSupportAgents", () => {
         AgentRole.PROMPTER,
         AgentRole.SECRETARY,
         AgentRole.PR_REVIEWER,
-      ])
+      ]),
     );
   });
 

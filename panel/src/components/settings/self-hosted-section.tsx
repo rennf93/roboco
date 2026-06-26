@@ -71,7 +71,7 @@ export function SelfHostedSection({
   // Timestamps for "Last refreshed" label
   const [lastRefreshed, setLastRefreshed] = useState<string | null>(null);
 
-  const hasSavedUrl = !!(config?.base_url);
+  const hasSavedUrl = !!config?.base_url;
 
   // ---- Save handler --------------------------------------------------------
   const handleSave = async () => {
@@ -167,7 +167,7 @@ export function SelfHostedSection({
             onChange={(e) => setBaseUrl(e.target.value)}
             placeholder={
               hasSavedUrl
-                ? config.base_url ?? "http://localhost:11434"
+                ? (config.base_url ?? "http://localhost:11434")
                 : "http://localhost:11434"
             }
             className="font-mono text-sm"
@@ -317,9 +317,7 @@ export function SelfHostedSection({
           <div className="flex items-center justify-between">
             <p className="text-xs text-muted-foreground">
               Last refreshed:{" "}
-              <span className="font-medium">
-                {relativeTime(lastRefreshed)}
-              </span>
+              <span className="font-medium">{relativeTime(lastRefreshed)}</span>
             </p>
             <Button
               variant="ghost"

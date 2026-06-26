@@ -27,32 +27,37 @@ export const getBoardAgents = (agents: AgentDefinition[] | undefined | null) =>
       // (Intake, Secretary, root PR Reviewer) — those are grouped as Support.
       a.role === AgentRole.PRODUCT_OWNER ||
       a.role === AgentRole.HEAD_MARKETING ||
-      a.role === AgentRole.AUDITOR
+      a.role === AgentRole.AUDITOR,
   );
 
 export const getMainPm = (agents: AgentDefinition[] | undefined | null) =>
   (agents ?? []).filter((a) => a.role === AgentRole.MAIN_PM);
 
-export const getBackendAgents = (agents: AgentDefinition[] | undefined | null) =>
-  (agents ?? []).filter((a) => a.team === Team.BACKEND);
+export const getBackendAgents = (
+  agents: AgentDefinition[] | undefined | null,
+) => (agents ?? []).filter((a) => a.team === Team.BACKEND);
 
-export const getFrontendAgents = (agents: AgentDefinition[] | undefined | null) =>
-  (agents ?? []).filter((a) => a.team === Team.FRONTEND);
+export const getFrontendAgents = (
+  agents: AgentDefinition[] | undefined | null,
+) => (agents ?? []).filter((a) => a.team === Team.FRONTEND);
 
 export const getUxAgents = (agents: AgentDefinition[] | undefined | null) =>
   (agents ?? []).filter((a) => a.team === Team.UX_UI);
 
-export const getMarketingAgents = (agents: AgentDefinition[] | undefined | null) =>
-  (agents ?? []).filter((a) => a.team === Team.MARKETING);
+export const getMarketingAgents = (
+  agents: AgentDefinition[] | undefined | null,
+) => (agents ?? []).filter((a) => a.team === Team.MARKETING);
 
 // CEO-direct support roles — Intake (Prompter), Secretary, and the root PR
 // Reviewer. Board-adjacent and spawned on demand, but NOT Board members. Cell
 // PR reviewers carry their cell's team and stay grouped under that cell; only
 // the root reviewer carries team=board, which is how it is distinguished here.
-export const getSupportAgents = (agents: AgentDefinition[] | undefined | null) =>
+export const getSupportAgents = (
+  agents: AgentDefinition[] | undefined | null,
+) =>
   (agents ?? []).filter(
     (a) =>
       a.role === AgentRole.PROMPTER ||
       a.role === AgentRole.SECRETARY ||
-      (a.role === AgentRole.PR_REVIEWER && a.team === Team.BOARD)
+      (a.role === AgentRole.PR_REVIEWER && a.team === Team.BOARD),
   );

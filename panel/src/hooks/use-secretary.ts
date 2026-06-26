@@ -70,10 +70,10 @@ export function useSecretary() {
       esRef.current = source;
       const listener = (e: MessageEvent) => handleEvent(e.data);
       LIVE_EVENT_KINDS.forEach((kind) =>
-        source.addEventListener(kind, listener as EventListener)
+        source.addEventListener(kind, listener as EventListener),
       );
     },
-    [closeStream, handleEvent]
+    [closeStream, handleEvent],
   );
 
   const start = useCallback(
@@ -81,11 +81,13 @@ export function useSecretary() {
       const { session_id } = await secretaryApi.startLive(initialMessage);
       setSessionId(session_id);
       bufRef.current = "";
-      setMessages(initialMessage ? [{ role: "user", text: initialMessage }] : []);
+      setMessages(
+        initialMessage ? [{ role: "user", text: initialMessage }] : [],
+      );
       openStream(session_id);
       return session_id;
     },
-    [openStream]
+    [openStream],
   );
 
   const send = useCallback(
@@ -95,7 +97,7 @@ export function useSecretary() {
       setMessages((prev) => [...prev, { role: "user", text }]);
       await secretaryApi.sendMessage(sessionId, text);
     },
-    [sessionId]
+    [sessionId],
   );
 
   const stop = useCallback(async (): Promise<void> => {

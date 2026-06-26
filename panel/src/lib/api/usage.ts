@@ -24,7 +24,7 @@ function mockSummary(period: UsagePeriod = "24h"): UsageSummary {
     tokens_input: Math.round(base * 0.55),
     tokens_output: Math.round(base * 0.35),
     total_tokens: base,
-    total_cost_usd: parseFloat((base * 0.000030).toFixed(6)),
+    total_cost_usd: parseFloat((base * 0.00003).toFixed(6)),
     trend_pct: 12.5,
     period,
   };
@@ -51,7 +51,7 @@ function mockTimeSeries(period: UsagePeriod = "24h"): UsageTimePoint[] {
       tokens_input,
       tokens_output,
       total_tokens,
-      cost_usd: parseFloat((total_tokens * 0.000030).toFixed(6)),
+      cost_usd: parseFloat((total_tokens * 0.00003).toFixed(6)),
     };
   });
 }
@@ -78,7 +78,7 @@ function mockAgentUsage(period: UsagePeriod = "24h"): AgentUsageRow[] {
       tokens_input: ti,
       tokens_output: to_,
       total_tokens: total,
-      cost_usd: parseFloat((total * 0.000030).toFixed(6)),
+      cost_usd: parseFloat((total * 0.00003).toFixed(6)),
       pct_of_total: parseFloat(((total / grand) * 100).toFixed(2)),
     };
   });
@@ -97,7 +97,7 @@ function mockTeamUsage(period: UsagePeriod = "24h"): TeamUsageRow[] {
       tokens_input: ti,
       tokens_output: to_,
       total_tokens: total,
-      cost_usd: parseFloat((total * 0.000030).toFixed(6)),
+      cost_usd: parseFloat((total * 0.00003).toFixed(6)),
       pct_of_total: parseFloat(((total / grand) * 100).toFixed(2)),
     };
   });
@@ -120,29 +120,35 @@ function mockModelUsage(period: UsagePeriod = "24h"): ModelUsageSlice[] {
       tokens_input: ti,
       tokens_output: to_,
       total_tokens: total,
-      cost_usd: parseFloat((total * 0.000030).toFixed(6)),
+      cost_usd: parseFloat((total * 0.00003).toFixed(6)),
       pct_of_total: parseFloat((m.share * 100).toFixed(1)),
     };
   });
 }
 
 function mockProjection(): UsageProjection {
-  const total_cost_7d = parseFloat((124_800 * 7 * 0.000030).toFixed(6));
+  const total_cost_7d = parseFloat((124_800 * 7 * 0.00003).toFixed(6));
   return {
     total_cost_7d,
     avg_daily_cost_usd: parseFloat((total_cost_7d / 7).toFixed(6)),
-    projected_monthly_cost_usd: parseFloat((total_cost_7d / 7 * 30).toFixed(4)),
+    projected_monthly_cost_usd: parseFloat(
+      ((total_cost_7d / 7) * 30).toFixed(4),
+    ),
     basis_days: 7,
   };
 }
 
-function mockCacheEfficiency(period: UsagePeriod = "24h"): CacheEfficiencyResponse {
+function mockCacheEfficiency(
+  period: UsagePeriod = "24h",
+): CacheEfficiencyResponse {
   return {
     cache_hit_rate: 0.3142,
     tokens_cache_read: 39_168,
     tokens_cache_write: 12_480,
     tokens_input: 85_632,
-    cost_saved_by_cache_usd: parseFloat((39_168 * (3.00 - 0.30) / 1_000_000).toFixed(6)),
+    cost_saved_by_cache_usd: parseFloat(
+      ((39_168 * (3.0 - 0.3)) / 1_000_000).toFixed(6),
+    ),
     period,
   };
 }
@@ -157,7 +163,12 @@ function mockSessions(): UsageSession[] {
     const output = Math.round(500 + Math.random() * 3_000);
     const cache = Math.round(100 + Math.random() * 1_000);
     const started = new Date(Date.now() - (i + 1) * 12 * 60_000);
-    const ended = i < 3 ? null : new Date(started.getTime() + Math.round(5 + Math.random() * 55) * 60_000);
+    const ended =
+      i < 3
+        ? null
+        : new Date(
+            started.getTime() + Math.round(5 + Math.random() * 55) * 60_000,
+          );
     return {
       id: `session-mock-${i + 1}`,
       agent_slug,
@@ -167,7 +178,9 @@ function mockSessions(): UsageSession[] {
       tokens_output: output,
       tokens_cache: cache,
       total_tokens: input + output + cache,
-      cost: parseFloat(((input + output) * 0.00003 + cache * 0.000003).toFixed(4)),
+      cost: parseFloat(
+        ((input + output) * 0.00003 + cache * 0.000003).toFixed(4),
+      ),
       model,
     };
   });
@@ -179,7 +192,9 @@ function mockSessions(): UsageSession[] {
 
 export const usageApi = {
   /** Aggregated token usage summary — GET /usage/summary?period= */
-  getUsageSummary: async (period: UsagePeriod = "24h"): Promise<UsageSummary> => {
+  getUsageSummary: async (
+    period: UsagePeriod = "24h",
+  ): Promise<UsageSummary> => {
     if (isMockMode()) return mockSummary(period);
     const { data } = await api.get<UsageSummary>("/usage/summary", {
       params: { period },
@@ -188,7 +203,9 @@ export const usageApi = {
   },
 
   /** Bucketed time-series — GET /usage/time-series?period= */
-  getUsageTimeSeries: async (period: UsagePeriod = "24h"): Promise<UsageTimePoint[]> => {
+  getUsageTimeSeries: async (
+    period: UsagePeriod = "24h",
+  ): Promise<UsageTimePoint[]> => {
     if (isMockMode()) return mockTimeSeries(period);
     const { data } = await api.get<UsageTimePoint[]>("/usage/time-series", {
       params: { period },
@@ -197,7 +214,9 @@ export const usageApi = {
   },
 
   /** Per-agent usage rows — GET /usage/by-agent?period= */
-  getAgentUsage: async (period: UsagePeriod = "24h"): Promise<AgentUsageRow[]> => {
+  getAgentUsage: async (
+    period: UsagePeriod = "24h",
+  ): Promise<AgentUsageRow[]> => {
     if (isMockMode()) return mockAgentUsage(period);
     const { data } = await api.get<AgentUsageRow[]>("/usage/by-agent", {
       params: { period },
@@ -206,7 +225,9 @@ export const usageApi = {
   },
 
   /** Per-team usage rows — GET /usage/by-team?period= */
-  getTeamUsage: async (period: UsagePeriod = "24h"): Promise<TeamUsageRow[]> => {
+  getTeamUsage: async (
+    period: UsagePeriod = "24h",
+  ): Promise<TeamUsageRow[]> => {
     if (isMockMode()) return mockTeamUsage(period);
     const { data } = await api.get<TeamUsageRow[]>("/usage/by-team", {
       params: { period },
@@ -215,7 +236,9 @@ export const usageApi = {
   },
 
   /** Per-model usage slices — GET /usage/by-model?period= */
-  getModelUsage: async (period: UsagePeriod = "24h"): Promise<ModelUsageSlice[]> => {
+  getModelUsage: async (
+    period: UsagePeriod = "24h",
+  ): Promise<ModelUsageSlice[]> => {
     if (isMockMode()) return mockModelUsage(period);
     const { data } = await api.get<ModelUsageSlice[]>("/usage/by-model", {
       params: { period },
@@ -231,11 +254,16 @@ export const usageApi = {
   },
 
   /** Cache efficiency stats — GET /usage/cache-efficiency?period= */
-  getCacheEfficiency: async (period: UsagePeriod = "24h"): Promise<CacheEfficiencyResponse> => {
+  getCacheEfficiency: async (
+    period: UsagePeriod = "24h",
+  ): Promise<CacheEfficiencyResponse> => {
     if (isMockMode()) return mockCacheEfficiency(period);
-    const { data } = await api.get<CacheEfficiencyResponse>("/usage/cache-efficiency", {
-      params: { period },
-    });
+    const { data } = await api.get<CacheEfficiencyResponse>(
+      "/usage/cache-efficiency",
+      {
+        params: { period },
+      },
+    );
     return data;
   },
 

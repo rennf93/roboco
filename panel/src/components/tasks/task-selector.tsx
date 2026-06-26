@@ -59,13 +59,12 @@ export function TaskSelector({
     }
 
     // Only show tasks that can be parents (not cancelled, not subtasks themselves deeply)
-    filtered = filtered.filter(
-      (t) => t.status !== TaskStatus.CANCELLED
-    );
+    filtered = filtered.filter((t) => t.status !== TaskStatus.CANCELLED);
 
     // Sort by recency
     return filtered.sort(
-      (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      (a, b) =>
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
     );
   }, [tasks, excludeTaskId, filterByTeam]);
 
@@ -131,7 +130,9 @@ export function TaskSelector({
           {selectedTask ? (
             <div className="flex items-center gap-2 overflow-hidden">
               <ListTree className="h-4 w-4 shrink-0" />
-              <span className="truncate">{truncateTitle(selectedTask.title)}</span>
+              <span className="truncate">
+                {truncateTitle(selectedTask.title)}
+              </span>
             </div>
           ) : (
             placeholder
@@ -155,7 +156,9 @@ export function TaskSelector({
             {groupedTasks.board.slice(0, 10).map((task) => (
               <SelectItem key={task.id} value={task.id}>
                 <div className="flex items-center gap-2">
-                  <span className="truncate">{truncateTitle(task.title, 30)}</span>
+                  <span className="truncate">
+                    {truncateTitle(task.title, 30)}
+                  </span>
                   <Badge
                     variant="secondary"
                     className={`text-xs ${STATUS_COLORS[task.status] || ""}`}
@@ -175,7 +178,9 @@ export function TaskSelector({
             {groupedTasks.main_pm.slice(0, 10).map((task) => (
               <SelectItem key={task.id} value={task.id}>
                 <div className="flex items-center gap-2">
-                  <span className="truncate">{truncateTitle(task.title, 30)}</span>
+                  <span className="truncate">
+                    {truncateTitle(task.title, 30)}
+                  </span>
                   <Badge
                     variant="secondary"
                     className={`text-xs ${STATUS_COLORS[task.status] || ""}`}
@@ -195,7 +200,9 @@ export function TaskSelector({
             {groupedTasks.backend.slice(0, 10).map((task) => (
               <SelectItem key={task.id} value={task.id}>
                 <div className="flex items-center gap-2">
-                  <span className="truncate">{truncateTitle(task.title, 30)}</span>
+                  <span className="truncate">
+                    {truncateTitle(task.title, 30)}
+                  </span>
                   <Badge
                     variant="secondary"
                     className={`text-xs ${STATUS_COLORS[task.status] || ""}`}
@@ -215,7 +222,9 @@ export function TaskSelector({
             {groupedTasks.frontend.slice(0, 10).map((task) => (
               <SelectItem key={task.id} value={task.id}>
                 <div className="flex items-center gap-2">
-                  <span className="truncate">{truncateTitle(task.title, 30)}</span>
+                  <span className="truncate">
+                    {truncateTitle(task.title, 30)}
+                  </span>
                   <Badge
                     variant="secondary"
                     className={`text-xs ${STATUS_COLORS[task.status] || ""}`}
@@ -235,7 +244,9 @@ export function TaskSelector({
             {groupedTasks.ux_ui.slice(0, 10).map((task) => (
               <SelectItem key={task.id} value={task.id}>
                 <div className="flex items-center gap-2">
-                  <span className="truncate">{truncateTitle(task.title, 30)}</span>
+                  <span className="truncate">
+                    {truncateTitle(task.title, 30)}
+                  </span>
                   <Badge
                     variant="secondary"
                     className={`text-xs ${STATUS_COLORS[task.status] || ""}`}
@@ -255,7 +266,9 @@ export function TaskSelector({
             {groupedTasks.marketing.slice(0, 10).map((task) => (
               <SelectItem key={task.id} value={task.id}>
                 <div className="flex items-center gap-2">
-                  <span className="truncate">{truncateTitle(task.title, 30)}</span>
+                  <span className="truncate">
+                    {truncateTitle(task.title, 30)}
+                  </span>
                   <Badge
                     variant="secondary"
                     className={`text-xs ${STATUS_COLORS[task.status] || ""}`}

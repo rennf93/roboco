@@ -6,13 +6,13 @@ interface UIState {
   // Sidebar
   sidebarOpen: boolean;
   sidebarCollapsed: boolean;
-  
+
   // Theme
   theme: "light" | "dark" | "system";
-  
+
   // Current context
   currentTeam: Team | null;
-  
+
   // Actions
   toggleSidebar: () => void;
   setSidebarCollapsed: (collapsed: boolean) => void;
@@ -28,7 +28,8 @@ export const useUIStore = create<UIState>()(
       theme: "system",
       currentTeam: null,
 
-      toggleSidebar: () => set((state) => ({ sidebarOpen: !state.sidebarOpen })),
+      toggleSidebar: () =>
+        set((state) => ({ sidebarOpen: !state.sidebarOpen })),
       setSidebarCollapsed: (collapsed) => set({ sidebarCollapsed: collapsed }),
       setTheme: (theme) => set({ theme }),
       setCurrentTeam: (team) => set({ currentTeam: team }),
@@ -40,6 +41,6 @@ export const useUIStore = create<UIState>()(
         theme: state.theme,
         currentTeam: state.currentTeam,
       }),
-    }
-  )
+    },
+  ),
 );

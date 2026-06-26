@@ -9,7 +9,11 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { Search, X, Link2 } from "lucide-react";
 
 interface DependencySelectorProps {
@@ -32,14 +36,14 @@ export function DependencySelector({
     (task) =>
       task.id !== excludeTaskId &&
       task.status !== TaskStatus.COMPLETED &&
-      task.status !== TaskStatus.CANCELLED
+      task.status !== TaskStatus.CANCELLED,
   );
 
   // Filter by search term
   const filteredTasks = availableTasks.filter(
     (task) =>
       task.title.toLowerCase().includes(search.toLowerCase()) ||
-      task.id.toLowerCase().includes(search.toLowerCase())
+      task.id.toLowerCase().includes(search.toLowerCase()),
   );
 
   // Get selected task objects
@@ -65,7 +69,10 @@ export function DependencySelector({
       {selectedTasks.length > 0 && (
         <div className="space-y-2 border rounded-lg p-3 bg-muted/30">
           {selectedTasks.map((task) => (
-            <div key={task.id} className="flex items-center justify-between gap-2">
+            <div
+              key={task.id}
+              className="flex items-center justify-between gap-2"
+            >
               <div className="flex items-center gap-2 min-w-0">
                 <Link2 className="h-4 w-4 text-muted-foreground shrink-0" />
                 <span className="text-sm truncate">{task.title}</span>
@@ -90,7 +97,11 @@ export function DependencySelector({
       {/* Add dependency popover */}
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
-          <Button type="button" variant="outline" className="w-full justify-start">
+          <Button
+            type="button"
+            variant="outline"
+            className="w-full justify-start"
+          >
             <Search className="h-4 w-4 mr-2" />
             Search tasks to add as dependencies...
           </Button>
@@ -133,10 +144,15 @@ export function DependencySelector({
                       <div className="flex-1 min-w-0 text-left">
                         <p className="text-sm truncate">{task.title}</p>
                         <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                          <Badge variant="outline" className="font-mono text-xs">
+                          <Badge
+                            variant="outline"
+                            className="font-mono text-xs"
+                          >
                             {task.id.slice(0, 8)}
                           </Badge>
-                          <span className="capitalize">{task.status.replace(/_/g, " ")}</span>
+                          <span className="capitalize">
+                            {task.status.replace(/_/g, " ")}
+                          </span>
                         </div>
                       </div>
                     </Button>

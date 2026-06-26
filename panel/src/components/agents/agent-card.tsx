@@ -5,7 +5,13 @@ import { useStopAgent } from "@/hooks/use-agents";
 import { AgentStatusResponse } from "@/types";
 import { AgentDefinition } from "@/lib/agent-definitions";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from "@/components/ui/card";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -34,7 +40,9 @@ export function AgentCard({ agent, agentStatus, usageRow }: AgentCardProps) {
   // so a new "up" state the backend adds defaults to non-spawnable — the safe
   // side, since spawning an already-running agent is exactly the bug to avoid.
   // (The badge renders "active" as a first-class state, so it MUST count as up.)
-  const isActive = !["stopped", "offline", "terminated", "error"].includes(state);
+  const isActive = !["stopped", "offline", "terminated", "error"].includes(
+    state,
+  );
 
   const handleStop = async (graceful: boolean) => {
     try {
@@ -50,7 +58,9 @@ export function AgentCard({ agent, agentStatus, usageRow }: AgentCardProps) {
     <Card className={isActive ? "border-green-500/50" : ""}>
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-base">{agent.name || "Unknown Agent"}</CardTitle>
+          <CardTitle className="text-base">
+            {agent.name || "Unknown Agent"}
+          </CardTitle>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="icon" className="h-8 w-8">

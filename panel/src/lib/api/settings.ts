@@ -22,17 +22,26 @@ export const settingsApi = {
     return data.settings;
   },
   // PUT /api/settings/{key} — persist one setting; returns the full updated map.
-  update: async (key: string, value: string): Promise<Record<string, string>> => {
-    const { data } = await api.put<SettingsResponse>(`/settings/${key}`, { value });
+  update: async (
+    key: string,
+    value: string,
+  ): Promise<Record<string, string>> => {
+    const { data } = await api.put<SettingsResponse>(`/settings/${key}`, {
+      value,
+    });
     return data.settings;
   },
   // GET /api/settings/feature-flags — effective flag values (override, else env).
   getFeatureFlags: async (): Promise<FeatureFlagsResponse> => {
-    const { data } = await api.get<FeatureFlagsResponse>("/settings/feature-flags");
+    const { data } = await api.get<FeatureFlagsResponse>(
+      "/settings/feature-flags",
+    );
     return data;
   },
   // PUT /api/settings/{key} — persist a feature flag as "true"/"false".
   setFeatureFlag: async (key: string, enabled: boolean): Promise<void> => {
-    await api.put<SettingsResponse>(`/settings/${key}`, { value: enabled ? "true" : "false" });
+    await api.put<SettingsResponse>(`/settings/${key}`, {
+      value: enabled ? "true" : "false",
+    });
   },
 };

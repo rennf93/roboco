@@ -179,18 +179,22 @@ export function AIRoutingCard() {
 
   const catalogForMix = catalog;
   const catalogOllamaOnly = catalog.filter(
-    (c: { provider_type: ModelProvider }) => c.provider_type === ModelProvider.OLLAMA_CLOUD,
+    (c: { provider_type: ModelProvider }) =>
+      c.provider_type === ModelProvider.OLLAMA_CLOUD,
   );
   const catalogGrokOnly = catalog.filter(
-    (c: { provider_type: ModelProvider }) => c.provider_type === ModelProvider.GROK,
+    (c: { provider_type: ModelProvider }) =>
+      c.provider_type === ModelProvider.GROK,
   );
   const catalogAnthropicOnly = catalog.filter(
-    (c: { provider_type: ModelProvider }) => c.provider_type === ModelProvider.ANTHROPIC,
+    (c: { provider_type: ModelProvider }) =>
+      c.provider_type === ModelProvider.ANTHROPIC,
   );
 
   // --- Mode toggle handlers ---
   const flipToAnthropic = async () => {
-    if (!confirm("Switch every agent to Anthropic? Clears any overrides.")) return;
+    if (!confirm("Switch every agent to Anthropic? Clears any overrides."))
+      return;
     try {
       await applyMode.mutateAsync({ mode: "anthropic" });
       toast.success("All agents now on Anthropic");
@@ -274,8 +278,7 @@ export function AIRoutingCard() {
     const needsKey = Object.values(per_agent).some((m) =>
       catalog.find(
         (c: { model_name: string; provider_type: ModelProvider }) =>
-          c.model_name === m &&
-          c.provider_type === ModelProvider.OLLAMA_CLOUD,
+          c.model_name === m && c.provider_type === ModelProvider.OLLAMA_CLOUD,
       ),
     );
     if (needsKey && !hasOllamaKey) {
@@ -315,7 +318,6 @@ export function AIRoutingCard() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
-
         {/* -------- Grok (xAI) key -------- */}
         <section className="space-y-2">
           <div className="flex items-center justify-between">
@@ -386,7 +388,9 @@ export function AIRoutingCard() {
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               placeholder={
-                hasOllamaKey ? "•••••••••••• (leave blank to keep)" : "ollama_xxx…"
+                hasOllamaKey
+                  ? "•••••••••••• (leave blank to keep)"
+                  : "ollama_xxx…"
               }
               disabled={clearKey}
             />
@@ -487,8 +491,8 @@ export function AIRoutingCard() {
           {currentMode === "mix" && !hasOllamaKey ? (
             <p className="text-xs text-amber-600 flex items-center gap-1">
               <AlertTriangle className="h-3 w-3" />
-              Some agents may already be routed to Ollama but no key is
-              saved — those agents will fall back to Anthropic at spawn.
+              Some agents may already be routed to Ollama but no key is saved —
+              those agents will fall back to Anthropic at spawn.
             </p>
           ) : null}
           {currentMode === "grok" || currentMode === "mix" ? (
@@ -522,7 +526,9 @@ export function AIRoutingCard() {
                   <SelectValue placeholder="(use server default)" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="__clear__">(use server default)</SelectItem>
+                  <SelectItem value="__clear__">
+                    (use server default)
+                  </SelectItem>
                   {selfHostedModels.map((m) => (
                     <SelectItem key={m.model_name} value={m.model_name}>
                       {m.display_name}
@@ -544,17 +550,13 @@ export function AIRoutingCard() {
             <Label className="text-sm font-medium">
               Per-agent override (mix mode)
             </Label>
-            <Button
-              size="sm"
-              onClick={saveMix}
-              disabled={applyMode.isPending}
-            >
+            <Button size="sm" onClick={saveMix} disabled={applyMode.isPending}>
               {applyMode.isPending ? "Saving…" : "Save mix"}
             </Button>
           </div>
           <p className="text-xs text-muted-foreground">
-            Leave a row blank to inherit from the global mode. Saving
-            overwrites all per-agent overrides with what&apos;s picked here.
+            Leave a row blank to inherit from the global mode. Saving overwrites
+            all per-agent overrides with what&apos;s picked here.
           </p>
           <div className="divide-y rounded-md border">
             {AGENTS.map((a) => (
@@ -564,9 +566,7 @@ export function AIRoutingCard() {
               >
                 <div>
                   <div className="font-mono text-sm">{a.slug}</div>
-                  <div className="text-xs text-muted-foreground">
-                    {a.label}
-                  </div>
+                  <div className="text-xs text-muted-foreground">{a.label}</div>
                 </div>
                 <Select
                   value={mixMap[a.slug] ?? ""}
@@ -715,7 +715,9 @@ function ModeButton({
           </Badge>
         ) : null}
       </div>
-      <p className="mt-1 text-xs text-muted-foreground font-normal">{description}</p>
+      <p className="mt-1 text-xs text-muted-foreground font-normal">
+        {description}
+      </p>
     </Button>
   );
 }

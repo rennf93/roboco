@@ -37,7 +37,8 @@ import type {
 
 export const gitKeys = {
   all: ["git"] as const,
-  status: (projectSlug: string) => [...gitKeys.all, "status", projectSlug] as const,
+  status: (projectSlug: string) =>
+    [...gitKeys.all, "status", projectSlug] as const,
   log: (projectSlug: string, limit?: number, branch?: string) =>
     [...gitKeys.all, "log", projectSlug, { limit, branch }] as const,
   branches: (projectSlug: string, includeRemote?: boolean) =>
@@ -53,7 +54,11 @@ export const gitKeys = {
 /**
  * Get git status for a project
  */
-export function useGitStatus(projectSlug: string, taskId?: string, enabled: boolean = true) {
+export function useGitStatus(
+  projectSlug: string,
+  taskId?: string,
+  enabled: boolean = true,
+) {
   return useQuery<GitStatusResponse>({
     queryKey: gitKeys.status(projectSlug),
     queryFn: () => gitApi.getStatus(projectSlug, taskId),
@@ -70,7 +75,7 @@ export function useGitLog(
   projectSlug: string,
   limit: number = 10,
   branch?: string,
-  enabled: boolean = true
+  enabled: boolean = true,
 ) {
   return useQuery<GitLogResponse>({
     queryKey: gitKeys.log(projectSlug, limit, branch),
@@ -86,7 +91,7 @@ export function useGitLog(
 export function useGitBranches(
   projectSlug: string,
   includeRemote: boolean = false,
-  enabled: boolean = true
+  enabled: boolean = true,
 ) {
   return useQuery<GitBranchListResponse>({
     queryKey: gitKeys.branches(projectSlug, includeRemote),
@@ -103,7 +108,7 @@ export function useGitDiff(
   projectSlug: string,
   staged: boolean = false,
   filePath?: string,
-  enabled: boolean = true
+  enabled: boolean = true,
 ) {
   return useQuery<GitDiffResponse>({
     queryKey: gitKeys.diff(projectSlug, staged, filePath),
@@ -127,7 +132,9 @@ export function useGitCommit() {
     mutationFn: (request) => gitApi.commit(request),
     onSuccess: (_, variables) => {
       // Invalidate status and log after commit
-      queryClient.invalidateQueries({ queryKey: gitKeys.status(variables.project_slug) });
+      queryClient.invalidateQueries({
+        queryKey: gitKeys.status(variables.project_slug),
+      });
       queryClient.invalidateQueries({
         queryKey: [...gitKeys.all, "log", variables.project_slug],
       });
@@ -148,7 +155,9 @@ export function useGitPush() {
     mutationFn: (request) => gitApi.push(request),
     onSuccess: (_, variables) => {
       // Invalidate status after push
-      queryClient.invalidateQueries({ queryKey: gitKeys.status(variables.project_slug) });
+      queryClient.invalidateQueries({
+        queryKey: gitKeys.status(variables.project_slug),
+      });
     },
   });
 }
@@ -166,7 +175,9 @@ export function useCreateBranch() {
       queryClient.invalidateQueries({
         queryKey: [...gitKeys.all, "branches", variables.project_slug],
       });
-      queryClient.invalidateQueries({ queryKey: gitKeys.status(variables.project_slug) });
+      queryClient.invalidateQueries({
+        queryKey: gitKeys.status(variables.project_slug),
+      });
     },
   });
 }
@@ -181,7 +192,9 @@ export function useCheckout() {
     mutationFn: (request) => gitApi.checkout(request),
     onSuccess: (_, variables) => {
       // Invalidate everything for this project after checkout
-      queryClient.invalidateQueries({ queryKey: gitKeys.status(variables.project_slug) });
+      queryClient.invalidateQueries({
+        queryKey: gitKeys.status(variables.project_slug),
+      });
       queryClient.invalidateQueries({
         queryKey: [...gitKeys.all, "log", variables.project_slug],
       });
@@ -205,7 +218,9 @@ export function useCreatePR() {
     mutationFn: (request) => gitApi.createPR(request),
     onSuccess: (_, variables) => {
       // Invalidate status after PR creation
-      queryClient.invalidateQueries({ queryKey: gitKeys.status(variables.project_slug) });
+      queryClient.invalidateQueries({
+        queryKey: gitKeys.status(variables.project_slug),
+      });
       // Also invalidate tasks since PR creation updates task state
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
     },
@@ -225,7 +240,9 @@ export function useMergePR() {
       queryClient.invalidateQueries({
         queryKey: [...gitKeys.all, "branches", variables.project_slug],
       });
-      queryClient.invalidateQueries({ queryKey: gitKeys.status(variables.project_slug) });
+      queryClient.invalidateQueries({
+        queryKey: gitKeys.status(variables.project_slug),
+      });
       // Also invalidate tasks since merge updates task state
       queryClient.invalidateQueries({ queryKey: ["tasks"] });
     },
@@ -242,7 +259,9 @@ export function useGitPull() {
     mutationFn: (request) => gitApi.pull(request),
     onSuccess: (_, variables) => {
       // Invalidate status and log after pull
-      queryClient.invalidateQueries({ queryKey: gitKeys.status(variables.project_slug) });
+      queryClient.invalidateQueries({
+        queryKey: gitKeys.status(variables.project_slug),
+      });
       queryClient.invalidateQueries({
         queryKey: [...gitKeys.all, "log", variables.project_slug],
       });
@@ -260,7 +279,9 @@ export function useGitFetch() {
     mutationFn: (request) => gitApi.fetch(request),
     onSuccess: (_, variables) => {
       // Invalidate status after fetch
-      queryClient.invalidateQueries({ queryKey: gitKeys.status(variables.project_slug) });
+      queryClient.invalidateQueries({
+        queryKey: gitKeys.status(variables.project_slug),
+      });
     },
   });
 }
@@ -275,7 +296,9 @@ export function useGitRebase() {
     mutationFn: (request) => gitApi.rebase(request),
     onSuccess: (_, variables) => {
       // Invalidate everything after rebase since history has changed
-      queryClient.invalidateQueries({ queryKey: gitKeys.status(variables.project_slug) });
+      queryClient.invalidateQueries({
+        queryKey: gitKeys.status(variables.project_slug),
+      });
       queryClient.invalidateQueries({
         queryKey: [...gitKeys.all, "log", variables.project_slug],
       });

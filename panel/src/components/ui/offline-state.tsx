@@ -1,4 +1,10 @@
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from "@/components/ui/card";
 import { WifiOff, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
@@ -8,7 +14,7 @@ interface OfflineStateProps {
   onRetry?: () => void;
 }
 
-export function OfflineState({ 
+export function OfflineState({
   title = "Backend Not Connected",
   description = "The orchestrator API is not available. Start the backend to see live data.",
   onRetry,

@@ -34,21 +34,38 @@ import { toast } from "sonner";
 import { Markdown } from "@/components/ui/markdown";
 
 const typeIcons: Record<NotificationType, React.ReactNode> = {
-  [NotificationType.TASK_ASSIGNMENT]: <ListTodo className="h-4 w-4 text-green-500" />,
-  [NotificationType.PRIORITY_CHANGE]: <ArrowUpCircle className="h-4 w-4 text-orange-500" />,
-  [NotificationType.BLOCKER_ESCALATION]: <AlertTriangle className="h-4 w-4 text-red-500" />,
-  [NotificationType.REVIEW_REQUEST]: <Check className="h-4 w-4 text-purple-500" />,
-  [NotificationType.DOCUMENTATION_REQUEST]: <Info className="h-4 w-4 text-blue-500" />,
-  [NotificationType.ALERT]: <AlertTriangle className="h-4 w-4 text-yellow-500" />,
+  [NotificationType.TASK_ASSIGNMENT]: (
+    <ListTodo className="h-4 w-4 text-green-500" />
+  ),
+  [NotificationType.PRIORITY_CHANGE]: (
+    <ArrowUpCircle className="h-4 w-4 text-orange-500" />
+  ),
+  [NotificationType.BLOCKER_ESCALATION]: (
+    <AlertTriangle className="h-4 w-4 text-red-500" />
+  ),
+  [NotificationType.REVIEW_REQUEST]: (
+    <Check className="h-4 w-4 text-purple-500" />
+  ),
+  [NotificationType.DOCUMENTATION_REQUEST]: (
+    <Info className="h-4 w-4 text-blue-500" />
+  ),
+  [NotificationType.ALERT]: (
+    <AlertTriangle className="h-4 w-4 text-yellow-500" />
+  ),
   [NotificationType.BROADCAST]: <Bell className="h-4 w-4 text-gray-500" />,
-  [NotificationType.KNOWLEDGE_SHARE]: <BookOpen className="h-4 w-4 text-cyan-500" />,
+  [NotificationType.KNOWLEDGE_SHARE]: (
+    <BookOpen className="h-4 w-4 text-cyan-500" />
+  ),
   [NotificationType.MENTION]: <AtSign className="h-4 w-4 text-indigo-500" />,
 };
 
 const priorityColors: Record<NotificationPriority, string> = {
-  [NotificationPriority.NORMAL]: "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300",
-  [NotificationPriority.HIGH]: "bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300",
-  [NotificationPriority.URGENT]: "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300",
+  [NotificationPriority.NORMAL]:
+    "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300",
+  [NotificationPriority.HIGH]:
+    "bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300",
+  [NotificationPriority.URGENT]:
+    "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300",
 };
 
 interface NotificationCardProps {
@@ -57,23 +74,37 @@ interface NotificationCardProps {
   onAcknowledge: () => void;
 }
 
-function NotificationCard({ notification, onMarkRead, onAcknowledge }: NotificationCardProps) {
+function NotificationCard({
+  notification,
+  onMarkRead,
+  onAcknowledge,
+}: NotificationCardProps) {
   return (
-    <Card className={notification.is_read ? "opacity-70" : "border-l-4 border-l-primary"}>
+    <Card
+      className={
+        notification.is_read ? "opacity-70" : "border-l-4 border-l-primary"
+      }
+    >
       <CardContent className="p-4">
         <div className="flex items-start gap-3">
           <div className="mt-1">{typeIcons[notification.type]}</div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <span className="font-medium">{notification.subject}</span>
-              <Badge className={priorityColors[notification.priority] + " text-xs"}>
+              <Badge
+                className={priorityColors[notification.priority] + " text-xs"}
+              >
                 {notification.priority}
               </Badge>
               {!notification.is_read && (
-                <Badge variant="secondary" className="text-xs">New</Badge>
+                <Badge variant="secondary" className="text-xs">
+                  New
+                </Badge>
               )}
               {notification.requires_ack && !notification.is_acknowledged && (
-                <Badge variant="destructive" className="text-xs">Needs Ack</Badge>
+                <Badge variant="destructive" className="text-xs">
+                  Needs Ack
+                </Badge>
               )}
             </div>
             <div className="text-sm text-muted-foreground mt-1">
@@ -129,19 +160,21 @@ function NotificationsPageContent() {
   }
 
   const { data, isLoading, error, refetch } = useNotifications(
-    activeTab === "unread" ? { unread_only: true } :
-    activeTab === "pending" ? { pending_ack_only: true } :
-    undefined
+    activeTab === "unread"
+      ? { unread_only: true }
+      : activeTab === "pending"
+        ? { pending_ack_only: true }
+        : undefined,
   );
 
   const markRead = useMarkNotificationRead();
   const acknowledge = useAcknowledgeNotification();
   const markAllRead = useMarkAllNotificationsRead();
 
-  const isOffline = error && (
-    error.message?.includes("Network Error") ||
-    (error as { code?: string })?.code === "ERR_NETWORK"
-  );
+  const isOffline =
+    error &&
+    (error.message?.includes("Network Error") ||
+      (error as { code?: string })?.code === "ERR_NETWORK");
 
   const handleMarkRead = async (id: string) => {
     try {
@@ -213,7 +246,9 @@ function NotificationsPageContent() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-blue-600">{data.unread_count}</div>
+              <div className="text-2xl font-bold text-blue-600">
+                {data.unread_count}
+              </div>
             </CardContent>
           </Card>
           <Card>
@@ -224,7 +259,9 @@ function NotificationsPageContent() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-red-600">{data.pending_ack_count}</div>
+              <div className="text-2xl font-bold text-red-600">
+                {data.pending_ack_count}
+              </div>
             </CardContent>
           </Card>
         </div>
@@ -244,7 +281,10 @@ function NotificationsPageContent() {
               Unread {data && data.unread_count > 0 && `(${data.unread_count})`}
             </TabsTrigger>
             <TabsTrigger value="pending">
-              Pending {data && data.pending_ack_count > 0 && `(${data.pending_ack_count})`}
+              Pending{" "}
+              {data &&
+                data.pending_ack_count > 0 &&
+                `(${data.pending_ack_count})`}
             </TabsTrigger>
           </TabsList>
 
@@ -284,41 +324,43 @@ function NotificationsPageContent() {
 // Wrap in Suspense for useSearchParams
 export default function NotificationsPage() {
   return (
-    <Suspense fallback={
-      <div className="space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <Skeleton className="h-9 w-48 mb-2" />
-            <Skeleton className="h-5 w-72" />
+    <Suspense
+      fallback={
+        <div className="space-y-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <Skeleton className="h-9 w-48 mb-2" />
+              <Skeleton className="h-5 w-72" />
+            </div>
+            <div className="flex items-center gap-2">
+              <Skeleton className="h-9 w-36" />
+              <Skeleton className="h-9 w-24" />
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            <Skeleton className="h-9 w-36" />
-            <Skeleton className="h-9 w-24" />
+          <div className="grid grid-cols-3 gap-4">
+            {Array.from({ length: 3 }).map((_, i) => (
+              <Card key={i}>
+                <CardHeader className="pb-2">
+                  <Skeleton className="h-4 w-16" />
+                </CardHeader>
+                <CardContent>
+                  <Skeleton className="h-8 w-12" />
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+          <div className="space-y-3">
+            {Array.from({ length: 5 }).map((_, i) => (
+              <Card key={i}>
+                <CardContent className="p-4">
+                  <Skeleton className="h-20 w-full" />
+                </CardContent>
+              </Card>
+            ))}
           </div>
         </div>
-        <div className="grid grid-cols-3 gap-4">
-          {Array.from({ length: 3 }).map((_, i) => (
-            <Card key={i}>
-              <CardHeader className="pb-2">
-                <Skeleton className="h-4 w-16" />
-              </CardHeader>
-              <CardContent>
-                <Skeleton className="h-8 w-12" />
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-        <div className="space-y-3">
-          {Array.from({ length: 5 }).map((_, i) => (
-            <Card key={i}>
-              <CardContent className="p-4">
-                <Skeleton className="h-20 w-full" />
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      </div>
-    }>
+      }
+    >
       <NotificationsPageContent />
     </Suspense>
   );

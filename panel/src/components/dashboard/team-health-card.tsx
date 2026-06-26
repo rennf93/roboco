@@ -37,7 +37,9 @@ export function TeamHealthCard({ health }: TeamHealthCardProps) {
             <AlertTriangle className="h-4 w-4" />
             Blocked
           </div>
-          <span className={`font-medium ${health.blocked_tasks > 0 ? "text-red-600" : ""}`}>
+          <span
+            className={`font-medium ${health.blocked_tasks > 0 ? "text-red-600" : ""}`}
+          >
             {health.blocked_tasks}
           </span>
         </div>
@@ -55,7 +57,13 @@ export function TeamHealthCard({ health }: TeamHealthCardProps) {
         {health.blocked_ratio > 0 && (
           <div className="pt-2 border-t">
             <Badge
-              variant={health.blocked_ratio > 0.3 ? "destructive" : health.blocked_ratio > 0.1 ? "secondary" : "outline"}
+              variant={
+                health.blocked_ratio > 0.3
+                  ? "destructive"
+                  : health.blocked_ratio > 0.1
+                    ? "secondary"
+                    : "outline"
+              }
             >
               {Math.round(health.blocked_ratio * 100)}% blocked
             </Badge>

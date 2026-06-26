@@ -1,6 +1,9 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
-import { orchestratorApi, type SpawnAgentRequest } from "@/lib/api/orchestrator";
+import {
+  orchestratorApi,
+  type SpawnAgentRequest,
+} from "@/lib/api/orchestrator";
 import { agentsApi, type AgentDefinition } from "@/lib/api/agents";
 import { registerAgentRoster } from "@/lib/agent-utils";
 import type { Agent, AgentRole, Team, AgentState } from "@/types";
@@ -12,32 +15,208 @@ export type { AgentDefinition } from "@/lib/api/agents";
 // agents, but it is not the source of truth and may lag the backend.
 const AGENT_ROSTER: Agent[] = [
   // Board / Management
-  { id: "1", agent_id: "main-pm", name: "Main PM", role: "main_pm" as AgentRole, team: null, cell: null, status: "idle" as AgentState },
-  { id: "2", agent_id: "product-owner", name: "Product Owner", role: "product_owner" as AgentRole, team: "board" as Team, cell: null, status: "idle" as AgentState },
-  { id: "3", agent_id: "head-marketing", name: "Head of Marketing", role: "head_marketing" as AgentRole, team: "board" as Team, cell: null, status: "idle" as AgentState },
-  { id: "4", agent_id: "auditor", name: "Auditor", role: "auditor" as AgentRole, team: null, cell: null, status: "idle" as AgentState },
+  {
+    id: "1",
+    agent_id: "main-pm",
+    name: "Main PM",
+    role: "main_pm" as AgentRole,
+    team: null,
+    cell: null,
+    status: "idle" as AgentState,
+  },
+  {
+    id: "2",
+    agent_id: "product-owner",
+    name: "Product Owner",
+    role: "product_owner" as AgentRole,
+    team: "board" as Team,
+    cell: null,
+    status: "idle" as AgentState,
+  },
+  {
+    id: "3",
+    agent_id: "head-marketing",
+    name: "Head of Marketing",
+    role: "head_marketing" as AgentRole,
+    team: "board" as Team,
+    cell: null,
+    status: "idle" as AgentState,
+  },
+  {
+    id: "4",
+    agent_id: "auditor",
+    name: "Auditor",
+    role: "auditor" as AgentRole,
+    team: null,
+    cell: null,
+    status: "idle" as AgentState,
+  },
   // Board-adjacent singletons
-  { id: "20", agent_id: "intake-1", name: "Intake", role: "prompter" as AgentRole, team: "board" as Team, cell: null, status: "idle" as AgentState },
-  { id: "21", agent_id: "secretary-1", name: "Secretary", role: "secretary" as AgentRole, team: "board" as Team, cell: null, status: "idle" as AgentState },
-  { id: "22", agent_id: "pr-reviewer-1", name: "PR Reviewer", role: "pr_reviewer" as AgentRole, team: "board" as Team, cell: null, status: "idle" as AgentState },
+  {
+    id: "20",
+    agent_id: "intake-1",
+    name: "Intake",
+    role: "prompter" as AgentRole,
+    team: "board" as Team,
+    cell: null,
+    status: "idle" as AgentState,
+  },
+  {
+    id: "21",
+    agent_id: "secretary-1",
+    name: "Secretary",
+    role: "secretary" as AgentRole,
+    team: "board" as Team,
+    cell: null,
+    status: "idle" as AgentState,
+  },
+  {
+    id: "22",
+    agent_id: "pr-reviewer-1",
+    name: "PR Reviewer",
+    role: "pr_reviewer" as AgentRole,
+    team: "board" as Team,
+    cell: null,
+    status: "idle" as AgentState,
+  },
   // Backend Cell
-  { id: "5", agent_id: "be-dev-1", name: "Backend Dev 1", role: "developer" as AgentRole, team: "backend" as Team, cell: "backend", status: "idle" as AgentState },
-  { id: "6", agent_id: "be-dev-2", name: "Backend Dev 2", role: "developer" as AgentRole, team: "backend" as Team, cell: "backend", status: "idle" as AgentState },
-  { id: "7", agent_id: "be-qa", name: "Backend QA", role: "qa" as AgentRole, team: "backend" as Team, cell: "backend", status: "idle" as AgentState },
-  { id: "8", agent_id: "be-pm", name: "Backend PM", role: "cell_pm" as AgentRole, team: "backend" as Team, cell: "backend", status: "idle" as AgentState },
-  { id: "9", agent_id: "be-doc", name: "Backend Documenter", role: "documenter" as AgentRole, team: "backend" as Team, cell: "backend", status: "idle" as AgentState },
+  {
+    id: "5",
+    agent_id: "be-dev-1",
+    name: "Backend Dev 1",
+    role: "developer" as AgentRole,
+    team: "backend" as Team,
+    cell: "backend",
+    status: "idle" as AgentState,
+  },
+  {
+    id: "6",
+    agent_id: "be-dev-2",
+    name: "Backend Dev 2",
+    role: "developer" as AgentRole,
+    team: "backend" as Team,
+    cell: "backend",
+    status: "idle" as AgentState,
+  },
+  {
+    id: "7",
+    agent_id: "be-qa",
+    name: "Backend QA",
+    role: "qa" as AgentRole,
+    team: "backend" as Team,
+    cell: "backend",
+    status: "idle" as AgentState,
+  },
+  {
+    id: "8",
+    agent_id: "be-pm",
+    name: "Backend PM",
+    role: "cell_pm" as AgentRole,
+    team: "backend" as Team,
+    cell: "backend",
+    status: "idle" as AgentState,
+  },
+  {
+    id: "9",
+    agent_id: "be-doc",
+    name: "Backend Documenter",
+    role: "documenter" as AgentRole,
+    team: "backend" as Team,
+    cell: "backend",
+    status: "idle" as AgentState,
+  },
   // Frontend Cell
-  { id: "10", agent_id: "fe-dev-1", name: "Frontend Dev 1", role: "developer" as AgentRole, team: "frontend" as Team, cell: "frontend", status: "idle" as AgentState },
-  { id: "11", agent_id: "fe-dev-2", name: "Frontend Dev 2", role: "developer" as AgentRole, team: "frontend" as Team, cell: "frontend", status: "idle" as AgentState },
-  { id: "12", agent_id: "fe-qa", name: "Frontend QA", role: "qa" as AgentRole, team: "frontend" as Team, cell: "frontend", status: "idle" as AgentState },
-  { id: "13", agent_id: "fe-pm", name: "Frontend PM", role: "cell_pm" as AgentRole, team: "frontend" as Team, cell: "frontend", status: "idle" as AgentState },
-  { id: "14", agent_id: "fe-doc", name: "Frontend Documenter", role: "documenter" as AgentRole, team: "frontend" as Team, cell: "frontend", status: "idle" as AgentState },
+  {
+    id: "10",
+    agent_id: "fe-dev-1",
+    name: "Frontend Dev 1",
+    role: "developer" as AgentRole,
+    team: "frontend" as Team,
+    cell: "frontend",
+    status: "idle" as AgentState,
+  },
+  {
+    id: "11",
+    agent_id: "fe-dev-2",
+    name: "Frontend Dev 2",
+    role: "developer" as AgentRole,
+    team: "frontend" as Team,
+    cell: "frontend",
+    status: "idle" as AgentState,
+  },
+  {
+    id: "12",
+    agent_id: "fe-qa",
+    name: "Frontend QA",
+    role: "qa" as AgentRole,
+    team: "frontend" as Team,
+    cell: "frontend",
+    status: "idle" as AgentState,
+  },
+  {
+    id: "13",
+    agent_id: "fe-pm",
+    name: "Frontend PM",
+    role: "cell_pm" as AgentRole,
+    team: "frontend" as Team,
+    cell: "frontend",
+    status: "idle" as AgentState,
+  },
+  {
+    id: "14",
+    agent_id: "fe-doc",
+    name: "Frontend Documenter",
+    role: "documenter" as AgentRole,
+    team: "frontend" as Team,
+    cell: "frontend",
+    status: "idle" as AgentState,
+  },
   // UX/UI Cell
-  { id: "15", agent_id: "ux-dev-1", name: "UX/UI Dev 1", role: "developer" as AgentRole, team: "ux_ui" as Team, cell: "ux_ui", status: "idle" as AgentState },
-  { id: "16", agent_id: "ux-dev-2", name: "UX/UI Dev 2", role: "developer" as AgentRole, team: "ux_ui" as Team, cell: "ux_ui", status: "idle" as AgentState },
-  { id: "19", agent_id: "ux-qa", name: "UX/UI QA", role: "qa" as AgentRole, team: "ux_ui" as Team, cell: "ux_ui", status: "idle" as AgentState },
-  { id: "17", agent_id: "ux-pm", name: "UX/UI PM", role: "cell_pm" as AgentRole, team: "ux_ui" as Team, cell: "ux_ui", status: "idle" as AgentState },
-  { id: "18", agent_id: "ux-doc", name: "UX/UI Documenter", role: "documenter" as AgentRole, team: "ux_ui" as Team, cell: "ux_ui", status: "idle" as AgentState },
+  {
+    id: "15",
+    agent_id: "ux-dev-1",
+    name: "UX/UI Dev 1",
+    role: "developer" as AgentRole,
+    team: "ux_ui" as Team,
+    cell: "ux_ui",
+    status: "idle" as AgentState,
+  },
+  {
+    id: "16",
+    agent_id: "ux-dev-2",
+    name: "UX/UI Dev 2",
+    role: "developer" as AgentRole,
+    team: "ux_ui" as Team,
+    cell: "ux_ui",
+    status: "idle" as AgentState,
+  },
+  {
+    id: "19",
+    agent_id: "ux-qa",
+    name: "UX/UI QA",
+    role: "qa" as AgentRole,
+    team: "ux_ui" as Team,
+    cell: "ux_ui",
+    status: "idle" as AgentState,
+  },
+  {
+    id: "17",
+    agent_id: "ux-pm",
+    name: "UX/UI PM",
+    role: "cell_pm" as AgentRole,
+    team: "ux_ui" as Team,
+    cell: "ux_ui",
+    status: "idle" as AgentState,
+  },
+  {
+    id: "18",
+    agent_id: "ux-doc",
+    name: "UX/UI Documenter",
+    role: "documenter" as AgentRole,
+    team: "ux_ui" as Team,
+    cell: "ux_ui",
+    status: "idle" as AgentState,
+  },
 ];
 
 // Query keys
@@ -78,7 +257,11 @@ export function useAgentRosterSync(): void {
 }
 
 // Map team → cell (cells carry a cell name; board/management agents have none).
-const TEAM_CELLS: ReadonlyArray<Team> = ["backend", "frontend", "ux_ui"] as Team[];
+const TEAM_CELLS: ReadonlyArray<Team> = [
+  "backend",
+  "frontend",
+  "ux_ui",
+] as Team[];
 
 function definitionToAgent(def: AgentDefinition): Agent {
   return {
@@ -163,8 +346,13 @@ export function useSpawnAgent() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ agentId, request }: { agentId: string; request?: SpawnAgentRequest }) =>
-      orchestratorApi.spawn(agentId, request),
+    mutationFn: ({
+      agentId,
+      request,
+    }: {
+      agentId: string;
+      request?: SpawnAgentRequest;
+    }) => orchestratorApi.spawn(agentId, request),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: agentKeys.orchestrator() });
     },
@@ -175,8 +363,13 @@ export function useStopAgent() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ agentId, graceful = true }: { agentId: string; graceful?: boolean }) =>
-      orchestratorApi.stop(agentId, graceful),
+    mutationFn: ({
+      agentId,
+      graceful = true,
+    }: {
+      agentId: string;
+      graceful?: boolean;
+    }) => orchestratorApi.stop(agentId, graceful),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: agentKeys.orchestrator() });
     },
@@ -187,8 +380,13 @@ export function useResolveWait() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ agentId, resolution }: { agentId: string; resolution: string }) =>
-      orchestratorApi.resolveWait(agentId, resolution),
+    mutationFn: ({
+      agentId,
+      resolution,
+    }: {
+      agentId: string;
+      resolution: string;
+    }) => orchestratorApi.resolveWait(agentId, resolution),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: agentKeys.orchestrator() });
     },

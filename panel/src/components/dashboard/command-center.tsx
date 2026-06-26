@@ -1,6 +1,10 @@
 "use client";
 
-import { useCeoOverview, useAuditorFlags, useRecentActivity } from "@/hooks/use-dashboard";
+import {
+  useCeoOverview,
+  useAuditorFlags,
+  useRecentActivity,
+} from "@/hooks/use-dashboard";
 import { useTasks } from "@/hooks/use-tasks";
 import { TeamHealthCards } from "./team-health-cards";
 import { KeyMetricsPanel } from "./key-metrics-panel";
@@ -20,10 +24,30 @@ import { RefreshCw, Settings, AlertCircle } from "lucide-react";
 import Link from "next/link";
 
 export function CommandCenter() {
-  const { data: overview, isLoading: loadingOverview, isError: errorOverview, refetch: refetchOverview } = useCeoOverview();
-  const { data: flags, isLoading: loadingFlags, isError: errorFlags, refetch: refetchFlags } = useAuditorFlags({ resolved: false });
-  const { data: tasks, isLoading: loadingTasks, isError: errorTasks, refetch: refetchTasks } = useTasks();
-  const { data: activity, isLoading: loadingActivity, isError: errorActivity, refetch: refetchActivity } = useRecentActivity(24);
+  const {
+    data: overview,
+    isLoading: loadingOverview,
+    isError: errorOverview,
+    refetch: refetchOverview,
+  } = useCeoOverview();
+  const {
+    data: flags,
+    isLoading: loadingFlags,
+    isError: errorFlags,
+    refetch: refetchFlags,
+  } = useAuditorFlags({ resolved: false });
+  const {
+    data: tasks,
+    isLoading: loadingTasks,
+    isError: errorTasks,
+    refetch: refetchTasks,
+  } = useTasks();
+  const {
+    data: activity,
+    isLoading: loadingActivity,
+    isError: errorActivity,
+    refetch: refetchActivity,
+  } = useRecentActivity(24);
 
   const hasError = errorOverview || errorFlags || errorTasks || errorActivity;
 
@@ -39,7 +63,9 @@ export function CommandCenter() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">RoboCo Command Center</h1>
+          <h1 className="text-3xl font-bold tracking-tight">
+            RoboCo Command Center
+          </h1>
           <p className="text-muted-foreground">
             Complete visibility into all operations
           </p>

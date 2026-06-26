@@ -22,7 +22,8 @@ export const taskKeys = {
   list: (filters?: TaskFilters) => [...taskKeys.lists(), filters] as const,
   details: () => [...taskKeys.all, "detail"] as const,
   detail: (id: string) => [...taskKeys.details(), id] as const,
-  subtasks: (parentId: string) => [...taskKeys.all, "subtasks", parentId] as const,
+  subtasks: (parentId: string) =>
+    [...taskKeys.all, "subtasks", parentId] as const,
   boardReview: (id: string) => [...taskKeys.all, "board-review", id] as const,
   stats: () => [...taskKeys.all, "stats"] as const,
   statsByTeam: () => [...taskKeys.all, "stats-by-team"] as const,
@@ -110,7 +111,7 @@ export function useTaskStatsByTeam() {
 
 export function useCreateTask() {
   const queryClient = useQueryClient();
-  
+
   return useMutation({
     mutationFn: (task: TaskCreate) => tasksApi.create(task),
     onSuccess: () => {
@@ -123,8 +124,13 @@ export function useUpdateTask() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ taskId, updates }: { taskId: string; updates: TaskUpdate }) =>
-      tasksApi.update(taskId, updates),
+    mutationFn: ({
+      taskId,
+      updates,
+    }: {
+      taskId: string;
+      updates: TaskUpdate;
+    }) => tasksApi.update(taskId, updates),
     onSuccess: (task) => {
       queryClient.invalidateQueries({ queryKey: taskKeys.lists() });
       queryClient.setQueryData(taskKeys.detail(task.id), task);
@@ -134,7 +140,7 @@ export function useUpdateTask() {
 
 export function useDeleteTask() {
   const queryClient = useQueryClient();
-  
+
   return useMutation({
     mutationFn: (taskId: string) => tasksApi.delete(taskId),
     onSuccess: () => {
@@ -146,7 +152,7 @@ export function useDeleteTask() {
 // Lifecycle action hooks
 export function useTaskLifecycle() {
   const queryClient = useQueryClient();
-  
+
   const invalidateTask = (task: Task) => {
     queryClient.invalidateQueries({ queryKey: taskKeys.lists() });
     queryClient.setQueryData(taskKeys.detail(task.id), task);
@@ -163,8 +169,13 @@ export function useTaskLifecycle() {
   });
 
   const block = useMutation({
-    mutationFn: ({ taskId, blockerId }: { taskId: string; blockerId?: string }) =>
-      tasksApi.block(taskId, blockerId),
+    mutationFn: ({
+      taskId,
+      blockerId,
+    }: {
+      taskId: string;
+      blockerId?: string;
+    }) => tasksApi.block(taskId, blockerId),
     onSuccess: invalidateTask,
   });
 
@@ -207,8 +218,13 @@ export function useTaskLifecycle() {
   });
 
   const complete = useMutation({
-    mutationFn: ({ taskId, justification }: { taskId: string; justification: string }) =>
-      tasksApi.complete(taskId, justification),
+    mutationFn: ({
+      taskId,
+      justification,
+    }: {
+      taskId: string;
+      justification: string;
+    }) => tasksApi.complete(taskId, justification),
     onSuccess: invalidateTask,
   });
 
@@ -242,33 +258,58 @@ export function useTaskLifecycle() {
 
   // Progress tracking
   const addProgress = useMutation({
-    mutationFn: ({ taskId, request }: { taskId: string; request: ProgressRequest }) =>
-      tasksApi.addProgress(taskId, request),
+    mutationFn: ({
+      taskId,
+      request,
+    }: {
+      taskId: string;
+      request: ProgressRequest;
+    }) => tasksApi.addProgress(taskId, request),
     onSuccess: invalidateTask,
   });
 
   const addCheckpoint = useMutation({
-    mutationFn: ({ taskId, request }: { taskId: string; request: CheckpointRequest }) =>
-      tasksApi.addCheckpoint(taskId, request),
+    mutationFn: ({
+      taskId,
+      request,
+    }: {
+      taskId: string;
+      request: CheckpointRequest;
+    }) => tasksApi.addCheckpoint(taskId, request),
     onSuccess: invalidateTask,
   });
 
   const addCommit = useMutation({
-    mutationFn: ({ taskId, request }: { taskId: string; request: CommitRequest }) =>
-      tasksApi.addCommit(taskId, request),
+    mutationFn: ({
+      taskId,
+      request,
+    }: {
+      taskId: string;
+      request: CommitRequest;
+    }) => tasksApi.addCommit(taskId, request),
     onSuccess: invalidateTask,
   });
 
   // Soft block and escalation
   const softBlock = useMutation({
-    mutationFn: ({ taskId, request }: { taskId: string; request: SoftBlockRequest }) =>
-      tasksApi.softBlock(taskId, request),
+    mutationFn: ({
+      taskId,
+      request,
+    }: {
+      taskId: string;
+      request: SoftBlockRequest;
+    }) => tasksApi.softBlock(taskId, request),
     onSuccess: invalidateTask,
   });
 
   const escalate = useMutation({
-    mutationFn: ({ taskId, request }: { taskId: string; request: EscalateRequest }) =>
-      tasksApi.escalate(taskId, request),
+    mutationFn: ({
+      taskId,
+      request,
+    }: {
+      taskId: string;
+      request: EscalateRequest;
+    }) => tasksApi.escalate(taskId, request),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: taskKeys.lists() });
     },

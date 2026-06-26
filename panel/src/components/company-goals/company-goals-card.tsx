@@ -2,7 +2,10 @@
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { companyGoalsApi, type CompanyGoalsUpdate } from "@/lib/api/company-goals";
+import {
+  companyGoalsApi,
+  type CompanyGoalsUpdate,
+} from "@/lib/api/company-goals";
 import {
   Card,
   CardContent,
@@ -34,11 +37,12 @@ export function CompanyGoalsCard() {
     queryFn: companyGoalsApi.get,
   });
 
-  const northStarVal = northStar ?? (goals?.north_star ?? "");
+  const northStarVal = northStar ?? goals?.north_star ?? "";
   const constraintsVal = constraints ?? (goals?.constraints ?? []).join("\n");
   const objectivesVal =
     objectives ?? JSON.stringify(goals?.objectives ?? [], null, 2);
-  const policyVal = policy ?? JSON.stringify(goals?.operating_policy ?? {}, null, 2);
+  const policyVal =
+    policy ?? JSON.stringify(goals?.operating_policy ?? {}, null, 2);
 
   const saveMutation = useMutation({
     mutationFn: (update: CompanyGoalsUpdate) => companyGoalsApi.update(update),
@@ -99,8 +103,9 @@ export function CompanyGoalsCard() {
           Company Charter
         </CardTitle>
         <CardDescription>
-          The CEO-owned north star, objectives, constraints, and operating policy.
-          Injected into every agent&apos;s briefing so all work stays goal-aware.
+          The CEO-owned north star, objectives, constraints, and operating
+          policy. Injected into every agent&apos;s briefing so all work stays
+          goal-aware.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -150,7 +155,10 @@ export function CompanyGoalsCard() {
             placeholder='{"autonomy_level": "assisted", "monthly_budget_cap": 500}'
           />
         </div>
-        <Button onClick={handleSave} disabled={saveMutation.isPending || isLoading}>
+        <Button
+          onClick={handleSave}
+          disabled={saveMutation.isPending || isLoading}
+        >
           <Save className="h-4 w-4 mr-2" />
           {saveMutation.isPending ? "Saving..." : "Save charter"}
         </Button>

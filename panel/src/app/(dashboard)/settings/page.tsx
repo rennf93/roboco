@@ -3,7 +3,13 @@
 import { useState } from "react";
 import { useTheme } from "next-themes";
 import { useUIStore } from "@/store";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -16,14 +22,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
-import {
-  Settings,
-  Palette,
-  Bell,
-  Server,
-  User,
-  Save,
-} from "lucide-react";
+import { Settings, Palette, Bell, Server, User, Save } from "lucide-react";
 import { toast } from "sonner";
 import { API_URL, WS_URL } from "@/lib/constants";
 import { TranscriptRetentionCard } from "@/components/settings/transcript-retention-card";
@@ -69,11 +68,15 @@ export default function SettingsPage() {
           <CardContent className="space-y-4">
             <div className="flex items-center gap-4">
               <div className="h-16 w-16 rounded-full bg-primary flex items-center justify-center">
-                <span className="text-primary-foreground font-bold text-2xl">CEO</span>
+                <span className="text-primary-foreground font-bold text-2xl">
+                  CEO
+                </span>
               </div>
               <div>
                 <p className="font-semibold text-lg">Renzo</p>
-                <p className="text-sm text-muted-foreground">Chief Executive Officer</p>
+                <p className="text-sm text-muted-foreground">
+                  Chief Executive Officer
+                </p>
                 <p className="text-xs text-muted-foreground mt-1">
                   Agent ID: 00000000-0000-0000-0000-000000000001
                 </p>
@@ -89,7 +92,9 @@ export default function SettingsPage() {
               <Palette className="h-5 w-5" />
               Appearance
             </CardTitle>
-            <CardDescription>Customize the look and feel of the panel</CardDescription>
+            <CardDescription>
+              Customize the look and feel of the panel
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="flex items-center justify-between">
@@ -143,10 +148,7 @@ export default function SettingsPage() {
                   Automatically refresh data periodically
                 </p>
               </div>
-              <Switch
-                checked={autoRefresh}
-                onCheckedChange={setAutoRefresh}
-              />
+              <Switch checked={autoRefresh} onCheckedChange={setAutoRefresh} />
             </div>
             <Separator />
             <div className="flex items-center justify-between">
@@ -224,7 +226,9 @@ export default function SettingsPage() {
               <Settings className="h-5 w-5" />
               Connection Info
             </CardTitle>
-            <CardDescription>Backend API configuration (read-only)</CardDescription>
+            <CardDescription>
+              Backend API configuration (read-only)
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-2">
@@ -236,7 +240,8 @@ export default function SettingsPage() {
               <Input value={WS_URL} readOnly className="bg-muted" />
             </div>
             <p className="text-xs text-muted-foreground">
-              These values are configured via environment variables (NEXT_PUBLIC_API_URL, NEXT_PUBLIC_WS_URL)
+              These values are configured via environment variables
+              (NEXT_PUBLIC_API_URL, NEXT_PUBLIC_WS_URL)
             </p>
           </CardContent>
         </Card>

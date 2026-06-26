@@ -89,37 +89,52 @@ function JournalsPageContent() {
   }, [selectedAgentId, agentSearch, urlType, taskFilter]);
 
   // Update URL params
-  const updateParams = useCallback((updates: Record<string, string | null>) => {
-    const params = new URLSearchParams(searchParams.toString());
-    Object.entries(updates).forEach(([key, value]) => {
-      if (value) {
-        params.set(key, value);
-      } else {
-        params.delete(key);
+  const updateParams = useCallback(
+    (updates: Record<string, string | null>) => {
+      const params = new URLSearchParams(searchParams.toString());
+      Object.entries(updates).forEach(([key, value]) => {
+        if (value) {
+          params.set(key, value);
+        } else {
+          params.delete(key);
+        }
+      });
+      const query = params.toString();
+      router.push(query ? `/journals?${query}` : "/journals");
+    },
+    [router, searchParams],
+  );
+
+  const handleSelectAgent = useCallback(
+    (agentId: string | null) => {
+      // Only reset filters when changing to a different agent
+      if (agentId !== selectedAgentId) {
+        updateParams({ agent: agentId, type: null, task: null });
       }
-    });
-    const query = params.toString();
-    router.push(query ? `/journals?${query}` : "/journals");
-  }, [router, searchParams]);
+    },
+    [updateParams, selectedAgentId],
+  );
 
-  const handleSelectAgent = useCallback((agentId: string | null) => {
-    // Only reset filters when changing to a different agent
-    if (agentId !== selectedAgentId) {
-      updateParams({ agent: agentId, type: null, task: null });
-    }
-  }, [updateParams, selectedAgentId]);
+  const handleAgentSearch = useCallback(
+    (value: string) => {
+      updateParams({ q: value || null });
+    },
+    [updateParams],
+  );
 
-  const handleAgentSearch = useCallback((value: string) => {
-    updateParams({ q: value || null });
-  }, [updateParams]);
+  const handleTypeChange = useCallback(
+    (value: JournalEntryType | "all") => {
+      updateParams({ type: value === "all" ? null : value });
+    },
+    [updateParams],
+  );
 
-  const handleTypeChange = useCallback((value: JournalEntryType | "all") => {
-    updateParams({ type: value === "all" ? null : value });
-  }, [updateParams]);
-
-  const handleTaskChange = useCallback((value: string | null) => {
-    updateParams({ task: value });
-  }, [updateParams]);
+  const handleTaskChange = useCallback(
+    (value: string | null) => {
+      updateParams({ task: value });
+    },
+    [updateParams],
+  );
 
   // Filter agents by search
   const filteredAgents = (agents ?? []).filter((agent) => {
@@ -211,35 +226,37 @@ function JournalsPageContent() {
 // Wrap in Suspense for useSearchParams
 export default function JournalsPage() {
   return (
-    <Suspense fallback={
-      <div className="space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <Skeleton className="h-9 w-48 mb-2" />
-            <Skeleton className="h-5 w-64" />
+    <Suspense
+      fallback={
+        <div className="space-y-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <Skeleton className="h-9 w-48 mb-2" />
+              <Skeleton className="h-5 w-64" />
+            </div>
+          </div>
+          <div className="grid grid-cols-12 gap-6">
+            <div className="col-span-12 lg:col-span-3">
+              <Card>
+                <CardContent className="p-3 space-y-2">
+                  <Skeleton className="h-10 w-full" />
+                  {Array.from({ length: 5 }).map((_, i) => (
+                    <Skeleton key={i} className="h-12 w-full" />
+                  ))}
+                </CardContent>
+              </Card>
+            </div>
+            <div className="col-span-12 lg:col-span-9">
+              <Card>
+                <CardContent className="p-6">
+                  <Skeleton className="h-64 w-full" />
+                </CardContent>
+              </Card>
+            </div>
           </div>
         </div>
-        <div className="grid grid-cols-12 gap-6">
-          <div className="col-span-12 lg:col-span-3">
-            <Card>
-              <CardContent className="p-3 space-y-2">
-                <Skeleton className="h-10 w-full" />
-                {Array.from({ length: 5 }).map((_, i) => (
-                  <Skeleton key={i} className="h-12 w-full" />
-                ))}
-              </CardContent>
-            </Card>
-          </div>
-          <div className="col-span-12 lg:col-span-9">
-            <Card>
-              <CardContent className="p-6">
-                <Skeleton className="h-64 w-full" />
-              </CardContent>
-            </Card>
-          </div>
-        </div>
-      </div>
-    }>
+      }
+    >
       <JournalsPageContent />
     </Suspense>
   );

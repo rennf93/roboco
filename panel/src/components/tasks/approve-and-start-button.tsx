@@ -82,7 +82,10 @@ export function ApproveAndStartButton({ task }: ApproveAndStartButtonProps) {
         Approve &amp; Start
       </Button>
 
-      <Dialog open={open} onOpenChange={(next) => (next ? setOpen(true) : closeDialog())}>
+      <Dialog
+        open={open}
+        onOpenChange={(next) => (next ? setOpen(true) : closeDialog())}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Approve &amp; Start</DialogTitle>
@@ -121,7 +124,9 @@ export function ApproveAndStartButton({ task }: ApproveAndStartButtonProps) {
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="approve-and-start-notes">Approval notes (required)</Label>
+            <Label htmlFor="approve-and-start-notes">
+              Approval notes (required)
+            </Label>
             <Textarea
               id="approve-and-start-notes"
               placeholder="Board review read; requirements are clear. Build it..."
@@ -140,7 +145,9 @@ export function ApproveAndStartButton({ task }: ApproveAndStartButtonProps) {
               disabled={approveAndStartMutation.isPending}
               className="bg-green-600 hover:bg-green-700"
             >
-              {approveAndStartMutation.isPending ? "Starting..." : "Approve & Start"}
+              {approveAndStartMutation.isPending
+                ? "Starting..."
+                : "Approve & Start"}
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -144,7 +144,10 @@ export default function JournalEntryPage({ params }: JournalEntryPageProps) {
                 <span>Related Task</span>
               </div>
               <Link href={`/tasks/${entry.task_id}`}>
-                <Badge variant="outline" className="hover:bg-muted cursor-pointer">
+                <Badge
+                  variant="outline"
+                  className="hover:bg-muted cursor-pointer"
+                >
                   Task #{entry.task_id.slice(0, 8)}
                 </Badge>
               </Link>

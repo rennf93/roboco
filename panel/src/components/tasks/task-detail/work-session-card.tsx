@@ -128,7 +128,9 @@ export function WorkSessionCard({ taskId }: WorkSessionCardProps) {
           <div className="text-center py-4 text-muted-foreground">
             <GitBranch className="h-8 w-8 mx-auto mb-2 opacity-50" />
             <p className="text-sm">No active work session</p>
-            <p className="text-xs mt-1">A work session will be created when development begins</p>
+            <p className="text-xs mt-1">
+              A work session will be created when development begins
+            </p>
           </div>
         </CardContent>
       </Card>
@@ -180,14 +182,21 @@ export function WorkSessionCard({ taskId }: WorkSessionCardProps) {
                 </div>
                 {session.pr_created_at && (
                   <p className="text-xs text-muted-foreground">
-                    Created {formatDistanceToNow(new Date(session.pr_created_at), { addSuffix: true })}
+                    Created{" "}
+                    {formatDistanceToNow(new Date(session.pr_created_at), {
+                      addSuffix: true,
+                    })}
                   </p>
                 )}
               </div>
             </div>
             {session.pr_url && (
               <Button variant="outline" size="sm" asChild>
-                <a href={session.pr_url} target="_blank" rel="noopener noreferrer">
+                <a
+                  href={session.pr_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
                   <ExternalLink className="h-4 w-4 mr-1" />
                   View PR
                 </a>
@@ -200,14 +209,23 @@ export function WorkSessionCard({ taskId }: WorkSessionCardProps) {
         <div className="flex items-center gap-4 pt-2">
           <div className="flex items-center gap-2">
             <GitCommit className="h-4 w-4 text-muted-foreground" />
-            <span className="text-sm">{session.commits.length} commit{session.commits.length !== 1 ? 's' : ''}</span>
+            <span className="text-sm">
+              {session.commits.length} commit
+              {session.commits.length !== 1 ? "s" : ""}
+            </span>
           </div>
           <div className="flex items-center gap-2">
             <FileCode className="h-4 w-4 text-muted-foreground" />
-            <span className="text-sm">{session.files_modified.length} file{session.files_modified.length !== 1 ? 's' : ''}</span>
+            <span className="text-sm">
+              {session.files_modified.length} file
+              {session.files_modified.length !== 1 ? "s" : ""}
+            </span>
           </div>
           <div className="text-sm text-muted-foreground ml-auto">
-            Started {formatDistanceToNow(new Date(session.started_at), { addSuffix: true })}
+            Started{" "}
+            {formatDistanceToNow(new Date(session.started_at), {
+              addSuffix: true,
+            })}
           </div>
         </div>
 

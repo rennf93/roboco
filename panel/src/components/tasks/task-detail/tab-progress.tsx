@@ -71,7 +71,7 @@ function ProgressUpdatesSection({ task }: { task: Task }) {
 
   // Sort by most recent first
   const sortedUpdates = [...updates].sort(
-    (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+    (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
   );
 
   const latestWithPercentage = sortedUpdates.find((u) => u.percentage !== null);
@@ -107,7 +107,7 @@ function ProgressUpdatesSection({ task }: { task: Task }) {
     // Find the actual index in unsorted array
     const update = sortedUpdates[idx];
     const actualIdx = updates.findIndex(
-      (u) => u.timestamp === update.timestamp && u.message === update.message
+      (u) => u.timestamp === update.timestamp && u.message === update.message,
     );
     if (actualIdx === -1) return;
 
@@ -133,8 +133,13 @@ function ProgressUpdatesSection({ task }: { task: Task }) {
               {updates.length} update{updates.length !== 1 ? "s" : ""}
             </span>
             {!isAdding && (
-              <Button size="sm" variant="ghost" onClick={() => setIsAdding(true)}>
-                <Plus className="h-4 w-4 mr-1" />Add
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setIsAdding(true)}
+              >
+                <Plus className="h-4 w-4 mr-1" />
+                Add
               </Button>
             )}
           </div>
@@ -171,11 +176,24 @@ function ProgressUpdatesSection({ task }: { task: Task }) {
                 max="100"
               />
               <div className="flex-1" />
-              <Button size="sm" variant="ghost" onClick={() => { setNewMessage(""); setNewPercentage(""); setIsAdding(false); }}>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  setNewMessage("");
+                  setNewPercentage("");
+                  setIsAdding(false);
+                }}
+              >
                 <X className="h-4 w-4" />
               </Button>
-              <Button size="sm" onClick={handleAdd} disabled={!newMessage.trim() || updateTask.isPending}>
-                <Check className="h-4 w-4 mr-1" />Add Update
+              <Button
+                size="sm"
+                onClick={handleAdd}
+                disabled={!newMessage.trim() || updateTask.isPending}
+              >
+                <Check className="h-4 w-4 mr-1" />
+                Add Update
               </Button>
             </div>
           </div>
@@ -225,7 +243,10 @@ function ProgressUpdatesSection({ task }: { task: Task }) {
                     {update.percentage !== null && (
                       <div className="mt-2">
                         <div className="flex items-center gap-2">
-                          <Progress value={update.percentage} className="h-1.5 flex-1" />
+                          <Progress
+                            value={update.percentage}
+                            className="h-1.5 flex-1"
+                          />
                           <span className="text-xs text-muted-foreground w-10 text-right">
                             {update.percentage}%
                           </span>
@@ -263,7 +284,7 @@ function CheckpointsSection({ task }: { task: Task }) {
 
   // Sort by timestamp (newest first)
   const sortedCheckpoints = [...checkpoints].sort(
-    (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+    (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
   );
 
   const handleAdd = async () => {
@@ -324,8 +345,13 @@ function CheckpointsSection({ task }: { task: Task }) {
               {checkpoints.length} saved
             </span>
             {!isAdding && (
-              <Button size="sm" variant="ghost" onClick={() => setIsAdding(true)}>
-                <Plus className="h-4 w-4 mr-1" />Add
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setIsAdding(true)}
+              >
+                <Plus className="h-4 w-4 mr-1" />
+                Add
               </Button>
             )}
           </div>
@@ -336,7 +362,9 @@ function CheckpointsSection({ task }: { task: Task }) {
         {isAdding && (
           <div className="border rounded-lg p-4 mb-4 space-y-3">
             <div>
-              <label className="text-sm font-medium mb-1 block">State Summary</label>
+              <label className="text-sm font-medium mb-1 block">
+                State Summary
+              </label>
               <Textarea
                 ref={summaryRef}
                 value={newSummary}
@@ -346,7 +374,9 @@ function CheckpointsSection({ task }: { task: Task }) {
               />
             </div>
             <div>
-              <label className="text-sm font-medium mb-1 block">Remaining Work (one per line)</label>
+              <label className="text-sm font-medium mb-1 block">
+                Remaining Work (one per line)
+              </label>
               <Textarea
                 value={newRemaining}
                 onChange={(e) => setNewRemaining(e.target.value)}
@@ -355,7 +385,9 @@ function CheckpointsSection({ task }: { task: Task }) {
               />
             </div>
             <div>
-              <label className="text-sm font-medium mb-1 block">Notes (optional)</label>
+              <label className="text-sm font-medium mb-1 block">
+                Notes (optional)
+              </label>
               <Input
                 value={newNotes}
                 onChange={(e) => setNewNotes(e.target.value)}
@@ -365,11 +397,25 @@ function CheckpointsSection({ task }: { task: Task }) {
             </div>
             <div className="flex items-center gap-2">
               <div className="flex-1" />
-              <Button size="sm" variant="ghost" onClick={() => { setNewSummary(""); setNewRemaining(""); setNewNotes(""); setIsAdding(false); }}>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  setNewSummary("");
+                  setNewRemaining("");
+                  setNewNotes("");
+                  setIsAdding(false);
+                }}
+              >
                 <X className="h-4 w-4" />
               </Button>
-              <Button size="sm" onClick={handleAdd} disabled={!newSummary.trim() || updateTask.isPending}>
-                <Check className="h-4 w-4 mr-1" />Save Checkpoint
+              <Button
+                size="sm"
+                onClick={handleAdd}
+                disabled={!newSummary.trim() || updateTask.isPending}
+              >
+                <Check className="h-4 w-4 mr-1" />
+                Save Checkpoint
               </Button>
             </div>
           </div>
@@ -410,7 +456,9 @@ function CheckpointsSection({ task }: { task: Task }) {
                   {/* Agent */}
                   <div className="flex items-center gap-2 text-sm text-muted-foreground mb-3">
                     <User className="h-4 w-4" />
-                    <span>Saved by {getAgentDisplayName(checkpoint.agent_id)}</span>
+                    <span>
+                      Saved by {getAgentDisplayName(checkpoint.agent_id)}
+                    </span>
                   </div>
 
                   {/* State Summary */}

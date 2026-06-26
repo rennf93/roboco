@@ -1,7 +1,13 @@
 "use client";
 
 import { Task, TaskSessionLink, SessionScope } from "@/types";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { MessageSquare, ExternalLink, Star, Hash } from "lucide-react";
@@ -12,9 +18,12 @@ interface TabSessionsProps {
 }
 
 const scopeColors: Record<SessionScope, string> = {
-  [SessionScope.INITIATIVE]: "bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300",
-  [SessionScope.CELL]: "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300",
-  [SessionScope.TASK]: "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300",
+  [SessionScope.INITIATIVE]:
+    "bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300",
+  [SessionScope.CELL]:
+    "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300",
+  [SessionScope.TASK]:
+    "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300",
 };
 
 const scopeLabels: Record<SessionScope, string> = {
@@ -54,7 +63,10 @@ function SessionCard({ session }: { session: TaskSessionLink }) {
           </Badge>
         </div>
         <CardDescription className="mt-1 flex items-center gap-2">
-          <span>{relationshipLabels[session.relationship_type] || session.relationship_type}</span>
+          <span>
+            {relationshipLabels[session.relationship_type] ||
+              session.relationship_type}
+          </span>
           <span className="text-muted-foreground">•</span>
           <span className="flex items-center gap-1">
             <Hash className="h-3 w-3" />
@@ -87,8 +99,8 @@ export function TabSessions({ task }: TabSessionsProps) {
             <MessageSquare className="h-12 w-12 mx-auto mb-4 text-muted-foreground/50" />
             <h3 className="text-lg font-medium mb-2">No Linked Sessions</h3>
             <p className="text-sm text-muted-foreground max-w-md mx-auto">
-              This task does not have any linked discussion sessions yet.
-              A PM will create a session when work begins.
+              This task does not have any linked discussion sessions yet. A PM
+              will create a session when work begins.
             </p>
           </div>
         </CardContent>
@@ -111,7 +123,9 @@ export function TabSessions({ task }: TabSessionsProps) {
             Discussion sessions related to this task
           </p>
         </div>
-        <Badge variant="outline">{sessions.length} session{sessions.length !== 1 ? 's' : ''}</Badge>
+        <Badge variant="outline">
+          {sessions.length} session{sessions.length !== 1 ? "s" : ""}
+        </Badge>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">

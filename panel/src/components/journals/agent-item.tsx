@@ -28,7 +28,12 @@ function initialsFor(name: string): string {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
-export function AgentItem({ agent, isSelected, onClick, hasEntries }: AgentItemProps) {
+export function AgentItem({
+  agent,
+  isSelected,
+  onClick,
+  hasEntries,
+}: AgentItemProps) {
   const name = getAgentDisplayName(agent.agent_id);
   const avatarTint =
     TEAM_AVATAR[agent.team ?? ""] ?? "bg-muted text-muted-foreground";

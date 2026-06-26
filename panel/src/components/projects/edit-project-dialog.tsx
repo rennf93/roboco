@@ -70,7 +70,9 @@ function EditProjectForm({
   const [qualityCommand, setQualityCommand] = useState(
     project.quality_command || "",
   );
-  const [ciWatchEnabled, setCiWatchEnabled] = useState(project.ci_watch_enabled);
+  const [ciWatchEnabled, setCiWatchEnabled] = useState(
+    project.ci_watch_enabled,
+  );
   const [ciWatchWorkflow, setCiWatchWorkflow] = useState(
     project.ci_watch_workflow || "",
   );

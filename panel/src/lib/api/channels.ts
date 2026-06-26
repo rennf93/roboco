@@ -37,7 +37,9 @@ export const channelsApi = {
       }
       return channels;
     }
-    const { data } = await api.get<PaginatedResponse<Channel>>("/channels", { params: filters });
+    const { data } = await api.get<PaginatedResponse<Channel>>("/channels", {
+      params: filters,
+    });
     return data.items;
   },
 
@@ -74,7 +76,9 @@ export const channelsApi = {
     if (isMockMode()) {
       return mockGroups as Group[];
     }
-    const { data } = await api.get<Group[]>("/channels/" + channelId + "/groups");
+    const { data } = await api.get<Group[]>(
+      "/channels/" + channelId + "/groups",
+    );
     return data;
   },
 
@@ -103,7 +107,10 @@ export const channelsApi = {
   },
 
   // Update a channel (PM/CEO only)
-  update: async (channelId: string, updates: ChannelUpdate): Promise<Channel> => {
+  update: async (
+    channelId: string,
+    updates: ChannelUpdate,
+  ): Promise<Channel> => {
     if (isMockMode()) {
       const idx = mockChannels.findIndex((c) => c.id === channelId);
       if (idx === -1) throw new Error("Channel not found");
@@ -111,7 +118,10 @@ export const channelsApi = {
       (mockChannels as Channel[])[idx] = updated;
       return updated;
     }
-    const { data } = await api.patch<Channel>("/channels/" + channelId, updates);
+    const { data } = await api.patch<Channel>(
+      "/channels/" + channelId,
+      updates,
+    );
     return data;
   },
 
@@ -120,7 +130,9 @@ export const channelsApi = {
     if (isMockMode()) {
       return;
     }
-    await api.post("/channels/" + channelId + "/add-member", { agent_id: agentId });
+    await api.post("/channels/" + channelId + "/add-member", {
+      agent_id: agentId,
+    });
   },
 
   // Remove a member from a channel (PM/CEO only)

@@ -145,7 +145,10 @@ export function GitActionsPanel({
       </CardHeader>
       <CardContent className="space-y-3">
         {/* Commit Action */}
-        <Dialog open={showCommitDialog} onOpenChange={handleCommitDialogOpenChange}>
+        <Dialog
+          open={showCommitDialog}
+          onOpenChange={handleCommitDialogOpenChange}
+        >
           <DialogTrigger asChild>
             <Button
               className="w-full justify-start"
@@ -184,7 +187,9 @@ export function GitActionsPanel({
                     </li>
                   ))}
                   {(status?.staged_files.length ?? 0) > 5 && (
-                    <li>... and {(status?.staged_files.length ?? 0) - 5} more</li>
+                    <li>
+                      ... and {(status?.staged_files.length ?? 0) - 5} more
+                    </li>
                   )}
                 </ul>
               </div>
@@ -200,7 +205,9 @@ export function GitActionsPanel({
                 onClick={handleCommit}
                 disabled={!commitMessage.trim() || isCommitting}
               >
-                {isCommitting && <RefreshCw className="h-4 w-4 mr-2 animate-spin" />}
+                {isCommitting && (
+                  <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                )}
                 Commit
               </Button>
             </DialogFooter>
@@ -276,7 +283,9 @@ export function GitActionsPanel({
                 onClick={handleCreatePR}
                 disabled={!prTitle.trim() || isCreatingPR}
               >
-                {isCreatingPR && <RefreshCw className="h-4 w-4 mr-2 animate-spin" />}
+                {isCreatingPR && (
+                  <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                )}
                 Create PR
               </Button>
             </DialogFooter>
@@ -284,12 +293,12 @@ export function GitActionsPanel({
         </Dialog>
 
         {/* Merge PR Action */}
-        <Dialog open={showMergeDialog} onOpenChange={handleMergeDialogOpenChange}>
+        <Dialog
+          open={showMergeDialog}
+          onOpenChange={handleMergeDialogOpenChange}
+        >
           <DialogTrigger asChild>
-            <Button
-              className="w-full justify-start"
-              variant="outline"
-            >
+            <Button className="w-full justify-start" variant="outline">
               {isMerging ? (
                 <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
               ) : (
@@ -315,14 +324,23 @@ export function GitActionsPanel({
               </div>
             </div>
             <DialogFooter>
-              <Button variant="outline" onClick={() => setShowMergeDialog(false)}>
+              <Button
+                variant="outline"
+                onClick={() => setShowMergeDialog(false)}
+              >
                 Cancel
               </Button>
               <Button
                 onClick={handleMergePR}
-                disabled={!mergePrNumber.trim() || isNaN(parseInt(mergePrNumber, 10)) || isMerging}
+                disabled={
+                  !mergePrNumber.trim() ||
+                  isNaN(parseInt(mergePrNumber, 10)) ||
+                  isMerging
+                }
               >
-                {isMerging && <RefreshCw className="h-4 w-4 mr-2 animate-spin" />}
+                {isMerging && (
+                  <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                )}
                 Merge
               </Button>
             </DialogFooter>

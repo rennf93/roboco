@@ -62,7 +62,9 @@ export function AcceptanceCriteriaEditor({
           {criteria.map((criterion, index) => (
             <div key={index} className="flex items-center gap-2">
               <GripVertical className="h-4 w-4 text-muted-foreground shrink-0" />
-              <span className="text-sm text-muted-foreground w-6">{index + 1}.</span>
+              <span className="text-sm text-muted-foreground w-6">
+                {index + 1}.
+              </span>
               <Input
                 value={criterion}
                 onChange={(e) => handleUpdate(index, e.target.value)}
@@ -91,7 +93,12 @@ export function AcceptanceCriteriaEditor({
           placeholder="Enter acceptance criterion and press Enter..."
           className="flex-1"
         />
-        <Button type="button" variant="outline" onClick={handleAdd} disabled={!newCriterion.trim()}>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={handleAdd}
+          disabled={!newCriterion.trim()}
+        >
           <Plus className="h-4 w-4 mr-1" />
           Add
         </Button>
@@ -99,8 +106,8 @@ export function AcceptanceCriteriaEditor({
 
       {/* Helper text */}
       <p className="text-xs text-muted-foreground">
-        Define at least one acceptance criterion. Each criterion should describe a specific,
-        testable condition for task completion.
+        Define at least one acceptance criterion. Each criterion should describe
+        a specific, testable condition for task completion.
       </p>
 
       {/* Error message */}

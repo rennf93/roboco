@@ -9,9 +9,7 @@ import type { Notification } from "@/types";
 
 let _idCounter = 0;
 
-function makeNotification(
-  overrides: Partial<Notification> = {}
-): Notification {
+function makeNotification(overrides: Partial<Notification> = {}): Notification {
   _idCounter += 1;
   return {
     id: `notif-${_idCounter}`,
@@ -60,12 +58,16 @@ describe("useNotificationStore — addNotification", () => {
   });
 
   it("increments unreadCount when the notification is unread", () => {
-    useNotificationStore.getState().addNotification(makeNotification({ is_read: false }));
+    useNotificationStore
+      .getState()
+      .addNotification(makeNotification({ is_read: false }));
     expect(useNotificationStore.getState().unreadCount).toBe(1);
   });
 
   it("does NOT increment unreadCount when the notification is already read", () => {
-    useNotificationStore.getState().addNotification(makeNotification({ is_read: true }));
+    useNotificationStore
+      .getState()
+      .addNotification(makeNotification({ is_read: true }));
     expect(useNotificationStore.getState().unreadCount).toBe(0);
   });
 
@@ -73,7 +75,7 @@ describe("useNotificationStore — addNotification", () => {
     useNotificationStore
       .getState()
       .addNotification(
-        makeNotification({ requires_ack: true, is_acknowledged: false })
+        makeNotification({ requires_ack: true, is_acknowledged: false }),
       );
     expect(useNotificationStore.getState().pendingAckCount).toBe(1);
   });
@@ -89,7 +91,7 @@ describe("useNotificationStore — addNotification", () => {
     useNotificationStore
       .getState()
       .addNotification(
-        makeNotification({ requires_ack: true, is_acknowledged: true })
+        makeNotification({ requires_ack: true, is_acknowledged: true }),
       );
     expect(useNotificationStore.getState().pendingAckCount).toBe(0);
   });
@@ -113,7 +115,7 @@ describe("useNotificationStore — addNotification", () => {
     expect(useNotificationStore.getState().notifications).toHaveLength(1);
     // The entry was updated in place
     expect(useNotificationStore.getState().notifications[0].subject).toBe(
-      "Updated subject"
+      "Updated subject",
     );
   });
 
@@ -154,7 +156,9 @@ describe("useNotificationStore — markAsRead", () => {
     // markAsRead on an empty store shouldn't produce negative count
     useNotificationStore.setState({ unreadCount: 0 });
     useNotificationStore.getState().markAsRead("non-existent-id");
-    expect(useNotificationStore.getState().unreadCount).toBeGreaterThanOrEqual(0);
+    expect(useNotificationStore.getState().unreadCount).toBeGreaterThanOrEqual(
+      0,
+    );
   });
 
   it("does not affect other notifications", () => {
@@ -202,7 +206,9 @@ describe("useNotificationStore — markAsAcknowledged", () => {
   it("pendingAckCount never drops below 0", () => {
     useNotificationStore.setState({ pendingAckCount: 0 });
     useNotificationStore.getState().markAsAcknowledged("non-existent-id");
-    expect(useNotificationStore.getState().pendingAckCount).toBeGreaterThanOrEqual(0);
+    expect(
+      useNotificationStore.getState().pendingAckCount,
+    ).toBeGreaterThanOrEqual(0);
   });
 });
 
@@ -245,7 +251,9 @@ describe("useNotificationStore — clearAll", () => {
   });
 
   it("resets unreadCount to 0", () => {
-    useNotificationStore.getState().addNotification(makeNotification({ is_read: false }));
+    useNotificationStore
+      .getState()
+      .addNotification(makeNotification({ is_read: false }));
     useNotificationStore.getState().clearAll();
     expect(useNotificationStore.getState().unreadCount).toBe(0);
   });
@@ -254,7 +262,7 @@ describe("useNotificationStore — clearAll", () => {
     useNotificationStore
       .getState()
       .addNotification(
-        makeNotification({ requires_ack: true, is_acknowledged: false })
+        makeNotification({ requires_ack: true, is_acknowledged: false }),
       );
     useNotificationStore.getState().clearAll();
     expect(useNotificationStore.getState().pendingAckCount).toBe(0);

@@ -12,9 +12,10 @@ interface RAGCitationCardProps {
 
 export function RAGCitationCard({ citation, index }: RAGCitationCardProps) {
   // Truncate content
-  const snippet = citation.content.length > 200
-    ? citation.content.substring(0, 200) + "..."
-    : citation.content;
+  const snippet =
+    citation.content.length > 200
+      ? citation.content.substring(0, 200) + "..."
+      : citation.content;
 
   // Format source
   const formatSource = (source: string) => {
@@ -38,7 +39,10 @@ export function RAGCitationCard({ citation, index }: RAGCitationCardProps) {
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap mb-1">
-              <KBIndexTypeBadge indexType={citation.index_type} className="text-xs" />
+              <KBIndexTypeBadge
+                indexType={citation.index_type}
+                className="text-xs"
+              />
               <span className="text-xs text-muted-foreground flex items-center gap-0.5">
                 <Hash className="h-3 w-3" />
                 {scorePercent}%
@@ -49,7 +53,9 @@ export function RAGCitationCard({ citation, index }: RAGCitationCardProps) {
             </p>
             <div className="flex items-start gap-1">
               <Quote className="h-3 w-3 text-muted-foreground shrink-0 mt-0.5" />
-              <p className="text-sm text-foreground/80 line-clamp-3">{snippet}</p>
+              <p className="text-sm text-foreground/80 line-clamp-3">
+                {snippet}
+              </p>
             </div>
           </div>
         </div>

@@ -21,13 +21,19 @@ export interface SessionCreate {
 
 export const sessionsApi = {
   // List sessions for a group
-  listByGroup: async (groupId: string, limit: number = 50): Promise<Session[]> => {
+  listByGroup: async (
+    groupId: string,
+    limit: number = 50,
+  ): Promise<Session[]> => {
     if (isMockMode()) {
       return (mockSessions as Session[]).slice(0, limit);
     }
-    const { data } = await api.get<{ items: Session[]; total: number }>("/sessions", {
-      params: { group_id: groupId, limit },
-    });
+    const { data } = await api.get<{ items: Session[]; total: number }>(
+      "/sessions",
+      {
+        params: { group_id: groupId, limit },
+      },
+    );
     return data.items;
   },
 
@@ -47,7 +53,9 @@ export const sessionsApi = {
     if (isMockMode()) {
       return []; // No mock session-task links
     }
-    const { data } = await api.get<SessionTaskLinkResponse[]>("/sessions/for-task/" + taskId);
+    const { data } = await api.get<SessionTaskLinkResponse[]>(
+      "/sessions/for-task/" + taskId,
+    );
     return data;
   },
 
@@ -67,7 +75,9 @@ export const sessionsApi = {
       }
       throw new Error("Session not found");
     }
-    const { data } = await api.post<Session>("/sessions/" + sessionId + "/close");
+    const { data } = await api.post<Session>(
+      "/sessions/" + sessionId + "/close",
+    );
     return data;
   },
 
@@ -76,7 +86,7 @@ export const sessionsApi = {
     sessionId: string,
     taskId: string,
     isPrimary: boolean = false,
-    relationshipType: string = "discussion"
+    relationshipType: string = "discussion",
   ): Promise<SessionTaskLinkResponse> => {
     const { data } = await api.post<SessionTaskLinkResponse>(
       "/sessions/" + sessionId + "/add-task",
@@ -84,7 +94,7 @@ export const sessionsApi = {
         task_id: taskId,
         is_primary: isPrimary,
         relationship_type: relationshipType,
-      }
+      },
     );
     return data;
   },
@@ -97,28 +107,33 @@ export const sessionsApi = {
   },
 
   // Get tasks linked to a session
-  getTasksForSession: async (sessionId: string): Promise<SessionTaskLinkResponse[]> => {
+  getTasksForSession: async (
+    sessionId: string,
+  ): Promise<SessionTaskLinkResponse[]> => {
     // Note: Backend doesn't have a dedicated GET endpoint for session tasks
     // Task links are returned with session detail via get()
     const session = await sessionsApi.get(sessionId);
     // Return empty array if session doesn't have task_links
-    return (session as Session & { task_links?: SessionTaskLinkResponse[] }).task_links || [];
+    return (
+      (session as Session & { task_links?: SessionTaskLinkResponse[] })
+        .task_links || []
+    );
   },
 
   // Create a session for tasks (PM only)
   createForTasks: async (
     taskIds: string[],
     channelSlug: string,
-    relationshipType: string = "discussion"
+    relationshipType: string = "discussion",
   ): Promise<{ session: Session; links: SessionTaskLinkResponse[] }> => {
-    const { data } = await api.post<{ session: Session; links: SessionTaskLinkResponse[] }>(
-      "/sessions/for-tasks",
-      {
-        task_ids: taskIds,
-        channel_slug: channelSlug,
-        relationship_type: relationshipType,
-      }
-    );
+    const { data } = await api.post<{
+      session: Session;
+      links: SessionTaskLinkResponse[];
+    }>("/sessions/for-tasks", {
+      task_ids: taskIds,
+      channel_slug: channelSlug,
+      relationship_type: relationshipType,
+    });
     return data;
   },
 
@@ -149,7 +164,7 @@ export const sessionsApi = {
   updateTaskLink: async (
     sessionId: string,
     taskId: string,
-    updates: { is_primary?: boolean; relationship_type?: string }
+    updates: { is_primary?: boolean; relationship_type?: string },
   ): Promise<SessionTaskLinkResponse> => {
     if (isMockMode()) {
       return {
@@ -164,7 +179,7 @@ export const sessionsApi = {
     }
     const { data } = await api.post<SessionTaskLinkResponse>(
       "/sessions/" + sessionId + "/update-task",
-      { task_id: taskId, ...updates }
+      { task_id: taskId, ...updates },
     );
     return data;
   },

@@ -42,7 +42,10 @@ import {
   Coins,
   Sparkles,
 } from "lucide-react";
-import type { UsageProjection as UP, CacheEfficiencyResponse as CER } from "@/types";
+import type {
+  UsageProjection as UP,
+  CacheEfficiencyResponse as CER,
+} from "@/types";
 
 // ─── Humanized number formatting ─────────────────────────────────────────────
 
@@ -71,7 +74,14 @@ interface MetricCardProps {
   trendValue?: string;
 }
 
-function MetricCard({ title, value, subtitle, icon, trend, trendValue }: MetricCardProps) {
+function MetricCard({
+  title,
+  value,
+  subtitle,
+  icon,
+  trend,
+  trendValue,
+}: MetricCardProps) {
   const displayValue = typeof value === "number" ? humanizeCount(value) : value;
   return (
     <Card>
@@ -87,10 +97,19 @@ function MetricCard({ title, value, subtitle, icon, trend, trendValue }: MetricC
           <p className="text-xs text-muted-foreground mt-1">{subtitle}</p>
         )}
         {trend && trendValue && (
-          <div className={"flex items-center gap-1 mt-2 text-xs " +
-            (trend === "up" ? "text-green-600" : trend === "down" ? "text-red-600" : "text-gray-500")
-          }>
-            <TrendingUp className={"h-3 w-3 " + (trend === "down" ? "rotate-180" : "")} />
+          <div
+            className={
+              "flex items-center gap-1 mt-2 text-xs " +
+              (trend === "up"
+                ? "text-green-600"
+                : trend === "down"
+                  ? "text-red-600"
+                  : "text-gray-500")
+            }
+          >
+            <TrendingUp
+              className={"h-3 w-3 " + (trend === "down" ? "rotate-180" : "")}
+            />
             {trendValue}
           </div>
         )}
@@ -106,8 +125,13 @@ interface TeamHealthCardProps {
   completedToday: number;
 }
 
-function TeamHealthCard({ team, activeTasks, blockedTasks, completedToday }: TeamHealthCardProps) {
-  const healthScore = Math.max(0, 100 - (blockedTasks * 20));
+function TeamHealthCard({
+  team,
+  activeTasks,
+  blockedTasks,
+  completedToday,
+}: TeamHealthCardProps) {
+  const healthScore = Math.max(0, 100 - blockedTasks * 20);
 
   return (
     <Card>
@@ -144,12 +168,16 @@ function TeamHealthCard({ team, activeTasks, blockedTasks, completedToday }: Tea
 
 function PerformanceTabContent() {
   const { data: tasks, error: tasksError, refetch: refetchTasks } = useTasks();
-  const { data: status, error: statusError, refetch: refetchStatus } = useOrchestratorStatus();
+  const {
+    data: status,
+    error: statusError,
+    refetch: refetchStatus,
+  } = useOrchestratorStatus();
 
-  const isOffline = (tasksError || statusError) && (
-    tasksError?.message?.includes("Network Error") ||
-    statusError?.message?.includes("Network Error")
-  );
+  const isOffline =
+    (tasksError || statusError) &&
+    (tasksError?.message?.includes("Network Error") ||
+      statusError?.message?.includes("Network Error"));
 
   const refetch = () => {
     refetchTasks();
@@ -176,17 +204,35 @@ function PerformanceTabContent() {
   }).length;
 
   // Task status counts
-  const pending = taskList.filter((t) => t.status === TaskStatus.PENDING).length;
-  const inProgress = taskList.filter((t) => t.status === TaskStatus.IN_PROGRESS).length;
-  const blocked = taskList.filter((t) => t.status === TaskStatus.BLOCKED).length;
-  const awaitingQa = taskList.filter((t) => t.status === TaskStatus.AWAITING_QA).length;
-  const completed = taskList.filter((t) => t.status === TaskStatus.COMPLETED).length;
+  const pending = taskList.filter(
+    (t) => t.status === TaskStatus.PENDING,
+  ).length;
+  const inProgress = taskList.filter(
+    (t) => t.status === TaskStatus.IN_PROGRESS,
+  ).length;
+  const blocked = taskList.filter(
+    (t) => t.status === TaskStatus.BLOCKED,
+  ).length;
+  const awaitingQa = taskList.filter(
+    (t) => t.status === TaskStatus.AWAITING_QA,
+  ).length;
+  const completed = taskList.filter(
+    (t) => t.status === TaskStatus.COMPLETED,
+  ).length;
 
   // Agent counts
-  const runningAgents = status?.by_state?.running || agentList.filter((a) => a.state === "running").length;
-  const idleAgents = status?.by_state?.idle || agentList.filter((a) => a.state === "idle" || a.state === "stopped").length;
-  const waitingAgents = status?.waiting_count || agentList.filter((a) => a.state === "waiting_long").length;
-  const errorAgents = status?.by_state?.error || agentList.filter((a) => a.state === "error").length;
+  const runningAgents =
+    status?.by_state?.running ||
+    agentList.filter((a) => a.state === "running").length;
+  const idleAgents =
+    status?.by_state?.idle ||
+    agentList.filter((a) => a.state === "idle" || a.state === "stopped").length;
+  const waitingAgents =
+    status?.waiting_count ||
+    agentList.filter((a) => a.state === "waiting_long").length;
+  const errorAgents =
+    status?.by_state?.error ||
+    agentList.filter((a) => a.state === "error").length;
 
   // Team metrics
   const teamMetrics = Object.values(Team).map((team) => {
@@ -194,9 +240,10 @@ function PerformanceTabContent() {
     return {
       team,
       activeTasks: teamTasks.filter((t) =>
-        [TaskStatus.IN_PROGRESS, TaskStatus.CLAIMED].includes(t.status)
+        [TaskStatus.IN_PROGRESS, TaskStatus.CLAIMED].includes(t.status),
       ).length,
-      blockedTasks: teamTasks.filter((t) => t.status === TaskStatus.BLOCKED).length,
+      blockedTasks: teamTasks.filter((t) => t.status === TaskStatus.BLOCKED)
+        .length,
       completedToday: teamTasks.filter((t) => {
         if (!t.completed_at) return false;
         const c = new Date(t.completed_at);
@@ -242,7 +289,11 @@ function PerformanceTabContent() {
           />
           <MetricCard
             title="Completion Rate"
-            value={taskList.length > 0 ? Math.round((completed / taskList.length) * 100) + "%" : "0%"}
+            value={
+              taskList.length > 0
+                ? Math.round((completed / taskList.length) * 100) + "%"
+                : "0%"
+            }
             subtitle="Of all tasks"
             icon={<Activity className="h-4 w-4 text-purple-500" />}
           />
@@ -341,7 +392,8 @@ function TokenUsageCostsSection() {
   const { data: sessions, isLoading: loadingSessions } = useUsageSessions(100);
   const { data: modelUsage, isLoading: loadingModels } = useModelUsage("24h");
   const { data: projection, isLoading: loadingProj } = useUsageProjection();
-  const { data: cacheStats, isLoading: loadingCache } = useCacheEfficiency("24h");
+  const { data: cacheStats, isLoading: loadingCache } =
+    useCacheEfficiency("24h");
 
   const trendUp = (summary?.trend_pct ?? 0) >= 0;
 
@@ -369,7 +421,11 @@ function TokenUsageCostsSection() {
         />
         <SummaryCard
           title="Trend vs Prior"
-          value={summary ? (trendUp ? "+" : "") + summary.trend_pct.toFixed(1) + "%" : undefined}
+          value={
+            summary
+              ? (trendUp ? "+" : "") + summary.trend_pct.toFixed(1) + "%"
+              : undefined
+          }
           icon={
             trendUp ? (
               <TrendingUp className="h-4 w-4 text-red-500" />
@@ -387,7 +443,11 @@ function TokenUsageCostsSection() {
         />
         <SummaryCard
           title="Cache Saved"
-          value={cacheStats ? "$" + cacheStats.cost_saved_by_cache_usd.toFixed(4) : undefined}
+          value={
+            cacheStats
+              ? "$" + cacheStats.cost_saved_by_cache_usd.toFixed(4)
+              : undefined
+          }
           icon={<Sparkles className="h-4 w-4 text-purple-500" />}
           isLoading={loadingCache}
         />
@@ -429,11 +489,19 @@ interface SummaryCardProps {
   isLoading: boolean;
 }
 
-function SummaryCard({ title, value, icon, trend, isLoading }: SummaryCardProps) {
+function SummaryCard({
+  title,
+  value,
+  icon,
+  trend,
+  isLoading,
+}: SummaryCardProps) {
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between pb-2">
-        <CardTitle className="text-sm font-medium text-muted-foreground">{title}</CardTitle>
+        <CardTitle className="text-sm font-medium text-muted-foreground">
+          {title}
+        </CardTitle>
         {icon}
       </CardHeader>
       <CardContent>
@@ -479,7 +547,9 @@ function ProjectionCard({ projection, isLoading }: ProjectionCardProps) {
         ) : (
           <div>
             <div className="text-3xl font-bold">
-              {projection != null ? "$" + projection.projected_monthly_cost_usd.toFixed(2) : "—"}
+              {projection != null
+                ? "$" + projection.projected_monthly_cost_usd.toFixed(2)
+                : "—"}
             </div>
             <p className="text-xs text-muted-foreground mt-1">
               Based on {projection?.basis_days ?? 7}-day rolling average ($
@@ -497,7 +567,10 @@ interface CacheEfficiencyCardProps {
   isLoading: boolean;
 }
 
-function CacheEfficiencyCard({ cacheStats, isLoading }: CacheEfficiencyCardProps) {
+function CacheEfficiencyCard({
+  cacheStats,
+  isLoading,
+}: CacheEfficiencyCardProps) {
   const pct = cacheStats ? cacheStats.cache_hit_rate * 100 : 0;
 
   return (
@@ -515,8 +588,9 @@ function CacheEfficiencyCard({ cacheStats, isLoading }: CacheEfficiencyCardProps
           <div>
             <div className="text-3xl font-bold">{pct.toFixed(1)}%</div>
             <p className="text-xs text-muted-foreground mt-1">
-              {cacheStats ? fmtTokens(cacheStats.tokens_cache_read) : "—"} cache reads ·
-              saved ${cacheStats?.cost_saved_by_cache_usd.toFixed(4) ?? "—"}
+              {cacheStats ? fmtTokens(cacheStats.tokens_cache_read) : "—"} cache
+              reads · saved $
+              {cacheStats?.cost_saved_by_cache_usd.toFixed(4) ?? "—"}
             </p>
             <Progress value={pct} className="mt-2" />
           </div>
@@ -530,7 +604,11 @@ function CacheEfficiencyCard({ cacheStats, isLoading }: CacheEfficiencyCardProps
 
 type MetricsTab = "performance" | "token-usage" | "delivery";
 
-const VALID_METRICS_TABS: MetricsTab[] = ["performance", "token-usage", "delivery"];
+const VALID_METRICS_TABS: MetricsTab[] = [
+  "performance",
+  "token-usage",
+  "delivery",
+];
 
 function isValidMetricsTab(value: string | null): value is MetricsTab {
   return VALID_METRICS_TABS.includes(value as MetricsTab);
@@ -544,7 +622,9 @@ function MetricsPageContent() {
 
   // Read ?tab= from URL, default to "performance"
   const rawTab = searchParams.get("tab");
-  const activeTab: MetricsTab = isValidMetricsTab(rawTab) ? rawTab : "performance";
+  const activeTab: MetricsTab = isValidMetricsTab(rawTab)
+    ? rawTab
+    : "performance";
 
   function handleTabChange(value: string) {
     const params = new URLSearchParams(searchParams.toString());
@@ -590,32 +670,34 @@ function MetricsPageContent() {
 // Wrap in Suspense for useSearchParams
 export default function MetricsPage() {
   return (
-    <Suspense fallback={
-      <div className="space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <Skeleton className="h-9 w-32 mb-2" />
-            <Skeleton className="h-5 w-72" />
+    <Suspense
+      fallback={
+        <div className="space-y-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <Skeleton className="h-9 w-32 mb-2" />
+              <Skeleton className="h-5 w-72" />
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <Skeleton className="h-9 w-28" />
+            <Skeleton className="h-9 w-28" />
+          </div>
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <Card key={i}>
+                <CardHeader className="pb-2">
+                  <Skeleton className="h-4 w-24" />
+                </CardHeader>
+                <CardContent>
+                  <Skeleton className="h-8 w-16" />
+                </CardContent>
+              </Card>
+            ))}
           </div>
         </div>
-        <div className="flex gap-2">
-          <Skeleton className="h-9 w-28" />
-          <Skeleton className="h-9 w-28" />
-        </div>
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <Card key={i}>
-              <CardHeader className="pb-2">
-                <Skeleton className="h-4 w-24" />
-              </CardHeader>
-              <CardContent>
-                <Skeleton className="h-8 w-16" />
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      </div>
-    }>
+      }
+    >
       <MetricsPageContent />
     </Suspense>
   );

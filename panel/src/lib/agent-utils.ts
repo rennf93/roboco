@@ -85,7 +85,7 @@ const AGENT_NAMES: Record<string, string> = {
   "main-pm": "Main PM",
   "product-owner": "Product Owner",
   "head-marketing": "Head Marketing",
-  "auditor": "Auditor",
+  auditor: "Auditor",
   // Backend Cell
   "be-pm": "Backend PM",
   "be-dev-1": "Backend Dev 1",
@@ -105,8 +105,8 @@ const AGENT_NAMES: Record<string, string> = {
   "ux-qa": "UX/UI QA",
   "ux-doc": "UX/UI Doc",
   // CEO (human)
-  "ceo": "CEO",
-  "CEO": "CEO",
+  ceo: "CEO",
+  CEO: "CEO",
   // Board-adjacent singletons
   "intake-1": "Intake",
   "secretary-1": "Secretary",
@@ -136,7 +136,9 @@ export function resolveToSlug(agentId: string | null | undefined): string {
  * @param agentId - The agent identifier (slug or UUID)
  * @returns The human-readable name, or the slug, or "Unknown Agent" for unrecognized UUIDs
  */
-export function getAgentDisplayName(agentId: string | null | undefined): string {
+export function getAgentDisplayName(
+  agentId: string | null | undefined,
+): string {
   if (!agentId) return "Unassigned";
 
   // Live roster first — keyed by both UUID and slug, so a direct hit gives the
@@ -170,7 +172,7 @@ const AGENT_CODES: Record<string, string> = {
   "main-pm": "MPM",
   "product-owner": "PO",
   "head-marketing": "MKT",
-  "auditor": "AUD",
+  auditor: "AUD",
   // Backend Cell
   "be-pm": "BPM",
   "be-dev-1": "BD1",
@@ -190,8 +192,8 @@ const AGENT_CODES: Record<string, string> = {
   "ux-qa": "UQA",
   "ux-doc": "UDC",
   // CEO
-  "ceo": "CEO",
-  "CEO": "CEO",
+  ceo: "CEO",
+  CEO: "CEO",
   // Board-adjacent singletons
   "intake-1": "INT",
   "secretary-1": "SEC",

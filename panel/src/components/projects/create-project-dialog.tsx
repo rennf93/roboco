@@ -64,7 +64,12 @@ export function CreateProjectDialog() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!formData.name || !formData.slug || !formData.git_url || !formData.assigned_cell) {
+    if (
+      !formData.name ||
+      !formData.slug ||
+      !formData.git_url ||
+      !formData.assigned_cell
+    ) {
       toast.error("Please fill in all required fields");
       return;
     }
@@ -97,7 +102,7 @@ export function CreateProjectDialog() {
       setShowAdvanced(false);
     } catch (error) {
       toast.error(
-        `Failed to create project: ${error instanceof Error ? error.message : "Unknown error"}`
+        `Failed to create project: ${error instanceof Error ? error.message : "Unknown error"}`,
       );
     }
   };
@@ -136,7 +141,9 @@ export function CreateProjectDialog() {
               <Input
                 id="slug"
                 value={formData.slug}
-                onChange={(e) => setFormData({ ...formData, slug: e.target.value })}
+                onChange={(e) =>
+                  setFormData({ ...formData, slug: e.target.value })
+                }
                 placeholder="roboco-api"
                 pattern="^[a-z0-9-]+$"
               />
@@ -151,7 +158,9 @@ export function CreateProjectDialog() {
               <Input
                 id="git_url"
                 value={formData.git_url}
-                onChange={(e) => setFormData({ ...formData, git_url: e.target.value })}
+                onChange={(e) =>
+                  setFormData({ ...formData, git_url: e.target.value })
+                }
                 placeholder="https://github.com/org/repo.git"
               />
               <p className="text-xs text-muted-foreground">
@@ -169,11 +178,14 @@ export function CreateProjectDialog() {
                 id="git_token"
                 type="password"
                 value={formData.git_token || ""}
-                onChange={(e) => setFormData({ ...formData, git_token: e.target.value })}
+                onChange={(e) =>
+                  setFormData({ ...formData, git_token: e.target.value })
+                }
                 placeholder="ghp_xxxxxxxxxxxx..."
               />
               <p className="text-xs text-muted-foreground">
-                Personal access token with repo access for clone, push, and PR operations
+                Personal access token with repo access for clone, push, and PR
+                operations
               </p>
             </div>
 
@@ -182,7 +194,9 @@ export function CreateProjectDialog() {
               <Label htmlFor="assigned_cell">Assigned Cell *</Label>
               <Select
                 value={formData.assigned_cell}
-                onValueChange={(value: Team) => setFormData({ ...formData, assigned_cell: value })}
+                onValueChange={(value: Team) =>
+                  setFormData({ ...formData, assigned_cell: value })
+                }
               >
                 <SelectTrigger>
                   <SelectValue placeholder="Select cell" />
@@ -203,7 +217,9 @@ export function CreateProjectDialog() {
               <Input
                 id="default_branch"
                 value={formData.default_branch}
-                onChange={(e) => setFormData({ ...formData, default_branch: e.target.value })}
+                onChange={(e) =>
+                  setFormData({ ...formData, default_branch: e.target.value })
+                }
                 placeholder="main"
               />
             </div>
@@ -226,7 +242,9 @@ export function CreateProjectDialog() {
                   <Input
                     id="test_command"
                     value={formData.test_command || ""}
-                    onChange={(e) => setFormData({ ...formData, test_command: e.target.value })}
+                    onChange={(e) =>
+                      setFormData({ ...formData, test_command: e.target.value })
+                    }
                     placeholder="uv run pytest"
                   />
                 </div>
@@ -236,7 +254,9 @@ export function CreateProjectDialog() {
                   <Input
                     id="lint_command"
                     value={formData.lint_command || ""}
-                    onChange={(e) => setFormData({ ...formData, lint_command: e.target.value })}
+                    onChange={(e) =>
+                      setFormData({ ...formData, lint_command: e.target.value })
+                    }
                     placeholder="uv run ruff check ."
                   />
                 </div>
@@ -246,7 +266,12 @@ export function CreateProjectDialog() {
                   <Input
                     id="format_command"
                     value={formData.format_command || ""}
-                    onChange={(e) => setFormData({ ...formData, format_command: e.target.value })}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        format_command: e.target.value,
+                      })
+                    }
                     placeholder="uv run ruff format ."
                   />
                 </div>
@@ -257,7 +282,10 @@ export function CreateProjectDialog() {
                     id="typecheck_command"
                     value={formData.typecheck_command || ""}
                     onChange={(e) =>
-                      setFormData({ ...formData, typecheck_command: e.target.value })
+                      setFormData({
+                        ...formData,
+                        typecheck_command: e.target.value,
+                      })
                     }
                     placeholder="uv run mypy src/"
                   />
@@ -268,7 +296,12 @@ export function CreateProjectDialog() {
                   <Input
                     id="build_command"
                     value={formData.build_command || ""}
-                    onChange={(e) => setFormData({ ...formData, build_command: e.target.value })}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        build_command: e.target.value,
+                      })
+                    }
                     placeholder="pnpm build"
                   />
                 </div>
@@ -279,20 +312,27 @@ export function CreateProjectDialog() {
                     id="quality_command"
                     value={formData.quality_command || ""}
                     onChange={(e) =>
-                      setFormData({ ...formData, quality_command: e.target.value })
+                      setFormData({
+                        ...formData,
+                        quality_command: e.target.value,
+                      })
                     }
                     placeholder="make gate"
                   />
                   <p className="text-xs text-muted-foreground">
-                    Fast pre-submit gate (lint + types + complexity, no tests) run
-                    in the dev&apos;s workspace at hand-off to QA.
+                    Fast pre-submit gate (lint + types + complexity, no tests)
+                    run in the dev&apos;s workspace at hand-off to QA.
                   </p>
                 </div>
               </>
             )}
           </div>
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setOpen(false)}
+            >
               Cancel
             </Button>
             <Button type="submit" disabled={createProject.isPending}>

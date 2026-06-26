@@ -95,9 +95,14 @@ function KnowledgeBaseBrowserContent() {
   const searchQuery = searchParams.get("q") || "";
   const filtersParam = searchParams.get("filters");
   const searchFilters: KBIndexType[] = filtersParam
-    ? (filtersParam.split(",").filter((f) => VALID_INDEX_TYPES.includes(f as KBIndexType)) as KBIndexType[])
+    ? (filtersParam
+        .split(",")
+        .filter((f) =>
+          VALID_INDEX_TYPES.includes(f as KBIndexType),
+        ) as KBIndexType[])
     : [];
-  const selectedCategory = (searchParams.get("category") as KBIndexType) || null;
+  const selectedCategory =
+    (searchParams.get("category") as KBIndexType) || null;
 
   // RAG state (transient, not URL-persisted)
   const [ragQuestion, setRagQuestion] = useState<string | null>(null);
@@ -118,7 +123,7 @@ function KnowledgeBaseBrowserContent() {
       const query = params.toString();
       router.push(query ? `/knowledge-base?${query}` : "/knowledge-base");
     },
-    [router, searchParams]
+    [router, searchParams],
   );
 
   // State update handlers
@@ -126,32 +131,37 @@ function KnowledgeBaseBrowserContent() {
     (tab: TabValue) => {
       updateParams({ tab: tab === "search" ? null : tab });
     },
-    [updateParams]
+    [updateParams],
   );
 
   const handleSearchChange = useCallback(
     (query: string) => {
       updateParams({ q: query || null });
     },
-    [updateParams]
+    [updateParams],
   );
 
   const handleFiltersChange = useCallback(
     (filters: KBIndexType[]) => {
       updateParams({ filters: filters.length > 0 ? filters.join(",") : null });
     },
-    [updateParams]
+    [updateParams],
   );
 
   const handleCategoryChange = useCallback(
     (category: KBIndexType | null) => {
       updateParams({ category });
     },
-    [updateParams]
+    [updateParams],
   );
 
   // Data hooks
-  const { data: stats, isLoading: statsLoading, error: statsError, refetch: refetchStats } = useKBStats();
+  const {
+    data: stats,
+    isLoading: statsLoading,
+    error: statsError,
+    refetch: refetchStats,
+  } = useKBStats();
   const { data: searchResults, isLoading: searchLoading } = useKBSearch({
     query: searchQuery,
     index_types: searchFilters.length > 0 ? searchFilters : undefined,
@@ -159,7 +169,11 @@ function KnowledgeBaseBrowserContent() {
   const ragMutation = useRAGQuery();
 
   // Admin hooks
-  const { data: health, isLoading: loadingHealth, refetch: refetchHealth } = useRAGHealth();
+  const {
+    data: health,
+    isLoading: loadingHealth,
+    refetch: refetchHealth,
+  } = useRAGHealth();
   const deleteIndex = useDeleteIndex();
   const refreshIndex = useRefreshIndex();
   const reindexAll = useReindexAll();
@@ -212,7 +226,7 @@ function KnowledgeBaseBrowserContent() {
         toast.success(`Reindexed ${docsCount} docs.${warns}`);
       } else {
         toast.warning(
-          `Reindex completed with issues: ${result.warnings?.join(", ") ?? "Unknown errors"}`
+          `Reindex completed with issues: ${result.warnings?.join(", ") ?? "Unknown errors"}`,
         );
       }
     } catch (error) {
@@ -239,21 +253,25 @@ function KnowledgeBaseBrowserContent() {
   };
 
   // Calculate totals for admin
-  const totalDocs = stats?.indexes.reduce((sum, idx) => sum + idx.document_count, 0) ?? 0;
-  const totalChunks = stats?.indexes.reduce((sum, idx) => sum + idx.chunk_count, 0) ?? 0;
+  const totalDocs =
+    stats?.indexes.reduce((sum, idx) => sum + idx.document_count, 0) ?? 0;
+  const totalChunks =
+    stats?.indexes.reduce((sum, idx) => sum + idx.chunk_count, 0) ?? 0;
 
   // Check if offline
-  const isOffline = statsError && (
-    statsError.message?.includes("Network Error") ||
-    (statsError as { code?: string })?.code === "ERR_NETWORK"
-  );
+  const isOffline =
+    statsError &&
+    (statsError.message?.includes("Network Error") ||
+      (statsError as { code?: string })?.code === "ERR_NETWORK");
 
   if (isOffline) {
     return (
       <div className="space-y-6">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-3xl font-bold tracking-tight">Knowledge Base</h1>
+            <h1 className="text-3xl font-bold tracking-tight">
+              Knowledge Base
+            </h1>
             <p className="text-muted-foreground">
               Search and query indexed knowledge
             </p>
@@ -285,7 +303,10 @@ function KnowledgeBaseBrowserContent() {
       </div>
 
       {/* Tabs */}
-      <Tabs value={activeTab} onValueChange={(v) => handleTabChange(v as TabValue)}>
+      <Tabs
+        value={activeTab}
+        onValueChange={(v) => handleTabChange(v as TabValue)}
+      >
         <TabsList>
           <TabsTrigger value="search" className="gap-2">
             <Search className="h-4 w-4" />
@@ -371,10 +392,7 @@ function KnowledgeBaseBrowserContent() {
 
         {/* Mentor Tab - Chat Interface */}
         <TabsContent value="mentor" className="mt-6">
-          <MentorChat
-            onAsk={handleMentorAsk}
-            isLoading={askMentor.isPending}
-          />
+          <MentorChat onAsk={handleMentorAsk} isLoading={askMentor.isPending} />
         </TabsContent>
 
         {/* Browse Tab */}
@@ -424,7 +442,9 @@ function KnowledgeBaseBrowserContent() {
                           <XCircle className="h-8 w-8 text-red-600" />
                         )}
                         <div>
-                          <p className="font-medium">{health.healthy ? "Healthy" : "Unhealthy"}</p>
+                          <p className="font-medium">
+                            {health.healthy ? "Healthy" : "Unhealthy"}
+                          </p>
                           <p className="text-sm text-muted-foreground">
                             Embedding: {health.embedding_status}
                           </p>
@@ -436,7 +456,9 @@ function KnowledgeBaseBrowserContent() {
                       </div>
                     </div>
                   ) : (
-                    <p className="text-muted-foreground text-sm">Health data unavailable</p>
+                    <p className="text-muted-foreground text-sm">
+                      Health data unavailable
+                    </p>
                   )}
                 </CardContent>
               </Card>
@@ -457,13 +479,19 @@ function KnowledgeBaseBrowserContent() {
                         <AlertDialogHeader>
                           <AlertDialogTitle>Reindex All Data?</AlertDialogTitle>
                           <AlertDialogDescription>
-                            This will rebuild all indexes from scratch. This may take several minutes.
+                            This will rebuild all indexes from scratch. This may
+                            take several minutes.
                           </AlertDialogDescription>
                         </AlertDialogHeader>
                         <AlertDialogFooter>
                           <AlertDialogCancel>Cancel</AlertDialogCancel>
-                          <AlertDialogAction onClick={handleReindexAll} disabled={reindexAll.isPending}>
-                            {reindexAll.isPending && <RefreshCw className="h-4 w-4 mr-2 animate-spin" />}
+                          <AlertDialogAction
+                            onClick={handleReindexAll}
+                            disabled={reindexAll.isPending}
+                          >
+                            {reindexAll.isPending && (
+                              <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                            )}
                             Reindex
                           </AlertDialogAction>
                         </AlertDialogFooter>
@@ -484,7 +512,6 @@ function KnowledgeBaseBrowserContent() {
                   </div>
                 </CardContent>
               </Card>
-
             </div>
 
             {/* Right Column - Index Management */}
@@ -508,9 +535,12 @@ function KnowledgeBaseBrowserContent() {
                       <div className="space-y-3 pr-4">
                         {stats?.indexes.map((index) => {
                           const indexType = index.index_type;
-                          const percentage = totalChunks > 0
-                            ? Math.round((index.chunk_count / totalChunks) * 100)
-                            : 0;
+                          const percentage =
+                            totalChunks > 0
+                              ? Math.round(
+                                  (index.chunk_count / totalChunks) * 100,
+                                )
+                              : 0;
 
                           return (
                             <div
@@ -520,7 +550,9 @@ function KnowledgeBaseBrowserContent() {
                               <div className="flex items-center justify-between mb-2">
                                 <div className="flex items-center gap-2">
                                   <FileText className="h-4 w-4 text-muted-foreground" />
-                                  <span className="font-medium">{INDEX_LABELS[indexType]}</span>
+                                  <span className="font-medium">
+                                    {INDEX_LABELS[indexType]}
+                                  </span>
                                   <Badge variant="outline" className="text-xs">
                                     {indexType}
                                   </Badge>
@@ -529,7 +561,9 @@ function KnowledgeBaseBrowserContent() {
                                   <Button
                                     size="sm"
                                     variant="outline"
-                                    onClick={() => handleRefreshIndex(indexType)}
+                                    onClick={() =>
+                                      handleRefreshIndex(indexType)
+                                    }
                                     disabled={refreshIndex.isPending}
                                   >
                                     {refreshIndex.isPending ? (
@@ -540,22 +574,34 @@ function KnowledgeBaseBrowserContent() {
                                   </Button>
                                   <AlertDialog>
                                     <AlertDialogTrigger asChild>
-                                      <Button size="sm" variant="outline" className="text-red-600">
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        className="text-red-600"
+                                      >
                                         <Trash2 className="h-3 w-3" />
                                       </Button>
                                     </AlertDialogTrigger>
                                     <AlertDialogContent>
                                       <AlertDialogHeader>
-                                        <AlertDialogTitle>Delete {INDEX_LABELS[indexType]}?</AlertDialogTitle>
+                                        <AlertDialogTitle>
+                                          Delete {INDEX_LABELS[indexType]}?
+                                        </AlertDialogTitle>
                                         <AlertDialogDescription>
-                                          This will permanently delete all {index.document_count} documents
-                                          and {index.chunk_count} chunks from this index.
+                                          This will permanently delete all{" "}
+                                          {index.document_count} documents and{" "}
+                                          {index.chunk_count} chunks from this
+                                          index.
                                         </AlertDialogDescription>
                                       </AlertDialogHeader>
                                       <AlertDialogFooter>
-                                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                        <AlertDialogCancel>
+                                          Cancel
+                                        </AlertDialogCancel>
                                         <AlertDialogAction
-                                          onClick={() => handleDeleteIndex(indexType)}
+                                          onClick={() =>
+                                            handleDeleteIndex(indexType)
+                                          }
                                           className="bg-red-600 hover:bg-red-700"
                                         >
                                           Delete
@@ -568,18 +614,30 @@ function KnowledgeBaseBrowserContent() {
 
                               <div className="grid grid-cols-3 gap-4 text-sm mb-2">
                                 <div>
-                                  <span className="text-muted-foreground">Documents:</span>{" "}
-                                  <span className="font-medium">{index.document_count}</span>
+                                  <span className="text-muted-foreground">
+                                    Documents:
+                                  </span>{" "}
+                                  <span className="font-medium">
+                                    {index.document_count}
+                                  </span>
                                 </div>
                                 <div>
-                                  <span className="text-muted-foreground">Chunks:</span>{" "}
-                                  <span className="font-medium">{index.chunk_count}</span>
+                                  <span className="text-muted-foreground">
+                                    Chunks:
+                                  </span>{" "}
+                                  <span className="font-medium">
+                                    {index.chunk_count}
+                                  </span>
                                 </div>
                                 <div>
-                                  <span className="text-muted-foreground">Updated:</span>{" "}
+                                  <span className="text-muted-foreground">
+                                    Updated:
+                                  </span>{" "}
                                   <span className="font-medium">
                                     {index.last_updated
-                                      ? formatDistanceToNow(new Date(index.last_updated)) + " ago"
+                                      ? formatDistanceToNow(
+                                          new Date(index.last_updated),
+                                        ) + " ago"
                                       : "Never"}
                                   </span>
                                 </div>

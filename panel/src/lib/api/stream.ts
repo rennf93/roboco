@@ -74,7 +74,9 @@ export const streamApi = {
   /**
    * Submit an audio chunk for transcription
    */
-  submitChunk: async (request: StreamChunkRequest): Promise<StreamChunkResponse> => {
+  submitChunk: async (
+    request: StreamChunkRequest,
+  ): Promise<StreamChunkResponse> => {
     if (isMockMode()) {
       return {
         status: "queued",
@@ -82,14 +84,19 @@ export const streamApi = {
         queued: true,
       };
     }
-    const { data } = await api.post<StreamChunkResponse>("/stream/chunk", request);
+    const { data } = await api.post<StreamChunkResponse>(
+      "/stream/chunk",
+      request,
+    );
     return data;
   },
 
   /**
    * Complete a transcription session
    */
-  complete: async (request: StreamCompleteRequest): Promise<StreamCompleteResponse> => {
+  complete: async (
+    request: StreamCompleteRequest,
+  ): Promise<StreamCompleteResponse> => {
     if (isMockMode()) {
       return {
         status: "completed",
@@ -98,7 +105,10 @@ export const streamApi = {
         transcription_id: `trans-${Date.now()}`,
       };
     }
-    const { data } = await api.post<StreamCompleteResponse>("/stream/complete", request);
+    const { data } = await api.post<StreamCompleteResponse>(
+      "/stream/complete",
+      request,
+    );
     return data;
   },
 
@@ -117,7 +127,10 @@ export const streamApi = {
         confidence: 0.85,
       };
     }
-    const { data } = await api.post<ExtractionResponse>("/stream/extract", request);
+    const { data } = await api.post<ExtractionResponse>(
+      "/stream/extract",
+      request,
+    );
     return data;
   },
 
@@ -155,7 +168,9 @@ export const streamApi = {
   /**
    * Get permissions for a specific channel
    */
-  getChannelPermissions: async (channelName: string): Promise<ChannelPermissions> => {
+  getChannelPermissions: async (
+    channelName: string,
+  ): Promise<ChannelPermissions> => {
     if (isMockMode()) {
       return {
         channel_name: channelName,
@@ -163,7 +178,9 @@ export const streamApi = {
         can_extract: true,
       };
     }
-    const { data } = await api.get<ChannelPermissions>(`/stream/permissions/channel/${channelName}`);
+    const { data } = await api.get<ChannelPermissions>(
+      `/stream/permissions/channel/${channelName}`,
+    );
     return data;
   },
 };

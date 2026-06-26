@@ -26,10 +26,7 @@ function groupChannels(channels: Channel[]): Record<string, Channel[]> {
       groups["Cell Channels"].push(channel);
     } else if (channel.name.includes("-all")) {
       groups["Cross-Cell"].push(channel);
-    } else if (
-      channel.name.includes("pm") ||
-      channel.name.includes("board")
-    ) {
+    } else if (channel.name.includes("pm") || channel.name.includes("board")) {
       groups["Management"].push(channel);
     } else {
       groups["Special"].push(channel);

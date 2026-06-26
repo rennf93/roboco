@@ -5,12 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Check, RefreshCw, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { OfflineState } from "@/components/ui/offline-state";
@@ -100,7 +95,9 @@ function PitchCard({ pitch, onApprove, onReject, busy }: PitchCardProps) {
             <p className="text-xs font-medium text-muted-foreground">
               Proposed solution
             </p>
-            <p className="text-sm whitespace-pre-wrap">{pitch.proposed_solution}</p>
+            <p className="text-sm whitespace-pre-wrap">
+              {pitch.proposed_solution}
+            </p>
           </div>
           {proposed ? (
             <div className="flex gap-2">

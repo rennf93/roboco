@@ -13,7 +13,7 @@ interface LiveFeedsPanelProps {
 
 export function LiveFeedsPanel({ feeds, isLoading }: LiveFeedsPanelProps) {
   const activeCount = (feeds ?? []).filter(
-    (f) => f.status === "active" || f.message_count_24h > 0
+    (f) => f.status === "active" || f.message_count_24h > 0,
   ).length;
 
   return (

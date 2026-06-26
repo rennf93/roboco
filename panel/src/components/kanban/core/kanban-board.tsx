@@ -57,13 +57,16 @@ export function KanbanBoard({
   onTeamChange,
   showQaActions,
 }: KanbanBoardProps) {
-  const { data: tasks, isLoading, refetch } = useTasks(
-    teamFilter ? { team: teamFilter } : undefined
-  );
+  const {
+    data: tasks,
+    isLoading,
+    refetch,
+  } = useTasks(teamFilter ? { team: teamFilter } : undefined);
   const lifecycle = useTaskLifecycle();
   const updateTask = useUpdateTask();
   const [activeTask, setActiveTask] = useState<Task | null>(null);
-  const [pendingNotesAction, setPendingNotesAction] = useState<PendingNotesAction | null>(null);
+  const [pendingNotesAction, setPendingNotesAction] =
+    useState<PendingNotesAction | null>(null);
   const [activeColumnIndex, setActiveColumnIndex] = useState(0);
 
   const sensors = useSensors(
@@ -71,14 +74,17 @@ export function KanbanBoard({
       activationConstraint: {
         distance: 8,
       },
-    })
+    }),
   );
 
   // Group tasks by status
-  const tasksByStatus = columns.reduce((acc, col) => {
-    acc[col.status] = (tasks || []).filter((t) => t.status === col.status);
-    return acc;
-  }, {} as Record<TaskStatus, Task[]>);
+  const tasksByStatus = columns.reduce(
+    (acc, col) => {
+      acc[col.status] = (tasks || []).filter((t) => t.status === col.status);
+      return acc;
+    },
+    {} as Record<TaskStatus, Task[]>,
+  );
 
   const handleDragStart = (event: DragStartEvent) => {
     const taskId = event.active.id as string;
@@ -142,7 +148,9 @@ export function KanbanBoard({
           switch (task.status) {
             case TaskStatus.BACKLOG:
               // BACKLOG tasks need session before activation - PM only
-              toast.info("Backlog tasks must be activated by PM with a session");
+              toast.info(
+                "Backlog tasks must be activated by PM with a session",
+              );
               break;
             case TaskStatus.PENDING:
               await lifecycle.claim.mutateAsync(taskId);
@@ -359,9 +367,7 @@ export function KanbanBoard({
           ))}
         </div>
         <DragOverlay>
-          {activeTask ? (
-            <KanbanCard task={activeTask} isDragging />
-          ) : null}
+          {activeTask ? <KanbanCard task={activeTask} isDragging /> : null}
         </DragOverlay>
       </DndContext>
 

@@ -1,8 +1,5 @@
 import api from "./client";
-import type {
-  AssignmentScope,
-  ModelProvider,
-} from "@/types";
+import type { AssignmentScope, ModelProvider } from "@/types";
 
 // Matches the backend's CatalogEntryResponse.
 export interface CatalogEntry {

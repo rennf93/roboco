@@ -2,7 +2,13 @@
 
 import { MessageCircle, Users, Rocket, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { CopyButton } from "@/components/ui/copy-button";
 import type { DraftProposal } from "@/lib/api/prompter";
@@ -36,7 +42,7 @@ function draftToText(draft: DraftProposal): string {
     lines.push(
       "## What This Builds",
       ...draft.what_this_builds.map((b) => `- ${b}`),
-      ""
+      "",
     );
   }
   if (draft.the_work?.length) {
@@ -54,7 +60,7 @@ function draftToText(draft: DraftProposal): string {
     lines.push(
       "## Success Criteria",
       ...draft.acceptance_criteria.map((c) => `- ${c}`),
-      ""
+      "",
     );
   }
   return lines.join("\n").trim();
@@ -132,7 +138,9 @@ export function DraftProposalCard({
                   <span className="mt-0.5 h-3 w-3 shrink-0 rounded-full border border-primary/50 flex items-center justify-center">
                     <span className="h-1.5 w-1.5 rounded-full bg-primary/50" />
                   </span>
-                  <span className="text-foreground line-clamp-2">{criterion}</span>
+                  <span className="text-foreground line-clamp-2">
+                    {criterion}
+                  </span>
                 </li>
               ))}
               {draft.acceptance_criteria.length > 4 && (
@@ -170,7 +178,11 @@ export function DraftProposalCard({
           Board review &amp; Start
         </Button>
         {/* Approve & Start → PENDING, straight to Main PM (skip the board) */}
-        <Button size="sm" onClick={() => onStart("main_pm")} disabled={isLaunching}>
+        <Button
+          size="sm"
+          onClick={() => onStart("main_pm")}
+          disabled={isLaunching}
+        >
           {isLaunching ? (
             <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
           ) : (

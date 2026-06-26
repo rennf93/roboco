@@ -18,8 +18,10 @@ import { toast } from "sonner";
 
 // One-line blurb per flag so the operator knows what each master switch gates.
 const FLAG_DESCRIPTIONS: Record<string, string> = {
-  external_pr_enabled: "Discover and review inbound external/fork pull requests.",
-  internal_pr_enabled: "Run the read-only safety reviewer on internal branch PRs.",
+  external_pr_enabled:
+    "Discover and review inbound external/fork pull requests.",
+  internal_pr_enabled:
+    "Run the read-only safety reviewer on internal branch PRs.",
   research_enabled: "Let the Board and PMs run web research.",
   strategy_engine_enabled: "Generate and maintain company strategy artifacts.",
   self_heal_enabled: "Watch RoboCo's own CI and notify you when it regresses.",
@@ -30,8 +32,10 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
     "Provision each agent workspace with the target project's Python (not RoboCo's) and block delivery gates when its test suite can't be executed.",
   conventions_enabled:
     "Enforce a per-project architectural standard (.roboco/conventions.yml): inject the map, attach baseline constraints, and block i_am_done / pr_pass on misplaced definitions or lint suppressions.",
-  rag_auto_update_enabled: "Keep the knowledge base index refreshed automatically.",
-  transcript_prune_enabled: "Run the background sweep that prunes old transcripts.",
+  rag_auto_update_enabled:
+    "Keep the knowledge base index refreshed automatically.",
+  transcript_prune_enabled:
+    "Run the background sweep that prunes old transcripts.",
   gateway_health_enabled:
     "Recover an agent whose MCP gateway has broken (it can run no tools) while its container stays up — kill + respawn it instead of shielding it from the reaper forever.",
   ci_watch_enabled:
@@ -85,10 +89,14 @@ export function FeatureFlagsCard() {
       </CardHeader>
       <CardContent className="space-y-4">
         {isLoading && (
-          <p className="text-sm text-muted-foreground">Loading feature flags…</p>
+          <p className="text-sm text-muted-foreground">
+            Loading feature flags…
+          </p>
         )}
         {!isLoading && flags.length === 0 && (
-          <p className="text-sm text-muted-foreground">No feature flags available.</p>
+          <p className="text-sm text-muted-foreground">
+            No feature flags available.
+          </p>
         )}
         {flags.map((flag, i) => (
           <div key={flag.key}>

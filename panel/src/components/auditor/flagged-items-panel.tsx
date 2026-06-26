@@ -25,8 +25,13 @@ interface FlaggedItemsPanelProps {
   isLoading: boolean;
 }
 
-export function FlaggedItemsPanel({ flags, isLoading }: FlaggedItemsPanelProps) {
-  const [filter, setFilter] = useState<"all" | "unresolved" | "resolved">("unresolved");
+export function FlaggedItemsPanel({
+  flags,
+  isLoading,
+}: FlaggedItemsPanelProps) {
+  const [filter, setFilter] = useState<"all" | "unresolved" | "resolved">(
+    "unresolved",
+  );
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const resolveFlag = useResolveAuditorFlag();
 
@@ -74,7 +79,12 @@ export function FlaggedItemsPanel({ flags, isLoading }: FlaggedItemsPanelProps) 
             )}
           </div>
           <div className="flex items-center gap-2">
-            <Select value={filter} onValueChange={(v) => setFilter(v as "all" | "unresolved" | "resolved")}>
+            <Select
+              value={filter}
+              onValueChange={(v) =>
+                setFilter(v as "all" | "unresolved" | "resolved")
+              }
+            >
               <SelectTrigger className="w-auto min-w-24 h-8">
                 <SelectValue />
               </SelectTrigger>

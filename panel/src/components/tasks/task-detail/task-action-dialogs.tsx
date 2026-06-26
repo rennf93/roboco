@@ -74,7 +74,10 @@ export function EscalateToCeoDialog({
           <Button variant="outline" onClick={() => handleOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={handleConfirm} disabled={!reason.trim() || isPending}>
+          <Button
+            onClick={handleConfirm}
+            disabled={!reason.trim() || isPending}
+          >
             {isPending ? "Escalating..." : "Escalate"}
           </Button>
         </DialogFooter>
@@ -170,12 +173,16 @@ export function ApproveAndMergeDialog({
         <DialogHeader>
           <DialogTitle>Approve &amp; Merge</DialogTitle>
           <DialogDescription>
-            This will approve the completed work and merge the pull request into the
-            target branch. This action cannot be undone.
+            This will approve the completed work and merge the pull request into
+            the target branch. This action cannot be undone.
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isPending}>
+          <Button
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            disabled={isPending}
+          >
             Cancel
           </Button>
           <Button onClick={onConfirm} disabled={isPending}>
@@ -374,7 +381,8 @@ export function CreateBranchDialog({
         <DialogHeader>
           <DialogTitle>Create Branch</DialogTitle>
           <DialogDescription>
-            Create a new branch for this task. The branch name will be generated automatically.
+            Create a new branch for this task. The branch name will be generated
+            automatically.
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-4 py-4">

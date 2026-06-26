@@ -29,7 +29,10 @@ export function AgentStatusCards({ agent }: AgentStatusCardsProps) {
         </CardHeader>
         <CardContent>
           {agent.task_id ? (
-            <Link href={"/tasks/" + agent.task_id} className="text-blue-500 hover:underline">
+            <Link
+              href={"/tasks/" + agent.task_id}
+              className="text-blue-500 hover:underline"
+            >
               {agent.task_id.slice(0, 8)}...
             </Link>
           ) : (
@@ -58,7 +61,11 @@ export function AgentStatusCards({ agent }: AgentStatusCardsProps) {
           <AlertCircle className="h-4 w-4 text-muted-foreground" />
         </CardHeader>
         <CardContent>
-          <span className={agent.error_count > 0 ? "text-red-600 font-semibold" : ""}>
+          <span
+            className={
+              agent.error_count > 0 ? "text-red-600 font-semibold" : ""
+            }
+          >
             {agent.error_count}
           </span>
           {agent.waiting_for && (

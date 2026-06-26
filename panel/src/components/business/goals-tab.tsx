@@ -53,20 +53,18 @@ interface ObjectivesEditorProps {
   disabled: boolean;
 }
 
-function ObjectivesEditor({ items, onChange, disabled }: ObjectivesEditorProps) {
+function ObjectivesEditor({
+  items,
+  onChange,
+  disabled,
+}: ObjectivesEditorProps) {
   // Derive keys from the first item; fall back to generic keys.
   const keys =
-    items.length > 0
-      ? Object.keys(items[0])
-      : ["metric", "target", "status"];
+    items.length > 0 ? Object.keys(items[0]) : ["metric", "target", "status"];
 
-  const handleChange = (
-    rowIdx: number,
-    key: string,
-    value: string
-  ) => {
+  const handleChange = (rowIdx: number, key: string, value: string) => {
     const next = items.map((item, i) =>
-      i === rowIdx ? { ...item, [key]: value } : item
+      i === rowIdx ? { ...item, [key]: value } : item,
     );
     onChange(next);
   };
@@ -102,7 +100,10 @@ function ObjectivesEditor({ items, onChange, disabled }: ObjectivesEditorProps) 
           </div>
           {keys.map((key) => (
             <div key={key} className="space-y-1">
-              <Label htmlFor={`obj-${rowIdx}-${key}`} className="text-xs capitalize">
+              <Label
+                htmlFor={`obj-${rowIdx}-${key}`}
+                className="text-xs capitalize"
+              >
                 {key.replace(/_/g, " ")}
               </Label>
               <Input
@@ -225,13 +226,15 @@ function GoalsForm({ goals, refetch }: GoalsFormProps) {
 
   const [northStar, setNorthStar] = useState<string | null>(null);
   const [constraints, setConstraints] = useState<string | null>(null);
-  const [objectives, setObjectives] = useState<Record<string, unknown>[] | null>(null);
+  const [objectives, setObjectives] = useState<
+    Record<string, unknown>[] | null
+  >(null);
   const [policy, setPolicy] = useState<Record<string, unknown> | null>(null);
 
   const northStarVal = northStar ?? goals.north_star ?? "";
   const constraintsVal = constraints ?? (goals.constraints ?? []).join("\n");
-  const objectivesVal = objectives ?? (goals.objectives ?? []);
-  const policyVal = policy ?? (goals.operating_policy ?? {});
+  const objectivesVal = objectives ?? goals.objectives ?? [];
+  const policyVal = policy ?? goals.operating_policy ?? {};
 
   const saveMutation = useMutation({
     mutationFn: (update: CompanyGoalsUpdate) => companyGoalsApi.update(update),
@@ -268,7 +271,8 @@ function GoalsForm({ goals, refetch }: GoalsFormProps) {
         <CardTitle>Company Charter</CardTitle>
         <CardDescription>
           CEO-owned north star, objectives, constraints, and operating policy.
-          Injected into every agent&apos;s briefing so all work stays goal-aware.
+          Injected into every agent&apos;s briefing so all work stays
+          goal-aware.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">

@@ -40,7 +40,10 @@ export function ConnectionStatus() {
 
   if (state === "connected") {
     return (
-      <Badge variant="outline" className="gap-1 border-green-500 text-green-600">
+      <Badge
+        variant="outline"
+        className="gap-1 border-green-500 text-green-600"
+      >
         <Wifi className="h-3 w-3" />
         Connected
       </Badge>
@@ -48,7 +51,10 @@ export function ConnectionStatus() {
   }
 
   return (
-    <Badge variant="outline" className="gap-1 border-orange-500 text-orange-600">
+    <Badge
+      variant="outline"
+      className="gap-1 border-orange-500 text-orange-600"
+    >
       <WifiOff className="h-3 w-3" />
       Offline
     </Badge>

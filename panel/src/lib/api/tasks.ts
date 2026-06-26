@@ -136,7 +136,11 @@ export const tasksApi = {
     if (isMockMode()) {
       const idx = mockTasks.findIndex((t) => t.id === taskId);
       if (idx === -1) throw new Error("Task not found");
-      mockTasks[idx] = { ...mockTasks[idx], ...updates, updated_at: new Date().toISOString() };
+      mockTasks[idx] = {
+        ...mockTasks[idx],
+        ...updates,
+        updated_at: new Date().toISOString(),
+      };
       return mockTasks[idx];
     }
     const { data } = await api.patch<Task>("/tasks/" + taskId, updates);
@@ -162,7 +166,12 @@ export const tasksApi = {
       const idx = mockTasks.findIndex((t) => t.id === taskId);
       if (idx === -1) throw new Error("Task not found");
       const now = new Date().toISOString();
-      mockTasks[idx] = { ...mockTasks[idx], status: TaskStatus.CLAIMED, claimed_at: now, updated_at: now };
+      mockTasks[idx] = {
+        ...mockTasks[idx],
+        status: TaskStatus.CLAIMED,
+        claimed_at: now,
+        updated_at: now,
+      };
       return mockTasks[idx];
     }
     const { data } = await api.post<Task>("/tasks/" + taskId + "/claim");
@@ -174,7 +183,12 @@ export const tasksApi = {
       const idx = mockTasks.findIndex((t) => t.id === taskId);
       if (idx === -1) throw new Error("Task not found");
       const now = new Date().toISOString();
-      mockTasks[idx] = { ...mockTasks[idx], status: TaskStatus.IN_PROGRESS, started_at: now, updated_at: now };
+      mockTasks[idx] = {
+        ...mockTasks[idx],
+        status: TaskStatus.IN_PROGRESS,
+        started_at: now,
+        updated_at: now,
+      };
       return mockTasks[idx];
     }
     const { data } = await api.post<Task>("/tasks/" + taskId + "/start");
@@ -186,11 +200,20 @@ export const tasksApi = {
       const idx = mockTasks.findIndex((t) => t.id === taskId);
       if (idx === -1) throw new Error("Task not found");
       const now = new Date().toISOString();
-      const blockerIds = blockerId ? [...mockTasks[idx].blocker_ids, blockerId] : mockTasks[idx].blocker_ids;
-      mockTasks[idx] = { ...mockTasks[idx], status: TaskStatus.BLOCKED, blocker_ids: blockerIds, updated_at: now };
+      const blockerIds = blockerId
+        ? [...mockTasks[idx].blocker_ids, blockerId]
+        : mockTasks[idx].blocker_ids;
+      mockTasks[idx] = {
+        ...mockTasks[idx],
+        status: TaskStatus.BLOCKED,
+        blocker_ids: blockerIds,
+        updated_at: now,
+      };
       return mockTasks[idx];
     }
-    const { data } = await api.post<Task>("/tasks/" + taskId + "/block", { blocker_id: blockerId });
+    const { data } = await api.post<Task>("/tasks/" + taskId + "/block", {
+      blocker_id: blockerId,
+    });
     return data;
   },
 
@@ -199,7 +222,12 @@ export const tasksApi = {
       const idx = mockTasks.findIndex((t) => t.id === taskId);
       if (idx === -1) throw new Error("Task not found");
       const now = new Date().toISOString();
-      mockTasks[idx] = { ...mockTasks[idx], status: TaskStatus.IN_PROGRESS, blocker_ids: [], updated_at: now };
+      mockTasks[idx] = {
+        ...mockTasks[idx],
+        status: TaskStatus.IN_PROGRESS,
+        blocker_ids: [],
+        updated_at: now,
+      };
       return mockTasks[idx];
     }
     const { data } = await api.post<Task>("/tasks/" + taskId + "/unblock");
@@ -211,7 +239,11 @@ export const tasksApi = {
       const idx = mockTasks.findIndex((t) => t.id === taskId);
       if (idx === -1) throw new Error("Task not found");
       const now = new Date().toISOString();
-      mockTasks[idx] = { ...mockTasks[idx], status: TaskStatus.PAUSED, updated_at: now };
+      mockTasks[idx] = {
+        ...mockTasks[idx],
+        status: TaskStatus.PAUSED,
+        updated_at: now,
+      };
       return mockTasks[idx];
     }
     const { data } = await api.post<Task>("/tasks/" + taskId + "/pause");
@@ -223,7 +255,11 @@ export const tasksApi = {
       const idx = mockTasks.findIndex((t) => t.id === taskId);
       if (idx === -1) throw new Error("Task not found");
       const now = new Date().toISOString();
-      mockTasks[idx] = { ...mockTasks[idx], status: TaskStatus.IN_PROGRESS, updated_at: now };
+      mockTasks[idx] = {
+        ...mockTasks[idx],
+        status: TaskStatus.IN_PROGRESS,
+        updated_at: now,
+      };
       return mockTasks[idx];
     }
     const { data } = await api.post<Task>("/tasks/" + taskId + "/resume");
@@ -235,7 +271,12 @@ export const tasksApi = {
       const idx = mockTasks.findIndex((t) => t.id === taskId);
       if (idx === -1) throw new Error("Task not found");
       const now = new Date().toISOString();
-      mockTasks[idx] = { ...mockTasks[idx], status: TaskStatus.VERIFYING, self_verified: true, updated_at: now };
+      mockTasks[idx] = {
+        ...mockTasks[idx],
+        status: TaskStatus.VERIFYING,
+        self_verified: true,
+        updated_at: now,
+      };
       return mockTasks[idx];
     }
     const { data } = await api.post<Task>("/tasks/" + taskId + "/verify");
@@ -247,10 +288,17 @@ export const tasksApi = {
       const idx = mockTasks.findIndex((t) => t.id === taskId);
       if (idx === -1) throw new Error("Task not found");
       const now = new Date().toISOString();
-      mockTasks[idx] = { ...mockTasks[idx], status: TaskStatus.AWAITING_QA, dev_notes: devNotes ?? null, updated_at: now };
+      mockTasks[idx] = {
+        ...mockTasks[idx],
+        status: TaskStatus.AWAITING_QA,
+        dev_notes: devNotes ?? null,
+        updated_at: now,
+      };
       return mockTasks[idx];
     }
-    const { data } = await api.post<Task>("/tasks/" + taskId + "/submit-qa", { dev_notes: devNotes });
+    const { data } = await api.post<Task>("/tasks/" + taskId + "/submit-qa", {
+      dev_notes: devNotes,
+    });
     return data;
   },
 
@@ -259,10 +307,18 @@ export const tasksApi = {
       const idx = mockTasks.findIndex((t) => t.id === taskId);
       if (idx === -1) throw new Error("Task not found");
       const now = new Date().toISOString();
-      mockTasks[idx] = { ...mockTasks[idx], status: TaskStatus.AWAITING_DOCUMENTATION, qa_verified: true, qa_notes: qaNotes ?? null, updated_at: now };
+      mockTasks[idx] = {
+        ...mockTasks[idx],
+        status: TaskStatus.AWAITING_DOCUMENTATION,
+        qa_verified: true,
+        qa_notes: qaNotes ?? null,
+        updated_at: now,
+      };
       return mockTasks[idx];
     }
-    const { data } = await api.post<Task>("/tasks/" + taskId + "/pass-qa", { notes: qaNotes });
+    const { data } = await api.post<Task>("/tasks/" + taskId + "/pass-qa", {
+      notes: qaNotes,
+    });
     return data;
   },
 
@@ -271,10 +327,18 @@ export const tasksApi = {
       const idx = mockTasks.findIndex((t) => t.id === taskId);
       if (idx === -1) throw new Error("Task not found");
       const now = new Date().toISOString();
-      mockTasks[idx] = { ...mockTasks[idx], status: TaskStatus.NEEDS_REVISION, qa_verified: false, qa_notes: qaNotes ?? null, updated_at: now };
+      mockTasks[idx] = {
+        ...mockTasks[idx],
+        status: TaskStatus.NEEDS_REVISION,
+        qa_verified: false,
+        qa_notes: qaNotes ?? null,
+        updated_at: now,
+      };
       return mockTasks[idx];
     }
-    const { data } = await api.post<Task>("/tasks/" + taskId + "/fail-qa", { notes: qaNotes });
+    const { data } = await api.post<Task>("/tasks/" + taskId + "/fail-qa", {
+      notes: qaNotes,
+    });
     return data;
   },
 
@@ -283,10 +347,17 @@ export const tasksApi = {
       const idx = mockTasks.findIndex((t) => t.id === taskId);
       if (idx === -1) throw new Error("Task not found");
       const now = new Date().toISOString();
-      mockTasks[idx] = { ...mockTasks[idx], status: TaskStatus.COMPLETED, completed_at: now, updated_at: now };
+      mockTasks[idx] = {
+        ...mockTasks[idx],
+        status: TaskStatus.COMPLETED,
+        completed_at: now,
+        updated_at: now,
+      };
       return mockTasks[idx];
     }
-    const { data } = await api.post<Task>("/tasks/" + taskId + "/complete", { justification });
+    const { data } = await api.post<Task>("/tasks/" + taskId + "/complete", {
+      justification,
+    });
     return data;
   },
 
@@ -295,10 +366,16 @@ export const tasksApi = {
       const idx = mockTasks.findIndex((t) => t.id === taskId);
       if (idx === -1) throw new Error("Task not found");
       const now = new Date().toISOString();
-      mockTasks[idx] = { ...mockTasks[idx], status: TaskStatus.CANCELLED, updated_at: now };
+      mockTasks[idx] = {
+        ...mockTasks[idx],
+        status: TaskStatus.CANCELLED,
+        updated_at: now,
+      };
       return mockTasks[idx];
     }
-    const { data } = await api.post<Task>("/tasks/" + taskId + "/cancel", { reason });
+    const { data } = await api.post<Task>("/tasks/" + taskId + "/cancel", {
+      reason,
+    });
     return data;
   },
 
@@ -308,11 +385,18 @@ export const tasksApi = {
       const idx = mockTasks.findIndex((t) => t.id === taskId);
       if (idx === -1) throw new Error("Task not found");
       const now = new Date().toISOString();
-      mockTasks[idx] = { ...mockTasks[idx], status: TaskStatus.PENDING, completed_at: null, updated_at: now };
+      mockTasks[idx] = {
+        ...mockTasks[idx],
+        status: TaskStatus.PENDING,
+        completed_at: null,
+        updated_at: now,
+      };
       return mockTasks[idx];
     }
     // Backend doesn't have /reopen endpoint - use update instead
-    const { data } = await api.put<Task>("/tasks/" + taskId, { status: TaskStatus.PENDING });
+    const { data } = await api.put<Task>("/tasks/" + taskId, {
+      status: TaskStatus.PENDING,
+    });
     return data;
   },
 
@@ -322,7 +406,11 @@ export const tasksApi = {
       const idx = mockTasks.findIndex((t) => t.id === taskId);
       if (idx === -1) throw new Error("Task not found");
       const now = new Date().toISOString();
-      mockTasks[idx] = { ...mockTasks[idx], status: TaskStatus.PENDING, updated_at: now };
+      mockTasks[idx] = {
+        ...mockTasks[idx],
+        status: TaskStatus.PENDING,
+        updated_at: now,
+      };
       return mockTasks[idx];
     }
     const { data } = await api.post<Task>("/tasks/" + taskId + "/activate");
@@ -335,10 +423,17 @@ export const tasksApi = {
       const idx = mockTasks.findIndex((t) => t.id === taskId);
       if (idx === -1) throw new Error("Task not found");
       const now = new Date().toISOString();
-      mockTasks[idx] = { ...mockTasks[idx], status: TaskStatus.AWAITING_PM_REVIEW, updated_at: now };
+      mockTasks[idx] = {
+        ...mockTasks[idx],
+        status: TaskStatus.AWAITING_PM_REVIEW,
+        updated_at: now,
+      };
       return mockTasks[idx];
     }
-    const { data } = await api.post<Task>("/tasks/" + taskId + "/docs-complete", { notes: docNotes });
+    const { data } = await api.post<Task>(
+      "/tasks/" + taskId + "/docs-complete",
+      { notes: docNotes },
+    );
     return data;
   },
 
@@ -389,7 +484,9 @@ export const tasksApi = {
 
   getAwaitingDocs: async (): Promise<Task[]> => {
     if (isMockMode()) {
-      return mockTasks.filter((t) => t.status === TaskStatus.AWAITING_DOCUMENTATION);
+      return mockTasks.filter(
+        (t) => t.status === TaskStatus.AWAITING_DOCUMENTATION,
+      );
     }
     const { data } = await api.get<Task[]>("/tasks/awaiting-docs");
     return data;
@@ -410,7 +507,7 @@ export const tasksApi = {
       return [];
     }
     const { data } = await api.get<{ valid_statuses: TaskStatus[] }>(
-      "/tasks/" + taskId + "/valid-transitions"
+      "/tasks/" + taskId + "/valid-transitions",
     );
     return data.valid_statuses;
   },
@@ -447,7 +544,10 @@ export const tasksApi = {
   // PROGRESS TRACKING
   // =========================================================================
 
-  addProgress: async (taskId: string, request: ProgressRequest): Promise<Task> => {
+  addProgress: async (
+    taskId: string,
+    request: ProgressRequest,
+  ): Promise<Task> => {
     if (isMockMode()) {
       const idx = mockTasks.findIndex((t) => t.id === taskId);
       if (idx === -1) throw new Error("Task not found");
@@ -465,11 +565,17 @@ export const tasksApi = {
       };
       return mockTasks[idx];
     }
-    const { data } = await api.post<Task>("/tasks/" + taskId + "/progress", request);
+    const { data } = await api.post<Task>(
+      "/tasks/" + taskId + "/progress",
+      request,
+    );
     return data;
   },
 
-  addCheckpoint: async (taskId: string, request: CheckpointRequest): Promise<Task> => {
+  addCheckpoint: async (
+    taskId: string,
+    request: CheckpointRequest,
+  ): Promise<Task> => {
     if (isMockMode()) {
       const idx = mockTasks.findIndex((t) => t.id === taskId);
       if (idx === -1) throw new Error("Task not found");
@@ -489,7 +595,10 @@ export const tasksApi = {
       };
       return mockTasks[idx];
     }
-    const { data } = await api.post<Task>("/tasks/" + taskId + "/checkpoint", request);
+    const { data } = await api.post<Task>(
+      "/tasks/" + taskId + "/checkpoint",
+      request,
+    );
     return data;
   },
 
@@ -511,7 +620,10 @@ export const tasksApi = {
       };
       return mockTasks[idx];
     }
-    const { data } = await api.post<Task>("/tasks/" + taskId + "/commit", request);
+    const { data } = await api.post<Task>(
+      "/tasks/" + taskId + "/commit",
+      request,
+    );
     return data;
   },
 
@@ -519,7 +631,10 @@ export const tasksApi = {
   // SOFT BLOCK & ESCALATION
   // =========================================================================
 
-  softBlock: async (taskId: string, request: SoftBlockRequest): Promise<Task> => {
+  softBlock: async (
+    taskId: string,
+    request: SoftBlockRequest,
+  ): Promise<Task> => {
     if (isMockMode()) {
       const idx = mockTasks.findIndex((t) => t.id === taskId);
       if (idx === -1) throw new Error("Task not found");
@@ -531,11 +646,17 @@ export const tasksApi = {
       };
       return mockTasks[idx];
     }
-    const { data } = await api.post<Task>("/tasks/" + taskId + "/soft-block", request);
+    const { data } = await api.post<Task>(
+      "/tasks/" + taskId + "/soft-block",
+      request,
+    );
     return data;
   },
 
-  escalate: async (taskId: string, request: EscalateRequest): Promise<EscalateResponse> => {
+  escalate: async (
+    taskId: string,
+    request: EscalateRequest,
+  ): Promise<EscalateResponse> => {
     if (isMockMode()) {
       return {
         status: "escalated",
@@ -545,7 +666,10 @@ export const tasksApi = {
         message: "Task escalated successfully (mock)",
       };
     }
-    const { data } = await api.post<EscalateResponse>("/tasks/" + taskId + "/escalate", request);
+    const { data } = await api.post<EscalateResponse>(
+      "/tasks/" + taskId + "/escalate",
+      request,
+    );
     return data;
   },
 
@@ -561,7 +685,10 @@ export const tasksApi = {
       };
       return mockTasks[idx];
     }
-    const { data } = await api.post<Task>("/tasks/" + taskId + "/submit-pm-review", { notes });
+    const { data } = await api.post<Task>(
+      "/tasks/" + taskId + "/submit-pm-review",
+      { notes },
+    );
     return data;
   },
 
@@ -572,7 +699,9 @@ export const tasksApi = {
   // Get tasks awaiting CEO approval
   getAwaitingCeoApproval: async (): Promise<Task[]> => {
     if (isMockMode()) {
-      return mockTasks.filter((t) => t.status === TaskStatus.AWAITING_CEO_APPROVAL);
+      return mockTasks.filter(
+        (t) => t.status === TaskStatus.AWAITING_CEO_APPROVAL,
+      );
     }
     const { data } = await api.get<Task[]>("/tasks/awaiting-ceo-approval");
     return data;
@@ -592,7 +721,9 @@ export const tasksApi = {
       };
       return mockTasks[idx];
     }
-    const { data } = await api.post<Task>("/tasks/" + taskId + "/ceo-approve", { notes });
+    const { data } = await api.post<Task>("/tasks/" + taskId + "/ceo-approve", {
+      notes,
+    });
     return data;
   },
 
@@ -609,7 +740,9 @@ export const tasksApi = {
   // No request body — the backend endpoint accepts no notes parameter.
   // May throw HTTP 400 with detail starting 'NO_PR' or 'Merge failed'.
   approveAndMerge: async (taskId: string): Promise<Task> => {
-    const { data } = await api.post<Task>("/tasks/" + taskId + "/approve-and-merge");
+    const { data } = await api.post<Task>(
+      "/tasks/" + taskId + "/approve-and-merge",
+    );
     return data;
   },
 
@@ -626,7 +759,9 @@ export const tasksApi = {
       };
       return mockTasks[idx];
     }
-    const { data } = await api.post<Task>("/tasks/" + taskId + "/ceo-reject", { notes });
+    const { data } = await api.post<Task>("/tasks/" + taskId + "/ceo-reject", {
+      notes,
+    });
     return data;
   },
 
@@ -637,7 +772,9 @@ export const tasksApi = {
   // Get tasks awaiting PM review
   getAwaitingPmReview: async (): Promise<Task[]> => {
     if (isMockMode()) {
-      return mockTasks.filter((t) => t.status === TaskStatus.AWAITING_PM_REVIEW);
+      return mockTasks.filter(
+        (t) => t.status === TaskStatus.AWAITING_PM_REVIEW,
+      );
     }
     const { data } = await api.get<Task[]>("/tasks/awaiting-pm-review");
     return data;
@@ -654,18 +791,25 @@ export const tasksApi = {
   },
 
   // Get sessions linked to a task
-  getSessions: async (taskId: string): Promise<{ session_id: string; is_primary: boolean; relationship_type: string }[]> => {
+  getSessions: async (
+    taskId: string,
+  ): Promise<
+    { session_id: string; is_primary: boolean; relationship_type: string }[]
+  > => {
     if (isMockMode()) {
       return [];
     }
-    const { data } = await api.get<{ session_id: string; is_primary: boolean; relationship_type: string }[]>(
-      "/tasks/" + taskId + "/sessions"
-    );
+    const { data } = await api.get<
+      { session_id: string; is_primary: boolean; relationship_type: string }[]
+    >("/tasks/" + taskId + "/sessions");
     return data;
   },
 
   // Escalate task directly to CEO
-  escalateToCeo: async (taskId: string, reason: string): Promise<EscalateResponse> => {
+  escalateToCeo: async (
+    taskId: string,
+    reason: string,
+  ): Promise<EscalateResponse> => {
     if (isMockMode()) {
       return {
         status: "escalated",
@@ -675,12 +819,18 @@ export const tasksApi = {
         message: "Task escalated to CEO (mock)",
       };
     }
-    const { data } = await api.post<EscalateResponse>("/tasks/" + taskId + "/escalate-to-ceo", { notes: reason });
+    const { data } = await api.post<EscalateResponse>(
+      "/tasks/" + taskId + "/escalate-to-ceo",
+      { notes: reason },
+    );
     return data;
   },
 
   // Substitute a task with another (create replacement)
-  substitute: async (taskId: string, replacementTaskId: string): Promise<Task> => {
+  substitute: async (
+    taskId: string,
+    replacementTaskId: string,
+  ): Promise<Task> => {
     if (isMockMode()) {
       const idx = mockTasks.findIndex((t) => t.id === taskId);
       if (idx === -1) throw new Error("Task not found");

@@ -117,7 +117,8 @@ export function CreateTaskDialog() {
     }
 
     if (acceptanceCriteria.length === 0) {
-      newErrors.acceptance_criteria = "At least one acceptance criterion is required";
+      newErrors.acceptance_criteria =
+        "At least one acceptance criterion is required";
     }
 
     if (!projectId && !productId) {
@@ -143,7 +144,9 @@ export function CreateTaskDialog() {
         team,
         priority,
         status,
-        acceptance_criteria: acceptanceCriteria.map((c) => c.trim()).filter(Boolean),
+        acceptance_criteria: acceptanceCriteria
+          .map((c) => c.trim())
+          .filter(Boolean),
         estimated_complexity: complexity,
         nature,
         task_type: taskType,
@@ -181,7 +184,13 @@ export function CreateTaskDialog() {
   };
 
   return (
-    <Dialog open={open} onOpenChange={(newOpen) => { setOpen(newOpen); if (!newOpen) resetForm(); }}>
+    <Dialog
+      open={open}
+      onOpenChange={(newOpen) => {
+        setOpen(newOpen);
+        if (!newOpen) resetForm();
+      }}
+    >
       <DialogTrigger asChild>
         <Button>
           <Plus className="h-4 w-4 mr-2" />
@@ -208,7 +217,9 @@ export function CreateTaskDialog() {
               placeholder="Enter task title (5-200 characters)"
               className={errors.title ? "border-destructive" : ""}
             />
-            {errors.title && <p className="text-xs text-destructive">{errors.title}</p>}
+            {errors.title && (
+              <p className="text-xs text-destructive">{errors.title}</p>
+            )}
           </div>
 
           {/* Description */}
@@ -243,7 +254,10 @@ export function CreateTaskDialog() {
             </div>
             <div className="space-y-2">
               <Label>Status</Label>
-              <Select value={status} onValueChange={(v) => setStatus(v as TaskStatus)}>
+              <Select
+                value={status}
+                onValueChange={(v) => setStatus(v as TaskStatus)}
+              >
                 <SelectTrigger className="w-full">
                   <SelectValue />
                 </SelectTrigger>
@@ -276,7 +290,10 @@ export function CreateTaskDialog() {
             </div>
             <div className="space-y-2">
               <Label>Complexity</Label>
-              <Select value={complexity} onValueChange={(v) => setComplexity(v as Complexity)}>
+              <Select
+                value={complexity}
+                onValueChange={(v) => setComplexity(v as Complexity)}
+              >
                 <SelectTrigger className="w-full">
                   <SelectValue />
                 </SelectTrigger>
@@ -291,7 +308,10 @@ export function CreateTaskDialog() {
             </div>
             <div className="space-y-2">
               <Label>Nature</Label>
-              <Select value={nature} onValueChange={(v) => setNature(v as TaskNature)}>
+              <Select
+                value={nature}
+                onValueChange={(v) => setNature(v as TaskNature)}
+              >
                 <SelectTrigger className="w-full">
                   <SelectValue />
                 </SelectTrigger>
@@ -322,7 +342,11 @@ export function CreateTaskDialog() {
           {/* Advanced Options */}
           <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
             <CollapsibleTrigger asChild>
-              <Button variant="ghost" type="button" className="w-full justify-between">
+              <Button
+                variant="ghost"
+                type="button"
+                className="w-full justify-between"
+              >
                 <span>Advanced Options</span>
                 {advancedOpen ? (
                   <ChevronDown className="h-4 w-4" />
@@ -356,7 +380,8 @@ export function CreateTaskDialog() {
                   filterByTeam={team}
                 />
                 <p className="text-xs text-muted-foreground">
-                  Leave unassigned to let the orchestrator route automatically, or manually assign to a specific agent
+                  Leave unassigned to let the orchestrator route automatically,
+                  or manually assign to a specific agent
                 </p>
               </div>
 
@@ -364,13 +389,18 @@ export function CreateTaskDialog() {
               <div className="space-y-4 pt-4 border-t">
                 <div className="flex items-center gap-2 mb-2">
                   <GitBranch className="h-4 w-4 text-muted-foreground" />
-                  <span className="font-medium text-sm">Git & Work Configuration</span>
+                  <span className="font-medium text-sm">
+                    Git & Work Configuration
+                  </span>
                 </div>
 
                 {/* Task Type */}
                 <div className="space-y-2">
                   <Label>Task Type</Label>
-                  <Select value={taskType} onValueChange={(v) => setTaskType(v as TaskType)}>
+                  <Select
+                    value={taskType}
+                    onValueChange={(v) => setTaskType(v as TaskType)}
+                  >
                     <SelectTrigger className="w-full">
                       <SelectValue />
                     </SelectTrigger>
@@ -396,11 +426,14 @@ export function CreateTaskDialog() {
                     placeholder="Select project..."
                   />
                   {errors.project_id && (
-                    <p className="text-xs text-destructive">{errors.project_id}</p>
+                    <p className="text-xs text-destructive">
+                      {errors.project_id}
+                    </p>
                   )}
                   <p className="text-xs text-muted-foreground">
-                    The repo this task targets. Optional if you pick a Product below — a
-                    fan-out task routes each cell&apos;s subtask via the Product instead.
+                    The repo this task targets. Optional if you pick a Product
+                    below — a fan-out task routes each cell&apos;s subtask via
+                    the Product instead.
                   </p>
                 </div>
 
@@ -415,7 +448,9 @@ export function CreateTaskDialog() {
                       <SelectValue placeholder="None" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="none">None (single project)</SelectItem>
+                      <SelectItem value="none">
+                        None (single project)
+                      </SelectItem>
                       {products.map((p) => (
                         <SelectItem key={p.id} value={p.id}>
                           {p.name}
@@ -424,8 +459,8 @@ export function CreateTaskDialog() {
                     </SelectContent>
                   </Select>
                   <p className="text-xs text-muted-foreground">
-                    Optional. When set, delegated subtasks route to each cell&apos;s
-                    mapped project (manage these in Products).
+                    Optional. When set, delegated subtasks route to each
+                    cell&apos;s mapped project (manage these in Products).
                   </p>
                 </div>
               </div>

@@ -5,14 +5,24 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Send, Loader2, Brain, User, BookMarked, MessageCircle } from "lucide-react";
+import {
+  Send,
+  Loader2,
+  Brain,
+  User,
+  BookMarked,
+  MessageCircle,
+} from "lucide-react";
 
 interface MentorQueryInputProps {
   onSubmit: (question: string) => void;
   isLoading: boolean;
 }
 
-export function MentorQueryInput({ onSubmit, isLoading }: MentorQueryInputProps) {
+export function MentorQueryInput({
+  onSubmit,
+  isLoading,
+}: MentorQueryInputProps) {
   const [question, setQuestion] = useState("");
 
   const handleSubmit = () => {

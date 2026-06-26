@@ -6,7 +6,11 @@ import { useTask, useTaskLifecycle, useUpdateTask } from "@/hooks/use-tasks";
 import { useProject } from "@/hooks/use-projects";
 import { useCreateBranch, useCreatePR, useMergePR } from "@/hooks/use-git";
 import { Team, TaskStatus } from "@/types";
-import { TaskHeader, TaskMetadata, TaskTabs } from "@/components/tasks/task-detail";
+import {
+  TaskHeader,
+  TaskMetadata,
+  TaskTabs,
+} from "@/components/tasks/task-detail";
 import { ApproveAndStartButton } from "@/components/tasks/approve-and-start-button";
 import {
   EscalateToCeoDialog,
@@ -42,7 +46,8 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
 
   // Dialog states
   const [escalateDialogOpen, setEscalateDialogOpen] = useState(false);
-  const [approveAndMergeDialogOpen, setApproveAndMergeDialogOpen] = useState(false);
+  const [approveAndMergeDialogOpen, setApproveAndMergeDialogOpen] =
+    useState(false);
   const [approveDialogOpen, setApproveDialogOpen] = useState(false);
   const [rejectDialogOpen, setRejectDialogOpen] = useState(false);
   const [branchDialogOpen, setBranchDialogOpen] = useState(false);
@@ -51,7 +56,8 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
   const [passQaDialogOpen, setPassQaDialogOpen] = useState(false);
   const [failQaDialogOpen, setFailQaDialogOpen] = useState(false);
   const [docsCompleteDialogOpen, setDocsCompleteDialogOpen] = useState(false);
-  const [submitPmReviewDialogOpen, setSubmitPmReviewDialogOpen] = useState(false);
+  const [submitPmReviewDialogOpen, setSubmitPmReviewDialogOpen] =
+    useState(false);
   const [completeDialogOpen, setCompleteDialogOpen] = useState(false);
 
   const handleAction = async (action: string) => {
@@ -141,7 +147,10 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
           setEscalateDialogOpen(true);
           return; // Don't refetch yet, dialog will handle it
         case "request-changes":
-          await lifecycle.failQa.mutateAsync({ taskId: task.id, qaNotes: "Changes requested by PM" });
+          await lifecycle.failQa.mutateAsync({
+            taskId: task.id,
+            qaNotes: "Changes requested by PM",
+          });
           toast.success("Changes requested");
           break;
         case "create-branch":
@@ -221,11 +230,21 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
       refetch();
     } catch (err) {
       if (axios.isAxiosError(err)) {
-        const detail = (err.response?.data as { detail?: string } | undefined)?.detail ?? "";
+        const detail =
+          (err.response?.data as { detail?: string } | undefined)?.detail ?? "";
         if (typeof detail === "string" && detail.startsWith("NO_PR")) {
-          toast.error("No PR found for this task. Create a pull request before merging.");
-        } else if (typeof detail === "string" && detail.startsWith("Merge failed")) {
-          toast.error("Merge failed: " + (detail.slice("Merge failed".length).replace(/^[: ]+/, "") || "the merge could not be completed"));
+          toast.error(
+            "No PR found for this task. Create a pull request before merging.",
+          );
+        } else if (
+          typeof detail === "string" &&
+          detail.startsWith("Merge failed")
+        ) {
+          toast.error(
+            "Merge failed: " +
+              (detail.slice("Merge failed".length).replace(/^[: ]+/, "") ||
+                "the merge could not be completed"),
+          );
         } else {
           toast.error("Failed to approve and merge task");
         }
@@ -333,7 +352,12 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
       await createBranch.mutateAsync({
         project_slug: project.slug,
         task_id: task.id,
-        branch_type: branchType as "feature" | "bug" | "chore" | "docs" | "hotfix",
+        branch_type: branchType as
+          | "feature"
+          | "bug"
+          | "chore"
+          | "docs"
+          | "hotfix",
         agent_id: "ceo", // CEO is creating the branch from the panel
       });
       toast.success("Branch created successfully");
@@ -403,7 +427,8 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
               <AlertTriangle className="h-16 w-16 mx-auto mb-4 text-destructive" />
               <h2 className="text-xl font-semibold mb-2">Task Not Found</h2>
               <p className="text-muted-foreground mb-6">
-                {error?.message ?? "The task you're looking for doesn't exist or has been deleted."}
+                {error?.message ??
+                  "The task you're looking for doesn't exist or has been deleted."}
               </p>
               <div className="flex justify-center gap-4">
                 <Button variant="outline" onClick={() => refetch()}>

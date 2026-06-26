@@ -18,11 +18,17 @@ export function useRateLimitSync() {
       syncFromApi(response);
     } catch (err) {
       // Endpoint unavailable — treat as no-op per acceptance criteria
-      const status = (err as { response?: { status?: number } })?.response?.status;
+      const status = (err as { response?: { status?: number } })?.response
+        ?.status;
       if (status === 404) {
-        console.warn("[rate-limits] GET /api/system/rate-limits returned 404 — endpoint not available");
+        console.warn(
+          "[rate-limits] GET /api/system/rate-limits returned 404 — endpoint not available",
+        );
       } else {
-        console.warn("[rate-limits] GET /api/system/rate-limits unavailable:", err);
+        console.warn(
+          "[rate-limits] GET /api/system/rate-limits unavailable:",
+          err,
+        );
       }
     }
   }, [syncFromApi]);

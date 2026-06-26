@@ -44,7 +44,10 @@ const CATEGORY_OPTIONS = [
   "other",
 ];
 
-export function CreateFlagDialog({ open, onOpenChange }: CreateFlagDialogProps) {
+export function CreateFlagDialog({
+  open,
+  onOpenChange,
+}: CreateFlagDialogProps) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [severity, setSeverity] = useState<FlagSeverity>(FlagSeverity.INFO);
@@ -124,7 +127,10 @@ export function CreateFlagDialog({ open, onOpenChange }: CreateFlagDialogProps) 
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
               <Label>Severity</Label>
-              <Select value={severity} onValueChange={(v) => setSeverity(v as FlagSeverity)}>
+              <Select
+                value={severity}
+                onValueChange={(v) => setSeverity(v as FlagSeverity)}
+              >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>

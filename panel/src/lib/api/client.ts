@@ -39,7 +39,7 @@ api.interceptors.request.use(
   (error) => {
     console.error("[API] Request setup error:", error);
     return Promise.reject(error);
-  }
+  },
 );
 
 // Response interceptor for comprehensive error handling
@@ -47,7 +47,9 @@ api.interceptors.response.use(
   (response) => {
     // Log successful responses in development
     if (process.env.NODE_ENV === "development") {
-      console.log(`[API] ✓ ${response.config.method?.toUpperCase()} ${response.config.url}`);
+      console.log(
+        `[API] ✓ ${response.config.method?.toUpperCase()} ${response.config.url}`,
+      );
     }
     return response;
   },
@@ -56,7 +58,9 @@ api.interceptors.response.use(
     const status = error.response?.status;
     const url = error.config?.url;
     const method = error.config?.method?.toUpperCase();
-    const errorData = error.response?.data as Record<string, unknown> | undefined;
+    const errorData = error.response?.data as
+      | Record<string, unknown>
+      | undefined;
     const errorDetail = errorData?.detail || error.message;
 
     // -------------------------------------------------------------------------
@@ -64,13 +68,16 @@ api.interceptors.response.use(
     // -------------------------------------------------------------------------
     if (status === 429) {
       const retryAfterHeader = error.response?.headers?.["retry-after"];
-      const retryAfterSeconds = retryAfterHeader ? parseInt(String(retryAfterHeader), 10) : 60;
+      const retryAfterSeconds = retryAfterHeader
+        ? parseInt(String(retryAfterHeader), 10)
+        : 60;
       const safeRetryAfter = isNaN(retryAfterSeconds) ? 60 : retryAfterSeconds;
 
       // Extract provider from custom header or fall back to URL path heuristics
       const providerHeader = error.response?.headers?.["x-provider"];
       const urlProvider = url
-        ? (["anthropic", "openai", "ollama"].find((p) => url.includes(p)) ?? "unknown")
+        ? (["anthropic", "openai", "ollama"].find((p) => url.includes(p)) ??
+          "unknown")
         : "unknown";
       const provider = (providerHeader as string | undefined) ?? urlProvider;
 
@@ -91,14 +98,14 @@ api.interceptors.response.use(
         if (retryCount < RATE_LIMIT_MAX_RETRIES) {
           // Wait retryAfterSeconds before retrying — interceptor re-runs on each subsequent 429
           const delayMs = safeRetryAfter * 1000;
-          return new Promise<void>((resolve) => setTimeout(resolve, delayMs)).then(
-            () => api(error.config!)
-          );
+          return new Promise<void>((resolve) =>
+            setTimeout(resolve, delayMs),
+          ).then(() => api(error.config!));
         }
       }
       // Retries exhausted — notify the user via Sonner toast
       toast.warning(
-        `Rate limited by ${provider}. The system has paused operations and will resume automatically in ~${safeRetryAfter}s.`
+        `Rate limited by ${provider}. The system has paused operations and will resume automatically in ~${safeRetryAfter}s.`,
       );
     }
 
@@ -111,23 +118,35 @@ api.interceptors.response.use(
 
     // Specific error handling with helpful messages
     if (error.code === "ECONNABORTED") {
-      console.error("[API] Request timed out - backend may be overloaded or unavailable");
+      console.error(
+        "[API] Request timed out - backend may be overloaded or unavailable",
+      );
     } else if (error.code === "ERR_NETWORK") {
-      console.error("[API] Network error - check if backend is running at", API_URL);
+      console.error(
+        "[API] Network error - check if backend is running at",
+        API_URL,
+      );
     } else if (status === 401) {
       console.error("[API] Unauthorized - check API authentication headers");
     } else if (status === 403) {
-      console.error("[API] Forbidden - insufficient permissions for this action");
+      console.error(
+        "[API] Forbidden - insufficient permissions for this action",
+      );
     } else if (status === 404) {
       console.error("[API] Not found - endpoint may not exist:", url);
     } else if (status === 422) {
-      console.error("[API] Validation error - request data is invalid:", errorDetail);
+      console.error(
+        "[API] Validation error - request data is invalid:",
+        errorDetail,
+      );
     } else if (status && status >= 500) {
-      console.error("[API] Server error - backend encountered an internal error");
+      console.error(
+        "[API] Server error - backend encountered an internal error",
+      );
     }
 
     return Promise.reject(error);
-  }
+  },
 );
 
 /**
@@ -187,7 +206,8 @@ export function getErrorMessage(error: unknown): string {
 
     // Check for HTTP status
     const status = axiosError.response?.status;
-    if (status === 401) return "Authentication required. Please refresh the page.";
+    if (status === 401)
+      return "Authentication required. Please refresh the page.";
     if (status === 403) return "Permission denied for this action.";
     if (status === 404) return "The requested resource was not found.";
     if (status === 422) return "Invalid request data.";
@@ -195,7 +215,9 @@ export function getErrorMessage(error: unknown): string {
   }
 
   // Generic error
-  return error instanceof Error ? error.message : "An unexpected error occurred";
+  return error instanceof Error
+    ? error.message
+    : "An unexpected error occurred";
 }
 
 export { api, API_URL };

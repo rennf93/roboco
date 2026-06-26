@@ -51,15 +51,16 @@ function makeAxiosError(opts: {
     isAxiosError: true as const,
     code: opts.code,
     message: opts.message ?? "axios error",
-    response: opts.status !== undefined
-      ? {
-          status: opts.status,
-          data: { detail: opts.detail } as { detail?: unknown },
-          headers: {} as Record<string, string>,
-          config: {} as never,
-          statusText: "",
-        }
-      : undefined,
+    response:
+      opts.status !== undefined
+        ? {
+            status: opts.status,
+            data: { detail: opts.detail } as { detail?: unknown },
+            headers: {} as Record<string, string>,
+            config: {} as never,
+            statusText: "",
+          }
+        : undefined,
     config: {} as never,
     name: "AxiosError" as const,
     toJSON: () => ({}),
@@ -78,14 +79,14 @@ describe("getErrorMessage — error codes", () => {
   it("returns timeout message for ECONNABORTED", () => {
     const err = makeAxiosError({ code: "ECONNABORTED" });
     expect(getErrorMessage(err)).toBe(
-      "Request timed out. The server may be busy."
+      "Request timed out. The server may be busy.",
     );
   });
 
   it("returns network message for ERR_NETWORK", () => {
     const err = makeAxiosError({ code: "ERR_NETWORK" });
     expect(getErrorMessage(err)).toBe(
-      "Cannot connect to server. Check if the backend is running."
+      "Cannot connect to server. Check if the backend is running.",
     );
   });
 });
@@ -153,7 +154,7 @@ describe("getErrorMessage — HTTP status codes", () => {
   it("returns auth message for 401", () => {
     const err = makeAxiosError({ status: 401 });
     expect(getErrorMessage(err)).toBe(
-      "Authentication required. Please refresh the page."
+      "Authentication required. Please refresh the page.",
     );
   });
 
@@ -164,9 +165,7 @@ describe("getErrorMessage — HTTP status codes", () => {
 
   it("returns not-found message for 404", () => {
     const err = makeAxiosError({ status: 404 });
-    expect(getErrorMessage(err)).toBe(
-      "The requested resource was not found."
-    );
+    expect(getErrorMessage(err)).toBe("The requested resource was not found.");
   });
 
   it("returns validation message for 422 without detail", () => {
@@ -209,7 +208,7 @@ describe("getErrorMessage — non-Axios fallbacks", () => {
 
   it("returns generic message for a plain object without isAxiosError", () => {
     expect(getErrorMessage({ code: "SOME_CODE" })).toBe(
-      "An unexpected error occurred"
+      "An unexpected error occurred",
     );
   });
 });

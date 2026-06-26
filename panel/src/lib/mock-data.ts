@@ -78,8 +78,10 @@ export const CHANNEL_IDS = {
 // Timestamps - computed dynamically to stay relative
 const getNow = () => new Date();
 const getMinutesAgo = (mins: number) => new Date(Date.now() - mins * 60 * 1000);
-const getHoursAgo = (hours: number) => new Date(Date.now() - hours * 60 * 60 * 1000);
-const getDaysAgo = (days: number) => new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+const getHoursAgo = (hours: number) =>
+  new Date(Date.now() - hours * 60 * 60 * 1000);
+const getDaysAgo = (days: number) =>
+  new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
 // Static references for initial data (these get stale but are used for tasks/etc)
 const now = getNow();
@@ -101,30 +103,150 @@ interface MockAgent {
 
 export const mockAgents: MockAgent[] = [
   // Backend Cell
-  { id: AGENT_IDS.beDev1, name: "Backend Developer 1", slug: "be-dev-1", role: AgentRole.DEVELOPER, team: Team.BACKEND },
-  { id: AGENT_IDS.beDev2, name: "Backend Developer 2", slug: "be-dev-2", role: AgentRole.DEVELOPER, team: Team.BACKEND },
-  { id: AGENT_IDS.beQa, name: "Backend QA", slug: "be-qa", role: AgentRole.QA, team: Team.BACKEND },
-  { id: AGENT_IDS.bePm, name: "Backend PM", slug: "be-pm", role: AgentRole.CELL_PM, team: Team.BACKEND },
-  { id: AGENT_IDS.beDoc, name: "Backend Documenter", slug: "be-doc", role: AgentRole.DOCUMENTER, team: Team.BACKEND },
+  {
+    id: AGENT_IDS.beDev1,
+    name: "Backend Developer 1",
+    slug: "be-dev-1",
+    role: AgentRole.DEVELOPER,
+    team: Team.BACKEND,
+  },
+  {
+    id: AGENT_IDS.beDev2,
+    name: "Backend Developer 2",
+    slug: "be-dev-2",
+    role: AgentRole.DEVELOPER,
+    team: Team.BACKEND,
+  },
+  {
+    id: AGENT_IDS.beQa,
+    name: "Backend QA",
+    slug: "be-qa",
+    role: AgentRole.QA,
+    team: Team.BACKEND,
+  },
+  {
+    id: AGENT_IDS.bePm,
+    name: "Backend PM",
+    slug: "be-pm",
+    role: AgentRole.CELL_PM,
+    team: Team.BACKEND,
+  },
+  {
+    id: AGENT_IDS.beDoc,
+    name: "Backend Documenter",
+    slug: "be-doc",
+    role: AgentRole.DOCUMENTER,
+    team: Team.BACKEND,
+  },
   // Frontend Cell
-  { id: AGENT_IDS.feDev1, name: "Frontend Developer 1", slug: "fe-dev-1", role: AgentRole.DEVELOPER, team: Team.FRONTEND },
-  { id: AGENT_IDS.feDev2, name: "Frontend Developer 2", slug: "fe-dev-2", role: AgentRole.DEVELOPER, team: Team.FRONTEND },
-  { id: AGENT_IDS.feQa, name: "Frontend QA", slug: "fe-qa", role: AgentRole.QA, team: Team.FRONTEND },
-  { id: AGENT_IDS.fePm, name: "Frontend PM", slug: "fe-pm", role: AgentRole.CELL_PM, team: Team.FRONTEND },
-  { id: AGENT_IDS.feDoc, name: "Frontend Documenter", slug: "fe-doc", role: AgentRole.DOCUMENTER, team: Team.FRONTEND },
+  {
+    id: AGENT_IDS.feDev1,
+    name: "Frontend Developer 1",
+    slug: "fe-dev-1",
+    role: AgentRole.DEVELOPER,
+    team: Team.FRONTEND,
+  },
+  {
+    id: AGENT_IDS.feDev2,
+    name: "Frontend Developer 2",
+    slug: "fe-dev-2",
+    role: AgentRole.DEVELOPER,
+    team: Team.FRONTEND,
+  },
+  {
+    id: AGENT_IDS.feQa,
+    name: "Frontend QA",
+    slug: "fe-qa",
+    role: AgentRole.QA,
+    team: Team.FRONTEND,
+  },
+  {
+    id: AGENT_IDS.fePm,
+    name: "Frontend PM",
+    slug: "fe-pm",
+    role: AgentRole.CELL_PM,
+    team: Team.FRONTEND,
+  },
+  {
+    id: AGENT_IDS.feDoc,
+    name: "Frontend Documenter",
+    slug: "fe-doc",
+    role: AgentRole.DOCUMENTER,
+    team: Team.FRONTEND,
+  },
   // UX/UI Cell (only 1 dev per seed data)
-  { id: AGENT_IDS.uxDev1, name: "UX/UI Developer 1", slug: "ux-dev-1", role: AgentRole.DEVELOPER, team: Team.UX_UI },
-  { id: AGENT_IDS.uxDev2, name: "UX/UI Developer 2", slug: "ux-dev-2", role: AgentRole.DEVELOPER, team: Team.UX_UI },
-  { id: AGENT_IDS.uxQa, name: "UX/UI QA", slug: "ux-qa", role: AgentRole.QA, team: Team.UX_UI },
-  { id: AGENT_IDS.uxPm, name: "UX/UI PM", slug: "ux-pm", role: AgentRole.CELL_PM, team: Team.UX_UI },
-  { id: AGENT_IDS.uxDoc, name: "UX/UI Documenter", slug: "ux-doc", role: AgentRole.DOCUMENTER, team: Team.UX_UI },
+  {
+    id: AGENT_IDS.uxDev1,
+    name: "UX/UI Developer 1",
+    slug: "ux-dev-1",
+    role: AgentRole.DEVELOPER,
+    team: Team.UX_UI,
+  },
+  {
+    id: AGENT_IDS.uxDev2,
+    name: "UX/UI Developer 2",
+    slug: "ux-dev-2",
+    role: AgentRole.DEVELOPER,
+    team: Team.UX_UI,
+  },
+  {
+    id: AGENT_IDS.uxQa,
+    name: "UX/UI QA",
+    slug: "ux-qa",
+    role: AgentRole.QA,
+    team: Team.UX_UI,
+  },
+  {
+    id: AGENT_IDS.uxPm,
+    name: "UX/UI PM",
+    slug: "ux-pm",
+    role: AgentRole.CELL_PM,
+    team: Team.UX_UI,
+  },
+  {
+    id: AGENT_IDS.uxDoc,
+    name: "UX/UI Documenter",
+    slug: "ux-doc",
+    role: AgentRole.DOCUMENTER,
+    team: Team.UX_UI,
+  },
   // Board/Management (team=null per seed data)
-  { id: AGENT_IDS.mainPm, name: "Main PM", slug: "main-pm", role: AgentRole.MAIN_PM, team: null },
-  { id: AGENT_IDS.productOwner, name: "Product Owner", slug: "product-owner", role: AgentRole.PRODUCT_OWNER, team: null },
-  { id: AGENT_IDS.headMarketing, name: "Head of Marketing", slug: "head-marketing", role: AgentRole.HEAD_MARKETING, team: null },
-  { id: AGENT_IDS.auditor, name: "Auditor", slug: "auditor", role: AgentRole.AUDITOR, team: null },
+  {
+    id: AGENT_IDS.mainPm,
+    name: "Main PM",
+    slug: "main-pm",
+    role: AgentRole.MAIN_PM,
+    team: null,
+  },
+  {
+    id: AGENT_IDS.productOwner,
+    name: "Product Owner",
+    slug: "product-owner",
+    role: AgentRole.PRODUCT_OWNER,
+    team: null,
+  },
+  {
+    id: AGENT_IDS.headMarketing,
+    name: "Head of Marketing",
+    slug: "head-marketing",
+    role: AgentRole.HEAD_MARKETING,
+    team: null,
+  },
+  {
+    id: AGENT_IDS.auditor,
+    name: "Auditor",
+    slug: "auditor",
+    role: AgentRole.AUDITOR,
+    team: null,
+  },
   // CEO (Human - Renzo)
-  { id: AGENT_IDS.ceo, name: "Renzo", slug: "ceo", role: AgentRole.CEO, team: null },
+  {
+    id: AGENT_IDS.ceo,
+    name: "Renzo",
+    slug: "ceo",
+    role: AgentRole.CEO,
+    team: null,
+  },
 ];
 
 // =============================================================================
@@ -190,29 +312,96 @@ Implement a complete user authentication system including:
 4. **OAuth Integration**: Add Google/GitHub providers
 5. **Testing**: Write comprehensive tests`,
       sub_tasks: [
-        { id: mockId(), title: "Create database migrations", description: null, order: 1, completed: true, estimated_hours: 2, notes: null },
-        { id: mockId(), title: "Implement auth service", description: null, order: 2, completed: true, estimated_hours: 4, notes: null },
-        { id: mockId(), title: "Build API endpoints", description: null, order: 3, completed: false, estimated_hours: 4, notes: null },
-        { id: mockId(), title: "Add OAuth providers", description: null, order: 4, completed: false, estimated_hours: 3, notes: null },
-        { id: mockId(), title: "Write tests", description: null, order: 5, completed: false, estimated_hours: 3, notes: null },
+        {
+          id: mockId(),
+          title: "Create database migrations",
+          description: null,
+          order: 1,
+          completed: true,
+          estimated_hours: 2,
+          notes: null,
+        },
+        {
+          id: mockId(),
+          title: "Implement auth service",
+          description: null,
+          order: 2,
+          completed: true,
+          estimated_hours: 4,
+          notes: null,
+        },
+        {
+          id: mockId(),
+          title: "Build API endpoints",
+          description: null,
+          order: 3,
+          completed: false,
+          estimated_hours: 4,
+          notes: null,
+        },
+        {
+          id: mockId(),
+          title: "Add OAuth providers",
+          description: null,
+          order: 4,
+          completed: false,
+          estimated_hours: 3,
+          notes: null,
+        },
+        {
+          id: mockId(),
+          title: "Write tests",
+          description: null,
+          order: 5,
+          completed: false,
+          estimated_hours: 3,
+          notes: null,
+        },
       ],
       technical_considerations: [
         "Consider using Redis for session storage",
         "Implement proper error handling",
         "Add request logging for audit trail",
       ],
-      risks: [{ description: "OAuth provider API changes", severity: "medium", mitigation: "Use official SDKs and monitor changelogs" }],
-      open_questions: [{ question: "Should we support 2FA in this iteration?", answer: "No, defer to Phase 2", answered_by: AGENT_IDS.productOwner, answered_at: dayAgo.toISOString() }],
+      risks: [
+        {
+          description: "OAuth provider API changes",
+          severity: "medium",
+          mitigation: "Use official SDKs and monitor changelogs",
+        },
+      ],
+      open_questions: [
+        {
+          question: "Should we support 2FA in this iteration?",
+          answer: "No, defer to Phase 2",
+          answered_by: AGENT_IDS.productOwner,
+          answered_at: dayAgo.toISOString(),
+        },
+      ],
     },
     progress_updates: [
-      { timestamp: hourAgo.toISOString(), message: "Completed database migrations and auth service implementation", agent_id: AGENT_IDS.beDev1, percentage: 40 },
+      {
+        timestamp: hourAgo.toISOString(),
+        message:
+          "Completed database migrations and auth service implementation",
+        agent_id: AGENT_IDS.beDev1,
+        percentage: 40,
+      },
     ],
     checkpoints: [],
-    commits: [{ hash: "abc123def456", message: "feat: add user authentication schema", timestamp: dayAgo.toISOString(), author_agent_id: AGENT_IDS.beDev1 }],
+    commits: [
+      {
+        hash: "abc123def456",
+        message: "feat: add user authentication schema",
+        timestamp: dayAgo.toISOString(),
+        author_agent_id: AGENT_IDS.beDev1,
+      },
+    ],
     dev_notes: "Using bcrypt with 12 rounds for password hashing.",
     qa_notes: null,
     auditor_notes: null,
-    quick_context: "Currently implementing API endpoints. Auth service is ready.",
+    quick_context:
+      "Currently implementing API endpoints. Auth service is ready.",
   },
   {
     id: TASK_IDS.task2,
@@ -235,7 +424,11 @@ Implement a complete user authentication system including:
     docs_complete: false,
     pr_created: false,
     pm_approvals: {},
-    acceptance_criteria: ["All components are responsive", "Components follow design system", "Unit tests cover 80%+ of code"],
+    acceptance_criteria: [
+      "All components are responsive",
+      "Components follow design system",
+      "Unit tests cover 80%+ of code",
+    ],
     dependency_ids: [],
     blocker_ids: [],
     parent_task_id: TASK_IDS.task1, // Child of "Implement user authentication flow"
@@ -286,7 +479,11 @@ Pagination should maintain filter state.`,
     docs_complete: false,
     pr_created: false,
     pm_approvals: {},
-    acceptance_criteria: ["Pagination maintains filter state", "URL params reflect current filters", "No regression in existing functionality"],
+    acceptance_criteria: [
+      "Pagination maintains filter state",
+      "URL params reflect current filters",
+      "No regression in existing functionality",
+    ],
     dependency_ids: [],
     blocker_ids: [],
     parent_task_id: TASK_IDS.task1, // Child of "Implement user authentication flow"
@@ -333,7 +530,11 @@ The flow should guide new users through:
     docs_complete: false,
     pr_created: false,
     pm_approvals: {},
-    acceptance_criteria: ["Wireframes for all screens", "Interactive prototype", "User flow documentation"],
+    acceptance_criteria: [
+      "Wireframes for all screens",
+      "Interactive prototype",
+      "User flow documentation",
+    ],
     dependency_ids: [],
     blocker_ids: [],
     parent_task_id: null,
@@ -352,24 +553,68 @@ The flow should guide new users through:
     pr_number: 42,
     pr_url: "https://github.com/roboco/roboco/pull/42",
     plan: {
-      approach: "Create lo-fi wireframes first, then hi-fi mockups after stakeholder approval.",
+      approach:
+        "Create lo-fi wireframes first, then hi-fi mockups after stakeholder approval.",
       sub_tasks: [
-        { id: mockId(), title: "User research", description: null, order: 1, completed: true, estimated_hours: 2, notes: null },
-        { id: mockId(), title: "Lo-fi wireframes", description: null, order: 2, completed: true, estimated_hours: 2, notes: null },
-        { id: mockId(), title: "Hi-fi mockups", description: null, order: 3, completed: true, estimated_hours: 3, notes: null },
-        { id: mockId(), title: "Interactive prototype", description: null, order: 4, completed: true, estimated_hours: 1, notes: null },
+        {
+          id: mockId(),
+          title: "User research",
+          description: null,
+          order: 1,
+          completed: true,
+          estimated_hours: 2,
+          notes: null,
+        },
+        {
+          id: mockId(),
+          title: "Lo-fi wireframes",
+          description: null,
+          order: 2,
+          completed: true,
+          estimated_hours: 2,
+          notes: null,
+        },
+        {
+          id: mockId(),
+          title: "Hi-fi mockups",
+          description: null,
+          order: 3,
+          completed: true,
+          estimated_hours: 3,
+          notes: null,
+        },
+        {
+          id: mockId(),
+          title: "Interactive prototype",
+          description: null,
+          order: 4,
+          completed: true,
+          estimated_hours: 1,
+          notes: null,
+        },
       ],
       technical_considerations: [],
       risks: [],
       open_questions: [],
     },
     progress_updates: [
-      { timestamp: dayAgo.toISOString(), message: "Completed user research and started wireframes", agent_id: AGENT_IDS.uxDev1, percentage: 30 },
-      { timestamp: hourAgo.toISOString(), message: "Finished all mockups and prototype, submitting for QA", agent_id: AGENT_IDS.uxDev1, percentage: 100 },
+      {
+        timestamp: dayAgo.toISOString(),
+        message: "Completed user research and started wireframes",
+        agent_id: AGENT_IDS.uxDev1,
+        percentage: 30,
+      },
+      {
+        timestamp: hourAgo.toISOString(),
+        message: "Finished all mockups and prototype, submitting for QA",
+        agent_id: AGENT_IDS.uxDev1,
+        percentage: 100,
+      },
     ],
     checkpoints: [],
     commits: [],
-    dev_notes: "Used Figma for all designs. Prototype link in the team channel.",
+    dev_notes:
+      "Used Figma for all designs. Prototype link in the team channel.",
     qa_notes: null,
     auditor_notes: null,
     quick_context: "Ready for QA review. All deliverables complete.",
@@ -396,7 +641,11 @@ Reduce response time to < 100ms for all endpoints.`,
     docs_complete: false,
     pr_created: false,
     pm_approvals: {},
-    acceptance_criteria: ["All listed endpoints respond in < 100ms", "Query execution plans are documented", "No N+1 queries remain"],
+    acceptance_criteria: [
+      "All listed endpoints respond in < 100ms",
+      "Query execution plans are documented",
+      "No N+1 queries remain",
+    ],
     dependency_ids: [],
     blocker_ids: [TASK_IDS.task1],
     parent_task_id: null,
@@ -415,7 +664,14 @@ Reduce response time to < 100ms for all endpoints.`,
     pr_number: null,
     pr_url: null,
     plan: null,
-    progress_updates: [{ timestamp: hourAgo.toISOString(), message: "Blocked waiting for auth changes to merge", agent_id: AGENT_IDS.beDev2, percentage: 10 }],
+    progress_updates: [
+      {
+        timestamp: hourAgo.toISOString(),
+        message: "Blocked waiting for auth changes to merge",
+        agent_id: AGENT_IDS.beDev2,
+        percentage: 10,
+      },
+    ],
     checkpoints: [],
     commits: [],
     dev_notes: "Need to wait for task #1 to complete before proceeding.",
@@ -444,7 +700,11 @@ Include:
     docs_complete: true,
     pr_created: true,
     pm_approvals: { main_pm: true },
-    acceptance_criteria: ["All endpoints documented", "Swagger UI accessible at /docs", "Examples for each endpoint"],
+    acceptance_criteria: [
+      "All endpoints documented",
+      "Swagger UI accessible at /docs",
+      "Examples for each endpoint",
+    ],
     dependency_ids: [],
     blocker_ids: [],
     parent_task_id: null,
@@ -465,7 +725,14 @@ Include:
     plan: null,
     progress_updates: [],
     checkpoints: [],
-    commits: [{ hash: "def456789abc", message: "docs: add OpenAPI documentation", timestamp: hourAgo.toISOString(), author_agent_id: AGENT_IDS.beDoc }],
+    commits: [
+      {
+        hash: "def456789abc",
+        message: "docs: add OpenAPI documentation",
+        timestamp: hourAgo.toISOString(),
+        author_agent_id: AGENT_IDS.beDoc,
+      },
+    ],
     dev_notes: "Used FastAPI's built-in OpenAPI support.",
     qa_notes: "Documentation is complete and accurate.",
     auditor_notes: null,
@@ -479,29 +746,112 @@ Include:
 
 export const mockDashboardStats = {
   total_tasks: mockTasks.length,
-  tasks_in_progress: mockTasks.filter((t) => t.status === TaskStatus.IN_PROGRESS).length,
-  tasks_blocked: mockTasks.filter((t) => t.status === TaskStatus.BLOCKED).length,
+  tasks_in_progress: mockTasks.filter(
+    (t) => t.status === TaskStatus.IN_PROGRESS,
+  ).length,
+  tasks_blocked: mockTasks.filter((t) => t.status === TaskStatus.BLOCKED)
+    .length,
   tasks_completed_today: 1,
   active_agents: 3,
 };
 
 // Team health - matches backend: [BACKEND, FRONTEND, UX_UI, MARKETING, BOARD]
 export const mockTeamHealth = [
-  { team: Team.BACKEND, status: "ok" as const, active_tasks: 3, blocked_tasks: 1, blocked_ratio: 0.33, completed_this_week: 2 },
-  { team: Team.FRONTEND, status: "ok" as const, active_tasks: 2, blocked_tasks: 0, blocked_ratio: 0, completed_this_week: 1 },
-  { team: Team.UX_UI, status: "slow" as const, active_tasks: 1, blocked_tasks: 0, blocked_ratio: 0, completed_this_week: 0 },
-  { team: Team.MARKETING, status: "ok" as const, active_tasks: 0, blocked_tasks: 0, blocked_ratio: 0, completed_this_week: 0 },
-  { team: Team.BOARD, status: "ok" as const, active_tasks: 2, blocked_tasks: 0, blocked_ratio: 0, completed_this_week: 1 },
+  {
+    team: Team.BACKEND,
+    status: "ok" as const,
+    active_tasks: 3,
+    blocked_tasks: 1,
+    blocked_ratio: 0.33,
+    completed_this_week: 2,
+  },
+  {
+    team: Team.FRONTEND,
+    status: "ok" as const,
+    active_tasks: 2,
+    blocked_tasks: 0,
+    blocked_ratio: 0,
+    completed_this_week: 1,
+  },
+  {
+    team: Team.UX_UI,
+    status: "slow" as const,
+    active_tasks: 1,
+    blocked_tasks: 0,
+    blocked_ratio: 0,
+    completed_this_week: 0,
+  },
+  {
+    team: Team.MARKETING,
+    status: "ok" as const,
+    active_tasks: 0,
+    blocked_tasks: 0,
+    blocked_ratio: 0,
+    completed_this_week: 0,
+  },
+  {
+    team: Team.BOARD,
+    status: "ok" as const,
+    active_tasks: 2,
+    blocked_tasks: 0,
+    blocked_ratio: 0,
+    completed_this_week: 1,
+  },
 ];
 
 // Recent activity - matching /dashboard/activity/recent response
 // Use getter to ensure fresh timestamps on each access
 export const getMockRecentActivity = () => [
-  { id: mockId(), type: "task_update", timestamp: getMinutesAgo(5).toISOString(), agent_id: AGENT_IDS.beDev1, task_id: TASK_IDS.task1, title: "Implement user authentication flow", status: "in_progress", action: "started" },
-  { id: mockId(), type: "task_update", timestamp: getMinutesAgo(15).toISOString(), agent_id: AGENT_IDS.feDev1, task_id: TASK_IDS.task3, title: "Fix pagination bug in task list", status: "claimed", action: "claimed" },
-  { id: mockId(), type: "task_update", timestamp: getMinutesAgo(30).toISOString(), agent_id: AGENT_IDS.uxDev1, task_id: TASK_IDS.task4, title: "Design new onboarding flow", status: "awaiting_qa", action: "completed" },
-  { id: mockId(), type: "task_update", timestamp: getMinutesAgo(45).toISOString(), agent_id: AGENT_IDS.beDev2, task_id: TASK_IDS.task5, title: "Optimize database queries", status: "blocked", action: "blocked" },
-  { id: mockId(), type: "task_update", timestamp: getHoursAgo(2).toISOString(), agent_id: AGENT_IDS.beDoc, task_id: TASK_IDS.task6, title: "Write API documentation", status: "completed", action: "passed_qa" },
+  {
+    id: mockId(),
+    type: "task_update",
+    timestamp: getMinutesAgo(5).toISOString(),
+    agent_id: AGENT_IDS.beDev1,
+    task_id: TASK_IDS.task1,
+    title: "Implement user authentication flow",
+    status: "in_progress",
+    action: "started",
+  },
+  {
+    id: mockId(),
+    type: "task_update",
+    timestamp: getMinutesAgo(15).toISOString(),
+    agent_id: AGENT_IDS.feDev1,
+    task_id: TASK_IDS.task3,
+    title: "Fix pagination bug in task list",
+    status: "claimed",
+    action: "claimed",
+  },
+  {
+    id: mockId(),
+    type: "task_update",
+    timestamp: getMinutesAgo(30).toISOString(),
+    agent_id: AGENT_IDS.uxDev1,
+    task_id: TASK_IDS.task4,
+    title: "Design new onboarding flow",
+    status: "awaiting_qa",
+    action: "completed",
+  },
+  {
+    id: mockId(),
+    type: "task_update",
+    timestamp: getMinutesAgo(45).toISOString(),
+    agent_id: AGENT_IDS.beDev2,
+    task_id: TASK_IDS.task5,
+    title: "Optimize database queries",
+    status: "blocked",
+    action: "blocked",
+  },
+  {
+    id: mockId(),
+    type: "task_update",
+    timestamp: getHoursAgo(2).toISOString(),
+    agent_id: AGENT_IDS.beDoc,
+    task_id: TASK_IDS.task6,
+    title: "Write API documentation",
+    status: "completed",
+    action: "passed_qa",
+  },
 ];
 // Legacy export for backwards compatibility
 export const mockRecentActivity = getMockRecentActivity();
@@ -571,7 +921,13 @@ export const mockOrchestratorStatus = {
 };
 
 export const mockWaitingAgents = [
-  { agent_id: AGENT_IDS.beDev2, task_id: TASK_IDS.task5, waiting_for: "Waiting for task #1 auth implementation", waiting_since: hourAgo.toISOString(), context: { blocker_task_id: TASK_IDS.task1 } },
+  {
+    agent_id: AGENT_IDS.beDev2,
+    task_id: TASK_IDS.task5,
+    waiting_for: "Waiting for task #1 auth implementation",
+    waiting_since: hourAgo.toISOString(),
+    context: { blocker_task_id: TASK_IDS.task1 },
+  },
 ];
 
 // =============================================================================
@@ -579,11 +935,76 @@ export const mockWaitingAgents = [
 // =============================================================================
 
 export const mockChannels = [
-  { id: CHANNEL_IDS.backendCell, name: "Backend Cell", slug: "backend-cell", type: ChannelType.CELL, description: "Backend development team channel", topic: null, member_count: 6, message_count: 150, group_count: 3, is_archived: false, is_private: false, can_write: true },
-  { id: CHANNEL_IDS.frontendCell, name: "Frontend Cell", slug: "frontend-cell", type: ChannelType.CELL, description: "Frontend development team channel", topic: null, member_count: 6, message_count: 120, group_count: 2, is_archived: false, is_private: false, can_write: true },
-  { id: CHANNEL_IDS.uxuiCell, name: "UX/UI Cell", slug: "uxui-cell", type: ChannelType.CELL, description: "UX/UI design team channel", topic: null, member_count: 5, message_count: 80, group_count: 2, is_archived: false, is_private: false, can_write: true },
-  { id: CHANNEL_IDS.devAll, name: "All Developers", slug: "dev-all", type: ChannelType.CROSS_CELL, description: "Cross-cell developer discussion", topic: null, member_count: 10, message_count: 200, group_count: 5, is_archived: false, is_private: false, can_write: true },
-  { id: CHANNEL_IDS.announcements, name: "Announcements", slug: "announcements", type: ChannelType.SPECIAL, description: "Company-wide announcements", topic: null, member_count: 19, message_count: 25, group_count: 1, is_archived: false, is_private: false, can_write: false },
+  {
+    id: CHANNEL_IDS.backendCell,
+    name: "Backend Cell",
+    slug: "backend-cell",
+    type: ChannelType.CELL,
+    description: "Backend development team channel",
+    topic: null,
+    member_count: 6,
+    message_count: 150,
+    group_count: 3,
+    is_archived: false,
+    is_private: false,
+    can_write: true,
+  },
+  {
+    id: CHANNEL_IDS.frontendCell,
+    name: "Frontend Cell",
+    slug: "frontend-cell",
+    type: ChannelType.CELL,
+    description: "Frontend development team channel",
+    topic: null,
+    member_count: 6,
+    message_count: 120,
+    group_count: 2,
+    is_archived: false,
+    is_private: false,
+    can_write: true,
+  },
+  {
+    id: CHANNEL_IDS.uxuiCell,
+    name: "UX/UI Cell",
+    slug: "uxui-cell",
+    type: ChannelType.CELL,
+    description: "UX/UI design team channel",
+    topic: null,
+    member_count: 5,
+    message_count: 80,
+    group_count: 2,
+    is_archived: false,
+    is_private: false,
+    can_write: true,
+  },
+  {
+    id: CHANNEL_IDS.devAll,
+    name: "All Developers",
+    slug: "dev-all",
+    type: ChannelType.CROSS_CELL,
+    description: "Cross-cell developer discussion",
+    topic: null,
+    member_count: 10,
+    message_count: 200,
+    group_count: 5,
+    is_archived: false,
+    is_private: false,
+    can_write: true,
+  },
+  {
+    id: CHANNEL_IDS.announcements,
+    name: "Announcements",
+    slug: "announcements",
+    type: ChannelType.SPECIAL,
+    description: "Company-wide announcements",
+    topic: null,
+    member_count: 19,
+    message_count: 25,
+    group_count: 1,
+    is_archived: false,
+    is_private: false,
+    can_write: false,
+  },
 ];
 
 // =============================================================================
@@ -644,7 +1065,7 @@ export const mockNotifications = [
     type: NotificationType.BROADCAST,
     priority: NotificationPriority.NORMAL,
     from_agent: AGENT_IDS.mainPm,
-    to_agents: mockAgents.map(a => a.id),
+    to_agents: mockAgents.map((a) => a.id),
     subject: "Weekly Standup Tomorrow",
     body: "Reminder: Weekly standup meeting tomorrow at 10:00 AM.",
     requires_ack: false,
@@ -667,9 +1088,14 @@ export const mockJournals = [
     agent_id: AGENT_IDS.beDev1,
     total_entries: 5,
     last_entry_at: hourAgo.toISOString(),
-    latest_summary: "Working on auth implementation. Good progress on database schema and service layer.",
+    latest_summary:
+      "Working on auth implementation. Good progress on database schema and service layer.",
     summary_updated_at: hourAgo.toISOString(),
-    entries_by_type: { [JournalEntryType.TASK_REFLECTION]: 2, [JournalEntryType.DECISION_LOG]: 1, [JournalEntryType.LEARNING]: 2 },
+    entries_by_type: {
+      [JournalEntryType.TASK_REFLECTION]: 2,
+      [JournalEntryType.DECISION_LOG]: 1,
+      [JournalEntryType.LEARNING]: 2,
+    },
     created_at: weekAgo.toISOString(),
     updated_at: hourAgo.toISOString(),
   },
@@ -681,7 +1107,8 @@ export const mockJournalEntries = [
     journal_id: mockJournals[0].id,
     type: JournalEntryType.TASK_REFLECTION,
     title: "Auth Implementation Progress",
-    content: "Completed the database migrations and basic auth service. JWT implementation is clean and follows best practices.",
+    content:
+      "Completed the database migrations and basic auth service. JWT implementation is clean and follows best practices.",
     task_id: TASK_IDS.task1,
     session_id: null,
     timestamp: hourAgo.toISOString(),
@@ -696,7 +1123,8 @@ export const mockJournalEntries = [
     journal_id: mockJournals[0].id,
     type: JournalEntryType.DECISION_LOG,
     title: "Chose bcrypt over argon2",
-    content: "Decided to use bcrypt for password hashing. While argon2 is newer, bcrypt is more widely supported and battle-tested.",
+    content:
+      "Decided to use bcrypt for password hashing. While argon2 is newer, bcrypt is more widely supported and battle-tested.",
     task_id: TASK_IDS.task1,
     session_id: null,
     timestamp: dayAgo.toISOString(),
@@ -718,10 +1146,70 @@ export const mockKanbanDevBoard = {
   board_type: "dev",
   team: Team.BACKEND,
   columns: [
-    { id: mockId(), title: "Backlog", status: TaskStatus.PENDING, cards: [{ id: TASK_IDS.task2, title: "Build dashboard components", priority: 2, status: TaskStatus.PENDING, assignee_name: null, is_blocked: false }], card_count: 1 },
-    { id: mockId(), title: "In Progress", status: TaskStatus.IN_PROGRESS, cards: [{ id: TASK_IDS.task1, title: "Implement user authentication flow", priority: 1, status: TaskStatus.IN_PROGRESS, assignee_name: "Backend Developer 1", is_blocked: false }], card_count: 1 },
-    { id: mockId(), title: "Blocked", status: TaskStatus.BLOCKED, cards: [{ id: TASK_IDS.task5, title: "Optimize database queries", priority: 1, status: TaskStatus.BLOCKED, assignee_name: "Backend Developer 2", is_blocked: true }], card_count: 1 },
-    { id: mockId(), title: "Done", status: TaskStatus.COMPLETED, cards: [{ id: TASK_IDS.task6, title: "Write API documentation", priority: 3, status: TaskStatus.COMPLETED, assignee_name: "Backend Documenter", is_blocked: false }], card_count: 1 },
+    {
+      id: mockId(),
+      title: "Backlog",
+      status: TaskStatus.PENDING,
+      cards: [
+        {
+          id: TASK_IDS.task2,
+          title: "Build dashboard components",
+          priority: 2,
+          status: TaskStatus.PENDING,
+          assignee_name: null,
+          is_blocked: false,
+        },
+      ],
+      card_count: 1,
+    },
+    {
+      id: mockId(),
+      title: "In Progress",
+      status: TaskStatus.IN_PROGRESS,
+      cards: [
+        {
+          id: TASK_IDS.task1,
+          title: "Implement user authentication flow",
+          priority: 1,
+          status: TaskStatus.IN_PROGRESS,
+          assignee_name: "Backend Developer 1",
+          is_blocked: false,
+        },
+      ],
+      card_count: 1,
+    },
+    {
+      id: mockId(),
+      title: "Blocked",
+      status: TaskStatus.BLOCKED,
+      cards: [
+        {
+          id: TASK_IDS.task5,
+          title: "Optimize database queries",
+          priority: 1,
+          status: TaskStatus.BLOCKED,
+          assignee_name: "Backend Developer 2",
+          is_blocked: true,
+        },
+      ],
+      card_count: 1,
+    },
+    {
+      id: mockId(),
+      title: "Done",
+      status: TaskStatus.COMPLETED,
+      cards: [
+        {
+          id: TASK_IDS.task6,
+          title: "Write API documentation",
+          priority: 3,
+          status: TaskStatus.COMPLETED,
+          assignee_name: "Backend Documenter",
+          is_blocked: false,
+        },
+      ],
+      card_count: 1,
+    },
   ],
   total_cards: 4,
   blocked_count: 1,
@@ -751,7 +1239,9 @@ export const mockSessions = [
     message_count: 50,
     total_content_length: 12000,
     started_at: dayAgo.toISOString(),
-    last_activity_at: new Date(now.getTime() - 2 * 60 * 60 * 1000).toISOString(),
+    last_activity_at: new Date(
+      now.getTime() - 2 * 60 * 60 * 1000,
+    ).toISOString(),
     closed_at: new Date(now.getTime() - 2 * 60 * 60 * 1000).toISOString(),
   },
 ];
@@ -771,7 +1261,8 @@ export const getMockMessages = () => [
     group_id: messageGroupId,
     session_id: mockSessions[0].id,
     type: MessageType.DIALOGUE,
-    content: "Just finished the auth service implementation. Ready to start on the API endpoints.",
+    content:
+      "Just finished the auth service implementation. Ready to start on the API endpoints.",
     content_length: 78,
     is_reply: false,
     reply_to: null,
@@ -807,7 +1298,8 @@ export const getMockMessages = () => [
     group_id: messageGroupId,
     session_id: mockSessions[0].id,
     type: MessageType.BLOCKER,
-    content: "I'm blocked on the database optimization task. Need the auth changes to merge first.",
+    content:
+      "I'm blocked on the database optimization task. Need the auth changes to merge first.",
     content_length: 82,
     is_reply: false,
     reply_to: null,
@@ -873,7 +1365,8 @@ export const mockAuditorFlags = [
     severity: FlagSeverity.WARNING,
     category: "blocked",
     title: "Task blocked for extended period",
-    description: "Task 'Optimize database queries' has been blocked for over 24 hours.",
+    description:
+      "Task 'Optimize database queries' has been blocked for over 24 hours.",
     related_task_id: TASK_IDS.task5,
     related_agent_id: AGENT_IDS.beDev2,
     created_at: hourAgo.toISOString(),
@@ -885,7 +1378,8 @@ export const mockAuditorFlags = [
     severity: FlagSeverity.INFO,
     category: "process",
     title: "QA queue growing",
-    description: "Multiple tasks awaiting QA review. Consider allocating additional QA resources.",
+    description:
+      "Multiple tasks awaiting QA review. Consider allocating additional QA resources.",
     related_task_id: null,
     related_agent_id: null,
     created_at: dayAgo.toISOString(),
@@ -899,9 +1393,13 @@ export const mockAuditorReports = [
     id: mockId(),
     report_type: "daily",
     title: "Daily Status Report - " + now.toLocaleDateString(),
-    summary: "Overall team productivity is good. One blocker identified in backend team.",
+    summary:
+      "Overall team productivity is good. One blocker identified in backend team.",
     sections: [
-      { title: "Completed Tasks", content: "1 task completed (API documentation)" },
+      {
+        title: "Completed Tasks",
+        content: "1 task completed (API documentation)",
+      },
       { title: "In Progress", content: "2 tasks in progress (auth, bug fix)" },
       { title: "Blockers", content: "1 task blocked (database optimization)" },
     ],
@@ -912,9 +1410,27 @@ export const mockAuditorReports = [
 
 export const mockAuditorDashboard = {
   live_feeds: [
-    { id: CHANNEL_IDS.backendCell, name: "Backend Cell", status: "streaming", last_activity: now.toISOString(), message_count_24h: 25 },
-    { id: CHANNEL_IDS.frontendCell, name: "Frontend Cell", status: "idle", last_activity: hourAgo.toISOString(), message_count_24h: 15 },
-    { id: CHANNEL_IDS.uxuiCell, name: "UX/UI Cell", status: "idle", last_activity: dayAgo.toISOString(), message_count_24h: 5 },
+    {
+      id: CHANNEL_IDS.backendCell,
+      name: "Backend Cell",
+      status: "streaming",
+      last_activity: now.toISOString(),
+      message_count_24h: 25,
+    },
+    {
+      id: CHANNEL_IDS.frontendCell,
+      name: "Frontend Cell",
+      status: "idle",
+      last_activity: hourAgo.toISOString(),
+      message_count_24h: 15,
+    },
+    {
+      id: CHANNEL_IDS.uxuiCell,
+      name: "UX/UI Cell",
+      status: "idle",
+      last_activity: dayAgo.toISOString(),
+      message_count_24h: 5,
+    },
   ],
   flagged_items: mockAuditorFlags,
   metrics: {
@@ -924,7 +1440,12 @@ export const mockAuditorDashboard = {
     avg_review_time_hours: 2.5,
   },
   audit_queue: [
-    { type: "qa_review", title: "Design new onboarding flow", task_id: TASK_IDS.task4, team: Team.UX_UI },
+    {
+      type: "qa_review",
+      title: "Design new onboarding flow",
+      task_id: TASK_IDS.task4,
+      team: Team.UX_UI,
+    },
   ],
   recent_reports: mockAuditorReports,
 };

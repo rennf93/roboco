@@ -54,13 +54,18 @@ import type {
 export const kbKeys = {
   all: ["knowledge-base"] as const,
   stats: () => [...kbKeys.all, "stats"] as const,
-  indexStats: (indexType: KBIndexType) => [...kbKeys.all, "stats", indexType] as const,
+  indexStats: (indexType: KBIndexType) =>
+    [...kbKeys.all, "stats", indexType] as const,
   health: () => [...kbKeys.all, "health"] as const,
   staleness: () => [...kbKeys.all, "staleness"] as const,
-  search: (query: string, filters?: string) => [...kbKeys.all, "search", query, filters] as const,
-  documents: (indexType: KBIndexType, params?: string) => [...kbKeys.all, "documents", indexType, params] as const,
-  learnings: (query: string, filters?: string) => [...kbKeys.all, "learnings", query, filters] as const,
-  proactiveContext: (taskId: string) => [...kbKeys.all, "proactive-context", taskId] as const,
+  search: (query: string, filters?: string) =>
+    [...kbKeys.all, "search", query, filters] as const,
+  documents: (indexType: KBIndexType, params?: string) =>
+    [...kbKeys.all, "documents", indexType, params] as const,
+  learnings: (query: string, filters?: string) =>
+    [...kbKeys.all, "learnings", query, filters] as const,
+  proactiveContext: (taskId: string) =>
+    [...kbKeys.all, "proactive-context", taskId] as const,
 };
 
 // =============================================================================
@@ -116,7 +121,7 @@ export function useKBSearch(params: KBSearchRequest, enabled = true) {
 export function useKBDocuments(
   indexType: KBIndexType,
   params?: { limit?: number; offset?: number },
-  enabled = true
+  enabled = true,
 ) {
   return useQuery({
     queryKey: kbKeys.documents(indexType, JSON.stringify(params)),
@@ -144,7 +149,8 @@ export function useRAGQuery() {
  */
 export function useRAGContext() {
   return useMutation({
-    mutationFn: (params: RAGQueryRequest) => knowledgeBaseApi.getContext(params),
+    mutationFn: (params: RAGQueryRequest) =>
+      knowledgeBaseApi.getContext(params),
   });
 }
 
@@ -338,9 +344,15 @@ export function useRecordLearning() {
 /**
  * Search learnings (as query for persistent results)
  */
-export function useSearchLearnings(request: LearningSearchRequest, enabled = true) {
+export function useSearchLearnings(
+  request: LearningSearchRequest,
+  enabled = true,
+) {
   return useQuery<KBSearchResponse>({
-    queryKey: kbKeys.learnings(request.query, JSON.stringify({ category: request.category, team: request.team })),
+    queryKey: kbKeys.learnings(
+      request.query,
+      JSON.stringify({ category: request.category, team: request.team }),
+    ),
     queryFn: () => knowledgeBaseApi.searchLearnings(request),
     enabled: enabled && request.query.length >= 3,
     staleTime: 1000 * 60 * 2, // 2 minutes

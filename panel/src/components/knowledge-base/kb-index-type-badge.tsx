@@ -2,9 +2,21 @@
 
 import { Badge } from "@/components/ui/badge";
 import { KBIndexType } from "@/types";
-import { FileText, MessageSquare, BookOpen, AlertTriangle, Scale, GitBranch, ClipboardCheck, Lightbulb } from "lucide-react";
+import {
+  FileText,
+  MessageSquare,
+  BookOpen,
+  AlertTriangle,
+  Scale,
+  GitBranch,
+  ClipboardCheck,
+  Lightbulb,
+} from "lucide-react";
 
-const indexTypeConfig: Record<KBIndexType, { label: string; color: string; icon: React.ReactNode }> = {
+const indexTypeConfig: Record<
+  KBIndexType,
+  { label: string; color: string; icon: React.ReactNode }
+> = {
   [KBIndexType.DOCUMENTATION]: {
     label: "Docs",
     color: "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300",
@@ -17,7 +29,8 @@ const indexTypeConfig: Record<KBIndexType, { label: string; color: string; icon:
   },
   [KBIndexType.JOURNALS]: {
     label: "Journals",
-    color: "bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300",
+    color:
+      "bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300",
     icon: <BookOpen className="h-3 w-3" />,
   },
   [KBIndexType.ERRORS]: {
@@ -32,7 +45,8 @@ const indexTypeConfig: Record<KBIndexType, { label: string; color: string; icon:
   },
   [KBIndexType.DECISIONS]: {
     label: "Decisions",
-    color: "bg-indigo-100 text-indigo-700 dark:bg-indigo-900 dark:text-indigo-300",
+    color:
+      "bg-indigo-100 text-indigo-700 dark:bg-indigo-900 dark:text-indigo-300",
     icon: <GitBranch className="h-3 w-3" />,
   },
   [KBIndexType.REVIEWS]: {
@@ -42,7 +56,8 @@ const indexTypeConfig: Record<KBIndexType, { label: string; color: string; icon:
   },
   [KBIndexType.LEARNINGS]: {
     label: "Learnings",
-    color: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900 dark:text-yellow-300",
+    color:
+      "bg-yellow-100 text-yellow-700 dark:bg-yellow-900 dark:text-yellow-300",
     icon: <Lightbulb className="h-3 w-3" />,
   },
 };
@@ -53,7 +68,11 @@ interface KBIndexTypeBadgeProps {
   className?: string;
 }
 
-export function KBIndexTypeBadge({ indexType, showIcon = true, className }: KBIndexTypeBadgeProps) {
+export function KBIndexTypeBadge({
+  indexType,
+  showIcon = true,
+  className,
+}: KBIndexTypeBadgeProps) {
   const config = indexTypeConfig[indexType];
 
   return (

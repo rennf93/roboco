@@ -3,7 +3,13 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Progress } from "@/components/ui/progress";
-import { BarChart3, CheckCircle, Clock, FileText, AlertTriangle } from "lucide-react";
+import {
+  BarChart3,
+  CheckCircle,
+  Clock,
+  FileText,
+  AlertTriangle,
+} from "lucide-react";
 
 interface QualityMetricsPanelProps {
   metrics: Record<string, number> | undefined;
@@ -36,7 +42,8 @@ const METRICS: MetricDisplay[] = [
     key: "avg_completion_time",
     label: "Avg Completion Time",
     icon: <Clock className="h-4 w-4 text-purple-500" />,
-    format: (v) => `${(typeof v === "number" ? v : parseFloat(v) || 0).toFixed(1)}h`,
+    format: (v) =>
+      `${(typeof v === "number" ? v : parseFloat(v) || 0).toFixed(1)}h`,
   },
   {
     key: "documentation_rate",
@@ -59,7 +66,10 @@ const METRICS: MetricDisplay[] = [
   },
 ];
 
-export function QualityMetricsPanel({ metrics, isLoading }: QualityMetricsPanelProps) {
+export function QualityMetricsPanel({
+  metrics,
+  isLoading,
+}: QualityMetricsPanelProps) {
   return (
     <Card>
       <CardHeader className="pb-3">

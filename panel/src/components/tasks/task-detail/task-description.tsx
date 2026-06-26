@@ -84,7 +84,10 @@ export function TaskDescription({ task }: TaskDescriptionProps) {
           <CardTitle className="text-lg">Description</CardTitle>
           {isEditing ? (
             <div className="flex items-center gap-2">
-              <Tabs value={editMode} onValueChange={(v) => setEditMode(v as "write" | "preview")}>
+              <Tabs
+                value={editMode}
+                onValueChange={(v) => setEditMode(v as "write" | "preview")}
+              >
                 <TabsList className="h-8">
                   <TabsTrigger value="write" className="text-xs px-2 h-6">
                     <Edit3 className="h-3 w-3 mr-1" />
@@ -114,11 +117,7 @@ export function TaskDescription({ task }: TaskDescriptionProps) {
               </Button>
             </div>
           ) : (
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={startEditing}
-            >
+            <Button size="sm" variant="ghost" onClick={startEditing}>
               <Edit3 className="h-4 w-4 mr-1" />
               Edit
             </Button>
@@ -143,12 +142,15 @@ export function TaskDescription({ task }: TaskDescriptionProps) {
                 {editValue ? (
                   <Markdown>{editValue}</Markdown>
                 ) : (
-                  <p className="text-muted-foreground text-sm italic">Nothing to preview</p>
+                  <p className="text-muted-foreground text-sm italic">
+                    Nothing to preview
+                  </p>
                 )}
               </div>
             )}
             <p className="text-xs text-muted-foreground">
-              Markdown supported. Press Ctrl/Cmd + Enter to save, Escape to cancel.
+              Markdown supported. Press Ctrl/Cmd + Enter to save, Escape to
+              cancel.
             </p>
           </div>
         ) : task.description ? (

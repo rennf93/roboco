@@ -10,11 +10,19 @@ export const productKeys = {
 };
 
 export function useProducts() {
-  return useQuery({ queryKey: productKeys.lists(), queryFn: () => productsApi.list(), staleTime: 60000 });
+  return useQuery({
+    queryKey: productKeys.lists(),
+    queryFn: () => productsApi.list(),
+    staleTime: 60000,
+  });
 }
 
 export function useProduct(id: string) {
-  return useQuery({ queryKey: productKeys.detail(id), queryFn: () => productsApi.get(id), enabled: !!id });
+  return useQuery({
+    queryKey: productKeys.detail(id),
+    queryFn: () => productsApi.get(id),
+    enabled: !!id,
+  });
 }
 
 export function useCreateProduct() {
@@ -28,7 +36,8 @@ export function useCreateProduct() {
 export function useUpdateProduct() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, patch }: { id: string; patch: ProductUpdate }) => productsApi.update(id, patch),
+    mutationFn: ({ id, patch }: { id: string; patch: ProductUpdate }) =>
+      productsApi.update(id, patch),
     onSuccess: (_d, v) => {
       qc.invalidateQueries({ queryKey: productKeys.lists() });
       qc.invalidateQueries({ queryKey: productKeys.detail(v.id) });

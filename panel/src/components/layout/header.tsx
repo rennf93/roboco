@@ -83,7 +83,9 @@ export function Header() {
         {/* User */}
         <div className="flex items-center gap-2 ml-2 pl-4 border-l">
           <div className="h-8 w-8 rounded-full bg-primary flex items-center justify-center">
-            <span className="text-primary-foreground font-medium text-sm">CEO</span>
+            <span className="text-primary-foreground font-medium text-sm">
+              CEO
+            </span>
           </div>
           <span className="text-sm font-medium hidden sm:inline">Renzo</span>
         </div>

@@ -5,7 +5,10 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { useWorkSessions } from "@/hooks/use-work-sessions";
 import { WorkSessionStatus } from "@/types";
 import { OfflineState } from "@/components/ui/offline-state";
-import { WorkSessionTable, WorkSessionFilters } from "@/components/work-sessions";
+import {
+  WorkSessionTable,
+  WorkSessionFilters,
+} from "@/components/work-sessions";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { RefreshCw } from "lucide-react";
@@ -18,8 +21,9 @@ function WorkSessionsPageContent() {
   const searchQuery = searchParams.get("q") || "";
   const statusParam = searchParams.get("status");
   const statusFilter = useMemo(
-    () => (statusParam?.split(",").filter(Boolean) as WorkSessionStatus[]) || [],
-    [statusParam]
+    () =>
+      (statusParam?.split(",").filter(Boolean) as WorkSessionStatus[]) || [],
+    [statusParam],
   );
 
   // Update URL params
@@ -36,21 +40,21 @@ function WorkSessionsPageContent() {
       const query = params.toString();
       router.push(query ? `/work-sessions?${query}` : "/work-sessions");
     },
-    [router, searchParams]
+    [router, searchParams],
   );
 
   const handleSearchChange = useCallback(
     (value: string) => {
       updateParams({ q: value || null });
     },
-    [updateParams]
+    [updateParams],
   );
 
   const handleStatusChange = useCallback(
     (value: WorkSessionStatus[]) => {
       updateParams({ status: value.length > 0 ? value.join(",") : null });
     },
-    [updateParams]
+    [updateParams],
   );
 
   // Fetch work sessions

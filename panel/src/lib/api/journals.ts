@@ -14,11 +14,7 @@ import {
   JournalStats,
   GrowthMetrics,
 } from "@/types";
-import {
-  isMockMode,
-  mockJournals,
-  mockJournalEntries,
-} from "@/lib/mock-data";
+import { isMockMode, mockJournals, mockJournalEntries } from "@/lib/mock-data";
 
 // =============================================================================
 // JOURNAL ENDPOINTS
@@ -59,7 +55,7 @@ async function listAgentEntries(
     task_id?: string;
     limit?: number;
     offset?: number;
-  }
+  },
 ): Promise<JournalEntry[]> {
   if (isMockMode()) {
     let entries = [...mockJournalEntries] as JournalEntry[];
@@ -75,7 +71,7 @@ async function listAgentEntries(
   }
   const response = await api.get<JournalEntry[]>(
     `/journals/${agentIdOrSlug}/entries`,
-    { params }
+    { params },
   );
   return response.data;
 }
@@ -195,7 +191,7 @@ async function addTaskReflection(data: {
   }
   const response = await api.post<JournalEntry>(
     "/journals/me/reflections",
-    data
+    data,
   );
   return response.data;
 }
@@ -329,11 +325,18 @@ async function getMyStats(): Promise<JournalStats> {
     return {
       total_entries: entries.length,
       entries_by_type: {
-        task_reflection: entries.filter((e) => e.type === JournalEntryType.TASK_REFLECTION).length,
-        decision_log: entries.filter((e) => e.type === JournalEntryType.DECISION_LOG).length,
-        learning: entries.filter((e) => e.type === JournalEntryType.LEARNING).length,
-        struggle: entries.filter((e) => e.type === JournalEntryType.STRUGGLE).length,
-        general: entries.filter((e) => e.type === JournalEntryType.GENERAL).length,
+        task_reflection: entries.filter(
+          (e) => e.type === JournalEntryType.TASK_REFLECTION,
+        ).length,
+        decision_log: entries.filter(
+          (e) => e.type === JournalEntryType.DECISION_LOG,
+        ).length,
+        learning: entries.filter((e) => e.type === JournalEntryType.LEARNING)
+          .length,
+        struggle: entries.filter((e) => e.type === JournalEntryType.STRUGGLE)
+          .length,
+        general: entries.filter((e) => e.type === JournalEntryType.GENERAL)
+          .length,
       },
       last_entry_at: entries[0]?.created_at ?? null,
       has_summary: false,
@@ -350,10 +353,18 @@ async function getMyGrowthMetrics(): Promise<GrowthMetrics> {
   if (isMockMode()) {
     const entries = mockJournalEntries as JournalEntry[];
     return {
-      total_reflections: entries.filter((e) => e.type === JournalEntryType.TASK_REFLECTION).length,
-      total_learnings: entries.filter((e) => e.type === JournalEntryType.LEARNING).length,
-      total_struggles: entries.filter((e) => e.type === JournalEntryType.STRUGGLE).length,
-      total_decisions: entries.filter((e) => e.type === JournalEntryType.DECISION_LOG).length,
+      total_reflections: entries.filter(
+        (e) => e.type === JournalEntryType.TASK_REFLECTION,
+      ).length,
+      total_learnings: entries.filter(
+        (e) => e.type === JournalEntryType.LEARNING,
+      ).length,
+      total_struggles: entries.filter(
+        (e) => e.type === JournalEntryType.STRUGGLE,
+      ).length,
+      total_decisions: entries.filter(
+        (e) => e.type === JournalEntryType.DECISION_LOG,
+      ).length,
       struggle_resolution_rate: 0.7,
       learning_frequency: 3.5,
       sentiment_trend: "improving",
@@ -372,7 +383,7 @@ async function getMyGrowthMetrics(): Promise<GrowthMetrics> {
  */
 async function searchEntries(
   query: string,
-  topK: number = 10
+  topK: number = 10,
 ): Promise<JournalEntry[]> {
   if (isMockMode()) {
     // Simple text search for mock mode
@@ -381,7 +392,7 @@ async function searchEntries(
       .filter(
         (e) =>
           e.title.toLowerCase().includes(queryLower) ||
-          e.content.toLowerCase().includes(queryLower)
+          e.content.toLowerCase().includes(queryLower),
       )
       .slice(0, topK);
   }

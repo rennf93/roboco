@@ -60,9 +60,12 @@ export const releaseApi = {
     return data;
   },
   reject: async (requiredChanges: string): Promise<ReleaseProposal> => {
-    const { data } = await api.post<ReleaseProposal>("/release/proposal/reject", {
-      required_changes: requiredChanges,
-    });
+    const { data } = await api.post<ReleaseProposal>(
+      "/release/proposal/reject",
+      {
+        required_changes: requiredChanges,
+      },
+    );
     return data;
   },
 };

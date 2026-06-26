@@ -4,7 +4,10 @@ import { useEffect, useRef } from "react";
 import { useWebSocket } from "./use-websocket";
 import { useRateLimitStore } from "@/store/rate-limit-store";
 import { useUsageStore } from "@/store/usage-store";
-import type { RateLimitHitEvent, RateLimitLiftedEvent } from "@/types/rate-limits";
+import type {
+  RateLimitHitEvent,
+  RateLimitLiftedEvent,
+} from "@/types/rate-limits";
 
 /**
  * Unified shape for all messages arriving on the /ws/system endpoint.
@@ -43,7 +46,9 @@ interface UseRateLimitWebSocketOptions {
  * Accepts an optional onReconnect callback that fires when the connection
  * recovers from a reconnecting state.
  */
-export function useRateLimitWebSocket(options: UseRateLimitWebSocketOptions = {}) {
+export function useRateLimitWebSocket(
+  options: UseRateLimitWebSocketOptions = {},
+) {
   const { onReconnect } = options;
   const prevStateRef = useRef<string | null>(null);
 
@@ -53,7 +58,7 @@ export function useRateLimitWebSocket(options: UseRateLimitWebSocketOptions = {}
   const { state, lastMessage } = useWebSocket<SystemWsMessage>(
     "/system",
     undefined,
-    true
+    true,
   );
 
   // Sync WS connection state into useUsageStore for cross-component visibility.

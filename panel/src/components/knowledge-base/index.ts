@@ -2,7 +2,11 @@
 export { KnowledgeBaseBrowser } from "./knowledge-base-browser";
 
 // Shared components
-export { KBIndexTypeBadge, getIndexTypeIcon, getIndexTypeLabel } from "./kb-index-type-badge";
+export {
+  KBIndexTypeBadge,
+  getIndexTypeIcon,
+  getIndexTypeLabel,
+} from "./kb-index-type-badge";
 export { KBStatsCard } from "./kb-stats-card";
 export { KBSearchBar } from "./kb-search-bar";
 export { KBFilters } from "./kb-filters";

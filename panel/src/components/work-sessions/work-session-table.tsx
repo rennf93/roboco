@@ -57,7 +57,10 @@ function getStatusBadge(status: WorkSessionStatus) {
   }
 }
 
-export function WorkSessionTable({ sessions, isLoading }: WorkSessionTableProps) {
+export function WorkSessionTable({
+  sessions,
+  isLoading,
+}: WorkSessionTableProps) {
   if (isLoading) {
     return (
       <div className="space-y-3">
@@ -73,7 +76,9 @@ export function WorkSessionTable({ sessions, isLoading }: WorkSessionTableProps)
       <div className="text-center py-12 text-muted-foreground">
         <GitCommit className="h-12 w-12 mx-auto mb-4 opacity-50" />
         <p className="text-lg font-medium">No work sessions found</p>
-        <p className="text-sm">Work sessions are created when agents start working on tasks</p>
+        <p className="text-sm">
+          Work sessions are created when agents start working on tasks
+        </p>
       </div>
     );
   }
@@ -125,7 +130,9 @@ export function WorkSessionTable({ sessions, isLoading }: WorkSessionTableProps)
                 )}
               </TableCell>
               <TableCell className="text-sm text-muted-foreground">
-                {formatDistanceToNow(new Date(session.started_at), { addSuffix: true })}
+                {formatDistanceToNow(new Date(session.started_at), {
+                  addSuffix: true,
+                })}
               </TableCell>
               <TableCell>
                 <Link href={`/work-sessions/${session.id}`}>

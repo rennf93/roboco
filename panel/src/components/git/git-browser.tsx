@@ -40,17 +40,54 @@ function GitBrowserContent() {
   const taskId = searchParams.get("task") || "";
 
   // Fetch projects
-  const { data: projects, isLoading: loadingProjects, error: projectsError, refetch: refetchProjects } = useProjects();
+  const {
+    data: projects,
+    isLoading: loadingProjects,
+    error: projectsError,
+    refetch: refetchProjects,
+  } = useProjects();
 
   // Git hooks - only enabled when project is selected
-  const { data: status, isLoading: loadingStatus, refetch: refetchStatus } = useGitStatus(projectSlug, taskId, !!projectSlug);
-  const { data: log, isLoading: loadingLog, refetch: refetchLog } = useGitLog(projectSlug, 20, undefined, !!projectSlug);
-  const { data: branches, isLoading: loadingBranches, refetch: refetchBranches } = useGitBranches(projectSlug, true, !!projectSlug);
-  const { data: stagedDiff, isLoading: loadingStagedDiff } = useGitDiff(projectSlug, true, undefined, !!projectSlug);
-  const { data: unstagedDiff, isLoading: loadingUnstagedDiff } = useGitDiff(projectSlug, false, undefined, !!projectSlug);
+  const {
+    data: status,
+    isLoading: loadingStatus,
+    refetch: refetchStatus,
+  } = useGitStatus(projectSlug, taskId, !!projectSlug);
+  const {
+    data: log,
+    isLoading: loadingLog,
+    refetch: refetchLog,
+  } = useGitLog(projectSlug, 20, undefined, !!projectSlug);
+  const {
+    data: branches,
+    isLoading: loadingBranches,
+    refetch: refetchBranches,
+  } = useGitBranches(projectSlug, true, !!projectSlug);
+  const { data: stagedDiff, isLoading: loadingStagedDiff } = useGitDiff(
+    projectSlug,
+    true,
+    undefined,
+    !!projectSlug,
+  );
+  const { data: unstagedDiff, isLoading: loadingUnstagedDiff } = useGitDiff(
+    projectSlug,
+    false,
+    undefined,
+    !!projectSlug,
+  );
 
   // Git operations
-  const { commit, push, createBranch, checkout, createPR, mergePR, pull, fetch, rebase } = useGitOperations();
+  const {
+    commit,
+    push,
+    createBranch,
+    checkout,
+    createPR,
+    mergePR,
+    pull,
+    fetch,
+    rebase,
+  } = useGitOperations();
 
   // Update URL params
   const updateParams = useCallback(
@@ -66,14 +103,14 @@ function GitBrowserContent() {
       const query = params.toString();
       router.push(query ? `/git?${query}` : "/git");
     },
-    [router, searchParams]
+    [router, searchParams],
   );
 
   const handleProjectChange = useCallback(
     (slug: string) => {
       updateParams({ project: slug || null, task: null });
     },
-    [updateParams]
+    [updateParams],
   );
 
   const handleRefresh = () => {
@@ -97,7 +134,10 @@ function GitBrowserContent() {
     }
   };
 
-  const handleCreateBranch = async (branchType: BranchType, branchTaskId: string) => {
+  const handleCreateBranch = async (
+    branchType: BranchType,
+    branchTaskId: string,
+  ) => {
     try {
       const result = await createBranch.mutateAsync({
         project_slug: projectSlug,
@@ -133,7 +173,9 @@ function GitBrowserContent() {
         agent_id: "ceo",
         force,
       });
-      toast.success(`Pushed ${result.commits_pushed} commits to ${result.branch}`);
+      toast.success(
+        `Pushed ${result.commits_pushed} commits to ${result.branch}`,
+      );
     } catch {
       toast.error("Failed to push");
     }
@@ -151,10 +193,15 @@ function GitBrowserContent() {
       toast.success(
         <span>
           Created PR #{result.pr_number}:{" "}
-          <a href={result.pr_url} target="_blank" rel="noopener noreferrer" className="underline">
+          <a
+            href={result.pr_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline"
+          >
             View
           </a>
-        </span>
+        </span>,
       );
     } catch {
       toast.error("Failed to create PR");
@@ -209,7 +256,7 @@ function GitBrowserContent() {
       });
       if (result.conflict) {
         toast.warning(
-          `Rebase conflicts in: ${result.conflicted_files.join(", ") || "unknown files"}`
+          `Rebase conflicts in: ${result.conflicted_files.join(", ") || "unknown files"}`,
         );
       } else {
         toast.success("Rebase completed successfully");
@@ -220,10 +267,10 @@ function GitBrowserContent() {
   };
 
   // Check offline
-  const isOffline = projectsError && (
-    projectsError.message?.includes("Network Error") ||
-    (projectsError as { code?: string })?.code === "ERR_NETWORK"
-  );
+  const isOffline =
+    projectsError &&
+    (projectsError.message?.includes("Network Error") ||
+      (projectsError as { code?: string })?.code === "ERR_NETWORK");
 
   if (isOffline) {
     return (
@@ -282,7 +329,8 @@ function GitBrowserContent() {
             <GitBranch className="h-16 w-16 mx-auto mb-4 text-muted-foreground/50" />
             <h3 className="text-lg font-medium mb-2">Select a Project</h3>
             <p className="text-sm text-muted-foreground">
-              Choose a project from the dropdown to view git status and perform operations
+              Choose a project from the dropdown to view git status and perform
+              operations
             </p>
           </CardContent>
         </Card>

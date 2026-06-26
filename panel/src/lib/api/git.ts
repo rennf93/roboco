@@ -64,8 +64,18 @@ const mockBranches: GitBranchListResponse = {
   project_slug: "roboco",
   current_branch: "feature/backend/abc12345",
   branches: [
-    { name: "main", is_current: false, is_remote: false, last_commit: "def456" },
-    { name: "feature/backend/abc12345", is_current: true, is_remote: false, last_commit: "abc123" },
+    {
+      name: "main",
+      is_current: false,
+      is_remote: false,
+      last_commit: "def456",
+    },
+    {
+      name: "feature/backend/abc12345",
+      is_current: true,
+      is_remote: false,
+      last_commit: "abc123",
+    },
   ],
 };
 
@@ -81,7 +91,10 @@ export const gitApi = {
   /**
    * Get git status for a project
    */
-  getStatus: async (projectSlug: string, taskId?: string): Promise<GitStatusResponse> => {
+  getStatus: async (
+    projectSlug: string,
+    taskId?: string,
+  ): Promise<GitStatusResponse> => {
     if (isMockMode()) {
       return { ...mockGitStatus, project_slug: projectSlug };
     }
@@ -97,7 +110,7 @@ export const gitApi = {
   getLog: async (
     projectSlug: string,
     limit: number = 10,
-    branch?: string
+    branch?: string,
   ): Promise<GitLogResponse> => {
     if (isMockMode()) {
       return { ...mockGitLog, project_slug: projectSlug };
@@ -113,7 +126,7 @@ export const gitApi = {
    */
   getBranches: async (
     projectSlug: string,
-    includeRemote: boolean = false
+    includeRemote: boolean = false,
   ): Promise<GitBranchListResponse> => {
     if (isMockMode()) {
       return { ...mockBranches, project_slug: projectSlug };
@@ -130,7 +143,7 @@ export const gitApi = {
   getDiff: async (
     projectSlug: string,
     staged: boolean = false,
-    filePath?: string
+    filePath?: string,
   ): Promise<GitDiffResponse> => {
     if (isMockMode()) {
       return {
@@ -187,7 +200,9 @@ export const gitApi = {
   /**
    * Create a task branch (PM only)
    */
-  createBranch: async (request: GitCreateBranchRequest): Promise<GitCreateBranchResponse> => {
+  createBranch: async (
+    request: GitCreateBranchRequest,
+  ): Promise<GitCreateBranchResponse> => {
     if (isMockMode()) {
       return {
         branch_name: `${request.branch_type}/backend/${request.task_id.slice(0, 8)}`,
@@ -195,28 +210,38 @@ export const gitApi = {
         project_slug: request.project_slug,
       };
     }
-    const { data } = await api.post<GitCreateBranchResponse>("/git/branch/create", request);
+    const { data } = await api.post<GitCreateBranchResponse>(
+      "/git/branch/create",
+      request,
+    );
     return data;
   },
 
   /**
    * Checkout a branch
    */
-  checkout: async (request: GitCheckoutRequest): Promise<GitCheckoutResponse> => {
+  checkout: async (
+    request: GitCheckoutRequest,
+  ): Promise<GitCheckoutResponse> => {
     if (isMockMode()) {
       return {
         branch: request.branch,
         project_slug: request.project_slug,
       };
     }
-    const { data } = await api.post<GitCheckoutResponse>("/git/checkout", request);
+    const { data } = await api.post<GitCheckoutResponse>(
+      "/git/checkout",
+      request,
+    );
     return data;
   },
 
   /**
    * Create a pull request
    */
-  createPR: async (request: GitCreatePRRequest): Promise<GitCreatePRResponse> => {
+  createPR: async (
+    request: GitCreatePRRequest,
+  ): Promise<GitCreatePRResponse> => {
     if (isMockMode()) {
       return {
         pr_number: 42,
@@ -226,7 +251,10 @@ export const gitApi = {
         target_branch: "main",
       };
     }
-    const { data } = await api.post<GitCreatePRResponse>("/git/pr/create", request);
+    const { data } = await api.post<GitCreatePRResponse>(
+      "/git/pr/create",
+      request,
+    );
     return data;
   },
 
@@ -242,7 +270,10 @@ export const gitApi = {
         target_branch: "main",
       };
     }
-    const { data } = await api.post<GitMergePRResponse>("/git/pr/merge", request);
+    const { data } = await api.post<GitMergePRResponse>(
+      "/git/pr/merge",
+      request,
+    );
     return data;
   },
 

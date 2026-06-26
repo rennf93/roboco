@@ -22,7 +22,13 @@ interface MarkdownProps {
  * Uses Tailwind's prose classes for typography.
  * Supports GitHub Flavored Markdown (tables, checkboxes, strikethrough, autolinks).
  */
-export function Markdown({ children, className, onCheckboxChange, disabled, compact }: MarkdownProps) {
+export function Markdown({
+  children,
+  className,
+  onCheckboxChange,
+  disabled,
+  compact,
+}: MarkdownProps) {
   const checkboxIndexRef = useRef(0);
 
   // Reset checkbox index on each render
@@ -46,7 +52,7 @@ export function Markdown({ children, className, onCheckboxChange, disabled, comp
 
       onCheckboxChange(newContent);
     },
-    [children, onCheckboxChange]
+    [children, onCheckboxChange],
   );
 
   // Custom components for ReactMarkdown
@@ -59,7 +65,9 @@ export function Markdown({ children, className, onCheckboxChange, disabled, comp
               <Checkbox
                 checked={!!checked}
                 disabled={disabled}
-                onCheckedChange={(newChecked) => toggleCheckbox(index, !!newChecked)}
+                onCheckedChange={(newChecked) =>
+                  toggleCheckbox(index, !!newChecked)
+                }
                 className="mr-2 align-middle"
               />
             );
@@ -124,7 +132,7 @@ export function Markdown({ children, className, onCheckboxChange, disabled, comp
         "prose-table:border prose-table:border-border prose-th:border prose-th:border-border prose-th:bg-muted prose-td:border prose-td:border-border",
         // Strong/bold
         "prose-strong:font-semibold prose-strong:text-foreground",
-        className
+        className,
       )}
     >
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>

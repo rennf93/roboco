@@ -42,8 +42,8 @@ function BusinessPageContent() {
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Business</h1>
         <p className="text-muted-foreground">
-          Company goals, your chief-of-staff Secretary, and Board pitches — all in
-          one place.
+          Company goals, your chief-of-staff Secretary, and Board pitches — all
+          in one place.
         </p>
       </div>
 

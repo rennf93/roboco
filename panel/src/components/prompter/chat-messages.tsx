@@ -53,7 +53,10 @@ const markdownComponents = {
 function MarkdownBody({ content }: { content: string }) {
   return (
     <div className="prose prose-sm max-w-none !text-inherit [&_*]:!text-inherit prose-p:my-1.5 prose-headings:mt-3 prose-headings:mb-1 prose-pre:my-2 prose-pre:bg-black/20">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={markdownComponents}
+      >
         {content}
       </ReactMarkdown>
     </div>
@@ -78,8 +81,9 @@ export function ChatMessages({
       <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center text-muted-foreground px-8">
         <p className="text-lg font-semibold">What would you like to build?</p>
         <p className="text-sm max-w-md">
-          Describe your task idea. I&apos;ll help you refine it into a structured task with acceptance
-          criteria ready to hand off to the team.
+          Describe your task idea. I&apos;ll help you refine it into a
+          structured task with acceptance criteria ready to hand off to the
+          team.
         </p>
       </div>
     );
@@ -124,7 +128,7 @@ export function ChatMessages({
               <div
                 className={cn(
                   "group relative max-w-[70%] rounded-2xl rounded-tl-sm bg-muted px-4 py-3 text-sm text-foreground",
-                  msg.draft && "max-w-[85%]"
+                  msg.draft && "max-w-[85%]",
                 )}
               >
                 <MarkdownBody content={msg.content} />

@@ -3,12 +3,24 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { KBStats, KBIndexType } from "@/types";
-import { Database, FileText, MessageSquare, BookOpen, AlertTriangle, Scale, GitBranch, ClipboardCheck, Lightbulb } from "lucide-react";
+import {
+  Database,
+  FileText,
+  MessageSquare,
+  BookOpen,
+  AlertTriangle,
+  Scale,
+  GitBranch,
+  ClipboardCheck,
+  Lightbulb,
+} from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 
 const indexIcons: Record<KBIndexType, React.ReactNode> = {
   [KBIndexType.DOCUMENTATION]: <FileText className="h-4 w-4 text-blue-500" />,
-  [KBIndexType.CONVERSATIONS]: <MessageSquare className="h-4 w-4 text-green-500" />,
+  [KBIndexType.CONVERSATIONS]: (
+    <MessageSquare className="h-4 w-4 text-green-500" />
+  ),
   [KBIndexType.JOURNALS]: <BookOpen className="h-4 w-4 text-orange-500" />,
   [KBIndexType.ERRORS]: <AlertTriangle className="h-4 w-4 text-red-500" />,
   [KBIndexType.STANDARDS]: <Scale className="h-4 w-4 text-cyan-500" />,
@@ -73,7 +85,9 @@ export function KBStatsCard({ stats, isLoading }: KBStatsCardProps) {
 
   const latestUpdated = stats.indexes.reduce<string | null>(
     (acc, idx) =>
-      idx.last_updated && (!acc || idx.last_updated > acc) ? idx.last_updated : acc,
+      idx.last_updated && (!acc || idx.last_updated > acc)
+        ? idx.last_updated
+        : acc,
     null,
   );
 
@@ -87,13 +101,18 @@ export function KBStatsCard({ stats, isLoading }: KBStatsCardProps) {
       </CardHeader>
       <CardContent className="space-y-3">
         {stats.indexes.map((idx) => (
-          <div key={idx.index_type} className="flex items-center justify-between text-sm">
+          <div
+            key={idx.index_type}
+            className="flex items-center justify-between text-sm"
+          >
             <div className="flex items-center gap-2">
               {indexIcons[idx.index_type]}
               <span>{indexLabels[idx.index_type]}</span>
             </div>
             <div className="text-right">
-              <span className="font-medium">{idx.document_count.toLocaleString()}</span>
+              <span className="font-medium">
+                {idx.document_count.toLocaleString()}
+              </span>
               <span className="text-muted-foreground text-xs ml-1">docs</span>
             </div>
           </div>
@@ -101,7 +120,9 @@ export function KBStatsCard({ stats, isLoading }: KBStatsCardProps) {
         <div className="pt-2 border-t">
           <div className="flex items-center justify-between text-sm">
             <span className="font-medium">Total</span>
-            <span className="font-bold">{stats.total_documents.toLocaleString()}</span>
+            <span className="font-bold">
+              {stats.total_documents.toLocaleString()}
+            </span>
           </div>
           <div className="flex items-center justify-between text-xs text-muted-foreground mt-1">
             <span>Chunks</span>

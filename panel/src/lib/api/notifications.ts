@@ -1,5 +1,10 @@
 import api from "./client";
-import type { Notification, NotificationListResponse, NotificationType, NotificationPriority } from "@/types";
+import type {
+  Notification,
+  NotificationListResponse,
+  NotificationType,
+  NotificationPriority,
+} from "@/types";
 import { isMockMode, mockNotifications } from "@/lib/mock-data";
 
 export interface NotificationFilters {
@@ -11,26 +16,34 @@ export interface NotificationFilters {
 
 export const notificationsApi = {
   // List notifications for CEO
-  list: async (filters?: NotificationFilters): Promise<NotificationListResponse> => {
+  list: async (
+    filters?: NotificationFilters,
+  ): Promise<NotificationListResponse> => {
     if (isMockMode()) {
       let notifications = [...mockNotifications] as Notification[];
       if (filters?.type) {
         notifications = notifications.filter((n) => n.type === filters.type);
       }
       if (filters?.priority) {
-        notifications = notifications.filter((n) => n.priority === filters.priority);
+        notifications = notifications.filter(
+          (n) => n.priority === filters.priority,
+        );
       }
       if (filters?.unread_only) {
         notifications = notifications.filter((n) => !n.is_read);
       }
       if (filters?.pending_ack_only) {
-        notifications = notifications.filter((n) => n.requires_ack && !n.is_acknowledged);
+        notifications = notifications.filter(
+          (n) => n.requires_ack && !n.is_acknowledged,
+        );
       }
       return {
         items: notifications,
         total: notifications.length,
         unread_count: notifications.filter((n) => !n.is_read).length,
-        pending_ack_count: notifications.filter((n) => n.requires_ack && !n.is_acknowledged).length,
+        pending_ack_count: notifications.filter(
+          (n) => n.requires_ack && !n.is_acknowledged,
+        ).length,
       };
     }
     // Backend uses type_filter, priority_filter parameter names
@@ -38,20 +51,27 @@ export const notificationsApi = {
     if (filters?.type) params.type_filter = filters.type;
     if (filters?.priority) params.priority_filter = filters.priority;
     if (filters?.unread_only) params.unread_only = filters.unread_only;
-    if (filters?.pending_ack_only) params.pending_ack_only = filters.pending_ack_only;
+    if (filters?.pending_ack_only)
+      params.pending_ack_only = filters.pending_ack_only;
 
-    const { data } = await api.get<NotificationListResponse>("/notifications", { params });
+    const { data } = await api.get<NotificationListResponse>("/notifications", {
+      params,
+    });
     return data;
   },
 
   // Get notification by ID
   get: async (notificationId: string): Promise<Notification> => {
     if (isMockMode()) {
-      const notification = mockNotifications.find((n) => n.id === notificationId);
+      const notification = mockNotifications.find(
+        (n) => n.id === notificationId,
+      );
       if (notification) return notification as Notification;
       throw new Error("Notification not found");
     }
-    const { data } = await api.get<Notification>("/notifications/" + notificationId);
+    const { data } = await api.get<Notification>(
+      "/notifications/" + notificationId,
+    );
     return data;
   },
 
@@ -85,7 +105,7 @@ export const notificationsApi = {
       throw new Error("Notification not found");
     }
     const { data } = await api.post<Notification>(
-      "/notifications/" + notificationId + "/ack"
+      "/notifications/" + notificationId + "/ack",
     );
     return data;
   },
@@ -99,16 +119,19 @@ export const notificationsApi = {
       return;
     }
     // Get all unread notifications
-    const { data } = await api.get<{ items: Notification[] }>("/notifications", {
-      params: { unread_only: true },
-    });
+    const { data } = await api.get<{ items: Notification[] }>(
+      "/notifications",
+      {
+        params: { unread_only: true },
+      },
+    );
     // Mark each as read
     await Promise.all(
       data.items.map((n) =>
         api.post("/notifications/" + n.id + "/read").catch(() => {
           // Ignore individual failures
-        })
-      )
+        }),
+      ),
     );
   },
 };

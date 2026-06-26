@@ -48,8 +48,13 @@ export function KanbanColumn({
       )}
     >
       <div className="flex items-center justify-between mb-3">
-        <h3 className="font-semibold text-sm text-gray-800 dark:text-gray-100">{title}</h3>
-        <Badge variant="secondary" className="dark:bg-gray-700 dark:text-gray-100">
+        <h3 className="font-semibold text-sm text-gray-800 dark:text-gray-100">
+          {title}
+        </h3>
+        <Badge
+          variant="secondary"
+          className="dark:bg-gray-700 dark:text-gray-100"
+        >
           {isLoading ? "..." : tasks.length}
         </Badge>
       </div>
@@ -71,7 +76,11 @@ export function KanbanColumn({
                 key={task.id}
                 task={task}
                 onAction={onAction}
-                showQaActions={showQaActions && (status === TaskStatus.AWAITING_QA || status === TaskStatus.VERIFYING)}
+                showQaActions={
+                  showQaActions &&
+                  (status === TaskStatus.AWAITING_QA ||
+                    status === TaskStatus.VERIFYING)
+                }
               />
             ))}
           </div>

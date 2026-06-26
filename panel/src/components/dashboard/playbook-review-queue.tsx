@@ -51,7 +51,9 @@ export function PlaybookReviewQueue({ className }: { className?: string }) {
       toast.success("Playbook approved and indexed");
     },
     onError: (e) =>
-      toast.error(`Approve failed: ${e instanceof Error ? e.message : "error"}`),
+      toast.error(
+        `Approve failed: ${e instanceof Error ? e.message : "error"}`,
+      ),
   });
 
   const rejectMutation = useMutation({

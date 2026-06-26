@@ -76,7 +76,9 @@ export function GitLogPanel({
                 variant="ghost"
                 className={cn(
                   "w-full h-auto justify-start text-left p-3 font-normal whitespace-normal relative",
-                  selectedHash === commit.hash ? "bg-primary/10 hover:bg-primary/10" : ""
+                  selectedHash === commit.hash
+                    ? "bg-primary/10 hover:bg-primary/10"
+                    : "",
                 )}
               >
                 {/* Timeline line */}

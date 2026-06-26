@@ -20,13 +20,19 @@ import type {
 
 export const usageKeys = {
   all: ["usage"] as const,
-  summary: (period: UsagePeriod) => [...usageKeys.all, "summary", period] as const,
-  timeSeries: (period: UsagePeriod) => [...usageKeys.all, "time-series", period] as const,
-  agentUsage: (period: UsagePeriod) => [...usageKeys.all, "by-agent", period] as const,
-  teamUsage: (period: UsagePeriod) => [...usageKeys.all, "by-team", period] as const,
-  modelUsage: (period: UsagePeriod) => [...usageKeys.all, "by-model", period] as const,
+  summary: (period: UsagePeriod) =>
+    [...usageKeys.all, "summary", period] as const,
+  timeSeries: (period: UsagePeriod) =>
+    [...usageKeys.all, "time-series", period] as const,
+  agentUsage: (period: UsagePeriod) =>
+    [...usageKeys.all, "by-agent", period] as const,
+  teamUsage: (period: UsagePeriod) =>
+    [...usageKeys.all, "by-team", period] as const,
+  modelUsage: (period: UsagePeriod) =>
+    [...usageKeys.all, "by-model", period] as const,
   projection: () => [...usageKeys.all, "projection"] as const,
-  cacheEfficiency: (period: UsagePeriod) => [...usageKeys.all, "cache-efficiency", period] as const,
+  cacheEfficiency: (period: UsagePeriod) =>
+    [...usageKeys.all, "cache-efficiency", period] as const,
   sessions: (limit: number) => [...usageKeys.all, "sessions", limit] as const,
 };
 

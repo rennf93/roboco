@@ -114,7 +114,7 @@ export function TaskFilters({
     onProjectChange(
       projectFilter.includes(id)
         ? projectFilter.filter((p) => p !== id)
-        : [...projectFilter, id]
+        : [...projectFilter, id],
     );
   };
 
@@ -123,7 +123,7 @@ export function TaskFilters({
     onProductChange(
       productFilter.includes(id)
         ? productFilter.filter((p) => p !== id)
-        : [...productFilter, id]
+        : [...productFilter, id],
     );
   };
 
@@ -157,8 +157,8 @@ export function TaskFilters({
                     {statusFilter.length === 0
                       ? "All Statuses"
                       : statusFilter.length === 1
-                      ? STATUS_LABELS[statusFilter[0]]
-                      : `${statusFilter.length} statuses`}
+                        ? STATUS_LABELS[statusFilter[0]]
+                        : `${statusFilter.length} statuses`}
                   </span>
                   <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                 </Button>
@@ -202,8 +202,8 @@ export function TaskFilters({
                     {teamFilter.length === 0
                       ? "All Teams"
                       : teamFilter.length === 1
-                      ? TEAM_LABELS[teamFilter[0]]
-                      : `${teamFilter.length} teams`}
+                        ? TEAM_LABELS[teamFilter[0]]
+                        : `${teamFilter.length} teams`}
                   </span>
                   <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                 </Button>
@@ -243,13 +243,16 @@ export function TaskFilters({
             {onTaskTypeChange && (
               <Popover>
                 <PopoverTrigger asChild>
-                  <Button variant="outline" className="min-w-32 justify-between">
+                  <Button
+                    variant="outline"
+                    className="min-w-32 justify-between"
+                  >
                     <span className="truncate">
                       {taskTypeFilter.length === 0
                         ? "All Types"
                         : taskTypeFilter.length === 1
-                        ? TASK_TYPE_LABELS[taskTypeFilter[0]]
-                        : `${taskTypeFilter.length} types`}
+                          ? TASK_TYPE_LABELS[taskTypeFilter[0]]
+                          : `${taskTypeFilter.length} types`}
                     </span>
                     <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                   </Button>
@@ -278,7 +281,9 @@ export function TaskFilters({
                           checked={taskTypeFilter.includes(type)}
                           onCheckedChange={() => toggleTaskType(type)}
                         />
-                        <span className="text-sm">{TASK_TYPE_LABELS[type]}</span>
+                        <span className="text-sm">
+                          {TASK_TYPE_LABELS[type]}
+                        </span>
                       </label>
                     ))}
                   </div>
@@ -290,13 +295,16 @@ export function TaskFilters({
             {onProjectChange && projectOptions.length > 0 && (
               <Popover>
                 <PopoverTrigger asChild>
-                  <Button variant="outline" className="min-w-32 justify-between">
+                  <Button
+                    variant="outline"
+                    className="min-w-32 justify-between"
+                  >
                     <span className="truncate">
                       {projectFilter.length === 0
                         ? "All Projects"
                         : projectFilter.length === 1
-                        ? projectLabel(projectFilter[0])
-                        : `${projectFilter.length} projects`}
+                          ? projectLabel(projectFilter[0])
+                          : `${projectFilter.length} projects`}
                     </span>
                     <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                   </Button>
@@ -337,13 +345,16 @@ export function TaskFilters({
             {onProductChange && productOptions.length > 0 && (
               <Popover>
                 <PopoverTrigger asChild>
-                  <Button variant="outline" className="min-w-32 justify-between">
+                  <Button
+                    variant="outline"
+                    className="min-w-32 justify-between"
+                  >
                     <span className="truncate">
                       {productFilter.length === 0
                         ? "All Products"
                         : productFilter.length === 1
-                        ? productLabel(productFilter[0])
-                        : `${productFilter.length} products`}
+                          ? productLabel(productFilter[0])
+                          : `${productFilter.length} products`}
                     </span>
                     <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                   </Button>
@@ -383,7 +394,11 @@ export function TaskFilters({
         </div>
 
         {/* Active Filters */}
-        {(statusFilter.length > 0 || teamFilter.length > 0 || taskTypeFilter.length > 0 || projectFilter.length > 0 || productFilter.length > 0) && (
+        {(statusFilter.length > 0 ||
+          teamFilter.length > 0 ||
+          taskTypeFilter.length > 0 ||
+          projectFilter.length > 0 ||
+          productFilter.length > 0) && (
           <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t">
             {statusFilter.map((status) => (
               <Badge key={status} variant="secondary" className="gap-1">
@@ -430,7 +445,11 @@ export function TaskFilters({
                 />
               </Badge>
             ))}
-            {(statusFilter.length > 0 || teamFilter.length > 0 || taskTypeFilter.length > 0 || projectFilter.length > 0 || productFilter.length > 0) && (
+            {(statusFilter.length > 0 ||
+              teamFilter.length > 0 ||
+              taskTypeFilter.length > 0 ||
+              projectFilter.length > 0 ||
+              productFilter.length > 0) && (
               <Button
                 variant="ghost"
                 size="sm"

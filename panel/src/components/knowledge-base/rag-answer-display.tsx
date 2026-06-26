@@ -5,7 +5,13 @@ import { RAGQueryResponse } from "@/types";
 import { RAGCitationCard } from "./rag-citation-card";
 import { Markdown } from "@/components/ui/markdown";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Bot, BookOpen, MessageSquareText, Sparkles, AlertCircle } from "lucide-react";
+import {
+  Bot,
+  BookOpen,
+  MessageSquareText,
+  Sparkles,
+  AlertCircle,
+} from "lucide-react";
 
 interface RAGAnswerDisplayProps {
   response: RAGQueryResponse | null;
@@ -14,7 +20,12 @@ interface RAGAnswerDisplayProps {
   error?: string | null;
 }
 
-export function RAGAnswerDisplay({ response, isLoading, question, error }: RAGAnswerDisplayProps) {
+export function RAGAnswerDisplay({
+  response,
+  isLoading,
+  question,
+  error,
+}: RAGAnswerDisplayProps) {
   if (isLoading) {
     return (
       <div className="space-y-4">
@@ -51,8 +62,9 @@ export function RAGAnswerDisplay({ response, isLoading, question, error }: RAGAn
         </div>
         <h3 className="text-lg font-medium mb-1">Ask AI</h3>
         <p className="text-sm text-muted-foreground max-w-md">
-          Ask questions about your codebase, documentation, or past conversations.
-          The AI will provide answers with citations from the knowledge base.
+          Ask questions about your codebase, documentation, or past
+          conversations. The AI will provide answers with citations from the
+          knowledge base.
         </p>
       </div>
     );

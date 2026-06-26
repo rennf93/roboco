@@ -15,7 +15,13 @@ interface GitDiffViewerProps {
   isLoadingUnstaged: boolean;
 }
 
-function DiffContent({ diff, isLoading }: { diff: GitDiffResponse | undefined; isLoading: boolean }) {
+function DiffContent({
+  diff,
+  isLoading,
+}: {
+  diff: GitDiffResponse | undefined;
+  isLoading: boolean;
+}) {
   if (isLoading) {
     return (
       <div className="p-4 space-y-2">
@@ -54,10 +60,7 @@ function DiffContent({ diff, isLoading }: { diff: GitDiffResponse | undefined; i
           }
 
           return (
-            <div
-              key={i}
-              className={`px-2 -mx-2 whitespace-pre ${className}`}
-            >
+            <div key={i} className={`px-2 -mx-2 whitespace-pre ${className}`}>
               {line || " "}
             </div>
           );

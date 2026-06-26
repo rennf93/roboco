@@ -62,12 +62,13 @@ export function useMetrics() {
     queryKey: dashboardKeys.metrics(),
     queryFn: async (): Promise<MetricsSummary> => {
       // Fetch all metrics in parallel, including real agent status
-      const [velocity, blockers, communication, agentStatus] = await Promise.all([
-        dashboardApi.getVelocityMetrics(),
-        dashboardApi.getBlockerMetrics(),
-        dashboardApi.getCommunicationMetrics(),
-        dashboardApi.getAgentStatus(),
-      ]);
+      const [velocity, blockers, communication, agentStatus] =
+        await Promise.all([
+          dashboardApi.getVelocityMetrics(),
+          dashboardApi.getBlockerMetrics(),
+          dashboardApi.getCommunicationMetrics(),
+          dashboardApi.getAgentStatus(),
+        ]);
       return {
         velocity,
         blockers,
@@ -255,7 +256,8 @@ export function useCreateAuditorFlag() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (data: CreateFlagRequest) => dashboardApi.createAuditorFlag(data),
+    mutationFn: (data: CreateFlagRequest) =>
+      dashboardApi.createAuditorFlag(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: dashboardKeys.auditor() });
       queryClient.invalidateQueries({

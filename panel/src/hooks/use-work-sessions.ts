@@ -1,15 +1,20 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { workSessionsApi, type WorkSessionFilters } from "@/lib/api/work-sessions";
+import {
+  workSessionsApi,
+  type WorkSessionFilters,
+} from "@/lib/api/work-sessions";
 import type { WorkSession, WorkSessionCreate } from "@/types";
 
 // Query keys
 export const workSessionKeys = {
   all: ["work-sessions"] as const,
   lists: () => [...workSessionKeys.all, "list"] as const,
-  list: (filters?: WorkSessionFilters) => [...workSessionKeys.lists(), filters] as const,
+  list: (filters?: WorkSessionFilters) =>
+    [...workSessionKeys.lists(), filters] as const,
   details: () => [...workSessionKeys.all, "detail"] as const,
   detail: (id: string) => [...workSessionKeys.details(), id] as const,
-  forTask: (taskId: string) => [...workSessionKeys.all, "task", taskId] as const,
+  forTask: (taskId: string) =>
+    [...workSessionKeys.all, "task", taskId] as const,
 };
 
 // Hooks
@@ -56,19 +61,31 @@ export function useWorkSessionActions() {
     queryClient.invalidateQueries({ queryKey: workSessionKeys.lists() });
     queryClient.setQueryData(workSessionKeys.detail(session.id), session);
     if (session.task_id) {
-      queryClient.invalidateQueries({ queryKey: workSessionKeys.forTask(session.task_id) });
+      queryClient.invalidateQueries({
+        queryKey: workSessionKeys.forTask(session.task_id),
+      });
     }
   };
 
   const addCommit = useMutation({
-    mutationFn: ({ sessionId, commitSha }: { sessionId: string; commitSha: string }) =>
-      workSessionsApi.addCommit(sessionId, commitSha),
+    mutationFn: ({
+      sessionId,
+      commitSha,
+    }: {
+      sessionId: string;
+      commitSha: string;
+    }) => workSessionsApi.addCommit(sessionId, commitSha),
     onSuccess: invalidateSession,
   });
 
   const addFiles = useMutation({
-    mutationFn: ({ sessionId, filePaths }: { sessionId: string; filePaths: string[] }) =>
-      workSessionsApi.addFiles(sessionId, filePaths),
+    mutationFn: ({
+      sessionId,
+      filePaths,
+    }: {
+      sessionId: string;
+      filePaths: string[];
+    }) => workSessionsApi.addFiles(sessionId, filePaths),
     onSuccess: invalidateSession,
   });
 
@@ -86,14 +103,24 @@ export function useWorkSessionActions() {
   });
 
   const updatePRStatus = useMutation({
-    mutationFn: ({ sessionId, prStatus }: { sessionId: string; prStatus: string }) =>
-      workSessionsApi.updatePRStatus(sessionId, prStatus),
+    mutationFn: ({
+      sessionId,
+      prStatus,
+    }: {
+      sessionId: string;
+      prStatus: string;
+    }) => workSessionsApi.updatePRStatus(sessionId, prStatus),
     onSuccess: invalidateSession,
   });
 
   const mergePR = useMutation({
-    mutationFn: ({ sessionId, mergedBy }: { sessionId: string; mergedBy: string }) =>
-      workSessionsApi.mergePR(sessionId, mergedBy),
+    mutationFn: ({
+      sessionId,
+      mergedBy,
+    }: {
+      sessionId: string;
+      mergedBy: string;
+    }) => workSessionsApi.mergePR(sessionId, mergedBy),
     onSuccess: invalidateSession,
   });
 
@@ -103,8 +130,13 @@ export function useWorkSessionActions() {
   });
 
   const abandon = useMutation({
-    mutationFn: ({ sessionId, reason }: { sessionId: string; reason?: string }) =>
-      workSessionsApi.abandon(sessionId, reason),
+    mutationFn: ({
+      sessionId,
+      reason,
+    }: {
+      sessionId: string;
+      reason?: string;
+    }) => workSessionsApi.abandon(sessionId, reason),
     onSuccess: invalidateSession,
   });
 

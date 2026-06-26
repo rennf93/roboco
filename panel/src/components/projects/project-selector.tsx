@@ -101,7 +101,8 @@ export function ProjectSelector({
               <span>{selectedProject.name}</span>
               {selectedProject.assigned_cell && (
                 <Badge variant="outline" className="text-xs">
-                  {TEAM_LABELS[selectedProject.assigned_cell] || selectedProject.assigned_cell}
+                  {TEAM_LABELS[selectedProject.assigned_cell] ||
+                    selectedProject.assigned_cell}
                 </Badge>
               )}
             </div>
