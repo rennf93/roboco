@@ -40,6 +40,7 @@ from roboco.services.conventions import (
     get_conventions_service,
 )
 from roboco.services.project import ProjectService, get_project_service
+from roboco.utils.converters import require_uuid
 
 router = APIRouter()
 
@@ -221,7 +222,7 @@ async def update_project(
         is_active=data.is_active,
     )
 
-    updated = await service.update(project.id, update_data)
+    updated = await service.update(require_uuid(project.id), update_data)
     await db.commit()
 
     if not updated:
@@ -269,7 +270,7 @@ async def delete_project(
 
     require_cell_access(agent, project.assigned_cell, "delete")
 
-    deleted = await service.delete(project.id)
+    deleted = await service.delete(require_uuid(project.id))
     await db.commit()
 
     if not deleted:
@@ -309,7 +310,7 @@ async def set_workspace(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Project not found: {project_id}",
             ) from None
-        uuid = project.id
+        uuid = require_uuid(project.id)
 
     updated = await service.set_workspace_path(uuid, data.workspace_path)
     await db.commit()
@@ -346,7 +347,7 @@ async def update_sync_state(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Project not found: {project_id}",
             ) from None
-        uuid = project.id
+        uuid = require_uuid(project.id)
 
     updated = await service.update_sync_state(uuid, data.head_commit)
     await db.commit()
@@ -391,7 +392,7 @@ async def add_agent_access(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Project not found: {project_id}",
             ) from None
-        uuid = project.id
+        uuid = require_uuid(project.id)
 
     updated = await service.add_allowed_agent(uuid, agent_id)
     await db.commit()
@@ -428,7 +429,7 @@ async def remove_agent_access(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Project not found: {project_id}",
             ) from None
-        uuid = project.id
+        uuid = require_uuid(project.id)
 
     updated = await service.remove_allowed_agent(uuid, agent_id)
     await db.commit()
