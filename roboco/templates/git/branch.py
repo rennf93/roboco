@@ -13,7 +13,8 @@ Uses '--' separator for task hierarchy to avoid git ref conflicts.
 Git cannot have both 'foo' as a branch AND 'foo/bar' as another branch,
 so we use '--' instead of '/' for the task hierarchy portion.
 
-Max 3 levels deep (root → subtask → sub-subtask).
+Max 4 levels deep — MegaTask adds an umbrella Main-PM layer on top of the
+normal flow, so the full path is umbrella → root → cell → dev.
 """
 
 from typing import TYPE_CHECKING
@@ -39,7 +40,7 @@ async def build_branch_name(
     team: str,
     task_service: "TaskService",
 ) -> str:
-    """Build branch name with ancestor path (max 3 levels, full UUIDs).
+    """Build branch name with ancestor path (max 4 levels, full UUIDs).
 
     Args:
         task_id: The task to create branch for
@@ -48,7 +49,9 @@ async def build_branch_name(
         task_service: TaskService instance for fetching task hierarchy
 
     Returns:
-        Branch name in format: {type}/{team}/{root}--{sub}--{subsub}
+        Branch name in format: {type}/{team}/{root}--{sub}--{subsub}--{subsubsub}
+        (MegaTask: umbrella--root--cell--dev; shorter hierarchies omit the
+        trailing segments).
 
     Raises:
         BranchNameError: If branch_type invalid, task not found, or hierarchy too deep

@@ -224,6 +224,54 @@ def test_normalize_propose_batch_reports_dropped_count() -> None:
     assert [d["title"] for d in chunks[0].data["drafts"]] == ["Good"]
 
 
+def test_normalize_propose_batch_coerces_the_work_scalar_to_list() -> None:
+    # The agent may emit `the_work` as a lone object (single-cell task) or its
+    # `items` as a lone string instead of a list. The panel treats `the_work`
+    # as an array (`(draft.the_work ?? []).map`) and crashes if it isn't — so
+    # the backend coerces these list-shaped fields before they reach SSE, the
+    # same graceful single-item wrap the content models apply at confirm time.
+    msg = AssistantMessage(
+        [
+            ToolUseBlock(
+                "propose_batch",
+                {
+                    "drafts": [
+                        {
+                            "title": "Single-cell with bare the_work",
+                            "acceptance_criteria": "one string not a list",
+                            "the_work": {
+                                "team": "backend",
+                                "summary": "do the thing",
+                                "items": "lone item string",
+                            },
+                        }
+                    ]
+                },
+            )
+        ]
+    )
+    chunks = normalize(msg)
+    assert [c.kind for c in chunks] == ["batch"]
+    draft = chunks[0].data["drafts"][0]
+    assert draft["acceptance_criteria"] == ["one string not a list"]
+    assert isinstance(draft["the_work"], list) and len(draft["the_work"]) == 1
+    unit = draft["the_work"][0]
+    assert unit["team"] == "backend"
+    assert unit["items"] == ["lone item string"]
+    # A non-list, non-dict the_work (e.g. a stray string) is dropped so the
+    # panel never sees a value it cannot .map over.
+    msg2 = AssistantMessage(
+        [
+            ToolUseBlock(
+                "propose_batch",
+                {"drafts": [{"title": "Bad work", "the_work": "not a list"}]},
+            )
+        ]
+    )
+    draft2 = normalize(msg2)[0].data["drafts"][0]
+    assert draft2["the_work"] == []
+
+
 def test_normalize_propose_draft_without_title_is_ignored() -> None:
     msg = AssistantMessage(
         [ToolUseBlock("propose_draft", {"draft": {"acceptance_criteria": []}})]

@@ -1,9 +1,23 @@
 """Request schemas for /api/v1/flow/* intent verbs."""
 
-from typing import Any
+from typing import Annotated, Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, BeforeValidator, Field, field_validator
+
+from roboco.foundation.policy.content.validators import coerce_str_list
+
+# A ``list[str]`` field that tolerates the Claude SDK's XML-ish tool-input
+# parsing: an LLM emitting a bullet list as ``<item>…</item>`` elements arrives
+# nested (``[[["…"]]]`` / ``[{"item": {"$text": "…"}}, …]``), which a bare
+# ``list[str]`` hard-rejects at validation time (the live ``i_will_plan`` crash:
+# ``technical_considerations.1 Input should be a valid string``). The
+# ``BeforeValidator`` flattens it to a flat ``list[str]`` first — same
+# ``coerce_str_list`` used at the intake→DB boundary (Bug 3, MegaTask memory).
+# Applied to EVERY LLM-authored list-of-strings on the flow surface so the SDK
+# can't crash any of them (acceptance_criteria, issues, files, ac_verdicts,
+# technical_considerations, covers_parent_criteria).
+StrList = Annotated[list[str], BeforeValidator(coerce_str_list)]
 
 
 class GiveMeWorkRequest(BaseModel):
@@ -28,7 +42,7 @@ class IWillWorkOnRequest(BaseModel):
     # so re-entry/recovery calls that omit them still pass route validation;
     # depth + presence are enforced on FRESH dev claims by
     # choreographer._dev_plan_gate. The dev's `plan` doubles as the approach.
-    technical_considerations: list[str] = Field(default_factory=list)
+    technical_considerations: StrList = Field(default_factory=list)
     risks: list[dict[str, str]] = Field(default_factory=list)
     open_questions: list[dict[str, str | bool]] = Field(default_factory=list)
 
@@ -111,7 +125,7 @@ class ClaimReviewRequest(BaseModel):
 class PassReviewRequest(BaseModel):
     task_id: UUID
     notes: str = Field(..., min_length=1)
-    ac_verdicts: list[str] | None = Field(
+    ac_verdicts: StrList | None = Field(
         default=None,
         description=(
             "One verification entry per acceptance criterion (in criterion "
@@ -123,7 +137,7 @@ class PassReviewRequest(BaseModel):
 
 class FailReviewRequest(BaseModel):
     task_id: UUID
-    issues: list[str] = Field(..., min_length=1)
+    issues: StrList = Field(..., min_length=1)
 
 
 class ClaimPrReviewRequest(BaseModel):
@@ -162,7 +176,7 @@ class PrPassRequest(BaseModel):
 
 class PrFailRequest(BaseModel):
     task_id: UUID
-    issues: list[str] = Field(..., min_length=1)
+    issues: StrList = Field(..., min_length=1)
 
 
 class ClaimDocTaskRequest(BaseModel):
@@ -172,7 +186,7 @@ class ClaimDocTaskRequest(BaseModel):
 class IDocumentedRequest(BaseModel):
     task_id: UUID
     notes: str = Field(..., min_length=1)
-    files: list[str] = Field(..., min_length=1)
+    files: StrList = Field(..., min_length=1)
 
 
 class TriageRequest(BaseModel):
@@ -222,7 +236,7 @@ class IWillPlanRequest(BaseModel):
         default_factory=list,
         description="List of {title, description} — server assigns id + order",
     )
-    technical_considerations: list[str] = Field(default_factory=list)
+    technical_considerations: StrList = Field(default_factory=list)
     risks: list[dict[str, str]] = Field(default_factory=list)
     open_questions: list[dict[str, str | bool]] = Field(default_factory=list)
 
@@ -253,14 +267,14 @@ class DelegateRequest(BaseModel):
     estimated_complexity: str = Field(..., min_length=1)
     # acceptance_criteria is required and non-empty; downstream policy
     # also denylist-checks each item against placeholder phrases.
-    acceptance_criteria: list[str] = Field(..., min_length=1)
+    acceptance_criteria: StrList = Field(..., min_length=1)
     # Optional per-subtask project override. When omitted, the choreographer
     # resolves the project from the parent's Product map for this cell, then
     # falls back to the parent's project. Plain optional field — no validator.
     project_id: UUID | None = None
     # Parent acceptance-criterion ids this subtask is responsible for. Lets the
     # coverage + roll-up AC gates verify every parent AC is claimed and satisfied.
-    covers_parent_criteria: list[str] | None = None
+    covers_parent_criteria: StrList | None = None
 
     # Pre-gateway parity: cross-field validators that catch the most common
     # LLM-vs-schema confusions. Pre-gateway lived in

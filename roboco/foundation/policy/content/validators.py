@@ -101,3 +101,55 @@ def coerce_to_list(value: Any) -> Any:
     if isinstance(value, str | dict):
         return [value]
     return value
+
+
+# Keys an LLM's tool input may wrap a piece of text under. The Claude SDK parses
+# XML-ish mixed content the model sometimes emits for a list-of-strings field
+# (e.g. ``<item>…</item>``) into ``{"item": {"$text": "…"}}``; ``$text`` is the
+# SDK's marker for element text content. Ordered: most specific first.
+_TEXT_KEYS: tuple[str, ...] = ("$text", "text", "item", "value", "content", "summary")
+
+
+def _extract_strs(item: Any) -> list[str]:
+    """Pull every string out of one list element, recursing through wrappers."""
+    if isinstance(item, str):
+        stripped = item.strip()
+        return [stripped] if stripped else []
+    if isinstance(item, dict):
+        for key in _TEXT_KEYS:
+            if key in item:
+                return _extract_strs(item[key])
+        # No recognized key: keep any bare string values the dict carries.
+        return [
+            str(v).strip() for v in item.values() if isinstance(v, str) and v.strip()
+        ]
+    if isinstance(item, list):
+        out: list[str] = []
+        for sub in item:
+            out.extend(_extract_strs(sub))
+        return out
+    return []
+
+
+def coerce_str_list(value: Any) -> list[str]:
+    """Coerce a list-of-strings field to a flat ``list[str]``.
+
+    An LLM may emit a ``list[str]`` field (``acceptance_criteria``, ``notes``,
+    ``what_this_builds``, a work unit's ``items``) as XML-ish ``<item>…</item>``
+    elements, which the Claude SDK parses into ``[{"item": {"$text": "…"}}, …]``.
+    A bare dict/scalar is the single-item case. This recurses through the
+    wrappers and returns only strings — never a dict — so the value is safe for a
+    ``VARCHAR[]`` column (asyncpg rejects non-str elements with a DataError) and
+    for markdown rendering (``str(dict)`` would otherwise dump ``"{'item': …}"``).
+    Anything that cannot be reduced to a string is dropped.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str | dict):
+        value = [value]
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    for item in value:
+        out.extend(_extract_strs(item))
+    return out

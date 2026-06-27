@@ -196,6 +196,9 @@ def note(
     what_struggled: str = "",
     next_steps: list[str] | str | None = None,
     section: dict[str, Any] | None = None,
+    done: str = "",
+    next: str = "",
+    where_to_look: list[str] | None = None,
 ) -> dict[str, Any]:
     """Write a journal entry, or (scope='handoff') your note SECTION.
 
@@ -220,9 +223,13 @@ def note(
     Other journal scopes (note / learning / struggle) just need ``text``.
 
     scope='handoff' writes your dedicated SECTION (dev_notes / quick_context /
-    auditor_notes) instead of the journal: pass ``section={...}`` with the
-    section's fields (PM/resumption needs done+next; auditor needs
-    summary+severity), or just ``text`` for a developer summary.
+    auditor_notes) instead of the journal. For a PM/coordinator RESUMPTION
+    section pass the TOP-LEVEL fields ``done`` (what's been done) and ``next``
+    (the immediate next step) — these are the required fields and they show
+    up here as discrete string params; ``where_to_look`` is optional. (Do NOT
+    pass an empty ``section={}``; the ``section`` dict is the free-form path
+    for other content types — developer ``{summary, changes}``, auditor
+    ``{summary, severity}``.) Or just ``text`` for a developer summary.
     """
     return _post(
         "/api/v1/do/note",
@@ -241,6 +248,9 @@ def note(
             "what_struggled": what_struggled,
             "next_steps": next_steps,
             "section": section,
+            "done": done,
+            "next": next,
+            "where_to_look": where_to_look,
         },
     )
 

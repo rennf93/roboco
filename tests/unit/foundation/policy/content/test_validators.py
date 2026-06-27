@@ -9,7 +9,7 @@ every whitespace token is a placeholder (``wip wip``, ``tbd / na``).
 from __future__ import annotations
 
 import pytest
-from roboco.foundation.policy.content.validators import reject_trivial
+from roboco.foundation.policy.content.validators import coerce_str_list, reject_trivial
 
 
 def test_returns_trimmed_value_when_substantive() -> None:
@@ -57,3 +57,47 @@ def test_rejects_all_filler_token_string(soup: str) -> None:
 )
 def test_accepts_real_text_containing_a_filler_word(ok: str) -> None:
     assert reject_trivial(ok, field="reason", min_chars=3) == ok.strip()
+
+
+# ---------------------------------------------------------------------------
+# coerce_str_list — flatten an LLM's dict-wrapped list-of-strings to list[str].
+# The agent sometimes emits a list[str] field as XML-ish <item>…</item> elements
+# the Claude SDK parses into {"item": {"$text": "…"}}; left as dicts they crash
+# a VARCHAR[] insert ("expected str, got dict") and dump str(dict) into prose.
+# ---------------------------------------------------------------------------
+
+
+def test_coerce_str_list_passes_plain_strings_through() -> None:
+    assert coerce_str_list(["one", "two"]) == ["one", "two"]
+
+
+def test_coerce_str_list_extracts_sdk_item_text_wrapper() -> None:
+    # The exact shape from the live crash: [{"item": {"$text": "…"}}, ...].
+    assert coerce_str_list(
+        [{"item": {"$text": "UX-UI delivers a sketch"}}, {"item": "Spec lands first"}]
+    ) == ["UX-UI delivers a sketch", "Spec lands first"]
+
+
+def test_coerce_str_list_wraps_a_bare_dict() -> None:
+    assert coerce_str_list({"$text": "only one"}) == ["only one"]
+
+
+def test_coerce_str_list_wraps_a_bare_string() -> None:
+    assert coerce_str_list("only one") == ["only one"]
+
+
+def test_coerce_str_list_drops_non_string_junk() -> None:
+    # A non-str, non-dict element is dropped — never passed to a VARCHAR[] column.
+    assert coerce_str_list(["keep", 7, None, {"text": "nested"}]) == [
+        "keep",
+        "nested",
+    ]
+
+
+def test_coerce_str_list_recurses_into_nested_lists() -> None:
+    assert coerce_str_list([["a", {"item": "b"}], "c"]) == ["a", "b", "c"]
+
+
+def test_coerce_str_list_none_and_empty() -> None:
+    assert coerce_str_list(None) == []
+    assert coerce_str_list([]) == []

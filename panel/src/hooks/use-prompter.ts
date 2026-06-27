@@ -16,6 +16,7 @@ import {
 } from "@/lib/api/prompter";
 import { getErrorMessage } from "@/lib/api/client";
 import { tasksApi } from "@/lib/api/tasks";
+import { useProjects } from "@/hooks/use-projects";
 import { Team } from "@/types";
 import type { TaskType, TaskNature, Complexity } from "@/types";
 
@@ -68,7 +69,8 @@ const CELL_TEAMS: Team[] = [Team.BACKEND, Team.FRONTEND, Team.UX_UI];
  *  is a delivery cell and that carries a project_id. Empty for a legacy
  *  single-cell draft that uses a top-level project_id instead. */
 function draftCellProjectIds(draft: DraftProposal): string[] {
-  return (draft.the_work ?? [])
+  const work = Array.isArray(draft.the_work) ? draft.the_work : [];
+  return work
     .filter(
       (w): w is CellWork & { project_id: string } =>
         !!w?.team &&
@@ -173,6 +175,17 @@ function draftFromEvent(data: Record<string, unknown> | undefined): {
   return { draft: d as unknown as DraftProposal, scale };
 }
 
+/** Coerce a value into a `CellWork[]`: a bare object → one-element array, a
+ *  non-array non-object → empty. The backend coerces `the_work` before it
+ *  reaches SSE, but a stale localStorage payload or a malformed frame could
+ *  still carry a non-array, and the batch card does `the_work.map(...)` — so
+ *  normalize here rather than crash. */
+function asCellWork(value: unknown): CellWork[] {
+  if (Array.isArray(value)) return value as CellWork[];
+  if (value && typeof value === "object") return [value as CellWork];
+  return [];
+}
+
 /** Pull a MegaTask ({title, drafts[]}) out of a `batch` SSE event's payload. */
 function batchFromEvent(
   data: Record<string, unknown> | undefined,
@@ -180,10 +193,15 @@ function batchFromEvent(
   if (!data || typeof data !== "object") return null;
   const raw = (data as Record<string, unknown>).drafts;
   if (!Array.isArray(raw)) return null;
-  const drafts = raw.filter(
-    (x): x is DraftProposal =>
-      !!x && typeof (x as DraftProposal).title === "string",
-  );
+  const drafts = raw
+    .filter(
+      (x): x is Record<string, unknown> =>
+        !!x && typeof (x as DraftProposal).title === "string",
+    )
+    .map((d) => ({
+      ...(d as unknown as DraftProposal),
+      the_work: asCellWork((d as Record<string, unknown>).the_work),
+    }));
   if (drafts.length === 0) return null;
   const title = (data as Record<string, unknown>).title;
   // Prefer the backend's dropped count; else compute from what we filtered, so a
@@ -194,6 +212,128 @@ function batchFromEvent(
       ? backendDropped
       : raw.length - drafts.length;
   return { title: typeof title === "string" ? title : "", drafts, dropped };
+}
+
+/** Rebuild a draft's ``the_work`` from the set of projects the human selected
+ *  for it (the multi-select review card: one task can span several repos, one
+ *  repo per delivery cell — the backend's ``task_cell_projects`` is unique per
+ *  ``(task, team)``). Existing cell entries keep their summary/items; a newly-
+ *  selected cell gets a minimal entry; a deselected cell's entry is dropped
+ *  (that cell no longer participates). The top-level ``project_id`` is cleared
+ *  — a multi-repo task targets via its cell map, not a top-level repo. Pure, so
+ *  ``setBatchDraftProjects`` can stay a thin setState wrapper and this is
+ *  unit-tested directly. */
+export function rebuildCellWork(
+  ids: string[],
+  allProjects: { id: string; assigned_cell?: Team | "" }[],
+  currentWork: CellWork[],
+): { the_work: CellWork[]; project_id: null } {
+  const cellToPid = new Map<Team, string>();
+  for (const id of ids) {
+    const proj = allProjects.find((p) => p.id === id);
+    const cell = proj?.assigned_cell;
+    if (cell && !cellToPid.has(cell)) cellToPid.set(cell, id);
+  }
+  const covered = new Set<Team>();
+  // Update existing cell entries in place, preserve summary/items.
+  const updated = currentWork.map((w) => {
+    const team = w?.team;
+    if (team && cellToPid.has(team)) {
+      covered.add(team);
+      return { ...w, project_id: cellToPid.get(team)! };
+    }
+    return w;
+  });
+  // Append a minimal entry for a newly-selected cell not already in the_work.
+  const appended: CellWork[] = [];
+  for (const [team, pid] of cellToPid) {
+    if (!covered.has(team)) {
+      appended.push({ team, summary: "", items: [], project_id: pid });
+    }
+  }
+  // Drop entries for cells no longer selected.
+  const the_work = [...updated, ...appended].filter((w) => {
+    const team = w?.team;
+    return team && cellToPid.has(team);
+  });
+  return { the_work, project_id: null };
+}
+
+/** Fill each draft's missing project assignment from the MegaTask's scoped
+ *  repos, so the review card is pre-filled instead of forcing the human to
+ *  re-pick the projects they already scoped at intake. The intake prompt tells
+ *  the agent to set a top-level ``project_id`` (each task lives in one repo),
+ *  and the backend's scope validator falls back to it — so this mirrors that:
+ *  an explicit per-cell ``the_work[].project_id`` wins; else the draft's
+ *  top-level ``project_id`` (when scoped); else the single scoped repo that
+ *  belongs to this cell, when unambiguous. An empty field stays empty (real
+ *  ambiguity — 2+ scoped repos for the cell — the human picks). Returns the
+ *  same batch reference when nothing changed (idempotent, no render loop). */
+export function fillBatchProjects(
+  batch: BatchProposal,
+  projectIds: string[],
+  allProjects: { id: string; assigned_cell?: Team | "" }[],
+): BatchProposal {
+  const scoped = new Set(projectIds);
+  const scopedProjects = allProjects.filter((p) => scoped.has(p.id));
+  const byCell = (team: Team) =>
+    scopedProjects.filter((p) => p.assigned_cell === team);
+  const isCell = (team: unknown): team is Team =>
+    typeof team === "string" &&
+    (CELL_TEAMS as readonly string[]).includes(team as Team);
+
+  let changed = false;
+  const drafts = batch.drafts.map((d) => {
+    const work = Array.isArray(d.the_work) ? d.the_work : [];
+    const cellWork = work.filter((w) => isCell(w?.team));
+
+    // Draft with at least one the_work cell entry: fill each cell's project_id.
+    if (cellWork.length > 0) {
+      let workChanged = false;
+      const newWork = work.map((w) => {
+        if (
+          !w ||
+          !isCell(w.team) ||
+          (w.project_id && scoped.has(w.project_id))
+        ) {
+          return w;
+        }
+        // (1) the draft's top-level project_id (the agent's main assignment),
+        // but only when that repo actually belongs to this cell (a single-cell
+        // draft's repo should match its one cell; a mismatch is an agent error
+        // — fall through to auto-assign rather than land the wrong repo).
+        const top = d.project_id;
+        if (top && scoped.has(top)) {
+          const proj = scopedProjects.find((p) => p.id === top);
+          if (proj && proj.assigned_cell === w.team) {
+            workChanged = true;
+            return { ...w, project_id: top };
+          }
+        }
+        // (2) exactly one scoped repo belongs to this cell.
+        const matching = byCell(w.team);
+        if (matching.length === 1) {
+          workChanged = true;
+          return { ...w, project_id: matching[0].id };
+        }
+        return w;
+      });
+      if (!workChanged) return d;
+      changed = true;
+      return { ...d, the_work: newWork };
+    }
+
+    // Legacy draft (no cell the_work): one top-level project_id. Fill it only
+    // when exactly one scoped repo exists (truly unambiguous).
+    if (d.project_id && scoped.has(d.project_id)) return d;
+    if (scopedProjects.length === 1) {
+      changed = true;
+      return { ...d, project_id: scopedProjects[0].id };
+    }
+    return d;
+  });
+
+  return changed ? { ...batch, drafts } : batch;
 }
 
 // ---------------------------------------------------------------------------
@@ -271,6 +411,10 @@ export function usePrompter() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [isSending, setIsSending] = useState(false);
+  // Every project (carries assigned_cell), for pre-filling a MegaTask batch's
+  // per-cell project_ids from the scoped repos (useProjects dedups with the
+  // batch card's own query by key).
+  const { data: allProjects = [] } = useProjects();
   const [isLaunching, setIsLaunching] = useState(false);
   /** The latest tool the agent is using — "watch it work" status line. */
   const [activity, setActivity] = useState<string | null>(null);
@@ -366,7 +510,15 @@ export function usePrompter() {
           if (evt.text) {
             setActivity(null); // first text clears the "preparing…" indicator
             appendDelta(evt.text);
-            setState("streaming");
+            // Trailing prose AFTER a draft/batch tool call (the agent keeps
+            // talking once the card is up) must still render in the bubble —
+            // but it must NOT clobber the preview state, or the card vanishes
+            // mid-turn and turn_end can't restore it (it only preserves these
+            // states if they're still set). Keep the card up; the delta lands
+            // in a fresh bubble (the batch/draft handler cleared streamingId).
+            setState((s) =>
+              s === "draft_preview" || s === "batch_preview" ? s : "streaming",
+            );
           }
           break;
         case "tool_use":
@@ -507,6 +659,17 @@ export function usePrompter() {
       });
     }
   }, [sessionId, messages, state, editableDraft, batch, batchWaves]);
+
+  // Pre-fill each MegaTask draft's project from the scoped repos (the agent
+  // sets a top-level project_id; the backend falls back to it). Without this
+  // the review card shows empty Selects and blocks launch, forcing the human
+  // to re-pick the very projects they scoped at intake. Idempotent: once every
+  // cell has a project_id it returns the same batch reference (no loop).
+  useEffect(() => {
+    if (!batch) return;
+    const filled = fillBatchProjects(batch, projectIds, allProjects);
+    if (filled !== batch) setBatch(filled);
+  }, [batch, projectIds, allProjects]);
 
   // On mount, reconnect to a still-running session left behind by a reload.
   const didRestoreRef = useRef(false);
@@ -804,29 +967,33 @@ export function usePrompter() {
   // Confirm a MegaTask — create the umbrella + sequenced root-subtasks, reap
   // -----------------------------------------------------------------------
 
-  /** Reassign one cell of one task in the proposed MegaTask to a different
-   *  project. `entryIndex` is the the_work slot (the cell); pass -1 for a legacy
-   *  single-cell draft that has no per-cell map (sets the top-level project_id).
-   *  Project does not affect the wave plan (waves derive from collision surface),
-   *  so the previewed waves stay valid. */
-  const updateBatchDraftProject = useCallback(
-    (index: number, entryIndex: number, projectId: string) => {
+  /** Set the projects one MegaTask task targets. The review card exposes a
+   *  multi-select checkbox list per task (one task can span several repos), so
+   *  the human picks the whole set at once instead of one dropdown per cell.
+   *  A RoboCo project is per-cell, so the selection maps to one project per
+   *  cell in ``the_work[]`` (the backend's ``task_cell_projects`` is unique per
+   *  ``(task, team)`` — one repo per cell). Existing entries keep their
+   *  summary/items; a newly-selected cell gets a minimal entry; a deselected
+   *  cell's entry is dropped (that cell no longer participates). The top-level
+   *  ``project_id`` is cleared — a multi-repo task targets via its cell map.
+   *  Project choice does not affect the wave plan (waves derive from collision
+   *  surface), so the previewed waves stay valid. */
+  const setBatchDraftProjects = useCallback(
+    (index: number, ids: string[]) => {
       setBatch((prev) => {
         if (!prev) return prev;
         return {
           ...prev,
           drafts: prev.drafts.map((d, i) => {
             if (i !== index) return d;
-            if (entryIndex < 0) return { ...d, project_id: projectId };
-            const the_work = (d.the_work ?? []).map((w, wi) =>
-              wi === entryIndex ? { ...w, project_id: projectId } : w,
-            );
-            return { ...d, the_work };
+            const work = Array.isArray(d.the_work) ? d.the_work : [];
+            const rebuilt = rebuildCellWork(ids, allProjects, work);
+            return { ...d, the_work: rebuilt.the_work, project_id: null };
           }),
         };
       });
     },
-    [],
+    [allProjects],
   );
 
   const confirmBatch = useCallback(
@@ -891,10 +1058,24 @@ export function usePrompter() {
         setCreatedTaskId(result.umbrella_task_id);
         setCreatedTaskTitle(batch.title.trim() || "MegaTask");
         setCreatedTaskTeam(route === "board" ? Team.BOARD : Team.MAIN_PM);
-        toast.success(
-          `MegaTask launched — ${result.root_subtask_ids.length} tasks in ` +
-            `${result.waves.length} wave${result.waves.length === 1 ? "" : "s"}.`,
-        );
+        if (route === "board") {
+          // Board route: the umbrella + root-subtasks are created HELD for the
+          // PO + HoM to review — nothing is dispatched yet. The CEO releases the
+          // sequenced tasks with Approve & Start on the umbrella task once the
+          // board finishes (the existing CEO gate, not this chat). Say so, so
+          // "Board review & Start" doesn't read as "launched" the way the
+          // Main-PM route does.
+          toast.success(
+            "Sent to the Board for review — the Product Owner and Head of " +
+              "Marketing will review this MegaTask. Approve & Start it from the " +
+              "umbrella task once they're done.",
+          );
+        } else {
+          toast.success(
+            `MegaTask launched — ${result.root_subtask_ids.length} tasks in ` +
+              `${result.waves.length} wave${result.waves.length === 1 ? "" : "s"}.`,
+          );
+        }
         setState("success");
       } catch (err) {
         toast.error(`Failed to launch MegaTask: ${getErrorMessage(err)}`);
@@ -978,7 +1159,7 @@ export function usePrompter() {
     batch,
     batchWaves,
     batchResult,
-    updateBatchDraftProject,
+    setBatchDraftProjects,
     confirmBatch,
   };
 }

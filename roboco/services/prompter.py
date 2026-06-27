@@ -22,6 +22,7 @@ from sqlalchemy import select
 from roboco.db.tables import AgentTable, TaskTable
 from roboco.foundation.identity import CELL_TEAMS
 from roboco.foundation.policy.batch import is_batch_umbrella
+from roboco.foundation.policy.content.validators import coerce_str_list
 from roboco.foundation.policy.sequencing.models import DraftSurface, SequencePlan
 from roboco.models.base import (
     AgentRole,
@@ -231,6 +232,27 @@ class PrompterService:
                 message="This task draft is missing a title.", field="title"
             )
         if not draft_data.get("acceptance_criteria"):
+            raise ValidationError(
+                message="This task draft is missing acceptance criteria.",
+                field="acceptance_criteria",
+            )
+        # Flatten the string-list fields to list[str]. The agent sometimes emits
+        # these as XML-ish <item>…</item> elements the SDK parses into dict
+        # wrappers ({"item": {"$text": "…"}}); left as-is they crash the
+        # VARCHAR[] insert (asyncpg: "expected str, got dict") and dump str(dict)
+        # into the rendered description. Coerce here too — a draft can arrive
+        # via redraft/localStorage, not only the intake choke point.
+        draft_data["acceptance_criteria"] = coerce_str_list(
+            draft_data.get("acceptance_criteria")
+        )
+        draft_data["what_this_builds"] = coerce_str_list(
+            draft_data.get("what_this_builds")
+        )
+        draft_data["notes"] = coerce_str_list(draft_data.get("notes"))
+        for unit in draft_data.get("the_work") or []:
+            if isinstance(unit, dict):
+                unit["items"] = coerce_str_list(unit.get("items"))
+        if not draft_data["acceptance_criteria"]:
             raise ValidationError(
                 message="This task draft is missing acceptance criteria.",
                 field="acceptance_criteria",
@@ -833,8 +855,12 @@ def derive_scale(the_work: list[Any]) -> str:
 
 
 def _clean_list(value: Any) -> list[str]:
-    """Trimmed, non-empty string items from a possibly-missing list field."""
-    return [str(i).strip() for i in (value or []) if str(i).strip()]
+    """Trimmed, non-empty string items from a possibly-missing list field.
+
+    Uses :func:`coerce_str_list` so an LLM's dict-wrapped items (``{"$text": …}``
+    etc.) are extracted to text rather than dumped as ``str(dict)``.
+    """
+    return coerce_str_list(value)
 
 
 def _text(value: Any) -> str:

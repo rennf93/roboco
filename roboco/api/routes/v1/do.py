@@ -77,6 +77,9 @@ async def do_note(
             "next_steps": body.next_steps,
         },
         section=body.section,
+        done=body.done,
+        next=body.next,
+        where_to_look=body.where_to_look,
     )
     return envelope_to_response(env, request)
 

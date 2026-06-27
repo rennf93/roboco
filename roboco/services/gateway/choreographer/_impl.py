@@ -4541,6 +4541,7 @@ class Choreographer:
         have gotten from the upfront completeness check.
         """
         from roboco.foundation.policy.task_completeness import TaskCompletenessError
+        from roboco.services.base import ValidationError
 
         parent_task_id = parent.id
         try:
@@ -4557,6 +4558,24 @@ class Choreographer:
                         f"{', '.join(exc.missing)}. Each field's required "
                         "shape is in `field_hints`."
                     ),
+                    context_briefing=briefing,
+                ).with_introspection(task=parent, role=role_str),
+                agent_id=pm_agent_id,
+                task_id=parent_task_id,
+                verb="delegate",
+            )
+        except ValidationError as exc:
+            # A user-input error from task creation (e.g. delegating past
+            # MAX_TASK_DEPTH — ``_validate_parent_depth`` raises this with a
+            # remediation message telling the PM to create a sibling instead of
+            # a further nested subtask). Without this translator it escaped
+            # uncaught as a 500 ExceptionGroup; the agent never saw the fix.
+            # ``invalid_state`` carries the message as the remediation so the
+            # PM gets a clean, actionable rejection it can act on.
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=exc.message,
+                    remediate=exc.message,
                     context_briefing=briefing,
                 ).with_introspection(task=parent, role=role_str),
                 agent_id=pm_agent_id,

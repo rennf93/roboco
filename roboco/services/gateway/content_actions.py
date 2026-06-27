@@ -36,6 +36,36 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 
+def _merge_resumption_fields(
+    section: dict[str, Any] | None,
+    *,
+    done: str,
+    next: str,
+    where_to_look: list[str] | None,
+) -> dict[str, Any] | None:
+    """Fold the top-level resumption fields into the handoff ``section``.
+
+    ``section: dict[str, Any]`` renders a tool schema with no visible
+    sub-fields, so a weak model (minimax-m3) emits ``section={}`` and the
+    resumption gate rejects ``done — Field required`` (the 2026-06-27 PM
+    respawn-loop meltdown). The top-level ``done`` / ``next`` /
+    ``where_to_look`` string fields are the LLM-facing contract — they show
+    up in the tool schema as discrete fields the same model fills fine. Here
+    they fill any keys the explicit ``section`` omits without overwriting
+    keys the agent already supplied, so a capable model passing ``section``
+    directly is unaffected. Returns ``None`` when nothing was supplied so the
+    downstream ``{'summary': text}`` fallback + gate remediation still fire.
+    """
+    merged: dict[str, Any] = dict(section) if section else {}
+    if done and "done" not in merged:
+        merged["done"] = done
+    if next and "next" not in merged:
+        merged["next"] = next
+    if where_to_look and "where_to_look" not in merged:
+        merged["where_to_look"] = where_to_look
+    return merged or None
+
+
 # Scope catalog is canonical in foundation.policy.journaling.
 # Derived here as a string frozenset for the existing call sites that
 # compare strings rather than the Scope enum.
@@ -541,6 +571,9 @@ class ContentActions:
         task_id: UUID | None = None,
         structured: dict[str, Any] | None = None,
         section: dict[str, Any] | None = None,
+        done: str = "",
+        next: str = "",
+        where_to_look: list[str] | None = None,
     ) -> Envelope:
         """Write a journal entry, or (scope='handoff') the role's note section.
 
@@ -553,6 +586,17 @@ class ContentActions:
 
         - decision: context, options[], chosen, rationale, consequences
         - reflect: what_done, what_learned, what_struggled, next_steps
+
+        For ``scope='handoff'`` the resumption section (PM / coordinator
+        roles) can be authored two ways: the nested ``section`` dict, OR the
+        top-level ``done`` / ``next`` / ``where_to_look`` string fields. The
+        top-level path is the LLM-facing contract — ``section: dict[str, Any]``
+        renders a tool schema with no visible sub-fields, so a weak model
+        (minimax-m3) emits ``section={}`` and the resumption gate rejects
+        ``done — Field required``; the top-level typed strings show up in the
+        tool schema as discrete fields the same model fills fine (proven on
+        the decision scope). Top-level fields fill any keys the explicit
+        ``section`` omits without overwriting supplied ones.
 
         The note is always recorded. List-typed fields tolerate a
         lone scalar (wrapped into a one-element list) and missing decision/
@@ -571,7 +615,12 @@ class ContentActions:
             # a journal entry. Content quality is enforced by the content model
             # (apply_structured_note), so skip the journal-text soup check.
             return await self._record_section_handoff(
-                agent_id=agent_id, text=text, task_id=task_id, structured=section
+                agent_id=agent_id,
+                text=text,
+                task_id=task_id,
+                structured=_merge_resumption_fields(
+                    section, done=done, next=next, where_to_look=where_to_look
+                ),
             )
         return await self._write_journal_note(
             agent_id=agent_id,

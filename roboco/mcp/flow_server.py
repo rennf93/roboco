@@ -18,11 +18,25 @@ import json
 import os
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import httpx
 import structlog
 from mcp.server.fastmcp import FastMCP
+from pydantic import BeforeValidator
+
+from roboco.foundation.policy.content.validators import coerce_str_list
+
+# A ``list[str]`` field that tolerates the Claude SDK's XML-ish tool-input
+# parsing: an LLM emitting a bullet list as ``<item>…</item>`` elements arrives
+# as ``[[["…"]]]`` / ``[{"item": {"$text": "…"}}, …]`` — nested arrays / dicts,
+# not strings. A bare ``list[str]`` annotation hard-rejects element 1 (a list,
+# not a str) at the MCP validation layer BEFORE the verb body runs, surfacing as
+# ``1 validation error for i_will_planArguments technical_considerations.1
+# Input should be a valid string``. The ``BeforeValidator`` flattens it to a
+# flat ``list[str]`` first (same ``coerce_str_list`` used at the intake→DB
+# boundary — see Bug 3 in the MegaTask memory).
+StrList = Annotated[list[str], BeforeValidator(coerce_str_list)]
 
 ORCHESTRATOR_URL = os.environ.get(
     "ROBOCO_ORCHESTRATOR_URL",
@@ -214,7 +228,7 @@ def i_will_work_on(
     task_id: str,
     plan: str | None = None,
     steps: list[dict[str, str]] | None = None,
-    technical_considerations: list[str] | None = None,
+    technical_considerations: StrList | None = None,
     risks: list[dict[str, str]] | None = None,
     open_questions: list[dict[str, str | bool]] | None = None,
 ) -> dict[str, Any]:
@@ -333,7 +347,7 @@ def claim_review(task_id: str) -> dict[str, Any]:
 
 
 def pass_review(
-    task_id: str, notes: str, ac_verdicts: list[str] | None = None
+    task_id: str, notes: str, ac_verdicts: StrList | None = None
 ) -> dict[str, Any]:
     """QA: accept the work. notes >= 80 chars; journal:learning required.
 
@@ -347,7 +361,7 @@ def pass_review(
     return _post(_role_path("pass"), payload)
 
 
-def fail_review(task_id: str, issues: list[str]) -> dict[str, Any]:
+def fail_review(task_id: str, issues: StrList) -> dict[str, Any]:
     """QA: reject the work with issues. Each issue should be concrete and actionable."""
     return _post(_role_path("fail"), {"task_id": task_id, "issues": issues})
 
@@ -401,7 +415,7 @@ def claim_doc_task(task_id: str) -> dict[str, Any]:
     return _post(_role_path("claim_doc_task"), {"task_id": task_id})
 
 
-def i_documented(task_id: str, notes: str, files: list[str]) -> dict[str, Any]:
+def i_documented(task_id: str, notes: str, files: StrList) -> dict[str, Any]:
     """Doc: mark documentation complete. files=['<doc-path>', ...]."""
     return _post(
         _role_path("i_documented"),
@@ -463,7 +477,7 @@ def i_will_plan(
     plan: str,
     approach: str = "",
     sub_tasks: list[dict[str, str]] | None = None,
-    technical_considerations: list[str] | None = None,
+    technical_considerations: StrList | None = None,
     risks: list[dict[str, str]] | None = None,
     open_questions: list[dict[str, str | bool]] | None = None,
 ) -> dict[str, Any]:
@@ -506,9 +520,9 @@ def delegate(
     team: str,
     task_type: str,
     nature: str,
-    acceptance_criteria: list[str],
+    acceptance_criteria: StrList,
     estimated_complexity: str = "medium",
-    covers_parent_criteria: list[str] | None = None,
+    covers_parent_criteria: StrList | None = None,
 ) -> dict[str, Any]:
     """PM: create a subtask of parent_task_id.
 
@@ -566,7 +580,7 @@ def pr_pass(task_id: str, notes: str) -> dict[str, Any]:
     return _post(_role_path("pr_pass"), {"task_id": task_id, "notes": notes})
 
 
-def pr_fail(task_id: str, issues: list[str]) -> dict[str, Any]:
+def pr_fail(task_id: str, issues: StrList) -> dict[str, Any]:
     """PR reviewer: fail the assembled PR with concrete issues → needs_revision."""
     return _post(_role_path("pr_fail"), {"task_id": task_id, "issues": issues})
 

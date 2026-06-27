@@ -544,9 +544,9 @@ export function TaskTable({
                     )}
                     onClick={handleRowClick}
                   >
-                    <TableCell>
+                    <TableCell className="max-w-[22rem]">
                       <div
-                        className="flex items-center gap-1"
+                        className="flex items-center gap-1 min-w-0"
                         style={{ paddingLeft: `${node.depth * 1.5}rem` }}
                       >
                         {hasChildren ? (
@@ -569,8 +569,10 @@ export function TaskTable({
                           href={"/tasks/" + task.id}
                           className="block hover:underline min-w-0"
                         >
-                          <div className="font-medium flex items-center gap-2">
-                            <span className="truncate">{task.title}</span>
+                          <div className="font-medium flex items-center gap-2 min-w-0">
+                            <span className="truncate" title={task.title}>
+                              {task.title}
+                            </span>
                             {task.batch_id && !task.parent_task_id && (
                               <Badge
                                 variant="outline"

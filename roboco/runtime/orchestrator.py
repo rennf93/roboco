@@ -4129,40 +4129,60 @@ class AgentOrchestrator:
     async def _persist_respawn_record(
         self, agent_slug: str, task_id: str, record: dict[str, Any]
     ) -> None:
-        """Write-through one PM-respawn counter row (delete-then-insert upsert).
+        """Write-through one PM-respawn counter row (atomic upsert).
 
         Best-effort, mirroring ``_persist_waiting_record``: a persistence failure
         must never gate or un-gate a spawn, so any error is logged and swallowed.
         The counter stays authoritative in memory regardless.
+
+        Unlike ``_persist_waiting_record`` (inline-awaited, one row per agent),
+        this is scheduled fire-and-forget per gate mutation, and a respawn loop
+        fires several persists for the same ``(agent_slug, task_id)`` in quick
+        succession. A delete-then-insert raced under that concurrency: two
+        transactions for the same key overlapped, the loser's INSERT hit
+        ``pk_respawn_tracker`` UniqueViolation, the durable count stuck at the
+        first INSERT's value, and a restart re-burned the strike threshold — the
+        exact re-burn this feature was built to stop (2026-06-27 live meltdown).
+        The single ``ON CONFLICT DO UPDATE`` upsert is race-free: concurrent
+        upserts on the same key serialize at row level.
         """
         try:
             from uuid import UUID as _UUID
 
-            from sqlalchemy import delete
+            from sqlalchemy.dialects.postgresql import insert as pg_insert
 
             from roboco.db.base import get_session_factory
             from roboco.db.tables import RespawnTrackerTable
 
             tid = _UUID(task_id)
+            now = datetime.now(UTC)
+            stmt = pg_insert(RespawnTrackerTable).values(
+                agent_slug=agent_slug,
+                task_id=tid,
+                count=int(record["count"]),
+                last_status=record.get("last_status"),
+                last_check=record["last_check"],
+                tracing_resets=int(record.get("tracing_resets", 0)),
+                notified=bool(record.get("notified", False)),
+                updated_at=now,
+            )
+            stmt = stmt.on_conflict_do_update(
+                index_elements=[
+                    RespawnTrackerTable.agent_slug,
+                    RespawnTrackerTable.task_id,
+                ],
+                set_={
+                    "count": stmt.excluded.count,
+                    "last_status": stmt.excluded.last_status,
+                    "last_check": stmt.excluded.last_check,
+                    "tracing_resets": stmt.excluded.tracing_resets,
+                    "notified": stmt.excluded.notified,
+                    "updated_at": stmt.excluded.updated_at,
+                },
+            )
             session_factory = get_session_factory()
             async with session_factory() as db:
-                await db.execute(
-                    delete(RespawnTrackerTable).where(
-                        RespawnTrackerTable.agent_slug == agent_slug,
-                        RespawnTrackerTable.task_id == tid,
-                    )
-                )
-                db.add(
-                    RespawnTrackerTable(
-                        agent_slug=agent_slug,
-                        task_id=tid,
-                        count=int(record["count"]),
-                        last_status=record.get("last_status"),
-                        last_check=record["last_check"],
-                        tracing_resets=int(record.get("tracing_resets", 0)),
-                        notified=bool(record.get("notified", False)),
-                    )
-                )
+                await db.execute(stmt)
                 await db.commit()
         except Exception as e:
             logger.error(

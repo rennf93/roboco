@@ -45,7 +45,7 @@ function draftToText(draft: DraftProposal): string {
       "",
     );
   }
-  if (draft.the_work?.length) {
+  if (Array.isArray(draft.the_work) && draft.the_work.length) {
     lines.push("## The Work");
     for (const cell of draft.the_work) {
       lines.push(`### ${cellLabel(cell.team)}`, cell.summary);
@@ -73,7 +73,7 @@ export function DraftProposalCard({
   isLaunching = false,
 }: DraftProposalCardProps) {
   const priorityLabel = PRIORITY_LABELS[draft.priority ?? 2] ?? "Medium";
-  const cells = draft.the_work ?? [];
+  const cells = Array.isArray(draft.the_work) ? draft.the_work : [];
   // Distinct cells only: the_work has one entry per work item, so a cell with
   // several items would otherwise show its badge repeated (Backend Backend …).
   const distinctTeams = Array.from(new Set(cells.map((c) => c.team)));

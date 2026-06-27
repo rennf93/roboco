@@ -181,7 +181,7 @@ async def test_validate_parent_depth_missing_parent_raises(
     task_setup: dict,
 ) -> None:
     svc = task_setup["svc"]
-    with pytest.raises(ValueError, match="not found"):
+    with pytest.raises(ValidationError, match="not found"):
         await svc._validate_parent_depth(uuid4())
 
 
@@ -190,14 +190,14 @@ async def test_validate_parent_depth_circular_reference(
     task_setup: dict,
     db_session: AsyncSession,
 ) -> None:
-    """A self-referential parent loop raises ValueError."""
+    """A self-referential parent loop raises ValidationError."""
     svc = task_setup["svc"]
     a = await svc.create(_req(task_setup))
     b = await svc.create(_req(task_setup, parent_task_id=a.id))
     # Force circular: a.parent_task_id = b.id
     a.parent_task_id = b.id
     await db_session.flush()
-    with pytest.raises(ValueError, match="Circular reference"):
+    with pytest.raises(ValidationError, match="Circular reference"):
         await svc._validate_parent_depth(a.id)
 
 
@@ -205,7 +205,7 @@ async def test_validate_parent_depth_circular_reference(
 async def test_validate_parent_depth_exceeds_max(
     task_setup: dict,
 ) -> None:
-    """Adding a child past MAX_TASK_DEPTH raises ValueError."""
+    """Adding a child past MAX_TASK_DEPTH raises ValidationError."""
     svc = task_setup["svc"]
     # Build a chain of MAX_TASK_DEPTH+1 tasks
     parent = None
@@ -215,7 +215,7 @@ async def test_validate_parent_depth_exceeds_max(
         )
         parent = new
     assert parent is not None
-    with pytest.raises(ValueError, match="MAX_TASK_DEPTH"):
+    with pytest.raises(ValidationError, match="MAX_TASK_DEPTH"):
         await svc._validate_parent_depth(parent.id)
 
 

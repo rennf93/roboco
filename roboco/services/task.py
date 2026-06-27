@@ -713,10 +713,14 @@ class TaskService(BaseService):
     async def _validate_parent_depth(self, parent_task_id: UUID) -> None:
         """Enforce MAX_TASK_DEPTH at creation time.
 
-        Walks up the parent chain counting ancestors. Raises ValueError if
-        adding a child under this parent would exceed MAX_TASK_DEPTH.
-        Previously this was only enforced at branch-name generation time,
-        so invalid hierarchies could be created and only fail later at claim.
+        Walks up the parent chain counting ancestors. Raises ValidationError
+        (a ServiceError the API/gateway translate to a clean 400 / remediation
+        envelope) if adding a child under this parent would exceed
+        MAX_TASK_DEPTH. Previously this raised a bare ValueError that escaped
+        uncaught as a 500 (the message told the agent to create a sibling, but
+        it never reached the agent as a handled error), and before that it was
+        only enforced at branch-name generation time, so invalid hierarchies
+        could be created and only fail later at claim.
         """
         from roboco.templates.git.constants import MAX_TASK_DEPTH
 
@@ -726,19 +730,24 @@ class TaskService(BaseService):
         while current_id is not None:
             key = str(current_id)
             if key in visited:
-                raise ValueError(
-                    f"Circular reference detected at {key} while validating depth"
+                raise ValidationError(
+                    f"Circular reference detected at {key} while validating depth",
+                    field="parent_task_id",
                 )
             visited.add(key)
             parent = await self.get(current_id)
             if parent is None:
-                raise ValueError(f"Parent task {current_id} not found")
+                raise ValidationError(
+                    f"Parent task {current_id} not found",
+                    field="parent_task_id",
+                )
             depth += 1
             if depth >= MAX_TASK_DEPTH:
-                raise ValueError(
+                raise ValidationError(
                     f"Task hierarchy would exceed MAX_TASK_DEPTH={MAX_TASK_DEPTH}. "
                     "Create this work as a sibling of the deepest task instead "
-                    "of a further nested subtask."
+                    "of a further nested subtask.",
+                    field="parent_task_id",
                 )
             parent_parent = parent.parent_task_id
             current_id = UUID(str(parent_parent)) if parent_parent else None

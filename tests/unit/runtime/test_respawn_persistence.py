@@ -20,6 +20,7 @@ from uuid import uuid4
 
 import pytest
 from roboco.runtime.orchestrator import AgentOrchestrator
+from sqlalchemy.dialects import postgresql
 
 _SEEDED_COUNT = 3  # a persisted strike count, one below the trip threshold
 _STRIKE_COUNT = 2
@@ -237,6 +238,47 @@ async def test_persist_record_swallows_db_failure() -> None:
             str(uuid4()),
             {"count": 2, "last_check": datetime.now(UTC)},
         )
+
+
+@pytest.mark.asyncio
+async def test_persist_record_uses_atomic_upsert_no_delete_then_insert() -> None:
+    """Wedge #3 (2026-06-27 live meltdown): the persist did delete-then-insert in
+    its own transaction. A respawn loop fires count 1->2->3->4 in quick
+    succession, scheduling a fire-and-forget persist per increment; two of those
+    for the same (agent_slug, task_id) race in separate transactions and the
+    loser's INSERT hit pk_respawn_tracker UniqueViolation, so the durable count
+    stuck at the first INSERT's value and a restart re-burned the strike
+    threshold — exactly the re-burn this feature was built to stop. The persist
+    must be a single atomic ON CONFLICT DO UPDATE upsert (no DELETE, no db.add):
+    concurrent upserts on the same key serialize at row level and never collide.
+    """
+    orch = _new_orchestrator()
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=MagicMock())
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=db)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    factory = MagicMock(return_value=ctx)
+    with patch("roboco.db.base.get_session_factory", return_value=factory):
+        await orch._persist_respawn_record(
+            "be-pm",
+            str(uuid4()),
+            {
+                "count": 4,
+                "last_status": "pending",
+                "last_check": datetime.now(UTC),
+                "tracing_resets": 0,
+                "notified": True,
+            },
+        )
+    # One atomic statement, no ORM add, no delete.
+    assert db.execute.await_count == 1
+    db.add.assert_not_called()
+    stmt = db.execute.await_args.args[0]
+    sql = str(stmt.compile(dialect=postgresql.dialect()))
+    assert "ON CONFLICT" in sql
+    assert "DO UPDATE" in sql
+    assert "DELETE" not in sql.upper()
 
 
 # --------------------------------------------------------------------------- #
