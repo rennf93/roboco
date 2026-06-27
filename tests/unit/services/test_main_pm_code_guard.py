@@ -351,6 +351,37 @@ async def test_claim_rejects_main_pm_claiming_code_in_execution_state(
 
 
 @pytest.mark.asyncio
+async def test_claim_allows_main_pm_recovery_of_code_root_from_needs_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The coordination-recovery path: after a pr_fail / qa_fail / ceo_reject the
+    # owning PM re-claims the NEEDS_REVISION root to re-delegate the fixes
+    # (lifecycle CLAIM_RULES). A legacy coordination root still typed ``code``
+    # (the 2026-06-27 c80e19ff root until the Phase 3b deploy retype) MUST pass
+    # through this claim — blocking it wedges the Main PM in needs_revision with
+    # no actor and no exit (the loop this bundle closes). The recovery claim
+    # re-delegates; it does not execute code.
+    svc = TaskService.__new__(TaskService)
+    svc.session = AsyncMock()
+    task = MagicMock(
+        team=Team.MAIN_PM,
+        task_type=TaskType.CODE,
+        status=TaskStatus.NEEDS_REVISION,
+    )
+    monkeypatch.setattr(svc, "_load_task_or_raise", AsyncMock(return_value=task))
+    claimed = MagicMock()
+    plain_claim = AsyncMock(return_value=claimed)
+    monkeypatch.setattr(svc, "claim", plain_claim)
+
+    result = await svc.claim_task_for_agent(
+        task.id, _agent(role=AgentRole.MAIN_PM), _perms(), claim_target_slug=None
+    )
+
+    assert result is claimed
+    plain_claim.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_claim_allows_main_pm_claiming_planning_in_execution_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

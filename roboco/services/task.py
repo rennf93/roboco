@@ -6192,20 +6192,33 @@ class TaskService(BaseService):
         if task.status == TaskStatus.AWAITING_PM_REVIEW:
             return await self._claim_review_state(task_id, claim_agent_id)
 
-        # Impossibility backstop (C8 — execution states only): a Main PM
-        # coordinates — it never claims a CODE task to execute (claiming here
-        # is owning through the lifecycle, NOT delegating; delegation uses the
-        # `delegate` verb, not claim). Scoped to run only AFTER the
-        # awaiting_pm_review review-claim above returned, so the legitimate
-        # Main-PM review/merge path is untouched. The effective claimant is the
-        # reassign target when ``allow_reassign`` (claim on behalf of), else the
-        # caller. The dispatcher never offers code tasks to main-pm (code→dev),
-        # so this is a backstop for a rogue / on-behalf-of-main-pm claim.
+        # Impossibility backstop (C8): a Main PM coordinates — it never claims a
+        # CODE task to EXECUTE (claiming here is owning through the lifecycle,
+        # NOT delegating; delegation uses the `delegate` verb, not claim).
+        # Scoped to run only AFTER the awaiting_pm_review review-claim above
+        # returned, so the legitimate Main-PM review/merge path is untouched, AND
+        # to skip NEEDS_REVISION — the coordination-recovery path. ``CLAIM_RULES``
+        # lets a PM re-claim NEEDS_REVISION to re-delegate the fixes after a
+        # pr_fail / qa_fail / ceo_reject; blocking that wedges the PM in
+        # needs_revision with no actor and no exit (the 2026-06-27 c80e19ff loop:
+        # a legacy coordination root still typed `code` until the Phase 3b deploy
+        # retype recovers through exactly this claim). The recovery claim
+        # re-delegates — it does not execute code — so a code-typed coordination
+        # root MUST pass through. The dispatcher never offers code leaf tasks to
+        # main-pm (code→dev), so the guard is still an effective backstop against
+        # a rogue / on-behalf-of-main-pm claim of a code leaf from PENDING; the
+        # needs_revision exemption only re-opens the documented recovery path.
+        # The effective claimant is the reassign target when ``allow_reassign``
+        # (claim on behalf of), else the caller.
         if allow_reassign:
             claimant_is_main_pm = await self._is_main_pm_agent(claim_agent_id)
         else:
             claimant_is_main_pm = agent.role == AgentRole.MAIN_PM
-        if claimant_is_main_pm and _task_type_is_code(task.task_type):
+        if (
+            claimant_is_main_pm
+            and _task_type_is_code(task.task_type)
+            and task.status != TaskStatus.NEEDS_REVISION
+        ):
             raise UnauthorizedError(
                 action="claim",
                 reason=(
