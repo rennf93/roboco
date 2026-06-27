@@ -62,7 +62,9 @@ async def test_superseded_closes_pr_and_completes_without_merge(
         return_value=MagicMock(status="completed", parent_task_id=None, team="frontend")
     )
     choreo = _choreo(task, git, monkeypatch)
-    t = MagicMock(pr_number=159, parent_task_id=None, team="frontend")
+    t = MagicMock(
+        pr_number=159, project_id=uuid4(), parent_task_id=None, team="frontend"
+    )
 
     env = await choreo._resolve_merge_conflict_on_complete(
         uuid4(), uuid4(), t, "feature/frontend/root--cell", "notes", _EXC
@@ -93,7 +95,9 @@ async def test_rebased_retries_merge_and_completes(
         return_value=MagicMock(status="completed", parent_task_id=None, team="frontend")
     )
     choreo = _choreo(task, git, monkeypatch)
-    t = MagicMock(pr_number=160, parent_task_id=None, team="backend")
+    t = MagicMock(
+        pr_number=160, project_id=uuid4(), parent_task_id=None, team="backend"
+    )
 
     await choreo._resolve_merge_conflict_on_complete(
         uuid4(), uuid4(), t, "feature/backend/root--cell", "notes", _EXC
@@ -124,7 +128,9 @@ async def test_genuine_conflict_escalates_to_ceo_and_does_not_loop(
     notify = AsyncMock()
     monkeypatch.setattr(choreo, "_notify_ceo_merge_conflict", notify)
     tid = uuid4()
-    t = MagicMock(pr_number=160, parent_task_id=None, team="backend")
+    t = MagicMock(
+        pr_number=160, project_id=uuid4(), parent_task_id=None, team="backend"
+    )
 
     env = await choreo._resolve_merge_conflict_on_complete(
         uuid4(), tid, t, "feature/backend/root--cell", "notes", _EXC
@@ -155,7 +161,9 @@ async def test_unknown_rebase_outcome_escalates_rather_than_completing(
     task.admin_set_status = AsyncMock()
     task.get = AsyncMock(return_value=MagicMock(status="awaiting_ceo_approval"))
     choreo = _choreo(task, git, monkeypatch)
-    t = MagicMock(pr_number=160, parent_task_id=None, team="backend")
+    t = MagicMock(
+        pr_number=160, project_id=uuid4(), parent_task_id=None, team="backend"
+    )
 
     await choreo._resolve_merge_conflict_on_complete(
         uuid4(), uuid4(), t, "feature/backend/root--cell", "notes", _EXC

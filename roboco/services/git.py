@@ -3418,12 +3418,21 @@ class GitService(BaseService):
         pr_number: int,
         *,
         target: str,
+        project_id: UUID,
         actor_agent_id: UUID | None = None,
     ) -> dict[str, Any]:
         """Merge PR `pr_number` into `target`.
 
         Returns: ``{"merge_commit_sha": str | None}``. Looks up the
         task/project that owns the PR to resolve workspace + token.
+
+        ``pr_number`` alone is ambiguous across projects — GitHub numbers
+        PRs per-repo, but ``tasks.pr_number`` stores the bare integer with
+        no repo scoping, so two tasks on different repos can share a number.
+        The caller MUST pass the ``project_id`` the PR belongs to so the
+        task lookup is scoped to it: a same-numbered PR in another
+        project's repo is never resolved (and merged, or its work session
+        marked merged) by accident. Mirrors :meth:`close_pull_request`.
 
         Concurrency: takes a row-level lock on the parent task before
         invoking the GitHub merge API so that two PMs completing
@@ -3436,7 +3445,10 @@ class GitService(BaseService):
         from roboco.db.tables import TaskTable as _TaskTable
 
         result = await self.session.execute(
-            select(_TaskTable).where(_TaskTable.pr_number == pr_number).limit(1)
+            select(_TaskTable)
+            .where(_TaskTable.pr_number == pr_number)
+            .where(_TaskTable.project_id == project_id)
+            .limit(1)
         )
         task = result.scalar_one_or_none()
         if task is None:
@@ -3581,6 +3593,7 @@ class GitService(BaseService):
         self,
         pr_number: int,
         *,
+        project_id: UUID,
         actor_agent_id: UUID | None = None,
     ) -> dict[str, Any]:
         """Resolve workspace/refs for a PR and rebase its branch onto the base.
@@ -3589,13 +3602,20 @@ class GitService(BaseService):
         that owns the PR (mirrors :meth:`pr_merge`) and reads the PR's head/base
         refs from GitHub. Returns the same classification dict, or
         ``{"status": "unknown"}`` when refs can't be resolved.
+
+        ``pr_number`` is ambiguous across projects (GitHub numbers PRs per-repo)
+        so the caller MUST pass ``project_id`` to scope the task lookup — the
+        same cross-repo guard as :meth:`pr_merge` / :meth:`close_pull_request`.
         """
         from sqlalchemy import select
 
         from roboco.db.tables import TaskTable as _TaskTable
 
         result = await self.session.execute(
-            select(_TaskTable).where(_TaskTable.pr_number == pr_number).limit(1)
+            select(_TaskTable)
+            .where(_TaskTable.pr_number == pr_number)
+            .where(_TaskTable.project_id == project_id)
+            .limit(1)
         )
         task = result.scalar_one_or_none()
         if task is None:

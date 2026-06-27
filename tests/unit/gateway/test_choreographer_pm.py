@@ -318,8 +318,60 @@ async def test_cell_pm_complete_merges_then_completes() -> None:
     assert env.error is None
     assert env.status == "completed"
     git_svc.pr_merge.assert_awaited_once_with(
-        8, target="feature/main_pm/abc", actor_agent_id=pm_id
+        8,
+        target="feature/main_pm/abc",
+        project_id=t.project_id,
+        actor_agent_id=pm_id,
     )
+
+
+@pytest.mark.asyncio
+async def test_cell_pm_complete_does_not_500_when_complete_returns_none() -> None:
+    """`complete()` returns None when its PR-merged guard fails — which is
+    exactly what happened live when the merge recorded against the WRONG
+    task's work session (the cross-repo pr_number collision) left this
+    task's `pr_status="open"`. `_finalize_cell_complete` used to deref
+    `t.status` on the None and 500, leaving the cell PM thrashing
+    escalate<->blocked until the CEO intervened. It must fail closed into a
+    clean invalid_state envelope, never a 500.
+    """
+    pm_id = uuid4()
+    task_id = uuid4()
+    parent_id = uuid4()
+    t = MagicMock(
+        id=task_id,
+        status="awaiting_pm_review",
+        assigned_to=pm_id,
+        pr_number=8,
+        branch_name="feature/backend/abc--def",
+        parent_task_id=parent_id,
+        team="backend",
+    )
+    parent = MagicMock(
+        id=parent_id, branch_name="feature/main_pm/abc", parent_task_id=None
+    )
+    task_svc = AsyncMock()
+    task_svc.get.side_effect = lambda tid: parent if tid == parent_id else t
+    task_svc.all_subtasks_terminal.return_value = True
+    task_svc.cell_pm_complete.return_value = None  # complete() rejected
+    git_svc = AsyncMock()
+    git_svc.pr_merge.return_value = {"merge_commit_sha": "merge-abc"}
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
+    journal_svc.has_reflect_for_task.return_value = True
+    deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.cell_pm_complete(pm_id, task_id, notes="reviewed and approved")
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+    assert (
+        "merged" in body.get("message", "").lower()
+        or "complete" in body.get("message", "").lower()
+    )
+    # No AttributeError 500 — the verb completed cleanly with a remediation.
+    assert body.get("remediate")
 
 
 @pytest.mark.asyncio

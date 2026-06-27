@@ -14,7 +14,7 @@ from __future__ import annotations
 import contextlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 from uuid import UUID
 
 import structlog
@@ -5426,7 +5426,10 @@ class Choreographer:
         target = await resolve_parent_branch(t, self.task)
         try:
             merge_result = await self.git.pr_merge(
-                t.pr_number, target=target, actor_agent_id=pm_agent_id
+                t.pr_number,
+                target=target,
+                project_id=cast("UUID", t.project_id),
+                actor_agent_id=pm_agent_id,
             )
         except MergeConflictError as exc:
             # A sibling landed overlapping work first, so this PR can't merge.
@@ -5456,6 +5459,28 @@ class Choreographer:
             notes,
             merge_commit=merge_commit,
         )
+        # `complete()` returns None when its prerequisites fail — most
+        # notably the PR-merged guard (`work_session.pr_status == "merged"`),
+        # which is exactly what breaks when the merge recorded against the
+        # WRONG task's work session (the cross-repo pr_number collision that
+        # `pr_merge`'s project_id scoping now prevents). Fail closed into a
+        # clean invalid_state envelope instead of dereferencing None and
+        # 500-ing, which left the be-pm thrashing escalate<->blocked.
+        if t is None:
+            return Envelope.invalid_state(
+                message=(
+                    "task could not be completed: its PR is not recorded as "
+                    "merged against this task's work session, or it has "
+                    "incomplete subtasks / an invalid completion status"
+                ),
+                remediate=(
+                    "re-issue pr_merge for this task's PR, then complete; if "
+                    "the PR is genuinely merged on GitHub but the work session "
+                    "still shows open, escalate to the CEO to reconcile the "
+                    "session and complete manually"
+                ),
+                context_briefing=await self._briefing_for(pm_agent_id, task_id),
+            )
         # Now that the leaf is completed, propagate the completion up to the
         # parent task: if the parent's subtasks are all terminal, hand the
         # parent off to the cell_pm for that team so it gets respawned for
@@ -5490,12 +5515,17 @@ class Choreographer:
           CEO (``awaiting_ceo_approval``) so the task leaves the agent loop.
         """
         rebase = await self.git.rebase_pr_for_task(
-            t.pr_number, actor_agent_id=pm_agent_id
+            t.pr_number,
+            project_id=cast("UUID", t.project_id),
+            actor_agent_id=pm_agent_id,
         )
         status = rebase.get("status")
         if status == "rebased":
             merge_result = await self.git.pr_merge(
-                t.pr_number, target=target, actor_agent_id=pm_agent_id
+                t.pr_number,
+                target=target,
+                project_id=cast("UUID", t.project_id),
+                actor_agent_id=pm_agent_id,
             )
             return await self._finalize_cell_complete(
                 pm_agent_id, task_id, t, notes, merge_result.get("merge_commit_sha")
@@ -5509,6 +5539,7 @@ class Choreographer:
                     "first. Completing the task without a redundant merge."
                 ),
                 actor_agent_id=pm_agent_id,
+                project_id=cast("UUID", t.project_id),
             )
             return await self._finalize_cell_complete(
                 pm_agent_id, task_id, t, notes, None
