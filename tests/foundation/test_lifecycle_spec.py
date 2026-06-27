@@ -711,6 +711,34 @@ def test_run_all_validators_raises_on_unknown_intent_action(
         _validate.run_all_lifecycle_validators()
 
 
+def test_next_hint_pr_fail_main_pm_root_steers_to_redelegate() -> None:
+    """A ``pr_fail`` on a Main-PM branch-bearing root must steer the Main PM to
+    re-delegate the fixes, NOT re-submit the unchanged root. The root is an
+    assembled cell→root / root→master PR — coordination, not the Main PM's own
+    code — so re-submitting it is the 2026-06-27 infinite ``pr_fail`` loop."""
+    t = SimpleNamespace(team=spec.Team.MAIN_PM, branch_name="feature/main_pm/c80e19ff")
+    hint = _INTENT_VERBS["pr_fail"].next_hint(t)
+    assert "re-delegate" in hint
+    assert "do NOT re-submit" in hint
+
+
+def test_next_hint_pr_fail_cell_dev_keeps_dev_revise() -> None:
+    """A cell / dev task is revised in place by its dev, so ``pr_fail`` keeps the
+    dev-revise hint (the cell→root PR carries that dev's own code)."""
+    t = SimpleNamespace(team=spec.Team.BACKEND, branch_name="feature/backend/abc12345")
+    hint = _INTENT_VERBS["pr_fail"].next_hint(t)
+    assert hint == "idle - dev will revise and re-submit"
+
+
+def test_next_hint_pr_fail_branchless_main_pm_keeps_dev_revise() -> None:
+    """A branchless Main-PM umbrella (no ``branch_name``) assembles no PR of its
+    own, so the gate never lands a ``pr_fail`` on it — but defensively it keeps
+    the dev-revise hint rather than the re-delegate steer."""
+    t = SimpleNamespace(team=spec.Team.MAIN_PM, branch_name=None)
+    hint = _INTENT_VERBS["pr_fail"].next_hint(t)
+    assert hint == "idle - dev will revise and re-submit"
+
+
 def test_unmigrated_is_pinned() -> None:
     """The known-debt set; remove an entry once that consumer is migrated."""
     assert (

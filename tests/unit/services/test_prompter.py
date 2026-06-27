@@ -469,6 +469,9 @@ async def test_confirm_live_draft_product_routes_to_main_pm(db_session: Any) -> 
     assert row.team == Team.MAIN_PM
     assert row.product_id == product_id
     assert row.project_id is None
+    # A Main-PM coordination root is never code — intake coerces code->planning
+    # so main_pm + code can never coexist (the 2026-06-27 meltdown shape).
+    assert row.task_type == TaskType.PLANNING
 
 
 # =============================================================================
@@ -556,6 +559,8 @@ async def test_confirm_live_batch_builds_umbrella_and_sequenced_subtasks(
     assert umbrella.team == Team.MAIN_PM
     assert umbrella.status == TaskStatus.PENDING
     assert umbrella.branch_name is None  # branchless
+    # A Main-PM coordination root is never code — the umbrella is planning-typed.
+    assert umbrella.task_type == TaskType.PLANNING
 
     a, b, c = [await db_session.get(TaskTable, UUID(sid)) for sid in ids]
     for sub in (a, b, c):
@@ -563,6 +568,11 @@ async def test_confirm_live_batch_builds_umbrella_and_sequenced_subtasks(
         assert sub.batch_id == umbrella.batch_id
         assert sub.team == Team.MAIN_PM
         assert sub.status == TaskStatus.PENDING
+        # Each root-subtask is a Main-PM coordination root: code->planning coerced
+        # at intake so main_pm + code can never coexist (the 2026-06-27 meltdown
+        # shape). It still gets its own branch + PR + submit_root + pr_review gate
+        # — the gate is branch-keyed, not task_type-keyed.
+        assert sub.task_type == TaskType.PLANNING
     assert a.project_id == project1
     assert b.project_id == project1
     assert c.project_id == project2

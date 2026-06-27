@@ -10,7 +10,9 @@ from roboco.foundation.policy.batch import (
     is_batch_umbrella,
     is_branchless_coordination,
     is_valid_batch_shape,
+    main_pm_cannot_own_code,
 )
+from roboco.models.base import TaskType, Team
 
 
 def test_umbrella_is_batch_id_set_and_top_level() -> None:
@@ -163,3 +165,27 @@ def test_valid_batch_shape_denies_cell_map_alongside_another_target() -> None:
         product_id=uuid4(),
         has_cell_projects=True,
     )
+
+
+def test_main_pm_cannot_own_code_predicate() -> None:
+    """``main_pm`` + ``code`` must never coexist — the single invariant behind
+    the intake coercion, the create backstop, the reassign/escalation diversion,
+    and the claim guard. Accepts ORM enums or their .value strings."""
+    # The forbidden combo, in both enum and string form.
+    assert main_pm_cannot_own_code(team=Team.MAIN_PM, task_type=TaskType.CODE)
+    assert main_pm_cannot_own_code(
+        team=Team.MAIN_PM.value, task_type=TaskType.CODE.value
+    )
+    # A Main PM coordinating (planning / research / etc.) is fine.
+    assert not main_pm_cannot_own_code(team=Team.MAIN_PM, task_type=TaskType.PLANNING)
+    assert not main_pm_cannot_own_code(team=Team.MAIN_PM, task_type=TaskType.RESEARCH)
+    assert not main_pm_cannot_own_code(
+        team=Team.MAIN_PM, task_type=TaskType.DOCUMENTATION
+    )
+    # Code owned by any non-main_pm team (a cell dev, the board pre-approval) is fine.
+    assert not main_pm_cannot_own_code(team=Team.BACKEND, task_type=TaskType.CODE)
+    assert not main_pm_cannot_own_code(team=Team.FRONTEND, task_type=TaskType.CODE)
+    assert not main_pm_cannot_own_code(team=Team.BOARD, task_type=TaskType.CODE)
+    # Missing team or type cannot satisfy the invariant.
+    assert not main_pm_cannot_own_code(team=None, task_type=TaskType.CODE)
+    assert not main_pm_cannot_own_code(team=Team.MAIN_PM, task_type=None)

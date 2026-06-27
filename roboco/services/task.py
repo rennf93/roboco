@@ -39,6 +39,7 @@ from roboco.foundation.policy.batch import (
     is_batch_umbrella,
     is_branchless_coordination,
     is_valid_batch_shape,
+    main_pm_cannot_own_code,
 )
 from roboco.foundation.policy.content import markers
 from roboco.foundation.policy.content.validators import ContentValidationError
@@ -193,6 +194,20 @@ def _board_cannot_own(task: TaskTable) -> bool:
         or _is_cell_team_task(task)
         or _is_coordination_task(task)
     )
+
+
+def _task_type_is_code(task_type: Any) -> bool:
+    """True when ``task_type`` is ``TaskType.CODE`` (enum member or its value).
+
+    Robust to the two shapes SQLAlchemy hands back: the ``TaskType`` enum or
+    its raw ``"code"`` string (the latter on detached/partially-hydrated rows).
+    Used by the Main-PM claim guard, which keys on the task's *type* (a Main PM
+    cannot execute code) rather than the team+type combo the create / reassign
+    guards use — claiming is owning, and a Main PM claiming a code task is a
+    mismatch regardless of the task's team.
+    """
+    value = task_type.value if isinstance(task_type, TaskType) else task_type
+    return str(value) == TaskType.CODE.value
 
 
 _PM_OWNED_CELL_TASK_TYPES: frozenset[str] = frozenset(
@@ -822,6 +837,23 @@ class TaskService(BaseService):
 
         if req.parent_task_id:
             await self._validate_parent_depth(req.parent_task_id)
+
+        # Impossibility backstop: a Main PM coordinates — it never owns a code
+        # task. ``main_pm`` + ``code`` on the same task is the structural
+        # mismatch behind the 2026-06-27 MegaTask meltdown (a root-subtask the
+        # git/PR/review layer treated as code while ownership treated it as
+        # coordination — never reconciled, pr_fail looped). Intake
+        # (create_task_from_draft) coerces code→planning, so this fires only on
+        # a non-intake create (the HTTP route / a direct internal create) that
+        # tries to persist the forbidden combo.
+        if main_pm_cannot_own_code(team=req.team, task_type=req.task_type):
+            raise ValidationError(
+                "MAIN_PM_NO_CODE: A Main PM task coordinates — it does not"
+                " execute code. Re-draft as `planning` with coordination-level"
+                " acceptance criteria, or target a cell so a developer owns the"
+                " code.",
+                field="task_type",
+            )
 
         # Stable per-criterion ids (1:1 with acceptance_criteria) so children can
         # reference specific parent criteria; generated here when not supplied.
@@ -4728,6 +4760,24 @@ class TaskService(BaseService):
                 reason=reason,
             )
             return
+        # Impossibility backstop: a Main-PM target must never receive (back) a
+        # main_pm + code task — a coordinator with no code verb cannot fix the
+        # code, so escalating it to Main PM perpetuates the mismatch (the
+        # 2026-06-27 meltdown shape). Scoped to the team+type combo (NOT a broad
+        # code+main-pm-target rule) so a legacy main_pm+code task can still be
+        # escalated to a cell dev — the correct remediation. The combo is
+        # uncreatable going forward (create backstop + intake coercion), so this
+        # is a backstop for legacy / direct-ORM-write tasks.
+        if main_pm_cannot_own_code(
+            team=task.team, task_type=task.task_type
+        ) and await self._is_main_pm_agent(target_agent_id):
+            await self._release_code_task_to_pool(
+                task=task,
+                escalator_slug=escalator_slug,
+                blocked_target_slug=target_slug,
+                reason=reason,
+            )
+            return
         if task.assigned_to and not task.blocker_raised_by:
             task.blocker_raised_by = cast("Any", task.assigned_to)
         # Capture before mutating: the audit row must record the real prior
@@ -4983,6 +5033,20 @@ class TaskService(BaseService):
         # off the board — reflect the new owner. Team.MAIN_PM is a valid non-cell
         # team and does not affect dispatch (which routes by assignee, not team).
         task.team = cast("Any", Team.MAIN_PM)
+        # A board-approved task handed to Main PM must not stay `code` — a Main
+        # PM coordinates, it never owns a code task (the 2026-06-27 meltdown was
+        # a main_pm + code root). A board-routed PROJECT code task reaches here
+        # with team=cell and task_type=code (intake only coerces main_pm-team
+        # drafts); once team is flipped to MAIN_PM the combo would persist.
+        # Retype code→planning so it's a planning-typed coordination root the
+        # Main PM delegates to the cells. (Intake coerces this too; this is the
+        # board-review backstop.)
+        if main_pm_cannot_own_code(team=task.team, task_type=task.task_type):
+            self.log.info(
+                "approve_and_start retyped main-pm code task to planning",
+                task_id=str(task_id),
+            )
+            task.task_type = cast("Any", TaskType.PLANNING)
 
         if notes:
             # Coordination metadata, not a human handoff — store as a marker so
@@ -6128,6 +6192,28 @@ class TaskService(BaseService):
         if task.status == TaskStatus.AWAITING_PM_REVIEW:
             return await self._claim_review_state(task_id, claim_agent_id)
 
+        # Impossibility backstop (C8 — execution states only): a Main PM
+        # coordinates — it never claims a CODE task to execute (claiming here
+        # is owning through the lifecycle, NOT delegating; delegation uses the
+        # `delegate` verb, not claim). Scoped to run only AFTER the
+        # awaiting_pm_review review-claim above returned, so the legitimate
+        # Main-PM review/merge path is untouched. The effective claimant is the
+        # reassign target when ``allow_reassign`` (claim on behalf of), else the
+        # caller. The dispatcher never offers code tasks to main-pm (code→dev),
+        # so this is a backstop for a rogue / on-behalf-of-main-pm claim.
+        if allow_reassign:
+            claimant_is_main_pm = await self._is_main_pm_agent(claim_agent_id)
+        else:
+            claimant_is_main_pm = agent.role == AgentRole.MAIN_PM
+        if claimant_is_main_pm and _task_type_is_code(task.task_type):
+            raise UnauthorizedError(
+                action="claim",
+                reason=(
+                    "MAIN_PM_NO_CODE: A Main PM coordinates — it does not own a"
+                    " code task. Leave it for a developer; delegate instead."
+                ),
+            )
+
         claimed = await self.claim(
             task_id, claim_agent_id, allow_reassign=allow_reassign
         )
@@ -7079,6 +7165,46 @@ class TaskService(BaseService):
         )
         return task
 
+    async def _maybe_divert_main_pm_code_reassign(
+        self, task: TaskTable, task_id: UUID, new_assignee: UUID | None
+    ) -> TaskTable | None:
+        """Divert a main_pm+code → Main-PM reassign to the pool, or None.
+
+        Twin of ``_maybe_divert_board_advisory_reassign`` for the
+        impossibility invariant: a Main-PM target must never receive (back) a
+        ``main_pm`` + ``code`` task — a coordinator with no code verb cannot
+        fix the code, so re-handing it to Main PM perpetuates the mismatch
+        (the 2026-06-27 meltdown shape). Scoped to the team+type combo (NOT a
+        broad code+main-pm-target rule) so a legacy main_pm+code task can still
+        be reassigned to a cell dev — the correct remediation. The combo is
+        uncreatable going forward (create backstop + intake coercion +
+        approve_and_start retype), so this is a backstop for legacy /
+        direct-ORM-write tasks.
+
+        Returns the refreshed task when it diverted, or ``None`` when no
+        diversion applies and the caller should proceed with the normal handoff.
+        """
+        if not (
+            new_assignee is not None
+            and main_pm_cannot_own_code(team=task.team, task_type=task.task_type)
+            and await self._is_main_pm_agent(new_assignee)
+        ):
+            return None
+        await self._divert_owned_task_to_pool(
+            task,
+            note=(
+                "\n\n[REASSIGN REDIRECTED] attempted to hand this main_pm + code"
+                " task to a Main PM that cannot own code. Released to the pool"
+                " for a role-matched claim instead."
+            ),
+        )
+        self.log.info(
+            "main_pm + code task reassign to a Main PM diverted to pool",
+            task_id=str(task_id),
+            refused_assignee=str(new_assignee),
+        )
+        return task
+
     async def reassign(
         self, task_id: UUID, new_assignee: UUID | None
     ) -> TaskTable | None:
@@ -7099,6 +7225,14 @@ class TaskService(BaseService):
         # `_maybe_divert_board_advisory_reassign`); otherwise proceed with the
         # normal handoff + cell-PM redirect.
         diverted = await self._maybe_divert_board_advisory_reassign(
+            task, task_id, new_assignee
+        )
+        if diverted is not None:
+            return diverted
+        # main_pm + code → Main-PM hand-off is diverted to the pool (see
+        # `_maybe_divert_main_pm_code_reassign`); otherwise proceed with the
+        # normal handoff + cell-PM redirect.
+        diverted = await self._maybe_divert_main_pm_code_reassign(
             task, task_id, new_assignee
         )
         if diverted is not None:
@@ -7253,6 +7387,27 @@ class TaskService(BaseService):
             )
             self.log.info(
                 "Active cell task reassign to a board/advisory role diverted",
+                task_id=str(task_id),
+                refused_assignee=str(new_assignee),
+            )
+            return task
+        # Impossibility backstop (mirrors `reassign`): an active main_pm + code
+        # claim must not be handed to a Main PM — divert to the pool. Scoped to
+        # the team+type combo so a legacy main_pm+code task can still be
+        # reassign-claimed by a cell dev (the correct remediation).
+        if main_pm_cannot_own_code(
+            team=task.team, task_type=task.task_type
+        ) and await self._is_main_pm_agent(new_assignee):
+            await self._divert_owned_task_to_pool(
+                task,
+                note=(
+                    "\n\n[REASSIGN REDIRECTED] attempted to hand this active"
+                    " main_pm + code task to a Main PM that cannot own code."
+                    " Released to the pool for a role-matched claim instead."
+                ),
+            )
+            self.log.info(
+                "Active main_pm + code task reassign to a Main PM diverted",
                 task_id=str(task_id),
                 refused_assignee=str(new_assignee),
             )
@@ -7696,6 +7851,19 @@ class TaskService(BaseService):
         )
         role = result.scalar_one_or_none()
         return role in _BOARD_ADVISORY_ROLES
+
+    async def _is_main_pm_agent(self, agent_id: UUID) -> bool:
+        """True if ``agent_id`` is the Main PM role (the coordinator with no code verb).
+
+        Twin of ``_is_board_advisory_agent`` for the impossibility invariant —
+        consulted by the escalation / reassign / claim guards that divert or
+        refuse a ``main_pm`` + ``code`` hand-off to a Main-PM target.
+        """
+        result = await self.session.execute(
+            select(AgentTable.role).where(AgentTable.id == agent_id)
+        )
+        role = result.scalar_one_or_none()
+        return role == AgentRole.MAIN_PM
 
     async def _divert_owned_task_to_pool(self, task: TaskTable, *, note: str) -> None:
         """Clear ownership and return ``task`` to PENDING for a role-matched claim.

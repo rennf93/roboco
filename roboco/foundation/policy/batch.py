@@ -15,6 +15,8 @@ between sites. Inputs are typed ``object | None`` because callers pass either OR
 
 from __future__ import annotations
 
+from roboco.models.base import TaskType, Team
+
 
 def is_batch_umbrella(
     *, batch_id: object | None, parent_task_id: object | None
@@ -97,3 +99,27 @@ def is_valid_batch_shape(
         return targets == 0
     # root-subtask: exactly one target
     return targets == 1
+
+
+def main_pm_cannot_own_code(*, team: object | None, task_type: object | None) -> bool:
+    """True when a Main-PM-owned task must NOT be ``code``.
+
+    A Main PM *coordinates* — it plans and delegates execution to the cells; it
+    has no verb to write code. A ``task_type=code`` task owned by ``main_pm`` is
+    the structural mismatch behind the 2026-06-27 MegaTask meltdown: the git/PR/
+    review layer treated the Main-PM root-subtask as a code root (branch + PR +
+    ``submit_root`` + the ``pr_review`` gate) while the ownership/dispatch layer
+    treated it as coordination, and a code-style ``pr_fail`` landed on a
+    coordinator with no code verb → an infinite re-submit loop. The root's code
+    ACs were never decomposed to children because the roll-up gate is inert
+    unless a child declares ``parent_ac_refs``.
+
+    This predicate is the single invariant every layer consults so ``main_pm`` +
+    ``code`` can never coexist: the intake coercion (``create_task_from_draft``
+    retypes ``code``→``planning``), the ``TaskService.create`` backstop reject,
+    the reassign/escalation diversion, and the claim guard. Accepts either ORM
+    enum members or their ``.value`` strings (callers pass both shapes).
+    """
+    team_value = str(getattr(team, "value", team))
+    type_value = str(getattr(task_type, "value", task_type))
+    return team_value == Team.MAIN_PM.value and type_value == TaskType.CODE.value

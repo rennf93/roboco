@@ -21,7 +21,7 @@ from sqlalchemy import select
 
 from roboco.db.tables import AgentTable, TaskTable
 from roboco.foundation.identity import CELL_TEAMS
-from roboco.foundation.policy.batch import is_batch_umbrella
+from roboco.foundation.policy.batch import is_batch_umbrella, main_pm_cannot_own_code
 from roboco.foundation.policy.content.validators import coerce_str_list
 from roboco.foundation.policy.sequencing.models import DraftSurface, SequencePlan
 from roboco.models.base import (
@@ -303,6 +303,23 @@ class PrompterService:
             team_override=place.team_override,
             default_lead=_lead,
         )
+
+        # A Main PM coordinates — it never owns a code task. A main_pm + code
+        # draft is the structural mismatch behind the 2026-06-27 MegaTask
+        # meltdown (the git/PR/review layer treated the root as code while the
+        # ownership layer treated it as coordination → pr_fail loop). Intake
+        # coerces code -> planning here so the combo can never persist; a
+        # root-subtask / umbrella / single-task main_pm route is a coordination
+        # root whose code ACs live on the delegated cell/dev leaves. The
+        # TaskService.create backstop rejects main_pm + code for non-intake
+        # create paths (the HTTP route).
+        if main_pm_cannot_own_code(team=team, task_type=task_type):
+            self.log.info(
+                "Main-PM intake task coerced code->planning",
+                team=str(getattr(team, "value", team)),
+                title=_text(draft_data.get("title")) or "",
+            )
+            task_type = TaskType.PLANNING
 
         req = TaskCreateRequest(
             title=draft_data["title"],
@@ -990,9 +1007,9 @@ def _compose_umbrella_draft(
     The umbrella targets neither project nor product (it is branchless) and
     carries no collision surface of its own — it exists to group the batch, hold
     the wave plan in its description for review, and be the one board-review /
-    CEO-approve / Main-PM-coordinate unit. ``task_type=code`` mirrors the existing
-    product coordination roots created from intake (the branch/PR exemption comes
-    from the batch identity, not the type).
+    CEO-approve / Main-PM-coordinate unit. It is a Main-PM coordination root, so
+    ``task_type=planning`` (a Main PM coordinates, it does not execute code); the
+    branch/PR exemption comes from the batch identity, not the type.
     """
     item_titles = [
         _text(d.get("title")) or f"Task {i + 1}" for i, d in enumerate(drafts)
@@ -1014,7 +1031,7 @@ def _compose_umbrella_draft(
         "acceptance_criteria": [
             "Every root-subtask in the MegaTask is completed and merged.",
         ],
-        "task_type": TaskType.CODE.value,
+        "task_type": TaskType.PLANNING.value,
         "nature": TaskNature.TECHNICAL.value,
         "estimated_complexity": Complexity.HIGH.value,
         "priority": 1,

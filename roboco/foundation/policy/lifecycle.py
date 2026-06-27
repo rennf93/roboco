@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Any, Literal
 # Re-exported here so callers can import `Role` from this module alongside
 # the lifecycle tables that depend on it. New consumers may also import
 # from `roboco.foundation.identity` directly.
-from roboco.foundation.identity import Role
+from roboco.foundation.identity import Role, Team
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -779,6 +779,27 @@ def _next_hint_dev_revise(_t: Any) -> str:
     return "idle - dev will revise and re-submit"
 
 
+def _next_hint_pr_fail(t: Any) -> str:
+    # Steer a pr_fail verdict by owner shape. A Main-PM branch-bearing root is
+    # an assembled cell→root / root→master PR — coordination, not the Main PM's
+    # own code. The rejection is about the cells' merged code, which the Main PM
+    # cannot fix directly (no code verb); it must re-delegate the fixes to the
+    # owning cell PM(s) and wait for re-assembly. Re-submitting the unchanged
+    # root is the 2026-06-27 infinite pr_fail loop. A cell/dev task is revised
+    # in place by its dev, so keep the dev-revise hint there.
+    team = getattr(t, "team", None)
+    team_value = str(getattr(team, "value", team))
+    branch = bool(getattr(t, "branch_name", None))
+    if team_value == Team.MAIN_PM.value and branch:
+        return (
+            "assembled cell work failed review — re-delegate the fixes to the"
+            " owning cell PM(s) via delegate(...), then wait for the cell"
+            " subtasks to complete and the PR to be re-assembled; do NOT"
+            " re-submit the root until then"
+        )
+    return "idle - dev will revise and re-submit"
+
+
 def _next_hint_doc_after_claim(_t: Any) -> str:
     return (
         "write docs in your workspace, commit them, then call"
@@ -1152,7 +1173,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         composes=("pr_fail",),
         extra_preconditions=(),
         side_effects=(),
-        next_hint=_next_hint_dev_revise,
+        next_hint=_next_hint_pr_fail,
     ),
     # Phase 3: documenter verbs
     "claim_doc_task": IntentSpec(
@@ -1244,8 +1265,10 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
             "Main PM opens the root→master PR and moves the root task to"
             " awaiting_pr_review for the main reviewer (the root analogue of the"
             " cell PM's submit_up). After pr_pass, call complete to escalate to"
-            " the CEO. Only for code roots; branchless coordination roots skip"
-            " the gate and complete directly."
+            " the CEO. For branch-bearing roots (a Main-PM root-subtask assembles"
+            " the cells' merged work); branchless coordination roots skip the"
+            " gate and complete directly. The gate is branch-keyed, not"
+            " task_type-keyed — a Main-PM root is planning-typed, never code."
         ),
         composes=("submit_for_review",),
         extra_preconditions=(),

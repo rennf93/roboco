@@ -245,7 +245,7 @@ class PRGateMixin(_Base):
         # what keeps notes_structured.pr_review in lock-step with the decision —
         # a later pr_fail overwrites an earlier pr_pass verdict instead of
         # leaving a stale "passed" on a task that was just sent back.
-        self._record_gate_verdict(t, verb, notes)
+        self._record_gate_verdict(t, verb, notes, issues=issues)
         runner = self._verb_runner()
         try:
             t = await runner.run_intent(verb, t, agent, spec_ctx)
@@ -265,6 +265,49 @@ class PRGateMixin(_Base):
         # transition — a GitHub failure must not roll back the gate decision.
         reviewer_slug = getattr(agent, "slug", None) or role_str
         await self._post_gate_review_to_pr(t, verb, reviewer_slug, notes)
+        # Deliver the change-requests to the owner that now has to act on them
+        # — the cell PM the runner just re-assigned via _revision_pm_for_task.
+        # The reviewer posts the verdict on the PR itself but that never reaches
+        # any PM-readable channel (no a2a, and _briefing_for / build_task_handoff
+        # read neither pr_reviewer_notes nor notes_structured.pr_review). Without
+        # this the owning PM respawned into needs_revision saw a generic "needs
+        # revision" with zero concrete issues, concluded nothing to rework, and
+        # re-submitted the same PR — an infinite pr_fail loop (live on
+        # 9980d0a0 / PR #138). Mirrors QA's fail_review a2a to the dev (qa.py:671).
+        # Best-effort: the transition already committed, so a delivery failure
+        # must not roll the verdict back or 500 the reviewer.
+        if verb == "pr_fail" and t.assigned_to is not None:
+            # A Main-PM branch-bearing root is an assembled cell→root / root→master
+            # PR — coordination, not the Main PM's own code. The rejection is
+            # about the cells' merged code, which the Main PM cannot fix directly
+            # (no code verb). Steer the a2a body to re-delegate + wait for
+            # re-assembly so the PM doesn't re-submit the unchanged root (the
+            # 2026-06-27 infinite pr_fail loop). The Envelope ``next`` hint makes
+            # the same steer via _next_hint_pr_fail.
+            team = getattr(t, "team", None)
+            team_value = str(getattr(team, "value", team))
+            is_main_pm_root = team_value == spec_module.Team.MAIN_PM.value and bool(
+                getattr(t, "branch_name", None)
+            )
+            steer = (
+                " Assembled cell work failed — re-delegate the fixes to the"
+                " owning cell PM(s) and wait for re-assembly; do NOT re-submit"
+                " the root."
+                if is_main_pm_root
+                else ""
+            )
+            try:
+                await self.a2a.send(
+                    from_agent=reviewer_agent_id,
+                    to_agent=t.assigned_to,
+                    skill="code_review",
+                    task_id=task_id,
+                    body=f"PR review needs changes. {notes}{steer}",
+                )
+            except Exception:
+                logger.exception(
+                    "pr_fail a2a to owning PM failed", task_id=str(task_id)
+                )
         return Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
@@ -302,27 +345,50 @@ class PRGateMixin(_Base):
                 )
         return None
 
-    def _record_gate_verdict(self, t: Any, verb: str, notes: str) -> None:
+    def _record_gate_verdict(
+        self, t: Any, verb: str, notes: str, issues: tuple[str, ...] = ()
+    ) -> None:
         """Persist the gate verdict as the canonical ``pr_review`` note.
 
         The tracing gate only threads ``notes`` through a throwaway shim, so
         nothing wrote the task's structured PR-reviewer slot — a task passed
         once and later failed kept showing the stale ``verdict: passed``. This
         authors the slot on every decision (``pr_pass`` → passed, ``pr_fail`` →
-        failed) so it can never contradict the transition. Best-effort: content
-        validation (e.g. a too-short summary) must never roll back the gate, so a
-        malformed payload is logged and skipped rather than raised.
+        failed) so it can never contradict the transition. For ``pr_fail`` the
+        free-text ``issues`` land in the structured ``issues`` slot (not the
+        format-enforced ``findings`` list, which needs file/severity/expected/
+        actual) so a reader of ``notes_structured.pr_review`` — or the owning
+        PM's briefing that mirrors it — gets the concrete change-requests.
+        Best-effort: content validation (e.g. a too-short summary) must never
+        roll back the gate, so a malformed payload is logged and skipped.
         """
         from roboco.foundation.policy.content import ContentValidationError
         from roboco.services.content_notes import apply_structured_note
 
         verdict = "passed" if verb == "pr_pass" else "failed"
-        try:
-            apply_structured_note(
-                t,
-                "pr_review",
-                {"summary": notes, "findings": [], "verdict": verdict},
+        if verb == "pr_fail" and issues:
+            # The free-text issues render under their own ``## Issues`` section
+            # (render_markdown). Baking them into ``summary`` too duplicated each
+            # issue on the Task Details "PR Reviewer Notes" card (once under
+            # ## Summary, once under ## Issues). The summary is a substantive
+            # non-issues sentence; ``notes`` (with the issues) still drives the
+            # GitHub PR post and the a2a to the owning PM — those are raw text,
+            # not rendered through render_markdown, so no duplication there.
+            summary = (
+                f"In-path PR-review gate requested changes - "
+                f"{len(issues)} issue(s) listed below."
             )
+        else:
+            summary = notes
+        payload: dict[str, Any] = {
+            "summary": summary,
+            "findings": [],
+            "verdict": verdict,
+        }
+        if issues:
+            payload["issues"] = list(issues)
+        try:
+            apply_structured_note(t, "pr_review", payload)
         except ContentValidationError:
             logger.warning(
                 "gate verdict note skipped (invalid content)",

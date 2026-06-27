@@ -5780,12 +5780,15 @@ class Choreographer:
                     main_pm_agent_id, root_task_id
                 ),
             )
-        # A code root must pass the in-path PR-review gate first: submit_root
-        # opens the root→master PR and moves it in_progress → awaiting_pr_review,
-        # then the main reviewer pr_passes it to awaiting_pm_review. So complete
-        # accepts only awaiting_pm_review for a code root. A branchless
-        # coordination root (product fan-out, no repo/PR) skips the gate, so it
-        # may still be walked from in_progress here.
+        # A branch-bearing root must pass the in-path PR-review gate first:
+        # submit_root opens the root→master PR and moves it in_progress →
+        # awaiting_pr_review, then the main reviewer pr_passes it to
+        # awaiting_pm_review. So complete accepts only awaiting_pm_review for a
+        # branch-bearing root (a Main-PM root-subtask is planning-typed, never
+        # code, but it still assembles the cells' merged work into a real PR).
+        # A branchless coordination root (product fan-out, no repo/PR) skips the
+        # gate, so it may still be walked from in_progress here. The split is
+        # branch-keyed, not task_type-keyed.
         root_is_branchless = not bool(t.branch_name)
         allowed_statuses = (
             ("awaiting_pm_review", "in_progress")

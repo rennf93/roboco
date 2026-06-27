@@ -143,15 +143,29 @@ class AcVerdict(_Base):
 
 
 class PrReviewContent(_Content):
-    """A PR-review comment / reviewer verdict."""
+    """A PR-review comment / reviewer verdict.
+
+    ``findings`` carries the *structured* review (file/line/severity/expected/
+    actual) used by the inbound external-PR path. The in-path gate instead
+    fails on free-text ``issues`` — those land in the additive ``issues`` slot
+    rather than being flattened into ``summary`` alone, so a reader of
+    ``notes_structured.pr_review`` (or the derived ``pr_reviewer_notes`` mirror)
+    gets the concrete change-requests either way.
+    """
 
     summary: str
     findings: list[Finding] = Field(default_factory=list)
+    issues: list[str] = Field(default_factory=list)
     verdict: Verdict
 
     @field_validator("findings", mode="before")
     @classmethod
     def _coerce_findings(cls, v: Any) -> Any:
+        return coerce_to_list(v)
+
+    @field_validator("issues", mode="before")
+    @classmethod
+    def _coerce_issues(cls, v: Any) -> Any:
         return coerce_to_list(v)
 
     @field_validator("summary")
@@ -174,6 +188,8 @@ class PrReviewContent(_Content):
                     f"| {f.expected} → {f.actual} |"
                 )
             parts.append("## Findings\n" + "\n".join(rows))
+        if self.issues:
+            parts.append(_section("Issues", _bullets(self.issues)))
         parts.append(_section("Verdict", self.verdict.value.replace("_", " ")))
         return _join(parts)
 
