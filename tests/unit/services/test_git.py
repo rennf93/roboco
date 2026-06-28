@@ -377,7 +377,7 @@ async def test_pr_target_returns_base_ref() -> None:
         _patch_project_service(fake_project),
         patch("roboco.services.git.httpx.AsyncClient", return_value=fake_client),
     ):
-        out = await svc.pr_target(42)
+        out = await svc.pr_target(42, project_id=project_id)
     assert out == "feature/parent"
 
 
@@ -387,7 +387,7 @@ async def test_pr_target_raises_when_pr_not_found() -> None:
     result.scalar_one_or_none.return_value = None
     svc = _service(execute_returns=result)
     with pytest.raises(NotFoundError):
-        await svc.pr_target(99)
+        await svc.pr_target(99, project_id=uuid4())
 
 
 # ---------------------------------------------------------------------------

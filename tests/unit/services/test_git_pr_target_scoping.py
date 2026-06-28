@@ -1,15 +1,15 @@
-"""F052: pr_target must scope its task lookup by project_id when the caller
-knows it, mirroring close_pull_request.
+"""pr_target must scope its task lookup by project_id — always.
 
 GitHub numbers PRs per-repo, so ``pr_number`` is ambiguous across projects: a
 backend repo's PR #132 and a frontend repo's PR #132 are different PRs. The
 bare ``WHERE pr_number == N LIMIT 1`` query returns whichever task row comes
 first — the wrong repo's task, whose ``_project_for_task`` then resolves the
-wrong project and the GitHub fetch hits the wrong repo. When the caller knows
-the project (the Main PM coordinating a known root), it must pass
-``project_id`` so the lookup is scoped and a same-numbered PR in another
-project's repo is never resolved by accident — the pattern
-``close_pull_request`` already established.
+wrong project and the GitHub fetch hits the wrong repo.
+
+``project_id`` is therefore MANDATORY: the caller can never resolve a PR
+without scoping it to a project, so a same-numbered PR in another project's
+repo is unreachable by accident — the pattern ``pr_merge`` already
+established (and ``close_pull_request`` follows).
 """
 
 from __future__ import annotations
@@ -59,10 +59,10 @@ def _compiled_sql(stmt: Any) -> str:
 
 
 @pytest.mark.asyncio
-async def test_pr_target_scopes_task_lookup_by_project_id_when_provided() -> None:
-    """With ``project_id`` the task lookup WHERE clause filters on BOTH
-    pr_number and project_id — a same-numbered PR in another project's repo
-    can't be resolved by accident."""
+async def test_pr_target_scopes_task_lookup_by_project_id() -> None:
+    """The task lookup WHERE clause filters on BOTH pr_number and project_id
+    — a same-numbered PR in another project's repo can't be resolved by
+    accident."""
     recorder: list[object] = []
     svc = _service(recorder)
     project_id = uuid4()
@@ -82,21 +82,19 @@ async def test_pr_target_scopes_task_lookup_by_project_id_when_provided() -> Non
 
 
 @pytest.mark.asyncio
-async def test_pr_target_without_project_id_does_not_scope() -> None:
-    """Without ``project_id`` the lookup stays unscoped (backward-compatible
-    with callers that don't know the project) — only pr_number is filtered."""
+async def test_pr_target_requires_project_id() -> None:
+    """``project_id`` is mandatory — a caller can NEVER resolve a PR without
+    scoping it to a project. Omitting it is a programming error (TypeError at
+    call time), not a silent unscoped lookup that could hit another project's
+    same-numbered PR (the cross-repo #132 collision)."""
     recorder: list[object] = []
     svc = _service(recorder)
 
-    with _patch_project_service(MagicMock(slug="roboco")), pytest.raises(NotFoundError):
-        await svc.pr_target(_PR_NUMBER)
+    with pytest.raises(TypeError):
+        await svc.pr_target(_PR_NUMBER)  # missing required project_id
 
-    assert len(recorder) == 1
-    sql = _compiled_sql(recorder[0])
-    assert "tasks.pr_number =" in sql
-    # No project_id WHERE filter (the column still appears in the select list
-    # with a trailing comma, but the ``=`` comparison is absent).
-    assert "tasks.project_id =" not in sql
+    # The unscoped lookup was never issued — no SQL reached the session.
+    assert recorder == []
 
 
 @pytest.mark.asyncio
