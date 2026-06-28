@@ -86,5 +86,15 @@ async def _run_one(workspace: Path, command: str) -> tuple[int, str]:
         )
     except TimeoutError:
         proc.kill()
+        # Reap the killed process and close the stdout/stderr pipe transports
+        # (communicate() was cancelled, so it never closed them). Without this
+        # the process lingers as a transient zombie and the FDs leak.
+        await proc.wait()
         return 124, f"command timed out after {_GATE_TIMEOUT_SECONDS}s"
-    return proc.returncode or 0, stdout.decode("utf-8", errors="replace")
+    rc = proc.returncode
+    if rc is None:
+        # communicate() returned without a recorded exit code (the process
+        # was terminated out-of-band). Fail closed — an unknown status must
+        # not pass the gate.
+        return 1, stdout.decode("utf-8", errors="replace")
+    return rc, stdout.decode("utf-8", errors="replace")
