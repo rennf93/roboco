@@ -46,7 +46,7 @@ from roboco.agents_config import (
 )
 from roboco.config import settings
 from roboco.foundation import identity as _foundation
-from roboco.foundation.identity import CELL_TEAMS
+from roboco.foundation.identity import CELL_TEAMS, Role, role_for_slug
 from roboco.foundation.policy.agent_loop import DEFAULT_BUDGET as _AGENT_LOOP_BUDGET
 from roboco.foundation.policy.batch import is_branchless_coordination
 from roboco.models import AgentRole, Team
@@ -1853,6 +1853,33 @@ class AgentOrchestrator:
                 is auto-blocked before we raise so the dispatcher doesn't
                 keep retrying.
         """
+        # Human-only roles (ceo / prompter / secretary) are NEVER spawned by a
+        # dispatcher. The CEO is the human operator; intake (prompter) and
+        # secretary are human-driven interactive chats launched through their
+        # own deliberately-separate guarded paths (_spawn_intake_container /
+        # _spawn_secretary_container), NOT through this method. A dispatcher
+        # that spawns "any A2A/notification target" (e.g. _dispatch_a2a_work)
+        # could otherwise resolve a CEO-addressed notification to slug "ceo" and
+        # launch a CEO container — a trust violation (the system acting as the
+        # human CEO). This chokepoint guard is the single structural fix: no
+        # matter which dispatcher calls in, a human role never gets a container
+        # here. Safe because the dedicated human-spawn paths do not route
+        # through spawn_agent (see the _spawn_intake_container note at the top
+        # of this file).
+        _role = role_for_slug(agent_id)
+        if _role in (Role.CEO, Role.PROMPTER, Role.SECRETARY):
+            logger.error(
+                "spawn_agent refused for human-only role — dispatchers must never"
+                " spawn the CEO / prompter / secretary; these are human-driven",
+                agent_id=agent_id,
+                role=str(_role),
+                task_id=str(task_id) if task_id else None,
+            )
+            raise AgentReadinessError(
+                f"refused to spawn human-only role {_role!r} ({agent_id}) — the"
+                f" CEO is the human operator, not a container; intake and secretary"
+                f" launch through their dedicated paths, not spawn_agent"
+            )
         # Pre-flight: refuse to spawn if the task isn't ready. Auto-block
         # on refusal so the dispatcher doesn't keep spinning a container
         # that will immediately fail (wasted image pull + startup tokens).
@@ -9972,6 +9999,21 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             for agent_id in targets:
                 # Resolve UUID to slug - to_agents contains UUIDs from database
                 agent_slug = self._resolve_agent_slug(str(agent_id))
+
+                # Human-only roles (CEO / prompter / secretary) are never
+                # dispatched — the CEO is the human operator and intake/
+                # secretary are human-driven chats with their own launch
+                # paths. Spawning a container for one is a trust violation
+                # (the system acting as the human CEO). The CEO being a
+                # notification target (board-review handoff, escalation, etc.)
+                # is expected; it is NOT a spawn signal. Skip — the
+                # notification stays for the human to read in the panel.
+                if role_for_slug(agent_slug) in (
+                    Role.CEO,
+                    Role.PROMPTER,
+                    Role.SECRETARY,
+                ):
+                    continue
 
                 if self._is_agent_active(agent_slug):
                     # Agent is online - SDK handles A2A delivery directly
