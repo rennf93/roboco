@@ -2040,16 +2040,58 @@ class AgentOrchestrator:
             existing = self._existing_running_instance(agent_id)
             if existing is not None:
                 return existing
+
+        # Provider-parking loop-breaker (cheap pre-check): while this agent's
+        # provider is parked (rate-limited or overloaded), do NOT run the full
+        # ``_prepare_agent_spawn`` — which writes the blueprint / settings /
+        # briefing / MCP-config files, ensures the agent image, and registers a
+        # STARTING instance — only to bail. The dispatcher re-ticks a parked
+        # agent every cycle, so running the full prepare each tick wasted all
+        # that file I/O and left a STARTING instance registered then downgraded
+        # to OFFLINE. The parked check only needs ``provider_type``, cheaply
+        # resolvable via ``_resolve_agent_route``. Bailing here returns a
+        # minimal UNREGISTERED OFFLINE instance (no stale ``_instances`` entry),
+        # so the next tick re-checks cheaply until the provider recovers. The
+        # existing-running check above stays first, so a live agent is never
+        # replaced by this bail. Fail-open: a tracker read error never blocks.
+        route = await self._resolve_agent_route(agent_id)
+        if await self._provider_spawn_parked(route.provider_type.value):
+            self._mark_task_handled(task_id)
+            logger.info(
+                "Spawn skipped: provider rate-limited (parked)",
+                agent_id=agent_id,
+                task_id=task_id,
+                provider=route.provider_type.value,
+            )
+            return AgentInstance(
+                agent_id=agent_id,
+                state=AgentState.OFFLINE,
+                config=AgentConfig(
+                    agent_id=agent_id,
+                    blueprint_path=Path(),  # not launching — no blueprint written
+                    model=route.model_name,
+                    provider_type=route.provider_type.value,
+                    provider_base_url=route.base_url,
+                    provider_auth_token=route.auth_token,
+                    git_context=git_context,
+                ),
+                current_task_id=task_id,
+            )
+
+        async with self._lock:
+            # TOCTOU re-check: another tick may have started this agent during
+            # the unlocked route resolve + parked check above. Re-check before
+            # the expensive prepare so two concurrent ticks don't double-spawn.
+            existing = self._existing_running_instance(agent_id)
+            if existing is not None:
+                return existing
             config, instance, agent_settings_path = await self._prepare_agent_spawn(
                 agent_id, task_id, model, git_context
             )
-        # Provider-parking loop-breaker: while this agent's provider is parked
-        # (rate-limited or overloaded), do NOT launch another container — the
-        # dispatcher would otherwise re-spawn the same task every tick, hit the
-        # limit again, and burn cost. The probe-resume loop clears the park when
-        # the provider recovers and the next tick spawns normally. Covers both
-        # the GROK 429 path and the Claude session/overload paths.
-        # Fail-open: a tracker read error must never block spawning.
+        # Rare-race defense: a park could land during prepare. The every-tick
+        # parked case is already handled above; this guards the window between
+        # the pre-check and the launch. Fail-open: a tracker read error never
+        # blocks spawning.
         if await self._provider_spawn_parked(config.provider_type):
             self._mark_task_handled(task_id)
             instance.state = AgentState.OFFLINE
