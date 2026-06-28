@@ -132,7 +132,10 @@ export function PlaybookReviewQueue({ className }: { className?: string }) {
                 <Button
                   size="sm"
                   className="bg-green-600 hover:bg-green-700"
-                  disabled={approveMutation.isPending}
+                  disabled={
+                    approveMutation.isPending &&
+                    approveMutation.variables === pb.id
+                  }
                   onClick={() => approveMutation.mutate(pb.id)}
                 >
                   <CheckCircle2 className="mr-1 h-4 w-4" />

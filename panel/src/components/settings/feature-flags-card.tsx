@@ -111,7 +111,10 @@ export function FeatureFlagsCard() {
               <Switch
                 id={`flag-${flag.key}`}
                 checked={flag.enabled}
-                disabled={toggleMutation.isPending}
+                disabled={
+                  toggleMutation.isPending &&
+                  toggleMutation.variables?.key === flag.key
+                }
                 onCheckedChange={(checked) =>
                   toggleMutation.mutate({ key: flag.key, enabled: checked })
                 }
