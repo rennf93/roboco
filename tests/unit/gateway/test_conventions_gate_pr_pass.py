@@ -95,6 +95,32 @@ async def test_pr_pass_guard_could_not_run_remediation_uses_pr_fail(
 
 
 @pytest.mark.asyncio
+async def test_pr_pass_guard_block_remediation_uses_pr_fail_not_reviewer_waiver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # F047: on the pr_pass (reviewer) path a block-level finding's remediation
+    # must point at pr_fail (the reviewer's only lever) and frame the waiver as
+    # the DEV's action — NOT tell the reviewer to "add a waiver to
+    # .roboco/conventions.yml in your branch". A pr_reviewer does not own the
+    # assembled cell→root / root→master branch and has no commit verb on it, so
+    # the shared dev-path waiver remediation is unreachable and would strand the
+    # gate on every false positive (no self-recovery).
+    monkeypatch.setattr(settings, "conventions_enabled", True)
+    c = _make_choreographer(check_result=_BLOCK_RESULT)
+    env = await c._conventions_guard(uuid4(), MagicMock(), {})
+    assert env is not None
+    body = env.as_dict()
+    remediate = body["remediate"]
+    # The reviewer's lever is pr_fail, not committing a waiver themselves.
+    assert "pr_fail" in remediate
+    # The offending finding is carried so the reviewer can paste it as an issue.
+    assert "app/routers/u.py:2" in remediate
+    # The reviewer must NOT be told to add a waiver "in your branch" — they
+    # can't commit to the assembled PR branch. The waiver is the dev's job.
+    assert "in your branch" not in remediate
+
+
+@pytest.mark.asyncio
 async def test_pr_pass_guard_inert_when_flag_off(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

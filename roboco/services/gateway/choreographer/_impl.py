@@ -2015,17 +2015,38 @@ class Choreographer:
         listing = "\n".join(
             f"- {f.get('file')}:{f.get('line')} — {f.get('fix_hint')}" for f in blocks
         )
+        if reviewer:
+            # F047: the pr_pass gate runs this on the REVIEWER, who does not own
+            # the assembled cell→root / root→master branch and has no commit
+            # verb on it. The dev-path remediation ("add a waiver in your
+            # branch") is unreachable by the reviewer and would strand the gate
+            # on every false positive with no self-recovery. The reviewer's only
+            # lever is pr_fail — bounce the PR back to needs_revision carrying
+            # the findings as issues so the dev fixes the violation or commits
+            # the waiver (the dev CAN commit to the branch). Waiver authorship is
+            # framed as the dev's action, not the reviewer's.
+            remediate = (
+                "the assembled PR carries block-level architectural-convention"
+                " violations. call pr_fail(issues=[<file:line — fix_hint>, ...])"
+                " with the findings below so the PR returns to needs_revision and"
+                " the dev places each definition in the module the architecture"
+                " map assigns it, or — if a finding is a false positive — commits"
+                " a waiver to .roboco/conventions.yml in the PR branch for review"
+                " and re-submits:\n\n" + listing
+            )
+        else:
+            remediate = (
+                "place each definition in the module the architecture map assigns "
+                "it, then commit and call the verb again. if a finding is a false "
+                "positive, add a waiver to .roboco/conventions.yml in your branch "
+                "for the PR to review:\n\n" + listing
+            )
         return Envelope.invalid_state(
             message=(
                 f"{len(blocks)} architectural-convention violation(s) must be "
                 "fixed before this can proceed"
             ),
-            remediate=(
-                "place each definition in the module the architecture map assigns "
-                "it, then commit and call the verb again. if a finding is a false "
-                "positive, add a waiver to .roboco/conventions.yml in your branch "
-                "for the PR to review:\n\n" + listing
-            ),
+            remediate=remediate,
             context_briefing=briefing,
         )
 
