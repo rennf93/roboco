@@ -77,6 +77,8 @@ async def test_mismatched_pr_number_rejected_before_merge(
     svc = _git_service()
     task = _task(pr_number=_RECORDED_PR, project_id=uuid4())
     merge, _ws = _wire(monkeypatch, svc, task)
+    session = AsyncMock()
+    svc.session = session
 
     data = GitMergePRRequest(
         project_slug="roboco",
@@ -91,7 +93,7 @@ async def test_mismatched_pr_number_rejected_before_merge(
         )
 
     merge.assert_not_awaited()
-    svc.session.commit.assert_not_awaited()
+    session.commit.assert_not_awaited()
 
 
 @pytest.mark.asyncio

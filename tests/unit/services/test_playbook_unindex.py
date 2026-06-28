@@ -14,6 +14,7 @@ public step the caller runs AFTER committing. Both helpers stay gated on
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -23,7 +24,9 @@ from roboco.models.base import PlaybookStatus
 from roboco.services.playbook import PlaybookService
 
 
-def _mock_playbook(playbook_id, *, status=PlaybookStatus.APPROVED.value):
+def _mock_playbook(
+    playbook_id: Any, *, status: str = PlaybookStatus.APPROVED.value
+) -> MagicMock:
     pb = MagicMock()
     pb.id = playbook_id
     pb.status = status
@@ -36,7 +39,7 @@ def _mock_playbook(playbook_id, *, status=PlaybookStatus.APPROVED.value):
     return pb
 
 
-def _session_with(pb) -> MagicMock:
+def _session_with(pb: Any) -> MagicMock:
     session = MagicMock()
     result = MagicMock()
     result.scalar_one_or_none.return_value = pb

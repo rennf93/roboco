@@ -74,6 +74,7 @@ async def test_cost_over_cap_finalizes_spawn_session_before_evict(
     finalize.assert_awaited_once()
     # finalize ran with the agent still registered (so it could read the model +
     # usage_session_id), and the instance was evicted only after.
+    assert finalize.await_args is not None
     assert finalize.await_args.args[0] == "be-dev-1"
 
 

@@ -49,7 +49,9 @@ def _seed_locks(workspace: Path) -> dict[str, Path]:
 
 
 @pytest.mark.asyncio
-async def test_timeout_removes_stale_git_locks(tmp_path: Path, monkeypatch) -> None:
+async def test_timeout_removes_stale_git_locks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A timed-out git op clears orphaned .git locks before re-raising."""
     workspace = tmp_path / "ws"
     (workspace / ".git").mkdir(parents=True)
@@ -72,7 +74,7 @@ async def test_timeout_removes_stale_git_locks(tmp_path: Path, monkeypatch) -> N
 
 @pytest.mark.asyncio
 async def test_timeout_lock_cleanup_is_best_effort_no_git_dir(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A timeout with no .git/ directory must not error the cleanup path."""
     workspace = tmp_path / "ws"
@@ -89,7 +91,9 @@ async def test_timeout_lock_cleanup_is_best_effort_no_git_dir(
 
 
 @pytest.mark.asyncio
-async def test_clean_exit_does_not_touch_locks(tmp_path: Path, monkeypatch) -> None:
+async def test_clean_exit_does_not_touch_locks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A normal (non-timed-out) git op must NOT delete lock files — a concurrent
     real git process could be holding one. Cleanup is timeout-only."""
     workspace = tmp_path / "ws"

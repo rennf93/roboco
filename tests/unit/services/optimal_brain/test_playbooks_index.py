@@ -7,6 +7,9 @@ BaseIndexPlugin (shared, proven by the other 8 plugins) and runs live.
 
 from __future__ import annotations
 
+import asyncio
+from unittest.mock import AsyncMock, MagicMock
+
 from roboco.models.optimal import IndexType
 from roboco.services.optimal_brain.indexes.playbooks import PlaybooksIndexPlugin
 
@@ -44,8 +47,6 @@ def test_delete_playbook_removes_its_chunks_by_source() -> None:
     """F011: deleting a playbook removes its embedded chunks from the vector
     store by the playbook's source URI (idempotent — no-op if absent). A
     rejected/archived playbook must not stay retrievable in the PLAYBOOKS index."""
-    from unittest.mock import AsyncMock, MagicMock
-
     plugin = PlaybooksIndexPlugin.__new__(PlaybooksIndexPlugin)
     store = MagicMock()
     store.delete_by_source = AsyncMock(return_value=None)
@@ -53,8 +54,6 @@ def test_delete_playbook_removes_its_chunks_by_source() -> None:
     # live pgvector store.
     object.__setattr__(plugin, "_initialized", True)
     object.__setattr__(plugin, "_store", store)
-
-    import asyncio
 
     asyncio.run(plugin.delete_playbook("pb-42"))
 

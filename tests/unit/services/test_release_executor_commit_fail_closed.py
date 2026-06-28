@@ -39,7 +39,7 @@ class _FakeGitOps(_GitReleaseOps):
         self._script = list(script)
         self.calls: list[tuple[str, ...]] = []
 
-    async def _git(self, *args: str) -> tuple[int, str]:  # type: ignore[override]
+    async def _git(self, *args: str) -> tuple[int, str]:
         self.calls.append(args)
         return self._script.pop(0)
 

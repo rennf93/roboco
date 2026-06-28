@@ -15,7 +15,7 @@ project's repo is never resolved by accident — the pattern
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -53,9 +53,9 @@ def _patch_project_service(project: object | None) -> AbstractContextManager[obj
     return patch("roboco.services.git.get_project_service", return_value=fake_service)
 
 
-def _compiled_sql(stmt: object) -> str:
+def _compiled_sql(stmt: Any) -> str:
     """Render a SQLAlchemy stmt to literal-bound SQL for assertion."""
-    return str(stmt.compile(compile_kwargs={"literal_binds": True}))  # type: ignore[arg-type]
+    return str(stmt.compile(compile_kwargs={"literal_binds": True}))
 
 
 @pytest.mark.asyncio

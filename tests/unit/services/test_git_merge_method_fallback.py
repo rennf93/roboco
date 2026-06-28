@@ -181,13 +181,13 @@ async def test_merge_already_merged_pr_is_idempotent_success(
         svc, "_get_project_token_or_raise", AsyncMock(return_value="tok")
     )
     monkeypatch.setattr(svc, "_parse_github_remote", lambda _ws: ("owner", "repo"))
-    monkeypatch.setattr(
-        svc, "_delete_pr_branch_best_effort", AsyncMock(return_value=None)
-    )
+    delete_branch = AsyncMock(return_value=None)
+    monkeypatch.setattr(svc, "_delete_pr_branch_best_effort", delete_branch)
     monkeypatch.setattr(
         svc, "_project_default_branch", AsyncMock(return_value="master")
     )
-    monkeypatch.setattr(svc, "_sync_target_branch", AsyncMock(return_value="abc123"))
+    sync_target = AsyncMock(return_value="abc123")
+    monkeypatch.setattr(svc, "_sync_target_branch", sync_target)
     # No fallback retry would help (already merged => 405 either way); make the
     # fallback lookup return None so the code falls straight through to the
     # already-merged disambiguation.
@@ -208,8 +208,8 @@ async def test_merge_already_merged_pr_is_idempotent_success(
     assert commit == "abc123"
     # The post-merge steps still run (branch cleanup, target sync) so the
     # caller's state stays consistent with "the PR is merged".
-    svc._delete_pr_branch_best_effort.assert_awaited_once()
-    svc._sync_target_branch.assert_awaited_once()
+    delete_branch.assert_awaited_once()
+    sync_target.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -224,9 +224,8 @@ async def test_merge_raises_when_not_merged_and_refused(
         svc, "_get_project_token_or_raise", AsyncMock(return_value="tok")
     )
     monkeypatch.setattr(svc, "_parse_github_remote", lambda _ws: ("owner", "repo"))
-    monkeypatch.setattr(
-        svc, "_delete_pr_branch_best_effort", AsyncMock(return_value=None)
-    )
+    delete_branch = AsyncMock(return_value=None)
+    monkeypatch.setattr(svc, "_delete_pr_branch_best_effort", delete_branch)
     monkeypatch.setattr(
         svc, "_project_default_branch", AsyncMock(return_value="master")
     )
@@ -244,4 +243,4 @@ async def test_merge_raises_when_not_merged_and_refused(
         await svc.merge_pull_request(Path("/tmp/ws"), 42, "squash", "proj")
 
     # No post-merge cleanup ran — the merge did not land.
-    svc._delete_pr_branch_best_effort.assert_not_awaited()
+    delete_branch.assert_not_awaited()

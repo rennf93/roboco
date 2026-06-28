@@ -63,7 +63,7 @@ async def test_approve_does_not_index_before_commit(
     session = AsyncMock()
     session.flush = AsyncMock()
     svc = PlaybookService(session)
-    svc._get_or_raise = AsyncMock(return_value=_playbook_mock())  # type: ignore[assignment]
+    monkeypatch.setattr(svc, "_get_or_raise", AsyncMock(return_value=_playbook_mock()))
 
     optimal = MagicMock()
     optimal.index_playbook = AsyncMock()
@@ -109,7 +109,7 @@ async def test_reject_does_not_unindex_before_commit(
     session = AsyncMock()
     session.flush = AsyncMock()
     svc = PlaybookService(session)
-    svc._get_or_raise = AsyncMock(return_value=_playbook_mock())  # type: ignore[assignment]
+    monkeypatch.setattr(svc, "_get_or_raise", AsyncMock(return_value=_playbook_mock()))
 
     optimal = MagicMock()
     optimal.unindex_playbook = AsyncMock()

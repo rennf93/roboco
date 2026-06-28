@@ -62,6 +62,7 @@ def orch(monkeypatch: pytest.MonkeyPatch) -> AgentOrchestrator:
 class _FakeTracker:
     def __init__(self) -> None:
         self.activated_with: dict[str, object] | None = None
+        self.clear = AsyncMock()
 
     async def activate(
         self, *, retry_after: float, affected_agents: list[str], kind: str
@@ -141,9 +142,7 @@ async def test_agent_writing_about_error_500_does_not_park(
         orch, "_tail_container_logs", AsyncMock(return_value=agent_note)
     )
     monkeypatch.setattr(orch, "_transcript_tail_text", lambda _a, _lines=80: "")
-    assert (
-        await orch._provider_overload_park_target("be-dev-1", _instance()) is None
-    )
+    assert await orch._provider_overload_park_target("be-dev-1", _instance()) is None
 
 
 @pytest.mark.asyncio
@@ -245,7 +244,7 @@ async def test_probe_success_respawns_parked_agent(
         )
     }
     tracker = _FakeTracker()
-    tracker.clear = AsyncMock()  # type: ignore[method-assign]
+    tracker.clear = AsyncMock()
     monkeypatch.setattr(orch, "_make_tracker", lambda _p: tracker)
     monkeypatch.setattr(orch, "_delete_waiting_record", AsyncMock())
     monkeypatch.setattr(orch, "_generate_resume_prompt", lambda _r, _res: "resume")

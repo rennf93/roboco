@@ -31,6 +31,15 @@ _GROUP_ID = MagicMock(name="group-id")
 _WINNER_SESSION_ID = MagicMock(name="winner-session-id")
 
 
+def _bind(svc: object, name: str, value: object) -> Any:
+    """Stub `name` on `svc` without tripping mypy's method-assign check.
+    Returns the value (typed ``Any``) so the caller can keep a reference for
+    assertions — ``object.__setattr__`` does not narrow the attribute type, so
+    assert on the returned local, not ``svc.<name>``."""
+    object.__setattr__(svc, name, value)
+    return value
+
+
 @pytest.mark.asyncio
 async def test_lock_group_emits_for_update() -> None:
     """``_lock_group`` must issue ``SELECT ... FOR UPDATE`` (the row lock that
@@ -69,18 +78,20 @@ async def test_create_session_race_loser_reuses_winner_under_lock() -> None:
     svc = MessagingService(session)
 
     winner = MagicMock(name="winner-session", status=SessionStatus.ACTIVE)
-    svc.get_group = AsyncMock(return_value=MagicMock(active_session_id=None))
+    _bind(svc, "get_group", AsyncMock(return_value=MagicMock(active_session_id=None)))
     # Under the lock, the group now reflects the winner's link.
-    svc._lock_group = AsyncMock(
-        return_value=MagicMock(active_session_id=_WINNER_SESSION_ID)
+    lock_group = _bind(
+        svc,
+        "_lock_group",
+        AsyncMock(return_value=MagicMock(active_session_id=_WINNER_SESSION_ID)),
     )
-    svc.get_session = AsyncMock(return_value=winner)
+    get_session = _bind(svc, "get_session", AsyncMock(return_value=winner))
 
     result = await svc.create_session(SessionCreateRequest(group_id=_GROUP_ID))
 
     assert result is winner
-    svc._lock_group.assert_awaited_once()
-    svc.get_session.assert_awaited_once()
+    lock_group.assert_awaited_once()
+    get_session.assert_awaited_once()
     session.add.assert_not_called()  # no orphaning INSERT
     session.flush.assert_not_awaited()
 
@@ -96,15 +107,15 @@ async def test_create_session_creates_when_no_active_under_lock() -> None:
     svc = MessagingService(session)
 
     locked_group = MagicMock(active_session_id=None)
-    svc.get_group = AsyncMock(return_value=MagicMock(active_session_id=None))
-    svc._lock_group = AsyncMock(return_value=locked_group)
-    svc.get_session = AsyncMock()  # should NOT be called (no active id)
+    _bind(svc, "get_group", AsyncMock(return_value=MagicMock(active_session_id=None)))
+    lock_group = _bind(svc, "_lock_group", AsyncMock(return_value=locked_group))
+    get_session = _bind(svc, "get_session", AsyncMock())  # NOT called (no active id)
 
     result = await svc.create_session(SessionCreateRequest(group_id=_GROUP_ID))
 
     assert isinstance(result, SessionTable)
     assert result.status == SessionStatus.ACTIVE
-    svc._lock_group.assert_awaited_once()
-    svc.get_session.assert_not_awaited()
+    lock_group.assert_awaited_once()
+    get_session.assert_not_awaited()
     session.add.assert_called_once()
     assert session.flush.await_count >= 1

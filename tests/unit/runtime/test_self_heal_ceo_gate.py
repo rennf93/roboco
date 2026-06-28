@@ -126,10 +126,13 @@ async def test_non_self_heal_tasks_dispatch_regardless_of_confirmation() -> None
 # ---------------------------------------------------------------------------
 
 
-def _originate_engine(captured: dict[str, Any]) -> SelfHealEngine:
+def _originate_engine(
+    captured: dict[str, Any],
+) -> tuple[SelfHealEngine, MagicMock, MagicMock, Any]:
     """An engine whose task/project services are mocks that capture the create
     request — so the held-for-CEO invariant is unit-testable without a DB."""
     session = MagicMock()
+    session.flush = AsyncMock()
 
     task_svc = MagicMock()
     task_svc.list_open_self_heal_tasks = AsyncMock(return_value=[])
@@ -145,6 +148,11 @@ def _originate_engine(captured: dict[str, Any]) -> SelfHealEngine:
     engine.log = MagicMock()
     engine._source = MagicMock()
     return engine, task_svc, project_svc, _self_heal_mod
+
+
+def _bind(svc: object, name: str, value: object) -> None:
+    """Stub `name` on `svc` without tripping mypy's method-assign check."""
+    object.__setattr__(svc, name, value)
 
 
 @pytest.mark.asyncio
@@ -169,8 +177,7 @@ async def test_originate_opens_task_held_for_ceo(
             raw_ref="r",
         )
     ]
-    # Bypass the session.flush (MagicMock session) — _originate awaits it.
-    engine.session.flush = AsyncMock()  # type: ignore[assignment]
+    # session.flush is set in _originate_engine (MagicMock) — _originate awaits it.
 
     count = await engine._originate(obs)
 
@@ -196,8 +203,9 @@ async def test_approve_and_start_lifts_the_ceo_hold(
 ) -> None:
     """``approve_and_start`` is the CEO's start gate — it flips
     ``confirmed_by_human`` True so a held self-heal task finally dispatches."""
-    svc = TaskService(MagicMock())
-    svc.session.flush = AsyncMock()  # type: ignore[assignment]
+    session = MagicMock()
+    session.flush = AsyncMock()
+    svc = TaskService(session)
     task = MagicMock()
     task.status = TaskStatus.PENDING
     task.team = MagicMock()
@@ -207,7 +215,7 @@ async def test_approve_and_start_lifts_the_ceo_hold(
     task.assigned_to = "someone-else"
     task.task_type = MagicMock()
     task.task_type.value = "code"
-    svc.get = AsyncMock(return_value=task)
+    _bind(svc, "get", AsyncMock(return_value=task))
     main_pm = MagicMock(id=MAIN_PM_UUID)
     agent_svc = MagicMock()
     agent_svc.get_by_slug = AsyncMock(return_value=main_pm)
@@ -240,15 +248,16 @@ async def test_list_pending_for_agent_excludes_held_self_heal() -> None:
     (``source != 'self_heal' OR confirmed_by_human``), so the database drops a
     held self-heal task before the agent ever sees the list.
     """
-    svc = TaskService(MagicMock())
+    session = MagicMock()
     result = MagicMock()
     result.scalars.return_value.all.return_value = []
-    svc.session.execute = AsyncMock(return_value=result)
-    svc.unmet_dependency_ids = AsyncMock(return_value=[])  # type: ignore[assignment]
+    session.execute = AsyncMock(return_value=result)
+    svc = TaskService(session)
+    _bind(svc, "unmet_dependency_ids", AsyncMock(return_value=[]))
 
     await svc.list_pending_for_agent(MAIN_PM_UUID)
 
-    stmt = svc.session.execute.await_args.args[0]
+    stmt = session.execute.await_args.args[0]
     compiled = str(
         stmt.compile(
             dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
@@ -265,7 +274,7 @@ async def test_list_pending_for_agent_still_offers_delegated_subtask() -> None:
     PM-delegated work, where the delegation IS the authorization to start) must
     STILL be offered via give_me_work. A universal confirmed_by_human filter
     would starve devs of all delegated work."""
-    svc = TaskService(MagicMock())
+    session = MagicMock()
 
     delegated = MagicMock()
     delegated.source = "manual"  # not self_heal
@@ -274,8 +283,9 @@ async def test_list_pending_for_agent_still_offers_delegated_subtask() -> None:
 
     result = MagicMock()
     result.scalars.return_value.all.return_value = [delegated]
-    svc.session.execute = AsyncMock(return_value=result)
-    svc.unmet_dependency_ids = AsyncMock(return_value=[])  # type: ignore[assignment]
+    session.execute = AsyncMock(return_value=result)
+    svc = TaskService(session)
+    _bind(svc, "unmet_dependency_ids", AsyncMock(return_value=[]))
 
     available = await svc.list_pending_for_agent(MAIN_PM_UUID)
 

@@ -15,6 +15,7 @@ diagnosable).
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -29,7 +30,7 @@ def _svc() -> GitService:
     return GitService(MagicMock())
 
 
-def _patch_project_service_raising(exc: Exception) -> object:
+def _patch_project_service_raising(exc: Exception) -> Any:
     fake_service = MagicMock()
     fake_service.get_decrypted_token_by_slug = AsyncMock(side_effect=exc)
     return patch("roboco.services.git.get_project_service", return_value=fake_service)

@@ -53,7 +53,12 @@ def _stub_gate_path(
     PM re-assignment the real ``_revision_pm_for_task`` performs.
     """
     agent = MagicMock(role="pr_reviewer", slug="be-pr-reviewer")
-    c._gate_preflight = AsyncMock(  # type: ignore[method-assign]
+    # Alias to ``Any`` so attribute assignment needs no type:ignore (mypy
+    # doesn't flag attribute assignment on ``Any``; avoids ruff B010's
+    # no-setattr rule too). ``object.__setattr__`` would also work but loses
+    # the cross-scope narrowing callers rely on for ``cc.<attr>`` asserts.
+    cc: Any = c
+    cc._gate_preflight = AsyncMock(
         return_value=(
             t_before,
             agent,
@@ -62,20 +67,17 @@ def _stub_gate_path(
             spec_module.Context(actor_id=reviewer_id),
         )
     )
-    c._gate_tracing = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    cc._gate_tracing = AsyncMock(return_value=None)
     # These tests exercise the pr_fail a2a / notify path, not the head-sha
     # capture (which has its own suite in test_submit_root_unchanged_pr_guard).
     # Stub the capture so it does not walk the mock session into un-awaited
     # coroutines; the verdict still lands via the _record_gate_verdict spy.
-    # Alias to ``Any`` so this addition needs no type:ignore (mypy doesn't flag
-    # attribute assignment on ``Any``; avoids ruff B010's no-setattr rule too).
-    cc: Any = c
     cc._capture_pr_head_sha = AsyncMock(return_value=None)
-    c._record_gate_verdict = MagicMock()  # type: ignore[method-assign]
-    c._post_gate_review_to_pr = AsyncMock()  # type: ignore[method-assign]
+    cc._record_gate_verdict = MagicMock()
+    cc._post_gate_review_to_pr = AsyncMock()
     runner = MagicMock()
     runner.run_intent = AsyncMock(return_value=t_after)
-    c._verb_runner = MagicMock(return_value=runner)  # type: ignore[method-assign]
+    cc._verb_runner = MagicMock(return_value=runner)
 
 
 @pytest.mark.asyncio
@@ -267,9 +269,12 @@ async def test_pr_fail_returns_invalid_state_when_runner_returns_none() -> None:
 
     # Clean rejection, not a 500.
     assert env.error == "invalid_state"
-    # No PR post / no a2a against a None task.
-    c._post_gate_review_to_pr.assert_not_awaited()
-    c.a2a.send.assert_not_awaited()
+    # No PR post / no a2a against a None task. Alias to ``Any`` so the asserts
+    # resolve without the cross-scope narrowing _stub_gate_path's assignment
+    # can't provide (and without a type:ignore).
+    cc: Any = c
+    cc._post_gate_review_to_pr.assert_not_awaited()
+    cc.a2a.send.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -295,5 +300,8 @@ async def test_pr_pass_returns_invalid_state_when_runner_returns_none() -> None:
     )
 
     assert env.error == "invalid_state"
-    c._post_gate_review_to_pr.assert_not_awaited()
-    c.a2a.send.assert_not_awaited()
+    # Alias to ``Any`` so the asserts resolve without cross-scope narrowing
+    # (and without a type:ignore) — see test_pr_fail_returns_invalid_state...
+    cc: Any = c
+    cc._post_gate_review_to_pr.assert_not_awaited()
+    cc.a2a.send.assert_not_awaited()

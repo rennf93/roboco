@@ -11,6 +11,7 @@ second concurrent approve sees the lock held and refuses instead of racing.
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -65,7 +66,7 @@ def _wire(
     report_dict: dict,
     executor_result: ReleaseResult,
     fake_redis: _FakeRedis,
-) -> dict[str, object]:
+) -> dict[str, Any]:
     """Patch every collaborator ``approve`` touches. Returns the mocks."""
     task_svc = MagicMock()
     task_svc.get = AsyncMock(return_value=task)
