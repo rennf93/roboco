@@ -126,6 +126,16 @@ export function CreateTaskDialog() {
         "Pick a Project (the repo) or a Product (cell→project map for a fan-out task)";
     }
 
+    // A task targets exactly one repo OR fans out via a Product — never both.
+    // The server silently lets product_id win at routing and drops project_id,
+    // so submitting both would record a misleading, never-used project_id. The
+    // selectors clear each other on pick (below); this validator is the
+    // backstop for any path that sets both.
+    if (projectId && productId) {
+      newErrors.project_id =
+        "Pick either a Project or a Product, not both — a task targets one repo or fans out via a Product";
+    }
+
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   };
