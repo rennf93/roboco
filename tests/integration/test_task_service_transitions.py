@@ -1607,6 +1607,95 @@ async def test_submit_for_pm_review_advances_with_notes(
     assert out.status == TaskStatus.AWAITING_PM_REVIEW
 
 
+@pytest.mark.asyncio
+async def test_submit_for_pm_review_waives_branch_pr_for_batch_umbrella(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """F001: a MegaTask umbrella is branchless by design (no branch/PR) yet
+    must walk in_progress -> awaiting_pm_review so main_pm_complete can
+    escalate it to the CEO. submit_for_pm_review must waive the branch+PR
+    requirement for a batch umbrella, or umbrella completion deadlocks in
+    in_progress forever (the Main PM loops on `complete` -> invalid_state)."""
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup))
+    task.status = TaskStatus.IN_PROGRESS
+    task.project_id = None  # umbrella: branchless, no repo, no PR
+    task.product_id = None
+    task.batch_id = uuid4()
+    task.parent_task_id = None  # umbrella is top-level
+    task.branch_name = None
+    task.pr_created = False
+    task.pr_number = None
+    await db_session.flush()
+    out = await svc.submit_for_pm_review(task.id, agent_role="main_pm")
+    assert out is not None
+    assert out.status == TaskStatus.AWAITING_PM_REVIEW
+
+
+@pytest.mark.asyncio
+async def test_activate_batch_root_subtasks_retypes_code_to_planning(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """F002: a board-routed MegaTask root-subtask is created in BACKLOG with
+    team=board and task_type=code (intake only coerces main_pm-team drafts, so a
+    board-routed code root-subtask reaches activation still code-typed). When
+    the CEO approves the umbrella, _activate_batch_root_subtasks flips the held
+    child to team=main_pm — but if it leaves task_type=code the combo
+    re-introduces the 2026-06-27 main_pm+code meltdown. The activation must
+    retype code->planning, mirroring approve_and_start's own retype."""
+    svc = task_setup["svc"]
+    # approve_and_start resolves the main-pm agent by slug — seed it.
+    main_pm = AgentTable(
+        id=uuid4(),
+        name="Main PM",
+        slug="main-pm",
+        role=AgentRole.MAIN_PM,
+        team=Team.MAIN_PM,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="main-pm",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(main_pm)
+    await db_session.flush()
+
+    batch = uuid4()
+    # Umbrella: board-routed, pending, board review complete, branchless.
+    umbrella = await svc.create(_req(task_setup, title="umbrella"))
+    umbrella.status = TaskStatus.PENDING
+    umbrella.team = cast("Any", Team.BOARD)
+    umbrella.board_review_complete = True
+    umbrella.project_id = None
+    umbrella.product_id = None
+    umbrella.batch_id = batch
+    umbrella.parent_task_id = None
+    umbrella.task_type = cast("Any", TaskType.PLANNING)
+    await db_session.flush()
+
+    # Root-subtask: held in BACKLOG on the board, code-typed (the danger case).
+    child = await svc.create(
+        _req(task_setup, title="root-sub", parent_task_id=umbrella.id)
+    )
+    child.status = TaskStatus.BACKLOG
+    child.team = cast("Any", Team.BOARD)
+    child.batch_id = batch
+    child.parent_task_id = umbrella.id
+    child.task_type = cast("Any", TaskType.CODE)
+    await db_session.flush()
+
+    approved = await svc.approve_and_start(umbrella.id)
+    assert approved is not None
+
+    refreshed = await svc.get(child.id)
+    assert refreshed is not None
+    assert refreshed.status == TaskStatus.PENDING
+    assert refreshed.team == Team.MAIN_PM
+    # The fix: a main_pm team may not own a code task -> retype to planning.
+    assert refreshed.task_type == TaskType.PLANNING
+
+
 # ---------------------------------------------------------------------------
 # docs_complete: full path including descendants check
 # ---------------------------------------------------------------------------

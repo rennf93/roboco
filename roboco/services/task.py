@@ -4479,7 +4479,16 @@ class TaskService(BaseService):
         return task
 
     def _validate_submit_review_status(self, task: TaskTable, task_id: UUID) -> bool:
-        """Task must be in_progress with branch + PR; otherwise log + False."""
+        """Task must be in_progress with branch + PR; otherwise log + False.
+
+        A MegaTask umbrella is branchless by design (it assembles no PR of
+        its own; each root-subtask carries its own project/branch/PR), yet it
+        still walks in_progress -> awaiting_pm_review so ``main_pm_complete``
+        can escalate it to the CEO. Waive the branch+PR requirement for a
+        batch umbrella — without this, umbrella completion deadlocks in
+        in_progress (``submit_pm_review`` returns None, the Main PM loops on
+        ``complete`` -> invalid_state forever).
+        """
         if task.status != TaskStatus.IN_PROGRESS:
             self.log.warning(
                 "Cannot submit for PM review - task not in progress",
@@ -4487,13 +4496,16 @@ class TaskService(BaseService):
                 current_status=task.status.value,
             )
             return False
-        if not task.branch_name:
+        is_umbrella = is_batch_umbrella(
+            batch_id=task.batch_id, parent_task_id=task.parent_task_id
+        )
+        if not task.branch_name and not is_umbrella:
             self.log.warning(
                 "Cannot submit for PM review - no branch (claim task first)",
                 task_id=str(task_id),
             )
             return False
-        if not task.pr_created or not task.pr_number:
+        if (not task.pr_created or not task.pr_number) and not is_umbrella:
             self.log.warning(
                 "Cannot submit for PM review - PR must be created first",
                 task_id=str(task_id),
@@ -5153,6 +5165,21 @@ class TaskService(BaseService):
             if child.batch_id is not None and child.status == TaskStatus.BACKLOG:
                 child.status = TaskStatus.PENDING
                 child.team = cast("Any", Team.MAIN_PM)
+                # F002: a board-routed root-subtask is created in BACKLOG with
+                # team=board and task_type=code (intake only coerces main_pm-team
+                # drafts, so a board-routed code root reaches activation still
+                # code-typed). Now that team is flipped to MAIN_PM, leaving
+                # task_type=code would re-introduce the 2026-06-27 main_pm+code
+                # meltdown. Retype code->planning, mirroring approve_and_start's
+                # own retype above — the activated child is a planning-typed
+                # coordination root the Main PM delegates to the cells.
+                if main_pm_cannot_own_code(team=child.team, task_type=child.task_type):
+                    self.log.info(
+                        "activate_batch_root_subtasks retyped main-pm code "
+                        "root-subtask to planning",
+                        task_id=str(child.id),
+                    )
+                    child.task_type = cast("Any", TaskType.PLANNING)
                 released = True
         if released:
             await self.session.flush()

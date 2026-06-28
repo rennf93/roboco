@@ -359,3 +359,72 @@ async def test_main_pm_complete_handles_escalate_returning_none() -> None:
     env = await c.main_pm_complete(pm_id, umbrella_id, "ready for CEO sign-off")
     assert env.error == "invalid_state"
     assert "escalate_to_ceo" in env.as_dict()["message"]
+
+
+@pytest.mark.asyncio
+async def test_complete_escalates_batch_umbrella_from_in_progress() -> None:
+    """F001: a MegaTask umbrella is branchless by design and sits in
+    in_progress with no branch/PR. The ``complete`` verb's spec gate
+    (``complete`` action source_statuses={AWAITING_PM_REVIEW}) must NOT
+    reject it — the Main PM routes through main_pm_complete, which walks
+    in_progress -> awaiting_pm_review -> awaiting_ceo_approval. Calling the
+    ``complete`` ENTRY point (not main_pm_complete directly) must succeed
+    and escalate to the CEO. This exercises the real spec gate
+    (can_invoke_intent is pure) — the prior test mocked submit_pm_review and
+    called main_pm_complete directly, bypassing the gate (false green)."""
+    pm_id = uuid4()
+    umbrella_id = uuid4()
+    batch_id = uuid4()
+    t = MagicMock(
+        id=umbrella_id,
+        status="in_progress",
+        assigned_to=pm_id,
+        parent_task_id=None,
+        batch_id=batch_id,
+        branch_name=None,
+        pr_number=None,
+        pr_created=False,
+        pr_url=None,
+        team="main_pm",
+    )
+    after_review = MagicMock(
+        id=umbrella_id,
+        status="awaiting_pm_review",
+        assigned_to=pm_id,
+        parent_task_id=None,
+        batch_id=batch_id,
+        branch_name=None,
+        team="main_pm",
+    )
+    escalated = MagicMock(
+        id=umbrella_id,
+        status="awaiting_ceo_approval",
+        assigned_to=pm_id,
+        parent_task_id=None,
+        batch_id=batch_id,
+        branch_name=None,
+        team="main_pm",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="main_pm", slug="main-pm")
+    task_svc.all_subtasks_terminal.return_value = True
+    task_svc.get_subtasks.return_value = []
+    task_svc.submit_pm_review.return_value = after_review
+    task_svc.escalate_to_ceo.return_value = escalated
+    task_svc.reassign = AsyncMock()
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
+    journal_svc.has_reflect_for_task.return_value = True
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.complete(
+        pm_id, umbrella_id, notes="every root-subtask terminal; MegaTask ready for CEO"
+    )
+    body = env.as_dict()
+    assert body.get("error") is None, body
+    assert body["status"] == "awaiting_ceo_approval"
+    task_svc.submit_pm_review.assert_awaited_once()
+    task_svc.escalate_to_ceo.assert_awaited_once()

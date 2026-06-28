@@ -6338,18 +6338,35 @@ class Choreographer:
             verb="complete",
         ):
             return soup
-        decision = spec_module.can_invoke_intent(role, "complete", t, spec_ctx)
-        if not decision.allowed:
-            return await self._emit_rejection(
-                Envelope.from_decision(decision, briefing=briefing).with_introspection(
-                    task=t, role=role_str
-                ),
-                agent_id=agent_id,
-                task_id=task_id,
-                verb="complete",
-            )
-        # Spec gate passed — role is CELL_PM or MAIN_PM, status is
-        # AWAITING_PM_REVIEW. Verb body owns dispatch from here.
+        # F001: a MegaTask umbrella is branchless by design and never goes
+        # through submit_root / pr_pass, so it sits in in_progress with no
+        # branch/PR. The ``complete`` action's source_statuses=
+        # {AWAITING_PM_REVIEW} spec gate would reject it before
+        # main_pm_complete's branchless-aware guard can run. Skip the spec
+        # gate for an in_progress batch umbrella and fall through to
+        # main_pm_complete, which walks in_progress -> awaiting_pm_review ->
+        # awaiting_ceo_approval (the CEO merges the root PR; no agent touches
+        # master). Role membership is preserved (role_str == "main_pm");
+        # main_pm_complete's own guard re-checks assignment, subtasks-
+        # terminal, and the journal:decision gate.
+        umbrella_in_progress = (
+            role_str == "main_pm"
+            and str(t.status) == "in_progress"
+            and is_batch_umbrella(batch_id=t.batch_id, parent_task_id=t.parent_task_id)
+        )
+        if not umbrella_in_progress:
+            decision = spec_module.can_invoke_intent(role, "complete", t, spec_ctx)
+            if not decision.allowed:
+                return await self._emit_rejection(
+                    Envelope.from_decision(
+                        decision, briefing=briefing
+                    ).with_introspection(task=t, role=role_str),
+                    agent_id=agent_id,
+                    task_id=task_id,
+                    verb="complete",
+                )
+        # Spec gate passed (or waived for an in_progress batch umbrella) —
+        # role is CELL_PM or MAIN_PM. Verb body owns dispatch from here.
         if role_str == "cell_pm":
             return await self.cell_pm_complete(agent_id, task_id, notes)
         # role_str == "main_pm" — spec._PM_ROLES has only these two members.
