@@ -8,6 +8,7 @@ against mock sockets (no real app/lifespan/Redis).
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -33,9 +34,14 @@ async def test_broadcast_system_sends_to_every_connection() -> None:
     ws1, ws2 = MagicMock(), MagicMock()
     ws1.send_text = AsyncMock()
     ws2.send_text = AsyncMock()
+    # These sockets are placed directly into the subscription set (bypassing
+    # connect_system), so they take the F064 legacy fallback path: broadcast
+    # schedules a timeout-bounded send task per socket instead of awaiting
+    # send_text inline. Yield once so those tasks run before asserting.
     mgr.system_connections = {ws1, ws2}
 
     await mgr.broadcast_system({"type": "RATE_LIMIT_HIT", "provider": "anthropic"})
+    await asyncio.sleep(0)
 
     ws1.send_text.assert_awaited_once()
     ws2.send_text.assert_awaited_once()

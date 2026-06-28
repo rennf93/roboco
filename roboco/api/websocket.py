@@ -19,6 +19,7 @@ from typing import Any
 from uuid import UUID
 
 import httpx
+import structlog
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 
 from roboco.agents_config import CEO_AGENT_ID, verify_agent_token
@@ -28,6 +29,39 @@ from roboco.db.base import get_db
 from roboco.services.repositories import resolve_agent_uuid
 
 router = APIRouter()
+log = structlog.get_logger()
+
+# F066: server-side idle timeout for WS receive loops. A half-open socket
+# (dead agent container, silent client) blocks ``receive_text()`` forever;
+# wrapping it in ``asyncio.wait_for`` reaps the socket after this many
+# seconds of silence. No env-var/config precedent exists in ``config.py``
+# for WS tuning, so this is a module constant — callers/tests patch it.
+IDLE_TIMEOUT_SECONDS: float = 90.0
+
+# F064: per-connection send queue + send timeout. Each registered connection
+# owns a bounded ``asyncio.Queue`` drained by a sender task, so a slow client
+# can't back-pressure the fan-out: broadcast enqueues (non-blocking) and
+# returns immediately. When the queue is full the message is dropped + logged
+# (the client is lagging, not the whole fan-out). ``send_text`` itself is
+# wrapped in ``wait_for`` so a stuck transport doesn't wedge the sender.
+MAX_SEND_QUEUE: int = 256
+SEND_TIMEOUT_SECONDS: float = 10.0
+
+
+class _ClientConnection:
+    """F064: per-connection send queue + sender task.
+
+    Holds the bounded outbound queue drained by ``sender``; broadcast enqueues
+    here instead of awaiting ``send_text`` directly, so one slow client cannot
+    block the fan-out to every other client.
+    """
+
+    __slots__ = ("queue", "sender", "websocket")
+
+    def __init__(self, websocket: WebSocket, maxsize: int) -> None:
+        self.websocket = websocket
+        self.queue: asyncio.Queue[str] = asyncio.Queue(maxsize=maxsize)
+        self.sender: asyncio.Task[None] | None = None
 
 
 async def _require_panel_token(websocket: WebSocket) -> bool:
@@ -87,6 +121,45 @@ class ConnectionManager:
         # websocket -> agent_id (for tracking who is connected)
         self.connection_agents: dict[WebSocket, UUID] = {}
 
+        # F064: websocket -> per-connection send queue + sender task. Every
+        # connect_* registers here; disconnect cancels + removes. Broadcast
+        # enqueues into these queues instead of awaiting send_text directly so
+        # one slow client can't block the fan-out.
+        self.connection_senders: dict[WebSocket, _ClientConnection] = {}
+
+        # F064: fire-and-forget fallback send tasks for unregistered sockets
+        # (legacy path). Held only to satisfy ruff RUF006 + to allow clean
+        # shutdown; each task removes itself on completion.
+        self._pending_sends: set[asyncio.Task[None]] = set()
+
+    def _register_sender(self, websocket: WebSocket) -> _ClientConnection:
+        """Create the per-connection send queue + start its sender task."""
+        conn = _ClientConnection(websocket, maxsize=MAX_SEND_QUEUE)
+        conn.sender = asyncio.create_task(self._run_sender(conn))
+        self.connection_senders[websocket] = conn
+        return conn
+
+    async def _run_sender(self, conn: _ClientConnection) -> None:
+        """Drain the per-connection send queue; each send is timeout-bounded."""
+        ws = conn.websocket
+        while True:
+            data = await conn.queue.get()
+            try:
+                await asyncio.wait_for(ws.send_text(data), timeout=SEND_TIMEOUT_SECONDS)
+            except TimeoutError:
+                log.warning(
+                    "WebSocket send timeout — dropping message to slow client",
+                    timeout=SEND_TIMEOUT_SECONDS,
+                )
+            except Exception as exc:
+                # Transport closed / error — stop sending to this client; the
+                # receive loop's finally will disconnect and cancel us.
+                log.debug(
+                    "WebSocket sender stopping on send error",
+                    error=str(exc),
+                )
+                return
+
     async def connect_channel(
         self, websocket: WebSocket, channel_id: UUID, agent_id: UUID
     ) -> None:
@@ -98,6 +171,7 @@ class ConnectionManager:
 
         self.channel_connections[channel_id].add(websocket)
         self.connection_agents[websocket] = agent_id
+        self._register_sender(websocket)
 
     async def connect_agent(
         self, websocket: WebSocket, target_agent_id: UUID, viewer_agent_id: UUID
@@ -110,6 +184,7 @@ class ConnectionManager:
 
         self.agent_connections[target_agent_id].add(websocket)
         self.connection_agents[websocket] = viewer_agent_id
+        self._register_sender(websocket)
 
     async def connect_session(
         self, websocket: WebSocket, session_id: UUID, agent_id: UUID
@@ -122,6 +197,7 @@ class ConnectionManager:
 
         self.session_connections[session_id].add(websocket)
         self.connection_agents[websocket] = agent_id
+        self._register_sender(websocket)
 
     async def connect_notifications(self, websocket: WebSocket, agent_id: UUID) -> None:
         """Connect to an agent's notification stream."""
@@ -132,11 +208,13 @@ class ConnectionManager:
 
         self.notification_connections[agent_id].add(websocket)
         self.connection_agents[websocket] = agent_id
+        self._register_sender(websocket)
 
     async def connect_system(self, websocket: WebSocket) -> None:
         """Connect to the operator/system-wide stream (rate limits, etc.)."""
         await websocket.accept()
         self.system_connections.add(websocket)
+        self._register_sender(websocket)
 
     def disconnect(self, websocket: WebSocket) -> None:
         """Remove a websocket from all subscriptions."""
@@ -162,6 +240,53 @@ class ConnectionManager:
         # Remove from tracking
         self.connection_agents.pop(websocket, None)
 
+        # F064: cancel + drop the per-connection sender task so a slow/stale
+        # client's queue doesn't leak after the socket is removed.
+        conn = self.connection_senders.pop(websocket, None)
+        if conn is not None and conn.sender is not None:
+            conn.sender.cancel()
+
+    def _enqueue_or_send(self, websocket: WebSocket, data: str) -> None:
+        """F064: fan out one message to one connection without blocking.
+
+        Registered connections (created via ``connect_*``) get the message
+        enqueued into their bounded send queue — non-blocking, drop + warn on
+        overflow. An unregistered socket (legacy path: present in a
+        subscription set but not in ``connection_senders``) falls back to a
+        timeout-bounded ``send_text`` scheduled on the loop, so the broadcast
+        still never blocks on a single slow client.
+        """
+        conn = self.connection_senders.get(websocket)
+        if conn is not None:
+            try:
+                conn.queue.put_nowait(data)
+            except asyncio.QueueFull:
+                log.warning(
+                    "WebSocket send queue overflow — dropping message",
+                    queue_size=conn.queue.maxsize,
+                )
+            return
+        # Legacy fallback: schedule a timeout-bounded send so a slow
+        # unregistered client can't wedge the fan-out either. Keep a strong
+        # reference so the task isn't GC'd mid-flight (ruff RUF006); it
+        # discards itself on completion.
+        task = asyncio.create_task(self._send_with_timeout(websocket, data))
+        self._pending_sends.add(task)
+        task.add_done_callback(self._pending_sends.discard)
+
+    async def _send_with_timeout(self, websocket: WebSocket, data: str) -> None:
+        try:
+            await asyncio.wait_for(
+                websocket.send_text(data), timeout=SEND_TIMEOUT_SECONDS
+            )
+        except TimeoutError:
+            log.warning(
+                "WebSocket send timeout — dropping message to slow client",
+                timeout=SEND_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:  # transport closed / cancelled
+            log.debug("WebSocket send failed", error=str(exc))
+
     async def broadcast_to_channel(
         self, channel_id: UUID, message: dict[str, Any]
     ) -> None:
@@ -169,12 +294,9 @@ class ConnectionManager:
         connections = self.channel_connections.get(channel_id, set())
         if not connections:
             return
-
         data = json.dumps(message, default=str)
-        await asyncio.gather(
-            *[conn.send_text(data) for conn in connections],
-            return_exceptions=True,
-        )
+        for conn in connections:
+            self._enqueue_or_send(conn, data)
 
     async def broadcast_to_agent_watchers(
         self, agent_id: UUID, message: dict[str, Any]
@@ -183,12 +305,9 @@ class ConnectionManager:
         connections = self.agent_connections.get(agent_id, set())
         if not connections:
             return
-
         data = json.dumps(message, default=str)
-        await asyncio.gather(
-            *[conn.send_text(data) for conn in connections],
-            return_exceptions=True,
-        )
+        for conn in connections:
+            self._enqueue_or_send(conn, data)
 
     async def broadcast_to_session(
         self, session_id: UUID, message: dict[str, Any]
@@ -197,23 +316,17 @@ class ConnectionManager:
         connections = self.session_connections.get(session_id, set())
         if not connections:
             return
-
         data = json.dumps(message, default=str)
-        await asyncio.gather(
-            *[conn.send_text(data) for conn in connections],
-            return_exceptions=True,
-        )
+        for conn in connections:
+            self._enqueue_or_send(conn, data)
 
     async def broadcast_system(self, message: dict[str, Any]) -> None:
         """Broadcast a message to all operator/system-wide subscribers."""
         if not self.system_connections:
             return
-
         data = json.dumps(message, default=str)
-        await asyncio.gather(
-            *[conn.send_text(data) for conn in self.system_connections],
-            return_exceptions=True,
-        )
+        for conn in self.system_connections:
+            self._enqueue_or_send(conn, data)
 
     def get_channel_subscriber_count(self, channel_id: UUID) -> int:
         """Get number of subscribers to a channel."""
@@ -323,7 +436,9 @@ async def channel_stream(
 
         # Keep connection alive and handle incoming messages
         while True:
-            data = await websocket.receive_text()
+            data = await asyncio.wait_for(
+                websocket.receive_text(), timeout=IDLE_TIMEOUT_SECONDS
+            )
 
             # Handle ping/pong for keepalive
             if data == "ping":
@@ -334,6 +449,19 @@ async def channel_stream(
             # For now, channels are primarily for receiving
 
     except WebSocketDisconnect:
+        # Clean client-initiated disconnect — handled here for clarity; the
+        # finally below also disconnects (idempotent) to cover every other
+        # exit path (anyio closed-resource, CancelledError, transport errors).
+        pass
+    except TimeoutError:
+        # F066: idle timeout — the client has been silent for
+        # IDLE_TIMEOUT_SECONDS (likely a half-open socket from a dead
+        # container). Log and fall through to the finally so the socket is
+        # removed from every subscription set.
+        log.warning(
+            "WebSocket idle timeout — disconnecting", timeout=IDLE_TIMEOUT_SECONDS
+        )
+    finally:
         manager.disconnect(websocket)
 
 
@@ -380,11 +508,26 @@ async def agent_stream(
         )
 
         while True:
-            data = await websocket.receive_text()
+            data = await asyncio.wait_for(
+                websocket.receive_text(), timeout=IDLE_TIMEOUT_SECONDS
+            )
             if data == "ping":
                 await websocket.send_text("pong")
 
     except WebSocketDisconnect:
+        # Clean client-initiated disconnect — handled here for clarity; the
+        # finally below also disconnects (idempotent) to cover every other
+        # exit path (anyio closed-resource, CancelledError, transport errors).
+        pass
+    except TimeoutError:
+        # F066: idle timeout — the client has been silent for
+        # IDLE_TIMEOUT_SECONDS (likely a half-open socket from a dead
+        # container). Log and fall through to the finally so the socket is
+        # removed from every subscription set.
+        log.warning(
+            "WebSocket idle timeout — disconnecting", timeout=IDLE_TIMEOUT_SECONDS
+        )
+    finally:
         manager.disconnect(websocket)
 
 
@@ -429,11 +572,26 @@ async def session_stream(
         )
 
         while True:
-            data = await websocket.receive_text()
+            data = await asyncio.wait_for(
+                websocket.receive_text(), timeout=IDLE_TIMEOUT_SECONDS
+            )
             if data == "ping":
                 await websocket.send_text("pong")
 
     except WebSocketDisconnect:
+        # Clean client-initiated disconnect — handled here for clarity; the
+        # finally below also disconnects (idempotent) to cover every other
+        # exit path (anyio closed-resource, CancelledError, transport errors).
+        pass
+    except TimeoutError:
+        # F066: idle timeout — the client has been silent for
+        # IDLE_TIMEOUT_SECONDS (likely a half-open socket from a dead
+        # container). Log and fall through to the finally so the socket is
+        # removed from every subscription set.
+        log.warning(
+            "WebSocket idle timeout — disconnecting", timeout=IDLE_TIMEOUT_SECONDS
+        )
+    finally:
         manager.disconnect(websocket)
 
 
@@ -467,11 +625,26 @@ async def notification_stream(
         )
 
         while True:
-            data = await websocket.receive_text()
+            data = await asyncio.wait_for(
+                websocket.receive_text(), timeout=IDLE_TIMEOUT_SECONDS
+            )
             if data == "ping":
                 await websocket.send_text("pong")
 
     except WebSocketDisconnect:
+        # Clean client-initiated disconnect — handled here for clarity; the
+        # finally below also disconnects (idempotent) to cover every other
+        # exit path (anyio closed-resource, CancelledError, transport errors).
+        pass
+    except TimeoutError:
+        # F066: idle timeout — the client has been silent for
+        # IDLE_TIMEOUT_SECONDS (likely a half-open socket from a dead
+        # container). Log and fall through to the finally so the socket is
+        # removed from every subscription set.
+        log.warning(
+            "WebSocket idle timeout — disconnecting", timeout=IDLE_TIMEOUT_SECONDS
+        )
+    finally:
         manager.disconnect(websocket)
 
 
@@ -490,11 +663,26 @@ async def system_stream(websocket: WebSocket) -> None:
         await websocket.send_json({"type": "connected"})
 
         while True:
-            data = await websocket.receive_text()
+            data = await asyncio.wait_for(
+                websocket.receive_text(), timeout=IDLE_TIMEOUT_SECONDS
+            )
             if data == "ping":
                 await websocket.send_text("pong")
 
     except WebSocketDisconnect:
+        # Clean client-initiated disconnect — handled here for clarity; the
+        # finally below also disconnects (idempotent) to cover every other
+        # exit path (anyio closed-resource, CancelledError, transport errors).
+        pass
+    except TimeoutError:
+        # F066: idle timeout — the client has been silent for
+        # IDLE_TIMEOUT_SECONDS (likely a half-open socket from a dead
+        # container). Log and fall through to the finally so the socket is
+        # removed from every subscription set.
+        log.warning(
+            "WebSocket idle timeout — disconnecting", timeout=IDLE_TIMEOUT_SECONDS
+        )
+    finally:
         manager.disconnect(websocket)
 
 
@@ -543,7 +731,5 @@ async def broadcast_notification(
     for agent_id in agent_ids:
         connections = manager.notification_connections.get(agent_id, set())
         if connections:
-            await asyncio.gather(
-                *[conn.send_text(data) for conn in connections],
-                return_exceptions=True,
-            )
+            for conn in connections:
+                manager._enqueue_or_send(conn, data)
