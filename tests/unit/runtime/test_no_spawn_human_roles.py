@@ -165,3 +165,33 @@ async def test_dispatch_a2a_mixed_targets_skips_only_human() -> None:
     spawned = [c.kwargs.get("agent_id") for c in orch.spawn_agent.call_args_list]
     assert "ceo" not in spawned
     assert spawned == ["be-dev-1"]
+
+
+# ---------------------------------------------------------------------------
+# _dispatch_pm_review_work — skips a human-only assignee (defense-in-depth)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dispatch_pm_review_skips_ceo_assignee() -> None:
+    """An awaiting_pm_review task assigned to the CEO must NOT respawn a CEO
+    container, and must NOT abort the dispatcher's tick (which would stall
+    other PM-review respawns behind it). The skip leaves it for the human."""
+    orch = object.__new__(AgentOrchestrator)
+    orch.spawn_agent = AsyncMock()  # type: ignore[method-assign]
+    orch._is_agent_active = MagicMock(return_value=False)  # type: ignore[method-assign]
+    orch._pm_respawn_should_gate = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    orch._fetch_tasks = AsyncMock(  # type: ignore[method-assign]
+        return_value=[
+            {
+                "id": "t1",
+                "status": "awaiting_pm_review",
+                "team": "backend",
+                "assigned_to": AGENT_UUIDS["ceo"],
+            }
+        ]
+    )
+
+    await orch._dispatch_pm_review_work(MagicMock())
+
+    orch.spawn_agent.assert_not_awaited()

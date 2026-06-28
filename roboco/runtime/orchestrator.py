@@ -9421,6 +9421,18 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             # If already assigned, check if that agent is running
             if assigned_to:
                 assigned_slug = self._resolve_agent_slug(assigned_to)
+                # Human-only roles (CEO / prompter / secretary) are never
+                # containers — there is no reviewer agent to respawn. Leave
+                # the task for the human (the CEO approves via the panel).
+                # Mirrors the spawn_agent human-role guard; a skip here keeps
+                # a mis-assigned human task from aborting this dispatcher's
+                # whole tick (the chokepoint would otherwise raise).
+                if role_for_slug(assigned_slug) in (
+                    Role.CEO,
+                    Role.PROMPTER,
+                    Role.SECRETARY,
+                ):
+                    continue
                 if self._is_agent_active(assigned_slug):
                     continue
                 # Loop guard: a review task that keeps re-surfacing without
@@ -9587,6 +9599,13 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         if not owner_uuid:
             return None
         agent_slug = self._resolve_agent_slug(str(owner_uuid))
+        # Human-only roles (CEO / prompter / secretary) are never containers —
+        # there is no agent to respawn. Leave the task as-is for the human to
+        # act on through the panel; do NOT release it to pending (that would
+        # re-route a human-owned task to a PM). See spawn_agent's human-role
+        # guard for the structural backstop.
+        if role_for_slug(agent_slug) in (Role.CEO, Role.PROMPTER, Role.SECRETARY):
+            return None
         # The assignee is running, and on THIS task — healthy.
         instance = self._instances.get(agent_slug)
         if instance is not None and instance.state == AgentState.ACTIVE:
