@@ -17,6 +17,7 @@ from typing import Any, ClassVar, cast
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -308,15 +309,34 @@ class MessagingService(BaseService):
         if not channel_data:
             return None
 
-        # Auto-create from config
+        # Auto-create from config. Two concurrent callers (e.g. two Main-PM
+        # group-create requests) can both miss the lookup and both try to
+        # INSERT the same seed channel; ``channels.slug`` is UNIQUE, so the
+        # loser's flush raises ``IntegrityError``. Isolate the insert in a
+        # savepoint so a lost race rolls back only this insert (not the
+        # caller's pending work), then re-fetch the winner's row. A conflict
+        # that produced no row on re-fetch is a real failure — re-raise it
+        # rather than masking it as a silent None.
         channel = ChannelTable(
             name=channel_data["name"],
             slug=channel_data["slug"],
             type=ChannelType(channel_data["channel_type"]),
             description=channel_data.get("description", ""),
         )
-        self.session.add(channel)
-        await self.session.flush()
+        try:
+            async with self.session.begin_nested():
+                self.session.add(channel)
+                await self.session.flush()
+        except IntegrityError:
+            existing = await self.get_channel_by_slug(normalized)
+            if existing is not None:
+                self.log.info(
+                    "Channel race lost; reusing existing channel",
+                    slug=slug,
+                    type=channel_data["channel_type"],
+                )
+                return existing
+            raise
 
         self.log.info(
             "Channel auto-created from config",
