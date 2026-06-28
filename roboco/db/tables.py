@@ -816,7 +816,7 @@ class WorkSessionTable(Base):
         nullable=False,
         index=True,
     )
-    agent_id: Mapped[UUID] = mapped_column(
+    agent_id: Mapped[UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("agents.id", ondelete="SET NULL"),
         nullable=True,

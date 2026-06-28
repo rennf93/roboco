@@ -28,7 +28,9 @@ class WorkSessionResponse(BaseModel):
     id: UUID
     project_id: UUID
     task_id: UUID
-    agent_id: UUID
+    # Nullable in the DB (ondelete SET NULL when an agent is deleted); a session
+    # whose agent was deleted serializes agent_id as null, not a crash.
+    agent_id: UUID | None
 
     # Branch management
     branch_name: str
@@ -129,7 +131,7 @@ def session_to_response(session: "WorkSessionTable") -> WorkSessionResponse:
         id=typing_cast("UUID", session.id),
         project_id=typing_cast("UUID", session.project_id),
         task_id=typing_cast("UUID", session.task_id),
-        agent_id=typing_cast("UUID", session.agent_id),
+        agent_id=typing_cast("UUID | None", session.agent_id),
         branch_name=str(session.branch_name),
         base_branch=str(session.base_branch),
         target_branch=str(session.target_branch),
