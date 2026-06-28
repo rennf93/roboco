@@ -46,7 +46,7 @@ from roboco.agents_config import (
 )
 from roboco.config import settings
 from roboco.foundation import identity as _foundation
-from roboco.foundation.identity import CELL_TEAMS, Role, role_for_slug
+from roboco.foundation.identity import CELL_TEAMS, Role, role_for_slug_or_none
 from roboco.foundation.policy.agent_loop import DEFAULT_BUDGET as _AGENT_LOOP_BUDGET
 from roboco.foundation.policy.batch import is_branchless_coordination
 from roboco.models import AgentRole, Team
@@ -1866,7 +1866,7 @@ class AgentOrchestrator:
         # here. Safe because the dedicated human-spawn paths do not route
         # through spawn_agent (see the _spawn_intake_container note at the top
         # of this file).
-        _role = role_for_slug(agent_id)
+        _role = role_for_slug_or_none(agent_id)
         if _role in (Role.CEO, Role.PROMPTER, Role.SECRETARY):
             logger.error(
                 "spawn_agent refused for human-only role — dispatchers must never"
@@ -9427,7 +9427,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 # Mirrors the spawn_agent human-role guard; a skip here keeps
                 # a mis-assigned human task from aborting this dispatcher's
                 # whole tick (the chokepoint would otherwise raise).
-                if role_for_slug(assigned_slug) in (
+                if role_for_slug_or_none(assigned_slug) in (
                     Role.CEO,
                     Role.PROMPTER,
                     Role.SECRETARY,
@@ -9604,7 +9604,11 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         # act on through the panel; do NOT release it to pending (that would
         # re-route a human-owned task to a PM). See spawn_agent's human-role
         # guard for the structural backstop.
-        if role_for_slug(agent_slug) in (Role.CEO, Role.PROMPTER, Role.SECRETARY):
+        if role_for_slug_or_none(agent_slug) in (
+            Role.CEO,
+            Role.PROMPTER,
+            Role.SECRETARY,
+        ):
             return None
         # The assignee is running, and on THIS task — healthy.
         instance = self._instances.get(agent_slug)
@@ -10027,7 +10031,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 # notification target (board-review handoff, escalation, etc.)
                 # is expected; it is NOT a spawn signal. Skip — the
                 # notification stays for the human to read in the panel.
-                if role_for_slug(agent_slug) in (
+                if role_for_slug_or_none(agent_slug) in (
                     Role.CEO,
                     Role.PROMPTER,
                     Role.SECRETARY,
