@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import roboco.services.git as git_module
+from roboco.exceptions import GitError
 from roboco.services.git import GitService
 
 
@@ -160,3 +161,87 @@ async def test_merge_does_not_retry_when_method_allowed(
 
     assert calls == ["squash"]  # allowed first time, no second call
     lookup.assert_not_awaited()  # fallback lookup never triggered
+
+
+@pytest.mark.asyncio
+async def test_merge_already_merged_pr_is_idempotent_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F049: the CEO ``merge_pull_request`` path must treat an already-merged PR
+    as idempotent success, not raise GitError — mirroring ``_merge_with_retry``
+    (the agent-facing path). A merge PUT on an already-merged PR returns the
+    same 405 as a genuine "not mergeable" refusal, so without disambiguation a
+    CEO retry (double-click, or a re-merge after a network blip where the first
+    PUT actually landed) raises GitError instead of no-opping — surfacing a
+    spurious failure on the very master-merge path the CEO owns.
+    """
+
+    svc = _git_service()
+    monkeypatch.setattr(
+        svc, "_get_project_token_or_raise", AsyncMock(return_value="tok")
+    )
+    monkeypatch.setattr(svc, "_parse_github_remote", lambda _ws: ("owner", "repo"))
+    monkeypatch.setattr(
+        svc, "_delete_pr_branch_best_effort", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        svc, "_project_default_branch", AsyncMock(return_value="master")
+    )
+    monkeypatch.setattr(svc, "_sync_target_branch", AsyncMock(return_value="abc123"))
+    # No fallback retry would help (already merged => 405 either way); make the
+    # fallback lookup return None so the code falls straight through to the
+    # already-merged disambiguation.
+    monkeypatch.setattr(
+        svc, "_first_allowed_merge_method", AsyncMock(return_value=None)
+    )
+    # The GitHub merge PUT "refuses" (405) because the PR is already merged.
+    monkeypatch.setattr(
+        svc, "_call_merge_api", AsyncMock(return_value=_resp(405, is_success=False))
+    )
+    # ... and the PR is in fact already merged on GitHub.
+    monkeypatch.setattr(svc, "_pr_is_merged", AsyncMock(return_value=True))
+
+    target, commit = await svc.merge_pull_request(Path("/tmp/ws"), 42, "squash", "proj")
+
+    # Idempotent success, not a raise.
+    assert target == "master"
+    assert commit == "abc123"
+    # The post-merge steps still run (branch cleanup, target sync) so the
+    # caller's state stays consistent with "the PR is merged".
+    svc._delete_pr_branch_best_effort.assert_awaited_once()
+    svc._sync_target_branch.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_merge_raises_when_not_merged_and_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F049: a genuine merge refusal (not mergeable, NOT already-merged) still
+    raises GitError — the idempotency guard must not mask a real failure."""
+
+    svc = _git_service()
+    monkeypatch.setattr(
+        svc, "_get_project_token_or_raise", AsyncMock(return_value="tok")
+    )
+    monkeypatch.setattr(svc, "_parse_github_remote", lambda _ws: ("owner", "repo"))
+    monkeypatch.setattr(
+        svc, "_delete_pr_branch_best_effort", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        svc, "_project_default_branch", AsyncMock(return_value="master")
+    )
+    monkeypatch.setattr(svc, "_sync_target_branch", AsyncMock(return_value="abc123"))
+    monkeypatch.setattr(
+        svc, "_first_allowed_merge_method", AsyncMock(return_value=None)
+    )
+    monkeypatch.setattr(
+        svc, "_call_merge_api", AsyncMock(return_value=_resp(405, is_success=False))
+    )
+    # PR is NOT merged — this is a real conflict, not an idempotent retry.
+    monkeypatch.setattr(svc, "_pr_is_merged", AsyncMock(return_value=False))
+
+    with pytest.raises(GitError):
+        await svc.merge_pull_request(Path("/tmp/ws"), 42, "squash", "proj")
+
+    # No post-merge cleanup ran — the merge did not land.
+    svc._delete_pr_branch_best_effort.assert_not_awaited()

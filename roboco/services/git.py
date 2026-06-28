@@ -2880,10 +2880,29 @@ class GitService(BaseService):
                     owner, repo, pr_number, git_token, fallback
                 )
         if not resp.is_success:
-            raise GitError(
-                f"GitHub API refused PR merge ({resp.status_code}): {resp.text[:200]}",
-                {"owner": owner, "repo": repo, "pr": pr_number},
-            )
+            # A merge PUT on an already-merged PR returns the same 405/409 as a
+            # genuine "not mergeable" refusal. Disambiguate: if the PR is in
+            # fact already merged (a CEO double-click, or a first PUT that
+            # landed before a network blip made us retry), treat it as
+            # idempotent success and fall through to the post-merge cleanup —
+            # mirroring the agent-facing _merge_with_retry. Without this a
+            # CEO retry raised GitError on the very master-merge path only the
+            # CEO owns, surfacing a spurious failure for an action that had
+            # already succeeded.
+            if await self._pr_is_merged(owner, repo, pr_number, git_token):
+                self.log.info(
+                    "PR already merged on GitHub; treating as idempotent success",
+                    owner=owner,
+                    repo=repo,
+                    pr=pr_number,
+                    status_code=resp.status_code,
+                )
+            else:
+                raise GitError(
+                    f"GitHub API refused PR merge ({resp.status_code}):"
+                    f" {resp.text[:200]}",
+                    {"owner": owner, "repo": repo, "pr": pr_number},
+                )
 
         await self._delete_pr_branch_best_effort(owner, repo, pr_number, git_token)
 
