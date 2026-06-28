@@ -4304,10 +4304,13 @@ class GitService(BaseService):
         """Run the conventions validator on a task's changed files.
 
         Resolves the acting agent's workspace + the branch's changed files and
-        runs ``python -m roboco.conventions`` over them. Fail-open on a
-        resolution error (returns no findings, ``could_not_run=False``); the
-        validator's OWN fail-loud (exit 3) sets ``could_not_run=True`` so the
-        gate blocks rather than passing on an unanalyzable diff.
+        runs ``python -m roboco.conventions`` over them. A resolution error
+        (workspace missing, diff failed) fails CLOSED — returns
+        ``could_not_run=True`` so the block gate refuses the submit instead of
+        silently passing on an unanalyzable diff (the validator's OWN fail-loud
+        exit-3 philosophy). The two empty-result paths stay fail-open: a
+        branchless task (no ``branch_name``) and a task with no changed files
+        genuinely have nothing to validate, so the gate correctly passes.
         """
         try:
             branch = task.branch_name
@@ -4319,8 +4322,12 @@ class GitService(BaseService):
             changed = await self.list_changed_files(
                 branch_name=branch, actor_agent_id=actor_agent_id
             )
-        except Exception:
-            return {"findings": [], "could_not_run": False}
+        except Exception as exc:
+            return {
+                "findings": [],
+                "could_not_run": True,
+                "reason": f"resolution failed: {exc}"[:300],
+            }
         if not changed:
             return {"findings": [], "could_not_run": False}
         return await self._run_conventions_validator(workspace, changed)
