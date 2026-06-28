@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from roboco.api.deps import _auth_required
+from roboco.api.deps import _auth_required, get_orchestrator_or_none
 from roboco.api.middleware import setup_middleware
 from roboco.api.routes.a2a import router as a2a_router
 from roboco.api.routes.a2a import wellknown_router as a2a_wellknown_router
@@ -166,6 +166,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
     if _AppServices.transcription:
         await _AppServices.transcription.stop()
+
+    # Stop the orchestrator BEFORE closing the DB / OptimalService. stop()
+    # cancels the background loops, stops the agents (finalizing work sessions
+    # + agent state via DB writes), and drains fire-and-forget bg writes
+    # (respawn_tracker upserts, audit-log rows) — all needing the DB still
+    # open. Closing the DB first silently dropped those final writes (the old
+    # order, where only bootstrap's finally block called stop() AFTER lifespan
+    # had already closed the DB). Best-effort: a stop error must not block the
+    # resource teardown below. No-op when no orchestrator is wired (tests,
+    # skip_orchestrator). bootstrap's finally block re-calls stop() as a safety
+    # net; stop() is idempotent (guarded by the _stopped flag) so the second
+    # call is a no-op.
+    orchestrator = get_orchestrator_or_none()
+    if orchestrator is not None:
+        try:
+            await orchestrator.stop()
+        except Exception as e:
+            logger.warning("Orchestrator stop failed during shutdown", error=str(e))
 
     # Close Phase 3 services
     await close_optimal_service()

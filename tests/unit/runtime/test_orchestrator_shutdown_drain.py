@@ -148,3 +148,29 @@ async def test_stop_failing_agent_does_not_skip_drain() -> None:
     await asyncio.wait_for(orch.stop(), timeout=5.0)
 
     assert ran == [True], "failing stop_agent skipped the drain (data lost)"
+
+
+@pytest.mark.asyncio
+async def test_stop_is_idempotent_double_call_is_noop() -> None:
+    """F117: stop() is idempotent. The lifespan shutdown path now stops the
+    orchestrator before closing the DB, and bootstrap's finally block re-calls
+    stop() as a safety net. The second call must be a clean no-op — not a
+    re-drain, not a re-stop of already-stopped agents — guarded by ``_stopped``."""
+    orch = _make_orchestrator()
+    real_drain = orch._drain_bg_tasks
+    drain_calls = 0
+
+    async def counting_drain() -> None:
+        nonlocal drain_calls
+        drain_calls += 1
+        await real_drain()
+
+    orch._drain_bg_tasks = counting_drain
+
+    await orch.stop()
+    assert drain_calls == 1, "first stop() drained the bg tasks"
+    assert orch._stopped is True
+
+    await orch.stop()  # safety-net double-call (lifespan already stopped it)
+    assert drain_calls == 1, "second stop() must not re-drain (idempotent no-op)"
+    assert orch._stopped is True

@@ -93,6 +93,11 @@ def set_orchestrator(orchestrator: AgentOrchestrator) -> None:
     _ServiceHolder.orchestrator = orchestrator
 
 
+def clear_orchestrator() -> None:
+    """Clear the global orchestrator instance (test teardown / re-init)."""
+    _ServiceHolder.orchestrator = None
+
+
 def get_orchestrator() -> AgentOrchestrator:
     """Get the global orchestrator instance."""
     if _ServiceHolder.orchestrator is None:
@@ -100,6 +105,17 @@ def get_orchestrator() -> AgentOrchestrator:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Orchestrator not initialized",
         )
+    return _ServiceHolder.orchestrator
+
+
+def get_orchestrator_or_none() -> AgentOrchestrator | None:
+    """The global orchestrator instance, or ``None`` if not set.
+
+    Used by the lifespan shutdown path, which must stop the orchestrator
+    BEFORE closing the DB (orchestrator.stop() drains fire-and-forget DB
+    writes and finalizes agent state) but must not crash when the app is run
+    without a bootstrap-set orchestrator (e.g. tests, ``skip_orchestrator``).
+    """
     return _ServiceHolder.orchestrator
 
 

@@ -16,6 +16,7 @@ import pytest
 from fastapi import FastAPI
 from roboco.api.app import app as default_app
 from roboco.api.app import create_app, lifespan
+from roboco.api.deps import clear_orchestrator, set_orchestrator
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -142,6 +143,62 @@ async def test_lifespan_startup_and_shutdown_happy_path() -> None:
             assert app.state.optimal is not None
         # After yield, shutdown ran.
         transcription_mock.stop.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_lifespan_stops_orchestrator_before_closing_db_and_optimal() -> None:
+    """F117: orchestrator.stop() must run BEFORE close_optimal_service / close_db
+    on shutdown. stop() drains fire-and-forget DB writes (respawn_tracker
+    upserts, audit-log rows) and stop_agent finalizes work sessions / agent
+    state — all needing the DB still open. Closing the DB first (the old order,
+    where only bootstrap's finally called stop() after lifespan had already
+    closed the DB) silently dropped those final writes."""
+    order: list[str] = []
+
+    def _record(label: str) -> AsyncMock:
+        async def _fn() -> None:
+            order.append(label)
+
+        return AsyncMock(side_effect=_fn)
+
+    transcription_mock = MagicMock()
+    transcription_mock.start = AsyncMock()
+    transcription_mock.stop = AsyncMock()
+    orchestrator_mock = MagicMock()
+    orchestrator_mock.stop = _record("orchestrator.stop")
+
+    set_orchestrator(orchestrator_mock)
+    try:
+        with (
+            patch("roboco.api.app.init_db", new=AsyncMock()),
+            patch("roboco.api.app.close_db", new=_record("close_db")),
+            patch(
+                "roboco.api.app.close_optimal_service",
+                new=_record("close_optimal_service"),
+            ),
+            patch(
+                "roboco.api.app.TranscriptionService", return_value=transcription_mock
+            ),
+            patch("roboco.api.app.ExtractionService"),
+            patch("roboco.api.app.ExtractionPipeline"),
+            patch(
+                "roboco.api.app.get_optimal_service",
+                new=AsyncMock(return_value=MagicMock()),
+            ),
+        ):
+            app = create_app()
+            async with lifespan(app):
+                pass
+    finally:
+        # Clear the global so it doesn't leak into other tests.
+        clear_orchestrator()
+
+    # orchestrator.stop() ran, and it ran BEFORE close_optimal_service + close_db.
+    assert "orchestrator.stop" in order
+    assert order.index("orchestrator.stop") < order.index("close_optimal_service")
+    assert order.index("orchestrator.stop") < order.index("close_db")
+    # The DB is still the last thing closed (innermost resource).
+    assert order.index("close_optimal_service") < order.index("close_db")
 
 
 @pytest.mark.asyncio

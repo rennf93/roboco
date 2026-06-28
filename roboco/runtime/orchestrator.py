@@ -844,6 +844,10 @@ class AgentOrchestrator:
         # instead of waiting for the next 30-second tick.
         self._dispatch_wake: asyncio.Event = asyncio.Event()
         self._running = False
+        # Set True once stop() completes — makes the (lifespan + bootstrap
+        # safety-net) double-call a clean no-op instead of re-stopping already
+        # stopped agents / re-draining an empty bg-task set.
+        self._stopped = False
         self._lock = asyncio.Lock()
         # Serializes CEO supersede calls so a double-click can't pass the
         # find_supersede_umbrella dedup check twice and cut two branches /
@@ -1023,6 +1027,14 @@ class AgentOrchestrator:
 
     async def stop(self) -> None:
         """Stop the orchestrator and all agents."""
+        if getattr(self, "_stopped", False):
+            # Idempotent: the lifespan shutdown path stops the orchestrator
+            # before closing the DB, and bootstrap's finally block re-calls
+            # stop() as a safety net. The second call must be a no-op, not a
+            # re-stop of already-stopped agents. ``getattr`` so a ``__new__``-
+            # constructed instance (unit-test pattern) without ``__init__`` is
+            # still stoppable.
+            return
         self._running = False
 
         # Cancel every background loop, then stop the agents.
@@ -1057,6 +1069,7 @@ class AgentOrchestrator:
         # stuck task can't hang shutdown — it is cancelled past the deadline.
         await self._drain_bg_tasks()
 
+        self._stopped = True
         logger.info("Orchestrator stopped")
 
     async def _ensure_agent_image(self, agent_id: str | None = None) -> None:
