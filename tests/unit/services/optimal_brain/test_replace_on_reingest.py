@@ -42,19 +42,37 @@ def test_conversations_plugin_appends_not_replaces() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reingest_deletes_existing_source_chunks_when_replacing(
+async def test_reingest_replaces_source_chunks_atomically(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Re-ingest must replace the source's chunks in ONE atomic call (F108).
+
+    The replace path used to be two separate awaits — ``delete_by_source``
+    then ``add_chunks`` — each acquiring its own pool connection. Two
+    concurrent re-indexes of the same source interleaved (A.delete, B.delete,
+    A.add, B.add) and produced duplicate chunk rows. The fix collapses the
+    delete + insert into a single transactional ``replace_chunks`` call so
+    the whole replace is atomic (concurrent replacers serialize; the last
+    committer wins with no duplicates).
+    """
     plugin = StandardsIndexPlugin()
     source = "roboco://standards/general/std-1"
     store = _wire_plugin(plugin, source, monkeypatch)
+    store.replace_chunks = AsyncMock()
     doc = Document(content="x" * 250, source=source, metadata={})
 
     count = await plugin._chunk_filter_embed_store(doc, {})
 
     assert count == 1
-    store.delete_by_source.assert_awaited_once_with(source)
-    store.add_chunks.assert_awaited_once()
+    store.replace_chunks.assert_awaited_once()
+    # The atomic path must NOT also issue the separate delete/add calls —
+    # that would re-open the non-atomic race the single call closes.
+    store.delete_by_source.assert_not_awaited()
+    store.add_chunks.assert_not_awaited()
+    # The source and the embedded chunks are passed through verbatim.
+    called_source, called_chunks = store.replace_chunks.await_args.args
+    assert called_source == source
+    assert len(called_chunks) == 1
 
 
 @pytest.mark.asyncio
