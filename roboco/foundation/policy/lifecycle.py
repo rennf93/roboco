@@ -891,6 +891,21 @@ def _p_owns_task(task: Any, _agent: Any, ctx: Any) -> bool:
     return getattr(task, "assigned_to", None) == getattr(ctx, "actor_id", None)
 
 
+def _p_non_terminal(task: Any, _agent: Any, _ctx: Any) -> bool:
+    """True unless the task is in a terminal state (completed / cancelled).
+
+    Escalation is a "I'm blocked, hand this up" action — it must never resurrect
+    a task the lifecycle has already terminated. ``escalate_up`` has
+    ``composes=()`` (no composed action supplies a source-status gate), so
+    without this precondition the spec gate accepts a COMPLETED/CANCELLED task
+    and ``apply_escalation`` sets it back to BLOCKED, bypassing the state
+    machine's terminal-state invariant (F043).
+    """
+    status = getattr(task, "status", None)
+    value = status.value if isinstance(status, Status) else str(status)
+    return value not in (Status.COMPLETED.value, Status.CANCELLED.value)
+
+
 PRECONDITION_PLAN = Precondition(
     key="plan",
     check=_p_has_plan_or_supplied,
@@ -922,6 +937,17 @@ PRECONDITION_OWNERSHIP = Precondition(
     remediate="task is not assigned to you; call give_me_work() to find your work",
     missing_token="owns_task",
     rejection_kind="not_authorized",
+)
+
+PRECONDITION_NON_TERMINAL = Precondition(
+    key="non_terminal",
+    check=_p_non_terminal,
+    remediate=(
+        "task is in a terminal state (completed / cancelled) and cannot be"
+        " escalated — terminal tasks must not be resurrected to blocked"
+    ),
+    missing_token="non_terminal",
+    rejection_kind="invalid_state",
 )
 
 
@@ -1237,7 +1263,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         allowed_roles=_PM_ROLES,
         description="Escalate to your role's escalation_target.",
         composes=(),  # special - uses TaskService.escalate
-        extra_preconditions=(),
+        extra_preconditions=(PRECONDITION_NON_TERMINAL,),
         side_effects=(),
         next_hint=lambda _t: "idle until escalation target acts",
     ),
@@ -1522,13 +1548,16 @@ def _check_intent_preconditions(
     first_missing = next(
         p for p in spec_intent.extra_preconditions if p.missing_token == missing[0]
     )
-    if first_missing.rejection_kind == "not_authorized":
-        return Decision.reject(
-            kind="not_authorized",
-            message=first_missing.remediate,
-            remediate=first_missing.remediate,
-        )
-    return Decision.tracing_gap(missing=missing, remediate=first_missing.remediate)
+    if first_missing.rejection_kind == "tracing_gap":
+        return Decision.tracing_gap(missing=missing, remediate=first_missing.remediate)
+    # A precondition may declare a non-tracing rejection kind (not_authorized
+    # for ownership, invalid_state for the terminal-state guard on escalate_up).
+    # Honor it directly so the envelope signals the right failure flavor.
+    return Decision.reject(
+        kind=first_missing.rejection_kind,
+        message=first_missing.remediate,
+        remediate=first_missing.remediate,
+    )
 
 
 def can_invoke_intent(

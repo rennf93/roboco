@@ -429,6 +429,102 @@ async def test_is_board_advisory_agent_classifies_roles() -> None:
 
 
 @pytest.mark.asyncio
+async def test_apply_escalation_refuses_completed_task() -> None:
+    # F043: a COMPLETED task is terminal — apply_escalation must not resurrect
+    # it to BLOCKED. The HTTP escalate route bypasses the spec gate, so the
+    # single write primitive must refuse terminal tasks itself. Returns False
+    # so callers (escalate / HTTP route) can surface a clean invalid_state / 409
+    # instead of mutating a finished task.
+    svc = _service()
+    original_assignee = uuid4()
+    task = MagicMock(
+        id=uuid4(),
+        parent_task_id=uuid4(),
+        task_type=TaskType.CODE,
+        assigned_to=original_assignee,
+        blocker_raised_by=None,
+        status=TaskStatus.COMPLETED,
+    )
+    flush = AsyncMock()
+    object.__setattr__(svc.session, "flush", flush)
+    _bind(svc, "_is_board_advisory_agent", AsyncMock(return_value=False))
+    _bind(svc, "_emit_status_transition_audit", MagicMock())
+
+    applied = await svc.apply_escalation(
+        task=task,
+        target_agent_id=uuid4(),
+        escalator_slug="be-pm",
+        target_slug="main-pm",
+        reason="please review",
+    )
+
+    assert applied is False
+    assert task.status == TaskStatus.COMPLETED  # untouched — not resurrected
+    assert task.assigned_to == original_assignee  # no reassignment happened
+    flush.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_apply_escalation_refuses_cancelled_task() -> None:
+    # F043: cancelled is terminal too — must not be resurrected via escalation.
+    svc = _service()
+    task = MagicMock(
+        id=uuid4(),
+        parent_task_id=uuid4(),
+        task_type=TaskType.CODE,
+        assigned_to=uuid4(),
+        blocker_raised_by=None,
+        status=TaskStatus.CANCELLED,
+    )
+    flush = AsyncMock()
+    object.__setattr__(svc.session, "flush", flush)
+    _bind(svc, "_is_board_advisory_agent", AsyncMock(return_value=False))
+
+    applied = await svc.apply_escalation(
+        task=task,
+        target_agent_id=uuid4(),
+        escalator_slug="be-pm",
+        target_slug="main-pm",
+        reason="please review",
+    )
+
+    assert applied is False
+    assert task.status == TaskStatus.CANCELLED
+    flush.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_apply_escalation_blocks_non_terminal_task() -> None:
+    # F043: the terminal guard must not over-restrict — a normal in_progress
+    # task still escalates (blocked + reassigned) and returns True.
+    svc = _service()
+    target_id = uuid4()
+    task = MagicMock(
+        id=uuid4(),
+        parent_task_id=uuid4(),
+        task_type=TaskType.CODE,
+        assigned_to=uuid4(),
+        blocker_raised_by=None,
+        dev_notes=None,
+        status=TaskStatus.IN_PROGRESS,
+    )
+    _bind(svc, "_is_board_advisory_agent", AsyncMock(return_value=False))
+    _bind(svc, "_emit_status_transition_audit", MagicMock())
+
+    applied = await svc.apply_escalation(
+        task=task,
+        target_agent_id=target_id,
+        escalator_slug="be-pm",
+        target_slug="main-pm",
+        reason="cell blocked",
+    )
+
+    assert applied is True
+    assert task.status == TaskStatus.BLOCKED
+    assert task.assigned_to == target_id
+
+
+@pytest.mark.asyncio
 async def test_apply_escalation_emits_blocked_audit_event() -> None:
     """A non-divert escalation sets BLOCKED and MUST record a task.blocked audit
     row. The escalate path sets status directly (bypassing the validated

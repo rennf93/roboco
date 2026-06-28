@@ -2024,6 +2024,19 @@ async def escalate_task(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
         )
+    # F043: a terminal task (completed / cancelled) must not be resurrected to
+    # BLOCKED via escalation. Refuse BEFORE sending the escalation notification
+    # so a finished/cancelled task isn't yanked back into the workflow (and the
+    # PM isn't pinged about a task that's already done). The single write
+    # primitive apply_escalation guards this too — defense in depth.
+    if task.status in (TaskStatus.COMPLETED, TaskStatus.CANCELLED):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Task is in a terminal state ({task.status.value}) and cannot"
+                " be escalated — terminal tasks must not be resurrected."
+            ),
+        )
 
     delivery = get_notification_delivery_service(db)
     try:

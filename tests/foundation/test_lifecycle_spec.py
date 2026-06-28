@@ -566,6 +566,49 @@ def test_can_invoke_intent_developer_open_pr_no_commits_tracing_gap() -> None:
     assert "commits>=1" in d.missing
 
 
+def test_escalate_up_rejected_on_completed_task() -> None:
+    """F043: a PM must not resurrect a COMPLETED task via escalate_up.
+
+    escalate_up has composes=() and historically no source-status guard, so the
+    spec gate accepted it on a terminal task and apply_escalation set it back to
+    BLOCKED — bypassing the state machine's terminal-state invariant. The spec
+    now rejects terminal tasks (completed / cancelled) before the journal:decision
+    write fires.
+    """
+    d = spec.can_invoke_intent(
+        spec.Role.CELL_PM,
+        "escalate_up",
+        _stub_task(status="completed"),
+        context=spec.Context(notes="stuck on something"),
+    )
+    assert d.allowed is False
+    assert d.rejection_kind == "invalid_state"
+
+
+def test_escalate_up_rejected_on_cancelled_task() -> None:
+    """F043: cancelled is terminal — escalate_up must not resurrect it either."""
+    d = spec.can_invoke_intent(
+        spec.Role.MAIN_PM,
+        "escalate_up",
+        _stub_task(status="cancelled"),
+        context=spec.Context(notes="stuck on something"),
+    )
+    assert d.allowed is False
+    assert d.rejection_kind == "invalid_state"
+
+
+def test_escalate_up_allowed_on_blocked_task() -> None:
+    """F043: the terminal guard must not over-restrict — BLOCKED is the natural
+    escalation source and must still be allowed."""
+    d = spec.can_invoke_intent(
+        spec.Role.CELL_PM,
+        "escalate_up",
+        _stub_task(status="blocked"),
+        context=spec.Context(notes="stuck on something"),
+    )
+    assert d.allowed is True
+
+
 def test_valid_next_verbs_developer_in_progress_includes_open_pr_and_i_am_done() -> (
     None
 ):

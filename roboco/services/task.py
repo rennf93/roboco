@@ -210,6 +210,20 @@ def _task_type_is_code(task_type: Any) -> bool:
     return str(value) == TaskType.CODE.value
 
 
+def _is_terminal_task(task: TaskTable) -> bool:
+    """True when ``task`` is in a terminal state (completed / cancelled).
+
+    Terminal tasks must never be resurrected by a side-channel write
+    (escalation → BLOCKED, reassign, dependency-revival). The lifecycle spec
+    guards the gateway verbs, but the HTTP routes and direct service callers
+    bypass it, so the single write primitives consult this too (F043). Robust
+    to the enum-or-raw-string shapes SQLAlchemy hands back.
+    """
+    status = getattr(task, "status", None)
+    value = status.value if isinstance(status, TaskStatus) else str(status)
+    return value in (TaskStatus.COMPLETED.value, TaskStatus.CANCELLED.value)
+
+
 _PM_OWNED_CELL_TASK_TYPES: frozenset[str] = frozenset(
     {
         TaskType.PLANNING.value,
@@ -4801,7 +4815,7 @@ class TaskService(BaseService):
         escalator_slug: str,
         target_slug: str,
         reason: str,
-    ) -> None:
+    ) -> bool:
         """Apply the state mutations for a generic chain escalation.
 
         Sets the task to BLOCKED, reassigns to the escalation target, and
@@ -4812,6 +4826,13 @@ class TaskService(BaseService):
         subsequent `unblock` call hands the task back to the original dev
         and the orchestrator re-spawns them. Without this, escalation
         loses the dev's identity permanently.
+
+        Returns True when the escalation was applied (or diverted to the pool
+        by the board/main-pm guard); False when refused because the task is in
+        a terminal state (COMPLETED / CANCELLED) — a terminal task must not be
+        resurrected to BLOCKED (F043). The gateway ``escalate_up`` path also
+        guards this in the lifecycle spec, but the HTTP escalate route bypasses
+        the spec gate, so the single write primitive refuses it here too.
 
         Invariant: a board/advisory role is NEVER assigned a task it cannot own
         — a descendant executable task (code / documentation / design), a cell's
@@ -4825,6 +4846,15 @@ class TaskService(BaseService):
         it. Enforced here — the single write primitive — so both the gateway
         ``escalate`` verb and the HTTP escalate route are covered.
         """
+        if _is_terminal_task(task):
+            self.log.warning(
+                "Refusing to escalate a terminal task (no resurrection to blocked)",
+                task_id=str(task.id),
+                status=str(task.status),
+                escalator=escalator_slug,
+                target=target_slug,
+            )
+            return False
         if _board_cannot_own(task) and await self._is_board_advisory_agent(
             target_agent_id
         ):
@@ -4834,7 +4864,7 @@ class TaskService(BaseService):
                 blocked_target_slug=target_slug,
                 reason=reason,
             )
-            return
+            return True
         # Impossibility backstop: a Main-PM target must never receive (back) a
         # main_pm + code task — a coordinator with no code verb cannot fix the
         # code, so escalating it to Main PM perpetuates the mismatch (the
@@ -4852,7 +4882,7 @@ class TaskService(BaseService):
                 blocked_target_slug=target_slug,
                 reason=reason,
             )
-            return
+            return True
         if task.assigned_to and not task.blocker_raised_by:
             task.blocker_raised_by = cast("Any", task.assigned_to)
         # Capture before mutating: the audit row must record the real prior
@@ -4893,6 +4923,7 @@ class TaskService(BaseService):
             escalator=escalator_slug,
             target=target_slug,
         )
+        return True
 
     # =========================================================================
     # CEO APPROVAL WORKFLOW
@@ -8039,14 +8070,14 @@ class TaskService(BaseService):
 
         # The board/advisory guard lives in apply_escalation so the HTTP
         # escalate route is covered too; nothing extra to do here.
-        await self.apply_escalation(
+        applied = await self.apply_escalation(
             task=task,
             target_agent_id=UUID(str(target.id)),
             escalator_slug=agent.slug,
             target_slug=target_slug,
             reason=reason,
         )
-        return task
+        return task if applied else None
 
     async def _is_board_advisory_agent(self, agent_id: UUID) -> bool:
         """True if ``agent_id`` is a board/advisory role (PO / marketing / auditor)."""
@@ -8174,14 +8205,16 @@ class TaskService(BaseService):
         if target is None:
             return None
 
-        await self.apply_escalation(
+        applied = await self.apply_escalation(
             task=task,
             target_agent_id=UUID(str(target.id)),
             escalator_slug=agent.slug,
             target_slug=target.slug,
             reason=reason,
         )
-        return task
+        # apply_escalation refuses terminal tasks (F043); mirror escalate()'s
+        # contract so the gateway emits a clean invalid_state envelope.
+        return task if applied else None
 
     async def list_in_progress_for_agent(self, agent_id: UUID) -> list[TaskTable]:
         """Tasks the agent is still on the hook for — in_progress OR blocked.
