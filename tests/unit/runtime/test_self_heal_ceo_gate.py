@@ -179,7 +179,10 @@ async def test_originate_opens_task_held_for_ceo(
     assert req.confirmed_by_human is False  # held for the CEO — the F059 fix
     assert req.status == TaskStatus.PENDING
     assert req.source == SELF_HEAL_SOURCE
-    assert req.task_type == TaskType.CODE
+    # A Main-PM-owned coordination root (not code — the Main PM delegates the
+    # fix to a cell dev). `code` + `main_pm` is rejected by the
+    # main_pm_cannot_own_code guard, so the self-heal root must be `planning`.
+    assert req.task_type == TaskType.PLANNING
 
 
 # ---------------------------------------------------------------------------

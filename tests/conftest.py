@@ -67,12 +67,24 @@ if TYPE_CHECKING:
 
 
 # ---------------------------------------------------------------------------
-# Test DB endpoint discovery — env-overridable, default to localhost:5432.
+# Test DB endpoint discovery — env-overridable.
+#
+# Defaults match the project's own running postgres (`roboco-postgres` in
+# `docker-compose.yml`): superuser `roboco`/`roboco`, host-exposed on
+# `localhost:15432` (the container's 5432). `roboco` has CREATEDB, which the
+# session fixture needs to provision/drop an ephemeral per-run test DB.
+#
+# Previously these defaulted to the OS `$USER` with an empty password on
+# `localhost:5432`, which hit a bare system postgres that has no such role —
+# every `db_session` test failed with `InvalidPasswordError: password
+# authentication failed for user "renzof"` instead of running. Defaulting to
+# the project's actual DB makes the integration suite run out of the box; any
+# of these can still be overridden with `ROBOCO_TEST_DB_*`.
 # ---------------------------------------------------------------------------
 _TEST_DB_HOST = os.environ.get("ROBOCO_TEST_DB_HOST", "localhost")
-_TEST_DB_PORT = int(os.environ.get("ROBOCO_TEST_DB_PORT", "5432"))
-_TEST_DB_USER = os.environ.get("ROBOCO_TEST_DB_USER", os.environ.get("USER", "renzof"))
-_TEST_DB_PASSWORD = os.environ.get("ROBOCO_TEST_DB_PASSWORD", "")
+_TEST_DB_PORT = int(os.environ.get("ROBOCO_TEST_DB_PORT", "15432"))
+_TEST_DB_USER = os.environ.get("ROBOCO_TEST_DB_USER", "roboco")
+_TEST_DB_PASSWORD = os.environ.get("ROBOCO_TEST_DB_PASSWORD", "roboco")
 _TEST_DB_ADMIN_DB = os.environ.get("ROBOCO_TEST_DB_ADMIN_DB", "postgres")
 
 

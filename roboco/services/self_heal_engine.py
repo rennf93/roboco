@@ -176,22 +176,25 @@ class SelfHealEngine(BaseService):
                     description=(
                         f"RoboCo's own CI regressed.\n\n{obs.detail}\n\n"
                         f"Evidence: {obs.raw_ref}\n\n"
-                        "Investigate and fix the regression at its root so CI "
-                        "returns to green. This task was opened automatically by "
-                        "the self-heal loop and is HELD for the CEO's "
-                        "Approve-&-Start — it will not dispatch until the CEO "
-                        "approves it. Once approved, it ships through the normal "
-                        "gates (QA, PR review, and the CEO's merge)."
+                        "This is a Main-PM coordination root: decompose the fix "
+                        "and delegate the code work to a cell dev — the Main PM "
+                        "does not write the fix itself. This task was opened "
+                        "automatically by the self-heal loop and is HELD for the "
+                        "CEO's Approve-&-Start — it will not dispatch until the "
+                        "CEO approves it. Once approved, the delegated fix ships "
+                        "through the normal gates (QA, PR review, and the CEO's "
+                        "merge)."
                     ),
                     acceptance_criteria=[
-                        f"CI on {obs.repo_hint}'s default branch is green again",
-                        "The cause of the failing run is fixed at its root, not "
-                        "masked or skipped",
+                        "The CI regression is decomposed into a code-fix "
+                        "subtask delegated to a cell developer",
+                        f"CI on {obs.repo_hint}'s default branch is green again "
+                        "and the fix merged through the normal gates",
                     ],
                     team=Team.MAIN_PM,
                     assigned_to=_foundation.AGENTS["main-pm"].uuid,
                     created_by=_foundation.AGENTS["system"].uuid,
-                    task_type=TaskType.CODE,
+                    task_type=TaskType.PLANNING,
                     nature=TaskNature.TECHNICAL,
                     estimated_complexity=Complexity.MEDIUM,
                     project_id=cast("UUID", project.id),
