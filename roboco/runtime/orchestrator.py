@@ -150,6 +150,18 @@ def _system_api_headers() -> dict[str, str]:
 
 # Consecutive failed recovery probes before the CEO is notified once per episode.
 _CEO_NOTIFY_THRESHOLD = 10
+# Persistent-probe-failure escape hatch (F094): if the recovery probe keeps
+# failing past this threshold, the probe endpoint itself is the problem (a
+# misconfigured URL, a removed API key, a network partition to the probe host)
+# while the provider may well be fine for real workloads. Hold the park any
+# longer and every agent on the provider strands forever with only a one-shot
+# CEO notification. Past this threshold, fall back to the same time-expiry
+# optimism the unprobeable-provider path uses (``_do_probe`` returns True when
+# there is no probe URL): clear the park and resume. If the provider is
+# genuinely still down the real workload attempts re-park via the 429/5xx path,
+# so this is bounded burn — strictly better than a silent forever-strand. Kept
+# above the CEO-notify threshold so the operator gets the notification first.
+_PROBE_GIVE_UP_THRESHOLD = 30
 
 # Persistent server-overload parking (HTTP 529 / 500 / 503). The model API's
 # SDK already retries transient overloads in-process; only a persistent one
@@ -6887,7 +6899,21 @@ Start by:
     async def _on_probe_failure(
         self, provider: str, tracker: Any, activated_at_raw: str | None
     ) -> None:
-        """Count a failed probe; notify the CEO once at the failure threshold."""
+        """Count a failed probe; notify the CEO once at the failure threshold.
+
+        F094 escape hatch: past ``_PROBE_GIVE_UP_THRESHOLD`` persistent failures
+        the probe endpoint itself is the problem (misconfigured URL / removed API
+        key / network partition to the probe host) while the provider may be fine
+        for real workloads. Holding the park any longer strands every agent on
+        the provider forever with only a one-shot CEO notification. Fall back to
+        the same time-expiry optimism the unprobeable-provider path uses: clear
+        the park and resume. If the provider is genuinely still down the real
+        workload attempts re-park via the 429/5xx path, so this is bounded burn —
+        strictly better than a silent forever-strand. ``_on_probe_success``
+        clears the tracker (so the loop won't probe this provider again until a
+        real 429 re-parks) and discards the CEO-notified flag (a fresh episode
+        later gets a fresh notification).
+        """
         failure_count = await tracker.increment_probe_failures()
         logger.debug(
             "Rate-limit probe failed", provider=provider, probe_failures=failure_count
@@ -6902,6 +6928,16 @@ Start by:
                 activated_at_str=activated_at_raw or "unknown",
                 paused_agent_count=len(self._parked_agents_for(provider)),
             )
+        if failure_count >= _PROBE_GIVE_UP_THRESHOLD:
+            logger.warning(
+                "Rate-limit probe persistently failing; giving up on the probe "
+                "and falling back to time-expiry optimism (clearing the park + "
+                "resuming parked agents). If the provider is genuinely still down "
+                "they will re-park via the real 429/5xx path.",
+                provider=provider,
+                probe_failures=failure_count,
+            )
+            await self._on_probe_success(provider, tracker)
 
     async def _probe_one_provider(self, provider: str, state: dict[str, Any]) -> None:
         """Probe a single rate-limited provider and handle the outcome."""
