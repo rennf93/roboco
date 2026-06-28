@@ -98,6 +98,14 @@ _PROBE_TIMEOUT_SECONDS = 10.0
 # short enough that a hang degrades one tick, not the whole fleet.
 _DOCKER_INSPECT_TIMEOUT_SECONDS = 10.0
 _DOCKER_EXEC_TIMEOUT_SECONDS = 30.0
+# Deadline for draining fire-and-forget ``_bg_tasks`` on shutdown. Short DB
+# writes (a respawn_tracker upsert, an audit-log row) finish before the
+# process exits — preserving the durable PM-respawn counter and the
+# metrics-bearing audit trail — while a stuck task can't hang shutdown: past
+# this deadline the still-pending tasks are cancelled. Generous enough that a
+# legitimate slow write under load commits rather than being dropped (the
+# exact data-loss tail the durable tracker exists to prevent).
+_SHUTDOWN_DRAIN_TIMEOUT_SECONDS = 5.0
 _HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_OK = 200
 _HTTP_MULTIPLE_CHOICES = 300  # first non-2xx status; 2xx == [_HTTP_OK, this)
@@ -913,6 +921,32 @@ class AgentOrchestrator:
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
+    async def _drain_bg_tasks(self) -> None:
+        """Let fire-and-forget ``_bg_tasks`` finish before the process exits.
+
+        Short DB writes (a respawn_tracker upsert, an audit-log row) get a
+        bounded window to commit — preserving the durable PM-respawn counter
+        and the metrics-bearing audit trail — while a stuck task can't hang
+        shutdown: past ``_SHUTDOWN_DRAIN_TIMEOUT_SECONDS`` the still-pending
+        tasks are cancelled. ``return_exceptions=True`` so one failing bg task
+        doesn't crash the drain (a failed write already degraded to in-memory;
+        logging it here would just be noise). No-op when nothing is pending.
+        """
+        pending = [t for t in self._bg_tasks if not t.done()]
+        if not pending:
+            return
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*pending, return_exceptions=True),
+                timeout=_SHUTDOWN_DRAIN_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            for task in pending:
+                if not task.done():
+                    task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.gather(*pending, return_exceptions=True)
+
     async def stop(self) -> None:
         """Stop the orchestrator and all agents."""
         self._running = False
@@ -932,9 +966,22 @@ class AgentOrchestrator:
         ):
             await self._cancel_background_task(task)
 
-        # Stop all agents
+        # Stop all agents. One agent's stop error must not skip the drain
+        # below — that would re-introduce the data-loss tail for every in-flight
+        # bg write, so log-and-continue rather than propagate.
         for agent_id in list(self._instances.keys()):
-            await self.stop_agent(agent_id)
+            try:
+                await self.stop_agent(agent_id)
+            except Exception:
+                logger.exception(
+                    "stop_agent raised during shutdown; continuing to drain",
+                    agent_id=agent_id,
+                )
+
+        # Drain fire-and-forget bg writes so short DB commits finish before the
+        # process exits (respawn_tracker upserts, audit-log rows). Bounded so a
+        # stuck task can't hang shutdown — it is cancelled past the deadline.
+        await self._drain_bg_tasks()
 
         logger.info("Orchestrator stopped")
 
