@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock
 import pytest
 from roboco.models.runtime import AgentInstance
 from roboco.runtime.orchestrator import (
+    _GROK_AUTH_EXIT_CODE,
     _GROK_RATE_LIMIT_EXIT_CODE,
     AgentOrchestrator,
     AgentState,
@@ -107,12 +108,18 @@ async def test_park_grok_rate_limited_activates_and_offlines(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    # _park_provider_unavailable registers a WaitingRecord (F035) so the
+    # probe-resume loop can revive the task; the bare __new__ orchestrator
+    # needs the dict + persist stub to exercise that without AttributeError.
+    orch._waiting_records = {}
+    orch._rate_limit_ceo_notified = set()
     inst = _grok_instance()
     inst.error_count = 2  # pretend prior crashes — parking must NOT count one
     tracker = _FakeTracker()
     monkeypatch.setattr(orch, "_make_tracker", lambda _p: tracker)
     finalize = AsyncMock()
     monkeypatch.setattr(orch, "_finalize_spawn_session", finalize)
+    monkeypatch.setattr(orch, "_persist_waiting_record", AsyncMock())
 
     await orch._park_grok_rate_limited("be-dev-1", inst)
 
@@ -143,3 +150,68 @@ async def test_handle_stopped_container_parks_on_grok_429(
     park.assert_awaited_once_with("be-dev-1", inst)
     # Early-return: the normal crash/graceful finalize path never runs.
     finalize.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# F041: exit 78 (auth missing/expired) parks instead of crash-retrying
+# ---------------------------------------------------------------------------
+
+
+def test_is_grok_auth_exit() -> None:
+    inst = _grok_instance()
+    assert AgentOrchestrator._is_grok_auth_exit(inst, _GROK_AUTH_EXIT_CODE)
+    # Wrong exit code, or a non-grok provider, is not a grok-auth exit.
+    assert not AgentOrchestrator._is_grok_auth_exit(inst, 0)
+    assert not AgentOrchestrator._is_grok_auth_exit(inst, 1)
+    assert not AgentOrchestrator._is_grok_auth_exit(
+        _grok_instance(provider_type="anthropic"), _GROK_AUTH_EXIT_CODE
+    )
+
+
+@pytest.mark.asyncio
+async def test_handle_stopped_container_parks_on_grok_auth_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # F041: a grok container whose entrypoint ran `grok_auth --check` and found
+    # the token missing/expired exits 78 (EX_CONFIG). Crash-retrying 3x burns
+    # tokens for zero progress (the agent can't start without a valid token);
+    # park it like the 429 exit-75 path so the probe-resume loop revives the
+    # task once grok_auth.refresh_if_stale mints a fresh token.
+    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    inst = _grok_instance()
+    park = AsyncMock()
+    finalize = AsyncMock()
+    monkeypatch.setattr(orch, "_park_grok_auth_unavailable", park)
+    monkeypatch.setattr(orch, "_finalize_spawn_session", finalize)
+
+    await orch._handle_stopped_container("be-dev-1", inst, _GROK_AUTH_EXIT_CODE)
+
+    park.assert_awaited_once_with("be-dev-1", inst)
+    # Early-return: the crash-retry path never runs (no token burn).
+    finalize.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_park_grok_auth_unavailable_activates_with_auth_missing_kind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    orch._waiting_records = {}
+    orch._rate_limit_ceo_notified = set()
+    inst = _grok_instance()
+    inst.error_count = 2  # prior crashes — parking must NOT count one
+    tracker = _FakeTracker()
+    monkeypatch.setattr(orch, "_make_tracker", lambda _p: tracker)
+    monkeypatch.setattr(orch, "_finalize_spawn_session", AsyncMock())
+    monkeypatch.setattr(orch, "_persist_waiting_record", AsyncMock())
+
+    await orch._park_grok_auth_unavailable("be-dev-1", inst)
+
+    assert inst.state == AgentState.OFFLINE
+    assert inst.container_id is None
+    assert inst.error_count == 0  # an auth-missing exit is not a crash
+    assert tracker.activated_with == {
+        "retry_after": pytest.approx(60.0),
+        "affected_agents": ["be-dev-1"],
+        "kind": "auth_missing",
+    }

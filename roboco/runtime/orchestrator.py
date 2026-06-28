@@ -126,6 +126,8 @@ def _system_api_headers() -> dict[str, str]:
             _SYSTEM_API_HEADERS["X-Agent-ID"], "system", ""
         ),
     }
+
+
 # Consecutive failed recovery probes before the CEO is notified once per episode.
 _CEO_NOTIFY_THRESHOLD = 10
 
@@ -270,6 +272,17 @@ _GROK_INTERACTIVE_DOCKERFILES = {
 # the retry window (unknown-provider time-expiry fallback in _probe_target).
 _GROK_RATE_LIMIT_EXIT_CODE = 75
 _GROK_RATE_LIMIT_RETRY_AFTER_S = 60.0
+# A one-shot Grok container exits with this code (EX_CONFIG) when the
+# entrypoint's `grok_auth --check` backstop found the access token missing or
+# expired (it can't be refreshed headlessly, so the CLI would hang at an
+# interactive login prompt). Park the provider instead of crash-retrying 3x —
+# the agent cannot start without a valid token, so respawning burns tokens for
+# zero progress. The probe-resume loop revives the task once
+# grok_auth.refresh_if_stale (run once per dispatch tick) mints a fresh token
+# from the offline-access refresh token; if still expired, the next exit 78
+# re-parks (no token burn). Same shape as the 429 exit-75 path (F041).
+_GROK_AUTH_EXIT_CODE = 78
+_GROK_AUTH_RETRY_AFTER_S = 60.0
 
 
 # =============================================================================
@@ -5599,6 +5612,14 @@ Start by:
         if self._is_grok_rate_limit_exit(instance, exit_code):
             await self._park_grok_rate_limited(agent_id, instance)
             return
+        # Grok auth-missing parking (F041): a one-shot grok run whose entrypoint
+        # found the token missing/expired exits 78 (EX_CONFIG). Park the provider
+        # instead of crash-retrying — the agent can't start without a valid token,
+        # so respawning burns tokens for zero progress. The probe-resume loop
+        # revives the task once grok_auth.refresh_if_stale mints a fresh token.
+        if self._is_grok_auth_exit(instance, exit_code):
+            await self._park_grok_auth_unavailable(agent_id, instance)
+            return
         graceful = exit_code == 0
         # Session/usage-limit parking: the Claude session ("5-hour") limit is a
         # 429 the SDK does not retry — the container exits non-zero with a
@@ -6377,6 +6398,23 @@ Start by:
         )
 
     @staticmethod
+    def _is_grok_auth_exit(instance: Any, exit_code: int | None) -> bool:
+        """True for a one-shot grok container that exited 78 (auth missing/expired).
+
+        The entrypoint runs ``grok_auth --check`` as a backstop and exits 78
+        (EX_CONFIG) when the access token is missing or expired — the CLI cannot
+        refresh it headlessly and would otherwise hang at an interactive login
+        prompt. See ``_GROK_AUTH_EXIT_CODE`` for the full rationale (F041).
+        """
+        from roboco.models.base import ModelProvider
+
+        return (
+            exit_code == _GROK_AUTH_EXIT_CODE
+            and instance.config is not None
+            and instance.config.provider_type == ModelProvider.GROK.value
+        )
+
+    @staticmethod
     async def _tail_container_logs(container_name: str, lines: int = 80) -> str:
         """Return the last ``lines`` of a container's combined output, '' on error.
 
@@ -6530,9 +6568,7 @@ Start by:
         # call ``mark_waiting_long`` itself — the container is already dead (it
         # exited), so there is nothing to stop, and parking keeps OFFLINE (not
         # WAITING_LONG) so the reaper's live-skip / health loop ignore it.
-        task_id = (
-            str(instance.current_task_id) if instance.current_task_id else None
-        )
+        task_id = str(instance.current_task_id) if instance.current_task_id else None
         record = WaitingRecord(
             agent_id=agent_id,
             task_id=task_id,
@@ -6561,6 +6597,26 @@ Start by:
             provider=ModelProvider.GROK.value,
             retry_after=_GROK_RATE_LIMIT_RETRY_AFTER_S,
             kind="rate_limited",
+        )
+
+    async def _park_grok_auth_unavailable(self, agent_id: str, instance: Any) -> None:
+        """Park a grok agent whose token was missing/expired (entrypoint exit 78).
+
+        Same park-and-probe shape as the 429 exit-75 path, but with
+        ``kind="auth_missing"``: the agent cannot start without a valid token, so
+        crash-retrying burns tokens for zero progress. The probe-resume loop
+        revives the task once ``grok_auth.refresh_if_stale`` mints a fresh token
+        (run once per dispatch tick); if still expired, the next exit 78 re-parks
+        (no token burn). See ``_GROK_AUTH_EXIT_CODE`` (F041).
+        """
+        from roboco.models.base import ModelProvider
+
+        await self._park_provider_unavailable(
+            agent_id,
+            instance,
+            provider=ModelProvider.GROK.value,
+            retry_after=_GROK_AUTH_RETRY_AFTER_S,
+            kind="auth_missing",
         )
 
     @staticmethod
@@ -7835,9 +7891,7 @@ Start now: evidence(task_id="{task_id}")
             # ACTIVE; the reaper's Docker-liveness fallback covers it).
             container_id: str | None = None
             try:
-                container_id = await self._resolve_container_id(
-                    f"roboco-agent-{slug}"
-                )
+                container_id = await self._resolve_container_id(f"roboco-agent-{slug}")
             except Exception:
                 container_id = None
             self._instances[slug] = AgentInstance(
