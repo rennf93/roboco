@@ -105,6 +105,26 @@ async def triage_all(
     return envelope_to_response(env, request)
 
 
+@router.post("/triage")
+async def triage(
+    request: Request,
+    _body: TriageRequest,
+    x_agent_id: _AgentIdHeader,
+    choreographer: _ChoreographerDep,
+) -> dict:
+    """Team-scoped triage for the Main PM (own-team blocked / awaiting_pm_review).
+
+    F067: the main_pm manifest advertises ``triage`` (lifecycle.intents_for_role
+    includes it for MAIN_PM via _PM_ROLES) alongside ``triage_all``; without a
+    route a main_pm agent calling `triage` hit a raw 404 that bypassed the
+    per-verb circuit breaker. ``choreographer.triage`` is team-scoped (uses
+    ``pm.team``) and works for any PM role — Main PM gets its own team's
+    blocked/awaiting tasks; ``triage_all`` is the cross-team sweep.
+    """
+    env = await choreographer.triage(x_agent_id)
+    return envelope_to_response(env, request)
+
+
 @router.post("/submit_root")
 async def submit_root(
     request: Request,
