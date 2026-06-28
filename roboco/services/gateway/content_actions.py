@@ -793,6 +793,18 @@ class ContentActions:
                 status = "playbook_archived"
         except NotFoundError:
             return Envelope.not_found(message=f"playbook {playbook_id} not found")
+        # Commit the status change BEFORE touching the RAG index: the index write
+        # runs through its own auto-committing connection, so indexing before the
+        # status commit would durably land (or drop) a playbook in the corpus even
+        # if this transaction rolled back — a divergence agents surface in
+        # briefings. ``get_db`` commits the session again after the route returns
+        # (a no-op on the now-clean transaction); this explicit commit is what
+        # gates the index.
+        await self.task.session.commit()
+        if action == "approve":
+            await svc.index_approved(playbook)
+        else:
+            await svc.unindex_playbook(playbook)
         return Envelope.ok(
             status=status,
             task_id=None,

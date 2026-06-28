@@ -1,11 +1,15 @@
-"""F011 — PlaybookService.reject must de-index the playbook.
+"""PlaybookService.reject must flush the status change WITHOUT de-indexing
+inline, and ``unindex_playbook`` is the separate post-commit de-index step.
 
-A rejected/archived playbook that was previously approved stays in the
-PLAYBOOKS RAG index (no de-index on reject/archive), so it keeps surfacing
-in agent briefings as a stale, no-longer-canonical procedure. The fix
-mirrors the index-on-approve path: ``reject`` calls an
-``_unindex_playbook`` helper (gated on ``org_memory_enabled``, best-effort)
-that removes the playbook's chunks + tracking row.
+A rejected/archived playbook that was previously approved must stop surfacing in
+agent briefings, so a reject drops its chunks + tracking row. Originally (F011)
+``reject`` called an ``_unindex_playbook`` helper inline. F057 split that out:
+the RAG index write runs through its own auto-committing pool connection, so
+de-indexing inline (before the caller commits the status) would drop a playbook
+from the corpus even if the status transaction rolled back — a divergence. So
+``reject`` now flushes the status ONLY; ``unindex_playbook`` is a separate
+public step the caller runs AFTER committing. Both helpers stay gated on
+``org_memory_enabled`` (inert when the loop is off) and best-effort.
 """
 
 from __future__ import annotations
@@ -32,26 +36,28 @@ def _mock_playbook(playbook_id, *, status=PlaybookStatus.APPROVED.value):
     return pb
 
 
-@pytest.mark.asyncio
-async def test_reject_deindexes_approved_playbook(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Rejecting an approved (indexed) playbook removes it from the index."""
-    monkeypatch.setattr(settings, "org_memory_enabled", True)
-    playbook_id = uuid4()
-    pb = _mock_playbook(playbook_id, status=PlaybookStatus.APPROVED.value)
-
+def _session_with(pb) -> MagicMock:
     session = MagicMock()
-    # _get_or_raise returns the playbook; flush is a no-op.
     result = MagicMock()
     result.scalar_one_or_none.return_value = pb
     session.execute = AsyncMock(return_value=result)
     session.flush = AsyncMock()
+    return session
+
+
+@pytest.mark.asyncio
+async def test_reject_archives_but_does_not_deindex_inline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``reject`` flushes the ARCHIVED status but must NOT touch the RAG index —
+    the de-index is a separate post-commit step (F057 ordering)."""
+    monkeypatch.setattr(settings, "org_memory_enabled", True)
+    playbook_id = uuid4()
+    pb = _mock_playbook(playbook_id, status=PlaybookStatus.APPROVED.value)
+    svc = PlaybookService(_session_with(pb))
 
     optimal = MagicMock()
     optimal.unindex_playbook = AsyncMock(return_value=None)
-
-    svc = PlaybookService(session)
     with (
         patch(
             "roboco.services.optimal.get_optimal_service",
@@ -61,68 +67,52 @@ async def test_reject_deindexes_approved_playbook(
         out = await svc.reject(playbook_id, approver_id=uuid4(), reason="stale")
 
     assert out.status == PlaybookStatus.ARCHIVED.value
-    optimal.unindex_playbook.assert_awaited_once_with(str(playbook_id))
+    optimal.unindex_playbook.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_reject_of_unindexed_draft_does_not_error(
+async def test_unindex_playbook_deindexes_approved_playbook(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A draft (never indexed) reject still de-indexes (idempotent no-op) and
-    never errors the curation."""
+    """``unindex_playbook`` (the post-commit step) removes an approved playbook
+    from the index."""
     monkeypatch.setattr(settings, "org_memory_enabled", True)
     playbook_id = uuid4()
-    pb = _mock_playbook(playbook_id, status=PlaybookStatus.DRAFT.value)
-
-    session = MagicMock()
-    result = MagicMock()
-    result.scalar_one_or_none.return_value = pb
-    session.execute = AsyncMock(return_value=result)
-    session.flush = AsyncMock()
+    pb = _mock_playbook(playbook_id, status=PlaybookStatus.APPROVED.value)
+    svc = PlaybookService(_session_with(pb))
 
     optimal = MagicMock()
     optimal.unindex_playbook = AsyncMock(return_value=None)
-
-    svc = PlaybookService(session)
     with (
         patch(
             "roboco.services.optimal.get_optimal_service",
             AsyncMock(return_value=optimal),
         ),
     ):
-        out = await svc.reject(playbook_id, approver_id=uuid4(), reason="nope")
+        await svc.unindex_playbook(pb)
 
-    assert out.status == PlaybookStatus.ARCHIVED.value
-    # De-index is still called (idempotent — the store no-ops on an absent
-    # source), so a draft reject mirrors the approved reject path uniformly.
     optimal.unindex_playbook.assert_awaited_once_with(str(playbook_id))
 
 
 @pytest.mark.asyncio
-async def test_reject_skips_deindex_when_org_memory_disabled(
+async def test_unindex_playbook_skips_when_org_memory_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """org_memory_enabled=False ⇒ the index is inert; reject must not touch it."""
+    """org_memory_enabled=False ⇒ the index is inert; ``unindex_playbook`` must
+    not touch it."""
     monkeypatch.setattr(settings, "org_memory_enabled", False)
     playbook_id = uuid4()
     pb = _mock_playbook(playbook_id)
-
-    session = MagicMock()
-    result = MagicMock()
-    result.scalar_one_or_none.return_value = pb
-    session.execute = AsyncMock(return_value=result)
-    session.flush = AsyncMock()
+    svc = PlaybookService(_session_with(pb))
 
     optimal = MagicMock()
     optimal.unindex_playbook = AsyncMock(return_value=None)
-
-    svc = PlaybookService(session)
     with (
         patch(
             "roboco.services.optimal.get_optimal_service",
             AsyncMock(return_value=optimal),
         ),
     ):
-        await svc.reject(playbook_id, approver_id=uuid4(), reason="nope")
+        await svc.unindex_playbook(pb)
 
     optimal.unindex_playbook.assert_not_awaited()

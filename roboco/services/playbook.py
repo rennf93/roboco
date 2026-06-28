@@ -68,21 +68,30 @@ class PlaybookService(BaseService):
         return playbook
 
     async def approve(self, playbook_id: UUID, approver_id: UUID) -> PlaybookTable:
-        """Auditor approves a draft: draft -> approved, stamped."""
+        """Auditor approves a draft: draft -> approved, stamped.
+
+        Flushes the status change ONLY — the RAG index write (``index_approved``)
+        is a SEPARATE step the caller runs AFTER committing the status. The vector
+        store writes through its own auto-committing pool connection, so indexing
+        inline (before the status commit) would durably land an approved playbook
+        in the corpus even if the status transaction rolled back — a divergence
+        agents then surfaced in briefings.
+        """
         playbook = await self._get_or_raise(playbook_id)
         playbook.status = PlaybookStatus.APPROVED.value
         playbook.approved_by = approver_id
         playbook.approved_at = datetime.now(UTC)
         await self.session.flush()
-        await self._index_approved(playbook)
         self.log.info("Playbook approved", playbook_id=str(playbook_id))
         return playbook
 
-    async def _index_approved(self, playbook: PlaybookTable) -> None:
+    async def index_approved(self, playbook: PlaybookTable) -> None:
         """Embed an approved playbook into the PLAYBOOKS RAG index (best-effort).
 
-        Gated on ``org_memory_enabled`` so the feature is fully inert when off;
-        a failure (e.g. the embedder is down) never blocks the approval.
+        Post-commit step: the caller commits the ``draft -> approved`` status
+        change FIRST, then runs this so the index never leads the status
+        transaction. Gated on ``org_memory_enabled`` so the feature is fully inert
+        when off; a failure (e.g. the embedder is down) never blocks the approval.
         """
         if not settings.org_memory_enabled:
             return
@@ -114,17 +123,20 @@ class PlaybookService(BaseService):
     async def reject(
         self, playbook_id: UUID, approver_id: UUID, reason: str
     ) -> PlaybookTable:
-        """Auditor rejects a playbook: -> archived (reason recorded in the log)."""
+        """Auditor rejects a playbook: -> archived (reason recorded in the log).
+
+        Flushes the status change ONLY — ``unindex_playbook`` is a separate
+        post-commit step (see ``approve`` for the ordering rationale).
+        """
         playbook = await self._get_or_raise(playbook_id)
         playbook.status = PlaybookStatus.ARCHIVED.value
         playbook.approved_by = approver_id
         playbook.approved_at = datetime.now(UTC)
         await self.session.flush()
-        await self._unindex_playbook(playbook)
         self.log.info("Playbook rejected", playbook_id=str(playbook_id), reason=reason)
         return playbook
 
-    async def _unindex_playbook(self, playbook: PlaybookTable) -> None:
+    async def unindex_playbook(self, playbook: PlaybookTable) -> None:
         """De-index a playbook from the PLAYBOOKS RAG index (best-effort).
 
         The mirror of :meth:`_index_approved`: a rejected/archived playbook that

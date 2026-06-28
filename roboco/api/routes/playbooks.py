@@ -53,14 +53,17 @@ async def approve_playbook(
     """Approve a draft playbook → approved (and indexed into the KB)."""
     _require_curator(agent)
     try:
-        playbook = await get_playbook_service(db).approve(
-            playbook_id, approver_id=agent.agent_id
-        )
+        svc = get_playbook_service(db)
+        playbook = await svc.approve(playbook_id, approver_id=agent.agent_id)
     except NotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Playbook not found"
         ) from exc
+    # Commit the status change BEFORE indexing: the RAG index write runs through
+    # its own auto-committing connection, so indexing before commit would durably
+    # land an approved playbook in the corpus even if this commit rolled back.
     await db.commit()
+    await svc.index_approved(playbook)
     return Playbook.model_validate(playbook)
 
 
@@ -74,12 +77,15 @@ async def reject_playbook(
     """Reject a playbook → archived, with the Auditor's reason."""
     _require_curator(agent)
     try:
-        playbook = await get_playbook_service(db).reject(
+        svc = get_playbook_service(db)
+        playbook = await svc.reject(
             playbook_id, approver_id=agent.agent_id, reason=body.reason
         )
     except NotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Playbook not found"
         ) from exc
+    # Commit the status change BEFORE de-indexing (see approve_playbook).
     await db.commit()
+    await svc.unindex_playbook(playbook)
     return Playbook.model_validate(playbook)

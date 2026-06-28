@@ -48,7 +48,7 @@ def _actions(role: str) -> ContentActions:
     agent = MagicMock()
     agent.role = role
     task.agent_for = AsyncMock(return_value=agent)
-    task.session = MagicMock()
+    task.session = AsyncMock()
     deps = ContentActionsDeps(
         task=task,
         git=MagicMock(),
@@ -107,13 +107,17 @@ async def test_approve_playbook_for_auditor(monkeypatch: pytest.MonkeyPatch) -> 
     approved.status = "approved"
     svc = MagicMock()
     svc.approve = AsyncMock(return_value=approved)
+    svc.index_approved = AsyncMock()
     monkeypatch.setattr("roboco.services.playbook.get_playbook_service", lambda _s: svc)
-    env = await _actions("auditor").approve_playbook(
-        agent_id=uuid4(), playbook_id=uuid4()
-    )
+    actions = _actions("auditor")
+    env = await actions.approve_playbook(agent_id=uuid4(), playbook_id=uuid4())
     assert env.error is None
     assert env.status == "playbook_approved"
     svc.approve.assert_awaited_once()
+    # F057: the status commit gates the index — commit then index, never index
+    # before commit (the index write auto-commits on its own connection).
+    actions.task.session.commit.assert_awaited_once()
+    svc.index_approved.assert_awaited_once_with(approved)
 
 
 @pytest.mark.asyncio
@@ -125,9 +129,14 @@ async def test_reject_playbook_archives_for_auditor(
     archived.status = "archived"
     svc = MagicMock()
     svc.reject = AsyncMock(return_value=archived)
+    svc.unindex_playbook = AsyncMock()
     monkeypatch.setattr("roboco.services.playbook.get_playbook_service", lambda _s: svc)
-    env = await _actions("auditor").reject_playbook(
+    actions = _actions("auditor")
+    env = await actions.reject_playbook(
         agent_id=uuid4(), playbook_id=uuid4(), reason="duplicate"
     )
     assert env.status == "playbook_archived"
     svc.reject.assert_awaited_once()
+    # F057: de-index is the post-commit step (commit gates it).
+    actions.task.session.commit.assert_awaited_once()
+    svc.unindex_playbook.assert_awaited_once_with(archived)
