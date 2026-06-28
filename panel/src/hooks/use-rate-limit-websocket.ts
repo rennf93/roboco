@@ -64,7 +64,17 @@ export function useRateLimitWebSocket(
   // Sync WS connection state into useUsageStore for cross-component visibility.
   // This is the ONLY place wsState is written; no second useWebSocket call is needed.
   useEffect(() => {
-    useUsageStore.getState().setWsState(state);
+    const store = useUsageStore.getState();
+    store.setWsState(state);
+    // Drop any held snapshot the moment the stream is no longer connected.
+    // Otherwise a reconnect flips wsState back to "connected" before a fresh
+    // USAGE_SNAPSHOT arrives, and UsageOverviewPanel would render the prior
+    // session's totals/cost as if they were live. Clearing here keeps `live`
+    // null until a new snapshot lands, so the panel falls back to the polling
+    // summary during the gap. (Connected → connected is a no-op clear skip.)
+    if (state !== "connected") {
+      store.clearUsageData();
+    }
   }, [state]);
 
   // Fire onReconnect when state transitions from reconnecting → connected
