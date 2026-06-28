@@ -85,6 +85,10 @@ async def delegate(
         estimated_complexity=body.estimated_complexity,
         project_id=body.project_id,
         covers_parent_criteria=body.covers_parent_criteria,
+        intends_to_touch=body.intends_to_touch,
+        adds_migration=body.adds_migration,
+        touches_shared=body.touches_shared,
+        depends_on=body.depends_on,
     )
     env = await choreographer.delegate(x_agent_id, body.parent_task_id, inputs)
     return envelope_to_response(env, request)

@@ -677,6 +677,50 @@ async def test_fail_qa_routes_to_dev_via_work_session_when_marker_missing(
 
 
 @pytest.mark.asyncio
+async def test_create_subtask_round_trips_collision_surfaces_and_deps(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """create_subtask forwards intends_to_touch / adds_migration /
+    touches_shared / sequence / dependency_ids onto the created subtask.
+
+    Previously these were dropped inside create_subtask's `prepared`
+    TaskCreateRequest, so a dev task delegated with a collision surface or an
+    explicit dependency lost it before persistence — the root cause of
+    dev-task dependency_ids always being [] (the live 2026-06-27 out-of-order
+    break). The base ``create`` persists them (task.py:878-884); this test
+    locks the forwarding through create_subtask.
+    """
+    svc = task_setup["svc"]
+    parent = await svc.create(_req(task_setup))
+    await db_session.flush()
+    dep_id = uuid4()
+    sub = await svc.create_subtask(
+        TaskCreateRequest(
+            title="child",
+            description="child description with enough length",
+            acceptance_criteria=["ac1"],
+            team=Team.BACKEND,
+            created_by=task_setup["agent_id"],
+            project_id=task_setup["project_id"],
+            parent_task_id=parent.id,
+            task_type=TaskType.CODE,
+            nature=TaskNature.TECHNICAL,
+            sequence=3,
+            dependency_ids=[dep_id],
+            intends_to_touch=["roboco/services/foo.py"],
+            adds_migration=True,
+            touches_shared=True,
+        )
+    )
+    assert sub.intends_to_touch == ["roboco/services/foo.py"]
+    assert sub.adds_migration is True
+    assert sub.touches_shared is True
+    expected_sequence = 3
+    assert sub.sequence == expected_sequence
+    assert sub.dependency_ids == [dep_id]
+
+
+@pytest.mark.asyncio
 async def test_fail_qa_work_session_fallback_excludes_qa_session(
     task_setup: dict, db_session: AsyncSession
 ) -> None:

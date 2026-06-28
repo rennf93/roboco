@@ -323,6 +323,16 @@ class DelegateInputs:
     # Parent AC ids this subtask is responsible for — the decomposition coverage
     # link. Empty/None means the child covers no specific parent criteria yet.
     covers_parent_criteria: list[str] | None = None
+    # Dev-task collision surface (multi-level sequencing — edge kind 3). The
+    # cell PM states what each dev task touches so the choreographer can run
+    # SequencingService and wire the dev-task collision DAG. Optional: a
+    # delegate without surfaces joins no collision edges (parallel).
+    intends_to_touch: list[str] | None = None
+    adds_migration: bool = False
+    touches_shared: bool = False
+    # Explicit dependency override — wired verbatim as dependency_ids on the
+    # created dev task (an edge the surface rules would miss).
+    depends_on: list[UUID] | None = None
 
 
 class Choreographer:
@@ -4846,6 +4856,14 @@ class Choreographer:
             task_type=type_enum,
             nature=nature_enum,
             estimated_complexity=complexity_enum,
+            # Dev-task collision surface (multi-level sequencing — edge kind 3)
+            # + explicit dependency override. Forwarded so create_subtask can
+            # persist them (Phase S2 runs SequencingService over the surfaced
+            # siblings and wires the collision DAG via add_dependency).
+            intends_to_touch=inputs.intends_to_touch,
+            adds_migration=inputs.adds_migration,
+            touches_shared=inputs.touches_shared,
+            dependency_ids=list(inputs.depends_on) if inputs.depends_on else [],
         )
         new_task = await self.task.create_subtask(req)
         # Assign a distinct ordinal within the parent's siblings so the merge

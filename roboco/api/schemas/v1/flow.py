@@ -275,6 +275,18 @@ class DelegateRequest(BaseModel):
     # Parent acceptance-criterion ids this subtask is responsible for. Lets the
     # coverage + roll-up AC gates verify every parent AC is claimed and satisfied.
     covers_parent_criteria: StrList | None = None
+    # Dev-task collision surface (the multi-level sequencing model — edge kind
+    # 3). The cell PM states what each dev task touches so the choreographer can
+    # run SequencingService and wire the dev-task collision DAG (file-overlap
+    # serializes, migration-adders chain, shared-surface edits run last).
+    # Optional: a delegate without surfaces joins no collision edges (parallel).
+    intends_to_touch: StrList | None = None
+    adds_migration: bool = False
+    touches_shared: bool = False
+    # Explicit dependency override (edge the surface rules would miss, e.g. a
+    # non-collision ordering the PM knows). Optional; wired verbatim as
+    # dependency_ids on the created dev task.
+    depends_on: list[UUID] | None = None
 
     # Pre-gateway parity: cross-field validators that catch the most common
     # LLM-vs-schema confusions. Pre-gateway lived in

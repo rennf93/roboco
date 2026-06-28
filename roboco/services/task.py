@@ -8148,6 +8148,17 @@ class TaskService(BaseService):
             task_type=req.task_type,
             nature=req.nature,
             status=req.status or inferred_status,
+            # Forward ordering + collision surface so a dev task delegated with
+            # surfaces/dependencies keeps them (multi-level sequencing — edge
+            # kinds 3 & 4). Previously dropped here, which is why dev-task
+            # dependency_ids was always [] and the only ordering was the weak
+            # assignee-keyed spawn barrier (live 2026-06-27 out-of-order break).
+            sequence=req.sequence,
+            dependency_ids=list(req.dependency_ids) if req.dependency_ids else [],
+            batch_id=req.batch_id,
+            intends_to_touch=req.intends_to_touch,
+            adds_migration=req.adds_migration,
+            touches_shared=req.touches_shared,
         )
         return await self.create(prepared)
 
