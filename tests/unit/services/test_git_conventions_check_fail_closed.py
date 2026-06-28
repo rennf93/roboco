@@ -16,11 +16,13 @@ These are empty-result cases, not errors, so the gate correctly passes.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+from roboco.services import git as git_module
 from roboco.services.git import GitService
 
 
@@ -91,3 +93,37 @@ async def test_no_changed_files_still_fails_open() -> None:
     result = await svc.conventions_check_for_task(uuid4(), _task("feature/backend/abc"))
     assert result["could_not_run"] is False
     assert result["findings"] == []
+
+
+@pytest.mark.asyncio
+async def test_validator_timeout_fails_closed_and_reaps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hung conventions validator subprocess (tree-sitter deadlock, huge repo)
+    must time out, fail closed (could_not_run=True so the block gate refuses the
+    submit), and kill+wait the proc — not hang the gate forever nor orphan the
+    subprocess on orchestrator restart.
+    """
+    fake_proc = MagicMock()
+    fake_proc.returncode = None
+
+    async def _communicate() -> tuple[bytes, bytes]:
+        await asyncio.sleep(30)
+        return (b"", b"")
+
+    fake_proc.communicate = _communicate
+    fake_proc.kill = MagicMock()
+    fake_proc.wait = AsyncMock(return_value=-9)
+
+    async def _fake_exec(*_args: object, **_kwargs: object) -> object:
+        return fake_proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(git_module, "_CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS", 0.01)
+
+    svc = _service()
+    result = await svc._run_conventions_validator(tmp_path, ["a.py"])
+    assert result["could_not_run"] is True
+    assert "timed out" in (result.get("reason") or "")
+    fake_proc.kill.assert_called_once()
+    fake_proc.wait.assert_awaited_once()

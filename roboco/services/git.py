@@ -181,6 +181,9 @@ _CI_RUN_WINDOW = 20
 _CI_FETCH_ATTEMPTS = 3
 _CI_FETCH_BACKOFF_SECONDS = 0.5
 _CI_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+# Cap a conventions-validator run so a hung subprocess (tree-sitter deadlock,
+# huge repo) can't hang the i_am_done/pr_pass gate forever.
+_CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS = 120
 
 
 def _select_ci_head_run(runs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -4347,7 +4350,25 @@ class GitService(BaseService):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        out, err = await proc.communicate()
+        try:
+            out, err = await asyncio.wait_for(
+                proc.communicate(),
+                timeout=_CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            # Fail closed (could_not_run=True → block gate refuses the submit),
+            # matching the validator's own fail-loud philosophy, and reap the
+            # killed proc so it isn't orphaned on orchestrator restart.
+            proc.kill()
+            await proc.wait()
+            return {
+                "findings": [],
+                "could_not_run": True,
+                "reason": (
+                    f"validator timed out after "
+                    f"{_CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS}s"
+                ),
+            }
         if proc.returncode != 0:
             reason = err.decode(errors="replace").strip() or "validator crashed"
             return {"findings": [], "could_not_run": True, "reason": reason[:300]}
