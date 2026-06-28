@@ -7,12 +7,14 @@ or committing/pushing. Fail-safe: a null/failing command returns False.
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
+import time
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from roboco.services.workspace import WorkspaceService
+from roboco.services.workspace import WorkspaceService, _ensure_lock_for
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -94,3 +96,59 @@ async def test_explicit_dep_update_paths_scope(tmp_path: Path) -> None:
     cmd = "python3 -c \"open('uv.lock','a').write('x')\""
     project = _project(cmd, paths=["pnpm-lock.yaml"])
     assert await svc.dry_upgrade_changes_lockfile(project) is False
+
+
+@pytest.mark.asyncio
+async def test_probe_holds_read_clone_lock_across_local_clone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F116: the dep-update probe must hold the read-clone lock for the
+    duration of the local ``git clone --local`` from the read clone, so a
+    concurrent ``ensure_read_clone`` → ``_sync_read_clone`` (fetch + hard-reset
+    to origin's default branch) cannot mutate the read clone mid-clone. The
+    lock is released before the upgrade runs on the independent copy (the
+    upgrade never touches the read clone, so holding the lock past the clone
+    would needlessly block conventions reads for the upgrade duration)."""
+    read_clone = _make_read_clone(tmp_path)
+    svc = _svc(read_clone)
+    # Unique slug → a fresh lock not shared with any other test.
+    project = MagicMock(
+        slug="f116-probe", dep_update_command="python3 -c pass", dep_update_paths=None
+    )
+    lock = _ensure_lock_for("f116-probe", "_meta-conventions")
+    assert not lock.locked()
+
+    def slow_clone(read_clone: Path, clone_dir: Path, timeout: float) -> None:
+        # Real local clone so the dir is valid, then hold the lock a while so
+        # the test coroutine can observe the lock is held mid-clone.
+        subprocess.run(
+            [
+                "git",
+                "clone",
+                "--local",
+                "--no-hardlinks",
+                str(read_clone),
+                str(clone_dir),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=True,
+        )
+        time.sleep(0.4)
+
+    def noop_probe(_clone_dir: Path, _command: str, _lock_paths: list[str]) -> bool:
+        return False
+
+    monkeypatch.setattr(WorkspaceService, "_clone_local_into", staticmethod(slow_clone))
+    monkeypatch.setattr(
+        WorkspaceService, "_probe_lockfile_on_clone", staticmethod(noop_probe)
+    )
+
+    probe_task = asyncio.create_task(svc.dry_upgrade_changes_lockfile(project))
+    # ensure_read_clone is mocked (instant) → the probe immediately enters the
+    # lock + clone step. Give it a beat, then assert the lock is held.
+    await asyncio.sleep(0.1)
+    assert lock.locked(), "read-clone lock must be held during the local-clone step"
+    await asyncio.wait_for(probe_task, timeout=3)
+    assert not lock.locked(), "lock released after the clone step (upgrade needs none)"

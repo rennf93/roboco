@@ -1293,6 +1293,15 @@ class WorkspaceService:
         or pushed. Returns False (don't originate) on a null command or any
         probe/command error — fail-safe — and logs loudly. The throwaway is
         always removed.
+
+        The local ``git clone --local`` from the read clone runs UNDER the
+        project's read-clone lock (the same lock ``ensure_read_clone`` syncs
+        under) so a concurrent ``ensure_read_clone`` → ``_sync_read_clone``
+        (fetch + hard-reset to origin's default branch) cannot mutate the read
+        clone mid-clone. The lock is released before the upgrade runs: the
+        upgrade operates on the independent local copy and never touches the
+        read clone, so holding the lock past the clone would only block
+        conventions reads for the upgrade duration.
         """
         command = str(getattr(project, "dep_update_command", None) or "").strip()
         if not command:
@@ -1312,8 +1321,15 @@ class WorkspaceService:
         )
         tmp = Path(tempfile.mkdtemp(prefix="dep-probe-"))
         try:
+            clone_dir = tmp / "repo"
+            timeout = settings.workspace_dep_install_timeout_seconds
+            lock = _ensure_lock_for(slug, "_meta-conventions")
+            async with lock:
+                await asyncio.to_thread(
+                    self._clone_local_into, read_clone, clone_dir, timeout
+                )
             return await asyncio.to_thread(
-                self._probe_lockfile_change, read_clone, tmp, command, lock_paths
+                self._probe_lockfile_on_clone, clone_dir, command, lock_paths
             )
         except Exception as exc:
             logger.warning(
@@ -1326,17 +1342,14 @@ class WorkspaceService:
             shutil.rmtree(tmp, ignore_errors=True)
 
     @staticmethod
-    def _probe_lockfile_change(
-        read_clone: Path, tmp: Path, command: str, lock_paths: list[str]
-    ) -> bool:
-        """Sync core of the dep-update probe (run in a thread). True if dirty.
+    def _clone_local_into(read_clone: Path, clone_dir: Path, timeout: float) -> None:
+        """Local clone of the read clone into ``clone_dir`` (run in a thread).
 
-        Isolated local clone (``--no-hardlinks``) so the read clone is never
-        touched; runs the upgrade with no shell (``shlex.split``); a non-zero
-        upgrade yields False (fail-safe, don't originate on a broken probe).
+        ``--no-hardlinks`` forces a full object copy so the clone is an
+        independent repo that can be mutated (the upgrade) without touching the
+        read clone. Caller holds the read-clone lock so ``_sync_read_clone``
+        cannot mutate the source mid-clone.
         """
-        clone_dir = tmp / "repo"
-        timeout = settings.workspace_dep_install_timeout_seconds
         subprocess.run(
             [
                 "git",
@@ -1351,6 +1364,19 @@ class WorkspaceService:
             timeout=timeout,
             check=True,
         )
+
+    @staticmethod
+    def _probe_lockfile_on_clone(
+        clone_dir: Path, command: str, lock_paths: list[str]
+    ) -> bool:
+        """Run the upgrade on the independent local clone + report dirty (in a thread).
+
+        Runs the upgrade with no shell (``shlex.split``); a non-zero upgrade
+        yields False (fail-safe, don't originate on a broken probe). The lock is
+        NOT held here — the clone is a full independent copy and the upgrade
+        never touches the read clone.
+        """
+        timeout = settings.workspace_dep_install_timeout_seconds
         upgrade = subprocess.run(
             shlex.split(command),
             cwd=str(clone_dir),
