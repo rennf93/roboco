@@ -3000,6 +3000,32 @@ class GitService(BaseService):
                 raise NotFoundError(resource_type="Task", resource_id=str(data.task_id))
             self._assert_merge_role(self._status_value(task), agent_role)
 
+            # The recorded PR (task.pr_number, set when the PR was opened) is
+            # the source of truth for which PR belongs to this task. The
+            # caller's data.pr_number is unverified client input — a stale panel
+            # form, a cached old number, a buggy client — and merging it blindly
+            # would merge the wrong PR against this task's work-session and
+            # auto-complete. Refuse unless the caller's number matches the
+            # recorded one; a task with no recorded PR has nothing to verify
+            # against and is refused outright (re-opening the wrong-PR gap for
+            # any task that lost its pr_number is worse than a clear error).
+            recorded_pr = getattr(task, "pr_number", None)
+            if recorded_pr is None:
+                raise ValidationError(
+                    "PR_MISMATCH: task has no recorded pr_number; refusing to"
+                    f" merge caller-provided PR #{data.pr_number} for task"
+                    f" {data.task_id} — the merge path requires the task's own"
+                    " recorded PR."
+                )
+            if recorded_pr != data.pr_number:
+                raise ValidationError(
+                    "PR_MISMATCH: caller asked to merge PR"
+                    f" #{data.pr_number} but task {data.task_id}'s recorded PR"
+                    f" is #{recorded_pr}. The recorded PR is the source of"
+                    " truth; merge the task's own PR, not a caller-provided"
+                    " number."
+                )
+
             # A coordination root has no project of its own, so the CEO's merge
             # request can't carry a project_slug. Resolve the root's repo from
             # its product server-side; non-root tasks keep the client slug.
