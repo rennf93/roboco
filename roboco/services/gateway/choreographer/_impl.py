@@ -2810,6 +2810,33 @@ class Choreographer:
                 task_id=task_id,
                 verb="i_am_blocked",
             )
+        # F017: ``block`` is the LAST composed action, so a ``None`` return
+        # (TaskService.escalate resolved no escalation target — missing task,
+        # agent, escalation-target slug, or target agent row) flows out of
+        # ``run_intent`` as the verb's result. Without this guard the caller
+        # re-binds ``t`` to ``None`` and dereferences ``t.status`` building the
+        # success envelope → AttributeError → HTTP 500, and the agent
+        # respawn-loops with no actionable rejection. Surface invalid_state
+        # instead, pointing the agent at a direct CEO escalation or a retry.
+        if updated is None:
+            return t, await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=(
+                        "i_am_blocked did not transition the task — no escalation "
+                        "target could be resolved for your role (the PM above you "
+                        "is missing or unassignable)."
+                    ),
+                    remediate=(
+                        "re-fetch with evidence(task_id); escalate to the CEO "
+                        "directly via your PM, or retry once the escalation target "
+                        "is staffed."
+                    ),
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="i_am_blocked",
+            )
         return updated, None
 
     @staticmethod
@@ -6089,6 +6116,54 @@ class Choreographer:
                     ),
                     context_briefing=briefing,
                 ).with_introspection(task=t, role=role_str),
+                agent_id=main_pm_agent_id,
+                task_id=task_id,
+                verb="submit_root",
+            )
+        # F016: submit_for_review returns None when the root->master PR was
+        # already opened (the task raced out of in_progress, or a prior call
+        # already transitioned it to awaiting_pr_review). The create_root_pr
+        # pre-side-effect already ran, so the PR exists, but the transition
+        # did not happen — dereferencing t.status here 500'd. Surface an
+        # actionable invalid_state so the PM re-fetches and reconciles (if the
+        # task is already awaiting_pr_review the PR is open — wait for the
+        # reviewer; otherwise re-delegate the fixes and retry) instead of a
+        # crash. The None-guard + success envelope share a finalize helper so
+        # submit_root's own return count stays under the branch-limit.
+        return await self._submit_root_finalize(
+            main_pm_agent_id, task_id, t, role_str, briefing
+        )
+
+    async def _submit_root_finalize(
+        self,
+        main_pm_agent_id: UUID,
+        task_id: UUID,
+        t: Any,
+        role_str: str,
+        briefing: dict[str, Any],
+    ) -> Envelope:
+        """Build the submit_root result envelope after the verb runner returns.
+
+        ``None`` (F016) → invalid_state rejection (the root->master PR was
+        already opened / the task raced out of in_progress); otherwise the
+        success envelope keyed off the post-transition status.
+        """
+        if t is None:
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=(
+                        "submit_root did not transition the task — the "
+                        "root->master PR was already opened or the task is no "
+                        "longer in_progress."
+                    ),
+                    remediate=(
+                        "re-fetch with evidence(task_id); if it is "
+                        "awaiting_pr_review the PR is already open — wait for "
+                        "the reviewer; otherwise re-delegate the fixes and "
+                        "retry submit_root."
+                    ),
+                    context_briefing=briefing,
+                ),
                 agent_id=main_pm_agent_id,
                 task_id=task_id,
                 verb="submit_root",
