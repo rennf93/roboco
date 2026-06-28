@@ -5961,6 +5961,80 @@ class TaskService(BaseService):
         for depends_on_id, task_id in edges:
             await self.add_dependency(UUID(str(task_id)), UUID(str(depends_on_id)))
 
+    async def wire_cell_task_wave_chain(self, cell_task_id: UUID) -> None:
+        """Wire the cell-task wave chain (multi-level sequencing edge kind 2).
+
+        A new cell-task (under root-subtask ``UT_n``) depends on every cell-task
+        under every root-subtask ``UT_n`` itself depends on — ``UT_n`` 's
+        ``dependency_ids`` are the kind-1 wave-chain edges, so this chains the
+        cell-tasks of wave *k* onto the cell-tasks of wave *k-1*. A root-subtask
+        may fan to several cell-tasks (different cells), so the previous wave's
+        "cell-task" is a SET, not a single task, and the new cell-task waits for
+        the whole set so its branch carries the merged tail.
+
+        ``UT_n`` is held PENDING by ``list_pending(filter_by_dependencies=True)``
+        until its kind-1 predecessors are terminal, so by the time the Main PM
+        delegates ``UT_n`` 's cell-tasks the predecessor cell-tasks already exist
+        and are terminal — the edge is therefore a no-op gate in the common case
+        but documents the lineage and protects against any re-ordering.
+        Idempotent (``add_dependency`` dedupes) + best-effort (missing
+        predecessor / cell-task contributes no edge).
+        """
+        from roboco.services.sequencing import cell_task_wave_chain_depends_on
+
+        cell_task = await self.get(cell_task_id)
+        if cell_task is None or cell_task.parent_task_id is None:
+            return
+        root = await self.get(UUID(str(cell_task.parent_task_id)))
+        if root is None:
+            return
+        predecessor_root_ids = list(root.dependency_ids)
+        cell_tasks_by_root: dict = {}
+        for pred_root_id in predecessor_root_ids:
+            cell_tasks_by_root[pred_root_id] = await self.get_subtasks(
+                UUID(str(pred_root_id))
+            )
+        for dep_id in cell_task_wave_chain_depends_on(
+            predecessor_root_ids, cell_tasks_by_root
+        ):
+            await self.add_dependency(cell_task_id, UUID(str(dep_id)))
+
+    async def wire_by_osmosis_edge(self, dev_task_id: UUID) -> None:
+        """Wire the by-osmosis edge (multi-level sequencing edge kind 4).
+
+        The FIRST dev task (``sequence == 0``) under a cell-task depends on each
+        predecessor cell-task's tail (highest-``sequence``) dev task, so the new
+        wave's first branch carries the previous wave's fully-merged tail. The
+        predecessor cell-tasks are re-derived from the cell-task's root-subtask's
+        kind-1 ``dependency_ids`` (the same source :meth:`wire_cell_task_wave_chain`
+        uses), not from the cell-task's own ``dependency_ids`` — which also carry
+        UX/product-fanout deps the by-osmosis edge must not pick up.
+
+        Subsequent dev tasks (``sequence > 0``) inherit the tail via the kind-3
+        collision DAG or share the cell branch's already-merged base, so they
+        take no explicit edge. Idempotent + best-effort: a predecessor cell-task
+        with no dev tasks, or a missing predecessor, contributes no edge; a tail
+        already terminal is a no-op gate.
+        """
+        from roboco.services.sequencing import by_osmosis_tail_dev_tasks
+
+        dev_task = await self.get(dev_task_id)
+        if dev_task is None or dev_task.parent_task_id is None:
+            return
+        is_first = int(getattr(dev_task, "sequence", 0)) == 0
+        cell_task = await self.get(UUID(str(dev_task.parent_task_id)))
+        if cell_task is None or cell_task.parent_task_id is None:
+            return
+        root = await self.get(UUID(str(cell_task.parent_task_id)))
+        if root is None:
+            return
+        groups: list = []
+        for pred_root_id in list(root.dependency_ids):
+            for pred_ct in await self.get_subtasks(UUID(str(pred_root_id))):
+                groups.append(await self.get_subtasks(UUID(str(pred_ct.id))))
+        for dep_id in by_osmosis_tail_dev_tasks(is_first, groups):
+            await self.add_dependency(dev_task_id, UUID(str(dep_id)))
+
     async def set_sequence(self, task_id: UUID, sequence: int) -> None:
         """Set a task's sibling-ordering sequence (lower = first).
 

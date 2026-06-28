@@ -270,3 +270,59 @@ def dev_task_collision_edges(siblings: list) -> list[tuple[object, object]]:
     # any warning attributable. Empty capacity -> no warnings emitted.
     plan = SequencingService().analyze(surfaces, lambda _idx: "", {})
     return [(surfaced[a].id, surfaced[b].id) for a, b in plan.edges]
+
+
+# ---------------------------------------------------------------------------
+# Multi-level sequencing — edge kinds 2 + 4 (cell-task wave chain + by-osmosis).
+# Pure glue (no DB): the choreographer's TaskService wrappers walk the tree and
+# hand the gathered objects to these helpers, which return the IDs to
+# add_dependency. Pure so the edge logic is unit-testable without a database.
+# ---------------------------------------------------------------------------
+
+
+def cell_task_wave_chain_depends_on(
+    predecessor_root_ids: list,
+    cell_tasks_by_root: dict,
+) -> list:
+    """Kind 2: the cell-task IDs a new cell-task should depend on.
+
+    For each predecessor root-subtask (the kind-1 wave-chain edges on the new
+    cell-task's root-subtask — i.e. ``root.dependency_ids``), EVERY cell-task
+    under it. The new cell-task waits for the whole previous wave's cell work so
+    its branch carries the merged tail; a root-subtask may fan to several
+    cell-tasks (different cells), so the previous wave's "cell-task" is a SET,
+    not a single task. Idempotent by construction (``add_dependency`` dedupes);
+    over-serializes safely (a predecessor cell-task already terminal is a no-op
+    gate). A predecessor root with no cell tasks contributes nothing.
+    """
+    deps: list = []
+    for rid in predecessor_root_ids:
+        for ct in cell_tasks_by_root.get(rid, []):
+            deps.append(getattr(ct, "id", ct))
+    return deps
+
+
+def by_osmosis_tail_dev_tasks(
+    is_first_dev_task: bool,
+    predecessor_dev_task_groups: list,
+) -> list:
+    """Kind 4: the tail dev-task IDs a new dev task should depend on.
+
+    Only the FIRST dev task (``sequence == 0``) under a cell-task carries the
+    by-osmosis edge — its branch is cut first and must carry the previous wave's
+    fully-merged tail. Subsequent dev tasks inherit the tail via the kind-3
+    collision DAG (they depend on earlier siblings) or share the cell branch's
+    already-merged base, so they need no explicit edge. "Tail" = the
+    highest-``sequence`` dev task under each predecessor cell-task; a
+    predecessor with no dev tasks contributes no edge. Idempotent + best-effort
+    (a tail already terminal is a no-op gate).
+    """
+    if not is_first_dev_task:
+        return []
+    tails: list = []
+    for group in predecessor_dev_task_groups:
+        if not group:
+            continue
+        tail = max(group, key=lambda t: int(getattr(t, "sequence", 0)))
+        tails.append(getattr(tail, "id", tail))
+    return tails

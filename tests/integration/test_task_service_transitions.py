@@ -705,6 +705,7 @@ async def test_create_subtask_round_trips_collision_surfaces_and_deps(
             parent_task_id=parent.id,
             task_type=TaskType.CODE,
             nature=TaskNature.TECHNICAL,
+            estimated_complexity=Complexity.MEDIUM,
             sequence=3,
             dependency_ids=[dep_id],
             intends_to_touch=["roboco/services/foo.py"],
@@ -747,6 +748,7 @@ async def test_wire_sibling_collision_dag_serializes_overlapping_dev_tasks(
                 parent_task_id=parent.id,
                 task_type=TaskType.CODE,
                 nature=TaskNature.TECHNICAL,
+                estimated_complexity=Complexity.MEDIUM,
                 sequence=seq,
                 intends_to_touch=surface,
             )
@@ -772,6 +774,148 @@ async def test_wire_sibling_collision_dag_serializes_overlapping_dev_tasks(
     assert t1.id in r3.dependency_ids
     # T2 does NOT collide with T3 (disjoint file) -> no T2->T3 edge.
     assert t2.id not in r3.dependency_ids
+
+
+@pytest.mark.asyncio
+async def test_wire_cell_task_wave_chain_chains_to_predecessor_cell_tasks(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """Kind 2: a cell-task under root-subtask R1 depends on every cell-task
+    under R0, where R1 depends-on R0 (the kind-1 wave-chain edge on R1).
+
+    A root-subtask may fan to several cell-tasks (different cells) — both of
+    R0's cell-tasks are wired onto R1's cell-task so its branch carries the
+    whole previous wave's merged cell work. Idempotent (add_dependency dedupes).
+    """
+    svc = task_setup["svc"]
+    # Two root-subtasks; R1 depends-on R0 (the kind-1 edge lives on R1).
+    r0 = await svc.create(
+        _req(
+            task_setup,
+            title="r0",
+            team=Team.MAIN_PM,
+            task_type=TaskType.PLANNING,
+            nature=TaskNature.TECHNICAL,
+        )
+    )
+    r1 = await svc.create(
+        _req(
+            task_setup,
+            title="r1",
+            team=Team.MAIN_PM,
+            task_type=TaskType.PLANNING,
+            nature=TaskNature.TECHNICAL,
+            dependency_ids=[UUID(str(r0.id))],
+        )
+    )
+    await db_session.flush()
+
+    async def _cell(parent_id: UUID, team: Team) -> Any:
+        return await svc.create_subtask(
+            TaskCreateRequest(
+                title=f"ct-{team.value}",
+                description="cell task description long enough",
+                acceptance_criteria=["ac"],
+                team=team,
+                created_by=task_setup["agent_id"],
+                project_id=task_setup["project_id"],
+                parent_task_id=parent_id,
+                task_type=TaskType.CODE,
+                nature=TaskNature.TECHNICAL,
+                estimated_complexity=Complexity.MEDIUM,
+            )
+        )
+
+    # R0 fans to two cell-tasks (backend + frontend — the cross-cell fanout the
+    # CEO confirmed a root-subtask may carry).
+    ct0a = await _cell(UUID(str(r0.id)), Team.BACKEND)
+    ct0b = await _cell(UUID(str(r0.id)), Team.FRONTEND)
+    # R1's cell-task.
+    ct1 = await _cell(UUID(str(r1.id)), Team.BACKEND)
+
+    await svc.wire_cell_task_wave_chain(ct1.id)
+    # Idempotent: a second run adds no duplicates.
+    await svc.wire_cell_task_wave_chain(ct1.id)
+
+    r1ct = await svc.get(ct1.id)
+    assert r1ct is not None
+    # ct1 depends on BOTH of R0's cell-tasks (the whole previous wave's set).
+    assert UUID(str(ct0a.id)) in r1ct.dependency_ids
+    assert UUID(str(ct0b.id)) in r1ct.dependency_ids
+    # Idempotency: each predecessor appears once.
+    assert r1ct.dependency_ids.count(UUID(str(ct0a.id))) == 1
+
+
+@pytest.mark.asyncio
+async def test_wire_by_osmosis_edge_first_dev_task_depends_on_prev_wave_tail(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """Kind 4: the first dev task (sequence 0) of a cell-task under R1 depends
+    on the tail (highest-sequence) dev task of R0's cell-task. A non-first dev
+    task (sequence > 0) gets no by-osmosis edge (it inherits the tail via the
+    kind-3 collision DAG or shares the merged base)."""
+    svc = task_setup["svc"]
+    r0 = await svc.create(
+        _req(
+            task_setup,
+            title="r0",
+            team=Team.MAIN_PM,
+            task_type=TaskType.PLANNING,
+            nature=TaskNature.TECHNICAL,
+        )
+    )
+    r1 = await svc.create(
+        _req(
+            task_setup,
+            title="r1",
+            team=Team.MAIN_PM,
+            task_type=TaskType.PLANNING,
+            nature=TaskNature.TECHNICAL,
+            dependency_ids=[UUID(str(r0.id))],
+        )
+    )
+    await db_session.flush()
+
+    async def _sub(parent_id: UUID, seq: int) -> Any:
+        t = await svc.create_subtask(
+            TaskCreateRequest(
+                title=f"t{seq}",
+                description=f"subtask {seq} description long enough",
+                acceptance_criteria=["ac"],
+                team=Team.BACKEND,
+                created_by=task_setup["agent_id"],
+                project_id=task_setup["project_id"],
+                parent_task_id=parent_id,
+                task_type=TaskType.CODE,
+                nature=TaskNature.TECHNICAL,
+                estimated_complexity=Complexity.MEDIUM,
+                sequence=seq,
+            )
+        )
+        await svc.set_sequence(t.id, seq)
+        return t
+
+    # R0's cell-task with two dev tasks; tail = sequence 1.
+    ct0 = await _sub(UUID(str(r0.id)), 0)
+    d0a = await _sub(UUID(str(ct0.id)), 0)
+    d0b = await _sub(UUID(str(ct0.id)), 1)  # tail
+    # R1's cell-task with the first dev task (sequence 0) + a later one.
+    ct1 = await _sub(UUID(str(r1.id)), 0)
+    first = await _sub(UUID(str(ct1.id)), 0)
+    second = await _sub(UUID(str(ct1.id)), 1)
+
+    await svc.wire_by_osmosis_edge(first.id)
+    await svc.wire_by_osmosis_edge(second.id)
+
+    rf = await svc.get(first.id)
+    rs = await svc.get(second.id)
+    assert rf is not None and rs is not None
+    # The first dev task carries the by-osmosis edge to R0's cell-task's TAIL
+    # (d0b, sequence 1) — not the non-tail d0a.
+    assert UUID(str(d0b.id)) in rf.dependency_ids
+    assert UUID(str(d0a.id)) not in rf.dependency_ids
+    # The second dev task (sequence 1) gets NO by-osmosis edge.
+    assert UUID(str(d0b.id)) not in rs.dependency_ids
 
 
 @pytest.mark.asyncio

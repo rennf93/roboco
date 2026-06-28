@@ -17,7 +17,12 @@ from roboco.foundation.policy.sequencing.models import (
     DraftSurface,
     SequencingError,
 )
-from roboco.services.sequencing import SequencingService, dev_task_collision_edges
+from roboco.services.sequencing import (
+    SequencingService,
+    by_osmosis_tail_dev_tasks,
+    cell_task_wave_chain_depends_on,
+    dev_task_collision_edges,
+)
 
 
 def _backend(_i: int) -> str:
@@ -283,3 +288,80 @@ def test_dev_collision_returns_depends_on_first_pairs() -> None:
     [(dep, task)] = dev_task_collision_edges([first, second])
     assert dep == first.id
     assert task == second.id
+
+
+# ---------------------------------------------------------------------------
+# cell_task_wave_chain_depends_on — the cell-task wave chain (edge kind 2).
+# Pure glue: a new cell-task under root-subtask UT_n depends on every cell-task
+# under every root-subtask UT_n itself depends on (the kind-1 wave-chain edges).
+# ---------------------------------------------------------------------------
+
+
+def test_wave_chain_collects_all_predecessor_cell_tasks() -> None:
+    # Two predecessor root-subtasks: one fans to two cell-tasks, the other to one.
+    ct_a1, ct_a2, ct_b1 = _Sib(uuid4()), _Sib(uuid4()), _Sib(uuid4())
+    root_a, root_b = object(), object()
+    deps = cell_task_wave_chain_depends_on(
+        [root_a, root_b], {root_a: [ct_a1, ct_a2], root_b: [ct_b1]}
+    )
+    assert set(deps) == {ct_a1.id, ct_a2.id, ct_b1.id}
+
+
+def test_wave_chain_empty_when_no_predecessor_roots() -> None:
+    assert cell_task_wave_chain_depends_on([], {}) == []
+
+
+def test_wave_chain_skips_root_with_no_cell_tasks() -> None:
+    root = object()
+    assert cell_task_wave_chain_depends_on([root], {root: []}) == []
+    # A predecessor root absent from the map contributes nothing (no KeyError).
+    assert cell_task_wave_chain_depends_on([object()], {}) == []
+
+
+def test_wave_chain_preserves_predecessor_order() -> None:
+    # Edges are appended in predecessor-root order then cell-task order — stable
+    # so add_dependency (which dedupes) sees a deterministic sequence.
+    ct_a, ct_b = _Sib(uuid4()), _Sib(uuid4())
+    root_a, root_b = object(), object()
+    deps = cell_task_wave_chain_depends_on(
+        [root_a, root_b], {root_a: [ct_a], root_b: [ct_b]}
+    )
+    assert deps == [ct_a.id, ct_b.id]
+
+
+# ---------------------------------------------------------------------------
+# by_osmosis_tail_dev_tasks — the by-osmosis edge (edge kind 4).
+# Pure glue: the first dev task of a cell-task depends on each predecessor
+# cell-task's tail (highest-sequence) dev task. Only sequence 0 carries it.
+# ---------------------------------------------------------------------------
+
+
+def test_by_osmosis_skips_non_first_dev_task() -> None:
+    tail = _Sib(uuid4(), sequence=2)
+    # is_first_dev_task=False -> no edges, regardless of predecessor groups.
+    assert by_osmosis_tail_dev_tasks(False, [[tail]]) == []
+
+
+def test_by_osmosis_picks_max_sequence_per_group() -> None:
+    t0 = _Sib(uuid4(), sequence=0)
+    t1 = _Sib(uuid4(), sequence=1)
+    t2 = _Sib(uuid4(), sequence=2)
+    assert by_osmosis_tail_dev_tasks(True, [[t0, t1, t2]]) == [t2.id]
+
+
+def test_by_osmosis_one_tail_per_predecessor_group() -> None:
+    a_tail = _Sib(uuid4(), sequence=2)
+    b_tail = _Sib(uuid4(), sequence=4)
+    a_group = [_Sib(uuid4(), sequence=0), _Sib(uuid4(), sequence=1), a_tail]
+    b_group = [_Sib(uuid4(), sequence=3), b_tail]
+    assert by_osmosis_tail_dev_tasks(True, [a_group, b_group]) == [a_tail.id, b_tail.id]
+
+
+def test_by_osmosis_skips_empty_predecessor_group() -> None:
+    # A predecessor cell-task with no dev tasks contributes no edge.
+    tail = _Sib(uuid4(), sequence=1)
+    assert by_osmosis_tail_dev_tasks(True, [[], [tail]]) == [tail.id]
+
+
+def test_by_osmosis_no_edges_when_no_predecessor_groups() -> None:
+    assert by_osmosis_tail_dev_tasks(True, []) == []

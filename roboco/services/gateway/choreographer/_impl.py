@@ -4884,6 +4884,25 @@ class Choreographer:
         # dev_task_collision_edges orders by (priority, sequence) so re-runs
         # only add edges (never flip an existing pair's order into a cycle).
         await self.task.wire_sibling_collision_dag(parent_task_id)
+        # Multi-level sequencing — edge kinds 2 + 4: the cell-task wave chain
+        # and the by-osmosis dev-task edge. Dispatch on the parent's team: a
+        # MAIN_PM parent is a root-subtask, so the new task is a CELL-TASK →
+        # wire kind 2 (it depends on the previous wave's cell-tasks); a cell
+        # team parent is a cell-task, so the new task is a DEV TASK → wire kind
+        # 4 (its first dev task carries the previous wave's merged tail). kind 3
+        # (wire_sibling_collision_dag, above) runs for both. Idempotent +
+        # best-effort: missing predecessors / cell-tasks contribute no edge.
+        from roboco.foundation.identity import Team
+
+        parent_team = getattr(parent, "team", None)
+        if parent_team == Team.MAIN_PM.value:
+            await self.task.wire_cell_task_wave_chain(new_task.id)
+        elif parent_team in (
+            Team.BACKEND.value,
+            Team.FRONTEND.value,
+            Team.UX_UI.value,
+        ):
+            await self.task.wire_by_osmosis_edge(new_task.id)
         # Thread the parent's existing session links onto the
         # new subtask so the assigned agent (dev/qa/doc) lands in the
         # group chat the PM has already been talking in. Pre-gateway
