@@ -1049,10 +1049,21 @@ class WorkspaceService:
                 workspace=str(workspace),
             )
         except subprocess.CalledProcessError as e:
+            # F063: a failure anywhere in clone/configure/leakcheck/own leaves
+            # a half-configured workspace on disk. If _configure_git raised
+            # before its `remote set-url` scrub, .git/config still carries the
+            # tokenized auth URL (the project PAT); _assert_no_pat_leak never
+            # ran, and the next ensure_workspace's health short-circuit would
+            # skip straight past the leak — mounting the agent on a workspace
+            # whose .git/config lets it read+exfiltrate the PAT. Destroy the
+            # workspace so the next ensure_workspace re-clones from scratch.
+            shutil.rmtree(workspace, ignore_errors=True)
             raise WorkspaceError(
                 f"Failed to clone repository: {e.stderr or e.stdout}"
             ) from e
         except subprocess.TimeoutExpired as e:
+            # Same PAT-leak hygiene as the CalledProcessError branch.
+            shutil.rmtree(workspace, ignore_errors=True)
             raise WorkspaceError(
                 f"Clone timed out after {settings.workspace_clone_timeout}s"
             ) from e
