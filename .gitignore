@@ -1,4 +1,5 @@
 # Claude Code
+.claude/scheduled_tasks.lock
 .claude/agents/*
 .claude/commands/*
 .claude/hooks/*
