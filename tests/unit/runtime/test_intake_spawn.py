@@ -37,6 +37,9 @@ def _make_minimal_orchestrator() -> AgentOrchestrator:
     # (F071); without this the post-docker-run guard would AttributeError on
     # the constructor-skipped instance.
     orch._running = True
+    # F093: concurrent intake starts serialize on this lock; the constructor
+    # (skipped here) initializes it.
+    orch._intake_spawn_lock = asyncio.Lock()
     return orch
 
 
@@ -470,6 +473,61 @@ class TestSpawnGuarded:
         assert pushed[0][1]["kind"] == "error"
         assert "clone exploded" in pushed[0][1]["text"]
         assert closed == ["sess-B"]
+
+
+class TestConcurrentSpawnSerialization:
+    """Two concurrent intake starts must serialize — the intake agent id is a
+    single fixed id, so two ``docker run --name roboco-agent-prompter`` calls and
+    two ``_instances[INTAKE_AGENT_ID]`` writes racing orphan a container + relay.
+    The spawn body (reap-prior → clone → docker run → register) must run under
+    a per-agent lock so the second start only begins once the first has fully
+    registered (or been reaped).
+    """
+
+    @pytest.mark.asyncio
+    async def test_concurrent_intake_spawns_do_not_interleave(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        orch = _make_minimal_orchestrator()
+        _wire_spawn_mocks(monkeypatch, orch, run_calls=[])
+
+        # Reap the prior instance on a concurrent start: mock stop_agent so the
+        # second spawn's reap doesn't need the real self._lock (not set on the
+        # minimal orchestrator). Records that the prior instance was reaped.
+        reaped: list[str] = []
+
+        async def _stop(aid: str, **_kw: Any) -> None:
+            reaped.append(aid)
+
+        monkeypatch.setattr(orch, "stop_agent", _stop)
+
+        # Instrument the first await inside the spawn body (the scope clone) to
+        # measure how many spawns are inside the body at once. With a serializing
+        # lock the second spawn is parked on lock.acquire() and can't enter clone
+        # until the first releases (after fully registering) -> max depth 1.
+        # Without the lock both spawns reach clone concurrently -> max depth 2.
+        in_clone = 0
+        max_depth = 0
+
+        async def _clone(*_a: Any, **_kw: Any) -> tuple[str, list[str]]:
+            nonlocal in_clone, max_depth
+            in_clone += 1
+            max_depth = max(max_depth, in_clone)
+            await asyncio.sleep(0)  # yield so the other spawn may enter if not locked
+            in_clone -= 1
+            return "/data/workspaces/roboco/board/intake-1", ["/cwd"]
+
+        monkeypatch.setattr(orch, "_clone_intake_scope", _clone)
+
+        await asyncio.gather(
+            orch.spawn_intake_session("sess-a", project_slug="roboco"),
+            orch.spawn_intake_session("sess-b", project_slug="roboco"),
+        )
+
+        assert max_depth == 1  # serialized: never two spawns in the body at once
+        # The second start reaped the first's registered instance (proves the two
+        # spawns ran in order, not concurrently clobbering the registry).
+        assert reaped == [INTAKE_AGENT_ID]
 
 
 class TestReapIntakeSession:

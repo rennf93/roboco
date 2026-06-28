@@ -16,6 +16,7 @@ and abort WITHOUT registering. The guarded wrapper closes the relay silently
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -37,6 +38,9 @@ def _make_orchestrator() -> AgentOrchestrator:
     orch._instances = {}
     orch._bg_tasks = set()
     orch._running = True
+    # F093: concurrent secretary starts serialize on this lock; the constructor
+    # (skipped here) initializes it.
+    orch._secretary_spawn_lock = asyncio.Lock()
     return orch
 
 
@@ -163,3 +167,64 @@ async def test_running_spawn_registers_normally(
     # Only the pre-spawn reap remove — the shutdown guard did NOT remove the
     # just-started container (the orchestrator stayed running).
     assert removed == [f"roboco-agent-{SECRETARY_AGENT_ID}"]
+
+
+# ---------------------------------------------------------------------------
+# F093 — concurrent Secretary starts must serialize. The Secretary agent id is a
+# single fixed id, so two concurrent ``spawn_secretary_session`` calls race on
+# the container name (``docker run --name roboco-agent-secretary``) and the
+# ``_instances[SECRETARY_AGENT_ID]`` write, orphaning a container + relay. The
+# spawn body runs under ``_secretary_spawn_lock`` so the second start only begins
+# once the first has fully registered (so the second's reap-prior sees it).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_concurrent_secretary_spawns_do_not_interleave(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orch = _make_orchestrator()
+    removed: list[str] = []
+    _wire_secretary_spawn_mocks(monkeypatch, orch, removed, flip_running_on_run=False)
+
+    # Reap the prior instance on a concurrent start: mock stop_agent so the
+    # second spawn's reap doesn't need the real self._lock (not set on the
+    # minimal orchestrator).
+    reaped: list[str] = []
+
+    async def _stop(aid: str, **_kw: Any) -> None:
+        reaped.append(aid)
+
+    monkeypatch.setattr(orch, "stop_agent", _stop)
+
+    # Instrument the first await inside the spawn body (route resolution) to
+    # measure how many spawns are inside the body at once. With a serializing
+    # lock the second spawn is parked on lock.acquire() and can't reach the
+    # route call until the first releases -> max depth 1. Without the lock both
+    # spawns reach it concurrently -> max depth 2.
+    in_route = 0
+    max_depth = 0
+
+    async def _route(_aid: str) -> Any:
+        nonlocal in_route, max_depth
+        in_route += 1
+        max_depth = max(max_depth, in_route)
+        await asyncio.sleep(0)  # yield so the other spawn may enter if not locked
+        in_route -= 1
+        return SimpleNamespace(
+            provider_type=SimpleNamespace(value="anthropic"),
+            model_name="opus",
+            base_url=None,
+            auth_token=None,
+        )
+
+    monkeypatch.setattr(orch, "_resolve_agent_route", _route)
+
+    await asyncio.gather(
+        orch.spawn_secretary_session("sess-a", initial_message=None),
+        orch.spawn_secretary_session("sess-b", initial_message=None),
+    )
+
+    assert max_depth == 1  # serialized: never two spawns in the body at once
+    # The second start reaped the first's registered instance (ran in order).
+    assert reaped == [SECRETARY_AGENT_ID]

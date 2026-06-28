@@ -826,6 +826,19 @@ class AgentOrchestrator:
         # spawn two umbrellas for the same PR (the check is read-then-write
         # with no DB-level uniqueness).
         self._supersede_lock = asyncio.Lock()
+        # Serialize concurrent live-chat starts for the single-id interactive
+        # agents (intake / secretary). Each has a fixed agent id, so two
+        # concurrent starts race on the container name (``docker run --name
+        # roboco-agent-<id>``) and the ``_instances[<id>]`` write — orphaning a
+        # container + relay. The lock makes the second start wait for the first
+        # to fully register (so the second's reap-prior step sees it) instead of
+        # both clobbering the registry. Distinct from ``self._lock`` (which
+        # ``stop_agent`` takes) to avoid a reentrancy deadlock: the spawn body
+        # holds this lock then calls ``stop_agent`` (acquires ``self._lock``) —
+        # lock order is always ``_intake_spawn_lock`` -> ``self._lock``, never
+        # the reverse, so there's no cycle.
+        self._intake_spawn_lock = asyncio.Lock()
+        self._secretary_spawn_lock = asyncio.Lock()
         # Per-tick set of task_ids already handled by an earlier
         # dispatcher. Reset at the start of every _dispatch_all_work.
         # Consumed via `self._mark_task_handled` / `_is_task_handled`.
@@ -3466,118 +3479,129 @@ class AgentOrchestrator:
         The relay must already be open (``_open_intake_relay``). Heavy + slow
         (clone + first-time image build + docker run) — keep it off the request
         path via ``start_intake_session``.
+
+        Serialized by ``_intake_spawn_lock``: the intake agent id is a single
+        fixed id, so two concurrent starts would race on the container name and
+        the ``_instances`` write, orphaning a container + relay. The lock makes a
+        concurrent start wait for the in-flight one to finish (reap + register)
+        before it begins its own reap-prior check.
         """
-        # Single live session: reap any prior intake container before spawning.
-        if INTAKE_AGENT_ID in self._instances:
-            await self.stop_agent(INTAKE_AGENT_ID, graceful=False)
+        async with self._intake_spawn_lock:
+            # Single live session: reap any prior intake container before spawning.
+            if INTAKE_AGENT_ID in self._instances:
+                await self.stop_agent(INTAKE_AGENT_ID, graceful=False)
 
-        from roboco.models.base import ModelProvider
+            from roboco.models.base import ModelProvider
 
-        cwd, cloned = await self._clone_intake_scope(
-            project_slug, product_id, project_ids
-        )
-
-        ambient = await self._resolve_conventions_ambient(
-            project_slug, product_id=product_id
-        )
-        prompt_path = self._generate_composed_prompt(INTAKE_AGENT_ID, ambient=ambient)
-        route = await self._resolve_agent_route(INTAKE_AGENT_ID)
-        cli_model = _resolve_agent_cli_model(
-            route.provider_type.value, route.model_name
-        )
-        api_url = (
-            "http://roboco-orchestrator:8000"
-            if PROJECT_HOST_PATH
-            else f"http://127.0.0.1:{settings.port}"
-        )
-
-        # GROK runs the interactive driver on its own grok-CLI prompter image;
-        # every other provider uses the Claude SDK-driver prompter image.
-        is_grok = route.provider_type == ModelProvider.GROK
-        image = GROK_PROMPTER_IMAGE if is_grok else get_agent_image(INTAKE_AGENT_ID)
-        if is_grok:
-            await self._ensure_grok_interactive_image(image)
-            self._ensure_grok_usage_dir(INTAKE_AGENT_ID)
-        else:
-            await self._ensure_agent_image(INTAKE_AGENT_ID)
-        container_name = f"roboco-agent-{INTAKE_AGENT_ID}"
-        await self._remove_container(container_name)
-
-        cmd = self._build_intake_run_cmd(
-            _IntakeRunSpec(
-                container_name=container_name,
-                image=image,
-                hosts=self._resolve_intake_host_paths(),
-                session_id=session_id,
-                cwd=cwd,
-                cli_model=cli_model,
-                api_url=api_url,
-                provider_base_url=route.base_url,
-                provider_auth_token=route.auth_token,
-                provider_type=route.provider_type.value,
-                model=route.model_name,
+            cwd, cloned = await self._clone_intake_scope(
+                project_slug, product_id, project_ids
             )
-        )
-        container_id = await self._run_container_cmd(cmd)
 
-        # Shutdown may have begun while this (non-blocking) spawn was in flight
-        # — the bg coroutine runs concurrently with stop(). If so, remove the
-        # just-started container and abort WITHOUT registering: stop()'s
-        # _instances iteration has already run (or is running), so a registration
-        # now would land a live container nothing tears down (the orphan). The
-        # stop() drain awaits this coroutine, so the abort surfaces cleanly.
-        if not self._running:
+            ambient = await self._resolve_conventions_ambient(
+                project_slug, product_id=product_id
+            )
+            prompt_path = self._generate_composed_prompt(
+                INTAKE_AGENT_ID, ambient=ambient
+            )
+            route = await self._resolve_agent_route(INTAKE_AGENT_ID)
+            cli_model = _resolve_agent_cli_model(
+                route.provider_type.value, route.model_name
+            )
+            api_url = (
+                "http://roboco-orchestrator:8000"
+                if PROJECT_HOST_PATH
+                else f"http://127.0.0.1:{settings.port}"
+            )
+
+            # GROK runs the interactive driver on its own grok-CLI prompter image;
+            # every other provider uses the Claude SDK-driver prompter image.
+            is_grok = route.provider_type == ModelProvider.GROK
+            image = GROK_PROMPTER_IMAGE if is_grok else get_agent_image(INTAKE_AGENT_ID)
+            if is_grok:
+                await self._ensure_grok_interactive_image(image)
+                self._ensure_grok_usage_dir(INTAKE_AGENT_ID)
+            else:
+                await self._ensure_agent_image(INTAKE_AGENT_ID)
+            container_name = f"roboco-agent-{INTAKE_AGENT_ID}"
             await self._remove_container(container_name)
-            raise _SpawnAbortedDuringShutdown(INTAKE_AGENT_ID)
 
-        config = AgentConfig(
-            agent_id=INTAKE_AGENT_ID,
-            blueprint_path=prompt_path,
-            model=route.model_name,
-            git_context=None,
-            provider_type=route.provider_type.value,
-        )
-        instance = AgentInstance(
-            agent_id=INTAKE_AGENT_ID,
-            state=AgentState.ACTIVE,
-            config=config,
-            current_task_id=None,
-        )
-        instance.container_id = container_id
-        instance.started_at = datetime.now(UTC)
-        instance.last_activity = datetime.now(UTC)
-        self._instances[INTAKE_AGENT_ID] = instance
+            cmd = self._build_intake_run_cmd(
+                _IntakeRunSpec(
+                    container_name=container_name,
+                    image=image,
+                    hosts=self._resolve_intake_host_paths(),
+                    session_id=session_id,
+                    cwd=cwd,
+                    cli_model=cli_model,
+                    api_url=api_url,
+                    provider_base_url=route.base_url,
+                    provider_auth_token=route.auth_token,
+                    provider_type=route.provider_type.value,
+                    model=route.model_name,
+                )
+            )
+            container_id = await self._run_container_cmd(cmd)
 
-        # Record a usage session (task_id=None) and pin its id on the instance so
-        # the reap finalizer can look up token usage — without this an interactive
-        # session finalizes at 0 tokens / $0 (the GROK path reads the captured
-        # usage.json; the Claude path reads the transcript). Mirrors _launch_spawn.
-        usage_session_id = await self._record_spawn_session(config, None)
-        if usage_session_id is not None:
-            instance.usage_session_id = usage_session_id
+            # Shutdown may have begun while this (non-blocking) spawn was in flight
+            # — the bg coroutine runs concurrently with stop(). If so, remove the
+            # just-started container and abort WITHOUT registering: stop()'s
+            # _instances iteration has already run (or is running), so a registration
+            # now would land a live container nothing tears down (the orphan). The
+            # stop() drain awaits this coroutine, so the abort surfaces cleanly.
+            if not self._running:
+                await self._remove_container(container_name)
+                raise _SpawnAbortedDuringShutdown(INTAKE_AGENT_ID)
 
-        # The relay was already opened on the request path (start_intake_session /
-        # spawn_intake_session) BEFORE the panel connected its SSE stream. Do NOT
-        # re-open here: a second open would swap in a fresh queue and orphan that
-        # already-connected stream (the agent's replies would push to the new queue
-        # while the browser keeps reading the old one). open() is idempotent now as
-        # a guard, but the redundant call is gone regardless.
-        logger.info(
-            "Intake session spawned",
-            session_id=session_id,
-            container_id=container_id[:12],
-            cwd=cwd,
-            repos=len(cloned),
-        )
-        self._fire_audit(
-            event_type="agent.spawned",
-            agent_slug=INTAKE_AGENT_ID,
-            details={"session_id": session_id, "cwd": cwd, "repos": cloned},
-        )
+            config = AgentConfig(
+                agent_id=INTAKE_AGENT_ID,
+                blueprint_path=prompt_path,
+                model=route.model_name,
+                git_context=None,
+                provider_type=route.provider_type.value,
+            )
+            instance = AgentInstance(
+                agent_id=INTAKE_AGENT_ID,
+                state=AgentState.ACTIVE,
+                config=config,
+                current_task_id=None,
+            )
+            instance.container_id = container_id
+            instance.started_at = datetime.now(UTC)
+            instance.last_activity = datetime.now(UTC)
+            self._instances[INTAKE_AGENT_ID] = instance
 
-        if initial_message:
-            self._schedule_intake_first_message(session_id, initial_message)
-        return instance
+            # Record a usage session (task_id=None) and pin its id on the instance
+            # so the reap finalizer can look up token usage — without this an
+            # interactive session finalizes at 0 tokens / $0 (the GROK path reads the
+            # captured usage.json; the Claude path reads the transcript). Mirrors
+            # _launch_spawn.
+            usage_session_id = await self._record_spawn_session(config, None)
+            if usage_session_id is not None:
+                instance.usage_session_id = usage_session_id
+
+            # The relay was already opened on the request path
+            # (start_intake_session / spawn_intake_session) BEFORE the panel
+            # connected its SSE stream. Do NOT re-open here: a second open would
+            # swap in a fresh queue and orphan that already-connected stream (the
+            # agent's replies would push to the new queue while the browser keeps
+            # reading the old one). open() is idempotent now as a guard, but the
+            # redundant call is gone regardless.
+            logger.info(
+                "Intake session spawned",
+                session_id=session_id,
+                container_id=container_id[:12],
+                cwd=cwd,
+                repos=len(cloned),
+            )
+            self._fire_audit(
+                event_type="agent.spawned",
+                agent_slug=INTAKE_AGENT_ID,
+                details={"session_id": session_id, "cwd": cwd, "repos": cloned},
+            )
+
+            if initial_message:
+                self._schedule_intake_first_message(session_id, initial_message)
+            return instance
 
     async def reap_intake_session(self, session_id: str) -> None:
         """End a live chat: close the relay stream and stop the container."""
@@ -3653,100 +3677,108 @@ class AgentOrchestrator:
         company state through the API, so its cwd is the baked ``/app`` tree. It
         gets an HMAC agent token so its directive tools authenticate as the
         Secretary role.
+
+        Serialized by ``_secretary_spawn_lock`` for the same reason intake is
+        serialized by ``_intake_spawn_lock``: a single fixed agent id, so two
+        concurrent starts would race on the container name and the ``_instances``
+        write. See ``_spawn_intake_container`` for the deadlock-ordering note.
         """
-        from roboco.agents_config import issue_agent_token
-        from roboco.foundation.identity import AGENTS
-        from roboco.models.base import ModelProvider
+        async with self._secretary_spawn_lock:
+            from roboco.agents_config import issue_agent_token
+            from roboco.foundation.identity import AGENTS
+            from roboco.models.base import ModelProvider
 
-        if SECRETARY_AGENT_ID in self._instances:
-            await self.stop_agent(SECRETARY_AGENT_ID, graceful=False)
+            if SECRETARY_AGENT_ID in self._instances:
+                await self.stop_agent(SECRETARY_AGENT_ID, graceful=False)
 
-        prompt_path = self._generate_composed_prompt(SECRETARY_AGENT_ID)
-        route = await self._resolve_agent_route(SECRETARY_AGENT_ID)
-        cli_model = _resolve_agent_cli_model(
-            route.provider_type.value, route.model_name
-        )
-        api_url = (
-            "http://roboco-orchestrator:8000"
-            if PROJECT_HOST_PATH
-            else f"http://127.0.0.1:{settings.port}"
-        )
-
-        is_grok = route.provider_type == ModelProvider.GROK
-        image = GROK_SECRETARY_IMAGE if is_grok else get_agent_image(SECRETARY_AGENT_ID)
-        if is_grok:
-            await self._ensure_grok_interactive_image(image)
-            self._ensure_grok_usage_dir(SECRETARY_AGENT_ID)
-        else:
-            await self._ensure_agent_image(SECRETARY_AGENT_ID)
-        container_name = f"roboco-agent-{SECRETARY_AGENT_ID}"
-        await self._remove_container(container_name)
-
-        agent_uuid = str(AGENTS[SECRETARY_AGENT_ID].uuid)
-        cmd = self._build_secretary_run_cmd(
-            _SecretaryRunSpec(
-                container_name=container_name,
-                image=image,
-                hosts=self._resolve_secretary_host_paths(),
-                session_id=session_id,
-                cwd="/app",
-                cli_model=cli_model,
-                api_url=api_url,
-                agent_uuid=agent_uuid,
-                agent_token=issue_agent_token(agent_uuid, "secretary", ""),
-                provider_base_url=route.base_url,
-                provider_auth_token=route.auth_token,
-                provider_type=route.provider_type.value,
-                model=route.model_name,
+            prompt_path = self._generate_composed_prompt(SECRETARY_AGENT_ID)
+            route = await self._resolve_agent_route(SECRETARY_AGENT_ID)
+            cli_model = _resolve_agent_cli_model(
+                route.provider_type.value, route.model_name
             )
-        )
-        container_id = await self._run_container_cmd(cmd)
+            api_url = (
+                "http://roboco-orchestrator:8000"
+                if PROJECT_HOST_PATH
+                else f"http://127.0.0.1:{settings.port}"
+            )
 
-        # Shutdown may have begun while this (non-blocking) spawn was in flight
-        # — see the matching guard in _spawn_intake_container. Remove the
-        # just-started container and abort WITHOUT registering, so it isn't
-        # orphaned by a stop() that has already iterated _instances.
-        if not self._running:
+            is_grok = route.provider_type == ModelProvider.GROK
+            image = (
+                GROK_SECRETARY_IMAGE if is_grok else get_agent_image(SECRETARY_AGENT_ID)
+            )
+            if is_grok:
+                await self._ensure_grok_interactive_image(image)
+                self._ensure_grok_usage_dir(SECRETARY_AGENT_ID)
+            else:
+                await self._ensure_agent_image(SECRETARY_AGENT_ID)
+            container_name = f"roboco-agent-{SECRETARY_AGENT_ID}"
             await self._remove_container(container_name)
-            raise _SpawnAbortedDuringShutdown(SECRETARY_AGENT_ID)
 
-        config = AgentConfig(
-            agent_id=SECRETARY_AGENT_ID,
-            blueprint_path=prompt_path,
-            model=route.model_name,
-            git_context=None,
-            provider_type=route.provider_type.value,
-        )
-        instance = AgentInstance(
-            agent_id=SECRETARY_AGENT_ID,
-            state=AgentState.ACTIVE,
-            config=config,
-            current_task_id=None,
-        )
-        instance.container_id = container_id
-        instance.started_at = datetime.now(UTC)
-        instance.last_activity = datetime.now(UTC)
-        self._instances[SECRETARY_AGENT_ID] = instance
+            agent_uuid = str(AGENTS[SECRETARY_AGENT_ID].uuid)
+            cmd = self._build_secretary_run_cmd(
+                _SecretaryRunSpec(
+                    container_name=container_name,
+                    image=image,
+                    hosts=self._resolve_secretary_host_paths(),
+                    session_id=session_id,
+                    cwd="/app",
+                    cli_model=cli_model,
+                    api_url=api_url,
+                    agent_uuid=agent_uuid,
+                    agent_token=issue_agent_token(agent_uuid, "secretary", ""),
+                    provider_base_url=route.base_url,
+                    provider_auth_token=route.auth_token,
+                    provider_type=route.provider_type.value,
+                    model=route.model_name,
+                )
+            )
+            container_id = await self._run_container_cmd(cmd)
 
-        # Pin a usage session id so the reap finalizer can attribute token usage
-        # (else $0); see the matching note in _spawn_intake_container.
-        usage_session_id = await self._record_spawn_session(config, None)
-        if usage_session_id is not None:
-            instance.usage_session_id = usage_session_id
+            # Shutdown may have begun while this (non-blocking) spawn was in flight
+            # — see the matching guard in _spawn_intake_container. Remove the
+            # just-started container and abort WITHOUT registering, so it isn't
+            # orphaned by a stop() that has already iterated _instances.
+            if not self._running:
+                await self._remove_container(container_name)
+                raise _SpawnAbortedDuringShutdown(SECRETARY_AGENT_ID)
 
-        logger.info(
-            "Secretary session spawned",
-            session_id=session_id,
-            container_id=container_id[:12],
-        )
-        self._fire_audit(
-            event_type="agent.spawned",
-            agent_slug=SECRETARY_AGENT_ID,
-            details={"session_id": session_id},
-        )
-        if initial_message:
-            self._schedule_intake_first_message(session_id, initial_message)
-        return instance
+            config = AgentConfig(
+                agent_id=SECRETARY_AGENT_ID,
+                blueprint_path=prompt_path,
+                model=route.model_name,
+                git_context=None,
+                provider_type=route.provider_type.value,
+            )
+            instance = AgentInstance(
+                agent_id=SECRETARY_AGENT_ID,
+                state=AgentState.ACTIVE,
+                config=config,
+                current_task_id=None,
+            )
+            instance.container_id = container_id
+            instance.started_at = datetime.now(UTC)
+            instance.last_activity = datetime.now(UTC)
+            self._instances[SECRETARY_AGENT_ID] = instance
+
+            # Pin a usage session id so the reap finalizer can attribute token
+            # usage (else $0); see the matching note in _spawn_intake_container.
+            usage_session_id = await self._record_spawn_session(config, None)
+            if usage_session_id is not None:
+                instance.usage_session_id = usage_session_id
+
+            logger.info(
+                "Secretary session spawned",
+                session_id=session_id,
+                container_id=container_id[:12],
+            )
+            self._fire_audit(
+                event_type="agent.spawned",
+                agent_slug=SECRETARY_AGENT_ID,
+                details={"session_id": session_id},
+            )
+            if initial_message:
+                self._schedule_intake_first_message(session_id, initial_message)
+            return instance
 
     async def reap_secretary_session(self, session_id: str) -> None:
         """End a live Secretary chat: close the relay and stop the container."""
