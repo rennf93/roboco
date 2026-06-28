@@ -10,6 +10,7 @@ Claude session/overload paths get the same loop-break for free.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
@@ -17,6 +18,8 @@ from roboco.models.runtime import AgentInstance
 from roboco.runtime.orchestrator import (
     _GROK_AUTH_EXIT_CODE,
     _GROK_RATE_LIMIT_EXIT_CODE,
+    _GROK_RATE_LIMIT_RETRY_AFTER_S,
+    _GROK_REPARK_BACKOFF_CAP,
     AgentOrchestrator,
     AgentState,
 )
@@ -113,6 +116,9 @@ async def test_park_grok_rate_limited_activates_and_offlines(
     # needs the dict + persist stub to exercise that without AttributeError.
     orch._waiting_records = {}
     orch._rate_limit_ceo_notified = set()
+    # F097 backoff state — the constructor (skipped here) initializes these.
+    orch._grok_last_park_at = None
+    orch._grok_repark_count = 0
     inst = _grok_instance()
     inst.error_count = 2  # pretend prior crashes — parking must NOT count one
     tracker = _FakeTracker()
@@ -215,3 +221,103 @@ async def test_park_grok_auth_unavailable_activates_with_auth_missing_kind(
         "affected_agents": ["be-dev-1"],
         "kind": "auth_missing",
     }
+
+
+# --------------------------------------------------------------------------- #
+# F097 — grok has no real probe, so an optimistic clear respawns into a still-
+# active xAI 429 every ~90s. Back off the re-park retry_after within one rate-
+# limit episode so the churn dampens instead of spinning flat at 60s.
+# --------------------------------------------------------------------------- #
+
+
+class _RecordingTracker:
+    """Records every activate() retry_after across multiple re-parks."""
+
+    def __init__(self) -> None:
+        self.retry_afters: list[float] = []
+        self.kinds: list[str] = []
+        self.agents_lists: list[list[str]] = []
+
+    async def activate(
+        self, *, retry_after: float, affected_agents: list[str], kind: str
+    ) -> None:
+        self.retry_afters.append(retry_after)
+        self.kinds.append(kind)
+        self.agents_lists.append(affected_agents)
+
+
+def _backoff_orchestrator() -> AgentOrchestrator:
+    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    orch._waiting_records = {}
+    orch._rate_limit_ceo_notified = set()
+    # Backoff state — the constructor (skipped here) initializes these.
+    orch._grok_last_park_at = None
+    orch._grok_repark_count = 0
+    return orch
+
+
+@pytest.mark.asyncio
+async def test_grok_repark_backs_off_within_episode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Three re-parks within one episode (microseconds apart) must grow the
+    retry_after — 60 -> 120 -> 240 — not stay flat at 60s (the ~90s crash-retry
+    cycle the optimistic clear produces today)."""
+    orch = _backoff_orchestrator()
+    tracker = _RecordingTracker()
+    monkeypatch.setattr(orch, "_make_tracker", lambda _p: tracker)
+    monkeypatch.setattr(orch, "_finalize_spawn_session", AsyncMock())
+    monkeypatch.setattr(orch, "_persist_waiting_record", AsyncMock())
+    inst = _grok_instance()
+
+    await orch._park_grok_rate_limited("be-dev-1", inst)
+    await orch._park_grok_rate_limited("be-dev-1", inst)
+    await orch._park_grok_rate_limited("be-dev-1", inst)
+
+    assert tracker.retry_afters == [60.0, 120.0, 240.0]
+    assert tracker.kinds == ["rate_limited", "rate_limited", "rate_limited"]
+
+
+@pytest.mark.asyncio
+async def test_grok_repark_resets_after_episode_gap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A re-park AFTER the episode gap is a fresh episode — the retry_after
+    resets to the base 60s even if the prior episode had backed off."""
+    orch = _backoff_orchestrator()
+    orch._grok_repark_count = 3  # pretend a prior episode backed off hard
+    orch._grok_last_park_at = datetime.now(UTC) - timedelta(hours=2)
+    tracker = _RecordingTracker()
+    monkeypatch.setattr(orch, "_make_tracker", lambda _p: tracker)
+    monkeypatch.setattr(orch, "_finalize_spawn_session", AsyncMock())
+    monkeypatch.setattr(orch, "_persist_waiting_record", AsyncMock())
+    inst = _grok_instance()
+
+    await orch._park_grok_rate_limited("be-dev-1", inst)
+
+    # Fresh episode -> base retry_after, no carried-over backoff.
+    assert tracker.retry_afters == [60.0]
+    assert orch._grok_repark_count == 0
+
+
+@pytest.mark.asyncio
+async def test_grok_repark_backoff_caps(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The backoff is capped so a long xAI rate-limit window doesn't push the
+    retry_after toward infinity (bounded cycle, recovery still reachable)."""
+    orch = _backoff_orchestrator()
+    tracker = _RecordingTracker()
+    monkeypatch.setattr(orch, "_make_tracker", lambda _p: tracker)
+    monkeypatch.setattr(orch, "_finalize_spawn_session", AsyncMock())
+    monkeypatch.setattr(orch, "_persist_waiting_record", AsyncMock())
+    inst = _grok_instance()
+
+    # Park once, then re-park well past the cap.
+    for _ in range(_GROK_REPARK_BACKOFF_CAP + 3):
+        await orch._park_grok_rate_limited("be-dev-1", inst)
+
+    max_expected = _GROK_RATE_LIMIT_RETRY_AFTER_S * (2**_GROK_REPARK_BACKOFF_CAP)
+    # Every retry_after from the cap onward is the same capped value.
+    assert all(
+        r == max_expected for r in tracker.retry_afters[_GROK_REPARK_BACKOFF_CAP:]
+    )
+    assert max(tracker.retry_afters) == max_expected

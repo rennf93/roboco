@@ -304,6 +304,18 @@ _GROK_INTERACTIVE_DOCKERFILES = {
 # the retry window (unknown-provider time-expiry fallback in _probe_target).
 _GROK_RATE_LIMIT_EXIT_CODE = 75
 _GROK_RATE_LIMIT_RETRY_AFTER_S = 60.0
+# F097: grok has no real recovery probe (the grok CLI's xAI endpoint is closed
+# and the SuperGrok OIDC access token is not a valid bearer for the metered
+# api.x.ai, so a probe would either no-op or strand grok parked forever). So
+# the probe loop clears a grok park optimistically on a timer, a cleared park
+# dispatches a fresh grok agent that immediately hits the still-active xAI 429,
+# exits 75, and re-parks — a flat ~90s crash-retry cycle for the whole xAI
+# window. Back the re-park retry_after off exponentially within one episode so
+# the churn dampens (60 -> 120 -> 240 -> ... capped) instead of spinning flat.
+# Cap bounds the cycle; the episode gap (> the max cycle) resets the count once
+# the rate limit has actually lifted (no re-park for the gap => fresh episode).
+_GROK_REPARK_BACKOFF_CAP = 4  # max 2**4 = 16x base (~16min cycle)
+_GROK_REPARK_EPISODE_GAP_S = 1500.0  # 25min — > the capped ~16min cycle
 # A one-shot Grok container exits with this code (EX_CONFIG) when the
 # entrypoint's `grok_auth --check` backstop found the access token missing or
 # expired (it can't be refreshed headlessly, so the CLI would hang at an
@@ -909,6 +921,16 @@ class AgentOrchestrator:
         # kill-switch parity (the grok CLI exposes no live usage hook). 0 disables.
         # See _enforce_grok_cost_budget.
         self._grok_max_cost_usd: float = settings.grok_max_cost_usd
+        # F097: grok re-park backoff state. Grok has no real recovery probe, so
+        # the probe loop clears a grok park optimistically on a timer; a cleared
+        # park respawns a grok agent that hits the still-active xAI 429 and
+        # re-parks. Track the re-park count within one episode so the retry_after
+        # can back off exponentially (dampening the ~90s crash-retry churn), and
+        # the last park time so a gap (the rate limit actually lifted) resets
+        # the count for the next episode. Per-provider state would be cleaner,
+        # but grok is a single provider key, so a scalar suffices.
+        self._grok_last_park_at: datetime | None = None
+        self._grok_repark_count: int = 0
 
     # =========================================================================
     # LIFECYCLE
@@ -6865,14 +6887,37 @@ Start by:
         )
 
     async def _park_grok_rate_limited(self, agent_id: str, instance: Any) -> None:
-        """Park a grok agent whose run hit an xAI 429 (entrypoint exit 75)."""
+        """Park a grok agent whose run hit an xAI 429 (entrypoint exit 75).
+
+        F097: grok has no real recovery probe, so the probe loop clears a grok
+        park optimistically on a timer — a cleared park dispatches a fresh
+        grok agent that hits the still-active xAI 429, exits 75, and re-parks.
+        Without a backoff this is a flat ~90s crash-retry cycle for the whole
+        xAI rate-limit window. Back the re-park retry_after off exponentially
+        within one episode (60 -> 120 -> 240 -> ... capped) so the churn
+        dampens. A gap past ``_GROK_REPARK_EPISODE_GAP_S`` (no re-park for that
+        long => the rate limit actually lifted) starts a fresh episode at the
+        base retry_after, so recovery latency isn't penalized across episodes.
+        """
         from roboco.models.base import ModelProvider
 
+        now = datetime.now(UTC)
+        last = self._grok_last_park_at
+        if (
+            last is not None
+            and (now - last).total_seconds() < _GROK_REPARK_EPISODE_GAP_S
+        ):
+            self._grok_repark_count += 1
+        else:
+            self._grok_repark_count = 0
+        self._grok_last_park_at = now
+        backoff = 2 ** min(self._grok_repark_count, _GROK_REPARK_BACKOFF_CAP)
+        retry_after = _GROK_RATE_LIMIT_RETRY_AFTER_S * backoff
         await self._park_provider_unavailable(
             agent_id,
             instance,
             provider=ModelProvider.GROK.value,
-            retry_after=_GROK_RATE_LIMIT_RETRY_AFTER_S,
+            retry_after=retry_after,
             kind="rate_limited",
         )
 
