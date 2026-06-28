@@ -1144,19 +1144,26 @@ class TaskService(BaseService):
         await self.session.flush()
         return task
 
-    async def active_task_owns_branch(self, branch_name: str) -> bool:
-        """True if a non-terminal task already owns this git branch.
+    async def active_task_owns_branch(self, branch_name: str, project_id: UUID) -> bool:
+        """True if a non-terminal task on ``project_id`` already owns this branch.
 
         Lets the internal-PR reviewer skip the org's own in-flight integration
         PRs — those whose head branch a live task created via the agent
         task-flow (and which therefore already pass QA + PM review) — and review
         only org-repo PRs opened outside that flow.
+
+        Scoped to the polled project: a branch in project A's repo can only be
+        owned by a task whose ``project_id == A`` (each task branches in its
+        own project's repo, including each root-subtask of a multi-repo
+        MegaTask). An unscoped lookup would match the wrong project's task on a
+        cross-project branch_name collision and false-skip project A's PR.
         """
         if not branch_name:
             return False
         result = await self.session.execute(
             select(TaskTable.id).where(
                 TaskTable.branch_name == branch_name,
+                TaskTable.project_id == project_id,
                 TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
             )
         )

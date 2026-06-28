@@ -6604,7 +6604,8 @@ Start by:
             if not settings.internal_pr_enabled:
                 return False
             if await task_service.active_task_owns_branch(
-                str(pr.get("head_ref") or "")
+                str(pr.get("head_ref") or ""),
+                cast("UUID", project.id),
             ):
                 return False
             source = "internal_pr"
