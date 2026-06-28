@@ -27,12 +27,22 @@ if ! ( cd /app && python -m roboco.agent_sdk.prompt_guard "${ROBOCO_INITIAL_PROM
   exit 1
 fi
 
-# Auth fail-fast guard. The SuperGrok token (~/.grok/auth.json, mounted read-only)
-# has a ~6h TTL; on an expired/missing token headless grok does NOT refresh — it
-# hangs forever at an interactive "Waiting for authorization..." prompt, which
-# reads as a silent zombie container. The orchestrator refreshes the host token
-# on a loop; this is the in-container backstop: exit 78 (EX_CONFIG) immediately
-# so _handle_stopped_container surfaces it, instead of hanging for hours.
+# Auth fail-fast guard. The SuperGrok token (~/.grok/auth.json) has a ~6h TTL;
+# on an expired/missing token headless grok does NOT refresh — it hangs forever
+# at an interactive "Waiting for authorization..." prompt, which reads as a
+# silent zombie container. The orchestrator refreshes the host token on a loop;
+# this is the in-container backstop: exit 78 (EX_CONFIG) immediately so
+# _handle_stopped_container surfaces it, instead of hanging for hours.
+#
+# F005: the orchestrator mounts the host ~/.grok DIRECTORY read-only at
+# /home/agent/.grok-auth-ro (a single-file bind mount pins the inode, so the
+# atomic auth.json refresh never reached a running container). Symlink
+# ~/.grok/auth.json at that RO mount so grok + the --check backstop read the
+# LIVE credential (the directory mount sees the host-side rename), while grok's
+# own writable state (config.toml, sessions/) still lands in the image's
+# ~/.grok. `rm -f` first in case the image baked a stub auth.json.
+rm -f /home/agent/.grok/auth.json
+ln -s /home/agent/.grok-auth-ro/auth.json /home/agent/.grok/auth.json
 if ! ( cd /app && python -m roboco.llm.providers.grok_auth --check ); then
   echo "[grok] auth token missing or expired — refusing to run (would hang at" \
     "the login prompt). Refresh ~/.grok/auth.json (orchestrator auto-refresh or" \

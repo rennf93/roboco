@@ -126,12 +126,33 @@ def _post_token(url: str, form: dict[str, str]) -> dict[str, Any]:
 
 
 def _atomic_write(auth_path: Path, bundle: dict[str, Any]) -> None:
-    """Rewrite ``auth.json`` atomically, preserving the original file mode."""
+    """Rewrite ``auth.json`` atomically, preserving the original file mode.
+
+    F006: a rotated refresh_token is single-use — xAI invalidates the old one
+    the instant it issues the new one. If this write fails after the rotation,
+    the file keeps the now-dead old refresh_token and the credential is
+    permanently lost on the next refresh (the file's old token no longer works
+    at the token endpoint). Losing the write is therefore catastrophic; losing
+    atomicity is not. So the atomic tmp+replace is followed by a direct-write
+    fallback: only if BOTH paths fail do we let the OSError propagate so the
+    caller can report ``failed``. The direct write lands the rotated
+    refresh_token on disk even when the atomic replace can't (e.g. the tmp
+    rename fails across a boundary the kernel won't honor).
+    """
+    payload = json.dumps(bundle)
     tmp = auth_path.with_name(auth_path.name + ".refresh.tmp")
-    tmp.write_text(json.dumps(bundle), encoding="utf-8")
-    with contextlib.suppress(OSError):
-        shutil.copymode(auth_path, tmp)
-    tmp.replace(auth_path)
+    try:
+        tmp.write_text(payload, encoding="utf-8")
+        with contextlib.suppress(OSError):
+            shutil.copymode(auth_path, tmp)
+        tmp.replace(auth_path)
+        return
+    except OSError as exc:
+        logger.warning(
+            "grok auth atomic write failed; trying direct write", error=str(exc)
+        )
+    # Last-resort direct write so a rotated refresh_token is never lost.
+    auth_path.write_text(payload, encoding="utf-8")
 
 
 def _is_stale(creds: dict[str, Any], now: datetime, skew_seconds: int) -> bool:

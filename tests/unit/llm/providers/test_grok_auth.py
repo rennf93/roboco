@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import pathlib
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -124,6 +125,38 @@ def test_refresh_failed_when_no_access_token(tmp_path: Path) -> None:
     path = tmp_path / "auth.json"
     _write(path, _bundle(_PAST))
     assert ga.refresh_if_stale(path, post=lambda _u, _f: {"expires_in": 1}) == "failed"
+
+
+def test_refresh_persists_rotated_token_when_atomic_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F006: a rotated refresh_token is single-use — xAI invalidates the old one
+    the moment it issues the new one. If the atomic write (tmp+replace) fails
+    after the rotation, the file keeps the now-dead old refresh_token and the
+    credential is permanently lost on the next refresh. The write must fall back
+    to a direct write so the rotated refresh_token survives even when the atomic
+    replace can't."""
+    path = tmp_path / "auth.json"
+    _write(path, _bundle(_PAST))
+
+    def _post(_url: str, _form: dict[str, str]) -> dict[str, Any]:
+        return {
+            "access_token": "new-access",
+            "refresh_token": "rotated-rt",
+            "expires_in": 21600,
+        }
+
+    # Force the atomic tmp.replace to fail; the direct-write fallback must still
+    # land the rotated refresh_token on disk.
+    def _boom_replace(_self: pathlib.Path, _target: pathlib.Path) -> pathlib.Path:
+        raise OSError("replace failed (simulated)")
+
+    monkeypatch.setattr(pathlib.Path, "replace", _boom_replace)
+
+    assert ga.refresh_if_stale(path, post=_post) == "refreshed"
+    creds = next(iter(json.loads(path.read_text()).values()))
+    assert creds["refresh_token"] == "rotated-rt"  # survived the write failure
+    assert creds["key"] == "new-access"
 
 
 def test_main_check_exit_codes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
