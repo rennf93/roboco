@@ -50,11 +50,18 @@ export type TargetKind = "project" | "product" | "megatask";
 
 /** A MegaTask the agent proposed: a title + one draft per task (each draft
  *  carries its own project_id + collision surface). `dropped` is how many raw
- *  entries the agent emitted that were malformed and discarded. */
+ *  entries the agent emitted that were malformed and discarded.
+ *
+ *  ``parkedCellWork`` is client-only state (never sent to the backend — confirm
+ *  ships only ``title``/``drafts``/``project_ids``/``route``): a snapshot of each
+ *  draft's last per-cell content, keyed by draft index. It exists so toggling a
+ *  cell's project OFF then back ON in the review card restores the agent-authored
+ *  / user-edited summary+items instead of blanking them (F086). */
 export interface BatchProposal {
   title: string;
   drafts: DraftProposal[];
   dropped: number;
+  parkedCellWork?: Record<number, CellWork[]>;
 }
 
 /** Which start button the human pressed on the draft card. */
@@ -222,11 +229,19 @@ function batchFromEvent(
  *  (that cell no longer participates). The top-level ``project_id`` is cleared
  *  — a multi-repo task targets via its cell map, not a top-level repo. Pure, so
  *  ``setBatchDraftProjects`` can stay a thin setState wrapper and this is
- *  unit-tested directly. */
+ *  unit-tested directly.
+ *
+ *  ``priorByCell`` is the parked snapshot of a cell's last content (kept by the
+ *  caller in ``BatchProposal.parkedCellWork``) so that toggling a cell's project
+ *  OFF then back ON restores the agent-authored / user-edited summary+items
+ *  instead of blanking them. A live entry in ``currentWork`` always wins over a
+ *  stale parked copy — restore only applies to cells that are being re-added
+ *  (not present in ``currentWork``). */
 export function rebuildCellWork(
   ids: string[],
   allProjects: { id: string; assigned_cell?: Team | "" }[],
   currentWork: CellWork[],
+  priorByCell?: ReadonlyMap<Team, CellWork>,
 ): { the_work: CellWork[]; project_id: null } {
   const cellToPid = new Map<Team, string>();
   for (const id of ids) {
@@ -244,11 +259,18 @@ export function rebuildCellWork(
     }
     return w;
   });
-  // Append a minimal entry for a newly-selected cell not already in the_work.
+  // Append an entry for a newly-selected cell not already in the_work. If the
+  // cell was toggled off and back on, restore its parked summary/items instead
+  // of a blank entry — only when there's no live entry (covered) for it.
   const appended: CellWork[] = [];
   for (const [team, pid] of cellToPid) {
     if (!covered.has(team)) {
-      appended.push({ team, summary: "", items: [], project_id: pid });
+      const prior = priorByCell?.get(team);
+      appended.push(
+        prior
+          ? { ...prior, project_id: pid }
+          : { team, summary: "", items: [], project_id: pid },
+      );
     }
   }
   // Drop entries for cells no longer selected.
@@ -257,6 +279,26 @@ export function rebuildCellWork(
     return team && cellToPid.has(team);
   });
   return { the_work, project_id: null };
+}
+
+/** Merge a draft's previously-parked cell content with its current ``the_work``
+ *  into the next parked snapshot (F086). Previously-parked cells (toggled off,
+ *  no longer in ``work``) are retained so a later re-select can restore them;
+ *  live entries in ``work`` overwrite any stale parked copy, so an in-place edit
+ *  is the content that gets parked. Pure + unit-tested; the hook's
+ *  ``setBatchDraftProjects`` updater is a thin caller of this. */
+export function parkCellWork(
+  prevParked: readonly CellWork[],
+  work: readonly CellWork[],
+): CellWork[] {
+  const byTeam = new Map<Team, CellWork>();
+  for (const w of prevParked) {
+    if (w?.team) byTeam.set(w.team, w);
+  }
+  for (const w of work) {
+    if (w?.team) byTeam.set(w.team, w);
+  }
+  return Array.from(byTeam.values());
 }
 
 /** Fill each draft's missing project assignment from the MegaTask's scoped
@@ -1027,14 +1069,41 @@ export function usePrompter() {
     (index: number, ids: string[]) => {
       setBatch((prev) => {
         if (!prev) return prev;
+        const draft = prev.drafts[index];
+        const work: CellWork[] = Array.isArray(draft?.the_work)
+          ? (draft!.the_work as CellWork[])
+          : [];
+        // Park each cell's last-seen content so a later re-select of a
+        // toggled-off cell restores its summary/items instead of blanking
+        // them (F086). Previously-parked cells seed the map, then the live
+        // entries win (so an in-place edit is the copy that gets parked).
+        const parkedSnapshot = parkCellWork(
+          prev.parkedCellWork?.[index] ?? [],
+          work,
+        );
+        const prior = new Map<Team, CellWork>(
+          parkedSnapshot
+            .filter((w): w is CellWork => !!w?.team)
+            .map((w) => [w.team, w]),
+        );
         return {
           ...prev,
-          drafts: prev.drafts.map((d, i) => {
-            if (i !== index) return d;
-            const work = Array.isArray(d.the_work) ? d.the_work : [];
-            const rebuilt = rebuildCellWork(ids, allProjects, work);
-            return { ...d, the_work: rebuilt.the_work, project_id: null };
-          }),
+          drafts: prev.drafts.map((d, i) =>
+            i === index
+              ? {
+                  ...d,
+                  the_work: rebuildCellWork(ids, allProjects, work, prior)
+                    .the_work,
+                  project_id: null,
+                }
+              : d,
+          ),
+          // Persist the parked snapshot (every cell's latest content, selected
+          // or not) so the next toggle can restore from it.
+          parkedCellWork: {
+            ...(prev.parkedCellWork ?? {}),
+            [index]: parkedSnapshot,
+          },
         };
       });
     },

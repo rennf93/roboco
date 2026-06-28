@@ -3,6 +3,7 @@ import type { CellWork, DraftProposal } from "@/lib/api/prompter";
 import { Team } from "@/types";
 import {
   fillBatchProjects,
+  parkCellWork,
   rebuildCellWork,
   type BatchProposal,
 } from "@/hooks/use-prompter";
@@ -182,5 +183,106 @@ describe("rebuildCellWork", () => {
     ]);
     expect(out.the_work).toEqual([]);
     expect(out.project_id).toBeNull();
+  });
+
+  // F086: toggling a cell's project off then back on must NOT blank the
+  // agent-authored summary/items. The caller parks the cell's last content
+  // (the_work snapshot before the toggle-off) and passes it back as
+  // priorByCell; rebuildCellWork restores from it instead of appending a
+  // blank entry.
+  it("restores a re-selected cell's parked summary/items from priorByCell instead of blanking (F086)", () => {
+    const prior = new Map<Team, CellWork>([
+      [
+        Team.BACKEND,
+        {
+          team: Team.BACKEND,
+          summary: "agent-authored backend work",
+          items: ["endpoint", "migrations"],
+        },
+      ],
+    ]);
+    // currentWork has no backend entry (it was toggled off and dropped) —
+    // without priorByCell this would append {summary:"", items:[]}.
+    const out = rebuildCellWork([BE], projects, [], prior);
+    expect(out.the_work).toHaveLength(1);
+    expect(out.the_work[0].team).toBe(Team.BACKEND);
+    expect(out.the_work[0].summary).toBe("agent-authored backend work");
+    expect(out.the_work[0].items).toEqual(["endpoint", "migrations"]);
+    expect(out.the_work[0].project_id).toBe(BE); // restored content, new repo
+  });
+
+  it("a freshly-selected cell with no parked copy still gets a blank entry", () => {
+    // priorByCell has no frontend entry — append blank, unchanged behavior.
+    const prior = new Map<Team, CellWork>([
+      [Team.BACKEND, { team: Team.BACKEND, summary: "s", items: ["i"] }],
+    ]);
+    const out = rebuildCellWork([FE], projects, [], prior);
+    expect(out.the_work[0]).toMatchObject({
+      team: Team.FRONTEND,
+      summary: "",
+      items: [],
+    });
+  });
+
+  it("an existing selected entry wins over a stale parked copy (edits are kept)", () => {
+    // The cell is currently selected with edited content; priorByCell holds
+    // an older copy. The live entry must win — restore must not regress an
+    // in-place edit back to the stale parked copy.
+    const current: CellWork[] = [
+      {
+        team: Team.BACKEND,
+        summary: "edited just now",
+        items: ["new"],
+        project_id: BE2,
+      },
+    ];
+    const prior = new Map<Team, CellWork>([
+      [Team.BACKEND, { team: Team.BACKEND, summary: "stale", items: ["old"] }],
+    ]);
+    const out = rebuildCellWork([BE], projects, current, prior);
+    expect(out.the_work[0].summary).toBe("edited just now");
+    expect(out.the_work[0].items).toEqual(["new"]);
+    expect(out.the_work[0].project_id).toBe(BE);
+  });
+});
+
+describe("parkCellWork — parked snapshot across a toggle-off/on (F086)", () => {
+  it("retains a deselected cell's content so a later re-select can restore it", () => {
+    // work still has backend (about to be toggled off); no prior parking yet.
+    const parked = parkCellWork(
+      [],
+      [{ team: Team.BACKEND, summary: "agent work", items: ["a"] }],
+    );
+    expect(parked).toEqual([
+      { team: Team.BACKEND, summary: "agent work", items: ["a"] },
+    ]);
+
+    // Now the cell is toggled off — work no longer has it, but the parked
+    // snapshot retains it.
+    const parked2 = parkCellWork(parked, []);
+    expect(parked2.map((w) => w.team)).toContain(Team.BACKEND);
+    expect(parked2.find((w) => w.team === Team.BACKEND)?.summary).toBe(
+      "agent work",
+    );
+  });
+
+  it("a live entry overwrites a stale parked copy (edits are parked)", () => {
+    const parked = parkCellWork(
+      [{ team: Team.BACKEND, summary: "old", items: [] }],
+      [{ team: Team.BACKEND, summary: "edited", items: ["x"] }],
+    );
+    expect(parked).toHaveLength(1);
+    expect(parked[0].summary).toBe("edited");
+    expect(parked[0].items).toEqual(["x"]);
+  });
+
+  it("merges parked cells for different teams with the live ones", () => {
+    const parked = parkCellWork(
+      [{ team: Team.BACKEND, summary: "parked-be", items: [] }],
+      [{ team: Team.FRONTEND, summary: "live-fe", items: ["y"] }],
+    );
+    const byTeam = new Map(parked.map((w) => [w.team, w]));
+    expect(byTeam.get(Team.BACKEND)?.summary).toBe("parked-be");
+    expect(byTeam.get(Team.FRONTEND)?.summary).toBe("live-fe");
   });
 });
