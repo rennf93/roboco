@@ -124,3 +124,63 @@ async def test_developer_dm_passes_auditor_guard() -> None:
     if body.get("error") == "not_authorized":
         haystack = (body.get("message") or "") + " " + (body.get("remediate") or "")
         assert "silent" not in haystack.lower()
+
+
+# ---------------------------------------------------------------------------
+# The same no-comms invariant covers pr_reviewer / prompter / secretary
+# (CLAUDE.md): pr_reviewer "posts its change-request on the PR itself — no
+# say/dm"; prompter + secretary are "restricted to note + evidence — no
+# say/dm/notify". The auditor guard's own comment claims defence-in-depth for
+# "any call that bypassed the manifest" — that rationale must hold for these
+# three roles too, or the claimed defence-in-depth is only 1 of 4 silent roles.
+# ---------------------------------------------------------------------------
+
+
+_NO_COMMS_ROLES = ("pr_reviewer", "prompter", "secretary")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", _NO_COMMS_ROLES)
+async def test_no_comms_role_say_returns_not_authorized(role: str) -> None:
+    """pr_reviewer / prompter / secretary may not say() — the handler-level
+    guard must refuse them regardless of how the call arrived, same as auditor."""
+    deps = _make_deps(role)
+    actions = ContentActions(deps)
+
+    env = await actions.say(agent_id=uuid4(), channel="backend-cell", text="hi")
+    body = env.as_dict()
+
+    assert body["error"] == "not_authorized"
+    # The no-comms signal distinguishes the role guard from any downstream
+    # reject (channel-access denial) — proves it's the silent-role guard.
+    haystack = (body.get("message") or "") + " " + (body.get("remediate") or "")
+    assert "silent" in haystack.lower()
+    # The guard fires before any downstream call.
+    deps.messaging.post_to_channel.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", _NO_COMMS_ROLES)
+async def test_no_comms_role_dm_returns_not_authorized(role: str) -> None:
+    """pr_reviewer / prompter / secretary may not dm() — handler-level guard.
+
+    Asserts the no-comms signal ("silent") in the message so the test fails for
+    the right reason on RED: without the role guard, dm() with an unowned
+    task_id still returns not_authorized from the ownership check, but that
+    reject message does NOT carry the silent-role signal. The role guard firing
+    FIRST (before the ownership check) is what makes "silent" appear."""
+    deps = _make_deps(role)
+    actions = ContentActions(deps)
+
+    env = await actions.dm(
+        agent_id=uuid4(),
+        recipient=str(uuid4()),
+        text="hi",
+        task_id=uuid4(),
+    )
+    body = env.as_dict()
+
+    assert body["error"] == "not_authorized"
+    haystack = (body.get("message") or "") + " " + (body.get("remediate") or "")
+    assert "silent" in haystack.lower()
+    deps.a2a.send.assert_not_called()

@@ -88,6 +88,29 @@ _NOTIFY_ALLOWED_ROLES: frozenset[str] = frozenset(
     r.value for r in _comms.NOTIFY_SENDER_ROLES
 )
 
+# Roles with NO agent-comms surface (CLAUDE.md): auditor (silent observer),
+# pr_reviewer (posts review findings on the PR itself — no say/dm), prompter
+# and secretary (human-only, restricted to note + evidence — no say/dm/notify).
+# The spawn manifest already omits say/dm from these roles' tool surfaces, but
+# that is convention-only — this frozenset is the handler-level defence-in-depth
+# that refuses any call that bypassed the manifest (direct verb dispatch, test
+# harness, future routing change), so the no-comms invariant holds regardless of
+# how the call arrived. Matches the explicit role-frozenset gates on commit /
+# notify / pitch / playbook / open_session.
+_NO_COMMS_ROLES: frozenset[str] = frozenset(
+    {"auditor", "pr_reviewer", "prompter", "secretary"}
+)
+
+
+def _no_comms_remediate(role: str) -> str:
+    """Role-appropriate remediation for a no-comms role blocked at say/dm."""
+    if role == "auditor":
+        return "record observations via note(scope='reflect') instead"
+    if role == "pr_reviewer":
+        return "post review findings on the PR itself via pr_pass/pr_fail instead"
+    # prompter / secretary are human-only (note + evidence).
+    return "use note() to record; this human-only role has no agent-comms surface"
+
 
 _DECISION_SECTIONS: tuple[tuple[str, str], ...] = (
     ("context", "Context"),
@@ -982,17 +1005,23 @@ class ContentActions:
             get_agent_channels,
         )
 
-        # Spec §5.5: auditor is silent — defense-in-depth runtime guard.
-        # The spawn manifest already omits `say` from the auditor's tool
-        # surface, but that is convention-only. This guard refuses any
+        # Spec §5.5: silent / no-comms roles — defense-in-depth runtime guard.
+        # The spawn manifest already omits `say` from these roles' tool
+        # surfaces, but that is convention-only. This guard refuses any
         # call that bypassed the manifest (direct verb dispatch, test
-        # harness, future routing change) so the silent-observer rule
-        # holds regardless of how the call arrived.
+        # harness, future routing change) so the no-comms rule holds
+        # regardless of how the call arrived. Covers auditor (silent
+        # observer), pr_reviewer (posts findings on the PR), and the
+        # human-only prompter / secretary (note + evidence only).
         agent = await self.task.agent_for(agent_id)
-        if agent is not None and str(agent.role) == "auditor":
+        caller_role = str(agent.role) if agent is not None else ""
+        if caller_role in _NO_COMMS_ROLES:
             return Envelope.not_authorized(
-                message="auditor is a silent observer; say is not permitted",
-                remediate="record observations via note(scope='reflect') instead",
+                message=(
+                    f"role '{caller_role}' is a silent / no-comms role;"
+                    " say is not permitted"
+                ),
+                remediate=_no_comms_remediate(caller_role),
                 context_briefing={},
             )
 
@@ -1039,14 +1068,19 @@ class ContentActions:
         """A2A direct message. Requires task_id (active or explicit)."""
         if rej := self._reject_soup(text, field="message", min_chars=2):
             return rej
-        # Spec §5.5: auditor is silent — defense-in-depth runtime guard.
-        # See say() above for rationale. Mirrored here because dm() is
-        # the other channel through which the auditor could "speak".
+        # Spec §5.5: silent / no-comms roles — defense-in-depth runtime guard.
+        # See say() for rationale. Mirrored here because dm() is the other
+        # channel through which a no-comms role could "speak". Covers auditor,
+        # pr_reviewer, and the human-only prompter / secretary.
         agent = await self.task.agent_for(agent_id)
-        if agent is not None and str(agent.role) == "auditor":
+        caller_role = str(agent.role) if agent is not None else ""
+        if caller_role in _NO_COMMS_ROLES:
             return Envelope.not_authorized(
-                message="auditor is a silent observer; dm is not permitted",
-                remediate="record observations via note(scope='reflect') instead",
+                message=(
+                    f"role '{caller_role}' is a silent / no-comms role;"
+                    " dm is not permitted"
+                ),
+                remediate=_no_comms_remediate(caller_role),
                 context_briefing={},
             )
 
