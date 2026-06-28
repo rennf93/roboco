@@ -5380,8 +5380,6 @@ class AgentOrchestrator:
             return None
 
         record = self._waiting_records[agent_id]
-        del self._waiting_records[agent_id]
-        await self._delete_waiting_record(agent_id)
 
         # Generate resume prompt
         resume_prompt = self._generate_resume_prompt(record, resolution)
@@ -5391,13 +5389,38 @@ class AgentOrchestrator:
         prior = self._instances.get(agent_id)
         prior_git_context = prior.config.git_context if prior and prior.config else None
 
-        # Respawn
-        return await self.spawn_agent(
-            agent_id=agent_id,
-            initial_prompt=resume_prompt,
-            task_id=record.task_id,
-            git_context=prior_git_context,
-        )
+        # Respawn FIRST, then tear down the record only once a container actually
+        # launched. The old order deleted the record (in-memory + durable) before
+        # the spawn: a re-park during the resume window — the provider's rate limit
+        # lifts then immediately re-limits, or a second provider limit lands —
+        # bails spawn with an OFFLINE instance (the parked-provider short-circuit),
+        # and deleting the record first orphaned the agent. With no record the
+        # probe-resume loop can never revive it and the spawn gate bails every
+        # tick, so the agent is lost until the operator intervenes. Keeping the
+        # record through a bail lets the next probe-success re-attempt the resume.
+        try:
+            instance = await self.spawn_agent(
+                agent_id=agent_id,
+                initial_prompt=resume_prompt,
+                task_id=record.task_id,
+                git_context=prior_git_context,
+            )
+        except Exception:
+            # Spawn failed (e.g. readiness refused → task auto-blocked). Tear
+            # down the record so the probe loop doesn't keep re-resuming a task
+            # that has moved to a different state; the blocked-task path takes
+            # over. This matches the pre-fix behavior where the record was
+            # deleted before the spawn attempt.
+            del self._waiting_records[agent_id]
+            await self._delete_waiting_record(agent_id)
+            raise
+        if instance is None or instance.state == AgentState.OFFLINE:
+            # Spawn bailed without launching (provider re-parked). Keep the record
+            # so the probe-resume loop re-attempts on the next clear.
+            return instance
+        del self._waiting_records[agent_id]
+        await self._delete_waiting_record(agent_id)
+        return instance
 
     def _generate_resume_prompt(
         self,
