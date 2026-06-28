@@ -415,6 +415,93 @@ class TestCEONotificationThreshold:
 
 
 # ---------------------------------------------------------------------------
+# Tests: orphan-provider fallback (F045)
+# ---------------------------------------------------------------------------
+
+
+class TestOrphanProviderFallback:
+    """F045: an activate() failure in the in-verb ``i_am_blocked(rate_limited)``
+    path leaves agents parked in ``_waiting_records`` but the provider never
+    makes it into the tracker — so the tracker-driven loop never probes it and
+    the parked agents strand in WAITING_LONG forever. The sweep must scan the
+    in-memory records for any ``rate_limit_lifted`` provider the tracker-listed
+    set did NOT cover and probe it via the time-expiry fallback so
+    ``_on_probe_success`` can resume them.
+    """
+
+    async def test_orphan_parked_agent_resumed_when_tracker_lacks_provider(
+        self,
+    ) -> None:
+        orch = _make_orchestrator()
+        provider = "anthropic"
+        agent = "be-dev-1"
+        orch._waiting_records = {agent: _waiting_record(agent, provider)}
+
+        tracker_mock = _make_tracker_mock()
+        resolve_mock = AsyncMock(return_value=None)
+
+        with (
+            patch.object(orch, "resolve_wait", new=resolve_mock),
+            patch.object(orch, "_make_tracker", return_value=tracker_mock),
+            patch.object(orch, "_do_probe", new=AsyncMock(return_value=True)),
+            patch.object(
+                RateLimitStateTracker,
+                "list_rate_limited_providers",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch("roboco.events.get_event_bus") as mock_bus_fn,
+        ):
+            bus_mock = AsyncMock()
+            bus_mock.publish = AsyncMock()
+            mock_bus_fn.return_value = bus_mock
+
+            await orch._sweep_rate_limit_probes()
+
+        # The orphan provider was probed and the parked agent resumed.
+        assert resolve_mock.await_count == 1
+        assert resolve_mock.call_args.args[0] == agent
+
+    async def test_orphan_skipped_when_tracker_already_covers_provider(
+        self,
+    ) -> None:
+        """A provider the tracker lists must NOT be double-probed via the fallback."""
+        orch = _make_orchestrator()
+        provider = "anthropic"
+        agent = "be-dev-1"
+        orch._waiting_records = {agent: _waiting_record(agent, provider)}
+
+        tracker_mock = _make_tracker_mock()
+        resolve_mock = AsyncMock(return_value=None)
+        state = _make_active_state(provider, retry_after=None)
+
+        probe_calls: list[str] = []
+
+        async def fake_do_probe(p: str) -> bool:
+            probe_calls.append(p)
+            return True
+
+        with (
+            patch.object(orch, "resolve_wait", new=resolve_mock),
+            patch.object(orch, "_make_tracker", return_value=tracker_mock),
+            patch.object(orch, "_do_probe", new=fake_do_probe),
+            patch.object(
+                RateLimitStateTracker,
+                "list_rate_limited_providers",
+                new=AsyncMock(return_value=[(provider, state)]),
+            ),
+            patch("roboco.events.get_event_bus") as mock_bus_fn,
+        ):
+            bus_mock = AsyncMock()
+            bus_mock.publish = AsyncMock()
+            mock_bus_fn.return_value = bus_mock
+
+            await orch._sweep_rate_limit_probes()
+
+        # Probed exactly once (via the tracker-listed path), not twice.
+        assert probe_calls == [provider]
+
+
+# ---------------------------------------------------------------------------
 # Tests: list_rate_limited_providers
 # ---------------------------------------------------------------------------
 

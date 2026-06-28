@@ -2941,8 +2941,19 @@ class Choreographer:
         # calls can gate new spawns for this provider.  Skipped when the
         # provider is "unknown" (orchestrator not wired or not tracking the
         # agent) to avoid polluting the tracker with meaningless keys.
+        #
+        # F045: an activate() failure is logged loudly, NOT bare-suppressed.
+        # The probe-resume loop is tracker-driven — it iterates
+        # ``list_rate_limited_providers()`` — so a silent activate failure here
+        # leaves every parked agent in ``_waiting_records`` with a provider the
+        # tracker never learned about, and no probe ever runs to resume them
+        # (the stranded-fleet blind spot). The orchestrator's
+        # ``_sweep_rate_limit_probes`` has an in-memory ``_waiting_records``
+        # fallback that resumes them when the provider recovers even without
+        # tracker state; this error log makes the condition visible to
+        # operators either way.
         if provider != "unknown":
-            with contextlib.suppress(Exception):
+            try:
                 from roboco.services.gateway.rate_limit_tracker import (
                     RateLimitStateTracker,
                 )
@@ -2950,6 +2961,14 @@ class Choreographer:
                 await RateLimitStateTracker(provider).activate(
                     retry_after=retry_after_seconds,
                     affected_agents=affected_agents,
+                )
+            except Exception as exc:
+                logger.error(
+                    "rate_limit_tracker.activate failed; parked agents rely on"
+                    " the in-memory probe fallback to resume",
+                    provider=provider,
+                    affected_agents=affected_agents,
+                    error=str(exc),
                 )
 
         bus = self.stream_bus

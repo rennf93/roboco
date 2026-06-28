@@ -20,6 +20,7 @@ from uuid import uuid4
 
 from roboco.models.events import EventType
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
+from structlog.testing import capture_logs
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -505,3 +506,31 @@ class TestRateLimitTrackerActivateOnParking:
 
         assert env.error is None
         assert env.status == "in_progress"
+
+    async def test_activate_failure_is_logged_not_silent(self) -> None:
+        """F045: an activate() failure must be logged loudly, not bare-suppressed.
+
+        The probe-resume loop is tracker-driven, so a silent activate failure
+        strands every parked agent in WAITING_LONG with no probe ever running.
+        A loud error log makes the stranded-fleet condition visible to
+        operators (and pairs with the orchestrator's in-memory fallback sweep).
+        """
+        agent_id = uuid4()
+        task_id = uuid4()
+        orch = _make_orchestrator(active_agents=["be-dev-1"], provider=_PROVIDER)
+        deps = _make_deps(agent_id, task_id, orchestrator=orch)
+        c = Choreographer(deps)
+
+        mock_tracker = AsyncMock()
+        mock_tracker.activate = AsyncMock(side_effect=RuntimeError("redis down"))
+        mock_tracker_cls = MagicMock(return_value=mock_tracker)
+
+        with patch(_TRACKER_PATCH, mock_tracker_cls), capture_logs() as logs:
+            env = await c.i_am_blocked(agent_id, task_id, "rate_limited")
+
+        assert env.error is None
+        assert any(
+            "activate" in str(e.get("event", "")).lower()
+            and e.get("log_level") == "error"
+            for e in logs
+        ), f"expected an error log about activate failure; got {logs!r}"
