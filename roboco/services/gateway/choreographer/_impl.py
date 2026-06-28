@@ -1814,6 +1814,7 @@ class Choreographer:
                 ctx.agent_id, ctx.task_id, ctx.task
             ),
             lambda: self._ensure_branch_pushed(ctx),
+            lambda: self._behind_base_gate(ctx),
             lambda: self._check_quality_gate(ctx),
             lambda: self._toolchain_broken_guard(ctx.agent_id, ctx.task),
             lambda: self._conventions_gate(ctx),
@@ -2016,6 +2017,57 @@ class Choreographer:
                     "pushed PR branch. resolve the push error (often a "
                     "transient network / fetch timeout) and call i_am_done "
                     "again."
+                ),
+                context_briefing=ctx.briefing,
+            )
+        return None
+
+    async def _behind_base_gate(self, ctx: _IAmDoneContext) -> Envelope | None:
+        """Refuse i_am_done when the task branch has fallen behind its base.
+
+        A sibling's PR merged into the parent branch while this dev worked →
+        the head lacks that merged work, so the assembled PR can't merge
+        cleanly and a sibling's changes go missing from this branch (the
+        2026-06-27 out-of-order dev-task break). The dev must ``sync_branch``
+        (the gate-level rebase verb) before submitting. Fail-open on git /
+        base-resolution error so a flaky fetch can't strand a task at the
+        submit gate — the merge layer has its own behind checks. Skipped for
+        branchless coordination roots (no ``branch_name``) and when the base
+        resolves to a protected branch (master/main) or a ``-``-prefixed ref.
+        Runs after ``_ensure_branch_pushed`` so origin reflects the pushed head.
+        """
+        t = ctx.task
+        if not getattr(t, "branch_name", None):
+            return None
+        try:
+            base_branch = await resolve_parent_branch(t, self.task)
+        except Exception as exc:
+            logger.warning("behind_base_skip", task_id=str(ctx.task_id), error=str(exc))
+            return None
+        if (
+            not base_branch
+            or base_branch.startswith("-")
+            or base_branch in ("master", "main")
+        ):
+            return None
+        try:
+            behind, _ahead = await self.git.is_behind_base(
+                t, base_branch=base_branch, actor_agent_id=ctx.agent_id
+            )
+        except Exception as exc:
+            logger.warning("behind_base_skip", task_id=str(ctx.task_id), error=str(exc))
+            return None
+        if behind > 0:
+            return Envelope.invalid_state(
+                message=(
+                    f"your branch is {behind} commit(s) behind its base "
+                    f"'{base_branch}' — a sibling's PR merged into the parent "
+                    f"branch while you worked; your branch is missing that work"
+                ),
+                remediate=(
+                    "call sync_branch(task_id) to rebase your branch onto its base "
+                    "through the gate, then i_am_done again. do NOT submit a branch "
+                    "that is behind its base — the PR cannot merge cleanly"
                 ),
                 context_briefing=ctx.briefing,
             )

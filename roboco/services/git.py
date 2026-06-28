@@ -3732,6 +3732,57 @@ class GitService(BaseService):
             git_token=git_token,
         )
 
+    async def is_behind_base(
+        self,
+        task: Any,
+        *,
+        base_branch: str,
+        actor_agent_id: UUID | None = None,
+    ) -> tuple[int, int]:
+        """Return ``(behind, ahead)`` commit counts: head vs base branch.
+
+        ``behind`` = commits on ``origin/{base_branch}`` NOT on
+        ``origin/{head_branch}`` — the work the head has fallen behind by (e.g.
+        a sibling's PR merged into the parent branch while this dev worked).
+        ``ahead`` = commits on the head NOT on the base — the head's own work.
+        Both are read from origin after a fetch, so they reflect the pushed
+        state a merge / PR base would actually see.
+
+        The submit-time behind-base gate (``i_am_done``) uses this: a non-zero
+        ``behind`` means the branch fell behind its base and the dev must
+        ``sync_branch`` before submitting, else the PR can't merge cleanly /
+        a sibling's merged work is missing from this branch. Mirrors
+        :meth:`sync_task_branch`'s workspace/token resolution. Raises on git
+        failure (consistent with :meth:`rebase_onto_base`); the gate handler
+        fail-opens on a raised error so a flaky fetch can't strand a task at
+        the submit gate — the merge layer has its own behind checks.
+        """
+        if not task.branch_name:
+            raise ValueError("is_behind_base requires a task with a branch_name")
+        project = await self._project_for_task(task)
+        if project is None:
+            raise NotFoundError("Project for task", str(task.id))
+        workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
+        workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
+        git_token = await self._get_project_token_or_raise(project.slug)
+        await self._run_git(workspace, ["fetch", "origin"], token=git_token)
+        # --left-right --count A...B → "<left> <right>": left = commits only in
+        # A (base, what the head is BEHIND by); right = commits only in B (head,
+        # the head's own ahead work). Triple-dot = symmetric difference.
+        count = await self._run_git(
+            workspace,
+            [
+                "rev-list",
+                "--left-right",
+                "--count",
+                f"origin/{base_branch}...origin/{task.branch_name}",
+            ],
+        )
+        left, _, right = count.stdout.strip().partition(" ")
+        behind = int(left) if left.strip().isdigit() else 0
+        ahead = int(right) if right.strip().isdigit() else 0
+        return behind, ahead
+
     async def close_pull_request(
         self,
         pr_number: int,
