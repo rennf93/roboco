@@ -269,6 +269,34 @@ class PRGateMixin(_Base):
                 task_id=task_id,
                 verb=verb,
             )
+        # F046: a concurrent transition (cancel, or a racing reviewer) between
+        # the precondition gate and the runner's final composed action makes
+        # the source-status check fail mid-flight and run_intent returns None
+        # (the verb runner's documented contract for a last-action source-status
+        # failure). Without this guard the dereferences below (t.assigned_to,
+        # t.status, _post_gate_review_to_pr(t, ...)) crash the gate with a 500
+        # AttributeError. Surface a clean invalid_state rejection so the
+        # reviewer re-fetches with evidence(task_id) and re-issues — the
+        # already-authored verdict note is harmless (the task is no longer in
+        # the gate state) and no PR post / a2a runs against a None task.
+        if t is None:
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=(
+                        f"{verb}: the task moved out of awaiting_pr_review before"
+                        " the decision committed — a concurrent transition"
+                        " (cancel or a racing reviewer) beat you to it."
+                    ),
+                    remediate=(
+                        "re-fetch with evidence(task_id) and re-issue your gate"
+                        " verb once the task is back in awaiting_pr_review"
+                    ),
+                    context_briefing=briefing,
+                ),
+                agent_id=reviewer_agent_id,
+                task_id=task_id,
+                verb=verb,
+            )
         # Leave the gate verdict on the PR itself so there's a visible trail on
         # the very PR the PM (or CEO) merges. Best-effort and AFTER the DB
         # transition — a GitHub failure must not roll back the gate decision.

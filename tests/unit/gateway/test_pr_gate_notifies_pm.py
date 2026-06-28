@@ -238,3 +238,62 @@ async def test_pr_fail_a2a_failure_is_swallowed() -> None:
     env = await c.pr_fail(reviewer_id, task_id, ["a concrete actionable issue"])
     # Verdict still landed — the owning PM is in needs_revision.
     assert env.status == "needs_revision"
+
+
+@pytest.mark.asyncio
+async def test_pr_fail_returns_invalid_state_when_runner_returns_none() -> None:
+    """F046: if a concurrent transition (cancel or a racing reviewer) moved the
+    task out of ``awaiting_pr_review`` between the precondition gate and the
+    runner's final composed action, ``run_intent`` returns None (the verb
+    runner's documented contract for a last-action source-status failure).
+    ``_gate_decision`` must surface a clean ``invalid_state`` rejection so the
+    reviewer re-fetches and re-issues — NOT dereference None and crash the
+    gate with a 500 AttributeError on ``t.assigned_to`` / ``t.status``.
+    """
+    reviewer_id = uuid4()
+    task_id = uuid4()
+    t_before = MagicMock(
+        id=task_id,
+        assigned_to=reviewer_id,
+        pr_number=44,
+        parent_task_id=uuid4(),
+        status="awaiting_pr_review",
+    )
+
+    c = _make_choreographer()
+    _stub_gate_path(c, reviewer_id=reviewer_id, t_before=t_before, t_after=None)
+
+    env = await c.pr_fail(reviewer_id, task_id, ["a concrete actionable issue"])
+
+    # Clean rejection, not a 500.
+    assert env.error == "invalid_state"
+    # No PR post / no a2a against a None task.
+    c._post_gate_review_to_pr.assert_not_awaited()
+    c.a2a.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_pr_pass_returns_invalid_state_when_runner_returns_none() -> None:
+    """F046: the same None-guard covers pr_pass — a concurrent cancel between
+    gate and runner must surface invalid_state, not crash on ``str(t.status)``.
+    """
+    reviewer_id = uuid4()
+    task_id = uuid4()
+    t_before = MagicMock(
+        id=task_id,
+        assigned_to=reviewer_id,
+        pr_number=45,
+        parent_task_id=uuid4(),
+        status="awaiting_pr_review",
+    )
+
+    c = _make_choreographer()
+    _stub_gate_path(c, reviewer_id=reviewer_id, t_before=t_before, t_after=None)
+
+    env = await c.pr_pass(
+        reviewer_id, task_id, "Assembled root scope is clean and covered."
+    )
+
+    assert env.error == "invalid_state"
+    c._post_gate_review_to_pr.assert_not_awaited()
+    c.a2a.send.assert_not_awaited()
