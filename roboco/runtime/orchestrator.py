@@ -90,6 +90,14 @@ SDK_PORT: int = 9000
 # (a 429 rate limit OR a 5xx overload both keep the provider parked).
 _ANTHROPIC_PROBE_BASE = "https://api.anthropic.com"
 _PROBE_TIMEOUT_SECONDS = 10.0
+# Docker subprocess deadlines for the reaper path. A hung Docker daemon or a
+# stuck container FS would otherwise freeze the single asyncio event loop: the
+# reaper runs inline before every dispatch tick and shares that loop with every
+# background sweeper. Generous enough that a legitimate slow docker call (a
+# loaded daemon, a cold-venv ``import httpx, mcp``) is never wrongly aborted;
+# short enough that a hang degrades one tick, not the whole fleet.
+_DOCKER_INSPECT_TIMEOUT_SECONDS = 10.0
+_DOCKER_EXEC_TIMEOUT_SECONDS = 30.0
 _HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_OK = 200
 _HTTP_MULTIPLE_CHOICES = 300  # first non-2xx status; 2xx == [_HTTP_OK, this)
@@ -5532,7 +5540,13 @@ Start by:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        stdout, _ = await proc.communicate()
+        try:
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=_DOCKER_INSPECT_TIMEOUT_SECONDS
+            )
+        except TimeoutError:
+            proc.kill()
+            raise
         parts = stdout.decode().strip().split()
         is_running = bool(parts) and parts[0] == "true"
         try:
@@ -5561,7 +5575,13 @@ Start by:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        stdout, _ = await proc.communicate()
+        try:
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=_DOCKER_INSPECT_TIMEOUT_SECONDS
+            )
+        except TimeoutError:
+            proc.kill()
+            raise
         cid = stdout.decode().strip()
         return cid or None
 
@@ -5591,7 +5611,15 @@ Start by:
         except Exception:
             return None
         try:
-            rc = await proc.wait()
+            rc = await asyncio.wait_for(
+                proc.wait(), timeout=_DOCKER_EXEC_TIMEOUT_SECONDS
+            )
+        except TimeoutError:
+            # A hung docker exec is inconclusive (the probe could not run to
+            # completion): kill the child and decline to act, matching the
+            # existing probe-failure contract. The next grace tick retries.
+            proc.kill()
+            return None
         except Exception:
             return None
         return rc == 0
@@ -5738,9 +5766,22 @@ Start by:
                 continue
             if instance.container_id is None:
                 continue
-            is_running, exit_code = await self._inspect_container_state(
-                f"roboco-agent-{agent_id}"
-            )
+            # A per-agent docker-inspect timeout (or any docker error) must skip
+            # THIS agent, not abort the whole sweep — otherwise one hung daemon
+            # call means no agent gets health-checked this tick. The reaper's
+            # own liveness fallback still covers a genuinely-stopped container
+            # next tick; skipping is the safe fail-direction.
+            try:
+                is_running, exit_code = await self._inspect_container_state(
+                    f"roboco-agent-{agent_id}"
+                )
+            except Exception as exc:
+                logger.debug(
+                    "container inspect failed; skipping agent this tick",
+                    agent_id=agent_id,
+                    error=str(exc),
+                )
+                continue
             if not is_running:
                 await self._handle_stopped_container(agent_id, instance, exit_code)
 
