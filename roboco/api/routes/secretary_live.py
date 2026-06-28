@@ -19,10 +19,10 @@ import json
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sse_starlette import EventSourceResponse
 
-from roboco.api.deps import get_orchestrator
+from roboco.api.deps import get_orchestrator, require_panel_token
 from roboco.api.schemas.secretary_live import (
     AgentEvent,
     LiveMessageRequest,
@@ -41,6 +41,7 @@ router = APIRouter()
     "/live/start",
     response_model=StartSecretaryResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_panel_token)],
 )
 async def start_live(body: StartSecretaryRequest) -> StartSecretaryResponse:
     """Spawn the Secretary agent for a new chat and return its session id."""
@@ -57,7 +58,7 @@ async def start_live(body: StartSecretaryRequest) -> StartSecretaryResponse:
     return StartSecretaryResponse(session_id=session_id)
 
 
-@router.get("/live/{session_id}/stream")
+@router.get("/live/{session_id}/stream", dependencies=[Depends(require_panel_token)])
 async def stream(session_id: str, request: Request) -> EventSourceResponse:
     """Stream the Secretary's live events (token deltas, tool calls) to the panel."""
     registry = get_live_registry()
@@ -71,13 +72,13 @@ async def stream(session_id: str, request: Request) -> EventSourceResponse:
     return EventSourceResponse(events(), ping=15)
 
 
-@router.get("/live/{session_id}/status")
+@router.get("/live/{session_id}/status", dependencies=[Depends(require_panel_token)])
 async def session_status(session_id: str) -> dict[str, bool]:
     """Report whether a live Secretary session is still running."""
     return {"alive": get_live_registry().is_alive(session_id)}
 
 
-@router.post("/live/{session_id}/messages")
+@router.post("/live/{session_id}/messages", dependencies=[Depends(require_panel_token)])
 async def send_message(session_id: str, body: LiveMessageRequest) -> dict[str, bool]:
     """Deliver the CEO's message to the running Secretary agent."""
     delivered = await get_live_registry().deliver(session_id, body.text)
@@ -92,7 +93,7 @@ async def send_message(session_id: str, body: LiveMessageRequest) -> dict[str, b
     return {"delivered": True}
 
 
-@router.post("/live/{session_id}/stop")
+@router.post("/live/{session_id}/stop", dependencies=[Depends(require_panel_token)])
 async def stop_live(session_id: str) -> dict[str, bool]:
     """Reap the live Secretary session."""
     await get_orchestrator().reap_secretary_session(session_id)

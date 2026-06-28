@@ -20,13 +20,14 @@ import json
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sse_starlette import EventSourceResponse
 
 from roboco.api.deps import (
     CurrentAgentContext,
     DbSession,
     get_orchestrator,
+    require_panel_token,
     require_pm_or_above,
 )
 from roboco.api.schemas.prompter_live import (
@@ -74,6 +75,7 @@ def _translate_service_error(e: ServiceError) -> HTTPException:
     "/live/start",
     response_model=StartLiveResponse,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_panel_token)],
 )
 async def start_live(body: StartLiveRequest, db: DbSession) -> StartLiveResponse:
     """Spawn the intake agent for a new chat and return its session id.
@@ -117,7 +119,7 @@ async def start_live(body: StartLiveRequest, db: DbSession) -> StartLiveResponse
     return StartLiveResponse(session_id=session_id)
 
 
-@router.get("/live/{session_id}/stream")
+@router.get("/live/{session_id}/stream", dependencies=[Depends(require_panel_token)])
 async def stream(session_id: str, request: Request) -> EventSourceResponse:
     """Stream the agent's live events (token deltas, tool calls) to the panel."""
     registry = get_live_registry()
@@ -131,7 +133,7 @@ async def stream(session_id: str, request: Request) -> EventSourceResponse:
     return EventSourceResponse(events(), ping=15)
 
 
-@router.get("/live/{session_id}/status")
+@router.get("/live/{session_id}/status", dependencies=[Depends(require_panel_token)])
 async def session_status(session_id: str) -> dict[str, bool]:
     """Report whether a live intake session is still running.
 
@@ -142,7 +144,7 @@ async def session_status(session_id: str) -> dict[str, bool]:
     return {"alive": get_live_registry().is_alive(session_id)}
 
 
-@router.post("/live/{session_id}/messages")
+@router.post("/live/{session_id}/messages", dependencies=[Depends(require_panel_token)])
 async def send_message(session_id: str, body: LiveMessageRequest) -> dict[str, bool]:
     """Deliver the human's message to the running intake agent."""
     delivered = await get_live_registry().deliver(session_id, body.text)
@@ -157,7 +159,7 @@ async def send_message(session_id: str, body: LiveMessageRequest) -> dict[str, b
     return {"delivered": True}
 
 
-@router.post("/live/{session_id}/stop")
+@router.post("/live/{session_id}/stop", dependencies=[Depends(require_panel_token)])
 async def stop_live(session_id: str) -> dict[str, bool]:
     """Reap the live intake session (panel close, or draft confirmed)."""
     await get_orchestrator().reap_intake_session(session_id)
@@ -215,12 +217,13 @@ async def confirm_live(
     return {"task_id": str(task_id)}
 
 
-@router.post("/live/{session_id}/preview-batch")
+@router.post(
+    "/live/{session_id}/preview-batch", dependencies=[Depends(require_panel_token)]
+)
 async def preview_live_batch(
     session_id: str,  # noqa: ARG001 — kept for route symmetry; preview is pure
     body: BatchPreviewRequest,
     db: DbSession,
-    agent: CurrentAgentContext,  # noqa: ARG001 — auth context only
 ) -> dict[str, Any]:
     """Compute a MegaTask's waves from the proposed drafts WITHOUT creating it.
 

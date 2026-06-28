@@ -15,7 +15,7 @@ from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from roboco.agents_config import verify_agent_token
+from roboco.agents_config import CEO_AGENT_ID, verify_agent_token
 from roboco.api.schemas.optimal import PaginationParams
 from roboco.db.base import get_db
 from roboco.db.tables import AgentTable
@@ -229,6 +229,32 @@ def _check_agent_auth_token(
                 "Invalid X-Agent-Token — signature mismatch. Header "
                 "values do not match the token issued for this agent."
             ),
+        )
+
+
+def require_panel_token(
+    x_agent_token: Annotated[str | None, Header(alias="X-Agent-Token")] = None,
+) -> None:
+    """Panel (CEO) HMAC gate for the live-chat bridges.
+
+    The HTTP analog of the WS ``_require_panel_token``: the panel is the only
+    caller of the live intake/secretary chat, nginx injects the CEO-signed
+    ``X-Agent-Token`` on ``/api/`` in prod, and browser ``EventSource`` cannot
+    set headers — so the gate is token-only (no ``X-Agent-ID``; the stream is
+    session-keyed and the panel is the sole client). In dev
+    (``ROBOCO_AGENT_AUTH_REQUIRED`` unset) a missing token is allowed; a
+    presented-but-forged token is still rejected, matching
+    ``_check_agent_auth_token`` and the WS gate.
+    """
+    if _auth_required() and not x_agent_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing X-Agent-Token header (auth required)",
+        )
+    if x_agent_token and not verify_agent_token(x_agent_token, CEO_AGENT_ID, "ceo", ""):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid X-Agent-Token — signature mismatch.",
         )
 
 
