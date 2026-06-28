@@ -1057,7 +1057,13 @@ class AgentOrchestrator:
         # bg write, so log-and-continue rather than propagate.
         for agent_id in list(self._instances.keys()):
             try:
-                await self.stop_agent(agent_id)
+                # release_claim=True: on shutdown the orchestrator is going
+                # down and no agent will resume its task, so hand claimed
+                # tasks back to the pool now — they re-dispatch immediately on
+                # the next start instead of waiting for the reaper's TTL. A
+                # provider-parked agent is skipped inside stop_agent so its
+                # claim survives for the probe-resume loop across the restart.
+                await self.stop_agent(agent_id, release_claim=True)
             except Exception:
                 logger.exception(
                     "stop_agent raised during shutdown; continuing to drain",
@@ -4269,12 +4275,26 @@ class AgentOrchestrator:
         agent_id: str,
         graceful: bool = True,
         exit_reason: str = "stopped",
+        release_claim: bool = False,
     ) -> None:
         """Stop an agent container.
 
         Finalization (the HTTP call to the agent SDK's /usage/status endpoint)
         is performed BEFORE acquiring self._lock so that the network I/O does
         not block other operations that need the lock.
+
+        When ``release_claim`` is True the caller declares the stopped agent
+        will not continue its task (budget kill, orchestrator shutdown) and the
+        agent's claimed/in_progress task is handed back to the pool immediately
+        instead of waiting up to ``stale_claim_reap_seconds`` for the
+        stale-claim reaper to notice the dead heartbeat — closing the
+        SIGTERM-mid-verb gap where a task sat CLAIMED/IN_PROGRESS with no
+        running agent. Default False: the provider-park / waiting path
+        (``mark_waiting_long``) and interactive stops manage their own claim
+        lifecycle, so they opt out and the claim survives for the probe-resume
+        loop. A provider-parked agent (``rate_limit_lifted`` WaitingRecord) is
+        always skipped even when a caller opts in — its claim must survive so
+        probe-success revives the same agent on the same task.
         """
         # Finalize the spawn-session row before the container is removed so we
         # can still query the SDK's /usage/status endpoint.  This must happen
@@ -4285,6 +4305,11 @@ class AgentOrchestrator:
             return
         if instance.container_id:
             await self._finalize_spawn_session(agent_id, exit_reason=exit_reason)
+
+        # Capture the task the agent was working on before the instance state
+        # is mutated, so a release_claim stop can hand it back to the pool once
+        # the container is gone. Only relevant when the caller opted in.
+        stopped_task_id = instance.current_task_id if release_claim else None
 
         async with self._lock:
             if agent_id not in self._instances:
@@ -4326,6 +4351,68 @@ class AgentOrchestrator:
             instance.container_id = None
 
             logger.info("Agent stopped", agent_id=agent_id)
+
+        # Hand the stopped agent's claimed task back to the pool now, instead
+        # of leaving it CLAIMED/IN_PROGRESS with no running agent for the
+        # reaper's full heartbeat TTL. Done outside self._lock (DB I/O) and
+        # best-effort: a failure logs a warning and the stale-claim reaper
+        # remains the backstop. Skipped for a provider-parked agent — the
+        # probe-resume loop owns its recovery and the claim must survive.
+        if stopped_task_id and not self._is_rate_limit_parked(agent_id):
+            await self._release_stopped_agent_claim(agent_id, stopped_task_id)
+
+    def _is_rate_limit_parked(self, agent_id: str) -> bool:
+        """True if the agent is provider-parked on a rate limit.
+
+        Mirrors the reaper's ``_assignee_is_provider_parked`` guard but keyed
+        by slug directly (no task row needed): a ``rate_limit_lifted``
+        WaitingRecord means the probe-resume loop owns this agent's recovery
+        and its claim must survive a stop. Defensive on a missing registry.
+        """
+        records = getattr(self, "_waiting_records", None)
+        if not records:
+            return False
+        record = records.get(agent_id)
+        return record is not None and record.waiting_for == "rate_limit_lifted"
+
+    async def _release_stopped_agent_claim(
+        self, agent_id: str, task_id_str: str
+    ) -> None:
+        """Force a stopped agent's claimed/in_progress task back to pending.
+
+        Reuses the hardened, idempotent, status-checked
+        ``TaskService.unclaim_for_reaper`` (the same path the stale-claim
+        reaper uses) so a task that already moved on (e.g. submitted to QA
+        before the stop) is a clean no-op. Opens its own short-lived session
+        outside ``self._lock``. Best-effort: a DB failure logs and the reaper
+        backstops on the next tick.
+        """
+        from roboco.db.base import get_session_factory
+        from roboco.services.task import TaskService
+        from roboco.utils.converters import require_uuid
+
+        try:
+            task_id = require_uuid(task_id_str)
+        except Exception:
+            return
+        try:
+            factory = get_session_factory()
+            async with factory() as db:
+                svc = TaskService(db)
+                await svc.unclaim_for_reaper(task_id)
+                await db.commit()
+            logger.info(
+                "stopped agent claim released to pool",
+                agent_id=agent_id,
+                task_id=task_id_str,
+            )
+        except Exception as exc:
+            logger.warning(
+                "stop_agent claim release failed; reaper will backstop",
+                agent_id=agent_id,
+                task_id=task_id_str,
+                error=str(exc),
+            )
 
     # =========================================================================
     # WAITING STATE MANAGEMENT
@@ -5769,7 +5856,11 @@ Start by:
                     halt_threshold=data.get("halt_threshold"),
                 )
                 try:
-                    await self.stop_agent(agent_id, graceful=True)
+                    # release_claim=True: a budget-exceeded agent is terminated
+                    # for cost overruns and will not continue its task, so hand
+                    # the claim back to the pool now instead of waiting for the
+                    # reaper's TTL.
+                    await self.stop_agent(agent_id, graceful=True, release_claim=True)
                 except Exception as e:
                     logger.warning(
                         "Failed to stop budget-exceeded agent",
