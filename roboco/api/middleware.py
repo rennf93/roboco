@@ -363,6 +363,47 @@ def _uuid_field_remediation(errors: Sequence[Any]) -> str | None:
     return None
 
 
+# Credential-bearing request fields. A 422 on a secret-bearing request
+# would otherwise dump the plaintext GitHub PAT / provider API key / bearer
+# token into structlog output before the route ever encrypts it. The per-field
+# ``errors`` carry only field names and types (never values), so they stay
+# logged unchanged. Match by exact key name so a renamed secret field is
+# caught by the next audit pass rather than silently leaking.
+_SECRET_FIELD_NAMES: frozenset[str] = frozenset(
+    {
+        "git_token",
+        "api_key",
+        "auth_token",
+        "token",
+        "password",
+        "secret",
+        "client_secret",
+        "access_token",
+        "refresh_token",
+    }
+)
+
+_REDACTED = "***REDACTED***"
+
+
+def _scrub_secrets(value: Any) -> Any:
+    """Return a deep copy of ``value`` with known secret fields redacted.
+
+    Recurses into nested dicts and lists so a secret inside ``nested: {...}``
+    or a list element is also scrubbed. Non-secret fields are preserved so ops
+    can still see which field broke. The original ``rve.body`` is not mutated
+    (the 422 response body echoes the client's own submission unscrubbed).
+    """
+    if isinstance(value, dict):
+        return {
+            k: (_REDACTED if k in _SECRET_FIELD_NAMES else _scrub_secrets(v))
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_scrub_secrets(v) for v in value]
+    return value
+
+
 async def request_validation_handler(request: Request, exc: Exception) -> JSONResponse:
     """Log the rejected body before returning the standard 422 response.
 
@@ -373,15 +414,21 @@ async def request_validation_handler(request: Request, exc: Exception) -> JSONRe
 
     When the failure is a truncated ``task_id`` (the recurring agent mistake),
     add a ``remediate`` hint so the agent knows to retry with the full UUID.
+
+    F022: the log line scrubs known credential-bearing fields
+    (``git_token`` / ``api_key`` / ``auth_token`` / …) from the body before
+    logging. The 422 *response* body is unchanged — the client sent those
+    values, only the server's own log is redacted.
     """
     rve = cast("RequestValidationError", exc)
     body = rve.body if isinstance(rve.body, str | bytes | dict | list) else None
     errors = rve.errors()
+    body_for_log = _scrub_secrets(body) if isinstance(body, dict | list) else body
     logger.warning(
         "Request validation failed",
         path=request.url.path,
         method=request.method,
-        body=body,
+        body=body_for_log,
         errors=errors,
     )
     content: dict[str, Any] = {"detail": errors, "body": body}

@@ -5,10 +5,11 @@ API endpoints for managing the Agent Orchestrator.
 """
 
 from datetime import datetime
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 
-from roboco.api.deps import get_orchestrator, set_orchestrator
+from roboco.api.deps import _check_agent_auth_token, get_orchestrator, set_orchestrator
 from roboco.api.schemas.orchestrator import (
     AgentStatusResponse,
     OrchestratorStatusResponse,
@@ -16,8 +17,42 @@ from roboco.api.schemas.orchestrator import (
     SpawnAgentRequest,
     WaitingAgentResponse,
 )
+from roboco.foundation.identity import Role
 
-router = APIRouter()
+# Orchestrator control routes (spawn / stop / resolve-wait / mark-waiting,
+# plus the read-only status views) are operator/CEO control surfaces — any
+# client that could reach the API could previously spawn, stop, or
+# manipulate any agent's runtime state. The guard mirrors the panel-token
+# approach used by the WebSocket streams (DB-free): it binds the presented
+# ``X-Agent-ID`` to a verified HMAC token and asserts the role is CEO. In
+# dev (header-trust) mode a missing token is a no-op (the panel/operator
+# flow keeps working), but a presented-but-forged token is still rejected —
+# the same contract as the v1 flow role guards and the do router. CEO is the
+# sole operator role; agents (developers/QA/PMs) drive the orchestrator via
+# MCP verbs, not these HTTP routes, so a developer token is correctly 403'd
+# here.
+_CEO_ROLE = Role.CEO.value
+
+
+def _require_ceo(
+    x_agent_id: Annotated[str, Header(alias="X-Agent-ID")],
+    x_agent_role: Annotated[str, Header(alias="X-Agent-Role")],
+    x_agent_team: Annotated[str | None, Header(alias="X-Agent-Team")] = None,
+    x_agent_token: Annotated[str | None, Header(alias="X-Agent-Token")] = None,
+) -> None:
+    # Bind the role header to a verified token BEFORE trusting it (same
+    # defense-in-depth contract as the v1 flow role guards in _role_dep.py).
+    _check_agent_auth_token(x_agent_id, x_agent_role, x_agent_team, x_agent_token)
+    # ``Role`` is a StrEnum so the lowercase header string compares equal to
+    # its matching member.
+    if x_agent_role.lower() != _CEO_ROLE:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the CEO/operator may control the orchestrator",
+        )
+
+
+router = APIRouter(dependencies=[Depends(_require_ceo)])
 
 # Re-export set_orchestrator for bootstrap code
 __all__ = ["router", "set_orchestrator"]

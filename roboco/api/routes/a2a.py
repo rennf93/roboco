@@ -24,6 +24,7 @@ from fastapi.responses import JSONResponse
 from sse_starlette import EventSourceResponse
 
 from roboco.api.deps import CurrentAgentSlug, DbSession
+from roboco.api.routes.v1._role_dep import require_any_authenticated_agent
 from roboco.api.schemas.a2a_chat import (
     ConversationCloseRequest,
     ConversationCreateRequest,
@@ -39,6 +40,7 @@ from roboco.api.schemas.a2a_chat import (
     PairListResponse,
     PairResponse,
 )
+from roboco.db.base import get_session_factory
 from roboco.enforcement import A2AAccessDeniedError
 from roboco.models.a2a import (
     A2AConversationStatus,
@@ -107,7 +109,10 @@ async def get_agent_card(
 # =============================================================================
 
 
-@router.post("/message/send")
+@router.post(
+    "/message/send",
+    dependencies=[require_any_authenticated_agent],
+)
 async def send_message(
     request: SendMessageRequest,
     db: DbSession,
@@ -187,7 +192,10 @@ async def send_message(
     return {"status": "success", "a2a_request": result}
 
 
-@router.post("/message/stream")
+@router.post(
+    "/message/stream",
+    dependencies=[require_any_authenticated_agent],
+)
 async def send_message_stream(
     request: Request,
     body: SendMessageRequest,
@@ -275,22 +283,31 @@ async def send_message_stream(
     )
 
 
-@router.get("/tasks/{task_id}/subscribe")
+@router.get(
+    "/tasks/{task_id}/subscribe",
+    dependencies=[require_any_authenticated_agent],
+)
 async def subscribe_to_task(
     request: Request,
     task_id: str,
-    db: DbSession,
 ) -> EventSourceResponse:
     """
     Subscribe to task updates via SSE.
 
     Opens a persistent connection that streams task state changes
     until the task reaches a terminal state or client disconnects.
-    """
-    service = A2AService(db)
 
-    # Validate task exists
-    a2a_task = await service.get_task(task_id)
+    F024: each poll opens a SHORT-LIVED session via ``get_session_factory``
+    and closes it before the next ``asyncio.sleep`` — never holding one
+    asyncpg connection across the full SSE lifetime (up to 1 hour / 720
+    polls), which previously exhausted the pool one connection per connected
+    client. The route takes no ``db: DbSession`` for the same reason.
+    """
+    session_factory = get_session_factory()
+
+    # Validate task exists with a short-lived session (released immediately).
+    async with session_factory() as session:
+        a2a_task = await A2AService(session).get_task(task_id)
     if a2a_task is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -298,7 +315,7 @@ async def subscribe_to_task(
         )
 
     async def generate_updates() -> AsyncGenerator[dict[str, Any]]:
-        """Stream task updates."""
+        """Stream task updates — one short-lived session per poll."""
         poll_count = 0
         max_polls = 720  # 1 hour at 5s interval
         last_state = None
@@ -307,8 +324,11 @@ async def subscribe_to_task(
             if await request.is_disconnected():
                 break
 
-            # Refresh task state from DB
-            task = await service.get_task(task_id)
+            # F024: refresh task state from a per-poll session that is
+            # released before the sleep below — never held across the poll
+            # interval, so the asyncpg pool is free between queries.
+            async with session_factory() as session:
+                task = await A2AService(session).get_task(task_id)
             if task is None:
                 break
 
