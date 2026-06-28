@@ -4165,6 +4165,20 @@ class Choreographer:
                 task_id=parent_task_id,
                 verb="delegate",
             )
+        # Serialize same-parent delegates across the sibling-dedup read ->
+        # create_subtask write critical section. The dedup guard reads the
+        # parent's existing subtasks via an unlocked SELECT, then the verb
+        # body creates the subtask — with no DB serialization two concurrent
+        # same-parent delegates each read a duplicate-free set and each
+        # create a subtask (the duplicate the guard exists to prevent). The
+        # per-parent transaction-scoped advisory lock is held until the outer
+        # request commits, so the second same-parent delegate blocks until
+        # the first commits and its dedup read then sees the committed
+        # sibling. Acquired before the first get_subtasks read (the briefing
+        # context read AND the dedup sibling read) so it spans the whole
+        # section. Per-parent (not per-agent) so a coordinator PM's parallel
+        # root planning is not serialized — only same-parent delegates are.
+        await self.task.acquire_delegate_parent_lock(parent_task_id)
         agent = await self.task.agent_for(pm_agent_id)
         role_str = str(agent.role) if agent is not None else "cell_pm"
         briefing = await self._briefing_for(pm_agent_id, parent_task_id, task=parent)

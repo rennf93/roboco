@@ -2370,6 +2370,42 @@ class TaskService(BaseService):
             {"aid": str(agent_id)},
         )
 
+    async def acquire_delegate_parent_lock(self, parent_task_id: UUID) -> None:
+        """Take a per-parent transaction-scoped advisory lock for delegate.
+
+        The sibling-dedup guard (``_delegate_sibling_dedup_guard``) reads the
+        parent's existing subtasks via an unlocked ``get_subtasks`` SELECT,
+        then the verb body calls ``create_subtask`` (the write) — with no DB
+        serialization between the two. Two concurrent ``delegate`` calls for
+        the SAME parent (a PM re-delegating while a reaper re-dispatches, or
+        two orchestrator ticks racing) each read a duplicate-free sibling set,
+        each pass the guard, and each create a subtask → the parent gets the
+        duplicate the guard exists to prevent. A ``pg_advisory_xact_lock``
+        keyed by the parent serializes the WHOLE dedup-read -> create critical
+        section per parent — held until the outer request transaction commits,
+        the second concurrent same-parent delegate blocks until the first
+        commits, then its dedup read sees the first's committed sibling and is
+        rejected.
+
+        Per-PARENT (not per-agent): a coordinator PM legitimately delegates many
+        subtasks under one parent in quick succession and plans many roots in
+        parallel — a per-agent lock would serialize all of a PM's delegates and
+        regress coordinator concurrency. The per-parent lock serializes only
+        same-parent delegates (the dedup invariant is per-parent) and leaves
+        different parents untouched. Seed ``1`` keeps this in a disjoint key
+        space from the per-agent claim lock (seed ``0``). Transaction-scoped so
+        it auto-releases on commit or rollback and cannot outlive the request.
+        ``hashtextextended`` maps a UUID to a ``bigint`` key; a hash collision
+        only causes benign false serialization (two different parents
+        momentarily serializing), never a false negative.
+        """
+        await self.session.execute(
+            text(
+                "SELECT pg_advisory_xact_lock(hashtextextended(CAST(:pid AS text), 1))"
+            ),
+            {"pid": str(parent_task_id)},
+        )
+
     async def claim(
         self, task_id: UUID, agent_id: UUID, allow_reassign: bool = False
     ) -> TaskTable | None:
