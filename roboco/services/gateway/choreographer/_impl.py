@@ -5394,9 +5394,28 @@ class Choreographer:
                 context_briefing=briefing,
             ).with_introspection(task=t, role=role_str)
         if after is None:
+            # The create_pr pre-side-effect already opened the cell→root PR
+            # BEFORE submit_for_review ran (its pr_created gate requires it —
+            # see lifecycle.py), so a None here means the task raced out of
+            # in_progress AFTER the PR was opened: an orphaned PR sits on
+            # GitHub whose task is not in awaiting_pr_review. Name the open
+            # PR in the remediate so the PM can reconcile it — create_pr is
+            # idempotent, so re-issuing once the task is back in_progress
+            # re-attaches to the same PR rather than opening a duplicate.
+            # Mirrors submit_root's F016 None-envelope remediate.
             return Envelope.invalid_state(
-                message="could not transition to awaiting_pm_review",
-                remediate="check task state — must be in_progress with PR ready",
+                message=(
+                    "submit_up did not transition the task — the cell→root "
+                    "PR was already opened or the task is no longer "
+                    "in_progress."
+                ),
+                remediate=(
+                    "the cell→root PR is already open (create_pr ran before "
+                    "the transition). Re-fetch with evidence(task_id); if it "
+                    "is awaiting_pr_review wait for the reviewer, otherwise "
+                    "re-delegate the fixes and retry submit_up — create_pr "
+                    "is idempotent and re-attaches to the existing PR."
+                ),
                 context_briefing=briefing,
             )
         return after

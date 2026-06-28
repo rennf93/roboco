@@ -142,3 +142,45 @@ async def test_submit_up_fail_open_when_no_prior_pr_fail_verdict() -> None:
     )
     assert env.error is None, env.as_dict()
     assert env.status == "awaiting_pr_review"
+
+
+# ---------------------------------------------------------------------------
+# F122: when submit_for_review returns None (a concurrent state change moved
+# the task out of in_progress AFTER the create_pr pre-side-effect already
+# opened the cell→root PR), the invalid_state remediate must TELL the cell PM
+# the PR is already open. The old remediate ('must be in_progress with PR
+# ready') hid that the PR exists — so the agent could not tell an orphaned PR
+# was sitting on GitHub. The orphan is inherent to the correct pre-side-effect
+# ordering (submit_for_review's pr_created gate requires create_pr first, see
+# lifecycle.py:1338-1343) and is recoverable via create_pr's idempotent re-issue
+# — but only if the agent KNOWS the PR is open. Mirrors submit_root's F016
+# remediate (_impl.py:6305-6310).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_submit_up_none_remediate_names_the_already_open_pr() -> None:
+    """F122: submit_for_review returns None (raced out of in_progress) AFTER
+    create_pr already opened the cell→root PR. The rejection remediate must
+    name the open PR and point the PM at re-fetching + reconciling, not the
+    misleading 'must be in_progress with PR ready' that hides the PR exists."""
+    c, cell_pm_id, cell_task_id = _resubmit_cell(notes_structured=None)
+    # A concurrent transition (stale-heartbeat reaper unclaim, or a racing
+    # i_am_blocked) moved the task out of in_progress between the precondition
+    # gate and the runner's composed action → submit_for_review returns None.
+    c.task.submit_for_review.return_value = None
+
+    env = await c.submit_up(
+        cell_pm_id, cell_task_id, notes="submitting the assembled cell scope"
+    )
+
+    assert env.error == "invalid_state", env.as_dict()
+    remediate = (env.remediate or "").lower()
+    # The create_pr pre-side-effect ran BEFORE the None transition, so the PR
+    # is open on GitHub — the remediate must say so. The old 'PR ready' hint
+    # hid this.
+    assert "pr" in remediate and "open" in remediate, env.as_dict()
+    # The misleading old hint is gone.
+    assert "pr ready" not in remediate, env.as_dict()
+    # And the PR really was opened (pre-side-effect ran before the None).
+    c.git.create_pr.assert_awaited_once()
