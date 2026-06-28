@@ -155,21 +155,23 @@ class CiWatchEngine(BaseService):
                     f"This project's CI is red on its default branch.\n\n"
                     f"{sample.detail}\n\n"
                     f"Evidence: {sample.raw_ref}\n\n"
-                    "Investigate and fix the regression at its root so CI returns "
-                    "to green. This task was opened automatically by the CI-watch "
-                    "loop and is READY TO START NOW — no approval needed; pick it "
-                    "up and coordinate the fix. It still ships through the normal "
-                    "gates (QA, PR review, and the CEO's merge)."
+                    "This is a Main-PM coordination root: decompose the fix and "
+                    "delegate the code work to a cell dev — the Main PM does not "
+                    "write the fix itself. This task was opened automatically by "
+                    "the CI-watch loop and is READY TO START NOW — no approval "
+                    "needed; plan the fix and delegate it. It still ships through "
+                    "the normal gates (QA, PR review, and the CEO's merge)."
                 ),
                 acceptance_criteria=[
-                    f"CI on {slug}'s default branch is green again",
-                    "The cause of the failing run is fixed at its root, not "
-                    "masked or skipped",
+                    "The CI regression is decomposed into a code-fix subtask "
+                    "delegated to a cell developer",
+                    f"CI on {slug}'s default branch is green again and the fix "
+                    "merged through the normal gates",
                 ],
                 team=Team.MAIN_PM,
                 assigned_to=_foundation.AGENTS["main-pm"].uuid,
                 created_by=_foundation.AGENTS["system"].uuid,
-                task_type=TaskType.CODE,
+                task_type=TaskType.PLANNING,
                 nature=TaskNature.TECHNICAL,
                 estimated_complexity=Complexity.MEDIUM,
                 project_id=cast("UUID", project.id),
