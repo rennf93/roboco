@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, cast
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
@@ -74,6 +74,23 @@ def _minutes_to_timedelta(value: int | None) -> timedelta | None:
 # =============================================================================
 # MESSAGING SERVICE
 # =============================================================================
+
+
+@dataclass(frozen=True, slots=True)
+class MessageCursor:
+    """A keyset-pagination cursor over messages: a ``(timestamp, id)`` pair.
+
+    The ``id`` tie-breaks equal timestamps so paging across same-timestamp
+    messages skips nothing: the next page resumes past the cursor's id at
+    the shared timestamp rather than being excluded by a strict
+    ``timestamp < cursor`` / ``timestamp > cursor`` inequality (which drops
+    every row sharing the cursor's timestamp — they are cut by ``limit`` on
+    the prior page and never returned). ``id`` is ``None`` for a legacy
+    timestamp-only cursor (strict inequality, the prior behavior).
+    """
+
+    timestamp: datetime
+    id: UUID | None = None
 
 
 class MessagingService(BaseService):
@@ -1571,8 +1588,8 @@ class MessagingService(BaseService):
         self,
         *,
         session_id: UUID,
-        before: datetime | None,
-        after: datetime | None,
+        before: MessageCursor | None,
+        after: MessageCursor | None,
         message_type: MessageType | None,
         limit: int,
     ) -> tuple[list[MessageTable], bool]:
@@ -1580,7 +1597,10 @@ class MessagingService(BaseService):
 
         Existing `get_messages` skips the session-existence check — this
         variant raises NotFoundError when the session is missing so routes
-        can return a clean 404 without issuing their own query.
+        can return a clean 404 without issuing their own query. The ``before``
+        / ``after`` cursors carry the keyset ``(timestamp, id)`` pair so
+        callers can paginate without skipping equal-timestamp messages across
+        pages.
         """
         await self.get_session_or_raise(session_id)
         return await self.get_messages(
@@ -1668,8 +1688,8 @@ class MessagingService(BaseService):
     async def get_messages(
         self,
         session_id: UUID,
-        before: datetime | None = None,
-        after: datetime | None = None,
+        before: MessageCursor | None = None,
+        after: MessageCursor | None = None,
         message_type: MessageType | None = None,
         limit: int = 50,
     ) -> tuple[list[MessageTable], bool]:
@@ -1678,8 +1698,12 @@ class MessagingService(BaseService):
 
         Args:
             session_id: Session to get messages from
-            before: Get messages before this timestamp
-            after: Get messages after this timestamp
+            before: Keyset cursor — return messages older than (or, when the
+                cursor carries an id, equal-timestamp-but-smaller-id than) this
+                position. ``None`` for no upper bound.
+            after: Keyset cursor — return messages newer than (or
+                equal-timestamp-but-larger-id than) this position. ``None`` for
+                no lower bound.
             message_type: Filter by message type
             limit: Maximum messages to return
 
@@ -1688,15 +1712,48 @@ class MessagingService(BaseService):
         """
         query = select(MessageTable).where(MessageTable.session_id == session_id)
 
-        if before:
-            query = query.where(MessageTable.timestamp < before)
-        if after:
-            query = query.where(MessageTable.timestamp > after)
+        if before is not None:
+            if before.id is not None:
+                # Compound keyset cursor: resume past (before.timestamp,
+                # before.id) in desc order. Rows where (timestamp, id) <
+                # (before.timestamp, before.id): strictly older, OR same
+                # timestamp with a smaller id. Without this tie-break,
+                # equal-timestamp rows cut by ``limit`` on the prior page are
+                # excluded by the strict ``< before.timestamp`` and vanish.
+                query = query.where(
+                    or_(
+                        MessageTable.timestamp < before.timestamp,
+                        and_(
+                            MessageTable.timestamp == before.timestamp,
+                            MessageTable.id < before.id,
+                        ),
+                    )
+                )
+            else:
+                query = query.where(MessageTable.timestamp < before.timestamp)
+        if after is not None:
+            if after.id is not None:
+                query = query.where(
+                    or_(
+                        MessageTable.timestamp > after.timestamp,
+                        and_(
+                            MessageTable.timestamp == after.timestamp,
+                            MessageTable.id > after.id,
+                        ),
+                    )
+                )
+            else:
+                query = query.where(MessageTable.timestamp > after.timestamp)
         if message_type:
             query = query.where(MessageTable.type == message_type)
 
-        # Get one extra to check if there are more
-        query = query.order_by(MessageTable.timestamp.desc()).limit(limit + 1)
+        # Deterministic total order: timestamp desc, then id desc so the
+        # "last item" cursor is unambiguous for keyset pagination (without the
+        # id tie-break, same-timestamp rows have a non-deterministic order and
+        # the cursor is ambiguous).
+        query = query.order_by(
+            MessageTable.timestamp.desc(), MessageTable.id.desc()
+        ).limit(limit + 1)
 
         result = await self.session.execute(query)
         messages = list(result.scalars().all())

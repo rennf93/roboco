@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 from uuid import uuid4 as _u
 
 import pytest
@@ -38,6 +38,7 @@ from roboco.models.session import (
 from roboco.services.base import ConflictError, NotFoundError
 from roboco.services.messaging import (
     ApiSessionCreate,
+    MessageCursor,
     MessagingService,
     get_messaging_service,
 )
@@ -1106,8 +1107,8 @@ async def test_get_messages_with_filters(msg_setup: dict) -> None:
     cutoff = datetime.now(UTC) - timedelta(hours=1)
     msgs, _ = await svc.get_messages(
         sess.id,
-        before=datetime.now(UTC) + timedelta(hours=1),
-        after=cutoff,
+        before=MessageCursor(datetime.now(UTC) + timedelta(hours=1)),
+        after=MessageCursor(cutoff),
         message_type=MessageType.DIALOGUE,
     )
     assert isinstance(msgs, list)
@@ -1128,6 +1129,113 @@ async def test_get_messages_with_limit(msg_setup: dict) -> None:
     msgs, has_more = await svc.get_messages(sess.id, limit=_PAGE)
     assert len(msgs) == _PAGE
     assert has_more is True
+
+
+async def _seed_messages_same_timestamp(
+    svc: MessagingService, session: Any, aid: UUID, count: int
+) -> tuple[UUID, list[UUID]]:
+    """Create ``count`` messages in one session and force them ALL to the same
+    timestamp so the equal-timestamp pagination skip is reproducible. Returns
+    ``(session_id, message_ids)``."""
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    ids: list[UUID] = []
+    for i in range(count):
+        m = await svc.send_message(
+            MessageCreateRequest(agent_id=aid, session_id=sess.id, content=f"m-{i}")
+        )
+        ids.append(m.id)
+    fixed = datetime.now(UTC)
+    rows = (
+        (
+            await session.execute(
+                select(MessageTable).where(MessageTable.session_id == sess.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for row in rows:
+        row.timestamp = fixed
+    await session.flush()
+    return sess.id, ids
+
+
+@pytest.mark.asyncio
+async def test_get_messages_compound_before_cursor_no_skip_on_equal_timestamps(
+    msg_setup: dict,
+) -> None:
+    """Equal-timestamp messages must not be skipped across pages (F106).
+
+    With a strict ``timestamp < before`` cursor and ``order_by(timestamp.desc())``,
+    messages sharing the page's last timestamp are cut by ``limit`` on page 1
+    and excluded (``< T``) from page 2 — they vanish. The compound
+    ``(timestamp, id)`` cursor tie-breaks on the unique id so the next page
+    resumes exactly past the last id (no skip, no duplicate). Requires the
+    deterministic ``order_by(timestamp.desc(), id.desc())`` so the "last item"
+    cursor is unambiguous.
+    """
+    svc = msg_setup["svc"]
+    session = svc.session
+    aid = msg_setup["agent_id"]
+    total = 5
+    sess_id, ids = await _seed_messages_same_timestamp(svc, session, aid, count=total)
+
+    page_size = 3
+    page1, has_more = await svc.get_messages(sess_id, limit=page_size)
+    assert has_more is True
+    assert len(page1) == page_size
+    # Deterministic order: same timestamp → by id.desc()
+    page1_ids = [m.id for m in page1]
+    assert page1_ids == sorted(page1_ids, reverse=True)
+
+    last = page1[-1]
+    page2, has_more2 = await svc.get_messages(
+        sess_id, before=MessageCursor(last.timestamp, last.id), limit=page_size
+    )
+    # All 5 covered, no skip, no duplicate.
+    seen = {m.id for m in page1} | {m.id for m in page2}
+    assert seen == set(ids)
+    assert len(page1) + len(page2) == total
+    assert has_more2 is False
+
+
+@pytest.mark.asyncio
+async def test_get_messages_compound_after_cursor_no_skip_on_equal_timestamps(
+    msg_setup: dict,
+) -> None:
+    """Forward pagination (``after``) with the compound ``(timestamp, id)``
+    cursor tie-breaks on id so newer-direction pagination across equal
+    timestamps skips nothing either (F106).
+
+    With a strict ``timestamp > after`` cursor, every row sharing the cursor's
+    timestamp is EXCLUDED — so forward-paginating from a middle message would
+    return nothing (all rows are at the same timestamp, none strictly greater).
+    The compound cursor includes same-timestamp rows with a larger id.
+    """
+    svc = msg_setup["svc"]
+    session = svc.session
+    aid = msg_setup["agent_id"]
+    total = 5
+    fetch_limit = 10
+    mid_index = 2
+    newer_count = 2
+    sess_id, _ids = await _seed_messages_same_timestamp(svc, session, aid, count=total)
+
+    # Full desc ordering: [id_largest, ..., id_smallest].
+    all_msgs, _ = await svc.get_messages(sess_id, limit=fetch_limit)
+    assert len(all_msgs) == total
+    # Pick the middle row as the forward cursor.
+    mid = all_msgs[mid_index]
+    newer = {m.id for m in all_msgs[:newer_count]}  # the rows above mid (larger id)
+
+    page, _ = await svc.get_messages(
+        sess_id, after=MessageCursor(mid.timestamp, mid.id), limit=fetch_limit
+    )
+    # The same-timestamp rows newer than mid are returned — NOT skipped.
+    assert {m.id for m in page} == newer
+    assert len(page) == newer_count
 
 
 @pytest.mark.asyncio

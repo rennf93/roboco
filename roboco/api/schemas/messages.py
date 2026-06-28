@@ -23,6 +23,12 @@ class ListMessagesParams(BaseModel):
     session_id: UUID
     before: datetime | None = None
     after: datetime | None = None
+    # Keyset-pagination tie-breakers: pass the last (before) / first (after)
+    # message's id alongside its timestamp so equal-timestamp messages are not
+    # skipped across pages. Optional — a timestamp-only cursor keeps the
+    # legacy strict-inequality behavior.
+    before_id: UUID | None = None
+    after_id: UUID | None = None
     type_filter: MessageType | None = None
     limit: int = Field(50, ge=1, le=100)
 

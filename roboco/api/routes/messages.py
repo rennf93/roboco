@@ -25,6 +25,7 @@ from roboco.services.messaging import (
     MessageCreateRequest as ServiceMessageRequest,
 )
 from roboco.services.messaging import (
+    MessageCursor,
     get_messaging_service,
 )
 
@@ -45,10 +46,20 @@ async def list_messages(
     """List messages in a session (session existence is checked in the service)."""
     messaging = get_messaging_service(db)
     try:
+        before_cursor = (
+            MessageCursor(params.before, params.before_id)
+            if params.before is not None
+            else None
+        )
+        after_cursor = (
+            MessageCursor(params.after, params.after_id)
+            if params.after is not None
+            else None
+        )
         messages, has_more = await messaging.list_messages_for_session(
             session_id=params.session_id,
-            before=params.before,
-            after=params.after,
+            before=before_cursor,
+            after=after_cursor,
             message_type=params.type_filter,
             limit=params.limit,
         )
