@@ -8184,12 +8184,21 @@ class TaskService(BaseService):
         return task
 
     async def list_in_progress_for_agent(self, agent_id: UUID) -> list[TaskTable]:
-        """In-progress tasks currently assigned to the agent."""
+        """Tasks the agent is still on the hook for — in_progress OR blocked.
+
+        F018: ``blocked`` is included because a blocked task is still owned and
+        ``unblock_with_restore`` resumes it to ``in_progress``; the claim guard
+        (``already_active_guard``) must see it or a dev could claim a second
+        task while blocked and end up with two ``in_progress`` tasks once the
+        first is unblocked. Callers that only want pausable (in_progress) tasks
+        — the ``i_am_idle`` auto-pause path — filter on ``status`` themselves
+        (``pause()`` no-ops on non-in_progress regardless).
+        """
         query = (
             select(TaskTable)
             .where(
                 TaskTable.assigned_to == agent_id,
-                TaskTable.status == TaskStatus.IN_PROGRESS,
+                TaskTable.status.in_([TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED]),
             )
             .order_by(TaskTable.priority, TaskTable.updated_at.desc())
         )

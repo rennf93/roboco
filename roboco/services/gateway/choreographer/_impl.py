@@ -3846,8 +3846,16 @@ class Choreographer:
         reality. Checkpoint failure is swallowed; it must never block the pause.
         """
         in_progress = await self.task.list_in_progress_for_agent(agent_id)
+        # F018: the lookup now also returns blocked tasks (so the claim guard
+        # sees them). i_am_idle only auto-pauses genuinely in_progress tasks —
+        # a blocked task is waiting on an external dep, not on the agent, so it
+        # stays blocked (and isn't reported as paused for the agent to resume).
+        from roboco.models.base import TaskStatus
+
         paused_ids: list[str] = []
         for t in in_progress:
+            if t.status != TaskStatus.IN_PROGRESS:
+                continue
             await self.task.pause_for_agent(agent_id, t.id)
             paused_ids.append(str(t.id))
             await self._write_auto_pause_checkpoint(agent_id, t)

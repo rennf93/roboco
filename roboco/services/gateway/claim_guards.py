@@ -26,8 +26,13 @@ if TYPE_CHECKING:
 
 # Statuses that count as "still actively worked" — pre-gateway
 # _helpers.py:check_blocking_tasks 134-152.
+#
+# F018: ``blocked`` is included — a blocked task is still owned by the dev and
+# ``unblock_with_restore`` resumes it to ``in_progress``. Excluding it let a dev
+# claim a second task while blocked, then end up with TWO ``in_progress``
+# tasks once the first was unblocked, violating the one-active-task invariant.
 _ACTIVE_BLOCKING_STATUSES: frozenset[str] = frozenset(
-    {"claimed", "in_progress", "verifying"}
+    {"claimed", "in_progress", "verifying", "blocked"}
 )
 
 
