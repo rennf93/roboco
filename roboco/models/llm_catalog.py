@@ -102,31 +102,31 @@ def provider_type_for_model(model_name: str) -> ModelProvider | None:
 #     200-300 sequential tool calls. Best at reasoning, orchestration, tool use.
 #   MiniMax M3 — SWE-Bench 73.8%, SWE-Pro 56.2%, 10B active params (fastest,
 #     cheapest). Explicitly "built for Max coding & agentic workflows".
-#   GLM 5.1 — SWE-Bench 77.8% (highest of the three, 94.6% of Claude Opus 4.6),
+#   GLM 5.2 — SWE-Bench 77.8% (highest of the three, 94.6% of Claude Opus 4.6),
 #     self-correcting across hundreds of iterations, strong creative writing.
 OLLAMA_ROLE_DEFAULTS: dict[str, str] = {
     # High-volume agentic coding — M3 is purpose-built for this.
-    "developer": "minimax-m3:cloud",
+    "developer": "kimi-k2.7-code:cloud",
     # Deep code review — GLM 5.2 has the highest SWE-Bench and iterates thoroughly.
     "qa": "glm-5.2:cloud",
     # Orchestration + tool coordination — Kimi K2.6's Agent Swarm is the exact fit.
-    "cell_pm": "kimi-k2.6:cloud",
-    "main_pm": "kimi-k2.6:cloud",
+    "cell_pm": "kimi-k2.7-code:cloud",
+    "main_pm": "kimi-k2.7-code:cloud",
     # Quality reasoning — Kimi K2.6 leads HLE by a wide margin.
-    "auditor": "kimi-k2.6:cloud",
+    "auditor": "kimi-k2.7-code:cloud",
     # Product reasoning — same profile as PM work.
-    "product_owner": "kimi-k2.6:cloud",
+    "product_owner": "glm-5.2:cloud",
     # Writing with code-context — GLM 5.2's creative writing + SWE-Bench combo.
-    "documenter": "glm-5.2:cloud",
+    "documenter": "kimi-k2.7-code:cloud",
     # Stylistic writing — GLM 5.2's creative-writing strength.
     "head_marketing": "glm-5.2:cloud",
     # CEO is human-in-the-loop; keep an entry in case someone forces
     # a route to it, but the Settings UI intentionally excludes it.
-    "ceo": "kimi-k2.6:cloud",
+    "ceo": "glm-5.2:cloud",
 }
 
 # The Ollama model picked for "pure Ollama" mode's GLOBAL row when the
 # caller doesn't override. Minimax M3 wins as the generalist because it has
 # the strongest reasoning/tool-use profile and can fall back to coding/writing
 # adequately if a role ends up mapped to the global default.
-OLLAMA_DEFAULT_MODEL: str = "minimax-m3:cloud"
+OLLAMA_DEFAULT_MODEL: str = "kimi-k2.7-code:cloud"

@@ -360,7 +360,7 @@ class TestProviderAwareness:
 
     def test_ollama_cloud_model_returns_zero(self) -> None:
         """Ollama Cloud (``:cloud`` tag) is subscription-billed, not per token."""
-        cost = calculate_cost("glm-5:cloud", tokens_input=_M, tokens_output=_M)
+        cost = calculate_cost("glm-5.2:cloud", tokens_input=_M, tokens_output=_M)
         assert cost == _ZERO_COST
 
     def test_bare_local_model_returns_zero(self) -> None:
@@ -373,5 +373,5 @@ class TestProviderAwareness:
             assert _is_anthropic_model(name) is True, name
 
     def test_is_anthropic_model_false_for_non_claude_names(self) -> None:
-        for name in ("ollama/llama3", "glm-5:cloud", "qwen3-embedding", "gpt-4o"):
+        for name in ("ollama/llama3", "glm-5.2:cloud", "qwen3-embedding", "gpt-4o"):
             assert _is_anthropic_model(name) is False, name

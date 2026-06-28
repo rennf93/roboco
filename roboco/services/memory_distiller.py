@@ -2,7 +2,7 @@
 
 Replaces the noisy raw-notes / duration / commit-count capture with one curated
 lesson in a fixed Problem -> Approach -> Gotcha shape (<=120 words). Runs on the
-LOCAL model only (glm-5:cloud via the OpenAI-compatible endpoint) — never a cloud
+LOCAL model only (glm-5.2:cloud via the OpenAI-compatible endpoint) — never a cloud
 LLM in the hot path. Best-effort: any failure (LLM down, empty output) returns
 None and the caller records nothing rather than storing junk.
 """

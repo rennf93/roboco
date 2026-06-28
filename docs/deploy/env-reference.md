@@ -74,7 +74,7 @@ A feature flag set in `.env` takes effect on the next backend restart. The env-g
 | `ROBOCO_ANTHROPIC_API_KEY` | *(unset)* | Optional Anthropic key. Agents use the mounted Claude Code auth, not a metered key. |
 | `ROBOCO_DEFAULT_EMBEDDING_MODEL` | `qwen3-embedding:0.6b` | Embedding model (1024-dim). |
 | `ROBOCO_EMBEDDING_DIMENSIONS` | `1024` | Embedding dimensions — must match the model. |
-| `ROBOCO_LOCAL_LLM_MODEL` | `glm-5:cloud` | Local LLM for RAG answer synthesis. |
+| `ROBOCO_LOCAL_LLM_MODEL` | `glm-5.2:cloud` | Local LLM for RAG answer synthesis. |
 | `ROBOCO_LOCAL_LLM_BASE_URL` | `http://roboco-ollama:11434/v1` | Ollama OpenAI-compatible endpoint. |
 | `ROBOCO_OLLAMA_BASE_URL` | `http://roboco-ollama:11434` | Ollama native endpoint (embeddings, model management). |
 

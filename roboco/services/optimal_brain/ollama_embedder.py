@@ -42,7 +42,7 @@ DEFAULT_BATCH_SIZE = 32  # default batch size for Ollama embedding requests
 
 # Keep the embedding model resident in Ollama. It runs on CPU and Ollama's
 # default 5-min idle unload means a `say` after an idle window pays a cold 2.4 GB
-# reload before embedding; under contention with glm-5:cloud that overran the
+# reload before embedding; under contention with glm-5.2:cloud that overran the
 # embed retry window and dropped the background conversation ingest. -1 = never
 # unload (sent as `keep_alive` on every /api/embed request).
 EMBED_KEEP_ALIVE = -1

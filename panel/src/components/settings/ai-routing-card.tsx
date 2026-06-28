@@ -43,6 +43,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { AssignmentScope, ModelProvider } from "@/types";
+import type { SelfHostedModel } from "@/lib/api/providers";
 import type { RoutingMode, SelfHostedTestResult } from "@/lib/api/providers";
 import { SelfHostedSection } from "@/components/settings/self-hosted-section";
 import { Badge } from "@/components/ui/badge";
@@ -288,7 +289,7 @@ export function AIRoutingCard() {
       return;
     }
     const needsSelfHosted = Object.values(per_agent).some((m) =>
-      selfHostedModels.find((sh) => sh.model_name === m),
+      selfHostedModels.find((sh: SelfHostedModel) => sh.model_name === m),
     );
     if (needsSelfHosted && !isSelfHostedConnected) {
       toast.error(
@@ -350,7 +351,7 @@ export function AIRoutingCard() {
             <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
               <Checkbox
                 checked={clearGrokKey}
-                onCheckedChange={(checked) => {
+                onCheckedChange={(checked: boolean) => {
                   const next = checked === true;
                   setClearGrokKey(next);
                   if (next) setGrokKey("");
@@ -402,7 +403,7 @@ export function AIRoutingCard() {
             <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
               <Checkbox
                 checked={clearKey}
-                onCheckedChange={(checked) => {
+                onCheckedChange={(checked: boolean) => {
                   const next = checked === true;
                   setClearKey(next);
                   if (next) setApiKey("");
@@ -457,7 +458,7 @@ export function AIRoutingCard() {
               label="Ollama"
               description={
                 hasOllamaKey
-                  ? "Every agent uses Ollama Cloud (Minimax M3 default)."
+                  ? "Every agent uses Ollama Cloud." // TODO: Add dynamic default model name based on llm_catalog.py
                   : "Save the Ollama key first."
               }
               active={currentMode === "ollama"}
@@ -529,7 +530,7 @@ export function AIRoutingCard() {
                   <SelectItem value="__clear__">
                     (use server default)
                   </SelectItem>
-                  {selfHostedModels.map((m) => (
+                  {selfHostedModels.map((m: SelfHostedModel) => (
                     <SelectItem key={m.model_name} value={m.model_name}>
                       {m.display_name}
                       {m.display_name !== m.model_name
@@ -641,7 +642,7 @@ export function AIRoutingCard() {
                           <ProviderBadge variant="self-hosted" />
                           Self-Hosted
                         </SelectLabel>
-                        {selfHostedModels.map((m) => (
+                        {selfHostedModels.map((m: SelfHostedModel) => (
                           <SelectItem key={m.model_name} value={m.model_name}>
                             {m.display_name}
                           </SelectItem>

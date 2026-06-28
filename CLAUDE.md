@@ -80,7 +80,7 @@ pnpm test
 | Cache/Queue | Redis |
 | Container Runtime | Docker + Docker Compose |
 | Cloud LLM | Claude API (claude-opus-4-6) + xAI Grok (official `grok` CLI, SuperGrok subscription) |
-| Local LLM | Ollama (glm-5:cloud for RAG/hybrid retrieval) |
+| Local LLM | Ollama (glm-5.2:cloud for RAG/hybrid retrieval) |
 | Embeddings | qwen3-embedding:0.6b (1024 dim) |
 | Frontend | Next.js 16 + TypeScript + Tailwind + Radix UI (in `panel/`) |
 | Edge / Proxy | nginx (single entry point on port 3000) |
@@ -464,7 +464,7 @@ ROBOCO_RAG_USE_HYBRID_SEARCH=true
 
 # AI/LLM
 ROBOCO_DEFAULT_EMBEDDING_MODEL=qwen3-embedding:0.6b
-ROBOCO_LOCAL_LLM_MODEL=glm-5:cloud
+ROBOCO_LOCAL_LLM_MODEL=glm-5.2:cloud
 ROBOCO_LOCAL_LLM_BASE_URL=http://roboco-ollama:11434/v1
 ROBOCO_OLLAMA_BASE_URL=http://roboco-ollama:11434
 ```
@@ -524,7 +524,7 @@ The startup order is critical due to dependencies:
 postgres ──┐
 redis ─────┼──> ollama ──> ollama-init ──> orchestrator ──> panel ──> nginx
            │        │            │
-           │        │            └── Pulls qwen3-embedding:0.6b, glm-5:cloud
+           │        │            └── Pulls qwen3-embedding:0.6b, glm-5.2:cloud
            │        └── Healthcheck: ollama list
            └── Healthcheck: pg_isready, redis-cli ping
 ```
