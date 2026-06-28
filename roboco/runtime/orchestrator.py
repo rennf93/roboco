@@ -60,7 +60,11 @@ from roboco.models.runtime import (
     WaitingRecord,
 )
 from roboco.seeds.initial_data import AGENT_UUIDS
-from roboco.services.task import PR_REVIEW_SOURCES, RELEASE_MANAGER_SOURCE
+from roboco.services.task import (
+    PR_REVIEW_SOURCES,
+    RELEASE_MANAGER_SOURCE,
+    SELF_HEAL_SOURCE,
+)
 
 logger = structlog.get_logger()
 
@@ -8713,11 +8717,16 @@ Start now: evidence(task_id="{task_id}")
             # are acted on by the release routes + executor, never dispatched.
             if task.get("source") == RELEASE_MANAGER_SOURCE:
                 continue
-            # Self-heal fix tasks dispatch autonomously — the loop opens them
-            # confirmed + assigned to the Main PM, so they flow through the
-            # assigned-PM path below like any other PM task (no CEO Approve-&-
-            # Start; that gate is the Intake/board flow). The fix still ships
-            # through dev -> QA -> PR review -> the CEO's merge.
+            # F059: a self-heal fix task is HELD for the CEO's Approve-&-Start
+            # (confirmed_by_human=False at origination). It must NOT dispatch
+            # autonomously — the loop only OPENS it; the CEO's approve_and_start
+            # flips confirmed_by_human True, after which it flows through the
+            # assigned-PM path below like any other PM task. (The fix still ships
+            # through dev -> QA -> PR review -> the CEO's merge.)
+            if task.get("source") == SELF_HEAL_SOURCE and not task.get(
+                "confirmed_by_human"
+            ):
+                continue
             assigned_to = task.get("assigned_to")
             if assigned_to:
                 if self._resolve_agent_slug(assigned_to) in self._BOARD_AGENTS:
@@ -9098,6 +9107,13 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 continue
             # Release proposals are CEO-gated artifacts, never dev work.
             if task.get("source") == RELEASE_MANAGER_SOURCE:
+                continue
+            # F059: a self-heal fix task held for the CEO's Approve-&-Start is
+            # not dev work yet — it must not route to its assigned_to as a dev
+            # before the CEO approves it.
+            if task.get("source") == SELF_HEAL_SOURCE and not task.get(
+                "confirmed_by_human"
+            ):
                 continue
             await self._dev_dispatch_one(client, task)
 

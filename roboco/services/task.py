@@ -5134,6 +5134,13 @@ class TaskService(BaseService):
 
         already = task.assigned_to == main_pm.id
         task.assigned_to = cast("Any", main_pm.id)
+        # F059: this is the CEO's start gate — approving the task confirms it for
+        # dispatch. A self-heal fix task is opened held (confirmed_by_human=False)
+        # so the orchestrator + give_me_work keep it out of dispatch until now;
+        # flipping it True lifts that hold. Idempotent for board/intake tasks,
+        # which are already confirmed at creation. (The release-manager proposal
+        # is not routed through approve_and_start — it has its own CEO routes.)
+        task.confirmed_by_human = cast("Any", True)
         # The board-reviewed coordination task now belongs to Main PM, who will
         # delegate it to the cells. Leaving team="board" is misleading once it's
         # off the board — reflect the new owner. Team.MAIN_PM is a valid non-cell
@@ -7083,6 +7090,13 @@ class TaskService(BaseService):
         `list_pending(filter_by_dependencies=True)`, so the dependency gate
         must be applied here too.
 
+        F059: a self-heal fix task held for the CEO's Approve-&-Start
+        (``source=self_heal`` + ``confirmed_by_human=False``) is NOT offered
+        here — an already-alive PM must not grab it via give_me_work before the
+        CEO opens the gate. The hold is scoped to self-heal: ordinary delegated
+        subtasks default to ``confirmed_by_human=False`` (the PM delegated them,
+        which is itself the authorization to start) and MUST still be offered.
+
         Ordered by sequence asc, then priority asc, then created_at asc so
         earlier-sequence tasks win.
         """
@@ -7091,6 +7105,10 @@ class TaskService(BaseService):
             .where(
                 TaskTable.assigned_to == agent_id,
                 TaskTable.status == TaskStatus.PENDING,
+                or_(
+                    TaskTable.source != SELF_HEAL_SOURCE,
+                    TaskTable.confirmed_by_human.is_(True),
+                ),
             )
             .order_by(
                 TaskTable.sequence,
