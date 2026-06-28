@@ -132,7 +132,12 @@ async def test_note_with_task_id_allows_when_assignee() -> None:
     """note(task_id=X) where X is owned by caller succeeds."""
     agent_id = uuid4()
     task_id = uuid4()
-    task_obj = MagicMock(id=task_id, status="in_progress", assigned_to=agent_id)
+    task_obj = MagicMock(
+        id=task_id,
+        status="in_progress",
+        assigned_to=agent_id,
+        active_claimant_id=agent_id,
+    )
     task_svc = AsyncMock()
     task_svc.get.return_value = task_obj
     task_svc.get_active_task_for_agent.return_value = None
@@ -223,7 +228,12 @@ async def test_say_with_explicit_task_id_owned_by_caller_succeeds() -> None:
     """say(task_id=X) when caller owns X: allowed."""
     agent_id = uuid4()
     task_id = uuid4()
-    task_obj = MagicMock(id=task_id, status="in_progress", assigned_to=agent_id)
+    task_obj = MagicMock(
+        id=task_id,
+        status="in_progress",
+        assigned_to=agent_id,
+        active_claimant_id=agent_id,
+    )
     task_svc = AsyncMock()
     task_svc.get.return_value = task_obj
     messaging_svc = AsyncMock()
@@ -273,7 +283,12 @@ async def test_dm_with_task_id_blocks_when_not_assignee() -> None:
 async def test_dm_with_task_id_owned_by_caller_succeeds() -> None:
     agent_id = uuid4()
     task_id = uuid4()
-    task_obj = MagicMock(id=task_id, status="in_progress", assigned_to=agent_id)
+    task_obj = MagicMock(
+        id=task_id,
+        status="in_progress",
+        assigned_to=agent_id,
+        active_claimant_id=agent_id,
+    )
     task_svc = AsyncMock()
     task_svc.get.return_value = task_obj
     a2a_svc = AsyncMock()
@@ -510,3 +525,100 @@ async def test_evidence_allows_dependency_inspection() -> None:
     env = await ca.evidence(agent_id=agent_id, task_id=dep_task_id)
     assert env.error is None
     task_svc.list_assigned_for_agent.assert_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Reaped/handoff window: assigned_to persists, active_claimant_id is cleared
+# on release. A reaped agent must not keep posting to its former task.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_note_reaped_assignee_cannot_post_to_former_task() -> None:
+    """A reaped agent (assigned_to=caller, active_claimant_id=None) is rejected
+    on note(task_id=X) — its claim was released, so it must not journal on the
+    task it no longer actively holds."""
+    agent_id = uuid4()
+    task_id = uuid4()
+    task_obj = MagicMock(
+        id=task_id,
+        status="in_progress",
+        assigned_to=agent_id,  # persists across the reap
+        active_claimant_id=None,  # cleared on release — the reaped window
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = task_obj
+    journal_svc = AsyncMock()
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    ca = ContentActions(deps)
+
+    env = await ca.note(
+        agent_id=agent_id,
+        text="Posting after my claim was reaped",
+        scope="note",
+        task_id=task_id,
+    )
+    body = env.as_dict()
+    assert body["error"] == "not_authorized", body
+    assert "active claim" in body["message"], body
+    journal_svc.write_entry.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_say_reaped_assignee_cannot_post_to_former_task() -> None:
+    """A reaped agent is rejected on say(task_id=X) too — same stale-window
+    divergence as note."""
+    agent_id = uuid4()
+    task_id = uuid4()
+    task_obj = MagicMock(
+        id=task_id,
+        status="in_progress",
+        assigned_to=agent_id,
+        active_claimant_id=None,
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = task_obj
+    messaging_svc = AsyncMock()
+    deps = _make_deps(task=task_svc, messaging=messaging_svc)
+    ca = ContentActions(deps)
+
+    env = await ca.say(
+        agent_id=agent_id,
+        channel="backend-cell",
+        text="Posting after my claim was reaped",
+        task_id=task_id,
+    )
+    body = env.as_dict()
+    assert body["error"] == "not_authorized", body
+    assert "active claim" in body["message"], body
+    messaging_svc.post_to_channel.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_note_active_owner_can_still_post() -> None:
+    """No-regression: an active owner (assigned_to=caller AND
+    active_claimant_id=caller) still posts. The reaped-window rejection must
+    not weaken the legitimate active-owner path."""
+    agent_id = uuid4()
+    task_id = uuid4()
+    task_obj = MagicMock(
+        id=task_id,
+        status="in_progress",
+        assigned_to=agent_id,
+        active_claimant_id=agent_id,  # active claim — the normal case
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = task_obj
+    task_svc.get_active_task_for_agent.return_value = None
+    journal_svc = AsyncMock()
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    ca = ContentActions(deps)
+
+    env = await ca.note(
+        agent_id=agent_id,
+        text="Working on my actively-claimed task",
+        scope="note",
+        task_id=task_id,
+    )
+    assert env.error is None, env.as_dict()
+    journal_svc.write_entry.assert_awaited_once()

@@ -583,6 +583,11 @@ class ContentActions:
             if await self._board_may_co_review(agent_id, t):
                 return None
             return _ownership_violation(task_id)
+        # assigned_to is stale across a reap/handoff (persists until
+        # reassignment; active_claimant_id is cleared on release). Require
+        # the active claim so a reaped agent can't keep posting.
+        if t.assigned_to == agent_id:
+            return await self._active_claim_violation(agent_id, t)
         return None
 
     async def note(

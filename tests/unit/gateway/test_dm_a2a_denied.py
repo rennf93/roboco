@@ -44,7 +44,12 @@ async def test_dm_a2a_denied_returns_envelope_not_authorized() -> None:
     """A2AAccessDeniedError is caught and returned as Envelope.not_authorized."""
     agent_id = uuid4()
     task_id = uuid4()
-    task_obj = MagicMock(id=task_id, status="in_progress", assigned_to=agent_id)
+    task_obj = MagicMock(
+        id=task_id,
+        status="in_progress",
+        assigned_to=agent_id,
+        active_claimant_id=agent_id,
+    )
 
     task_svc = AsyncMock()
     task_svc.agent_for.return_value = MagicMock(role="qa")
