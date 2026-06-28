@@ -79,6 +79,22 @@ async def test_pr_pass_guard_blocks_when_validator_cannot_run(
 
 
 @pytest.mark.asyncio
+async def test_pr_pass_guard_could_not_run_remediation_uses_pr_fail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # F044: _conventions_guard is the pr_pass (reviewer) path. A reviewer has no
+    # i_am_blocked verb, so the could_not_run remediation must point at pr_fail
+    # (the reviewer's reject lever) — not tell them to call a verb they lack.
+    monkeypatch.setattr(settings, "conventions_enabled", True)
+    c = _make_choreographer(check_result={"findings": [], "could_not_run": True})
+    env = await c._conventions_guard(uuid4(), MagicMock(), {})
+    assert env is not None
+    body = env.as_dict()
+    assert "i_am_blocked" not in body["remediate"]
+    assert "pr_fail" in body["remediate"]
+
+
+@pytest.mark.asyncio
 async def test_pr_pass_guard_inert_when_flag_off(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -93,3 +93,37 @@ async def test_guard_silent_when_no_marker(monkeypatch: pytest.MonkeyPatch) -> N
         env = await c._toolchain_broken_guard(uuid4(), MagicMock())
     assert env is None
     assert not any(e.get("event") == "toolchain.unverified_gate_pass" for e in logs)
+
+
+@pytest.mark.asyncio
+async def test_guard_reviewer_remediation_uses_pr_fail_not_i_am_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # F044: the pr_pass gate runs this guard on the REVIEWER's workspace. A PR
+    # reviewer has no i_am_blocked verb, so the dev-path remediation ("call
+    # i_am_blocked(reason='toolchain')") sends them to a verb they cannot call.
+    # The reviewer's reject lever is pr_fail — the remediation must point there
+    # so the PR goes back to needs_revision for the dev to fix the environment.
+    monkeypatch.setattr(settings, "toolchain_match_enabled", True)
+    c = _make_choreographer(status="broken")
+    env = await c._toolchain_broken_guard(uuid4(), MagicMock(), reviewer=True)
+    assert env is not None
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+    assert "i_am_blocked" not in body["remediate"]
+    assert "pr_fail" in body["remediate"]
+
+
+@pytest.mark.asyncio
+async def test_guard_dev_remediation_still_uses_i_am_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # F044: the dev (i_am_done) path keeps i_am_blocked — a dev DOES have that
+    # verb, so the original remediation is correct there. The reviewer flag must
+    # not change the dev-path wording.
+    monkeypatch.setattr(settings, "toolchain_match_enabled", True)
+    c = _make_choreographer(status="broken")
+    env = await c._toolchain_broken_guard(uuid4(), MagicMock())
+    assert env is not None
+    body = env.as_dict()
+    assert "i_am_blocked" in body["remediate"]

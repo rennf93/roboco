@@ -1855,7 +1855,7 @@ class Choreographer:
         )
 
     async def _toolchain_broken_guard(
-        self, agent_id: UUID, task: Any
+        self, agent_id: UUID, task: Any, *, reviewer: bool = False
     ) -> Envelope | None:
         """Refuse a delivery gate when the acting agent's workspace cannot run
         the project's suite (interpreter mismatch).
@@ -1864,6 +1864,11 @@ class Choreographer:
         source", which the QA + PR-review gates exist to prevent. Inert when the
         flag is off; only a recorded ``broken`` status blocks — a missing or
         ``unknown`` status never strands a task (fail-open).
+
+        ``reviewer=True`` for the pr_pass gate: a PR reviewer has no
+        ``i_am_blocked`` verb, so the remediation points at ``pr_fail`` (their
+        reject lever, sending the PR back to needs_revision for the dev to fix
+        the environment) instead of a verb they cannot call (F044).
         """
         from roboco.config import settings as _settings
 
@@ -1887,17 +1892,27 @@ class Choreographer:
             )
         if status != "broken":
             return None
+        if reviewer:
+            remediate = (
+                "the workspace Python does not match the project's requirement, "
+                "so the suite cannot be executed to verify this PR. call "
+                "pr_fail(issues=['toolchain: interpreter mismatch — suite "
+                "cannot run']) so the PR returns to needs_revision and the dev "
+                "rebuilds the environment — do NOT pr_pass on a source read"
+            )
+        else:
+            remediate = (
+                "the workspace Python does not match the project's requirement; "
+                "call i_am_blocked(reason='toolchain') so the environment is "
+                "rebuilt against the right interpreter — do NOT pass on a "
+                "source read"
+            )
         return Envelope.invalid_state(
             message=(
                 "the project's test suite cannot be executed in this workspace "
                 "(interpreter mismatch) — verifying by reading source is hollow"
             ),
-            remediate=(
-                "the workspace Python does not match the project's requirement; "
-                "call i_am_blocked(reason='toolchain') so the environment is "
-                "rebuilt against the right interpreter — do NOT pass on a "
-                "source read"
-            ),
+            remediate=remediate,
             context_briefing={},
         )
 
@@ -1951,31 +1966,47 @@ class Choreographer:
         A ``block`` finding (a misplaced definition, a lint suppression) or a
         validator that could not run returns a rejection with the offending
         ``file:line`` + fix hint. ``warn`` findings never block. Inert when the
-        flag is off. Shared by the i_am_done and pr_pass gates.
+        flag is off. This is the pr_pass (reviewer) path — the remediation is
+        reviewer-aware (``pr_fail``, not ``i_am_blocked`` which a reviewer
+        lacks) via ``_conventions_rejection(..., reviewer=True)`` (F044).
         """
         from roboco.config import settings as _settings
 
         if not _settings.conventions_enabled:
             return None
         result = await self.git.conventions_check_for_task(agent_id, task)
-        return self._conventions_rejection(result, briefing)
+        return self._conventions_rejection(result, briefing, reviewer=True)
 
     @staticmethod
     def _conventions_rejection(
-        result: dict[str, Any], briefing: dict[str, Any]
+        result: dict[str, Any], briefing: dict[str, Any], *, reviewer: bool = False
     ) -> Envelope | None:
-        """Turn a validator result into a rejection Envelope, or None to pass."""
+        """Turn a validator result into a rejection Envelope, or None to pass.
+
+        ``reviewer=True`` for the pr_pass gate: a reviewer has no
+        ``i_am_blocked`` verb, so the could_not_run remediation points at
+        ``pr_fail`` instead (F044).
+        """
         if result.get("could_not_run"):
+            if reviewer:
+                remediate = (
+                    "the validator failed to analyze the diff (a parse or grammar "
+                    "error). call pr_fail(issues=['conventions: validator could "
+                    "not run on the changed files']) so the PR returns to "
+                    "needs_revision and the dev resolves it — do NOT pr_pass"
+                )
+            else:
+                remediate = (
+                    "the validator failed to analyze the diff (a parse or grammar "
+                    "error). resolve it and call the verb again; if it persists, "
+                    "call i_am_blocked"
+                )
             return Envelope.invalid_state(
                 message=(
                     "the architectural-conventions validator could not run on "
                     "your changed files — this blocks rather than passing silently"
                 ),
-                remediate=(
-                    "the validator failed to analyze the diff (a parse or grammar "
-                    "error). resolve it and call the verb again; if it persists, "
-                    "call i_am_blocked"
-                ),
+                remediate=remediate,
                 context_briefing=briefing,
             )
         blocks = [f for f in result.get("findings", []) if f.get("level") == "block"]

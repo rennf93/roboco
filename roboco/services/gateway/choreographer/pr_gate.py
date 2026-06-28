@@ -340,7 +340,7 @@ class PRGateMixin(_Base):
         None to proceed. Both guards are inert when their flag is off.
         """
         guards = (
-            lambda: self._toolchain_broken_guard(reviewer_agent_id, t),
+            lambda: self._toolchain_broken_guard(reviewer_agent_id, t, reviewer=True),
             lambda: self._conventions_guard(reviewer_agent_id, t, briefing),
         )
         for guard in guards:
