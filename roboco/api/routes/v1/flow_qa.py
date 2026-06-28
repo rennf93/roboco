@@ -11,6 +11,7 @@ from roboco.api.schemas.v1.flow import (
     ClaimReviewRequest,
     FailReviewRequest,
     GiveMeWorkRequest,
+    IAmBlockedRequest,
     IAmIdleRequest,
     PassReviewRequest,
     ResumeRequest,
@@ -105,4 +106,23 @@ async def i_am_idle(
     choreographer: _ChoreographerDep,
 ) -> dict:
     env = await choreographer.i_am_idle(x_agent_id)
+    return envelope_to_response(env, request)
+
+
+@router.post("/i_am_blocked")
+async def i_am_blocked(
+    request: Request,
+    body: IAmBlockedRequest,
+    x_agent_id: _AgentIdHeader,
+    choreographer: _ChoreographerDep,
+) -> dict:
+    """F015: the QA manifest registers ``i_am_blocked`` — surface the route so a
+    blocked QA agent's escape hatch returns an envelope instead of a 404."""
+    env = await choreographer.i_am_blocked(
+        x_agent_id,
+        body.task_id,
+        body.reason,
+        blocker_type=body.blocker_type,
+        what_needed=body.what_needed,
+    )
     return envelope_to_response(env, request)
