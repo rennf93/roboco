@@ -7,7 +7,7 @@ Repository for managing indexed documents in the knowledge base.
 import hashlib
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from roboco.db.tables import IndexedDocumentTable
 from roboco.services.repositories.base import BaseRepository
@@ -99,6 +99,25 @@ class IndexedDocumentRepository(BaseRepository[IndexedDocumentTable]):
     async def count_by_index_type(self, index_type: str) -> int:
         """Count documents in an index type."""
         return await self.count(IndexedDocumentTable.index_type == index_type)
+
+    async def delete_by_source(self, index_type: str, source: str) -> bool:
+        """Delete the indexed-document tracking row for one source URI.
+
+        Used by de-index paths (e.g. a rejected/archived playbook) to drop the
+        tracking row whose chunks the vector store has already removed by the
+        same source. Idempotent: returns ``False`` (nothing deleted) when no
+        tracking row exists, ``True`` when one was removed.
+        """
+        source_hash = hashlib.sha256(source.encode()).hexdigest()
+        result = await self.session.execute(
+            delete(IndexedDocumentTable).where(
+                IndexedDocumentTable.index_type == index_type,
+                IndexedDocumentTable.source_hash == source_hash,
+            )
+        )
+        await self.session.flush()
+        rowcount: int = getattr(result, "rowcount", 0) or 0
+        return rowcount > 0
 
     async def delete_by_index_type(self, index_type: str) -> int:
         """Delete all documents for an index type."""

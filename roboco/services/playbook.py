@@ -120,8 +120,32 @@ class PlaybookService(BaseService):
         playbook.approved_by = approver_id
         playbook.approved_at = datetime.now(UTC)
         await self.session.flush()
+        await self._unindex_playbook(playbook)
         self.log.info("Playbook rejected", playbook_id=str(playbook_id), reason=reason)
         return playbook
+
+    async def _unindex_playbook(self, playbook: PlaybookTable) -> None:
+        """De-index a playbook from the PLAYBOOKS RAG index (best-effort).
+
+        The mirror of :meth:`_index_approved`: a rejected/archived playbook that
+        was previously approved+indexed must stop surfacing in agent briefings,
+        so ``reject`` drops its chunks + tracking row. Gated on
+        ``org_memory_enabled`` (inert when the loop is off) and best-effort (a
+        failure never blocks the curation). Idempotent on a never-indexed draft.
+        """
+        if not settings.org_memory_enabled:
+            return
+        try:
+            from roboco.services.optimal import get_optimal_service
+
+            optimal = await get_optimal_service()
+            await optimal.unindex_playbook(str(playbook.id))
+        except Exception as exc:
+            self.log.warning(
+                "Playbook de-index-on-reject failed (best-effort)",
+                playbook_id=str(playbook.id),
+                error=str(exc),
+            )
 
     async def list_drafts(self) -> list[PlaybookTable]:
         return await self._list_by_status(PlaybookStatus.DRAFT)
