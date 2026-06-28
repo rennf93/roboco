@@ -974,7 +974,7 @@ class WorkspaceService:
                 capture_output=True,
             )
             subprocess.run(
-                ["git", "config", "user.email", f"{slug}@agents.roboco.dev"],
+                ["git", "config", "user.email", f"{slug}@roboco.tech"],
                 cwd=str(workspace),
                 check=True,
                 capture_output=True,
