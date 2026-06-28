@@ -56,16 +56,18 @@ from roboco.models.base import (
 )
 from roboco.models.permissions import AgentContext, TaskAction
 from roboco.models.task import TaskCreateRequest
-from roboco.models.work_session import WorkSessionStatus
+from roboco.models.work_session import WorkSessionCreate
 from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.base import (
     BaseService,
+    ConflictError,
     NotFoundError,
     ServiceError,
     UnauthorizedError,
     ValidationError,
 )
 from roboco.services.content_notes import apply_structured_note
+from roboco.services.work_session import WorkSessionService
 from roboco.utils.converters import require_uuid, to_python_uuid
 
 if TYPE_CHECKING:
@@ -2362,7 +2364,9 @@ class TaskService(BaseService):
         false negative — so it is not a correctness concern.
         """
         await self.session.execute(
-            text("SELECT pg_advisory_xact_lock(hashtextextended(CAST(:aid AS text), 0))"),
+            text(
+                "SELECT pg_advisory_xact_lock(hashtextextended(CAST(:aid AS text), 0))"
+            ),
             {"aid": str(agent_id)},
         )
 
@@ -2486,31 +2490,6 @@ class TaskService(BaseService):
     # GIT WORK SESSION INTEGRATION
     # =========================================================================
 
-    async def _supersede_other_active_sessions(
-        self, task_id: UUID, keep_agent_id: UUID
-    ) -> None:
-        """Abandon any ACTIVE work session for a task owned by a different agent.
-
-        Enforces the single-active-per-task invariant at claim time: a re-claim
-        by a different agent (pool release, reaper unclaim, escalation redirect)
-        otherwise left the prior holder's ACTIVE row open, and the duplicate
-        ACTIVE rows crashed ``WorkSessionService.get_active_for_task`` with
-        ``MultipleResultsFound`` — the i_will_plan respawn-loop wedge.
-        """
-        stale = await self.session.execute(
-            select(WorkSessionTable).where(
-                and_(
-                    WorkSessionTable.task_id == task_id,
-                    WorkSessionTable.agent_id != keep_agent_id,
-                    WorkSessionTable.status == WorkSessionStatus.ACTIVE,
-                )
-            )
-        )
-        for prior in stale.scalars().all():
-            prior.status = WorkSessionStatus.ABANDONED
-            prior.ended_at = datetime.now(UTC)
-        await self.session.flush()
-
     async def _create_work_session_if_needed(
         self,
         task: TaskTable,
@@ -2563,34 +2542,6 @@ class TaskService(BaseService):
             )
             return None
 
-        # Check if session already exists for this task+agent (resilient to any
-        # legacy duplicate ACTIVE rows — see
-        # WorkSessionService.get_active_for_task).
-        existing = await self.session.execute(
-            select(WorkSessionTable)
-            .where(
-                and_(
-                    WorkSessionTable.task_id == task.id,
-                    WorkSessionTable.agent_id == agent_id,
-                    WorkSessionTable.status == WorkSessionStatus.ACTIVE,
-                )
-            )
-            .order_by(WorkSessionTable.started_at.desc())
-        )
-        if existing.scalars().first():
-            self.log.debug(
-                "Work session already exists",
-                task_id=str(task.id),
-                agent_id=str(agent_id),
-            )
-            return None
-
-        # Single-active-per-task invariant: close any OTHER agent's stale ACTIVE
-        # session for this task before opening a new one (a re-claim by a
-        # different agent otherwise left duplicate ACTIVE rows that crashed
-        # get_active_for_task with MultipleResultsFound — the respawn-loop wedge).
-        await self._supersede_other_active_sessions(cast("UUID", task.id), agent_id)
-
         # Determine target branch:
         # - For subtasks: merge into parent task's branch
         # - For parent tasks: merge into default branch (master)
@@ -2604,19 +2555,34 @@ class TaskService(BaseService):
             if parent_branch:
                 target_branch = str(parent_branch)
 
-        # Create the work session
-        work_session = WorkSessionTable(
-            project_id=project_id,
-            task_id=task.id,
-            agent_id=agent_id,
-            branch_name=branch_name,
-            base_branch=target_branch,  # Created from target
-            target_branch=target_branch,  # Will merge back to target
-            status=WorkSessionStatus.ACTIVE,
-        )
-
-        self.session.add(work_session)
-        await self.session.flush()
+        # Create the work session through the validated service path (F113): the
+        # service-layer ``WorkSessionService.create`` is the single source of
+        # truth — it enforces the existing-active check (ConflictError on a
+        # duplicate), the single-active-per-task supersede invariant, and
+        # project/task existence. Constructing ``WorkSessionTable`` directly
+        # here duplicated that validation and the two sites had drifted. The
+        # ``ConflictError`` maps to the "if needed" idempotent semantics — an
+        # agent re-claiming its own already-active session is a no-op (None),
+        # not an error. The supersede still runs inside ``create`` before the
+        # insert (closing any OTHER agent's stale ACTIVE row first).
+        try:
+            work_session = await WorkSessionService(self.session).create(
+                WorkSessionCreate(
+                    project_id=cast("UUID", project_id),
+                    task_id=cast("UUID", task.id),
+                    agent_id=agent_id,
+                    branch_name=branch_name,
+                    base_branch=target_branch,  # Created from target
+                    target_branch=target_branch,  # Will merge back to target
+                )
+            )
+        except ConflictError:
+            self.log.debug(
+                "Work session already exists",
+                task_id=str(task.id),
+                agent_id=str(agent_id),
+            )
+            return None
 
         # Link session to task
         task.work_session_id = cast("Any", work_session.id)

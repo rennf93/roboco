@@ -952,7 +952,13 @@ async def test_fail_qa_work_session_fallback_excludes_qa_session(
     db_session.add(qa)
     await db_session.flush()
 
-    # A QA-attributed work session (older) and a dev-attributed one (newer).
+    # A QA-attributed work session (older, abandoned) and a dev-attributed one
+    # (newer, active). Only one ACTIVE session may exist per task
+    # (``uq_work_sessions_one_active_per_task``), so the QA session is
+    # ABANDONED — realistic for a stale QA review session and still in the
+    # fallback query's result set (the query filters by task_id + agent_id,
+    # not by status). The exclude filter (``agent_id != qa_agent_id``) is
+    # what must keep the QA session from being misread as the revision dev.
     qa_ws = WorkSessionTable(
         id=uuid4(),
         project_id=task_setup["project_id"],
@@ -961,7 +967,7 @@ async def test_fail_qa_work_session_fallback_excludes_qa_session(
         branch_name="feature/backend/abc",
         base_branch="main",
         target_branch="main",
-        status=WorkSessionStatus.ACTIVE,
+        status=WorkSessionStatus.ABANDONED,
     )
     dev_ws = WorkSessionTable(
         id=uuid4(),
@@ -1083,6 +1089,25 @@ async def test_ceo_reject_routes_coordination_task_to_main_pm(
                 metrics={},
             )
         )
+    # The CEO rejects the task; ceo_reject emits an audit row keyed to the CEO
+    # agent, so the CEO row must exist (fk_audit_log_agent_id_agents).
+    ceo_id = UUID(AGENT_UUIDS["ceo"])
+    if await db_session.get(AgentTable, ceo_id) is None:
+        db_session.add(
+            AgentTable(
+                id=ceo_id,
+                name="CEO",
+                slug="ceo",
+                role=AgentRole.CEO,
+                team=Team.MAIN_PM,
+                status=AgentStatus.ACTIVE,
+                model_config={},
+                system_prompt="ceo",
+                capabilities=[],
+                permissions=[],
+                metrics={},
+            )
+        )
     product = ProductTable(
         name="P", slug=f"p-{uuid4().hex[:8]}", created_by=task_setup["agent_id"]
     )
@@ -1128,6 +1153,27 @@ async def test_ceo_reject_routes_batch_umbrella_to_main_pm(
                 system_prompt="pm",
                 capabilities=[],
                 permissions={},
+                metrics={},
+            )
+        )
+        await db_session.flush()
+
+    # The CEO rejects the umbrella; ceo_reject emits an audit row keyed to the
+    # CEO agent, so the CEO row must exist (fk_audit_log_agent_id_agents).
+    ceo_id = UUID(AGENT_UUIDS["ceo"])
+    if await db_session.get(AgentTable, ceo_id) is None:
+        db_session.add(
+            AgentTable(
+                id=ceo_id,
+                name="CEO",
+                slug="ceo",
+                role=AgentRole.CEO,
+                team=Team.MAIN_PM,
+                status=AgentStatus.ACTIVE,
+                model_config={},
+                system_prompt="ceo",
+                capabilities=[],
+                permissions=[],
                 metrics={},
             )
         )
