@@ -22,6 +22,7 @@ import structlog
 
 from roboco.foundation.policy import lifecycle as spec_module
 from roboco.foundation.policy import tracing as _tr
+from roboco.foundation.policy.content import markers
 from roboco.services.gateway.envelope import Envelope
 
 if TYPE_CHECKING:
@@ -187,9 +188,21 @@ class PRGateMixin(_Base):
         )
         if isinstance(role, Envelope):
             return role
+        # The spec gate's ``self_review_block`` is the only self-review defense
+        # for pr_pass / pr_fail: the service-layer ``_validate_not_self_review``
+        # backstop covers qa/documenter but skips pr_reviewer. For the comparison
+        # to fire, both sides must be populated. ``GatewayAgentView`` carries no
+        # ``slug`` field (so ``getattr(agent, "slug", None)`` is always None in
+        # production), and the ``original_developer`` marker stores the dev's
+        # UUID — so resolve both as UUID strings and let the spec's string
+        # equality do the rest. The marker is never set on assembled coordination
+        # tasks (only on dev-leaf tasks at QA/doc claim), so the block is dormant
+        # by design in production — but the gate is now correctly wired to fire
+        # if the marker were ever set to the reviewer.
         spec_ctx = spec_module.Context(
             actor_id=reviewer_agent_id,
-            actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            actor_slug=str(reviewer_agent_id),
+            original_developer_slug=markers.get_original_developer(t),
             notes=notes,
             issues=issues,
         )
