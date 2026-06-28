@@ -25,12 +25,33 @@ import {
 import { useState } from "react";
 import { KanbanCard } from "./kanban-card";
 import { RequiredNotesDialog } from "@/components/tasks/task-detail/task-action-dialogs";
+import { skippedPreconditions } from "./bypass-preconditions";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 type NotesActionKind = "pass-qa" | "fail-qa" | "complete";
 
 interface PendingNotesAction {
   kind: NotesActionKind;
   taskId: string;
+}
+
+// A drag that would skip material lifecycle preconditions (completing with no
+// PR, QA-bypassing, finishing docs that aren't complete, …) is held for an
+// explicit override confirmation. The admin status-override is intentional
+// and stays intact — this only makes the bypass visible instead of silent.
+interface PendingOverride {
+  task: Task;
+  newStatus: TaskStatus;
+  skipped: string[];
 }
 
 interface ColumnConfig {
@@ -67,6 +88,8 @@ export function KanbanBoard({
   const [activeTask, setActiveTask] = useState<Task | null>(null);
   const [pendingNotesAction, setPendingNotesAction] =
     useState<PendingNotesAction | null>(null);
+  const [pendingOverride, setPendingOverride] =
+    useState<PendingOverride | null>(null);
   const [activeColumnIndex, setActiveColumnIndex] = useState(0);
 
   const sensors = useSensors(
@@ -125,6 +148,19 @@ export function KanbanBoard({
       }
     }
 
+    // A drag on this board routes the status move through the admin
+    // status-override, which bypasses the in-band lifecycle validator. When
+    // that override would skip material preconditions the panel can detect
+    // (no open PR, docs not complete, not self-verified, non-terminal
+    // subtasks, …), hold the move for an explicit confirmation that surfaces
+    // exactly what's being skipped. The override stays — this only makes the
+    // bypass visible instead of silent.
+    const skipped = skippedPreconditions(task, newStatus, tasks || []);
+    if (skipped.length > 0) {
+      setPendingOverride({ task, newStatus, skipped });
+      return;
+    }
+
     try {
       await updateTask.mutateAsync({
         taskId,
@@ -134,6 +170,23 @@ export function KanbanBoard({
       refetch();
     } catch {
       toast.error("Failed to move task");
+    }
+  };
+
+  const handleOverrideConfirm = async () => {
+    if (!pendingOverride) return;
+    const { task, newStatus } = pendingOverride;
+    try {
+      await updateTask.mutateAsync({
+        taskId: task.id,
+        updates: { status: newStatus },
+      });
+      toast.success(`Task moved to ${newStatus.replace(/_/g, " ")}`);
+      refetch();
+    } catch {
+      toast.error("Failed to move task");
+    } finally {
+      setPendingOverride(null);
     }
   };
 
@@ -381,6 +434,37 @@ export function KanbanBoard({
           {...notesDialogConfig[pendingNotesAction.kind]}
         />
       )}
+
+      <AlertDialog
+        open={pendingOverride !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingOverride(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Override lifecycle preconditions?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              This move routes through the admin status-override, which skips
+              the in-band lifecycle gate. The following preconditions would be
+              skipped:
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <ul className="text-sm text-muted-foreground list-disc pl-6 space-y-1">
+            {pendingOverride?.skipped.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleOverrideConfirm}>
+              Override &amp; move
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
