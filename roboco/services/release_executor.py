@@ -221,8 +221,19 @@ class _GitReleaseOps:
         return proc.returncode == 0
 
     async def commit_and_push(self, version: str) -> str:
-        await self._git("add", "-A")
-        await self._git("commit", "-S", "-m", f"chore(release): {version}")
+        add_rc, add_out = await self._git("add", "-A")
+        if add_rc != 0:
+            logger.error("release git add failed", error=add_out.strip()[:300])
+            raise RuntimeError(f"release git add failed: {add_out.strip()[:200]}")
+        commit_rc, commit_out = await self._git(
+            "commit", "-S", "-m", f"chore(release): {version}"
+        )
+        if commit_rc != 0:
+            # F012: a failed commit (gpgsign/pre-commit reject/no-op bump) must
+            # abort BEFORE rev-parse+push — otherwise the pre-bump base gets
+            # pushed and tagged as the new version.
+            logger.error("release commit failed", error=commit_out.strip()[:300])
+            raise RuntimeError(f"release commit failed: {commit_out.strip()[:200]}")
         _, out = await self._git("rev-parse", "HEAD")
         sha = out.strip()
         push_rc, push_out = await self._git(
