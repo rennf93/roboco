@@ -6481,6 +6481,29 @@ Start by:
                 kind=kind,
                 error=str(exc),
             )
+        # F035: register a WaitingRecord so the probe-resume loop can revive
+        # this agent when the provider recovers. ``_on_probe_success`` reads
+        # ``_waiting_records`` filtered by ``waiting_for == "rate_limit_lifted"``
+        # + ``context.provider``; without a record here it resumes nobody and
+        # recovery falls to the 600s stale-claim reaper instead of the
+        # probe-success path the parking design relies on. Persisted (mirrors
+        # ``mark_waiting_long``) so a restart still resolves the wait. We do NOT
+        # call ``mark_waiting_long`` itself — the container is already dead (it
+        # exited), so there is nothing to stop, and parking keeps OFFLINE (not
+        # WAITING_LONG) so the reaper's live-skip / health loop ignore it.
+        task_id = (
+            str(instance.current_task_id) if instance.current_task_id else None
+        )
+        record = WaitingRecord(
+            agent_id=agent_id,
+            task_id=task_id,
+            waiting_for="rate_limit_lifted",
+            waiting_since=datetime.now(UTC),
+            context={"provider": provider, "kind": kind},
+        )
+        self._waiting_records[agent_id] = record
+        with contextlib.suppress(Exception):
+            await self._persist_waiting_record(record)
         logger.warning(
             "Provider unavailable; parked (task retried when it recovers)",
             provider=provider,
@@ -7716,6 +7739,26 @@ Start now: evidence(task_id="{task_id}")
         instance = instances.get(self._resolve_agent_slug(str(owner)))
         return instance is not None and instance.state == AgentState.ACTIVE
 
+    def _assignee_is_provider_parked(self, task: Any) -> bool:
+        """True if the task's assignee is parked waiting for a provider to recover.
+
+        A provider-parked agent (session-limit / overload / grok-429) is OFFLINE
+        with a dead container and a ``rate_limit_lifted`` WaitingRecord; the
+        probe-resume loop owns its recovery. The stale-claim reaper must skip it
+        so the claim survives until the probe revives the agent — reaping would
+        release the claim to pending and probe-success would then respawn the
+        agent on a task it no longer owns. Defensive on a missing registry.
+        """
+        owner = getattr(task, "assigned_to", None) or getattr(task, "claimed_by", None)
+        if not owner:
+            return False
+        records = getattr(self, "_waiting_records", None)
+        if not records:
+            return False
+        slug = self._resolve_agent_slug(str(owner))
+        record = records.get(slug)
+        return record is not None and record.waiting_for == "rate_limit_lifted"
+
     async def _readopt_running_agents(self) -> int:
         """Re-adopt still-running agent containers into ``_instances`` at startup.
 
@@ -7959,6 +8002,13 @@ Start now: evidence(task_id="{task_id}")
                     and not await self._maybe_kill_wedged_grok(t, ts)
                     and not await self._maybe_recover_broken_gateway(t)
                 ):
+                    continue
+                # F035: a provider-parked agent (session-limit / overload /
+                # grok-429) is OFFLINE with a dead container and a
+                # ``rate_limit_lifted`` WaitingRecord. The probe-resume loop
+                # owns its recovery — do NOT reap the claim, or probe-success
+                # would later respawn the agent on a task it no longer owns.
+                if self._assignee_is_provider_parked(t):
                     continue
                 task_id = require_uuid(t.id)
                 try:

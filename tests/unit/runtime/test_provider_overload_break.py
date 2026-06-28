@@ -9,11 +9,12 @@ decision points deterministically (logs + tracker + finalize stubbed).
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import pytest
 from roboco.config import settings
-from roboco.models.runtime import AgentInstance
+from roboco.models.runtime import AgentInstance, WaitingRecord
 from roboco.runtime.orchestrator import (
     _OVERLOAD_RETRY_AFTER_S,
     _RATE_LIMIT_RETRY_AFTER_S,
@@ -52,6 +53,9 @@ def orch(monkeypatch: pytest.MonkeyPatch) -> AgentOrchestrator:
     # transcript fallback empty by default so dev environments with stray
     # transcripts do not make the tests flaky.
     monkeypatch.setattr(orch, "_transcript_tail_text", lambda _a, _lines=80: "")
+    orch._waiting_records = {}
+    orch._rate_limit_ceo_notified = set()
+    orch._instances = {}
     return orch
 
 
@@ -151,6 +155,64 @@ async def test_park_offlines_and_activates_with_kind(
         "affected_agents": ["be-dev-1"],
         "kind": "overloaded",
     }
+
+
+@pytest.mark.asyncio
+async def test_park_registers_waiting_record_so_probe_can_resume(
+    orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # F035: the probe-resume loop reads _waiting_records filtered by
+    # waiting_for == "rate_limit_lifted" + context.provider. Without a record
+    # here, _parked_agents_for(provider) returns [] and _on_probe_success
+    # resumes nobody — recovery falls to the 600s stale-claim reaper instead of
+    # the probe-success path the parking design relies on.
+    orch._waiting_records = {}
+    inst = _instance()
+    inst.current_task_id = "task-1"
+    tracker = _FakeTracker()
+    monkeypatch.setattr(orch, "_make_tracker", lambda _p: tracker)
+    monkeypatch.setattr(orch, "_finalize_spawn_session", AsyncMock())
+    monkeypatch.setattr(orch, "_persist_waiting_record", AsyncMock())
+
+    await orch._park_provider_unavailable(
+        "be-dev-1", inst, provider="anthropic", retry_after=45.0, kind="rate_limited"
+    )
+
+    assert "be-dev-1" in orch._waiting_records
+    rec = orch._waiting_records["be-dev-1"]
+    assert rec.waiting_for == "rate_limit_lifted"
+    assert rec.context.get("provider") == "anthropic"
+    assert rec.task_id == "task-1"
+    assert orch._parked_agents_for("anthropic") == ["be-dev-1"]
+
+
+@pytest.mark.asyncio
+async def test_probe_success_respawns_parked_agent(
+    orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # F035: once the probe succeeds, the parked agent must be respawned via
+    # resolve_wait — not left stranded for the 600s reaper.
+    orch._waiting_records = {
+        "be-dev-1": WaitingRecord(
+            agent_id="be-dev-1",
+            task_id="task-1",
+            waiting_for="rate_limit_lifted",
+            waiting_since=datetime.now(UTC),
+            context={"provider": "anthropic"},
+        )
+    }
+    tracker = _FakeTracker()
+    tracker.clear = AsyncMock()  # type: ignore[method-assign]
+    monkeypatch.setattr(orch, "_make_tracker", lambda _p: tracker)
+    monkeypatch.setattr(orch, "_delete_waiting_record", AsyncMock())
+    monkeypatch.setattr(orch, "_generate_resume_prompt", lambda _r, _res: "resume")
+    spawn = AsyncMock()
+    monkeypatch.setattr(orch, "spawn_agent", spawn)
+
+    await orch._on_probe_success("anthropic", tracker)
+
+    spawn.assert_awaited_once()  # parked agent respawned, not stranded
+    assert "be-dev-1" not in orch._waiting_records
 
 
 # ---------------------------------------------------------------------------

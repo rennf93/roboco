@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-from roboco.models.runtime import AgentInstance
+from roboco.models.runtime import AgentInstance, WaitingRecord
 from roboco.runtime.orchestrator import AgentOrchestrator, AgentState
 from roboco.seeds.initial_data import AGENT_UUIDS
 
@@ -374,6 +374,57 @@ async def test_reap_releases_on_registry_miss_when_container_gone(
     await orch._reap_with_service(svc)
 
     svc.unclaim_for_reaper.assert_awaited_once_with(task_id)
+
+
+@pytest.mark.asyncio
+async def test_reap_spares_provider_parked_agent_for_probe_resume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """F035: a provider-parked agent (dead container, OFFLINE, with a
+    ``rate_limit_lifted`` WaitingRecord) must NOT be reaped by the stale-claim
+    reaper. The probe-resume loop owns its recovery and respawns it when the
+    provider recovers; reaping would release the claim to pending, and then
+    probe-success would respawn the agent on a task it no longer owns.
+    """
+    now = datetime.now(UTC)
+    task_id = uuid4()
+    task = type(
+        "T",
+        (),
+        {
+            "id": task_id,
+            "last_heartbeat_at": now - timedelta(seconds=1200),
+            "assigned_to": AGENT_UUIDS["be-dev-1"],
+            "claimed_by": None,
+        },
+    )()
+
+    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    monkeypatch.setattr(
+        orch, "_maybe_recover_broken_gateway", AsyncMock(return_value=False)
+    )
+    orch._claim_heartbeat_ttl = 300
+    orch._grok_idle_kill_ttl = 900
+    orch._instances = {}  # parked agent is OFFLINE / not in the registry
+    orch._waiting_records = {
+        "be-dev-1": WaitingRecord(
+            agent_id="be-dev-1",
+            task_id=str(task_id),
+            waiting_for="rate_limit_lifted",
+            waiting_since=now,
+            context={"provider": "anthropic"},
+        )
+    }
+    monkeypatch.setattr(
+        orch, "_inspect_container_state", AsyncMock(return_value=(False, 0))
+    )
+    svc = AsyncMock()
+    svc.list_in_progress_or_claimed.return_value = [task]
+    svc.unclaim_for_reaper = AsyncMock()
+
+    await orch._reap_with_service(svc)
+
+    svc.unclaim_for_reaper.assert_not_awaited()  # spared for the probe loop
 
 
 @pytest.mark.asyncio
