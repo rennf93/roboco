@@ -2406,6 +2406,42 @@ class TaskService(BaseService):
             {"pid": str(parent_task_id)},
         )
 
+    async def acquire_task_lock(self, task_id: UUID) -> None:
+        """Take a per-task transaction-scoped advisory lock.
+
+        ``open_pr``'s idempotent re-entry guard reads ``t.pr_number`` from an
+        unlocked fetch, then runs the PR-opening runner + emits the 70%
+        "opened PR #N" milestone — a read-then-act with no DB serialization.
+        Two concurrent ``open_pr`` calls on the SAME task (the
+        alive-but-unresponsive respawn race) both fetch ``pr_number=None``,
+        both pass the guard, both run the runner (``create_pr``'s GitHub 422
+        'already exists' path ensures only one PR), and both emit the
+        milestone → a double-emitted progress entry (the audit/milestone
+        view double-counts one PR-open). A ``pg_advisory_xact_lock`` keyed by
+        the task serializes the WHOLE fetch -> guard -> runner -> milestone
+        critical section per task — held until the outer request transaction
+        commits, the second concurrent same-task ``open_pr`` blocks until the
+        first commits, its fetch then sees the first's committed ``pr_number``,
+        the idempotent guard fires, and it short-circuits without re-emitting
+        the milestone.
+
+        Per-TASK (not per-agent): the single-active-task guard means a dev
+        holds one task at a time, so concurrent ``open_pr`` on the SAME task is
+        purely the respawn-race bug case — no legitimate concurrency is
+        regressed. Seed ``2`` keeps this in a disjoint key space from the
+        per-agent claim lock (seed ``0``) and the per-parent delegate lock
+        (seed ``1``). Transaction-scoped so it auto-releases on commit or
+        rollback and cannot outlive the request. ``hashtextextended`` maps a
+        UUID to a ``bigint`` key; a hash collision only causes benign false
+        serialization, never a false negative.
+        """
+        await self.session.execute(
+            text(
+                "SELECT pg_advisory_xact_lock(hashtextextended(CAST(:tid AS text), 2))"
+            ),
+            {"tid": str(task_id)},
+        )
+
     async def claim(
         self, task_id: UUID, agent_id: UUID, allow_reassign: bool = False
     ) -> TaskTable | None:

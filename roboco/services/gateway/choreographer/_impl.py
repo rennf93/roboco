@@ -1556,6 +1556,23 @@ class Choreographer:
         than the spec's ``tracing_gap`` for ``no_prior_pr``. Two calls
         in a row should not surface a misleading "open a PR" hint.
         """
+        # Serialize concurrent open_pr on the SAME task across the
+        # idempotent-guard fetch -> runner -> milestone-emit critical section.
+        # The guard reads t.pr_number from an unlocked fetch; without a lock,
+        # two concurrent same-task open_pr calls (the alive-but-unresponsive
+        # respawn race) both fetch pr_number=None, both pass the guard, both
+        # run the runner (create_pr's GitHub 422 'already exists' path ensures
+        # only one PR — no double PR), and both reach _open_pr_success_envelope
+        # -> _record_milestone_progress -> a double-emitted 70% "opened PR #N"
+        # progress entry (the audit/milestone view double-counts one PR-open).
+        # The per-task transaction-scoped advisory lock is acquired BEFORE the
+        # fetch so the second concurrent call blocks until the first commits,
+        # then its fetch sees the first's committed pr_number and the guard
+        # short-circuits without re-emitting the milestone. Per-task (not
+        # per-agent) — the single-active-task guard means concurrent open_pr
+        # on the same task is purely the respawn-race bug case, never a
+        # legitimate-concurrency regression.
+        await self.task.acquire_task_lock(task_id)
         t = await self.task.get(task_id)
         if t is None:
             return await self._emit_rejection(
