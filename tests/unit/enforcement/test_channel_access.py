@@ -75,3 +75,35 @@ def test_validate_channel_access_silent_observer_can_read() -> None:
     """Line 80: silent observers can read."""
     # backend-cell has 'auditor' as silent observer.
     assert validate_channel_access("auditor", "backend-cell", "read") is True
+
+
+# ---------------------------------------------------------------------------
+# Auditor is a silent, read-only observer — the catalog must not grant it
+# write_roles on any channel. main-pm-board / board-private used to list the
+# auditor in write_roles (legacy parity), which let the catalog-only
+# enforcement path (the HTTP messaging route -> validate_channel_access)
+# authorize an auditor write that the say/dm guard would have blocked.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("channel", ["main-pm-board", "board-private"])
+def test_validate_channel_access_auditor_cannot_write_management_channels(
+    channel: str,
+) -> None:
+    """Auditor must not be in write_roles for any channel — silent observer."""
+    with pytest.raises(ChannelAccessDeniedError):
+        validate_channel_access("auditor", channel, "write")
+
+
+@pytest.mark.parametrize("channel", ["main-pm-board", "board-private"])
+def test_validate_channel_access_auditor_can_still_read_management_channels(
+    channel: str,
+) -> None:
+    """Removing write access must not regress the auditor's silent read."""
+    assert validate_channel_access("auditor", channel, "read") is True
+
+
+def test_validate_channel_access_main_pm_still_writes_main_pm_board() -> None:
+    """The legitimate writers (main-pm / board / ceo) are untouched."""
+    assert validate_channel_access("main-pm", "main-pm-board", "write") is True
+    assert validate_channel_access("ceo", "board-private", "write") is True

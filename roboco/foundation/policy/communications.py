@@ -219,9 +219,14 @@ CHANNELS: dict[str, ChannelSpec] = {
         silent_roles=_AUDITOR_ONLY,
     ),
     # -- Management channels --------------------------------------------------
-    # Legacy CHANNEL_ACCESS lists auditor as both read AND write here. We
-    # preserve that behaviour for parity; the runtime guard that downgrades
-    # auditor to silent lives in services.
+    # The auditor is a silent, read-only observer on every channel — its
+    # read membership is declared in read_roles, but it must NOT appear in
+    # write_roles. Previously the catalog listed the auditor as a writer
+    # here "for parity" with the legacy CHANNEL_ACCESS table, while the
+    # actual silent-observer rule was enforced only at the say/dm guard.
+    # That left the catalog-only enforcement path (the HTTP messaging route
+    # -> validate_channel_access) authorizing an auditor write that the
+    # guard would have blocked. The catalog now matches the enforced rule.
     "main-pm-board": ChannelSpec(
         slug="main-pm-board",
         description="Main PM and Board communication",
@@ -229,9 +234,7 @@ CHANNELS: dict[str, ChannelSpec] = {
         read_roles=frozenset(
             {Role.MAIN_PM, Role.PRODUCT_OWNER, Role.HEAD_MARKETING, Role.AUDITOR}
         ),
-        write_roles=frozenset(
-            {Role.MAIN_PM, Role.PRODUCT_OWNER, Role.HEAD_MARKETING, Role.AUDITOR}
-        ),
+        write_roles=frozenset({Role.MAIN_PM, Role.PRODUCT_OWNER, Role.HEAD_MARKETING}),
         silent_roles=frozenset(),
     ),
     "board-private": ChannelSpec(
@@ -247,9 +250,7 @@ CHANNELS: dict[str, ChannelSpec] = {
                 Role.MAIN_PM,
             }
         ),
-        write_roles=frozenset(
-            {Role.PRODUCT_OWNER, Role.HEAD_MARKETING, Role.AUDITOR, Role.CEO}
-        ),
+        write_roles=frozenset({Role.PRODUCT_OWNER, Role.HEAD_MARKETING, Role.CEO}),
         silent_roles=frozenset(),
     ),
     # -- Special / broadcast channels -----------------------------------------
