@@ -1021,6 +1021,38 @@ async def test_sweep_timed_out_sessions_closes_idle_session(
 
 
 @pytest.mark.asyncio
+async def test_sweep_skips_session_refreshed_after_candidate_select(
+    msg_setup: dict, db_session: AsyncSession
+) -> None:
+    """TOCTOU: a session stale at the candidate SELECT but refreshed (a message
+    landed) before the close must NOT be closed. The sweeper re-reads
+    last_activity_at fresh and skips a just-used session."""
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(
+        SessionCreateRequest(group_id=grp.id, timeout_seconds=1)
+    )
+    sid = sess.id
+    # Stale at SELECT time -> candidate.
+    sess.last_activity_at = datetime.now(UTC) - timedelta(seconds=120)
+    await db_session.flush()
+    # Fresh re-read sees stale -> still timed out.
+    assert (
+        await svc._session_still_timed_out(sid, timeout_seconds=1, max_time_window=None)
+        is True
+    )
+    # A message lands, refreshing activity.
+    sess.last_activity_at = datetime.now(UTC)
+    await db_session.flush()
+    # Fresh re-read sees recent -> no longer timed out -> sweeper must skip.
+    assert (
+        await svc._session_still_timed_out(sid, timeout_seconds=1, max_time_window=None)
+        is False
+    )
+
+
+@pytest.mark.asyncio
 async def test_edit_message_or_raise_succeeds(msg_setup: dict) -> None:
     svc = msg_setup["svc"]
     aid = msg_setup["agent_id"]

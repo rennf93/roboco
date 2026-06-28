@@ -536,6 +536,37 @@ class MessagingService(BaseService):
         )
         return result.scalar_one_or_none()
 
+    async def _session_still_timed_out(
+        self,
+        session_id: UUID,
+        *,
+        timeout_seconds: int,
+        max_time_window: timedelta | None,
+    ) -> bool:
+        """Re-check the timeout against a FRESH ``last_activity_at`` from the DB.
+
+        Closes the sweeper TOCTOU: a message may have refreshed
+        ``last_activity_at`` between the candidate SELECT and the close, so the
+        stale in-memory value would close a just-used session. Returns False if
+        the session is no longer timed out / window-exceeded per the fresh row
+        (or was closed concurrently).
+        """
+        now = datetime.now(UTC)
+        result = await self.session.execute(
+            select(
+                SessionTable.last_activity_at,
+                SessionTable.started_at,
+                SessionTable.status,
+            ).where(SessionTable.id == session_id)
+        )
+        row = result.one_or_none()
+        if row is None or row.status != SessionStatus.ACTIVE:
+            return False
+        last = row.last_activity_at or row.started_at
+        if (now - last).total_seconds() >= timeout_seconds:
+            return True
+        return max_time_window is not None and (now - row.started_at) >= max_time_window
+
     async def sweep_timed_out_sessions(self) -> int:
         """Close sessions whose inactivity exceeds `timeout_seconds`.
 
@@ -565,6 +596,16 @@ class MessagingService(BaseService):
                 and (now - session.started_at) >= session.max_time_window
             )
             if not (timeout_exceeded or window_exceeded):
+                continue
+
+            # TOCTOU re-check: a message may have refreshed last_activity_at
+            # between the candidate SELECT above and here. Re-read fresh and
+            # skip if the session is no longer timed out (was just used).
+            if not await self._session_still_timed_out(
+                cast("UUID", session.id),
+                timeout_seconds=session.timeout_seconds,
+                max_time_window=session.max_time_window,
+            ):
                 continue
 
             reason = "Inactivity timeout" if timeout_exceeded else "Max time window"
