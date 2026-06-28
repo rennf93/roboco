@@ -8,7 +8,7 @@ or committing/pushing. Fail-safe: a null/failing command returns False.
 from __future__ import annotations
 
 import subprocess
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -36,9 +36,9 @@ def _make_read_clone(tmp_path: Path) -> Path:
     return repo
 
 
-def _svc(read_clone: Path) -> WorkspaceService:
-    svc = WorkspaceService.__new__(WorkspaceService)
-    svc.ensure_read_clone = AsyncMock(return_value=read_clone)  # type: ignore[method-assign]
+def _svc(read_clone: Path) -> Any:
+    svc: Any = WorkspaceService.__new__(WorkspaceService)
+    svc.ensure_read_clone = AsyncMock(return_value=read_clone)
     return svc
 
 

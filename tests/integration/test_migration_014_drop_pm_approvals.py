@@ -7,12 +7,17 @@ tracking, RAG context). Only pm_approvals is truly orphaned.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 from sqlalchemy import text
 
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
 
 @pytest.mark.asyncio
-async def test_pm_approvals_dropped(db_session) -> None:  # type: ignore[no-untyped-def]
+async def test_pm_approvals_dropped(db_session: AsyncSession) -> None:
     """pm_approvals column is gone from the tasks table."""
     result = await db_session.execute(
         text(
@@ -25,7 +30,9 @@ async def test_pm_approvals_dropped(db_session) -> None:  # type: ignore[no-unty
 
 
 @pytest.mark.asyncio
-async def test_quick_context_and_proactive_context_remain(db_session) -> None:  # type: ignore[no-untyped-def]
+async def test_quick_context_and_proactive_context_remain(
+    db_session: AsyncSession,
+) -> None:
     """quick_context and proactive_context MUST remain — they're actively used."""
     result = await db_session.execute(
         text(

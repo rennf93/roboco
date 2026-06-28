@@ -23,8 +23,8 @@ _BASE = "feature/backend/parent12345"
 _HEAD = "feature/backend/abc12345"
 
 
-def _git_service() -> GitService:
-    svc = GitService.__new__(GitService)
+def _git_service() -> Any:
+    svc: Any = GitService.__new__(GitService)
     svc.log = MagicMock()
     return svc
 
@@ -45,14 +45,14 @@ def _project() -> Any:
     return MagicMock(slug="roboco")
 
 
-async def _wire(svc: GitService, *, rev_list_stdout: str) -> AsyncMock:
+async def _wire(svc: Any, *, rev_list_stdout: str) -> AsyncMock:
     """Stub the workspace/token resolution + _run_git; return the run mock."""
-    svc._project_for_task = AsyncMock(return_value=_project())  # type: ignore[method-assign]
-    svc._resolve_workspace_agent_id = MagicMock(return_value=uuid4())  # type: ignore[method-assign]
-    svc.get_workspace = AsyncMock(return_value=_WORKSPACE)  # type: ignore[method-assign]
-    svc._get_project_token_or_raise = AsyncMock(return_value=_TOKEN)  # type: ignore[method-assign]
+    svc._project_for_task = AsyncMock(return_value=_project())
+    svc._resolve_workspace_agent_id = MagicMock(return_value=uuid4())
+    svc.get_workspace = AsyncMock(return_value=_WORKSPACE)
+    svc._get_project_token_or_raise = AsyncMock(return_value=_TOKEN)
     run = AsyncMock(side_effect=[_result(), _result(stdout=rev_list_stdout)])
-    svc._run_git = run  # type: ignore[method-assign]
+    svc._run_git = run
     return run
 
 
@@ -116,7 +116,7 @@ async def test_is_behind_base_requires_branch_name() -> None:
 @pytest.mark.asyncio
 async def test_is_behind_base_raises_when_project_missing() -> None:
     svc = _git_service()
-    svc._project_for_task = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    svc._project_for_task = AsyncMock(return_value=None)
 
     with pytest.raises(NotFoundError):
         await svc.is_behind_base(_task(), base_branch=_BASE)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import subprocess
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from roboco.services.conventions import ConventionsService
 
@@ -33,7 +33,7 @@ def _git_repo(root: Path) -> str:
 
 
 def _svc() -> ConventionsService:
-    return ConventionsService(session=None)  # type: ignore[arg-type]
+    return ConventionsService(session=cast("Any", None))
 
 
 def test_resolve_reads_clone_head_and_backfills(tmp_path: Path) -> None:

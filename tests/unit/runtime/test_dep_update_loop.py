@@ -16,7 +16,7 @@ from roboco.config import settings
 from roboco.runtime.orchestrator import AgentOrchestrator
 
 
-def _orch() -> AgentOrchestrator:
+def _orch() -> Any:
     return AgentOrchestrator.__new__(AgentOrchestrator)
 
 
@@ -25,7 +25,7 @@ async def test_loop_noop_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "dep_update_enabled", False)
     orch = _orch()
     cycle = AsyncMock()
-    orch._run_dep_update_cycle = cycle  # type: ignore[method-assign]
+    orch._run_dep_update_cycle = cycle
     await orch._dep_update_loop()
     cycle.assert_not_awaited()
 
@@ -55,7 +55,7 @@ def _db_ctx(db: Any) -> Any:
 @pytest.mark.asyncio
 async def test_cycle_warns_and_skips_engine_when_empty() -> None:
     orch = _orch()
-    orch._load_dep_update_set = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    orch._load_dep_update_set = AsyncMock(return_value=[])
     get_eng = MagicMock()
     with (
         patch("roboco.db.get_db_context", _db_ctx(MagicMock())),
@@ -69,7 +69,7 @@ async def test_cycle_warns_and_skips_engine_when_empty() -> None:
 async def test_cycle_runs_engine_when_eligible_present() -> None:
     orch = _orch()
     eligible = [MagicMock()]
-    orch._load_dep_update_set = AsyncMock(return_value=eligible)  # type: ignore[method-assign]
+    orch._load_dep_update_set = AsyncMock(return_value=eligible)
     db = MagicMock()
     db.commit = AsyncMock()
     engine = MagicMock()

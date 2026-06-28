@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
@@ -212,7 +212,8 @@ def test_parse_uuid_list_with_valid() -> None:
 
 def test_parse_uuid_list_skips_empty_strings() -> None:
     raw = uuid4()
-    out = _parse_uuid_list([str(raw), "", None])  # type: ignore[list-item]
+    vals: list[Any] = [str(raw), "", None]
+    out = _parse_uuid_list(cast("list[str]", vals))
     assert raw in out
     assert len(out) == 1
 
@@ -278,7 +279,7 @@ def test_task_update_sequence_rejects_negative() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _stub_task(*, with_project: bool = False) -> SimpleNamespace:
+def _stub_task(*, with_project: bool = False) -> Any:
     """Build a TaskTable stand-in that matches task_to_response's reads."""
     return SimpleNamespace(
         id=uuid4(),
@@ -337,7 +338,7 @@ def test_task_to_response_omits_slug_when_project_not_loaded() -> None:
     fake_inspector = MagicMock()
     fake_inspector.unloaded = {"project"}
     with patch("roboco.api.schemas.tasks.sa_inspect", return_value=fake_inspector):
-        resp = task_to_response(stub)  # type: ignore[arg-type]
+        resp = task_to_response(stub)
     assert resp.project_slug is None
 
 
@@ -346,7 +347,7 @@ def test_task_to_response_includes_slug_when_project_loaded() -> None:
     fake_inspector = MagicMock()
     fake_inspector.unloaded = set()  # project IS loaded
     with patch("roboco.api.schemas.tasks.sa_inspect", return_value=fake_inspector):
-        resp = task_to_response(stub)  # type: ignore[arg-type]
+        resp = task_to_response(stub)
     assert resp.project_slug == "proj-1"
 
 
@@ -364,7 +365,7 @@ def test_task_to_response_serializes_cell_projects_when_loaded() -> None:
     fake_inspector = MagicMock()
     fake_inspector.unloaded = set()  # cell_projects IS loaded
     with patch("roboco.api.schemas.tasks.sa_inspect", return_value=fake_inspector):
-        resp = task_to_response(stub)  # type: ignore[arg-type]
+        resp = task_to_response(stub)
     assert resp.cell_projects == [
         ProductCellMapping(team=Team.BACKEND, project_id=be_proj),
         ProductCellMapping(team=Team.FRONTEND, project_id=fe_proj),
@@ -378,7 +379,7 @@ def test_task_to_response_omits_cell_projects_when_unloaded() -> None:
     fake_inspector = MagicMock()
     fake_inspector.unloaded = {"cell_projects"}
     with patch("roboco.api.schemas.tasks.sa_inspect", return_value=fake_inspector):
-        resp = task_to_response(stub)  # type: ignore[arg-type]
+        resp = task_to_response(stub)
     assert resp.cell_projects == []
 
 
@@ -393,7 +394,7 @@ def test_task_to_response_serializes_all_note_sections() -> None:
     fake_inspector = MagicMock()
     fake_inspector.unloaded = {"project"}
     with patch("roboco.api.schemas.tasks.sa_inspect", return_value=fake_inspector):
-        resp = task_to_response(stub)  # type: ignore[arg-type]
+        resp = task_to_response(stub)
     assert resp.pr_reviewer_notes == "## Findings\n- looks good"
     assert resp.doc_notes == "Updated the README"
     assert resp.notes_structured == {"pr_review": {"verdict": "passed"}}
@@ -404,7 +405,7 @@ def test_task_list_to_response_returns_list() -> None:
     fake_inspector = MagicMock()
     fake_inspector.unloaded = {"project"}
     with patch("roboco.api.schemas.tasks.sa_inspect", return_value=fake_inspector):
-        out = task_list_to_response(stubs)  # type: ignore[arg-type]
+        out = task_list_to_response(stubs)
     assert len(out) == len(stubs)
 
 
@@ -418,7 +419,7 @@ def _stub_response() -> Any:
     fake_inspector = MagicMock()
     fake_inspector.unloaded = {"project"}
     with patch("roboco.api.schemas.tasks.sa_inspect", return_value=fake_inspector):
-        resp = task_to_response(_stub_task())  # type: ignore[arg-type]
+        resp = task_to_response(_stub_task())
     return resp
 
 

@@ -22,9 +22,9 @@ _PCT_NONE = 0
 _PCT_FALLBACK = 42
 
 
-def _svc_with_task(task: Any) -> TaskService:
-    svc = TaskService.__new__(TaskService)
-    svc.get = AsyncMock(return_value=task)  # type: ignore[method-assign]
+def _svc_with_task(task: Any) -> Any:
+    svc: Any = TaskService.__new__(TaskService)
+    svc.get = AsyncMock(return_value=task)
     svc.session = MagicMock()
     svc.session.flush = AsyncMock()
     return svc
@@ -119,6 +119,6 @@ async def test_no_checklist_falls_back_to_supplied_percentage() -> None:
 
 @pytest.mark.asyncio
 async def test_missing_task_returns_none() -> None:
-    svc = TaskService.__new__(TaskService)
-    svc.get = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    svc: Any = TaskService.__new__(TaskService)
+    svc.get = AsyncMock(return_value=None)
     assert await svc.record_plan_progress(uuid4(), uuid4(), "x") is None

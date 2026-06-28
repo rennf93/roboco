@@ -26,10 +26,10 @@ def _link(session_id: object, relationship_type: str) -> MagicMock:
 @pytest.mark.asyncio
 async def test_propagate_links_every_parent_session_to_subtask() -> None:
     """Every link on the parent gets re-attached to the new subtask."""
-    svc = MessagingService.__new__(MessagingService)
+    svc: Any = MessagingService.__new__(MessagingService)
     parent_session = uuid4()
     review_session = uuid4()
-    svc.get_sessions_for_task = AsyncMock(  # type: ignore[method-assign]
+    svc.get_sessions_for_task = AsyncMock(
         return_value=[
             _link(parent_session, "discussion"),
             _link(review_session, "review"),
@@ -67,9 +67,9 @@ async def test_propagate_links_every_parent_session_to_subtask() -> None:
 @pytest.mark.asyncio
 async def test_propagate_no_parent_sessions_returns_empty() -> None:
     """When the parent has no session links, propagation is a no-op."""
-    svc = MessagingService.__new__(MessagingService)
-    svc.get_sessions_for_task = AsyncMock(return_value=[])  # type: ignore[method-assign]
-    svc.link_session_to_task = AsyncMock()  # type: ignore[method-assign]
+    svc: Any = MessagingService.__new__(MessagingService)
+    svc.get_sessions_for_task = AsyncMock(return_value=[])
+    svc.link_session_to_task = AsyncMock()
 
     out = await svc.propagate_sessions_to_subtask(uuid4(), uuid4(), uuid4())
     assert out == []
@@ -80,8 +80,8 @@ async def test_propagate_no_parent_sessions_returns_empty() -> None:
 async def test_propagate_unknown_relationship_type_defaults_to_discussion() -> None:
     """Garbage relationship_type on the parent link doesn't crash; it
     defaults to DISCUSSION so the subtask is still linked."""
-    svc = MessagingService.__new__(MessagingService)
-    svc.get_sessions_for_task = AsyncMock(  # type: ignore[method-assign]
+    svc: Any = MessagingService.__new__(MessagingService)
+    svc.get_sessions_for_task = AsyncMock(
         return_value=[_link(uuid4(), "definitely-not-a-real-type")]
     )
     calls: list[dict[str, Any]] = []

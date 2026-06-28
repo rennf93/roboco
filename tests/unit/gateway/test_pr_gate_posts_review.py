@@ -15,7 +15,7 @@ import pytest
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 
 
-def _make_choreographer(git: AsyncMock) -> Choreographer:
+def _make_choreographer(git: AsyncMock) -> Any:
     base: dict[str, Any] = {
         "task": AsyncMock(),
         "work_session": AsyncMock(),
@@ -25,9 +25,9 @@ def _make_choreographer(git: AsyncMock) -> Choreographer:
         "audit": AsyncMock(),
         "evidence_repo": AsyncMock(),
     }
-    c = Choreographer(ChoreographerDeps(**base))
+    c: Any = Choreographer(ChoreographerDeps(**base))
     # _project_slug_for hits the project service; stub it for the unit.
-    c._project_slug_for = AsyncMock(return_value="proj")  # type: ignore[method-assign]
+    c._project_slug_for = AsyncMock(return_value="proj")
     return c
 
 

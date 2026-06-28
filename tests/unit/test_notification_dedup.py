@@ -8,6 +8,7 @@ suites; here we assert the branch wiring with a mocked db context.
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -52,7 +53,8 @@ async def test_create_notification_suppresses_same_purpose_duplicate() -> None:
     db.commit = AsyncMock()
 
     svc = NotificationService()
-    svc._resolve_recipients = AsyncMock(return_value=[uuid4()])  # type: ignore[method-assign]
+    cc: Any = svc
+    cc._resolve_recipients = AsyncMock(return_value=[uuid4()])
     with (
         patch(
             "roboco.services.notification.get_db_context",
@@ -90,7 +92,8 @@ async def test_informational_knowledge_share_not_deduped() -> None:
     db.commit = AsyncMock()
 
     svc = NotificationService()
-    svc._resolve_recipients = AsyncMock(return_value=[uuid4()])  # type: ignore[method-assign]
+    cc: Any = svc
+    cc._resolve_recipients = AsyncMock(return_value=[uuid4()])
     params = CreateNotificationParams(
         notification_type=NotificationType.KNOWLEDGE_SHARE,
         priority=NotificationPriority.NORMAL,

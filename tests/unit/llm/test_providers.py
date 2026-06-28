@@ -13,6 +13,7 @@ safety properties the Grok provider must hold:
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -303,7 +304,8 @@ async def test_claude_spawn_delegates_to_host() -> None:
 
 async def test_claude_spawn_wraps_host_error() -> None:
     host = _FakeHost()
-    host._spawn_container = AsyncMock(side_effect=RuntimeError("docker down"))  # type: ignore[method-assign]
+    cc: Any = host
+    cc._spawn_container = AsyncMock(side_effect=RuntimeError("docker down"))
     provider = ClaudeCodeProvider(host)
     with pytest.raises(ProviderError, match="docker down"):
         await provider.spawn(_config())

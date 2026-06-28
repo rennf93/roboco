@@ -32,7 +32,7 @@ from roboco.foundation.policy import lifecycle as spec_module
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 
 
-def _make_choreographer() -> Choreographer:
+def _make_choreographer() -> Any:
     base: dict[str, Any] = {
         "task": AsyncMock(),
         "work_session": AsyncMock(),
@@ -45,12 +45,12 @@ def _make_choreographer() -> Choreographer:
     return Choreographer(ChoreographerDeps(**base))
 
 
-def _stub_post_path(c: Choreographer, *, reviewer_id: Any, t: Any) -> None:
+def _stub_post_path(c: Any, *, reviewer_id: Any, t: Any) -> None:
     """Drive ``post_pr_review`` past preflight + the verdict-consistency gate so
     the hand-format guard is the thing under test. The runner / side-effects are
     stubbed so a passing case does not hit GitHub or the DB transition."""
     agent = MagicMock(role="pr_reviewer", slug="be-pr-reviewer")
-    c._post_pr_review_preflight = AsyncMock(  # type: ignore[method-assign]
+    c._post_pr_review_preflight = AsyncMock(
         return_value=(
             agent,
             "pr_reviewer",
@@ -58,13 +58,13 @@ def _stub_post_path(c: Choreographer, *, reviewer_id: Any, t: Any) -> None:
             spec_module.Context(actor_id=reviewer_id),
         )
     )
-    c._verdict_consistency_gate = AsyncMock(return_value=None)  # type: ignore[method-assign]
-    c._project_slug_for = AsyncMock(return_value="proj")  # type: ignore[method-assign]
-    c._resolve_post_body = MagicMock(return_value="generated body")  # type: ignore[method-assign]
+    c._verdict_consistency_gate = AsyncMock(return_value=None)
+    c._project_slug_for = AsyncMock(return_value="proj")
+    c._resolve_post_body = MagicMock(return_value="generated body")
     runner = MagicMock()
     runner.run_intent = AsyncMock(return_value=t)
-    c._verb_runner = MagicMock(return_value=runner)  # type: ignore[method-assign]
-    c._post_review_side_effects = AsyncMock()  # type: ignore[method-assign]
+    c._verb_runner = MagicMock(return_value=runner)
+    c._post_review_side_effects = AsyncMock()
 
 
 def _task() -> Any:

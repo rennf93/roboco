@@ -16,7 +16,7 @@ from roboco.config import settings
 from roboco.runtime.orchestrator import AgentOrchestrator
 
 
-def _orch() -> AgentOrchestrator:
+def _orch() -> Any:
     return AgentOrchestrator.__new__(AgentOrchestrator)
 
 
@@ -25,7 +25,7 @@ async def test_loop_noop_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "ci_watch_enabled", False)
     orch = _orch()
     cycle = AsyncMock()
-    orch._run_ci_watch_cycle = cycle  # type: ignore[method-assign]
+    orch._run_ci_watch_cycle = cycle
     await orch._ci_watch_loop()  # must return immediately, no infinite loop
     cycle.assert_not_awaited()
 
@@ -55,7 +55,7 @@ def _db_ctx(db: Any) -> Any:
 @pytest.mark.asyncio
 async def test_cycle_warns_and_skips_engine_when_empty() -> None:
     orch = _orch()
-    orch._load_ci_watch_set = AsyncMock(return_value=[])  # type: ignore[method-assign]
+    orch._load_ci_watch_set = AsyncMock(return_value=[])
     get_eng = MagicMock()
     with (
         patch("roboco.db.get_db_context", _db_ctx(MagicMock())),
@@ -69,7 +69,7 @@ async def test_cycle_warns_and_skips_engine_when_empty() -> None:
 async def test_cycle_runs_engine_when_watch_set_present() -> None:
     orch = _orch()
     watch = [MagicMock()]
-    orch._load_ci_watch_set = AsyncMock(return_value=watch)  # type: ignore[method-assign]
+    orch._load_ci_watch_set = AsyncMock(return_value=watch)
     db = MagicMock()
     db.commit = AsyncMock()
     engine = MagicMock()

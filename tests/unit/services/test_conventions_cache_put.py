@@ -17,7 +17,7 @@ the session — while the happy path still adds + commits the savepoint.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
@@ -89,7 +89,7 @@ async def test_cache_put_tolerates_concurrent_duplicate_without_poisoning() -> N
     # a savepoint; _cache_put returns cleanly, the session is not poisoned, and
     # no full rollback undoes the outer task-create transaction.
     session = _FakeSession(duplicate=True)
-    svc = ConventionsService(session=session)  # type: ignore[arg-type]
+    svc = ConventionsService(session=cast("Any", session))
 
     await svc._cache_put(uuid4(), "deadbeef", _mapping(), "ok")
 
@@ -101,7 +101,7 @@ async def test_cache_put_tolerates_concurrent_duplicate_without_poisoning() -> N
 @pytest.mark.asyncio
 async def test_cache_put_happy_path_adds_and_releases_savepoint() -> None:
     session = _FakeSession(duplicate=False)
-    svc = ConventionsService(session=session)  # type: ignore[arg-type]
+    svc = ConventionsService(session=cast("Any", session))
 
     await svc._cache_put(uuid4(), "deadbeef", _mapping(), "ok")
 

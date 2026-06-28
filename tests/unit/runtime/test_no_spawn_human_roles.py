@@ -20,6 +20,7 @@ or future is covered, because they all go through `spawn_agent`.
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -28,7 +29,7 @@ from roboco.runtime.orchestrator import AgentOrchestrator, AgentReadinessError
 from roboco.seeds.initial_data import AGENT_UUIDS
 
 
-def _orch() -> AgentOrchestrator:
+def _orch() -> Any:
     # The human-role guard is the first statement in spawn_agent and only
     # consults the pure `role_for_slug` + the module logger — no self state
     # — so a bare (un-initialized) orchestrator is sufficient to exercise it.
@@ -75,7 +76,7 @@ async def test_spawn_agent_does_not_refuse_real_agent() -> None:
     async def _ready(_aid: str, _tid: str | None) -> str | None:
         return "stubbed-not-ready"
 
-    orch._readiness_gate = _ready  # type: ignore[assignment]
+    orch._readiness_gate = _ready
 
     with pytest.raises(AgentReadinessError) as exc_info:
         await orch.spawn_agent("be-dev-1", task_id="t-1")
@@ -89,15 +90,15 @@ async def test_spawn_agent_does_not_refuse_real_agent() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _a2a_orch(ceo_uuid: str) -> AgentOrchestrator:
+def _a2a_orch(ceo_uuid: str) -> Any:
     """A bare orchestrator with the a2a-dispatch collaborators stubbed."""
-    orch = object.__new__(AgentOrchestrator)
+    orch: Any = object.__new__(AgentOrchestrator)
     # _dispatch_a2a_work consults: _fetch_notifications, _resolve_agent_slug,
     # _is_agent_active, spawn_agent. _resolve_agent_slug is pure (module
     # UUID_TO_SLUG) so it works unstubbed; stub the rest.
-    orch.spawn_agent = AsyncMock()  # type: ignore[method-assign]
-    orch._is_agent_active = MagicMock(return_value=False)  # type: ignore[method-assign]
-    orch._fetch_notifications = AsyncMock(  # type: ignore[method-assign]
+    orch.spawn_agent = AsyncMock()
+    orch._is_agent_active = MagicMock(return_value=False)
+    orch._fetch_notifications = AsyncMock(
         return_value=[
             {"id": "n1", "to_agents": [ceo_uuid], "body": "board handoff"},
         ]
@@ -119,7 +120,7 @@ async def test_dispatch_a2a_skips_ceo_target() -> None:
 
     await orch._dispatch_a2a_work(client)
 
-    orch.spawn_agent.assert_not_awaited()  # type: ignore[attr-defined]
+    orch.spawn_agent.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -128,7 +129,7 @@ async def test_dispatch_a2a_skips_intake_and_secretary_targets() -> None:
     for slug in ("intake-1", "secretary-1"):
         orch = _a2a_orch(AGENT_UUIDS[slug])
         await orch._dispatch_a2a_work(MagicMock())
-        orch.spawn_agent.assert_not_awaited()  # type: ignore[attr-defined]
+        orch.spawn_agent.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -141,8 +142,8 @@ async def test_dispatch_a2a_still_spawns_real_agent_target() -> None:
 
     await orch._dispatch_a2a_work(client)
 
-    orch.spawn_agent.assert_awaited_once()  # type: ignore[attr-defined]
-    _args, kwargs = orch.spawn_agent.call_args  # type: ignore[attr-defined]
+    orch.spawn_agent.assert_awaited_once()
+    _args, kwargs = orch.spawn_agent.call_args
     assert kwargs.get("agent_id") == "be-dev-1"
 
 
@@ -152,10 +153,10 @@ async def test_dispatch_a2a_mixed_targets_skips_only_human() -> None:
     real agent once and never the CEO."""
     ceo_uuid = AGENT_UUIDS["ceo"]
     be_uuid = AGENT_UUIDS["be-dev-1"]
-    orch = object.__new__(AgentOrchestrator)
-    orch.spawn_agent = AsyncMock()  # type: ignore[method-assign]
-    orch._is_agent_active = MagicMock(return_value=False)  # type: ignore[method-assign]
-    orch._fetch_notifications = AsyncMock(  # type: ignore[method-assign]
+    orch: Any = object.__new__(AgentOrchestrator)
+    orch.spawn_agent = AsyncMock()
+    orch._is_agent_active = MagicMock(return_value=False)
+    orch._fetch_notifications = AsyncMock(
         return_value=[{"id": "n1", "to_agents": [ceo_uuid, be_uuid]}]
     )
     client = MagicMock()
@@ -177,11 +178,11 @@ async def test_dispatch_pm_review_skips_ceo_assignee() -> None:
     """An awaiting_pm_review task assigned to the CEO must NOT respawn a CEO
     container, and must NOT abort the dispatcher's tick (which would stall
     other PM-review respawns behind it). The skip leaves it for the human."""
-    orch = object.__new__(AgentOrchestrator)
-    orch.spawn_agent = AsyncMock()  # type: ignore[method-assign]
-    orch._is_agent_active = MagicMock(return_value=False)  # type: ignore[method-assign]
-    orch._pm_respawn_should_gate = AsyncMock(return_value=False)  # type: ignore[method-assign]
-    orch._fetch_tasks = AsyncMock(  # type: ignore[method-assign]
+    orch: Any = object.__new__(AgentOrchestrator)
+    orch.spawn_agent = AsyncMock()
+    orch._is_agent_active = MagicMock(return_value=False)
+    orch._pm_respawn_should_gate = AsyncMock(return_value=False)
+    orch._fetch_tasks = AsyncMock(
         return_value=[
             {
                 "id": "t1",

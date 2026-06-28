@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pytest
 from roboco.services.base import (
     BaseService,
@@ -120,7 +122,7 @@ def test_base_service_binds_session_and_logger() -> None:
         service_name = "x"
 
     fake_session = object()
-    svc = _Svc(fake_session)  # type: ignore[arg-type]
+    svc = _Svc(cast("Any", fake_session))
     assert svc.session is fake_session
     assert svc.log is not None
 
