@@ -544,45 +544,57 @@ class PRReviewerMixin(_Base):
 
     async def _project_slug_for(self, t: Any) -> str | None:
         """Resolve the project slug for a task (read-only PR API calls + the
-        in-path gate's PR comment).
-
-        A normal task carries ``project_id``. A Main-PM coordination root — the
-        only task a root→master PR ever sits on — often carries just a
-        ``product_id`` (the cell→repo map) and no project of its own; its
-        ``feature/main_pm/{root}`` branch + PR live in the product's repo. Fall
-        through to the product's first distinct project (a monorepo product maps
-        every cell to one repo) so the gate verdict reaches the PR instead of
-        silently no-op'ing. Purely additive: a task WITH ``project_id`` resolves
-        exactly as before.
+        in-path gate's PR comment). Delegates to the module-level resolver so
+        the unchanged-PR gate in ``_impl.py`` reuses the EXACT same path (it
+        can't see this mixin method — ``_LegacyChoreographer`` does not inherit
+        ``ChoreographerHelpers``). See ``resolve_task_project_slug``.
         """
-        from uuid import UUID
+        return await resolve_task_project_slug(self.task.session, t)
 
-        from roboco.services.project import get_project_service
 
-        project_service = get_project_service(self.task.session)
-        if t.project_id is not None:
-            project = await project_service.get(t.project_id)
+async def resolve_task_project_slug(session: Any, t: Any) -> str | None:
+    """Resolve the project slug for a task (read-only PR API calls + the
+    in-path gate's PR comment). Module-level so it is shared by
+    ``PRReviewerMixin._project_slug_for`` and the unchanged-PR gate's
+    ``_current_root_pr_head_sha`` (in ``_impl.py``) — DRY, and the only way the
+    legacy choreographer class can reach the resolver without inheriting
+    ``ChoreographerHelpers``.
+
+    A normal task carries ``project_id``. A Main-PM coordination root — the
+    only task a root→master PR ever sits on — often carries just a
+    ``product_id`` (the cell→repo map) and no project of its own; its
+    ``feature/main_pm/{root}`` branch + PR live in the product's repo. Fall
+    through to the product's first distinct project (a monorepo product maps
+    every cell to one repo) so the gate verdict reaches the PR instead of
+    silently no-op'ing. Purely additive: a task WITH ``project_id`` resolves
+    exactly as before.
+    """
+    from uuid import UUID
+
+    from roboco.services.project import get_project_service
+
+    project_service = get_project_service(session)
+    if t.project_id is not None:
+        project = await project_service.get(t.project_id)
+        return project.slug if project is not None else None
+    product_id = getattr(t, "product_id", None)
+    if product_id is not None:
+        from roboco.services.product import get_product_service
+
+        product_service = get_product_service(session)
+        project_ids = await product_service.distinct_project_ids(UUID(str(product_id)))
+        if not project_ids:
+            return None
+        project = await project_service.get(project_ids[0])
+        return project.slug if project is not None else None
+    # Ad-hoc per-cell map root-subtask: mirror the product root's first-project
+    # resolution so the gate verdict reaches the PR in the mapped repo.
+    cell_map = getattr(t, "cell_projects", None) or []
+    seen: set[UUID] = set()
+    for mapping in sorted(cell_map, key=lambda m: m.team.value):
+        pid = UUID(str(mapping.project_id))
+        if pid not in seen:
+            seen.add(pid)
+            project = await project_service.get(pid)
             return project.slug if project is not None else None
-        product_id = getattr(t, "product_id", None)
-        if product_id is not None:
-            from roboco.services.product import get_product_service
-
-            product_service = get_product_service(self.task.session)
-            project_ids = await product_service.distinct_project_ids(
-                UUID(str(product_id))
-            )
-            if not project_ids:
-                return None
-            project = await project_service.get(project_ids[0])
-            return project.slug if project is not None else None
-        # Ad-hoc per-cell map root-subtask: mirror the product root's first-project
-        # resolution so the gate verdict reaches the PR in the mapped repo.
-        cell_map = getattr(t, "cell_projects", None) or []
-        seen: set[UUID] = set()
-        for mapping in sorted(cell_map, key=lambda m: m.team.value):
-            pid = UUID(str(mapping.project_id))
-            if pid not in seen:
-                seen.add(pid)
-                project = await project_service.get(pid)
-                return project.slug if project is not None else None
-        return None
+    return None

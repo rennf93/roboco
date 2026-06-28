@@ -2345,6 +2345,61 @@ class GitService(BaseService):
             return ""
         return resp.text
 
+    async def get_pr_head_sha(self, project_slug: str, pr_number: int) -> str | None:
+        """Fetch a PR's current head commit SHA READ-ONLY via the GitHub API.
+
+        Used by the hard ``submit_root`` gate to detect that the assembled root
+        PR is byte-identical to the one a prior ``pr_fail`` already rejected —
+        i.e. no new cell work landed on the root branch since the fail — so the
+        gate can structurally refuse the re-submit instead of looping a weak
+        coordinator back into the same failed review (the 2026-06-27
+        ``pr_fail`` re-submit loop on PR #139). The head SHA equals the branch
+        HEAD at PR-open time, so two PRs opened from an unchanged branch share a
+        head SHA — the comparison holds whether or not a new PR number was cut.
+        Returns ``None`` on a missing token / unparseable remote / GitHub error
+        / a closed-or-missing PR so the gate FAILS OPEN rather than wedging the
+        PM (only the exact-unchanged case is hard-blocked; ambiguous cases pass
+        through and rely on the reviewer to re-fail).
+        """
+        project = await get_project_service(self.session).get_by_slug(project_slug)
+        if project is None or not project.git_url:
+            return None
+        try:
+            owner, repo = self._parse_git_url(project.git_url)
+        except GitError:
+            return None
+        git_token = await self._token_for_project(project_slug)
+        if not git_token:
+            return None
+        api_base = settings.github_api_base_url.rstrip("/")
+        try:
+            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
+                resp = await client.get(
+                    f"{api_base}/repos/{owner}/{repo}/pulls/{pr_number}",
+                    headers={
+                        "Authorization": f"Bearer {git_token}",
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                )
+            if not resp.is_success:
+                self.log.warning(
+                    "get_pr_head_sha non-2xx",
+                    project=project_slug,
+                    pr=pr_number,
+                    status=resp.status_code,
+                )
+                return None
+            return str(resp.json()["head"]["sha"])
+        except (httpx.HTTPError, ValueError, KeyError, TypeError) as e:
+            self.log.warning(
+                "get_pr_head_sha request/parse failed",
+                project=project_slug,
+                pr=pr_number,
+                error=str(e),
+            )
+            return None
+
     async def update_pr_for_task(
         self,
         task_id: UUID,

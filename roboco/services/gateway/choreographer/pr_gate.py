@@ -244,8 +244,17 @@ class PRGateMixin(_Base):
         # it is persisted by the same commit (mirrors post_pr_review). This is
         # what keeps notes_structured.pr_review in lock-step with the decision —
         # a later pr_fail overwrites an earlier pr_pass verdict instead of
-        # leaving a stale "passed" on a task that was just sent back.
-        self._record_gate_verdict(t, verb, notes, issues=issues)
+        # leaving a stale "passed" on a task that was just sent back. On pr_fail
+        # also stamp the assembled PR's head SHA so the next submit_root can
+        # structurally refuse to re-submit the unchanged root (the 2026-06-27
+        # infinite pr_fail re-submit loop). Best-effort: a capture failure
+        # (no token, no PR, GitHub error) leaves head_sha absent and the
+        # submit_root gate fails open rather than wedging the PM.
+        if verb == "pr_fail":
+            head_sha = await self._capture_pr_head_sha(t)
+            self._record_gate_verdict(t, verb, notes, issues=issues, head_sha=head_sha)
+        else:
+            self._record_gate_verdict(t, verb, notes, issues=issues)
         runner = self._verb_runner()
         try:
             t = await runner.run_intent(verb, t, agent, spec_ctx)
@@ -346,7 +355,13 @@ class PRGateMixin(_Base):
         return None
 
     def _record_gate_verdict(
-        self, t: Any, verb: str, notes: str, issues: tuple[str, ...] = ()
+        self,
+        t: Any,
+        verb: str,
+        notes: str,
+        issues: tuple[str, ...] = (),
+        *,
+        head_sha: str | None = None,
     ) -> None:
         """Persist the gate verdict as the canonical ``pr_review`` note.
 
@@ -361,6 +376,12 @@ class PRGateMixin(_Base):
         PM's briefing that mirrors it — gets the concrete change-requests.
         Best-effort: content validation (e.g. a too-short summary) must never
         roll back the gate, so a malformed payload is logged and skipped.
+
+        On ``pr_fail`` the assembled PR's head SHA is stamped into the slot
+        (``head_sha``) so the next ``submit_root`` can structurally refuse to
+        re-submit the unchanged root — the 2026-06-27 infinite ``pr_fail``
+        re-submit loop. ``None`` (the default) leaves it absent, which the
+        ``submit_root`` gate treats as fail-open.
         """
         from roboco.foundation.policy.content import ContentValidationError
         from roboco.services.content_notes import apply_structured_note
@@ -387,6 +408,8 @@ class PRGateMixin(_Base):
         }
         if issues:
             payload["issues"] = list(issues)
+        if verb == "pr_fail" and head_sha:
+            payload["head_sha"] = head_sha
         try:
             apply_structured_note(t, "pr_review", payload)
         except ContentValidationError:
@@ -395,6 +418,40 @@ class PRGateMixin(_Base):
                 verb=verb,
                 task_id=str(getattr(t, "id", "")),
             )
+
+    async def _capture_pr_head_sha(self, t: Any) -> str | None:
+        """Best-effort capture of the assembled PR's head SHA at ``pr_fail`` time.
+
+        Resolves the project slug via ``_project_slug_for`` (handles a
+        Main-PM root that carries only a ``product_id``) and asks
+        ``git.get_pr_head_sha``. Returns ``None`` on ANY failure (no PR number,
+        no resolvable project, git error) so the ``submit_root`` unchanged-PR
+        gate fails open rather than wedging the PM — only the exact-unchanged
+        case is hard-blocked.
+        """
+        pr_number = getattr(t, "pr_number", None)
+        if not pr_number:
+            return None
+        try:
+            slug = await self._project_slug_for(t)
+        except Exception:
+            logger.exception(
+                "pr_fail head-sha capture: slug resolve failed",
+                task_id=str(getattr(t, "id", "")),
+            )
+            return None
+        if not slug:
+            return None
+        try:
+            sha = await self.git.get_pr_head_sha(slug, int(pr_number))
+            return sha if isinstance(sha, str) else None
+        except Exception:
+            logger.exception(
+                "pr_fail head-sha capture: git lookup failed",
+                task_id=str(getattr(t, "id", "")),
+                pr=pr_number,
+            )
+            return None
 
     async def _post_gate_review_to_pr(
         self, t: Any, verb: str, reviewer_slug: str, notes: str

@@ -157,6 +157,14 @@ class PrReviewContent(_Content):
     findings: list[Finding] = Field(default_factory=list)
     issues: list[str] = Field(default_factory=list)
     verdict: Verdict
+    # The head SHA of the assembled PR at the moment a ``pr_fail`` landed —
+    # captured so the next ``submit_root`` can structurally refuse to re-submit
+    # the unchanged root (the 2026-06-27 infinite ``pr_fail`` re-submit loop: a
+    # weak coordinator re-submitted PR #139 with no new cell work on the root
+    # branch, so the reviewed diff was byte-identical and the gate failed
+    # again). ``None`` for a ``pr_pass`` verdict and for verdicts recorded before
+    # this field existed. Optional + JSON column, so no migration.
+    head_sha: str | None = None
 
     @field_validator("findings", mode="before")
     @classmethod

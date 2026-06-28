@@ -14,7 +14,7 @@ from __future__ import annotations
 import contextlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 from uuid import UUID
 
 import structlog
@@ -55,6 +55,13 @@ from roboco.services.gateway.remediation import (
 )
 
 logger = structlog.get_logger()
+
+if TYPE_CHECKING:
+    # The composed ``Choreographer`` resolves mixin helpers (``_project_slug_for``,
+    # etc.) via MRO, but ``_LegacyChoreographer`` itself does not inherit
+    # ``ChoreographerHelpers`` — so mypy can't see those names on ``self`` here.
+    # The cast below reaches the typed view the mixins use (``_Base`` pattern).
+    from roboco.services.gateway.choreographer._protocol import ChoreographerHelpers
 
 # Minimum character length enforced on rich_plan["approach"] by the PM
 # sub-tasks gate. Must match the Pydantic min_length on
@@ -5671,6 +5678,78 @@ class Choreographer:
             )
         return None
 
+    async def _submit_root_unchanged_pr_guard(
+        self, t: Any, briefing: dict[str, Any]
+    ) -> Envelope | None:
+        """Refuse to re-submit a root PR whose diff is unchanged since the last fail.
+
+        The hard loop-stopper for the 2026-06-27 ``pr_fail`` re-submit loop. A
+        prior ``pr_fail`` stamped the assembled PR's head SHA into
+        ``notes_structured.pr_review.head_sha`` (see ``_capture_pr_head_sha`` /
+        ``_record_gate_verdict``). On the next ``submit_root`` this looks up the
+        PR's CURRENT head SHA and compares. Equal ⇒ no new cell work landed on
+        the root branch since the fail ⇒ the diff the reviewer would see is
+        byte-identical to the one just rejected ⇒ refuse, so no model can loop
+        itself back into ``awaiting_pr_review``. Different ⇒ the branch advanced
+        ⇒ allow. Returns ``None`` (proceed) on every ambiguous case so the gate
+        FAILS OPEN: no prior ``pr_fail`` verdict, no recorded ``head_sha`` (e.g.
+        a verdict written before this field existed), no ``pr_number``, no
+        resolvable project, or a git/closed-PR lookup that returns ``None``.
+        Only the exact-unchanged case is hard-blocked; the rest fall through to
+        the reviewer, who can still ``pr_fail`` if the diff is bad.
+        """
+        pr_review = (getattr(t, "notes_structured", None) or {}).get("pr_review") or {}
+        if pr_review.get("verdict") != "failed":
+            return None
+        recorded = pr_review.get("head_sha")
+        if not recorded:
+            return None
+        current = await self._current_root_pr_head_sha(t)
+        if current is None or current != recorded:
+            return None
+        return Envelope.invalid_state(
+            message=(
+                "the assembled root PR is unchanged since the last pr_fail"
+                f" (head {current[:7]}). No new cell work has landed on the"
+                " root branch, so re-submitting would re-open the exact diff"
+                " the reviewer just rejected and loop straight back to"
+                " awaiting_pr_review."
+            ),
+            remediate=(
+                "re-delegate the fixes to the owning cell PM(s) via"
+                " delegate(...) and wait for the cell subtasks to complete"
+                " and the root branch to be re-assembled. Do NOT call"
+                " submit_root again until new cell work has advanced the"
+                " root branch HEAD."
+            ),
+            context_briefing=briefing,
+        )
+
+    async def _current_root_pr_head_sha(self, t: Any) -> str | None:
+        """Best-effort current head SHA of the task's assembled PR (fail-open).
+
+        The lookup the unchanged-PR gate compares against. Returns ``None`` on
+        every ambiguous case (no ``pr_number``, no resolvable project slug, a
+        git error, or a closed/missing PR) so the gate fails open rather than
+        wedging the PM — only the exact-unchanged case is hard-blocked.
+        """
+        pr_number = getattr(t, "pr_number", None)
+        if not pr_number:
+            return None
+        try:
+            # ``_LegacyChoreographer`` doesn't inherit ``ChoreographerHelpers``,
+            # so cast to the typed view the mixins use to reach the shared
+            # ``_project_slug_for`` resolver (it delegates to the module-level
+            # ``resolve_task_project_slug``). Same resolver the pr_fail capture
+            # path uses, so one stub controls both gate paths.
+            slug = await cast("ChoreographerHelpers", self)._project_slug_for(t)
+            if not slug:
+                return None
+            sha = await self.git.get_pr_head_sha(slug, int(pr_number))
+            return sha if isinstance(sha, str) else None
+        except Exception:
+            return None
+
     async def submit_root(
         self, main_pm_agent_id: UUID, task_id: UUID, notes: str
     ) -> Envelope:
@@ -5725,6 +5804,21 @@ class Choreographer:
         # journal:decision + subtasks-terminal + branch-present. submit_root's
         # tracing requirements mirror submit_up's, so the shared guard applies.
         guard = await self._submit_up_guard(main_pm_agent_id, task_id, t, notes)
+        # Hard unchanged-PR gate (the 2026-06-27 pr_fail re-submit loop-stopper).
+        # A hint (the pr_fail a2a / next-hint steer "do NOT re-submit") is ignored
+        # by a weak coordinator (minimax-m3 re-submitted PR #139 byte-identical),
+        # so this refuses the re-submit STRUCTURALLY: if the last pr_fail stamped
+        # the assembled PR's head SHA and the current PR head SHA is the same, no
+        # new cell work has landed on the root branch since the fail — re-running
+        # submit_root would re-open / re-push the exact diff the reviewer just
+        # rejected, looping straight back to awaiting_pr_review → pr_fail. Force
+        # the PM to re-delegate the fixes and wait for re-assembly instead.
+        # Fail-open on ANY ambiguity (no prior fail, no recorded sha, no
+        # resolvable project, git error, closed/missing PR) — only the
+        # exact-unchanged case is hard-blocked; everything else proceeds and
+        # relies on the reviewer to re-fail if the diff is still bad.
+        if guard is None:
+            guard = await self._submit_root_unchanged_pr_guard(t, briefing)
         if guard is not None:
             guard.with_introspection(task=t, role=role_str)
             return await self._emit_rejection(

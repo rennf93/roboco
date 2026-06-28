@@ -63,6 +63,14 @@ def _stub_gate_path(
         )
     )
     c._gate_tracing = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    # These tests exercise the pr_fail a2a / notify path, not the head-sha
+    # capture (which has its own suite in test_submit_root_unchanged_pr_guard).
+    # Stub the capture so it does not walk the mock session into un-awaited
+    # coroutines; the verdict still lands via the _record_gate_verdict spy.
+    # Alias to ``Any`` so this addition needs no type:ignore (mypy doesn't flag
+    # attribute assignment on ``Any``; avoids ruff B010's no-setattr rule too).
+    cc: Any = c
+    cc._capture_pr_head_sha = AsyncMock(return_value=None)
     c._record_gate_verdict = MagicMock()  # type: ignore[method-assign]
     c._post_gate_review_to_pr = AsyncMock()  # type: ignore[method-assign]
     runner = MagicMock()
