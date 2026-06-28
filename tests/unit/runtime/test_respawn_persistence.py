@@ -80,6 +80,26 @@ def test_partition_drops_terminal_and_missing_rows() -> None:
     }
 
 
+def test_partition_restamps_last_check_to_now_to_avoid_stale_tracing_gap() -> None:
+    # F034: a persisted last_check from BEFORE the restart would make the first
+    # post-restart ``_pm_made_rule_following_retry`` audit lookup
+    # (``since = record.get("last_check")``) match a PRE-restart tracing_gap
+    # row, falsely resetting the breaker on the very first post-restart spawn —
+    # exactly when a fresh strike count should be evaluating current state.
+    # Restore must re-stamp last_check to the restore time so only post-restart
+    # tracing gaps can reset the counter.
+    tid = uuid4()
+    stale_check = datetime(2026, 6, 20, tzinfo=UTC)
+    rows = [_row(tid, last_check=stale_check)]
+    restore_now = datetime(2026, 6, 28, 12, 0, tzinfo=UTC)
+    restored, stale = AgentOrchestrator._partition_respawn_rows(
+        rows, {tid: "in_progress"}, now=restore_now
+    )
+    assert stale == []
+    assert restored[("be-pm", str(tid))]["last_check"] == restore_now
+    assert restored[("be-pm", str(tid))]["last_check"] != stale_check
+
+
 # --------------------------------------------------------------------------- #
 # Startup loader
 # --------------------------------------------------------------------------- #

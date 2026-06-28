@@ -4999,7 +4999,9 @@ class AgentOrchestrator:
 
     @staticmethod
     def _partition_respawn_rows(
-        rows: "Iterable[Any]", status_by_id: dict[Any, Any]
+        rows: "Iterable[Any]",
+        status_by_id: dict[Any, Any],
+        now: datetime | None = None,
     ) -> tuple[dict[tuple[str, str], dict[str, Any]], list[tuple[str, Any]]]:
         """Split persisted respawn rows into (restorable entries, stale keys).
 
@@ -5008,9 +5010,17 @@ class AgentOrchestrator:
         against a fixed/deleted task. Restorable entries are keyed
         ``(agent_slug, str(task_id))`` to match the in-memory dict; stale keys
         carry the raw ``task_id`` for deletion.
+
+        F034: ``last_check`` is re-stamped to ``now`` (the restore time) on
+        every restorable entry. ``_pm_made_rule_following_retry`` reads
+        ``since = record.get("last_check")`` to bound its tracing_gap audit
+        lookup; a stale pre-restart ``last_check`` would match a pre-restart
+        tracing_gap row and falsely reset the breaker on the first post-restart
+        spawn. Re-stamping bounds the lookup to post-restart gaps only.
         """
         from roboco.models.base import TaskStatus
 
+        restore_now = now or datetime.now(UTC)
         terminal = {TaskStatus.COMPLETED.value, TaskStatus.CANCELLED.value}
         restored: dict[tuple[str, str], dict[str, Any]] = {}
         stale: list[tuple[str, Any]] = []
@@ -5023,7 +5033,7 @@ class AgentOrchestrator:
             restored[(r.agent_slug, str(r.task_id))] = {
                 "count": r.count,
                 "last_status": r.last_status,
-                "last_check": r.last_check,
+                "last_check": restore_now,
                 "tracing_resets": r.tracing_resets,
                 "notified": r.notified,
             }
