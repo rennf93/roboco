@@ -19,6 +19,7 @@ rather than hanging at the login prompt.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import json
 import os
@@ -161,6 +162,42 @@ def _is_stale(creds: dict[str, Any], now: datetime, skew_seconds: int) -> bool:
     return expires_at is None or (expires_at - now).total_seconds() <= skew_seconds
 
 
+# Documented grok access-token TTL (~6h, baked into the JWT ``exp`` by xAI's auth
+# server). Used only as the last-resort ``expires_at`` when a refresh response
+# omits ``expires_in`` AND the access token's JWT ``exp`` is unreadable.
+_DEFAULT_ACCESS_TOKEN_TTL_HOURS = 6
+# A JWT is three ``.``-separated parts (header.payload.signature); the payload
+# at index 1 carries the ``exp`` claim. Fewer parts means it isn't a JWT.
+_MIN_JWT_PARTS = 2
+
+
+def _exp_from_access_token(access_token: str) -> datetime | None:
+    """Decode the JWT ``exp`` claim (unix seconds) from the access token.
+
+    The grok access token is a JWT whose ``exp`` is the authoritative expiry. xAI
+    sometimes omits ``expires_in`` from the refresh response; without reading
+    ``exp`` the new token would keep the stale pre-refresh ``expires_at`` and
+    ``is_valid`` / ``--check`` would forever reject a fresh token. Returns
+    ``None`` when the token isn't a parseable JWT with a numeric ``exp``.
+    """
+    # A JWT is ``header.payload.signature``; the payload (parts[1]) holds ``exp``.
+    parts = access_token.split(".")
+    if len(parts) < _MIN_JWT_PARTS:
+        return None
+    payload_b64 = parts[1]
+    padding = "=" * (-len(payload_b64) % 4)
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64 + padding))
+    except (ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    exp = payload.get("exp")
+    if not isinstance(exp, (int, float)):
+        return None
+    return datetime.fromtimestamp(float(exp), tz=UTC)
+
+
 def _apply_refreshed_token(
     creds: dict[str, Any], token: dict[str, Any], now: datetime
 ) -> None:
@@ -171,6 +208,26 @@ def _apply_refreshed_token(
     expires_in = token.get("expires_in")
     if isinstance(expires_in, (int, float)):
         creds["expires_at"] = _to_iso_z(now + timedelta(seconds=float(expires_in)))
+    else:
+        # xAI's refresh response sometimes omits expires_in. The access token
+        # is a JWT whose `exp` is the authoritative expiry — decode it so a fresh
+        # token isn't left with the stale pre-refresh expires_at (which would
+        # make is_valid / --check forever reject it AND make the refresh loop
+        # re-rotate the single-use refresh token every tick, killing the
+        # credential — see F006).
+        exp = _exp_from_access_token(token["access_token"])
+        if exp is not None:
+            creds["expires_at"] = _to_iso_z(exp)
+        else:
+            creds["expires_at"] = _to_iso_z(
+                now + timedelta(hours=_DEFAULT_ACCESS_TOKEN_TTL_HOURS)
+            )
+            logger.warning(
+                "grok auth refresh omitted expires_in and the access token's "
+                "JWT exp was unreadable; defaulting expires_at to %dh — "
+                "re-check on next tick",
+                _DEFAULT_ACCESS_TOKEN_TTL_HOURS,
+            )
     creds["create_time"] = _to_iso_z(now)
 
 
