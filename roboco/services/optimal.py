@@ -564,6 +564,15 @@ class OptimalService:
         """Cleanup resources."""
         import contextlib
 
+        # Cancel the startup indexing task FIRST — it can still be mid-flight
+        # (slow Ollama, large repo) and writes through the plugins cleared
+        # below. Cancelling before clearing prevents writes against closed
+        # plugins. Its tail also starts the periodic task, so cancel it first.
+        if self._indexing_task and not self._indexing_task.done():
+            self._indexing_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._indexing_task
+
         # Cancel periodic update task
         if self._periodic_update_task and not self._periodic_update_task.done():
             self._periodic_update_task.cancel()
