@@ -1418,6 +1418,133 @@ async def test_doc_claim_returns_none_for_missing(task_setup: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# pr_gate_claim — single-claimant guard (F114)
+# ---------------------------------------------------------------------------
+
+
+def _reviewer(name: str) -> AgentTable:
+    return AgentTable(
+        id=uuid4(),
+        name=name,
+        slug=f"pr-reviewer-{uuid4().hex[:8]}",
+        role=AgentRole.PR_REVIEWER,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="reviewer",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+
+
+def _pm(name: str) -> AgentTable:
+    return AgentTable(
+        id=uuid4(),
+        name=name,
+        slug=f"be-pm-{uuid4().hex[:8]}",
+        role=AgentRole.CELL_PM,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="pm",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+
+
+async def _gate_task(task_setup: dict, db_session: AsyncSession) -> Any:
+    """A task sitting in awaiting_pr_review, owned by ``owner``."""
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup))
+    task.status = TaskStatus.AWAITING_PR_REVIEW
+    await db_session.flush()
+    return task
+
+
+@pytest.mark.asyncio
+async def test_pr_gate_claim_rejects_second_reviewer_race(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """F114: a second PR-reviewer race-claiming a gate task already claimed by a
+    reviewer must be refused (last-write-wins would otherwise overwrite the
+    first reviewer's claim and the first reviewer's pr_pass/pr_fail would
+    actor-mismatch)."""
+    svc = task_setup["svc"]
+    reviewer1 = _reviewer("R1")
+    reviewer2 = _reviewer("R2")
+    db_session.add_all([reviewer1, reviewer2])
+    await db_session.flush()
+    task = await _gate_task(task_setup, db_session)
+    # reviewer1 already claimed the gate task.
+    task.active_claimant_id = reviewer1.id
+    task.claimed_by = reviewer1.id
+    task.assigned_to = reviewer1.id
+    await db_session.flush()
+
+    rejected = await svc.pr_gate_claim(reviewer2.id, task.id)
+    # Refused, not silently stolen.
+    assert rejected is None
+    await db_session.refresh(task)
+    # The first reviewer's claim is intact (NOT overwritten by reviewer2).
+    assert task.active_claimant_id == reviewer1.id
+    assert task.claimed_by == reviewer1.id
+    assert task.assigned_to == reviewer1.id
+
+
+@pytest.mark.asyncio
+async def test_pr_gate_claim_allows_first_reviewer_when_pm_owns_root(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """F114 regression guard: the gate task is owned by the PM at entry
+    (submit_for_review does not clear ownership), so the FIRST reviewer must
+    still be allowed to claim — the guard only rejects a competing REVIEWER
+    claim, not the PM owner."""
+    svc = task_setup["svc"]
+    pm = _pm("PM")
+    reviewer = _reviewer("R")
+    db_session.add_all([pm, reviewer])
+    await db_session.flush()
+    task = await _gate_task(task_setup, db_session)
+    # The PM owns the coordination root at gate entry.
+    task.active_claimant_id = pm.id
+    task.claimed_by = pm.id
+    task.assigned_to = pm.id
+    await db_session.flush()
+
+    claimed = await svc.pr_gate_claim(reviewer.id, task.id)
+    assert claimed is not None
+    await db_session.refresh(task)
+    # The reviewer took over the gate (the legitimate overclaim).
+    assert task.active_claimant_id == reviewer.id
+    assert task.claimed_by == reviewer.id
+    assert task.assigned_to == reviewer.id
+
+
+@pytest.mark.asyncio
+async def test_pr_gate_claim_idempotent_for_same_reviewer(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """F114: a reviewer re-claiming its OWN gate claim is idempotent (allowed),
+    not rejected — the guard only refuses a DIFFERENT reviewer."""
+    svc = task_setup["svc"]
+    reviewer = _reviewer("R")
+    db_session.add(reviewer)
+    await db_session.flush()
+    task = await _gate_task(task_setup, db_session)
+    task.active_claimant_id = reviewer.id
+    task.claimed_by = reviewer.id
+    task.assigned_to = reviewer.id
+    await db_session.flush()
+
+    claimed = await svc.pr_gate_claim(reviewer.id, task.id)
+    assert claimed is not None
+    await db_session.refresh(task)
+    assert task.active_claimant_id == reviewer.id
+
+
+# ---------------------------------------------------------------------------
 # qa_pass / qa_fail / cell_pm_complete (404 paths)
 # ---------------------------------------------------------------------------
 

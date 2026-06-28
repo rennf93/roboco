@@ -7870,7 +7870,47 @@ class TaskService(BaseService):
         The in-path PR-review gate mirrors QA's claim_review: status stays at
         awaiting_pr_review while the reviewer inspects the assembled diff;
         pr_pass / pr_fail perform the transition.
+
+        Single-claimant guard: two reviewers race-claiming the same gate task
+        would otherwise overwrite the first's claim (last-write-wins) and the
+        first reviewer's subsequent pr_pass / pr_fail would actor-mismatch
+        against the new owner — wasting a review cycle. The guard refuses a
+        second reviewer when the task is already actively claimed by a
+        DIFFERENT PR-reviewer. The gate task is owned by the PM at entry
+        (``submit_for_review`` does not clear ownership, unlike
+        ``submit_for_qa``), so the guard must distinguish a PM/dev owner —
+        which the first reviewer legitimately overclaims — from a competing
+        reviewer claim. It does this by checking the existing claimant's
+        ROLE: only a PR-reviewer active claimant is a competing review claim.
+        The row is locked ``FOR UPDATE`` so concurrent claim attempts serialize
+        at the DB level (the second claim sees the first's committed claim),
+        mirroring the dev ``claim`` path. A re-claim by the SAME reviewer is
+        idempotent (the ``existing != reviewer_agent_id`` check skips the
+        guard).
         """
+        lock_result = await self.session.execute(
+            select(TaskTable)
+            .where(TaskTable.id == task_id)
+            .with_for_update(of=TaskTable)
+        )
+        task = lock_result.scalar_one_or_none()
+        if task is None or task.status != TaskStatus.AWAITING_PR_REVIEW:
+            return None
+        existing = to_python_uuid(task.active_claimant_id)
+        if existing is not None and existing != reviewer_agent_id:
+            existing_agent = await self.agent_for(existing)
+            if (
+                existing_agent is not None
+                and existing_agent.role == AgentRole.PR_REVIEWER.value
+            ):
+                self.log.warning(
+                    "pr_gate_claim rejected - gate task already claimed by"
+                    " another reviewer",
+                    task_id=str(task_id),
+                    existing_claimant=str(existing),
+                    requesting_reviewer=str(reviewer_agent_id),
+                )
+                return None
         return await self._qa_or_doc_claim(
             reviewer_agent_id, task_id, TaskStatus.AWAITING_PR_REVIEW
         )
