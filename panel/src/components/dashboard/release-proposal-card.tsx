@@ -44,7 +44,13 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
   const [action, setAction] = useState<"approve" | "reject" | null>(null);
   const [requiredChanges, setRequiredChanges] = useState("");
 
-  const { data: proposal, isLoading } = useQuery({
+  const {
+    data: proposal,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useQuery({
     queryKey: ["release", "proposal"],
     queryFn: () => releaseApi.getProposal(),
     refetchInterval: 30000,
@@ -102,8 +108,38 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
     }
   };
 
-  // Hidden entirely when there is no open proposal (mirrors PrReviewQueue).
-  if (isLoading || !proposal) return null;
+  // Loading: nothing to render yet (mirrors the prior hide).
+  if (isLoading) return null;
+  // A genuine query failure (non-404) must NOT hide silently — a 500 / network
+  // drop rethrows out of releaseApi.getProposal, leaving data undefined + isError
+  // set. Collapsing that onto `!proposal` returned null, so the CEO had no idea
+  // the release-proposal endpoint was unreachable. Surface it with a retry.
+  // (A 404 — "no open proposal" — is mapped to null in getProposal and falls
+  // through to the `!proposal` hide below, the normal empty state.)
+  if (isError) {
+    return (
+      <Card className={className}>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Rocket className="h-5 w-5" />
+            Release Proposal
+          </CardTitle>
+          <CardDescription>
+            Couldn&apos;t load the release proposal
+            {error instanceof Error ? `: ${error.message}` : ""}.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button variant="outline" size="sm" onClick={() => refetch()}>
+            Retry
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
+  // No open proposal (404 → null) — the normal empty state, hidden (mirrors
+  // PrReviewQueue).
+  if (!proposal) return null;
 
   const { report } = proposal;
   const pending = approveMutation.isPending || rejectMutation.isPending;
