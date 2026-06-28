@@ -6,7 +6,10 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, Request
 
 from roboco.api.deps import get_content_actions
-from roboco.api.routes.v1._role_dep import envelope_to_response
+from roboco.api.routes.v1._role_dep import (
+    envelope_to_response,
+    require_any_authenticated_agent,
+)
 from roboco.api.schemas.v1.do import (
     ApprovePlaybookRequest,
     ArchivePlaybookRequest,
@@ -31,7 +34,14 @@ from roboco.api.schemas.v1.do import (
 )
 from roboco.services.gateway.content_actions import ContentActions
 
-router = APIRouter(prefix="/api/v1/do", tags=["v1-do"])
+router = APIRouter(
+    prefix="/api/v1/do",
+    tags=["v1-do"],
+    # F003/F014: bind X-Agent-ID to a verified HMAC token — same gate the
+    # flow routers enforce via their role guards. The do router serves all
+    # roles, so this is token-only (no role assertion).
+    dependencies=[require_any_authenticated_agent],
+)
 
 _AgentIdHeader = Annotated[UUID, Header(alias="X-Agent-ID")]
 _ContentActionsDep = Annotated[ContentActions, Depends(get_content_actions)]

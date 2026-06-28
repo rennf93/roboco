@@ -21,11 +21,36 @@ from uuid import UUID
 import httpx
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 
+from roboco.agents_config import CEO_AGENT_ID, verify_agent_token
+from roboco.api.deps import _auth_required
 from roboco.config import settings
 from roboco.db.base import get_db
 from roboco.services.repositories import resolve_agent_uuid
 
 router = APIRouter()
+
+
+async def _require_panel_token(websocket: WebSocket) -> bool:
+    """F004: bind a per-agent WS upgrade to the panel/CEO HMAC token.
+
+    The /ws/* streams are operator-only — the control panel is the sole WS
+    client (agents use MCP verbs, not WS), and nginx injects the CEO panel
+    token as ``X-Agent-Token`` on /ws/ upgrades. Without verifying it the
+    per-agent endpoints (channels/agents/sessions/notifications) accepted a
+    bare ``agent_id`` query param with no auth, so in strict mode
+    (``ROBOCO_AGENT_AUTH_REQUIRED=true``) an agent on the Docker network
+    could hit e.g. ``/ws/notifications/{id}`` directly and subscribe to
+    another agent's notifications. This gate requires + verifies the token
+    against the CEO identity in strict mode, and rejects a presented-but-
+    forged token even in dev mode — the same contract as the HTTP
+    ``_check_agent_auth_token`` role gates. Returns True to proceed, False
+    to close with a policy violation (caller closes the socket).
+    """
+    token = websocket.headers.get("x-agent-token")
+    if _auth_required() and not token:
+        return False
+    # A missing token in dev mode proceeds; a presented token must verify.
+    return not (token and not verify_agent_token(token, CEO_AGENT_ID, "ceo", ""))
 
 
 # =============================================================================
@@ -262,6 +287,10 @@ async def channel_stream(
 
     Clients receive real-time messages for the channel.
     """
+    # F004: verify the panel/CEO token before any subject lookup.
+    if not await _require_panel_token(websocket):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
     # Get agent ID from query params (or auth in production)
     agent_id_str = websocket.query_params.get("agent_id")
     if not agent_id_str:
@@ -318,6 +347,10 @@ async def agent_stream(
 
     Clients receive real-time LLM output from the agent.
     """
+    # F004: verify the panel/CEO token before any subject lookup.
+    if not await _require_panel_token(websocket):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
     # Get viewer agent ID
     viewer_id_str = websocket.query_params.get("viewer_id")
     if not viewer_id_str:
@@ -365,6 +398,10 @@ async def session_stream(
 
     Clients receive real-time messages for a specific session.
     """
+    # F004: verify the panel/CEO token before any subject lookup.
+    if not await _require_panel_token(websocket):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
     agent_id_str = websocket.query_params.get("agent_id")
     if not agent_id_str:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
@@ -410,6 +447,10 @@ async def notification_stream(
 
     Agents receive real-time notifications via this stream.
     """
+    # F004: verify the panel/CEO token before any subject lookup.
+    if not await _require_panel_token(websocket):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
     # Validate agent exists in database
     if not await validate_agent_exists(agent_id):
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
