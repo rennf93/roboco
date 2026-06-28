@@ -110,8 +110,13 @@ _CEO_NOTIFY_THRESHOLD = 10
 # survives to kill the run. When it does, park the provider like a 429 instead
 # of crash-retrying into the overload. These markers are matched (lowercased,
 # substring) against the tail of the dead container's own output, so they are
-# kept specific to how the API surfaces an overload — bare "500"/"529" would
-# false-match an agent that merely writes about HTTP status codes.
+# kept specific to how the API surfaces an overload. Bare "error 529"/"error
+# 500"/"error 503" were dropped (F037): an agent that merely writes about an
+# HTTP status code in its own notes ("the endpoint returned error 500,
+# retrying") would false-match and park the whole Anthropic fleet. The SDK
+# error formatter emits "API Error: NNN" + a JSON error type, so the
+# ``api error: NNN`` and type-string markers below cover every real overload
+# without that false-match surface.
 _OVERLOAD_RETRY_AFTER_S = 45.0
 _ANTHROPIC_OVERLOAD_MARKERS: tuple[str, ...] = (
     "overloaded_error",
@@ -119,9 +124,6 @@ _ANTHROPIC_OVERLOAD_MARKERS: tuple[str, ...] = (
     "api error: 529",
     "api error: 500",
     "api error: 503",
-    "error 529",
-    "error 500",
-    "error 503",
 )
 
 # Session / usage-limit parking (HTTP 429). The Claude session ("5-hour") limit

@@ -124,6 +124,29 @@ async def test_detects_overload_marker_in_transcript(
 
 
 @pytest.mark.asyncio
+async def test_agent_writing_about_error_500_does_not_park(
+    orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # F037: an agent that merely writes about an HTTP error code in its own
+    # notes ("the endpoint returned error 500, retrying") must NOT trip the
+    # overload detector and park the whole Anthropic fleet. Markers must be
+    # specific to the API error formatter, not bare "error NNN".
+    monkeypatch.setattr(settings, "overload_break_enabled", True)
+    agent_note = (
+        "be-dev-1: the /health endpoint returned error 500 on retry; "
+        "adding a backoff. Also saw error 529 and error 503 upstream. "
+        "Not a model-API issue."
+    )
+    monkeypatch.setattr(
+        orch, "_tail_container_logs", AsyncMock(return_value=agent_note)
+    )
+    monkeypatch.setattr(orch, "_transcript_tail_text", lambda _a, _lines=80: "")
+    assert (
+        await orch._provider_overload_park_target("be-dev-1", _instance()) is None
+    )
+
+
+@pytest.mark.asyncio
 async def test_disabled_flag_never_parks(
     orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch
 ) -> None:
