@@ -233,6 +233,91 @@ async def test_notify_auditor_rejected_with_not_authorized() -> None:
 
 
 @pytest.mark.asyncio
+async def test_notify_rejects_prompter_recipient() -> None:
+    """F048: the prompter (intake-1) is a human-only role with no agent ack
+    path. An ack-required ALERT sent to it sits permanently unacked and — via
+    the dedup query's ``~acked_by.contains`` — permanently suppresses any
+    later same-purpose notification to that role. The notify verb must reject
+    a prompter recipient at the handler, not deliver an un-ackable signal."""
+    agent_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.get_active_task_for_agent.return_value = None
+    task_svc.agent_for.return_value = MagicMock(role="cell_pm")
+    notif_svc = AsyncMock()
+
+    deps = _make_deps(task=task_svc, notifications=notif_svc)
+    ca = ContentActions(deps)
+
+    env = await ca.notify(
+        agent_id=agent_id,
+        target="intake-1",
+        text="Please ack this formal signal before proceeding.",
+    )
+    body = env.as_dict()
+
+    assert body["error"] == "not_authorized"
+    assert (
+        "prompter" in body["message"].lower() or "human-only" in body["message"].lower()
+    )
+    notif_svc.send_ack_notification.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_notify_rejects_secretary_recipient() -> None:
+    """F048: the secretary (secretary-1) is human-only with no agent ack path —
+    same un-ackable-signal + dedup-suppression hazard as the prompter."""
+    agent_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.get_active_task_for_agent.return_value = None
+    task_svc.agent_for.return_value = MagicMock(role="main_pm")
+    notif_svc = AsyncMock()
+
+    deps = _make_deps(task=task_svc, notifications=notif_svc)
+    ca = ContentActions(deps)
+
+    env = await ca.notify(
+        agent_id=agent_id,
+        target="secretary-1",
+        text="Please ack this formal signal before proceeding.",
+    )
+    body = env.as_dict()
+
+    assert body["error"] == "not_authorized"
+    assert (
+        "secretary" in body["message"].lower()
+        or "human-only" in body["message"].lower()
+    )
+    notif_svc.send_ack_notification.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_notify_allows_ceo_recipient() -> None:
+    """F048: the CEO is human-only too, but the human acks via the panel, so a
+    non-dependency-block CEO notification is a valid ack-required target. The
+    recipient guard must NOT over-exclude the CEO (only prompter/secretary)."""
+    agent_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.get_active_task_for_agent.return_value = None
+    task_svc.get_journal_context_task_for_agent.return_value = None
+    task_svc.agent_for.return_value = MagicMock(role="cell_pm")
+    notif_svc = AsyncMock()
+
+    deps = _make_deps(task=task_svc, notifications=notif_svc)
+    ca = ContentActions(deps)
+
+    env = await ca.notify(
+        agent_id=agent_id,
+        target="ceo",
+        text="Heads up: this major task is ready for your final approval.",
+    )
+    body = env.as_dict()
+
+    assert body["error"] is None
+    assert body["status"] == "sent"
+    notif_svc.send_ack_notification.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_notify_auto_fills_task_id_from_active_task() -> None:
     """When the PM has an active task, notify auto-attaches it."""
     agent_id = uuid4()

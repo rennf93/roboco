@@ -1141,7 +1141,11 @@ class ContentActions:
         # A dependency block is a "wait silently" situation — never a CEO signal.
         # An agent must not page the CEO to relax or escalate a task that is
         # simply waiting on an unfinished upstream; that wait clears on its own.
-        if reject := await self._reject_ceo_dependency_notify(target, task_id):
+        # F048: also reject human-only recipients (prompter/secretary) — they
+        # have no agent ack path, so an ack-required signal would sit permanently
+        # unacked and suppress later same-purpose notifications via the dedup
+        # query. The CEO acks via the panel and stays an allowed recipient.
+        if reject := await self._reject_disallowed_recipient(target, task_id):
             return reject
         await self.notifications.send_ack_notification(
             from_agent=agent_id,
@@ -1156,6 +1160,44 @@ class ContentActions:
             next="continue",
             context_briefing={},
         )
+
+    async def _reject_disallowed_recipient(
+        self, target: str, task_id: UUID | None
+    ) -> Envelope | None:
+        """Rejection envelope for a notify() recipient the design disallows.
+
+        Two cases, checked in order:
+        1. F048 — a human-only recipient (prompter/secretary) with no agent ack
+           path. The knowledge-share path already excludes all three human-only
+           roles (learning.py); the general notify path did not, so an
+           ack-required ALERT could reach a human-driven role and sit permanently
+           unacked (polluting the panel's pending-ack view and, via the dedup
+           query's ``~acked_by.contains``, permanently suppressing any later
+           same-purpose notification from the same sender to that human role).
+           The CEO is human too but acks via the panel, so it is NOT rejected
+           here (its only disallowed case — a dependency-block page — is case 2).
+        2. A CEO notification about an open dependency block — pure noise; the
+           wait clears when the upstream completes.
+        """
+        from roboco.agents_config import get_agent_role
+
+        recipient_role = get_agent_role(target)
+        if recipient_role in ("prompter", "secretary"):
+            return Envelope.not_authorized(
+                message=(
+                    f"cannot notify {target!r} — the {recipient_role} is a"
+                    " human-only role with no agent ack path; an ack-required"
+                    " signal would sit permanently unacked and suppress later"
+                    " same-purpose notifications via the dedup query"
+                ),
+                remediate=(
+                    "use say() to a channel the human reads, or escalate via the"
+                    " CEO route. ack-required notify() targets must be agents"
+                    " (or the CEO, who acks via the panel)"
+                ),
+                context_briefing={},
+            )
+        return await self._reject_ceo_dependency_notify(target, task_id)
 
     async def _reject_ceo_dependency_notify(
         self, target: str, task_id: UUID | None
