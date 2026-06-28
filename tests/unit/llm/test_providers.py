@@ -262,6 +262,26 @@ async def test_grok_spawn_omits_auth_mount_when_absent() -> None:
     assert not any("/home/agent/.grok-auth-ro" in c for c in cmd)
 
 
+async def test_grok_spawn_warns_when_auth_absent(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A missing host auth.json must not be silent — the spawn is doomed to
+    exit 78, so the operator gets a spawn-time WARNING naming the missing file
+    and the remediation (``grok login`` on the host). Without it the container
+    silently started and only failed later at the entrypoint ``--check``.
+    """
+    caplog.set_level("WARNING", logger="roboco.llm.providers.grok")
+    host = _FakeHost()
+    provider = GrokCliProvider(host)
+    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())):
+        await provider.spawn(_config())
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert warnings, "expected a spawn-time WARNING for the missing host auth.json"
+    msg = warnings[0].getMessage()
+    assert "auth.json" in msg
+    assert "grok login" in msg  # names the remediation
+
+
 async def test_grok_spawn_prompt_is_injection_safe() -> None:
     host = _FakeHost()
     provider = GrokCliProvider(host)

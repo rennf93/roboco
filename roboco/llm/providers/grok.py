@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
@@ -36,6 +37,8 @@ from roboco.llm.providers.base import AgentProvider, ProviderError, SpawnResult
 
 if TYPE_CHECKING:
     from roboco.models.runtime import OrchestratorAgentConfig as AgentConfig
+
+_log = logging.getLogger(__name__)
 
 # The Grok agent image (own image, like every other agent role). Overridable for
 # tests / staged rollout.
@@ -179,6 +182,19 @@ class GrokCliProvider(AgentProvider):
         auth_dir = Path(GROK_AUTH_HOST_PATH)
         if (auth_dir / "auth.json").exists():
             cmd.extend(["-v", f"{auth_dir}:{_GROK_AUTH_DIR_IN_CONTAINER}:ro"])
+        else:
+            # The mount is the grok subscription credential — without it the
+            # container starts but the entrypoint ``--check`` backstop refuses
+            # to run (exit 78) and the agent is doomed. Fail loud at spawn time
+            # so the operator sees the missing credential immediately instead
+            # of diagnosing a later exit-78 from the container log markers.
+            _log.warning(
+                "grok host auth.json not found at %s — spawn will start the "
+                "container but it is doomed to exit 78 (no SuperGrok credential). "
+                "Run `grok login` on the host (or set ROBOCO_HOST_GROK_DIR to the "
+                "directory holding auth.json) before spawning Grok agents.",
+                auth_dir / "auth.json",
+            )
 
     @staticmethod
     def _append_usage_mount(cmd: list[str], hosts: dict[str, str | None]) -> None:
