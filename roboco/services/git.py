@@ -3943,20 +3943,28 @@ class GitService(BaseService):
         pr_number: int,
         *,
         actor_agent_id: UUID | None = None,
+        project_id: UUID | None = None,
     ) -> str:
         """Return the current target (base) branch of an open PR.
 
         Workspace resolution mirrors pr_merge: actor → assigned_to →
         created_by. Lets the Main PM call pr_target after
         ``submit_qa`` has cleared ``assigned_to`` without ValidationError.
+
+        ``pr_number`` alone is ambiguous across projects (GitHub numbers PRs
+        per-repo), so when the caller knows which project the PR belongs to it
+        MUST pass ``project_id`` — the task lookup is then scoped to it so a
+        same-numbered PR in another project's repo is never resolved by
+        accident (mirrors ``close_pull_request``).
         """
         from sqlalchemy import select
 
         from roboco.db.tables import TaskTable as _TaskTable
 
-        result = await self.session.execute(
-            select(_TaskTable).where(_TaskTable.pr_number == pr_number).limit(1)
-        )
+        stmt = select(_TaskTable).where(_TaskTable.pr_number == pr_number)
+        if project_id is not None:
+            stmt = stmt.where(_TaskTable.project_id == project_id)
+        result = await self.session.execute(stmt.limit(1))
         task = result.scalar_one_or_none()
         if task is None:
             raise NotFoundError("PR", str(pr_number))
