@@ -104,6 +104,26 @@ async def test_clean_output_is_not_overload(
 
 
 @pytest.mark.asyncio
+async def test_detects_overload_marker_in_transcript(
+    orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # F036: the SDK server writes model-API errors to /tmp/sdk-server.log, not
+    # stdout, so the overload marker (529/500/503) may appear only in the durable
+    # Claude transcript — exactly the rationale already applied to the
+    # session-limit detector. Without reading the transcript here an overload
+    # is missed and the agent crash-respawns straight back into it.
+    monkeypatch.setattr(settings, "overload_break_enabled", True)
+    monkeypatch.setattr(orch, "_tail_container_logs", AsyncMock(return_value=""))
+    monkeypatch.setattr(
+        orch, "_transcript_tail_text", lambda _a, _lines=80: _OVERLOAD_LOG
+    )
+    assert (
+        await orch._provider_overload_park_target("be-dev-1", _instance())
+        == "anthropic"
+    )
+
+
+@pytest.mark.asyncio
 async def test_disabled_flag_never_parks(
     orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch
 ) -> None:

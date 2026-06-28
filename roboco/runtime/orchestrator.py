@@ -6413,7 +6413,13 @@ Start by:
         if provider_type not in (None, ModelProvider.ANTHROPIC.value):
             return None
         tail = await self._tail_container_logs(f"roboco-agent-{agent_id}")
-        lowered = tail.lower()
+        # F036: the SDK server writes model-API errors to /tmp/sdk-server.log,
+        # not stdout, so the overload marker (529/500/503) may appear only in
+        # the durable Claude transcript — the same rationale already applied to
+        # the session-limit detector. Without the transcript an overload is
+        # missed and the agent crash-respawns straight back into it.
+        transcript_tail = self._transcript_tail_text(agent_id)
+        lowered = (tail + "\n" + transcript_tail).lower()
         if any(marker in lowered for marker in _ANTHROPIC_OVERLOAD_MARKERS):
             return ModelProvider.ANTHROPIC.value
         return None
