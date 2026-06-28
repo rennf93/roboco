@@ -223,6 +223,63 @@ async def test_broadcast_send_timeout_protects_legacy_unregistered_socket() -> N
 
 
 # ---------------------------------------------------------------------------
+# Send-side failure proactively reaps the dead socket (F119)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sender_triggers_disconnect_on_send_error() -> None:
+    """F119: when send_text raises (transport closed / dead socket), the sender
+    task must proactively disconnect the socket from every subscription set —
+    not just stop sending and wait for the receive loop's idle timeout to reap
+    it. Without this a send-side-detected dead socket lingers in the sets and
+    broadcasts keep enqueuing into a queue whose consumer has exited
+    (queue-overflow log spam, then silent drops) for up to IDLE_TIMEOUT_SECONDS
+    until the receive loop's idle timeout finally fires. The send path provably
+    failed, so it should clean up immediately — the receive-side-only reap was
+    the gap the audit flagged."""
+    mgr = ConnectionManager()
+    dead_ws = _make_ws(send_side_effect=ConnectionError("transport closed"))
+    await mgr.connect_system(dead_ws)
+    assert dead_ws in mgr.system_connections
+    assert dead_ws in mgr.connection_senders
+
+    await mgr.broadcast_system({"type": "RATE_LIMIT_HIT"})
+    # Let the sender drain the queue and hit the send error.
+    await asyncio.sleep(0.05)
+
+    # The send error triggered disconnect: the dead socket is gone from every
+    # subscription set + the sender registry, so future broadcasts skip it
+    # entirely instead of enqueueing into an un-drained queue.
+    assert dead_ws not in mgr.system_connections
+    assert dead_ws not in mgr.connection_senders
+
+
+@pytest.mark.asyncio
+async def test_sender_keeps_live_socket_on_send_timeout_only() -> None:
+    """F119: a send TIMEOUT alone (slow client, not a dead socket) must NOT
+    disconnect the socket — only a hard send Exception (transport closed) does.
+    A slow-but-live client should keep receiving once it drains; timing it out
+    is the existing F064 graceful-degradation path, not a reap trigger."""
+    mgr = ConnectionManager()
+    hang: asyncio.Future[None] = asyncio.Future()
+    slow_ws = _make_ws(send_side_effect=hang)
+    await mgr.connect_system(slow_ws)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("roboco.api.websocket.SEND_TIMEOUT_SECONDS", 0.1)
+        await mgr.broadcast_system({"type": "RATE_LIMIT_HIT"})
+        await asyncio.sleep(0.2)
+
+    # Timed out, but the socket is still live (registered) — slow, not dead.
+    assert slow_ws in mgr.system_connections
+    assert slow_ws in mgr.connection_senders
+
+    mgr.disconnect(slow_ws)
+    hang.cancel()
+
+
+# ---------------------------------------------------------------------------
 # disconnect cancels the sender task (no leak)
 # ---------------------------------------------------------------------------
 

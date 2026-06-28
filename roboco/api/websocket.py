@@ -150,12 +150,20 @@ class ConnectionManager:
                     timeout=SEND_TIMEOUT_SECONDS,
                 )
             except Exception as exc:
-                # Transport closed / error — stop sending to this client; the
-                # receive loop's finally will disconnect and cancel us.
+                # Transport closed / hard send error — the socket is provably
+                # dead on the send side. Reap it from every subscription set
+                # now instead of waiting for the receive loop's idle timeout to
+                # notice: otherwise the dead socket lingers in the sets and
+                # every subsequent broadcast enqueues into this connection's
+                # queue whose consumer has just exited (queue-overflow log spam
+                # then silent drops) for up to IDLE_TIMEOUT_SECONDS. A send
+                # TIMEOUT alone (slow client) does NOT reach here — it is
+                # caught above and the live socket is kept.
                 log.debug(
-                    "WebSocket sender stopping on send error",
+                    "WebSocket sender disconnecting on send error",
                     error=str(exc),
                 )
+                self.disconnect(ws)
                 return
 
     async def connect_channel(
