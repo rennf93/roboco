@@ -416,12 +416,28 @@ def _canonical_bump_files(root: Path, version: str) -> list[str]:
     # Subsequent releases derive the canonical bump set from the previous
     # ``chore(release):`` commit's touched files — the historical record of
     # what a release bumps.
-    sha = _run_git(
-        root, ["log", "--grep", "^chore(release):", "-n1", "--format=%H"]
-    ).strip()
-    if sha:
-        raw = _run_git(root, ["show", "--name-only", "--format=", sha])
-        return sorted(line.strip() for line in raw.splitlines() if line.strip())
+    #
+    # ``git log --grep "^chore(release):"`` matches ANY message line, including
+    # a body line of a non-release commit that merely REFERENCES the
+    # ``chore(release):`` type (e.g. a fix commit explaining the derivation). A
+    # newer such commit would shadow the real release commit and the bump plan
+    # would list the fix's files instead of the release's. Filter to the
+    # candidate whose SUBJECT (``%s``) starts with ``chore(release):`` — the
+    # real release-commit shape ``chore(release): X.Y.Z``. ``%x01`` separates
+    # sha from subject so a subject may contain spaces unambiguously.
+    raw = _run_git(
+        root,
+        ["log", "--grep", "^chore(release):", "--format=%H%x01%s"],
+    )
+    for line in raw.splitlines():
+        if "\x01" not in line:
+            continue
+        sha, subject = line.split("\x01", 1)
+        if subject.startswith("chore(release):"):
+            files_raw = _run_git(root, ["show", "--name-only", "--format=", sha])
+            return sorted(
+                line.strip() for line in files_raw.splitlines() if line.strip()
+            )
     # F058: the FIRST release has no prior ``chore(release):`` commit, so the
     # historical derivation returns ``[]`` and the executor would publish a tag
     # with no files bumped (a no-op release masquerading as X.Y.Z). Fall back to

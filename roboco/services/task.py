@@ -662,25 +662,40 @@ class TaskService(BaseService):
         task without routing through the strict transition validator — record
         the same audit event. No status change may bypass the audit log.
 
-        Fire-and-forget, but we hold a strong reference to the background task
-        (via ``_background_tasks``): the event loop only weak-refs tasks, so
-        without it the audit write can be garbage-collected before it commits.
+        The row is written into the CALLER's session (``self.session.add``),
+        so it commits / rolls back ATOMICALLY with the status transition — the
+        audit journey can never diverge from real task state. This closes three
+        facets of the fire-and-forget decoupling gap:
+
+        * F061/F073 — the audit commit is no longer decoupled on a separate
+          connection whose failures were swallowed; a committed transition now
+          ALWAYS has its audit row (same transaction), and a persist failure
+          fails the transition (fail-closed for the metric source of truth)
+          instead of silently dropping the row.
+        * F075 — a transition rolled back inside a verb savepoint
+          (``_verb_runner`` wraps composed actions in ``begin_nested``) now
+          rolls its audit row back too — no phantom ``task.<status>`` row for a
+          transition that did not stick. (The claim-branch-failure rollback in
+          ``_finalize_claim`` is one such site; the savepoint rollback handles
+          the general case.)
+
+        The ``revision_count`` rework counter is incremented synchronously
+        here (the single chokepoint every transition funnels through).
 
         The explicit ``audit_agent_id`` (capture-before-mutate) wins: callers
         like ``submit_for_qa`` clear ``task.claimed_by`` before transitioning
         but still want the row attributed to the outgoing agent. Otherwise fall
-        back to ``task.claimed_by``.
+        back to ``task.claimed_by``. A structurally-invalid id coerces to
+        ``None`` (mirroring ``AuditService._coerce_uuid``) so the row still
+        lands unattributed rather than FK-violating; a valid-but-deleted agent
+        id is a real bug worth surfacing as a transition failure.
         """
-        import asyncio
-        import contextlib
-
-        from roboco.services.audit import get_audit_service
+        from roboco.db.tables import AuditLogTable
 
         # Rework counter: a bounce INTO needs_revision (not a re-entry) is one
         # rework cycle. Incremented at this single chokepoint — every transition
         # path funnels its audit through here exactly once — so the rework rate
-        # is an O(1) column read. Synchronous (part of this unit of work),
-        # unlike the fire-and-forget audit rows below.
+        # is an O(1) column read. Synchronous (part of this unit of work).
         if (
             to_status == TaskStatus.NEEDS_REVISION.value
             and from_status != TaskStatus.NEEDS_REVISION.value
@@ -694,6 +709,13 @@ class TaskService(BaseService):
         else:
             resolved_audit_agent_id = None
 
+        agent_uuid: UUID | None = None
+        if resolved_audit_agent_id:
+            try:
+                agent_uuid = UUID(resolved_audit_agent_id)
+            except (ValueError, AttributeError):
+                agent_uuid = None
+
         details = {
             "from_status": from_status,
             "to_status": to_status,
@@ -702,20 +724,17 @@ class TaskService(BaseService):
                 task.team.value if hasattr(task.team, "value") else str(task.team)
             ),
         }
-        audit = get_audit_service()
-        with contextlib.suppress(RuntimeError):
-            loop = asyncio.get_running_loop()
-            for event_type in self._audit_events_for(to_status, agent_role):
-                bg = loop.create_task(
-                    audit.log_task_event(
-                        event_type=event_type,
-                        task_id=str(task.id),
-                        agent_id=resolved_audit_agent_id,
-                        details=details,
-                    )
+        for event_type in self._audit_events_for(to_status, agent_role):
+            self.session.add(
+                AuditLogTable(
+                    event_type=event_type,
+                    agent_id=agent_uuid,
+                    target_type="task",
+                    target_id=task.id,
+                    severity="info",
+                    details=dict(details),
                 )
-                self._background_tasks.add(bg)
-                bg.add_done_callback(self._background_tasks.discard)
+            )
 
     @staticmethod
     def _audit_events_for(to_status: str, agent_role: str | None) -> list[str]:

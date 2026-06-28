@@ -130,5 +130,48 @@ def test_first_release_emits_no_version_ref_gap_for_planned_files(
     assert not any(g.category == "version_ref" for g in report.gaps)
 
 
+def test_canonical_bump_files_ignores_body_only_chore_release_match(
+    tmp_path: Path,
+) -> None:
+    """A non-release commit whose message BODY references ``chore(release):``
+    (a body line starting with ``chore(release):``) must NOT be misidentified
+    as the last release commit.
+
+    ``git log --grep "^chore(release):"`` matches ANY message line, so a
+    fix/docs commit that explains the release process (body line
+    ``chore(release): the canonical set ...``) is matched and — being newer —
+    shadows the real release commit. The canonical set must come from the
+    commit whose SUBJECT starts with ``chore(release):`` (the real release
+    shape ``chore(release): X.Y.Z``), not a body-only match. (Regression: an
+    earlier fix commit's body referencing ``chore(release):`` was picked up,
+    so the bump plan listed that fix's files instead of the release's.)
+    """
+    root = _first_release_repo(tmp_path)
+    # Real release commit (older) touching the version-embedding file + marker.
+    (root / "RELEASE_MARKER.txt").write_text("released\n", encoding="utf-8")
+    (root / "pyproject.toml").write_text('version = "0.2.0"\n', encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-m", "chore(release): 0.2.0")
+    # A NEWER non-release commit whose BODY has a line starting with the
+    # release-commit prefix.
+    (root / "other.py").write_text("x = 1\n", encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(
+        root,
+        "commit",
+        "-m",
+        "fix: tighten release-readiness derivation",
+        "-m",
+        "chore(release): the canonical set derives from this commit type",
+    )
+
+    files = _canonical_bump_files(root, "0.2.0")
+    # The canonical set is the REAL release commit's files...
+    assert "RELEASE_MARKER.txt" in files
+    assert "pyproject.toml" in files
+    # ...NOT the body-only-matching fix commit's file.
+    assert "other.py" not in files
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-q"])

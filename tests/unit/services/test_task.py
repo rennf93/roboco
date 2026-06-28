@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from roboco.db.tables import AuditLogTable
 from roboco.models.base import (
     AgentRole,
     AgentStatus,
@@ -1115,6 +1116,55 @@ async def test_finalize_claim_rollback_emits_reversal_audit() -> None:
     # ...AND the reversal row is emitted so the journey's last event matches
     # the rolled-back state (the F060 fix). Before the fix this was missing.
     assert {"from": "claimed", "to": "pending"} in audit_calls
+
+
+@pytest.mark.asyncio
+async def test_emit_status_transition_audit_writes_in_session_atomically() -> None:
+    """F061/F073/F075: the status-transition audit row is written into the
+    CALLER's session (same transaction as the transition), not fire-and-forget
+    on a separate connection.
+
+    Fire-and-forget decouples the audit commit from the transition commit:
+    a transition that rolls back inside a verb savepoint leaves a PHANTOM audit
+    row (F075), and a swallowed persist failure means a committed transition
+    can have NO audit row (F073) — silently corrupting the cycle-time /
+    bottleneck metrics reconstructed from ``task.<status>`` events (F061).
+    Writing the row in-session makes it commit/roll back atomically with the
+    transition, closing all three. Asserted at the unit level: the row is
+    ``session.add``-ed (same txn) with the metric-reconstruction details, and
+    NO fire-and-forget background task is spawned.
+    """
+    svc = TaskService(MagicMock())
+    added: list[object] = []
+    svc.session.add = MagicMock(side_effect=added.append)  # type: ignore[assignment]
+    prior_bg = set(svc._background_tasks)
+
+    task = MagicMock(id=uuid4(), claimed_by=uuid4(), team=Team.BACKEND)
+
+    svc._emit_status_transition_audit(
+        task,
+        from_status="pending",
+        to_status="claimed",
+        agent_role="developer",
+        audit_agent_id=None,
+    )
+
+    # The audit row is added to the CALLER's session (same transaction) — not
+    # dispatched to a separate fire-and-forget connection.
+    rows = [r for r in added if isinstance(r, AuditLogTable)]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.event_type == "task.claimed"
+    assert row.target_type == "task"
+    assert row.target_id == task.id
+    assert row.details["from_status"] == "pending"
+    assert row.details["to_status"] == "claimed"
+    assert row.details["agent_role"] == "developer"
+    assert row.details["team"] == "backend"
+    # The claiming agent is attributed (resolved from claimed_by).
+    assert row.agent_id == task.claimed_by
+    # No fire-and-forget audit task was spawned (the old decoupled path).
+    assert svc._background_tasks == prior_bg
 
 
 # ---------------------------------------------------------------------------
