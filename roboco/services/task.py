@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstanceState
@@ -2340,6 +2340,31 @@ class TaskService(BaseService):
         bg_task = asyncio.create_task(self._inject_proactive_context(task, agent_id))
         self._background_tasks.add(bg_task)
         bg_task.add_done_callback(self._background_tasks.discard)
+
+    async def acquire_claim_lock(self, agent_id: UUID) -> None:
+        """Take a per-agent transaction-scoped advisory lock.
+
+        ``claim``'s ``SELECT ... FOR UPDATE`` serializes concurrent claims of
+        the SAME task, but the one-task-per-agent invariant is an agent-WIDE
+        guard: two concurrent claims by the SAME agent on TWO DIFFERENT pending
+        tasks lock different rows and both pass the already_active guard (each
+        reads an empty in_progress set before either commits). A
+        ``pg_advisory_xact_lock`` keyed by the agent serializes the WHOLE
+        claim+guard+start critical section per agent — held until the outer
+        request transaction commits, the second concurrent claim blocks until
+        the first commits, then its guard read sees the first's committed
+        in_progress task and is rejected.
+
+        Transaction-scoped (not session-scoped) so it auto-releases on commit
+        or rollback and cannot outlive the request. ``hashtextextended`` maps a
+        UUID to a ``bigint`` key; a hash collision only causes benign false
+        serialization (two different agents momentarily serializing), never a
+        false negative — so it is not a correctness concern.
+        """
+        await self.session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(CAST(:aid AS text), 0))"),
+            {"aid": str(agent_id)},
+        )
 
     async def claim(
         self, task_id: UUID, agent_id: UUID, allow_reassign: bool = False

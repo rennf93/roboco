@@ -1168,6 +1168,22 @@ class Choreographer:
         # above. These migrate into spec.extra_preconditions in a later
         # task; until then, keep them imperative so concurrency invariants
         # stay enforced.
+        #
+        # The agent-wide guards below read the agent's OTHER tasks via plain
+        # (unlocked) SELECTs, and claim()'s FOR UPDATE locks only the TARGET
+        # row — neither serializes two concurrent claims by the SAME agent on
+        # TWO DIFFERENT pending tasks. A transaction-scoped advisory lock keyed
+        # by agent_id, acquired here BEFORE the guard reads and held until the
+        # request transaction commits, makes the second concurrent claim's read
+        # see the first's committed in_progress task and get rejected. The
+        # in-process asyncio.Lock is lost on orchestrator-restart split-brain,
+        # so this is the only DB-level guarantee of the one-task-per-agent
+        # invariant. Coordinators (cell_pm / main_pm) are exempt — matching the
+        # already_active/paused guard exemption below — so a PM can still plan +
+        # delegate many roots in parallel (the PM coordinator concurrency
+        # feature). A hash collision only causes benign false serialization.
+        if role_str not in self._COORDINATOR_ROLES:
+            await self.task.acquire_claim_lock(ctx.agent_id)
         if guard := await self._run_claim_guards(
             agent_id=ctx.agent_id,
             task=t,
