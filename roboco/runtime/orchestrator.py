@@ -102,6 +102,30 @@ _SYSTEM_API_HEADERS = {
     "X-Agent-ID": "00000000-0000-0000-0000-000000000000",
     "X-Agent-Role": "system",
 }
+
+
+def _system_api_headers() -> dict[str, str]:
+    """System identity headers for the orchestrator's internal self-API calls.
+
+    Wraps ``_SYSTEM_API_HEADERS`` and adds a signed ``X-Agent-Token`` for the
+    system identity (F038/F039). Without it, arming
+    ``ROBOCO_AGENT_AUTH_REQUIRED=true`` 401s every silent recovery op
+    (auto-block / auto-resume / auto-recover / SLA annotation) and wedges
+    paused/blocked parents — the prior self-PATCH 401 fix only carried
+    ``X-Agent-ID`` / ``X-Agent-Role``, so it was incomplete under auth-required.
+    When the HMAC secret is unset (dev), ``issue_agent_token`` returns the
+    ``UNSIGNED`` sentinel and auth isn't required, so the self-call still
+    succeeds; the header is present either way so a future arm-when-secret-set
+    doesn't silently break.
+    """
+    from roboco.agents_config import issue_agent_token
+
+    return {
+        **_SYSTEM_API_HEADERS,
+        "X-Agent-Token": issue_agent_token(
+            _SYSTEM_API_HEADERS["X-Agent-ID"], "system", ""
+        ),
+    }
 # Consecutive failed recovery probes before the CEO is notified once per episode.
 _CEO_NOTIFY_THRESHOLD = 10
 
@@ -2744,7 +2768,7 @@ class AgentOrchestrator:
 
         try:
             async with httpx.AsyncClient(
-                timeout=5.0, headers=_SYSTEM_API_HEADERS
+                timeout=5.0, headers=_system_api_headers()
             ) as client:
                 task_or_reason = await self._readiness_fetch_task(client, task_id)
                 if isinstance(task_or_reason, str):
@@ -3043,7 +3067,7 @@ class AgentOrchestrator:
         """Best-effort GET /tasks/{id}; returns task dict or None on failure."""
         try:
             async with httpx.AsyncClient(
-                timeout=5.0, headers=_SYSTEM_API_HEADERS
+                timeout=5.0, headers=_system_api_headers()
             ) as client:
                 resp = await client.get(f"{self._api_url}/tasks/{task_id}")
             if resp.status_code == http_status.HTTP_200_OK:
@@ -4518,7 +4542,7 @@ class AgentOrchestrator:
         sdk_url = f"http://roboco-agent-{agent_id}:{SDK_PORT}/usage/status"
         try:
             async with httpx.AsyncClient(
-                timeout=3.0, headers=_SYSTEM_API_HEADERS
+                timeout=3.0, headers=_system_api_headers()
             ) as client:
                 resp = await client.get(sdk_url)
                 if resp.status_code == http_status.HTTP_200_OK:
@@ -4775,7 +4799,7 @@ class AgentOrchestrator:
         _usage_total_cost = 0.0
 
         async with httpx.AsyncClient(
-            timeout=3.0, headers=_SYSTEM_API_HEADERS
+            timeout=3.0, headers=_system_api_headers()
         ) as client:
             for agent_id, instance in list(self._instances.items()):
                 if instance.state not in (
@@ -5439,7 +5463,7 @@ Start by:
         if not self._instances:
             return
         async with httpx.AsyncClient(
-            timeout=3.0, headers=_SYSTEM_API_HEADERS
+            timeout=3.0, headers=_system_api_headers()
         ) as client:
             for agent_id, instance in list(self._instances.items()):
                 if instance.state not in (
@@ -8071,7 +8095,7 @@ Start now: evidence(task_id="{task_id}")
 
         dispatchers: list[tuple[str, Any]] = []
         async with httpx.AsyncClient(
-            timeout=30.0, headers=_SYSTEM_API_HEADERS
+            timeout=30.0, headers=_system_api_headers()
         ) as client:
             dispatchers = [
                 ("pm_work", self._dispatch_pm_work(client)),
