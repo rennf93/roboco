@@ -604,11 +604,38 @@ export function usePrompter() {
     sourceRef.current = null;
   }, []);
 
+  // A dropped connection or a session the server already tore down fires a
+  // transport-level `error` event on the EventSource itself — a plain Event
+  // with NO JSON payload. That is distinct from a server-sent `event: error`
+  // frame (a MessageEvent carrying a LiveEvent). Without handling it the
+  // transport error was swallowed by the JSON-parse try/catch in openStream
+  // and `isSending` stayed true — the composer was permanently disabled and
+  // the dead EventSource loop-reconnected a session that no longer existed.
+  // Reset the turn, tell the user, and close the dead stream.
+  const handleTransportError = useCallback(() => {
+    streamingIdRef.current = null;
+    setActivity(null);
+    setIsSending(false);
+    addMessage({
+      role: "error",
+      content:
+        "Live connection lost — the chat session is no longer reachable. " +
+        "Start a new chat to continue.",
+    });
+    // Keep a draft/batch preview up so the human can still act on a proposed
+    // card; otherwise land on the stable chat state.
+    setState((s) =>
+      s === "draft_preview" || s === "batch_preview" ? s : "chatting",
+    );
+    closeStream();
+  }, [addMessage, closeStream]);
+
   const openStream = useCallback(
     (sid: string) => {
       closeStream();
       const es = new EventSource(prompterLiveApi.streamUrl(sid));
       for (const kind of LIVE_EVENT_KINDS) {
+        if (kind === "error") continue; // error is dual-purpose — handled below
         es.addEventListener(kind, (e: MessageEvent) => {
           try {
             handleEvent(JSON.parse(e.data) as LiveEvent);
@@ -617,9 +644,27 @@ export function usePrompter() {
           }
         });
       }
+      // `error` is dual-purpose. A server-sent `event: error` frame carries a
+      // JSON LiveEvent (dispatched as a MessageEvent with string `data`) →
+      // route it through handleEvent like any other kind. A transport-level
+      // error (dropped connection / dead session) fires a plain Event with no
+      // `data` → JSON.parse would swallow it and leave isSending stuck, so
+      // route the no-payload case to the transport-error reset instead.
+      es.addEventListener("error", (e: Event) => {
+        const data = (e as MessageEvent).data;
+        if (typeof data === "string") {
+          try {
+            handleEvent(JSON.parse(data) as LiveEvent);
+          } catch {
+            // A malformed server-sent error frame is dropped; stream stays open.
+          }
+        } else {
+          handleTransportError();
+        }
+      });
       sourceRef.current = es;
     },
-    [closeStream, handleEvent],
+    [closeStream, handleEvent, handleTransportError],
   );
 
   // Best-effort reap if the user navigates away mid-chat. This cleanup runs on
