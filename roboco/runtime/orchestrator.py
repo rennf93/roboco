@@ -744,6 +744,20 @@ class AgentReadinessError(Exception):
     """
 
 
+class _SpawnAbortedDuringShutdown(Exception):
+    """Raised when a non-blocking intake/secretary spawn completes ``docker run``
+    after the orchestrator began shutting down.
+
+    The raiser has already removed the just-started container (so it isn't
+    orphaned); the guarded wrapper catches this BEFORE its generic
+    ``except Exception`` and closes the live relay silently — shutdown is not a
+    user-facing failure, so no error is pushed to the SSE stream. The F070
+    ``stop()`` drain awaits the bg spawn coroutine, so this surfaces cleanly
+    instead of the registration landing a live container into a registry that
+    ``stop()`` has already finished iterating.
+    """
+
+
 class AgentOrchestrator:
     """
     Manages Claude Code containers for all agents.
@@ -3421,6 +3435,12 @@ class AgentOrchestrator:
                 project_ids=project_ids,
                 initial_message=initial_message,
             )
+        except _SpawnAbortedDuringShutdown:
+            # Shutdown began mid-spawn; the just-started container was already
+            # removed by the raiser. Close the relay silently — shutdown is not a
+            # user-facing failure, so no error is pushed to the SSE stream.
+            get_live_registry().close(session_id)
+            return
         except Exception as exc:
             logger.error(
                 "Intake container spawn failed", session_id=session_id, error=str(exc)
@@ -3499,6 +3519,16 @@ class AgentOrchestrator:
             )
         )
         container_id = await self._run_container_cmd(cmd)
+
+        # Shutdown may have begun while this (non-blocking) spawn was in flight
+        # — the bg coroutine runs concurrently with stop(). If so, remove the
+        # just-started container and abort WITHOUT registering: stop()'s
+        # _instances iteration has already run (or is running), so a registration
+        # now would land a live container nothing tears down (the orphan). The
+        # stop() drain awaits this coroutine, so the abort surfaces cleanly.
+        if not self._running:
+            await self._remove_container(container_name)
+            raise _SpawnAbortedDuringShutdown(INTAKE_AGENT_ID)
 
         config = AgentConfig(
             agent_id=INTAKE_AGENT_ID,
@@ -3595,6 +3625,12 @@ class AgentOrchestrator:
             await self._spawn_secretary_container(
                 session_id, initial_message=initial_message
             )
+        except _SpawnAbortedDuringShutdown:
+            # Shutdown began mid-spawn; the just-started container was already
+            # removed by the raiser. Close the relay silently — shutdown is not
+            # a user-facing failure, so no error is pushed to the SSE stream.
+            get_live_registry().close(session_id)
+            return
         except Exception as exc:
             logger.error(
                 "Secretary container spawn failed",
@@ -3665,6 +3701,14 @@ class AgentOrchestrator:
             )
         )
         container_id = await self._run_container_cmd(cmd)
+
+        # Shutdown may have begun while this (non-blocking) spawn was in flight
+        # — see the matching guard in _spawn_intake_container. Remove the
+        # just-started container and abort WITHOUT registering, so it isn't
+        # orphaned by a stop() that has already iterated _instances.
+        if not self._running:
+            await self._remove_container(container_name)
+            raise _SpawnAbortedDuringShutdown(SECRETARY_AGENT_ID)
 
         config = AgentConfig(
             agent_id=SECRETARY_AGENT_ID,

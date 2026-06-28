@@ -32,6 +32,11 @@ def _make_minimal_orchestrator() -> AgentOrchestrator:
         orch = AgentOrchestrator.__new__(AgentOrchestrator)
     orch._instances = {}
     orch._bg_tasks = set()
+    # A minimal orchestrator is a RUNNING one. The non-blocking spawn path
+    # reads ``self._running`` after docker run to detect a mid-spawn shutdown
+    # (F071); without this the post-docker-run guard would AttributeError on
+    # the constructor-skipped instance.
+    orch._running = True
     return orch
 
 
@@ -506,3 +511,96 @@ class TestDeliverWhenReady:
 
         await orch._deliver_when_ready("sess-y", "hi", attempts=5, delay=0)
         assert attempts["n"] == succeed_on  # stopped as soon as delivery succeeded
+
+
+# ---------------------------------------------------------------------------
+# F071 — non-blocking intake spawn must not orphan a container if shutdown
+# arrives between ``docker run`` and the _instances registration. The guarded
+# wrapper runs concurrently with stop(); without a post-docker-run shutdown
+# check, the just-started container is never recorded in _instances (which
+# stop() already iterated) so nothing tears it down — a leaked container.
+# ---------------------------------------------------------------------------
+
+
+class TestSpawnIntakeShutdownNoOrphan:
+    @pytest.mark.asyncio
+    async def test_shutdown_mid_spawn_removes_container_and_skips_registration(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """docker run completes, THEN the orchestrator begins shutting down
+        (``_running`` flips to False) before the registration line. The just-
+        started container must be removed and NOT registered — otherwise it is
+        orphaned (live, untracked by stop())."""
+        orch = _make_minimal_orchestrator()
+        run_calls: list[list[str]] = []
+        _wire_spawn_mocks(monkeypatch, orch, run_calls)
+        removed: list[str] = []
+
+        async def _remove(name: str) -> None:
+            removed.append(name)
+
+        async def _run(cmd: list[str]) -> str:
+            run_calls.append(cmd)
+            # Shutdown arrives AFTER docker run started the container but BEFORE
+            # the registration line runs.
+            orch._running = False
+            return "containerid0123456789"
+
+        monkeypatch.setattr(orch, "_run_container_cmd", _run)
+        monkeypatch.setattr(orch, "_remove_container", _remove)
+
+        registry = prompter_live.get_live_registry()
+        pushed: list[tuple[str, dict[str, Any]]] = []
+        closed: list[str] = []
+        monkeypatch.setattr(registry, "push", lambda sid, ev: pushed.append((sid, ev)))
+        monkeypatch.setattr(registry, "close", closed.append)
+        registry.open("sess-orphan", INTAKE_AGENT_ID)
+
+        await orch._spawn_intake_container_guarded(
+            "sess-orphan",
+            project_slug="roboco",
+            product_id=None,
+            initial_message=None,
+        )
+
+        # The just-started container was removed by name (not orphaned). Two
+        # removes: the pre-spawn reap of any stale container, then the
+        # post-docker-run shutdown guard reaping the just-started one. Without
+        # the guard there is only ONE remove (the pre-spawn reap) and the
+        # just-started container is orphaned — so asserting two proves the guard
+        # ran.
+        assert removed == [
+            f"roboco-agent-{INTAKE_AGENT_ID}",
+            f"roboco-agent-{INTAKE_AGENT_ID}",
+        ]
+        # No instance registered — stop()'s _instances iteration has already
+        # run, so a registration now would land a live container nothing stops.
+        assert INTAKE_AGENT_ID not in orch._instances
+        # Shutdown is not a user-facing failure: the relay closes silently,
+        # no error pushed to the SSE stream.
+        assert pushed == []
+        assert closed == ["sess-orphan"]
+
+    @pytest.mark.asyncio
+    async def test_running_spawn_registers_normally(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Sanity: when the orchestrator stays running, the spawn registers the
+        instance as before — the shutdown guard does not fire on a healthy spawn."""
+        orch = _make_minimal_orchestrator()
+        run_calls: list[list[str]] = []
+        _wire_spawn_mocks(monkeypatch, orch, run_calls)
+        # _wire_spawn_mocks' _remove_container is a no-op; override to record.
+        removed: list[str] = []
+
+        async def _remove(name: str) -> None:
+            removed.append(name)
+
+        monkeypatch.setattr(orch, "_remove_container", _remove)
+
+        instance = await orch.spawn_intake_session("sess-ok", project_slug="roboco")
+
+        assert orch._instances[INTAKE_AGENT_ID] is instance
+        # The pre-spawn reap remove is the only remove call (the shutdown guard
+        # did NOT remove the just-started container).
+        assert removed == [f"roboco-agent-{INTAKE_AGENT_ID}"]
