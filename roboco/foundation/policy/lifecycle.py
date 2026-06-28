@@ -951,6 +951,46 @@ PRECONDITION_NON_TERMINAL = Precondition(
 )
 
 
+# The set of states from which a PR may be opened — the lifecycle-owned canon.
+# The HTTP PR-create path (GitService._assert_pr_create_allowed) and the gateway
+# ``open_pr`` intent must agree on this, so it lives here (the policy layer) as
+# the single source and the service derives its str set from it. A PR opens
+# during active dev (in_progress / verifying), the doc phase
+# (awaiting_documentation), QA review (awaiting_qa), or a rework cycle
+# (needs_revision) — never from claim/pause/block/terminal, which the HTTP path
+# already blocked but the gateway ``open_pr`` (composes=() → no source-status
+# gate) historically did not (F101).
+PR_OPEN_STATES: frozenset[Status] = frozenset(
+    {
+        Status.IN_PROGRESS,
+        Status.VERIFYING,
+        Status.AWAITING_QA,
+        Status.AWAITING_DOCUMENTATION,
+        Status.NEEDS_REVISION,
+    }
+)
+
+
+def _p_pr_open_state(task: Any, _agent: Any, _ctx: Any) -> bool:
+    """True iff the task is in a PR-open-eligible state (see ``PR_OPEN_STATES``)."""
+    status = getattr(task, "status", None)
+    value = status.value if isinstance(status, Status) else str(status)
+    return value in {s.value for s in PR_OPEN_STATES}
+
+
+PRECONDITION_PR_OPEN_STATE = Precondition(
+    key="pr_open_state",
+    check=_p_pr_open_state,
+    remediate=(
+        "open_pr is only valid during active dev states "
+        "(in_progress / verifying / awaiting_qa / awaiting_documentation / "
+        "needs_revision); move the task into one of those first"
+    ),
+    missing_token="pr_open_state",
+    rejection_kind="invalid_state",
+)
+
+
 _INTENT_VERBS: dict[str, IntentSpec] = {
     # Phase 1: developer verbs
     "give_me_work": IntentSpec(
@@ -1022,6 +1062,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         composes=(),
         extra_preconditions=(
             PRECONDITION_OWNERSHIP,
+            PRECONDITION_PR_OPEN_STATE,
             PRECONDITION_COMMITS,
             PRECONDITION_NO_PR,
         ),

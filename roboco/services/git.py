@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import os
 import re
@@ -47,6 +48,7 @@ from roboco.exceptions import (
     GitTimeoutError,
     MergeConflictError,
 )
+from roboco.foundation.policy import lifecycle
 from roboco.models.base import AgentRole, TaskStatus
 from roboco.services.base import (
     BaseService,
@@ -141,12 +143,10 @@ def _remove_stale_git_locks(workspace: Path) -> None:
         return
     try:
         for lock in git_dir.rglob("*.lock"):
-            try:
+            # A lock a real process just grabbed, or a permission issue —
+            # leave it. The TTL/next-op path is the backstop.
+            with contextlib.suppress(OSError):
                 lock.unlink()
-            except OSError:
-                # A lock a real process just grabbed, or a permission issue —
-                # leave it. The TTL/next-op path is the backstop.
-                pass
     except OSError:
         return
 
@@ -2509,14 +2509,11 @@ class GitService(BaseService):
             "updated_fields": updated,
         }
 
+    # PR-open-eligible states — the lifecycle policy owns the canon
+    # (``PR_OPEN_STATES``); the HTTP path derives its str set from it so the
+    # gateway ``open_pr`` spec gate and this HTTP gate can never drift.
     _PR_OPEN_STATES: ClassVar[frozenset[str]] = frozenset(
-        {
-            TaskStatus.IN_PROGRESS.value,
-            TaskStatus.VERIFYING.value,
-            TaskStatus.AWAITING_QA.value,
-            TaskStatus.AWAITING_DOCUMENTATION.value,
-            TaskStatus.NEEDS_REVISION.value,
-        }
+        s.value for s in lifecycle.PR_OPEN_STATES
     )
 
     @staticmethod

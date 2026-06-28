@@ -566,6 +566,112 @@ def test_can_invoke_intent_developer_open_pr_no_commits_tracing_gap() -> None:
     assert "commits>=1" in d.missing
 
 
+# --------------------------------------------------------------------------- #
+# F101: open_pr must enforce the PR-open state gate (parity with the HTTP path)
+# --------------------------------------------------------------------------- #
+
+
+def _owned_task(**overrides: Any) -> SimpleNamespace:
+    """A task owned by ``actor`` with commits and no prior PR — only the state
+    gate can fail, isolating the PR-open-state precondition."""
+    actor = overrides.pop("actor_id", uuid4())
+    return _stub_task(
+        assigned_to=actor,
+        commits=["abc123"],
+        pr_number=None,
+        **overrides,
+    )
+
+
+def test_open_pr_rejected_on_claimed_task() -> None:
+    """F101: ``open_pr`` has ``composes=()`` so the spec gate applied NO
+    source-status check — a dev could open a PR from ``claimed`` (before
+    ``in_progress``), skipping the active-dev state the HTTP path's
+    ``_assert_pr_create_allowed`` enforces. The state gate now rejects it."""
+    actor = uuid4()
+    d = spec.can_invoke_intent(
+        spec.Role.DEVELOPER,
+        "open_pr",
+        _owned_task(status="claimed", actor_id=actor),
+        context=spec.Context(actor_id=actor),
+    )
+    assert d.allowed is False
+    assert d.rejection_kind == "invalid_state"
+
+
+def test_open_pr_rejected_on_paused_task() -> None:
+    actor = uuid4()
+    d = spec.can_invoke_intent(
+        spec.Role.DEVELOPER,
+        "open_pr",
+        _owned_task(status="paused", actor_id=actor),
+        context=spec.Context(actor_id=actor),
+    )
+    assert d.allowed is False
+    assert d.rejection_kind == "invalid_state"
+
+
+def test_open_pr_rejected_on_blocked_task() -> None:
+    actor = uuid4()
+    d = spec.can_invoke_intent(
+        spec.Role.DEVELOPER,
+        "open_pr",
+        _owned_task(status="blocked", actor_id=actor),
+        context=spec.Context(actor_id=actor),
+    )
+    assert d.allowed is False
+    assert d.rejection_kind == "invalid_state"
+
+
+def test_open_pr_rejected_on_completed_task() -> None:
+    """A completed task is terminal — opening a PR on it is nonsensical."""
+    actor = uuid4()
+    d = spec.can_invoke_intent(
+        spec.Role.DEVELOPER,
+        "open_pr",
+        _owned_task(status="completed", actor_id=actor),
+        context=spec.Context(actor_id=actor),
+    )
+    assert d.allowed is False
+    assert d.rejection_kind == "invalid_state"
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        "in_progress",
+        "verifying",
+        "awaiting_qa",
+        "awaiting_documentation",
+        "needs_revision",
+    ],
+)
+def test_open_pr_allowed_in_pr_open_states(status: str) -> None:
+    """Regression guard: every PR-open-eligible state still lets the owner open
+    a PR — the new state gate must not over-restrict the legitimate path."""
+    actor = uuid4()
+    d = spec.can_invoke_intent(
+        spec.Role.DEVELOPER,
+        "open_pr",
+        _owned_task(status=status, actor_id=actor),
+        context=spec.Context(actor_id=actor),
+    )
+    assert d.allowed is True, f"open_pr should be allowed from {status}"
+
+
+def test_open_pr_state_gate_takes_priority_over_unowned() -> None:
+    """A non-owner in a wrong state: ownership (not_authorized) is checked
+    before state, mirroring the HTTP path's assignee-first ordering."""
+    d = spec.can_invoke_intent(
+        spec.Role.DEVELOPER,
+        "open_pr",
+        _owned_task(status="claimed", actor_id=uuid4()),
+        context=spec.Context(actor_id=uuid4()),  # different actor -> not owner
+    )
+    assert d.allowed is False
+    assert d.rejection_kind == "not_authorized"
+
+
 def test_escalate_up_rejected_on_completed_task() -> None:
     """F043: a PM must not resurrect a COMPLETED task via escalate_up.
 
