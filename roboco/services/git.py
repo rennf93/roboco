@@ -4364,24 +4364,56 @@ class GitService(BaseService):
             body=body,
         )
         original = await self.get_current_branch(ws)
+        # A dirty tree is an agent's active workspace. Cutting the scaffold
+        # branch here would sweep their uncommitted work into the conventions
+        # commit — ``checkout <base>`` no-ops or is refused, ``checkout -B
+        # <scaffold>`` carries the dirty change, and ``commit`` captures it,
+        # so the agent's in-progress edit rides a project-level PR they never
+        # intended and vanishes from their working tree. Refuse outright before
+        # any checkout touches the tree.
+        if not await self._working_tree_is_clean(ws):
+            return None
         try:
-            await self._commit_conventions_file(ws, base, spec)
+            if not await self._commit_conventions_file(ws, base, spec):
+                return None
             return await self._push_and_open_conventions_pr(
                 project_slug, ws, base, spec
             )
         finally:
             await self._run_git(ws, ["checkout", original], check=False)
 
+    async def _working_tree_is_clean(self, workspace: Path) -> bool:
+        """True iff ``git status --porcelain`` is empty (no staged/unstaged
+        changes, no untracked entries). Used to gate workspace-mutating
+        project-level ops (the conventions scaffold) away from an agent's
+        active dirty tree."""
+        result = await self._run_git(workspace, ["status", "--porcelain"])
+        return not result.stdout.strip()
+
     async def _commit_conventions_file(
         self, workspace: Path, base: str, spec: _ConventionsPr
-    ) -> None:
+    ) -> bool:
+        """Commit the conventions file on the scaffold branch cut from ``base``.
+
+        Returns False when the scaffold cannot be safely cut from ``base`` (the
+        ``checkout <base>`` with ``check=False`` failed — a missing base ref,
+        or a dirty tree that refused the switch). In that case ``checkout -B
+        <scaffold>`` would cut the scaffold from the *current* branch (the
+        agent's task branch), basing a project-level PR on the agent's work;
+        the caller refuses rather than commit on the wrong base.
+        """
         await self._run_git(workspace, ["checkout", base], check=False)
+        # check=False swallows the failed checkout; verify we actually landed
+        # on base before cutting the scaffold from here.
+        if await self.get_current_branch(workspace) != base:
+            return False
         await self._run_git(workspace, ["checkout", "-B", spec.branch])
         target = workspace / ".roboco" / "conventions.yml"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(spec.content)
         await self._run_git(workspace, ["add", ".roboco/conventions.yml"])
         await self._run_git(workspace, ["commit", "-m", spec.title])
+        return True
 
     async def _push_and_open_conventions_pr(
         self, project_slug: str, workspace: Path, base: str, spec: _ConventionsPr
