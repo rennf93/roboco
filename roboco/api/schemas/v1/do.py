@@ -91,7 +91,9 @@ class NoteRequest(BaseModel):
     # 422'd at the route and the agent's retry loop tripped the circuit
     # breaker. ``mode="before"`` runs ahead of type coercion so
     # the wrapped value satisfies the declared ``list[...]`` type.
-    @field_validator("options", "consequences", "next_steps", mode="before")
+    @field_validator(
+        "options", "consequences", "next_steps", "where_to_look", mode="before"
+    )
     @classmethod
     def _wrap_scalar_in_list(cls, value: Any) -> Any:
         return _coerce_to_list(value)
