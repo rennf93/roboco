@@ -386,6 +386,27 @@ class MessagingService(BaseService):
         )
         return result.scalar_one_or_none()
 
+    async def _lock_group(self, group_id: UUID) -> GroupTable | None:
+        """Lock the group row for the rest of this transaction and re-read its
+        ``active_session_id`` under the lock.
+
+        ``SELECT ... FOR UPDATE`` serializes concurrent session creation for the
+        same group: a check-then-create on ``active_session_id`` otherwise races
+        (two concurrent posts both miss the active session, both INSERT a new
+        ACTIVE session, and the second ``flush`` overwrites the group's
+        ``active_session_id`` — orphaning the first session as a forever-ACTIVE,
+        unreferenced row). ``populate_existing`` refreshes the identity-map-cached
+        instance's columns under the lock so the re-check sees the winner's link,
+        not the stale pre-lock value.
+        """
+        result = await self.session.execute(
+            select(GroupTable)
+            .where(GroupTable.id == group_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return result.scalar_one_or_none()
+
     async def list_groups_in_channel(self, channel_id: UUID) -> list[GroupTable]:
         """List all groups in a channel."""
         result = await self.session.execute(
@@ -429,6 +450,16 @@ class MessagingService(BaseService):
         # sessions (the smoke run showed ~one session per message, and the CEO
         # could not hold a conversation). Only open a fresh session when none is
         # currently active (the prior one closed via timeout / boundary / merge).
+        #
+        # Serialize the check-then-create per group: lock the row and re-read
+        # ``active_session_id`` under the lock so a concurrent creator that won
+        # the race is visible here (we reuse its session) instead of both
+        # inserting and orphaning the loser's session. ``get_or_create_active_
+        # session`` and the channel-post adapter (L1868) route through here, so
+        # the lock covers every active-session creation entry point.
+        group = await self._lock_group(req.group_id)
+        if group is None:
+            raise ValueError(f"Group {req.group_id} not found")
         if group.active_session_id:
             existing = await self.get_session(cast("UUID", group.active_session_id))
             if existing is not None and existing.status == SessionStatus.ACTIVE:
