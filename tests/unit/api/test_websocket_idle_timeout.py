@@ -126,9 +126,6 @@ async def test_channel_stream_reaps_silent_socket_after_idle_timeout(
     hang_future: asyncio.Future[str] = asyncio.Future()
     ws = _mock_ws_for_receive(hang_future)
     ws.query_params = {"agent_id": str(agent_id)}
-    monkeypatch.setattr(
-        "roboco.api.websocket.validate_channel_access", AsyncMock(return_value=True)
-    )
     monkeypatch.setattr("roboco.api.websocket.manager", mgr)
     monkeypatch.setattr("roboco.api.websocket.IDLE_TIMEOUT_SECONDS", 0.05)
 

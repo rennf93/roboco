@@ -18,13 +18,11 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
-import httpx
 import structlog
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 
 from roboco.agents_config import CEO_AGENT_ID, verify_agent_token
 from roboco.api.deps import _auth_required
-from roboco.config import settings
 from roboco.db.base import get_db
 from roboco.services.repositories import resolve_agent_uuid
 
@@ -359,32 +357,6 @@ async def validate_agent_exists(agent_id: UUID | str) -> bool:
     return False
 
 
-async def validate_channel_access(channel_id: UUID, agent_id: UUID) -> bool:
-    """
-    Validate that an agent has access to a channel.
-
-    Calls the permissions API to check read access.
-    """
-    try:
-        url = f"http://{settings.host}:{settings.port}/api/permissions/check"
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(
-                url,
-                params={
-                    "agent_id": str(agent_id),
-                    "channel_id": str(channel_id),
-                    "action": "read",
-                },
-            )
-            if response.status_code == status.HTTP_200_OK:
-                data = response.json()
-                return bool(data.get("allowed", False))
-            return False
-    except Exception:
-        # On error, deny access (fail closed)
-        return False
-
-
 # =============================================================================
 # WebSocket Routes
 # =============================================================================
@@ -413,12 +385,6 @@ async def channel_stream(
     try:
         agent_id = UUID(agent_id_str)
     except ValueError:
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-        return
-
-    # Validate agent access to channel
-    has_access = await validate_channel_access(channel_id, agent_id)
-    if not has_access:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 

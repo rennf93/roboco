@@ -127,9 +127,6 @@ async def test_channel_stream_disconnects_on_non_disconnect_exception(
     mgr = ConnectionManager()
     ws = _mock_ws_for_receive(RuntimeError("anyio closed"))
     ws.query_params = {"agent_id": str(agent_id)}
-    monkeypatch.setattr(
-        "roboco.api.websocket.validate_channel_access", AsyncMock(return_value=True)
-    )
     monkeypatch.setattr("roboco.api.websocket.manager", mgr)
 
     with pytest.raises(RuntimeError):
