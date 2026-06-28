@@ -1386,6 +1386,11 @@ class MessagingService(BaseService):
                 subject=f"You were mentioned in #{channel_slug}",
                 body=message.content[:500],  # Truncate for notification
                 related_task_id=message.task_id,
+                # F009: MENTION is informational (ACK_REQUIRED_BY_TYPE -> False).
+                # The column default True made every @mention require an ack,
+                # inflating the recipient's unacked set and soft-blocking
+                # i_am_idle into respawn churn.
+                requires_ack=False,
             )
             self.session.add(notification)
             await self.session.flush()

@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from roboco.db.base import get_db_context
 from roboco.db.tables import AgentTable, NotificationTable
+from roboco.foundation.policy.communications import ACK_REQUIRED_BY_TYPE
 from roboco.models import NotificationPriority, NotificationType
 from roboco.models.notification import CreateNotificationParams
 from roboco.utils.converters import require_uuid
@@ -522,6 +523,15 @@ class NotificationService:
                 subject=params.subject,
                 body=params.body,
                 related_task_id=params.related_task_id,
+                # F009: requires_ack follows ACK_REQUIRED_BY_TYPE (the spec's
+                # action-required vs informational split), not the column's True
+                # default. Without this every notification — including
+                # informational REVIEW_REQUEST / DOCUMENTATION_REQUEST /
+                # A2A_REQUEST / MENTION / KNOWLEDGE_SHARE — became requires_ack,
+                # inflating recipients' unacked sets and soft-blocking
+                # i_am_idle into respawn churn. Default to True for an unmapped
+                # type (preserve the safe action-required bias).
+                requires_ack=ACK_REQUIRED_BY_TYPE.get(params.notification_type, True),
             )
             db.add(notification)
             await db.flush()
