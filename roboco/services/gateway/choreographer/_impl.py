@@ -5237,6 +5237,12 @@ class Choreographer:
         # + subtasks-terminal + branch-present. None of these are modelled by
         # the spec yet — keep them in the verb body.
         guard = await self._submit_up_guard(pm_agent_id, task_id, t, notes)
+        # F007: the cell-level unchanged-PR loop-stopper. Only consult it once
+        # the state guard above has passed (ownership/tracing/branch all OK) —
+        # mirroring submit_root, a prior preflight reject short-circuits before
+        # the head-sha comparison runs.
+        if guard is None:
+            guard = await self._submit_up_unchanged_pr_guard(t, briefing)
         if guard is not None:
             guard.with_introspection(task=t, role=role_str)
             return await self._emit_rejection(
@@ -5980,7 +5986,7 @@ class Choreographer:
         recorded = pr_review.get("head_sha")
         if not recorded:
             return None
-        current = await self._current_root_pr_head_sha(t)
+        current = await self._current_pr_head_sha(t)
         if current is None or current != recorded:
             return None
         return Envelope.invalid_state(
@@ -6001,13 +6007,16 @@ class Choreographer:
             context_briefing=briefing,
         )
 
-    async def _current_root_pr_head_sha(self, t: Any) -> str | None:
+    async def _current_pr_head_sha(self, t: Any) -> str | None:
         """Best-effort current head SHA of the task's assembled PR (fail-open).
 
-        The lookup the unchanged-PR gate compares against. Returns ``None`` on
-        every ambiguous case (no ``pr_number``, no resolvable project slug, a
-        git error, or a closed/missing PR) so the gate fails open rather than
-        wedging the PM — only the exact-unchanged case is hard-blocked.
+        The lookup both unchanged-PR gates (submit_root F016 + submit_up F007)
+        compare against — ``pr_fail`` stamps the head SHA for cell AND root
+        gate tasks alike (the capture is gate-verb-level, not root-level), so
+        one resolver serves both. Returns ``None`` on every ambiguous case (no
+        ``pr_number``, no resolvable project slug, a git error, or a
+        closed/missing PR) so the gate fails open rather than wedging the PM
+        — only the exact-unchanged case is hard-blocked.
         """
         pr_number = getattr(t, "pr_number", None)
         if not pr_number:
@@ -6025,6 +6034,48 @@ class Choreographer:
             return sha if isinstance(sha, str) else None
         except Exception:
             return None
+
+    async def _submit_up_unchanged_pr_guard(
+        self, t: Any, briefing: dict[str, Any]
+    ) -> Envelope | None:
+        """F007 — the cell-level analogue of ``_submit_root_unchanged_pr_guard``.
+
+        The root loop-stopper was root-only; a weak cell PM could re-submit the
+        unchanged cell→root PR after a ``pr_fail`` and loop
+        ``awaiting_pr_review`` → ``pr_fail`` forever. ``pr_fail`` stamps the
+        assembled PR's head SHA into ``notes_structured.pr_review.head_sha``
+        for cell gate tasks too (the capture is gate-verb-level), so the same
+        structural refusal applies: if the cell PR's current head SHA equals
+        the SHA the last ``pr_fail`` recorded, no new dev work landed on the
+        cell branch ⇒ the diff is byte-identical ⇒ refuse. Every ambiguous case
+        FAILS OPEN (shared ``_current_pr_head_sha``) — only the exact-unchanged
+        case is hard-blocked; the rest fall through to the cell reviewer.
+        """
+        pr_review = (getattr(t, "notes_structured", None) or {}).get("pr_review") or {}
+        if pr_review.get("verdict") != "failed":
+            return None
+        recorded = pr_review.get("head_sha")
+        if not recorded:
+            return None
+        current = await self._current_pr_head_sha(t)
+        if current is None or current != recorded:
+            return None
+        return Envelope.invalid_state(
+            message=(
+                "the assembled cell PR is unchanged since the last pr_fail"
+                f" (head {current[:7]}). No new dev work has landed on the"
+                " cell branch, so re-submitting would re-open the exact diff"
+                " the reviewer just rejected and loop straight back to"
+                " awaiting_pr_review."
+            ),
+            remediate=(
+                "re-delegate the fixes to the owning developer(s) via"
+                " delegate(...) and wait for the dev subtasks to complete and"
+                " the cell branch to be re-assembled. Do NOT call submit_up"
+                " again until new dev work has advanced the cell branch HEAD."
+            ),
+            context_briefing=briefing,
+        )
 
     async def submit_root(
         self, main_pm_agent_id: UUID, task_id: UUID, notes: str
