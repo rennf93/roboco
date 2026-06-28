@@ -40,8 +40,33 @@ async def test_load_set_filters_command_one_per_repo() -> None:
     svc.list_all = AsyncMock(return_value=[on_a, on_a2, off])
     with patch("roboco.services.project.get_project_service", return_value=svc):
         eligible = await orch._load_dep_update_set(MagicMock())
-    assert len(eligible) == 1  # no-command excluded; same-repo collapsed
+    assert len(eligible) == 1  # no-command excluded; same-repo + same-command collapsed
     assert eligible[0].git_url == "https://x/a.git"
+
+
+@pytest.mark.asyncio
+async def test_load_set_keeps_distinct_commands_per_repo() -> None:
+    """F115: a monorepo's several cell-projects each carrying their OWN
+    ``dep_update_command`` (different ecosystems → different lockfiles) must
+    ALL be probed — collapsing to the canonical cell's command would miss the
+    other cells' lockfile drift (under-count). Same repo, DIFFERENT commands →
+    one entry per (repo, command). The engine's per-git_url open-task dedup
+    still prevents duplicate update tasks for the repo."""
+    orch = _orch()
+    be = MagicMock(
+        slug="be", git_url="https://x/a.git", dep_update_command="uv lock --upgrade"
+    )
+    fe = MagicMock(
+        slug="fe", git_url="https://x/a.git", dep_update_command="pnpm update -L"
+    )
+    svc = MagicMock()
+    svc.list_all = AsyncMock(return_value=[be, fe])
+    with patch("roboco.services.project.get_project_service", return_value=svc):
+        eligible = await orch._load_dep_update_set(MagicMock())
+    # distinct commands both probed, NOT collapsed to one canonical cell —
+    # the set-equality assertion proves exactly-two (no magic-value literal).
+    commands = {p.dep_update_command for p in eligible}
+    assert commands == {"uv lock --upgrade", "pnpm update -L"}
 
 
 def _db_ctx(db: Any) -> Any:

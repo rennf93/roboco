@@ -33,15 +33,57 @@ async def test_loop_noop_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.mark.asyncio
 async def test_load_watch_set_filters_enabled_one_per_repo() -> None:
     orch = _orch()
-    on_a = MagicMock(slug="be", git_url="https://x/a.git", ci_watch_enabled=True)
-    on_a2 = MagicMock(slug="fe", git_url="https://x/a.git", ci_watch_enabled=True)
+    # Same repo, SAME effective workflow (both fall back to the default) → one
+    # canonical entry; the opt-out is excluded.
+    on_a = MagicMock(
+        slug="be",
+        git_url="https://x/a.git",
+        ci_watch_enabled=True,
+        ci_watch_workflow=None,
+    )
+    on_a2 = MagicMock(
+        slug="fe",
+        git_url="https://x/a.git",
+        ci_watch_enabled=True,
+        ci_watch_workflow=None,
+    )
     off = MagicMock(slug="c", git_url="https://x/c.git", ci_watch_enabled=False)
     svc = MagicMock()
     svc.list_all = AsyncMock(return_value=[on_a, on_a2, off])
     with patch("roboco.services.project.get_project_service", return_value=svc):
         watch = await orch._load_ci_watch_set(MagicMock())
-    assert len(watch) == 1  # opt-out excluded; same-repo cell-projects collapsed
+    assert len(watch) == 1  # opt-out excluded; same-repo + same-workflow collapsed
     assert watch[0].git_url == "https://x/a.git"
+
+
+@pytest.mark.asyncio
+async def test_load_watch_set_keeps_distinct_workflows_per_repo() -> None:
+    """F115: a monorepo's several cell-projects each carrying their OWN
+    ``ci_watch_workflow`` must ALL be watched — collapsing to the canonical
+    cell's workflow would miss a red on the other cells' workflows (under-count).
+    Same repo, DIFFERENT workflows → one entry per (repo, workflow). The engine's
+    per-git_url fix-task dedup still prevents duplicate fix tasks for the repo."""
+    orch = _orch()
+    be = MagicMock(
+        slug="be",
+        git_url="https://x/a.git",
+        ci_watch_enabled=True,
+        ci_watch_workflow="backend-ci.yml",
+    )
+    fe = MagicMock(
+        slug="fe",
+        git_url="https://x/a.git",
+        ci_watch_enabled=True,
+        ci_watch_workflow="frontend-ci.yml",
+    )
+    svc = MagicMock()
+    svc.list_all = AsyncMock(return_value=[be, fe])
+    with patch("roboco.services.project.get_project_service", return_value=svc):
+        watch = await orch._load_ci_watch_set(MagicMock())
+    # distinct workflows both watched, NOT collapsed to one canonical cell —
+    # the set-equality assertion proves exactly-two (no magic-value literal).
+    workflows = {p.ci_watch_workflow for p in watch}
+    assert workflows == {"backend-ci.yml", "frontend-ci.yml"}
 
 
 def _db_ctx(db: Any) -> Any:

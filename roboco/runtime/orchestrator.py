@@ -6235,10 +6235,18 @@ Start by:
             await db.commit()
 
     async def _load_ci_watch_set(self, db: Any) -> list[Any]:
-        """Opted-in projects (``ci_watch_enabled`` + a git_url), one per repo.
+        """Opted-in projects (``ci_watch_enabled`` + a git_url), one per
+        (repo, workflow).
 
-        Collapsing to one canonical project per repo means a monorepo's several
-        cell-projects are watched as a single repo, not N times.
+        A monorepo's several cell-projects can each carry their OWN
+        ``ci_watch_workflow`` (e.g. a backend CI workflow distinct from the
+        frontend's). Collapsing to one canonical project per REPO would watch
+        only the canonical cell's workflow and miss a red on the others (the
+        under-count). Collapse to one canonical project per (repo, effective
+        workflow) instead — every distinct workflow is sampled once, and the
+        engine's per-``git_url`` fix-task dedup still prevents a duplicate fix
+        task for the same repo. The effective workflow is the project override
+        or ``ci_watch_default_workflow`` (matching ``MultiProjectCITelemetrySource``).
         """
         from roboco.services.project import get_project_service
 
@@ -6248,7 +6256,28 @@ Start by:
             for p in projects
             if getattr(p, "ci_watch_enabled", False) and getattr(p, "git_url", None)
         ]
-        return self._projects_one_per_repo(watched)
+        return self._projects_one_per_key(
+            watched,
+            key_fn=lambda p: (
+                self._repo_key(str(getattr(p, "git_url", "") or "")),
+                self._effective_ci_watch_workflow(p),
+            ),
+        )
+
+    @staticmethod
+    def _effective_ci_watch_workflow(project: Any) -> str | None:
+        """The workflow that will actually be polled for ``project``.
+
+        Mirrors ``MultiProjectCITelemetrySource._sample_for``: the project's
+        ``ci_watch_workflow`` override, falling back to the global
+        ``ci_watch_default_workflow``. Used as the per-(repo, workflow) collapse
+        key so two cells sharing a workflow still collapse to one sample.
+        """
+        workflow = str(
+            getattr(project, "ci_watch_workflow", None)
+            or settings.ci_watch_default_workflow
+        ).strip()
+        return workflow or None
 
     async def _dep_update_loop(self) -> None:
         """Dependency-update bot: probe opted-in projects, open update tasks.
@@ -6323,7 +6352,18 @@ Start by:
             await db.commit()
 
     async def _load_dep_update_set(self, db: Any) -> list[Any]:
-        """Projects with a ``dep_update_command`` + a git_url, one per repo."""
+        """Projects with a ``dep_update_command`` + a git_url, one per
+        (repo, command).
+
+        A monorepo's several cell-projects can each carry their OWN
+        ``dep_update_command`` (different ecosystems → different lockfiles,
+        e.g. ``uv lock --upgrade`` vs ``pnpm update -L``). Collapsing to one
+        canonical project per REPO would probe only the canonical cell's
+        lockfile and miss the others' drift (the under-count). Collapse to one
+        canonical project per (repo, command) instead — every distinct command
+        is probed once, and the engine's per-``git_url`` open-task dedup still
+        prevents a duplicate update task for the same repo.
+        """
         from roboco.services.project import get_project_service
 
         projects = await get_project_service(db).list_all(active_only=True)
@@ -6333,7 +6373,13 @@ Start by:
             if str(getattr(p, "dep_update_command", None) or "").strip()
             and getattr(p, "git_url", None)
         ]
-        return self._projects_one_per_repo(eligible)
+        return self._projects_one_per_key(
+            eligible,
+            key_fn=lambda p: (
+                self._repo_key(str(getattr(p, "git_url", "") or "")),
+                str(getattr(p, "dep_update_command", None) or "").strip(),
+            ),
+        )
 
     @staticmethod
     def _repo_key(git_url: str) -> str:
@@ -6351,14 +6397,41 @@ Start by:
         projects). Collapse to one canonical project per repo (deterministic by
         slug so the pick is stable across polls); genuinely separate repos
         (multi-repo) each keep their own. Projects without a git_url are skipped.
+
+        Used by the external-PR discovery path (one review per PR per repo). The
+        CI-watch and dep-update loaders use :meth:`_projects_one_per_key` with a
+        finer (repo, workflow) / (repo, command) key so a monorepo's per-cell
+        workflow / lockfile-command overrides are each sampled once instead of
+        collapsing to the canonical cell's value.
         """
-        seen: set[str] = set()
+        return cls._projects_one_per_key(
+            projects,
+            key_fn=lambda p: (cls._repo_key(str(getattr(p, "git_url", "") or "")),),
+        )
+
+    @classmethod
+    def _projects_one_per_key(
+        cls, projects: list[Any], *, key_fn: "Callable[[Any], tuple[Any, ...]]"
+    ) -> list[Any]:
+        """One canonical project per distinct key (deterministic by slug).
+
+        ``key_fn`` defines what distinguishes a duplicate: repo identity for
+        external-PR discovery (one review per PR per repo); ``(repo, workflow)``
+        for CI-watch and ``(repo, command)`` for dep-update so a monorepo's
+        several cell-projects — each potentially carrying its OWN workflow /
+        lockfile command — are each sampled once instead of collapsing to the
+        canonical cell's value (the under-count fixed by F115). The first
+        project (by slug) per key is the canonical pick; the engine's
+        per-``git_url`` fix-task dedup still prevents duplicate fix tasks for the
+        same repo. Projects without a git_url are skipped.
+        """
+        seen: set[tuple[Any, ...]] = set()
         canonical: list[Any] = []
-        for project in sorted(projects, key=lambda p: str(p.slug)):
+        for project in sorted(projects, key=lambda p: str(getattr(p, "slug", ""))):
             git_url = getattr(project, "git_url", None)
             if not git_url:
                 continue
-            key = cls._repo_key(git_url)
+            key = key_fn(project)
             if key in seen:
                 continue
             seen.add(key)
