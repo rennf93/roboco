@@ -278,3 +278,103 @@ async def test_coordinator_claim_does_not_acquire_lock() -> None:
         "coordinator PM must not acquire the per-agent claim lock (would regress "
         "the PM coordinator concurrency feature)"
     )
+
+
+# ---------------------------------------------------------------------------
+# F124: the unmet_dependency guard reads dependency state via an unlocked
+# SELECT, then fires release_dependency_blocked_claim (a state mutation:
+# claimed/in_progress -> pending, clears branch_name, abandons WorkSession)
+# as a side-effect BEFORE returning the rejection. If an upstream dependency
+# completes (transitions to completed/cancelled) in the microseconds between
+# the read and the release, the task is NEEDLESSLY released — its branch
+# cleared + WorkSession abandoned + assignee bounced, only to be re-dispatched
+# + re-claimed when the dependency-completion re-dispatch fires. Dependencies
+# are monotonic (unmet -> met, terminal: completed/cancelled never reopen), so
+# a fresh re-read that now finds them met stays met: safe to proceed without
+# releasing. The fix re-checks unmet_dependency_ids immediately before the
+# release and skips it (returning None — proceed) when the upstream just
+# completed. The "still unmet" path is byte-for-byte the prior behavior.
+# ---------------------------------------------------------------------------
+
+# Initial dependency read + the re-check before release (F124).
+_DEP_READ_INITIAL_PLUS_RECHECK = 2
+
+
+def _dep_task_svc(agent_id: object, task_id: object, dep_id: object) -> AsyncMock:
+    """TaskService mock for the dependency-guard race test. The task carries one
+    dependency; the guard reads its state via ``unmet_dependency_ids``."""
+    task = MagicMock(
+        id=task_id,
+        status="claimed",
+        assigned_to=agent_id,
+        parent_task_id=None,
+        dependency_ids=[dep_id],
+        team="backend",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = task
+    task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.list_paused_for_agent.return_value = []
+    return task_svc
+
+
+@pytest.mark.asyncio
+async def test_dependency_guard_skips_release_when_upstream_just_completed() -> None:
+    """F124: the first dependency read sees the upstream still unmet, but by the
+    re-check (a few microseconds later) it has completed. The guard must NOT
+    release the task — the dependency is now met, so the task can proceed.
+    Releasing would needlessly clear its branch + abandon its WorkSession only
+    to be re-dispatched + re-claimed when the dependency-completion re-dispatch
+    fires. Returns None (proceed), no release."""
+    agent_id = uuid4()
+    task_id = uuid4()
+    dep_id = uuid4()
+    task_svc = _dep_task_svc(agent_id, task_id, dep_id)
+    # First read: upstream still unmet. Re-check: upstream just completed -> met.
+    task_svc.unmet_dependency_ids.side_effect = [[dep_id], []]
+
+    deps = _make_deps(task_svc)
+    c = Choreographer(deps)
+
+    guard = await c._run_claim_guards(
+        agent_id=agent_id,
+        task=task_svc.get.return_value,
+        role_str="developer",
+    )
+
+    # The dependency just completed — the task can proceed, so the guard
+    # returns None (no rejection) and does NOT release the task.
+    assert guard is None, guard
+    task_svc.release_dependency_blocked_claim.assert_not_awaited()
+    # The re-check happened (initial read + re-check): the first saw unmet,
+    # the second saw met.
+    assert task_svc.unmet_dependency_ids.await_count == _DEP_READ_INITIAL_PLUS_RECHECK
+
+
+@pytest.mark.asyncio
+async def test_dependency_guard_releases_when_still_unmet_no_regression() -> None:
+    """F124 no-regression: both the first read AND the re-check see the upstream
+    still unmet. The guard releases the task to pending (stopping respawn churn
+    into a blocked task) and returns the rejection — byte-for-byte the prior
+    behavior. The re-check must not weaken the genuine-blocked release path."""
+    agent_id = uuid4()
+    task_id = uuid4()
+    dep_id = uuid4()
+    task_svc = _dep_task_svc(agent_id, task_id, dep_id)
+    # Both reads: upstream still unmet.
+    task_svc.unmet_dependency_ids.side_effect = [[dep_id], [dep_id]]
+
+    deps = _make_deps(task_svc)
+    c = Choreographer(deps)
+
+    guard = await c._run_claim_guards(
+        agent_id=agent_id,
+        task=task_svc.get.return_value,
+        role_str="developer",
+    )
+
+    # Still unmet -> release + reject (the unchanged genuine-blocked path).
+    assert guard is not None, guard
+    assert guard.error == "invalid_state", guard.as_dict()
+    task_svc.release_dependency_blocked_claim.assert_awaited_once_with(task_id)
+    assert task_svc.unmet_dependency_ids.await_count == _DEP_READ_INITIAL_PLUS_RECHECK

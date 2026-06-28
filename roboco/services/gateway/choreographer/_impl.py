@@ -944,11 +944,29 @@ class Choreographer:
         if dep_ids:
             unmet = await self.task.unmet_dependency_ids(dep_ids)
             if guard := unmet_dependency_guard(task, unmet):
-                # Park the dependency-gated task back to pending so the
-                # orchestrator stops respawning its assignee (the respawn loop
-                # targets only claimed/in_progress) and the dispatch dependency
-                # filter holds it until the upstream completes. No-op unless the
-                # task is currently claimed/in_progress.
+                # Re-check before mutating: the read above is an unlocked SELECT,
+                # and an upstream dependency may have reached a terminal state
+                # (completed/cancelled) in the microseconds between that read and
+                # now. Dependencies are monotonic — unmet -> met only, terminal
+                # states never reopen — so a fresh read that now finds them met
+                # stays met, and the task can proceed. Releasing it anyway would
+                # needlessly clear its branch + abandon its WorkSession and
+                # bounce the assignee, only for the dependency-completion
+                # re-dispatch to re-dispatch + re-claim it a moment later. Skip
+                # the release and let the caller proceed (return None). The
+                # cross-task residual window (upstream completes between this
+                # re-check and the release below) is not closable by a row lock
+                # on the dependent — but the re-check narrows the window from
+                # [first read -> release] to [re-check -> release] and, in the
+                # common case, the first read already sees met (no guard).
+                fresh_unmet = await self.task.unmet_dependency_ids(dep_ids)
+                if not fresh_unmet:
+                    return None
+                # Still unmet — park the dependency-gated task back to pending so
+                # the orchestrator stops respawning its assignee (the respawn
+                # loop targets only claimed/in_progress) and the dispatch
+                # dependency filter holds it until the upstream completes. No-op
+                # unless the task is currently claimed/in_progress.
                 await self.task.release_dependency_blocked_claim(task.id)
                 return guard
         return None
