@@ -2288,6 +2288,31 @@ class TaskService(BaseService):
                 task.last_heartbeat_at = original_heartbeat
                 task.active_claimant_id = original_claimant_id
                 await self.session.flush()
+                # F060: emit the reversal audit row so the journey doesn't
+                # diverge from real state. The forward ``task.claimed`` row
+                # (emitted above via ``_validate_and_set_status``) was already
+                # committed by the audit service on its OWN connection — this
+                # rollback's flush reverts the task row but NOT that audit row.
+                # Without a matching reversal row the journey's last event stays
+                # ``task.claimed`` while the task is back to its pre-claim
+                # status, corrupting every downstream metric reconstructed from
+                # ``task.<status>`` events (cycle time, bottlenecks). Emitted
+                # only when the forward transition was made (the original status
+                # was claimable) and attributed to the claimant via the explicit
+                # ``audit_agent_id`` (``claimed_by`` was just rolled back to
+                # ``None``).
+                if original_status in self._CLAIMABLE_STATUSES:
+                    self._emit_status_transition_audit(
+                        task,
+                        from_status=TaskStatus.CLAIMED.value,
+                        to_status=(
+                            original_status.value
+                            if isinstance(original_status, TaskStatus)
+                            else str(original_status)
+                        ),
+                        agent_role=agent_role,
+                        audit_agent_id=agent_id,
+                    )
                 raise
             await self.session.refresh(task)
 

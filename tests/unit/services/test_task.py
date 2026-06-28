@@ -1058,6 +1058,66 @@ async def test_ensure_branch_raises_when_neither_project_nor_product() -> None:
 
 
 # ---------------------------------------------------------------------------
+# _finalize_claim — branch-creation failure rollback (F060)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_finalize_claim_rollback_emits_reversal_audit() -> None:
+    """F060: when branch creation fails mid-claim, the rollback must emit a
+    REVERSAL audit row (CLAIMED -> original) so the audit journey doesn't
+    diverge from the real (rolled-back) task state.
+
+    The audit service writes on its own connection (fire-and-forget), so the
+    forward `task.claimed` row committed at the pre-branch flush is NOT undone
+    by the rollback's flush. Without a matching reversal row, the journey's
+    last event stays `task.claimed` while the task is back to PENDING — the
+    audit trail diverges from real state and corrupts every downstream metric
+    reconstructed from `task.<status>` events (cycle time, bottlenecks).
+    """
+    svc = TaskService(MagicMock())
+    svc.session.flush = AsyncMock()
+
+    task = _build_task(
+        status=TaskStatus.PENDING,
+        branch_name=None,  # forces the branch-creation path
+        project_id=uuid4(),
+        product_id=None,
+        batch_id=None,
+        parent_task_id=None,
+        cell_projects=[],  # a plain code task, not a branchless coordination root
+        pr_created=False,
+        pr_number=None,
+    )
+    agent = MagicMock(id=uuid4(), role=AgentRole.DEVELOPER)
+
+    audit_calls: list[dict[str, Any]] = []
+
+    def _capture(
+        _task: object, *, from_status: str, to_status: str, **_kw: object
+    ) -> None:
+        audit_calls.append({"from": from_status, "to": to_status})
+
+    _bind(svc, "_emit_status_transition_audit", _capture)
+    _bind(
+        svc,
+        "_ensure_branch_for_task",
+        AsyncMock(side_effect=RuntimeError("branch boom")),
+    )
+
+    with pytest.raises(RuntimeError, match="branch boom"):
+        await svc._finalize_claim(task, agent, agent.id)
+
+    # The task reverted to its pre-claim status (the existing behavior).
+    assert task.status == TaskStatus.PENDING
+    # The forward claim row was emitted...
+    assert {"from": "pending", "to": "claimed"} in audit_calls
+    # ...AND the reversal row is emitted so the journey's last event matches
+    # the rolled-back state (the F060 fix). Before the fix this was missing.
+    assert {"from": "claimed", "to": "pending"} in audit_calls
+
+
+# ---------------------------------------------------------------------------
 # _resolve_doc_abspath — normalize documenter-supplied paths under /app/docs
 # ---------------------------------------------------------------------------
 
