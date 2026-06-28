@@ -246,6 +246,7 @@ def test_pr_review_issues_default_empty_and_single_scalar_coerced() -> None:
             "issues": "lone issue string",
         },
     )
+    assert isinstance(coerced, PrReviewContent)
     assert coerced.issues == ["lone issue string"]
 
 

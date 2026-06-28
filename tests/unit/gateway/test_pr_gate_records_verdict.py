@@ -103,6 +103,7 @@ def test_pr_fail_stores_issues_structurally_not_summary_only() -> None:
         "Issues:\n- seam mismatch\n- docs lag the diff",
         issues=("seam mismatch", "docs lag the diff"),
     )
+    assert t.notes_structured is not None
     slot = t.notes_structured["pr_review"]
     assert slot["verdict"] == "failed"
     assert slot["issues"] == ["seam mismatch", "docs lag the diff"]
@@ -128,6 +129,7 @@ def test_pr_fail_summary_does_not_duplicate_issues() -> None:
         "Issues:\n- seam mismatch\n- docs lag the diff",
         issues=("seam mismatch", "docs lag the diff"),
     )
+    assert t.notes_structured is not None
     slot = t.notes_structured["pr_review"]
     assert slot["verdict"] == "failed"
     # Issues live in the structured issues slot...
@@ -151,6 +153,7 @@ def test_pr_pass_leaves_issues_slot_empty() -> None:
     c._record_gate_verdict(
         t, "pr_pass", "Assembled root scope is clean; every criterion is covered."
     )
+    assert t.notes_structured is not None
     slot = t.notes_structured["pr_review"]
     assert slot["verdict"] == "passed"
     assert slot.get("issues", []) == []

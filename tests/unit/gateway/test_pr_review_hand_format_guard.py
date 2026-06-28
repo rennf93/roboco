@@ -96,7 +96,11 @@ async def test_hand_formatted_verdict_body_with_no_findings_is_rejected() -> Non
     assert "findings" in body["remediate"].lower()
     # Nothing posted / transitioned — the guard fired before any side effect.
     c.git.post_pr_review.assert_not_awaited()
-    c._verb_runner().run_intent.assert_not_awaited()  # type: ignore[union-attr]
+    # ``c._verb_runner()`` is a ``MagicMock`` at runtime (stubbed above) but the
+    # declared return is a coroutine — index the spy through an ``Any`` alias so
+    # ``assert_not_awaited`` resolves without a ``type: ignore``.
+    cc: Any = c
+    cc._verb_runner().run_intent.assert_not_awaited()
 
 
 @pytest.mark.asyncio

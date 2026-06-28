@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -67,6 +68,14 @@ def test_i_will_plan_request_flattens_sdk_nested_technical_considerations() -> N
     valid string``. The ``StrList`` BeforeValidator must flatten it to a flat
     ``list[str]`` so the verb body receives clean strings.
     """
+    # The SDK nests list-of-strings tool input as nested arrays / dict-wrapped
+    # text (``[[["…"]]]``, ``{"item": {"$text": "…"}}``). Annotated ``list[Any]``
+    # so mypy accepts the coerce-able shape; the ``StrList`` BeforeValidator
+    # flattens it to ``list[str]`` at runtime (no ``type: ignore`` owed).
+    technical_considerations: list[Any] = [
+        [[["Empty state distinct from loaded state, coverage target 80%"]]],
+        [{"item": {"$text": "Use asyncpg prepared statements"}}],
+    ]
     req = IWillPlanRequest(
         task_id=uuid4(),
         plan="Plan narrative describing the approach in full sentences.",
@@ -75,10 +84,7 @@ def test_i_will_plan_request_flattens_sdk_nested_technical_considerations() -> N
             "enforced on the plan's Approach field so the Plan tab is fully "
             "populated for audit and tracing instead of rendering an empty view."
         ),
-        technical_considerations=[
-            [[["Empty state distinct from loaded state, coverage target 80%"]]],
-            [{"item": {"$text": "Use asyncpg prepared statements"}}],
-        ],
+        technical_considerations=technical_considerations,
     )
     assert req.technical_considerations == [
         "Empty state distinct from loaded state, coverage target 80%",
@@ -92,9 +98,12 @@ def test_i_will_work_on_request_flattens_dict_wrapped_technical_considerations()
     """Same coercion on the developer planning verb — a dict-wrapped string
     (``{"item": {"$text": "…"}}``, the SDK's element-text marker) must reduce
     to the bare string, not ``str(dict)``."""
+    technical_considerations: list[Any] = [
+        {"item": {"$text": "Cache the lookup result"}}
+    ]
     req = IWillWorkOnRequest(
         task_id=uuid4(),
-        technical_considerations=[{"item": {"$text": "Cache the lookup result"}}],
+        technical_considerations=technical_considerations,
     )
     assert req.technical_considerations == ["Cache the lookup result"]
 
@@ -104,6 +113,10 @@ def test_delegate_request_flattens_sdk_nested_acceptance_criteria() -> None:
     the SDK can nest (this is the ``delegate``-verb analogue of the MegaTask
     Bug 3 crash). The ``StrList`` field must flatten the nested input so the
     VARCHAR[] insert downstream never sees a dict/list element."""
+    acceptance_criteria: list[Any] = [
+        [[["returns 200 for valid input"]]],
+        [{"item": {"$text": "rejects malformed input with 400"}}],
+    ]
     req = DelegateRequest(
         parent_task_id=uuid4(),
         title="t",
@@ -113,10 +126,7 @@ def test_delegate_request_flattens_sdk_nested_acceptance_criteria() -> None:
         task_type="code",
         nature="technical",
         estimated_complexity="medium",
-        acceptance_criteria=[
-            [[["returns 200 for valid input"]]],
-            [{"item": {"$text": "rejects malformed input with 400"}}],
-        ],
+        acceptance_criteria=acceptance_criteria,
     )
     assert req.acceptance_criteria == [
         "returns 200 for valid input",
@@ -129,8 +139,9 @@ def test_strlist_drops_non_string_junk_instead_of_crashing() -> None:
     is dropped — the field never raises on garbage the SDK might emit; only
     real strings survive. An all-junk payload yields an empty list (the
     delegate min_length=1 gate then rejects it cleanly, not a 500)."""
+    technical_considerations: list[Any] = [42, {"foo": 123}, [["  "]], "real note"]
     req = IWillWorkOnRequest(
         task_id=uuid4(),
-        technical_considerations=[42, {"foo": 123}, [["  "]], "real note"],
+        technical_considerations=technical_considerations,
     )
     assert req.technical_considerations == ["real note"]

@@ -233,7 +233,7 @@ async def test_pr_fail_a2a_failure_is_swallowed() -> None:
 
     c = _make_choreographer()
     _stub_gate_path(c, reviewer_id=reviewer_id, t_before=t_before, t_after=t_after)
-    c.a2a.send = AsyncMock(side_effect=RuntimeError("db hiccup"))  # type: ignore[method-assign]
+    c.a2a.send = AsyncMock(side_effect=RuntimeError("db hiccup"))
 
     env = await c.pr_fail(reviewer_id, task_id, ["a concrete actionable issue"])
     # Verdict still landed — the owning PM is in needs_revision.
