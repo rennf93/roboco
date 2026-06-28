@@ -124,6 +124,33 @@ _GIT_EXECUTOR = ThreadPoolExecutor(
 _SLOW_GIT_OP_MS = 5000.0
 
 
+def _remove_stale_git_locks(workspace: Path) -> None:
+    """Best-effort removal of orphaned ``.git/**/*.lock`` files.
+
+    F019: a git mutation op (commit / merge --ff-only / rebase / reset --hard /
+    add) killed by ``_run_git``'s timeout (SIGKILL) can orphan lock files —
+    ``index.lock`` especially — that wedge the workspace for every subsequent
+    op (incl. the next fresh-claim ``reset --hard``) with
+    "Another git process seems to be running in this repository". By the time
+    the timeout fires the git process is dead, so its orphaned locks are safe
+    to remove. Best-effort: any error (no .git, race with a real process) is
+    swallowed — this only ever *helps*, never blocks.
+    """
+    git_dir = workspace / ".git"
+    if not git_dir.is_dir():
+        return
+    try:
+        for lock in git_dir.rglob("*.lock"):
+            try:
+                lock.unlink()
+            except OSError:
+                # A lock a real process just grabbed, or a permission issue —
+                # leave it. The TTL/next-op path is the backstop.
+                pass
+    except OSError:
+        return
+
+
 # `_get_gh_env` and the gh-CLI code paths were removed in favor of direct
 # GitHub REST API calls — no CLI dependency, and the PAT no longer touches
 # subprocess argv / environ.
@@ -247,6 +274,12 @@ class GitService(BaseService):
         try:
             result = await loop.run_in_executor(_GIT_EXECUTOR, _run)
         except subprocess.TimeoutExpired as e:
+            # F019: the timed-out git process was SIGKILL'd mid-mutation and may
+            # have orphaned .git/*.lock files; clear them so the workspace isn't
+            # wedged for the next op (incl. the next fresh-claim reset --hard).
+            await loop.run_in_executor(
+                _GIT_EXECUTOR, _remove_stale_git_locks, workspace
+            )
             raise GitTimeoutError(" ".join(args), effective_timeout) from e
         except subprocess.CalledProcessError as e:
             raise GitCommandError(
