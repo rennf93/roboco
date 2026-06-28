@@ -412,14 +412,23 @@ def _tracked_files_with_version(root: Path, version: str) -> list[str]:
     return sorted(line.strip() for line in raw.splitlines() if line.strip())
 
 
-def _canonical_bump_files(root: Path) -> list[str]:
+def _canonical_bump_files(root: Path, version: str) -> list[str]:
+    # Subsequent releases derive the canonical bump set from the previous
+    # ``chore(release):`` commit's touched files — the historical record of
+    # what a release bumps.
     sha = _run_git(
         root, ["log", "--grep", "^chore(release):", "-n1", "--format=%H"]
     ).strip()
-    if not sha:
-        return []
-    raw = _run_git(root, ["show", "--name-only", "--format=", sha])
-    return sorted(line.strip() for line in raw.splitlines() if line.strip())
+    if sha:
+        raw = _run_git(root, ["show", "--name-only", "--format=", sha])
+        return sorted(line.strip() for line in raw.splitlines() if line.strip())
+    # F058: the FIRST release has no prior ``chore(release):`` commit, so the
+    # historical derivation returns ``[]`` and the executor would publish a tag
+    # with no files bumped (a no-op release masquerading as X.Y.Z). Fall back to
+    # the version-reference scan — the files currently embedding the version are
+    # exactly the set a first release must bump, and the set the first release
+    # commit then records as canonical for every subsequent release. Read-only.
+    return _tracked_files_with_version(root, version)
 
 
 def _new_migrations(root: Path, tag: str | None) -> list[str]:
@@ -498,7 +507,7 @@ def gather_snapshot(
         last_tag=tag,
         commits=_commits_since(root, tag),
         tracked_files_with_version=_tracked_files_with_version(root, version),
-        canonical_bump_files=_canonical_bump_files(root),
+        canonical_bump_files=_canonical_bump_files(root, version),
         changelog_text=_read_changelog(root),
         new_migrations=_new_migrations(root, tag),
         migration_head_count=_migration_head_count(root),
