@@ -11,6 +11,7 @@ manufacturing a spawn.
 
 from __future__ import annotations
 
+import asyncio
 import copy
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -32,6 +33,7 @@ def _new_orchestrator() -> AgentOrchestrator:
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
     cast("Any", orch)._pm_respawn_tracker = {}
     cast("Any", orch)._bg_tasks = set()
+    cast("Any", orch)._respawn_persist_lock = asyncio.Lock()
     return orch
 
 
@@ -375,3 +377,78 @@ async def test_restart_midloop_continues_identically_to_no_restart() -> None:
     tail = [await _spawn(loaded) for _ in range(spawns - restart_after)]
 
     assert tail == full[restart_after:]
+
+
+# --------------------------------------------------------------------------- #
+# F096 — fire-and-forget persist commit ordering
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_persist_commits_in_schedule_order_not_out_of_order() -> None:
+    """Two fire-and-forget persists for the same ``(agent_slug, task_id)`` must
+    COMMIT in the order they were scheduled (logical order: count 1 -> 2 -> 3
+    -> 4), not in whatever order their DB transactions happen to resolve.
+
+    Without serialization, a slow stale persist (count=2) scheduled first can
+    commit AFTER a fast fresh persist (count=4) scheduled second, leaving the
+    durable row at the stale low count — and a restart re-burns the strike
+    threshold from that stale value (the exact re-burn this feature stops). The
+    fix serializes same-key persists so commit order = schedule order, and the
+    durable row ends at the latest logical value (4), never the stale one (2).
+    """
+    orch = _new_orchestrator()
+    tid = str(uuid4())
+    key = ("be-pm", tid)
+    now = datetime.now(UTC)
+
+    committed_counts: list[int] = []
+    # Per-execute delay, popped in execute-call order. The FIRST execute called
+    # (the stale count=2 persist, scheduled first = FIFO) is SLOW; the second
+    # (the fresh count=4 persist) is fast. Without serialization the fast one
+    # commits first -> durable ends at the stale 2.
+    delays = [0.05, 0.0]
+
+    def _make_db() -> Any:
+        captured: dict[str, int] = {}
+
+        async def _execute(stmt: Any) -> Any:
+            compiled = stmt.compile(dialect=postgresql.dialect())
+            captured["count"] = int(dict(compiled.params)["count"])
+            await asyncio.sleep(delays.pop(0))
+            return MagicMock()
+
+        async def _commit() -> None:
+            committed_counts.append(captured["count"])
+
+        db = MagicMock()
+        db.execute = _execute
+        db.commit = _commit
+        db.add = MagicMock()
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=db)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        return ctx
+
+    factory = MagicMock(side_effect=_make_db)
+    with patch("roboco.db.base.get_session_factory", return_value=factory):
+        # Schedule the stale persist (count=2) first.
+        orch._pm_respawn_tracker[key] = {
+            "count": 2,
+            "last_status": "pending",
+            "last_check": now,
+            "tracing_resets": 0,
+            "notified": False,
+        }
+        orch._schedule_respawn_persist("be-pm", tid, orch._pm_respawn_tracker[key])
+        # Then mutate to the fresh value (count=4) and schedule the fresh
+        # persist second — logical order is 2 -> 4.
+        orch._pm_respawn_tracker[key]["count"] = 4
+        orch._schedule_respawn_persist("be-pm", tid, orch._pm_respawn_tracker[key])
+
+        # Let both fire-and-forget bg tasks run to completion.
+        await asyncio.sleep(0.2)
+
+    # Commits happened in schedule order (2 then 4), so the durable row ends at
+    # the LATEST logical value (4) — never the stale 2.
+    assert committed_counts == [2, 4]

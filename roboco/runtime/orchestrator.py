@@ -861,6 +861,19 @@ class AgentOrchestrator:
         # is in a loop — without this gate the orchestrator re-spawns every
         # tick forever (seen in production on 2026-04-22).
         self._pm_respawn_tracker: dict[tuple[str, str], dict[str, Any]] = {}
+        # Serializes the fire-and-forget respawn-tracker upserts so same-key
+        # persists COMMIT in schedule (logical) order — not whatever order their
+        # DB transactions resolve in. A respawn loop fires count 1->2->3->4 in
+        # quick succession, one fire-and-forget persist per increment; without
+        # serialization a slow stale persist (count=2) can commit AFTER a fast
+        # fresh one (count=4), leaving the durable row at the stale low count
+        # and re-burning the strike threshold on restart. The lock is acquired
+        # as the FIRST await in _persist_respawn_record, so acquisition order
+        # matches task creation order (FIFO ready queue), which is the logical
+        # schedule order. Persists are best-effort background writes, so
+        # serializing them never blocks the dispatcher hot path (the lock lives
+        # in the bg task, not the caller).
+        self._respawn_persist_lock = asyncio.Lock()
         # Board agents (Product Owner / Head of Marketing) get exactly ONE
         # review pass per assigned task: they have no verb to claim, plan,
         # delegate, or complete, so a respawn cannot advance the task and would
@@ -4398,54 +4411,61 @@ class AgentOrchestrator:
         ``pk_respawn_tracker`` UniqueViolation, the durable count stuck at the
         first INSERT's value, and a restart re-burned the strike threshold — the
         exact re-burn this feature was built to stop (2026-06-27 live meltdown).
-        The single ``ON CONFLICT DO UPDATE`` upsert is race-free: concurrent
-        upserts on the same key serialize at row level.
+        The single ``ON CONFLICT DO UPDATE`` upsert is race-free at row level, BUT
+        fire-and-forget tasks can still COMMIT out of order: a slow stale persist
+        (count=2) scheduled first can resolve AFTER a fast fresh one (count=4)
+        scheduled second, leaving the durable row at the stale low count (same
+        re-burn on restart). The ``_respawn_persist_lock`` is acquired as the
+        FIRST await below, so acquisition order = task creation order = logical
+        schedule order, and commits land in that order — the durable row always
+        ends at the latest logical value.
         """
-        try:
-            from uuid import UUID as _UUID
+        async with self._respawn_persist_lock:
+            try:
+                from uuid import UUID as _UUID
 
-            from sqlalchemy.dialects.postgresql import insert as pg_insert
+                from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-            from roboco.db.base import get_session_factory
-            from roboco.db.tables import RespawnTrackerTable
+                from roboco.db.base import get_session_factory
+                from roboco.db.tables import RespawnTrackerTable
 
-            tid = _UUID(task_id)
-            now = datetime.now(UTC)
-            stmt = pg_insert(RespawnTrackerTable).values(
-                agent_slug=agent_slug,
-                task_id=tid,
-                count=int(record["count"]),
-                last_status=record.get("last_status"),
-                last_check=record["last_check"],
-                tracing_resets=int(record.get("tracing_resets", 0)),
-                notified=bool(record.get("notified", False)),
-                updated_at=now,
-            )
-            stmt = stmt.on_conflict_do_update(
-                index_elements=[
-                    RespawnTrackerTable.agent_slug,
-                    RespawnTrackerTable.task_id,
-                ],
-                set_={
-                    "count": stmt.excluded.count,
-                    "last_status": stmt.excluded.last_status,
-                    "last_check": stmt.excluded.last_check,
-                    "tracing_resets": stmt.excluded.tracing_resets,
-                    "notified": stmt.excluded.notified,
-                    "updated_at": stmt.excluded.updated_at,
-                },
-            )
-            session_factory = get_session_factory()
-            async with session_factory() as db:
-                await db.execute(stmt)
-                await db.commit()
-        except Exception as e:
-            logger.error(
-                "Failed to persist respawn record",
-                agent_id=agent_slug,
-                task_id=task_id,
-                error=str(e),
-            )
+                tid = _UUID(task_id)
+                now = datetime.now(UTC)
+                stmt = pg_insert(RespawnTrackerTable).values(
+                    agent_slug=agent_slug,
+                    task_id=tid,
+                    count=int(record["count"]),
+                    last_status=record.get("last_status"),
+                    last_check=record["last_check"],
+                    tracing_resets=int(record.get("tracing_resets", 0)),
+                    notified=bool(record.get("notified", False)),
+                    updated_at=now,
+                )
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=[
+                        RespawnTrackerTable.agent_slug,
+                        RespawnTrackerTable.task_id,
+                    ],
+                    set_={
+                        "count": stmt.excluded.count,
+                        "last_status": stmt.excluded.last_status,
+                        "last_check": stmt.excluded.last_check,
+                        "tracing_resets": stmt.excluded.tracing_resets,
+                        "notified": stmt.excluded.notified,
+                        "updated_at": stmt.excluded.updated_at,
+                    },
+                )
+                session_factory = get_session_factory()
+                async with session_factory() as db:
+                    await db.execute(stmt)
+                    await db.commit()
+            except Exception as e:
+                logger.error(
+                    "Failed to persist respawn record",
+                    agent_id=agent_slug,
+                    task_id=task_id,
+                    error=str(e),
+                )
 
     async def _clear_respawn_record(self, agent_slug: str, task_id: str) -> None:
         """Delete one PM-respawn counter row (best-effort).
