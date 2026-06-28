@@ -493,15 +493,9 @@ class NotificationService:
             # already acked all go through. Body text is NOT compared, so
             # rewording cannot defeat the guard.
             #
-            # F010: the dedup only applies to ACTION-REQUIRED types
-            # (ACK_REQUIRED_BY_TYPE -> True). Informational types
-            # (KNOWLEDGE_SHARE / MENTION / A2A_REQUEST / BROADCAST / the
-            # pickup-proves-receipt triad) carry distinct content per send — a
-            # new learning, a new mention — and acking them is voluntary, so a
-            # recipient who never acks would let the dedup permanently suppress
-            # every subsequent same-sender broadcast (silent learning-broadcast
-            # data loss). The anti-loop rationale only holds for ack-required
-            # signals; informational ones are not deduped.
+            # Dedup only applies to ACTION-REQUIRED types; informational types
+            # carry distinct content per send and acking is voluntary, so
+            # deduping them would silently drop broadcasts.
             related = params.related_task_id
             is_ack_required = ACK_REQUIRED_BY_TYPE.get(params.notification_type, True)
             if is_ack_required:
@@ -535,14 +529,9 @@ class NotificationService:
                 subject=params.subject,
                 body=params.body,
                 related_task_id=params.related_task_id,
-                # F009: requires_ack follows ACK_REQUIRED_BY_TYPE (the spec's
-                # action-required vs informational split), not the column's True
-                # default. Without this every notification — including
-                # informational REVIEW_REQUEST / DOCUMENTATION_REQUEST /
-                # A2A_REQUEST / MENTION / KNOWLEDGE_SHARE — became requires_ack,
-                # inflating recipients' unacked sets and soft-blocking
-                # i_am_idle into respawn churn. Default to True for an unmapped
-                # type (preserve the safe action-required bias).
+                # requires_ack follows ACK_REQUIRED_BY_TYPE (action-required vs
+                # informational), not the column's True default; default True
+                # for an unmapped type preserves the safe action-required bias.
                 requires_ack=ACK_REQUIRED_BY_TYPE.get(params.notification_type, True),
             )
             db.add(notification)

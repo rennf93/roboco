@@ -1,21 +1,11 @@
-"""F065: WS route handlers must disconnect on ANY exit path, not just
+"""WS route handlers must disconnect on ANY exit path, not just
 WebSocketDisconnect.
 
-The old handlers were ``try: ... while True: receive_text() ... except
-WebSocketDisconnect: manager.disconnect(websocket)`` with NO ``finally``.
-If ``receive_text()`` raised anything else (anyio closed-resource during
-shutdown, ``asyncio.CancelledError``, transport errors), the exception
-propagated WITHOUT calling ``manager.disconnect(websocket)``, so the dead
-socket stayed in the subscription set + ``connection_agents`` forever and
-was still fanned out to on every broadcast.
-
-The fix adds ``finally: manager.disconnect(websocket)`` to every handler.
-``disconnect`` is idempotent (``set.discard`` / ``dict.pop`` with default),
-so the clean-disconnect path (still caught by ``except WebSocketDisconnect``
-for clarity) and the new finally both calling it is safe.
-
-These tests use mock sockets (no real app/Redis) and an isolated
-``ConnectionManager`` patched in for the module-global ``manager``.
+Each handler adds ``finally: manager.disconnect(websocket)``; ``disconnect``
+is idempotent (``set.discard`` / ``dict.pop`` with default), so the
+clean-disconnect path and the finally both calling it is safe. Tests use
+mock sockets (no real app/Redis) and an isolated ``ConnectionManager``
+patched in for the module-global ``manager``.
 """
 
 from __future__ import annotations

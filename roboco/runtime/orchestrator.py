@@ -304,16 +304,13 @@ _GROK_INTERACTIVE_DOCKERFILES = {
 # the retry window (unknown-provider time-expiry fallback in _probe_target).
 _GROK_RATE_LIMIT_EXIT_CODE = 75
 _GROK_RATE_LIMIT_RETRY_AFTER_S = 60.0
-# F097: grok has no real recovery probe (the grok CLI's xAI endpoint is closed
-# and the SuperGrok OIDC access token is not a valid bearer for the metered
-# api.x.ai, so a probe would either no-op or strand grok parked forever). So
-# the probe loop clears a grok park optimistically on a timer, a cleared park
-# dispatches a fresh grok agent that immediately hits the still-active xAI 429,
-# exits 75, and re-parks — a flat ~90s crash-retry cycle for the whole xAI
-# window. Back the re-park retry_after off exponentially within one episode so
-# the churn dampens (60 -> 120 -> 240 -> ... capped) instead of spinning flat.
-# Cap bounds the cycle; the episode gap (> the max cycle) resets the count once
-# the rate limit has actually lifted (no re-park for the gap => fresh episode).
+# Grok has no real recovery probe (the SuperGrok OIDC token is not a valid
+# bearer for the metered api.x.ai, so a probe would no-op or strand grok
+# parked). The probe loop clears a grok park on a timer; the fresh agent hits
+# the still-active xAI 429, exits 75, and re-parks. Back the re-park retry_after
+# off exponentially within one episode so the churn dampens (60 -> 120 -> 240
+# -> ... capped) instead of spinning flat. The episode gap resets the count
+# once the rate limit has actually lifted.
 _GROK_REPARK_BACKOFF_CAP = 4  # max 2**4 = 16x base (~16min cycle)
 _GROK_REPARK_EPISODE_GAP_S = 1500.0  # 25min — > the capped ~16min cycle
 # A one-shot Grok container exits with this code (EX_CONFIG) when the
@@ -925,14 +922,10 @@ class AgentOrchestrator:
         # kill-switch parity (the grok CLI exposes no live usage hook). 0 disables.
         # See _enforce_grok_cost_budget.
         self._grok_max_cost_usd: float = settings.grok_max_cost_usd
-        # F097: grok re-park backoff state. Grok has no real recovery probe, so
-        # the probe loop clears a grok park optimistically on a timer; a cleared
-        # park respawns a grok agent that hits the still-active xAI 429 and
-        # re-parks. Track the re-park count within one episode so the retry_after
-        # can back off exponentially (dampening the ~90s crash-retry churn), and
-        # the last park time so a gap (the rate limit actually lifted) resets
-        # the count for the next episode. Per-provider state would be cleaner,
-        # but grok is a single provider key, so a scalar suffices.
+        # Grok re-park backoff state. Track the re-park count within one episode
+        # so retry_after can back off exponentially (dampening the ~90s
+        # crash-retry churn), and the last park time so a gap (the rate limit
+        # actually lifted) resets the count for the next episode.
         self._grok_last_park_at: datetime | None = None
         self._grok_repark_count: int = 0
 
@@ -4848,11 +4841,9 @@ class AgentOrchestrator:
                     error=str(exc),
                 )
                 continue
-            # F040: finalize the spawn session BEFORE popping the instance so
-            # the captured usage/cost is recorded in the DB/dashboard.
-            # _finalize_spawn_session reads self._instances[agent_id] for the
-            # model + usage_session_id; popping first would lose them and leave
-            # the session row open (ended_at IS NULL) — the burn invisible.
+            # Finalize the spawn session BEFORE popping the instance so the
+            # captured usage/cost is recorded; popping first would lose the
+            # model + usage_session_id and leave the session row open.
             with contextlib.suppress(Exception):
                 await self._finalize_spawn_session(agent_id, exit_reason="cost_cap")
             self._instances.pop(agent_id, None)
@@ -6834,11 +6825,10 @@ Start by:
                     error=str(e),
                 )
 
-        # F045 orphan fallback: resume agents parked for a provider the
+        # Orphan fallback: resume agents parked for a provider the
         # tracker-listed loop above did not cover (activate failed silently or
-        # Redis was down at park time). Empty state => probe immediately; on
-        # success ``_on_probe_success`` clears the tracker (self-healing) and
-        # resumes the parked agents.
+        # Redis was down at park time). On probe success ``_on_probe_success``
+        # clears the tracker (self-healing) and resumes the parked agents.
         orphan_providers: set[str] = set()
         for record in self._waiting_records.values():
             if record.waiting_for != "rate_limit_lifted":
@@ -6984,11 +6974,10 @@ Start by:
         if provider_type not in (None, ModelProvider.ANTHROPIC.value):
             return None
         tail = await self._tail_container_logs(f"roboco-agent-{agent_id}")
-        # F036: the SDK server writes model-API errors to /tmp/sdk-server.log,
-        # not stdout, so the overload marker (529/500/503) may appear only in
-        # the durable Claude transcript — the same rationale already applied to
-        # the session-limit detector. Without the transcript an overload is
-        # missed and the agent crash-respawns straight back into it.
+        # The SDK server writes model-API errors to /tmp/sdk-server.log, not
+        # stdout, so the overload marker may appear only in the durable Claude
+        # transcript; without it an overload is missed and the agent
+        # crash-respawns straight back into it.
         transcript_tail = self._transcript_tail_text(agent_id)
         lowered = (tail + "\n" + transcript_tail).lower()
         if any(marker in lowered for marker in _ANTHROPIC_OVERLOAD_MARKERS):
@@ -7058,16 +7047,13 @@ Start by:
                 kind=kind,
                 error=str(exc),
             )
-        # F035: register a WaitingRecord so the probe-resume loop can revive
-        # this agent when the provider recovers. ``_on_probe_success`` reads
-        # ``_waiting_records`` filtered by ``waiting_for == "rate_limit_lifted"``
-        # + ``context.provider``; without a record here it resumes nobody and
-        # recovery falls to the 600s stale-claim reaper instead of the
-        # probe-success path the parking design relies on. Persisted (mirrors
-        # ``mark_waiting_long``) so a restart still resolves the wait. We do NOT
-        # call ``mark_waiting_long`` itself — the container is already dead (it
-        # exited), so there is nothing to stop, and parking keeps OFFLINE (not
-        # WAITING_LONG) so the reaper's live-skip / health loop ignore it.
+        # Register a WaitingRecord so the probe-resume loop can revive this
+        # agent when the provider recovers; without it recovery falls to the
+        # 600s stale-claim reaper instead of the probe-success path the parking
+        # design relies on. Persisted so a restart still resolves the wait.
+        # We do NOT call ``mark_waiting_long`` — the container is already dead,
+        # and parking keeps OFFLINE so the reaper's live-skip / health loop
+        # ignore it.
         task_id = str(instance.current_task_id) if instance.current_task_id else None
         record = WaitingRecord(
             agent_id=agent_id,
@@ -8429,13 +8415,11 @@ Start now: evidence(task_id="{task_id}")
                 continue
             if not is_running:
                 continue
-            # F033: capture the real container id. _check_health skips
-            # ``container_id is None`` instances, so a re-adopted instance
-            # without the id would be invisible to the health loop — when the
-            # container later exits the stopped-container handler never runs
-            # and the task strands under a phantom ACTIVE instance. Best-effort:
-            # a probe failure degrades to the prior None (still re-adopted as
-            # ACTIVE; the reaper's Docker-liveness fallback covers it).
+            # Capture the real container id: ``_check_health`` skips instances
+            # with ``container_id is None``, so a re-adopted instance without
+            # the id would be invisible to the health loop and strand the task
+            # under a phantom ACTIVE instance. Best-effort — a probe failure
+            # degrades to None (reaper's Docker-liveness fallback covers it).
             container_id: str | None = None
             try:
                 container_id = await self._resolve_container_id(f"roboco-agent-{slug}")
@@ -8643,11 +8627,11 @@ Start now: evidence(task_id="{task_id}")
                     and not await self._maybe_recover_broken_gateway(t)
                 ):
                     continue
-                # F035: a provider-parked agent (session-limit / overload /
-                # grok-429) is OFFLINE with a dead container and a
-                # ``rate_limit_lifted`` WaitingRecord. The probe-resume loop
-                # owns its recovery — do NOT reap the claim, or probe-success
-                # would later respawn the agent on a task it no longer owns.
+                # A provider-parked agent (session-limit / overload / grok-429)
+                # is OFFLINE with a dead container and a ``rate_limit_lifted``
+                # WaitingRecord. The probe-resume loop owns its recovery — do
+                # NOT reap the claim, or probe-success would respawn the agent
+                # on a task it no longer owns.
                 if self._assignee_is_provider_parked(t):
                     continue
                 task_id = require_uuid(t.id)
@@ -9225,12 +9209,11 @@ Start now: evidence(task_id="{task_id}")
             # are acted on by the release routes + executor, never dispatched.
             if task.get("source") == RELEASE_MANAGER_SOURCE:
                 continue
-            # F059: a self-heal fix task is HELD for the CEO's Approve-&-Start
+            # A self-heal fix task is HELD for the CEO's Approve-&-Start
             # (confirmed_by_human=False at origination). It must NOT dispatch
-            # autonomously — the loop only OPENS it; the CEO's approve_and_start
-            # flips confirmed_by_human True, after which it flows through the
-            # assigned-PM path below like any other PM task. (The fix still ships
-            # through dev -> QA -> PR review -> the CEO's merge.)
+            # autonomously — the CEO's approve_and_start flips
+            # confirmed_by_human True, after which it flows through the
+            # assigned-PM path below like any other PM task.
             if task.get("source") == SELF_HEAL_SOURCE and not task.get(
                 "confirmed_by_human"
             ):
@@ -9616,9 +9599,9 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             # Release proposals are CEO-gated artifacts, never dev work.
             if task.get("source") == RELEASE_MANAGER_SOURCE:
                 continue
-            # F059: a self-heal fix task held for the CEO's Approve-&-Start is
-            # not dev work yet — it must not route to its assigned_to as a dev
-            # before the CEO approves it.
+            # A self-heal fix task held for the CEO's Approve-&-Start is not dev
+            # work yet — it must not route to its assigned_to as a dev before
+            # the CEO approves it.
             if task.get("source") == SELF_HEAL_SOURCE and not task.get(
                 "confirmed_by_human"
             ):

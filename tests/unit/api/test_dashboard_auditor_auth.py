@@ -1,12 +1,7 @@
-"""F025: dashboard auditor flag/report mutating routes must be gated to the
-Auditor or CEO.
-
-``create_auditor_flag`` / ``resolve_auditor_flag`` / ``create_auditor_report``
-/ ``send_auditor_report`` previously took only ``db: DbSession`` — no
-``CurrentAgentContext``, no role check — so any unauthenticated caller could
-create/resolve flags and mark reports as sent to the CEO. The fix mirrors
-``roboco/api/routes/playbooks.py::_require_curator``: a ``CurrentAgentContext``
-dependency plus a coarse role gate that admits only ``AUDITOR`` and ``CEO``.
+"""Dashboard auditor flag/report mutating routes (``create_auditor_flag``,
+``resolve_auditor_flag``, ``create_auditor_report``, ``send_auditor_report``)
+are gated to AUDITOR or CEO via a ``CurrentAgentContext`` dependency plus a
+coarse role gate, mirroring ``roboco/api/routes/playbooks.py::_require_curator``.
 """
 
 from __future__ import annotations

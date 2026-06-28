@@ -102,13 +102,10 @@ async def test_explicit_dep_update_paths_scope(tmp_path: Path) -> None:
 async def test_probe_holds_read_clone_lock_across_local_clone(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """F116: the dep-update probe must hold the read-clone lock for the
-    duration of the local ``git clone --local`` from the read clone, so a
-    concurrent ``ensure_read_clone`` → ``_sync_read_clone`` (fetch + hard-reset
-    to origin's default branch) cannot mutate the read clone mid-clone. The
-    lock is released before the upgrade runs on the independent copy (the
-    upgrade never touches the read clone, so holding the lock past the clone
-    would needlessly block conventions reads for the upgrade duration)."""
+    """The dep-update probe holds the read-clone lock across the local
+    ``git clone --local`` so a concurrent ``_sync_read_clone`` cannot mutate the
+    read clone mid-clone; released before the upgrade (which runs on an
+    independent copy)."""
     read_clone = _make_read_clone(tmp_path)
     svc = _svc(read_clone)
     # Unique slug → a fresh lock not shared with any other test.

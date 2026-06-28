@@ -255,9 +255,8 @@ class _GitReleaseOps:
             "commit", "-S", "-m", f"chore(release): {version}"
         )
         if commit_rc != 0:
-            # F012: a failed commit (gpgsign/pre-commit reject/no-op bump) must
-            # abort BEFORE rev-parse+push — otherwise the pre-bump base gets
-            # pushed and tagged as the new version.
+            # A failed commit (gpgsign/pre-commit reject/no-op bump) must abort
+            # before push — otherwise the pre-bump base gets tagged as the release.
             logger.error("release commit failed", error=commit_out.strip()[:300])
             raise RuntimeError(f"release commit failed: {commit_out.strip()[:200]}")
         _, out = await self._git("rev-parse", "HEAD")

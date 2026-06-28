@@ -28,7 +28,7 @@ The Grok access token has a fixed ~6-hour, server-set lifetime, and the CLI can'
 - As a backstop, each agent's entrypoint runs `python -m roboco.llm.providers.grok_auth --check` and **refuses to start** on a missing or expired token instead of hanging.
 
 !!! warning "The orchestrator's `~/.grok` mount must be writable"
-    The orchestrator rewrites `auth.json` when it refreshes the token, so the orchestrator's own mount of `~/.grok` must be **read-write**. (The per-agent mount stays read-only — agents only read the credential.) If the orchestrator can't write it, the token will expire and Grok agents will fail their start-up `--check`.
+    The orchestrator rewrites `auth.json` when it refreshes the token, so the orchestrator's own mount of `~/.grok` must be **read-write**. (The per-agent mount stays read-only — agents only read the credential.) If the orchestrator can't write it, the token will expire and Grok agents will fail their start-up `--check`. If the host `auth.json` is missing entirely at spawn time, the orchestrator logs a loud warning — a missing credential is the most common Grok misconfiguration, so it's surfaced early rather than as a fleet of failed starts.
 
 ## Per-fleet tuning
 

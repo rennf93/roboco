@@ -37,8 +37,8 @@ def _make_minimal_orchestrator() -> AgentOrchestrator:
     # (F071); without this the post-docker-run guard would AttributeError on
     # the constructor-skipped instance.
     orch._running = True
-    # F093: concurrent intake starts serialize on this lock; the constructor
-    # (skipped here) initializes it.
+    # Concurrent intake starts serialize on this lock; the constructor (skipped
+    # here) initializes it.
     orch._intake_spawn_lock = asyncio.Lock()
     return orch
 
@@ -572,11 +572,9 @@ class TestDeliverWhenReady:
 
 
 # ---------------------------------------------------------------------------
-# F071 — non-blocking intake spawn must not orphan a container if shutdown
-# arrives between ``docker run`` and the _instances registration. The guarded
-# wrapper runs concurrently with stop(); without a post-docker-run shutdown
-# check, the just-started container is never recorded in _instances (which
-# stop() already iterated) so nothing tears it down — a leaked container.
+# Non-blocking intake spawn must not orphan a container if shutdown arrives
+# between ``docker run`` and _instances registration: without a post-docker-run
+# shutdown check the just-started container is never recorded so leaks.
 # ---------------------------------------------------------------------------
 
 

@@ -116,7 +116,7 @@ async def test_park_grok_rate_limited_activates_and_offlines(
     # needs the dict + persist stub to exercise that without AttributeError.
     orch._waiting_records = {}
     orch._rate_limit_ceo_notified = set()
-    # F097 backoff state — the constructor (skipped here) initializes these.
+    # Backoff state — the constructor (skipped here) initializes these.
     orch._grok_last_park_at = None
     orch._grok_repark_count = 0
     inst = _grok_instance()
@@ -159,7 +159,7 @@ async def test_handle_stopped_container_parks_on_grok_429(
 
 
 # ---------------------------------------------------------------------------
-# F041: exit 78 (auth missing/expired) parks instead of crash-retrying
+# Exit 78 (auth missing/expired) parks instead of crash-retrying
 # ---------------------------------------------------------------------------
 
 
@@ -178,11 +178,9 @@ def test_is_grok_auth_exit() -> None:
 async def test_handle_stopped_container_parks_on_grok_auth_exit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # F041: a grok container whose entrypoint ran `grok_auth --check` and found
-    # the token missing/expired exits 78 (EX_CONFIG). Crash-retrying 3x burns
-    # tokens for zero progress (the agent can't start without a valid token);
-    # park it like the 429 exit-75 path so the probe-resume loop revives the
-    # task once grok_auth.refresh_if_stale mints a fresh token.
+    # A grok container whose entrypoint ran `grok_auth --check` and found the
+    # token missing/expired exits 78 (EX_CONFIG); park it (like the 429 exit-75
+    # path) so the probe-resume loop revives the task once a fresh token is minted.
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
     inst = _grok_instance()
     park = AsyncMock()
@@ -224,9 +222,9 @@ async def test_park_grok_auth_unavailable_activates_with_auth_missing_kind(
 
 
 # --------------------------------------------------------------------------- #
-# F097 — grok has no real probe, so an optimistic clear respawns into a still-
-# active xAI 429 every ~90s. Back off the re-park retry_after within one rate-
-# limit episode so the churn dampens instead of spinning flat at 60s.
+# Grok has no real probe, so an optimistic clear respawns into a still-active
+# xAI 429 every ~90s; back off the re-park retry_after within one rate-limit
+# episode so the churn dampens instead of spinning flat at 60s.
 # --------------------------------------------------------------------------- #
 
 

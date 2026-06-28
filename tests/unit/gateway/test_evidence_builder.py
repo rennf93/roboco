@@ -190,10 +190,8 @@ class TestTaskHandoff:
 
 
 class TestPrReviewSurface:
-    """F008 — the persisted pr_fail verdict + issues must surface in the PM
-    briefing's task_handoff, not just the fire-and-forget a2a. A PM respawned
-    into ``needs_revision`` after a pr_fail otherwise sees a generic "needs
-    revision" with zero concrete change-requests and re-submits the same PR."""
+    """The persisted pr_fail verdict + issues must surface in the PM
+    briefing's task_handoff, not just the fire-and-forget a2a."""
 
     def test_surfaces_pr_fail_verdict_and_issues(self) -> None:
         t = _task(pr_number=138, commits=[{"sha": "abc", "message": "feat: x"}])

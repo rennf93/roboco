@@ -54,7 +54,7 @@ A single Python CLI classifies every changed definition with tree-sitter (Python
 python -m roboco.conventions check --root <repo> --files <a> <b> ...
 ```
 
-It favours precision over recall — it abstains when it cannot classify a definition, so a `block` gate can never strand a task on a guess — and it fails loud: a validator that cannot run exits non-zero so the gate blocks rather than silently passing.
+It favours precision over recall — it abstains when it cannot classify a definition, so a `block` gate can never strand a task on a guess — and it fails loud: a validator that cannot run exits non-zero so the gate blocks rather than silently passing. A **hung** validator is reaped after a timeout and the gate blocks the same way, and a conventions **resolution error** (effective-map build failure) fails closed — the gate is never silently disabled by an upstream error.
 
 ## Modularity
 

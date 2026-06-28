@@ -1,13 +1,8 @@
-"""F098: a re-park during probe-success resume must not orphan the agent.
-
-``resolve_wait`` deletes the waiting record (in-memory + durable) and then calls
-``spawn_agent`` to respawn the parked agent. If the provider re-parks in the
-window between the probe-success clear and the spawn (the rate limit lifts then
-immediately re-limits, or a second provider limit lands), ``spawn_agent`` bails
-with an OFFLINE instance — the F095 parked-provider short-circuit. The old order
-deleted the record BEFORE the spawn, so a bail orphaned the agent: no record
-means the probe-resume loop can never revive it and the spawn gate bails every
-tick. The record must stay until a container actually launches.
+"""A re-park during probe-success resume must not orphan the agent. The waiting
+record must stay until ``spawn_agent`` actually launches a container — deleting
+it before the spawn lets a provider re-park (``spawn_agent`` bails OFFLINE on
+the parked-provider short-circuit) leave the agent with no record for the
+probe-resume loop to revive.
 """
 
 from __future__ import annotations

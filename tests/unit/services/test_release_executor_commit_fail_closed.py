@@ -1,10 +1,8 @@
-"""F012 — ``_GitReleaseOps.commit_and_push`` must be fail-closed on commit.
+"""``_GitReleaseOps.commit_and_push`` must be fail-closed on commit.
 
-The release commit step discarded the ``git add`` / ``git commit`` return codes:
-on a failed commit (gpgsign unavailable, pre-commit hook rejection, nothing to
-commit after a no-op bump) the code still ran ``rev-parse HEAD`` + pushed the
-pre-bump base, so ``gh release create`` would tag the *old* tree as the new
-version. The fix checks both return codes and raises before any push.
+A failed ``git add`` / ``git commit`` (gpgsign unavailable, pre-commit rejection,
+no-op bump) must raise before any push — otherwise ``gh release create`` tags
+the pre-bump base as the new version.
 """
 
 from __future__ import annotations

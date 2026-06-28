@@ -1,15 +1,8 @@
-"""F055: ``get_or_create_channel_by_slug`` must recover from a concurrent
-auto-create race on the channel slug's UNIQUE constraint instead of crashing
-the caller with an ``IntegrityError``.
+"""Recover from a concurrent auto-create race on the channel slug's UNIQUE
+constraint instead of crashing the caller with an ``IntegrityError``.
 
-Two concurrent callers (e.g. two Main-PM group-create requests hitting the
-groups route) both miss the lookup, both auto-create the same seed channel,
-and the loser's ``flush`` raises ``IntegrityError`` on ``channels.slug``
-unique. With no handling that propagates as a 500 to whichever caller lost the
-race, even though the channel they wanted now exists. The fix: isolate the
-insert in a savepoint, and on a unique-conflict ``IntegrityError`` re-fetch
-the now-existing channel (the winner's row) and return it. A conflict that
-did NOT produce a row on re-fetch is re-raised (don't mask a real failure).
+Isolate the insert in a savepoint; on a unique-conflict ``IntegrityError``
+re-fetch the winner's row. A conflict that did NOT produce a row is re-raised.
 """
 
 from __future__ import annotations

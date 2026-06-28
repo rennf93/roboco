@@ -277,9 +277,8 @@ class GitService(BaseService):
         try:
             result = await loop.run_in_executor(_GIT_EXECUTOR, _run)
         except subprocess.TimeoutExpired as e:
-            # F019: the timed-out git process was SIGKILL'd mid-mutation and may
-            # have orphaned .git/*.lock files; clear them so the workspace isn't
-            # wedged for the next op (incl. the next fresh-claim reset --hard).
+            # Timed-out git process was SIGKILL'd mid-mutation and may orphan
+            # .git/*.lock files; clear them so the workspace isn't wedged.
             await loop.run_in_executor(
                 _GIT_EXECUTOR, _remove_stale_git_locks, workspace
             )

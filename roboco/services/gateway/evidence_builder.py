@@ -106,14 +106,10 @@ def build_task_handoff(
     # Upstream dependencies that completed and were cleared — present only on a
     # just-unblocked task, so the revived dependent knows what it can build on.
     completed_deps = _typed(getattr(task, "completed_dependency_ids", None), list, [])
-    # F008 — the persisted in-path PR-review gate verdict + concrete issues.
-    # ``pr_fail`` authors ``notes_structured.pr_review`` (verdict / summary /
-    # issues / head_sha) on every fail, but the a2a steer to the owning PM is
-    # fire-and-forget — a PM respawned into ``needs_revision`` later read none
-    # of it (build_task_handoff never looked at notes_structured), saw a generic
-    # "needs revision" with zero change-requests, and re-submitted the same PR
-    # (the 2026-06-27 infinite pr_fail loop on 9980d0a0 / PR #138). Surfacing it
-    # here puts the concrete issues in every PM briefing for the task.
+    # The persisted in-path PR-review gate verdict + concrete issues.
+    # ``pr_fail`` writes ``notes_structured.pr_review``; surfacing it here puts
+    # the concrete issues in every PM briefing so a respawned PM doesn't
+    # re-submit the same PR blind.
     pr_review = _extract_pr_review(getattr(task, "notes_structured", None))
     has_prior = bool(
         commits

@@ -1,23 +1,7 @@
-"""F059: self-heal fix tasks must WAIT for the CEO's Approve-&-Start.
-
-The module docstring promises the loop 'only NOTIFIES and, at most, OPENS a
-PENDING task ... the task waits for the CEO's Approve-&-Start and terminates at
-awaiting_ceo_approval'. The implementation did the opposite: it created the
-task ``confirmed_by_human=True`` and the orchestrator dispatched it at once —
-a self-heal fix that re-broke CI would trigger another self-heal cycle, open
-another auto-dispatched fix, and loop with no CEO gate on dispatch.
-
-The fix restores the documented gate:
-* ``_originate`` opens the task ``confirmed_by_human=False`` (held for the CEO).
-* The orchestrator holds a self-heal task out of dispatch until the CEO
-  approves it (``confirmed_by_human`` flips True via ``approve_and_start``).
-* ``give_me_work`` (``list_pending_for_agent``) never offers a held task to an
-  already-alive agent.
-* ``approve_and_start`` is the CEO's start gate — it flips ``confirmed_by_human``
-  True so the held task finally dispatches.
-
-The 'never self-deploys' guarantee (no merge) is unchanged; only the dispatch
-gate is restored.
+"""Self-heal fix tasks must WAIT for the CEO's Approve-&-Start. ``_originate``
+opens them ``confirmed_by_human=False`` (held); the orchestrator holds them out
+of dispatch until ``approve_and_start`` flips it True. The 'never self-deploys'
+guarantee (no merge) is unchanged.
 """
 
 from __future__ import annotations
@@ -269,7 +253,7 @@ async def test_list_pending_for_agent_excludes_held_self_heal() -> None:
 
 @pytest.mark.asyncio
 async def test_list_pending_for_agent_still_offers_delegated_subtask() -> None:
-    """Regression guard (F059): the hold is scoped to self-heal. A delegated
+    """Regression guard: the hold is scoped to self-heal. A delegated
     subtask (source != self_heal, confirmed_by_human=False — the default for
     PM-delegated work, where the delegation IS the authorization to start) must
     STILL be offered via give_me_work. A universal confirmed_by_human filter

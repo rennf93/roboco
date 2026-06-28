@@ -108,11 +108,9 @@ async def test_clean_output_is_not_overload(
 async def test_detects_overload_marker_in_transcript(
     orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # F036: the SDK server writes model-API errors to /tmp/sdk-server.log, not
-    # stdout, so the overload marker (529/500/503) may appear only in the durable
-    # Claude transcript — exactly the rationale already applied to the
-    # session-limit detector. Without reading the transcript here an overload
-    # is missed and the agent crash-respawns straight back into it.
+    # The overload marker may appear only in the durable Claude transcript, not
+    # stdout; without reading it an overload is missed and the agent
+    # crash-respawns straight back into it.
     monkeypatch.setattr(settings, "overload_break_enabled", True)
     monkeypatch.setattr(orch, "_tail_container_logs", AsyncMock(return_value=""))
     monkeypatch.setattr(
@@ -128,10 +126,9 @@ async def test_detects_overload_marker_in_transcript(
 async def test_agent_writing_about_error_500_does_not_park(
     orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # F037: an agent that merely writes about an HTTP error code in its own
-    # notes ("the endpoint returned error 500, retrying") must NOT trip the
-    # overload detector and park the whole Anthropic fleet. Markers must be
-    # specific to the API error formatter, not bare "error NNN".
+    # An agent merely writing about an HTTP error code in its own notes must NOT
+    # trip the detector and park the whole fleet — markers must be specific to
+    # the API error formatter, not bare "error NNN".
     monkeypatch.setattr(settings, "overload_break_enabled", True)
     agent_note = (
         "be-dev-1: the /health endpoint returned error 500 on retry; "
@@ -203,11 +200,10 @@ async def test_park_offlines_and_activates_with_kind(
 async def test_park_registers_waiting_record_so_probe_can_resume(
     orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # F035: the probe-resume loop reads _waiting_records filtered by
-    # waiting_for == "rate_limit_lifted" + context.provider. Without a record
-    # here, _parked_agents_for(provider) returns [] and _on_probe_success
-    # resumes nobody — recovery falls to the 600s stale-claim reaper instead of
-    # the probe-success path the parking design relies on.
+    # The probe-resume loop reads _waiting_records filtered by
+    # waiting_for == "rate_limit_lifted" + context.provider; without a record
+    # here recovery falls to the 600s stale-claim reaper instead of the
+    # probe-success path.
     orch._waiting_records = {}
     inst = _instance()
     inst.current_task_id = "task-1"
@@ -232,7 +228,7 @@ async def test_park_registers_waiting_record_so_probe_can_resume(
 async def test_probe_success_respawns_parked_agent(
     orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # F035: once the probe succeeds, the parked agent must be respawned via
+    # Once the probe succeeds, the parked agent must be respawned via
     # resolve_wait — not left stranded for the 600s reaper.
     orch._waiting_records = {
         "be-dev-1": WaitingRecord(

@@ -1,35 +1,20 @@
-"""F127 — open_pr's idempotent re-entry guard was a read-then-act with no DB
-serialization, so a CONCURRENT (respawn-race) retry double-emitted the
-"opened PR #N" milestone progress entry.
+"""open_pr's idempotent re-entry guard reads ``t.pr_number`` from an unlocked
+fetch, so two CONCURRENT (respawn-race) retries both pass the guard and both
+emit the 70% "opened PR #N" milestone progress entry — double-counting one
+PR-open event in the Progress tab + cycle-time metrics (no PR duplication;
+GitHub's 422 'already exists' guard holds).
 
-The sequential-retry guard at ``open_pr`` (``if t.pr_number is not None and
-t.assigned_to == agent_id: return Envelope.ok(...)``) short-circuits BEFORE
-the runner and BEFORE ``_open_pr_success_envelope`` — so a SECOND call AFTER
-the first completed does NOT re-emit the 70% milestone. But this guard reads
-``t.pr_number`` from an unlocked fetch. Two CONCURRENT ``open_pr`` calls from
-the same agent (the alive-but-unresponsive respawn race CLAUDE.md documents)
-both fetch ``t`` with ``pr_number=None``, both pass the guard, both run the
-runner (``create_pr``'s GitHub 422 'already exists' path ensures only one PR
-is created — no double PR), and both then reach
-``_open_pr_success_envelope`` → ``_record_milestone_progress`` (the 70%
-"opened PR #N" entry). Result: TWO milestone progress entries for one PR —
-the Progress tab + audit reconstruction double-count one PR-open event, and
-cycle-time/milestone metrics are skewed. No PR duplication (GitHub 422 guard
-holds) and no state corruption — purely a double-emission under the narrow
-concurrent-retry case.
-
-The fix: a PostgreSQL transaction-scoped advisory lock keyed by the task id,
-acquired at the TOP of ``open_pr`` BEFORE the ``t = await self.task.get(...)``
-fetch (the read the idempotent guard consults) and held through the runner +
+The fix: a PostgreSQL transaction-scoped advisory lock keyed by the task id
+(seed ``2``, disjoint from the per-agent claim lock seed ``0`` and the
+per-parent delegate lock seed ``1``) acquired at the top of ``open_pr``
+BEFORE the ``t = await self.task.get(...)`` fetch and held through
 ``_record_milestone_progress`` + the outer request commit. The second
-concurrent same-task ``open_pr`` blocks on the lock until the first commits;
-its fetch then sees the first's committed ``pr_number``, the idempotent guard
-fires, and it short-circuits WITHOUT re-emitting the milestone. Per-TASK (not
-per-agent): the single-active-task guard means a dev has one task at a time,
-so concurrent ``open_pr`` on the SAME task is purely the respawn-race bug case
-— no legitimate concurrency is regressed. Seed ``2`` keeps this in a disjoint
-key space from the per-agent claim lock (seed ``0``) and the per-parent
-delegate lock (seed ``1``).
+same-task concurrent ``open_pr`` blocks until the first commits; its fetch
+then sees the committed ``pr_number``, the idempotent guard fires, and it
+short-circuits without re-emitting. Per-TASK (not per-agent): the
+single-active-task guard means a dev has one task at a time, so concurrent
+``open_pr`` on the SAME task is purely the respawn-race case — no legitimate
+concurrency is regressed.
 """
 
 from __future__ import annotations

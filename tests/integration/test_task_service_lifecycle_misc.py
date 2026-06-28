@@ -453,14 +453,10 @@ async def test_create_work_session_no_project_returns_none(
 async def test_create_work_session_delegates_to_service_create(
     task_setup: dict, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """F113: the claim path must create the WorkSession through the validated
-    ``WorkSessionService.create`` (the single source of truth), not construct a
-    ``WorkSessionTable`` directly. Two divergent creation sites had drifted and
-    bypassed the service-layer validation (existing-active check, supersede
-    invariant, project/task existence). Routing through ``create`` collapses
-    them to one validated path. The derived target_branch (parent branch for
-    subtasks, project default for roots) is passed in via ``WorkSessionCreate``.
-    """
+    """The claim path must create the WorkSession via ``WorkSessionService.create``
+    (single source of truth) rather than constructing a ``WorkSessionTable``
+    directly, so service-layer validation (existing-active check, supersede
+    invariant) is not bypassed."""
     svc = task_setup["svc"]
     task = await svc.create(_req(task_setup))
     task.branch_name = "feature/backend/delegate"

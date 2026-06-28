@@ -1,19 +1,11 @@
-"""F066: server-side idle timeout reaps half-open WS sockets.
+"""Server-side idle timeout reaps half-open WS sockets.
 
-The keepalive was client-driven (respond to ``"ping"`` with ``"pong"``); the
-server never sent its own ping and never timed out a silent client. If an
-agent container died leaving the TCP socket half-open, ``receive_text()``
-blocked forever and ``disconnect`` was never called.
-
-The fix wraps ``receive_text()`` in
-``asyncio.wait_for(..., timeout=IDLE_TIMEOUT_SECONDS)`` per handler; on
-``asyncio.TimeoutError`` the finally (from F065) disconnects the idle
-socket. ``IDLE_TIMEOUT_SECONDS`` is a named module constant (ruff PLR2004).
-
-Deterministic: the slow-socket test patches ``IDLE_TIMEOUT_SECONDS`` to a
-tiny value (0.05s) and uses a ``receive_text`` that returns a never-resolved
-``Future`` — so the test asserts a prompt disconnect in well under a second,
-never relying on real wall-clock timing of the default timeout.
+Each handler wraps ``receive_text()`` in
+``asyncio.wait_for(..., timeout=IDLE_TIMEOUT_SECONDS)``; on timeout the
+handler's ``finally`` disconnects the idle socket. ``IDLE_TIMEOUT_SECONDS``
+is a named module constant (ruff PLR2004). Tests patch it to a tiny value
+and use a never-resolved ``Future`` so assertions hold in well under a
+second, never relying on real wall-clock timing.
 """
 
 from __future__ import annotations

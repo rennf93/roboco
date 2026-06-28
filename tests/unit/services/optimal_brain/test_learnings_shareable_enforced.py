@@ -1,26 +1,7 @@
-"""F054: the LEARNINGS index must not leak private (shareable=False) entries
-through ANY shared retrieval path.
-
-A private LEARNING journal entry is recorded into the LEARNINGS index with
-``shareable=False`` (journal.py records it for completeness but it is never
-meant to surface to other agents). The shared retrieval paths all reach the
-plugin's retrieval with no ``include_private`` opt-in:
-
-- ``OptimalService.search`` (used by the briefing / ``similar_memory``) calls
-  ``search_with_embedding`` directly with no filters.
-- ``search_learnings`` (shareable_only=True, the default) and the
-  ``get_learnings_by_category`` / ``get_learnings_by_role`` /
-  ``get_team_learnings`` cross-agent views call ``search`` with a filters dict
-  that does NOT carry a ``shareable`` key.
-
-The base ``_citations_to_results`` only filters when a ``shareable`` filter is
-present, so a ``shareable=False`` chunk sails through into another agent's
-briefing — a private reflection leaked across the cross-agent corpus.
-
-The fix: the LEARNINGS plugin forces ``shareable=True`` on retrieval unless the
-caller explicitly opts into the private view via ``include_private=True`` (the
-``search_learnings(shareable_only=False)`` audit/admin path). An empty filters
-dict does NOT opt out — shareable is the safe default on every shared path.
+"""The LEARNINGS index must not leak private (``shareable=False``) entries
+through any shared retrieval path. The plugin forces ``shareable=True`` on
+retrieval unless the caller opts into the private view via
+``include_private=True``; an empty filters dict does NOT opt out.
 """
 
 from __future__ import annotations

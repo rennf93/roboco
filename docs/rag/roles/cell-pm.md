@@ -150,11 +150,27 @@ notify(target="be-dev-1", text="Please prioritise task X by EOD.",
 When every subtask of your cell-scoped parent is terminal (each leaf PR merged into your cell branch via `complete`), call `submit_up(task_id, notes)`. This opens the **cell→root PR** and moves the parent into the in-path PR-review gate (`awaiting_pr_review`), where your cell's **PR reviewer** reviews the assembled diff:
 
 - `pr_pass` → the parent moves to `awaiting_pm_review`; you then `complete(task_id, notes)` to merge the cell→root PR into the root branch.
-- `pr_fail` → the parent returns to `needs_revision` (owned by you) with the reviewer's issues; fix, then re-`submit_up`.
+- `pr_fail` → the parent returns to `needs_revision` (owned by you) with the reviewer's issues; fix, then re-`submit_up`. The reviewer's verdict + issues are carried in your task handoff, so you are not blind on the rework.
+
+Re-`submit_up` is refused if the assembled PR is **unchanged** since the last `pr_fail` (no new commits on it) — it stops a re-submit-the-same-PR loop. Fix the issues and commit before re-submitting.
 
 You merge your own cell→root PR — the Main PM does **not** merge your cell branch. The Main PM owns the **root** task: once every cell's parent is terminal, it runs the same gate one level up (`submit_root` → main reviewer → escalate to CEO) and only the CEO merges to `master`. You never open or merge a master PR yourself.
 
 `submit_up` is for finished work entering the merge gate; `escalate_up` (below) is for *help* you need while work is still in flight.
+
+### Sequencing dev-task collisions
+
+When you `delegate` a dev subtask you may pass the collision surface so the sequencing DAG orders siblings that touch the same files:
+
+```python
+delegate(parent_task_id=..., ..., 
+         intends_to_touch=["roboco/api/routes/*.py"],   # file globs
+         adds_migration=False,                            # adds a DB migration
+         touches_shared=True,                            # edits a shared module
+         depends_on=["<sibling-task-id>"])               # explicit ordering
+```
+
+Siblings whose `intends_to_touch` globs overlap are serialized (more-important first); migration-adders chain serially; a shared-surface edit runs after each non-shared task it overlaps. Omit these and only the weak assignee-keyed spawn barrier orders your dev tasks (the 2026-06-27 out-of-order break).
 
 ## Escalating to Main PM
 

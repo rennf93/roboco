@@ -60,11 +60,9 @@ async def test_cost_over_cap_kills_and_evicts(monkeypatch: pytest.MonkeyPatch) -
 async def test_cost_over_cap_finalizes_spawn_session_before_evict(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # F040: a cost-cap-killed grok container must finalize its spawn session so
-    # the captured usage/cost is recorded in the DB/dashboard — otherwise the
-    # session row stays open (ended_at IS NULL) and the burn is invisible.
-    # Finalization must run BEFORE the instance is popped: _finalize_spawn_session
-    # reads self._instances[agent_id] for the model + usage_session_id.
+    # Cost-cap-killed grok container must finalize its spawn session BEFORE the
+    # instance is popped: _finalize_spawn_session reads _instances[agent_id] for
+    # the model + usage_session_id; otherwise the burn stays invisible.
     orch, _remove_mock = _orch(monkeypatch, cap=5.0, cost=7.5)
     finalize = AsyncMock()
     monkeypatch.setattr(orch, "_finalize_spawn_session", finalize)

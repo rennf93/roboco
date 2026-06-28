@@ -1919,7 +1919,7 @@ class Choreographer:
         ``reviewer=True`` for the pr_pass gate: a PR reviewer has no
         ``i_am_blocked`` verb, so the remediation points at ``pr_fail`` (their
         reject lever, sending the PR back to needs_revision for the dev to fix
-        the environment) instead of a verb they cannot call (F044).
+        the environment) instead of a verb they cannot call.
         """
         from roboco.config import settings as _settings
 
@@ -2019,7 +2019,7 @@ class Choreographer:
         ``file:line`` + fix hint. ``warn`` findings never block. Inert when the
         flag is off. This is the pr_pass (reviewer) path — the remediation is
         reviewer-aware (``pr_fail``, not ``i_am_blocked`` which a reviewer
-        lacks) via ``_conventions_rejection(..., reviewer=True)`` (F044).
+        lacks) via ``_conventions_rejection(..., reviewer=True)``.
         """
         from roboco.config import settings as _settings
 
@@ -2036,7 +2036,7 @@ class Choreographer:
 
         ``reviewer=True`` for the pr_pass gate: a reviewer has no
         ``i_am_blocked`` verb, so the could_not_run remediation points at
-        ``pr_fail`` instead (F044).
+        ``pr_fail`` instead.
         """
         if result.get("could_not_run"):
             if reviewer:
@@ -2067,15 +2067,10 @@ class Choreographer:
             f"- {f.get('file')}:{f.get('line')} — {f.get('fix_hint')}" for f in blocks
         )
         if reviewer:
-            # F047: the pr_pass gate runs this on the REVIEWER, who does not own
-            # the assembled cell→root / root→master branch and has no commit
-            # verb on it. The dev-path remediation ("add a waiver in your
-            # branch") is unreachable by the reviewer and would strand the gate
-            # on every false positive with no self-recovery. The reviewer's only
-            # lever is pr_fail — bounce the PR back to needs_revision carrying
-            # the findings as issues so the dev fixes the violation or commits
-            # the waiver (the dev CAN commit to the branch). Waiver authorship is
-            # framed as the dev's action, not the reviewer's.
+            # The pr_pass gate runs on the REVIEWER, who has no commit verb on
+            # the assembled branch; the only lever is pr_fail — bounce the PR
+            # back to needs_revision with the findings as issues so the dev
+            # fixes the violation or commits a waiver.
             remediate = (
                 "the assembled PR carries block-level architectural-convention"
                 " violations. call pr_fail(issues=[<file:line — fix_hint>, ...])"
@@ -2913,14 +2908,9 @@ class Choreographer:
                 task_id=task_id,
                 verb="i_am_blocked",
             )
-        # F017: ``block`` is the LAST composed action, so a ``None`` return
-        # (TaskService.escalate resolved no escalation target — missing task,
-        # agent, escalation-target slug, or target agent row) flows out of
-        # ``run_intent`` as the verb's result. Without this guard the caller
-        # re-binds ``t`` to ``None`` and dereferences ``t.status`` building the
-        # success envelope → AttributeError → HTTP 500, and the agent
-        # respawn-loops with no actionable rejection. Surface invalid_state
-        # instead, pointing the agent at a direct CEO escalation or a retry.
+        # ``block`` is the LAST composed action, so a ``None`` return (escalate
+        # resolved no target) re-binds ``t`` to ``None``; guard the deref with
+        # an invalid_state so the agent gets a retryable rejection, not a 500.
         if updated is None:
             return t, await self._emit_rejection(
                 Envelope.invalid_state(
@@ -3014,16 +3004,9 @@ class Choreographer:
         # provider is "unknown" (orchestrator not wired or not tracking the
         # agent) to avoid polluting the tracker with meaningless keys.
         #
-        # F045: an activate() failure is logged loudly, NOT bare-suppressed.
-        # The probe-resume loop is tracker-driven — it iterates
-        # ``list_rate_limited_providers()`` — so a silent activate failure here
-        # leaves every parked agent in ``_waiting_records`` with a provider the
-        # tracker never learned about, and no probe ever runs to resume them
-        # (the stranded-fleet blind spot). The orchestrator's
-        # ``_sweep_rate_limit_probes`` has an in-memory ``_waiting_records``
-        # fallback that resumes them when the provider recovers even without
-        # tracker state; this error log makes the condition visible to
-        # operators either way.
+        # An activate() failure is logged loudly, NOT bare-suppressed: the
+        # probe-resume loop is tracker-driven, so a silent failure strands
+        # every parked agent waiting on a provider the tracker never learned.
         if provider != "unknown":
             try:
                 from roboco.services.gateway.rate_limit_tracker import (
@@ -3968,10 +3951,9 @@ class Choreographer:
         reality. Checkpoint failure is swallowed; it must never block the pause.
         """
         in_progress = await self.task.list_in_progress_for_agent(agent_id)
-        # F018: the lookup now also returns blocked tasks (so the claim guard
-        # sees them). i_am_idle only auto-pauses genuinely in_progress tasks —
-        # a blocked task is waiting on an external dep, not on the agent, so it
-        # stays blocked (and isn't reported as paused for the agent to resume).
+        # The lookup also returns blocked tasks (so the claim guard sees them);
+        # i_am_idle only auto-pauses genuinely in_progress ones — a blocked task
+        # waits on an external dep, not the agent, so it stays blocked.
         from roboco.models.base import TaskStatus
 
         paused_ids: list[str] = []
@@ -5381,10 +5363,9 @@ class Choreographer:
         # + subtasks-terminal + branch-present. None of these are modelled by
         # the spec yet — keep them in the verb body.
         guard = await self._submit_up_guard(pm_agent_id, task_id, t, notes)
-        # F007: the cell-level unchanged-PR loop-stopper. Only consult it once
-        # the state guard above has passed (ownership/tracing/branch all OK) —
-        # mirroring submit_root, a prior preflight reject short-circuits before
-        # the head-sha comparison runs.
+        # Cell-level unchanged-PR loop-stopper. Consulted only after the state
+        # guard above passes; a prior preflight reject short-circuits before the
+        # head-sha comparison runs (mirroring submit_root).
         if guard is None:
             guard = await self._submit_up_unchanged_pr_guard(t, briefing)
         if guard is not None:
@@ -6173,7 +6154,7 @@ class Choreographer:
     async def _current_pr_head_sha(self, t: Any) -> str | None:
         """Best-effort current head SHA of the task's assembled PR (fail-open).
 
-        The lookup both unchanged-PR gates (submit_root F016 + submit_up F007)
+        The lookup both unchanged-PR gates (submit_root + submit_up)
         compare against — ``pr_fail`` stamps the head SHA for cell AND root
         gate tasks alike (the capture is gate-verb-level, not root-level), so
         one resolver serves both. Returns ``None`` on every ambiguous case (no
@@ -6201,18 +6182,12 @@ class Choreographer:
     async def _submit_up_unchanged_pr_guard(
         self, t: Any, briefing: dict[str, Any]
     ) -> Envelope | None:
-        """F007 — the cell-level analogue of ``_submit_root_unchanged_pr_guard``.
+        """Cell-level analogue of ``_submit_root_unchanged_pr_guard``.
 
-        The root loop-stopper was root-only; a weak cell PM could re-submit the
-        unchanged cell→root PR after a ``pr_fail`` and loop
-        ``awaiting_pr_review`` → ``pr_fail`` forever. ``pr_fail`` stamps the
-        assembled PR's head SHA into ``notes_structured.pr_review.head_sha``
-        for cell gate tasks too (the capture is gate-verb-level), so the same
-        structural refusal applies: if the cell PR's current head SHA equals
-        the SHA the last ``pr_fail`` recorded, no new dev work landed on the
-        cell branch ⇒ the diff is byte-identical ⇒ refuse. Every ambiguous case
-        FAILS OPEN (shared ``_current_pr_head_sha``) — only the exact-unchanged
-        case is hard-blocked; the rest fall through to the cell reviewer.
+        Refuses re-submit when the cell PR's current head SHA equals the SHA
+        ``pr_fail`` recorded in ``notes_structured.pr_review.head_sha`` (no new
+        dev work landed ⇒ byte-identical diff). Ambiguous cases FAIL OPEN via
+        ``_current_pr_head_sha``; only the exact-unchanged case is hard-blocked.
         """
         pr_review = (getattr(t, "notes_structured", None) or {}).get("pr_review") or {}
         if pr_review.get("verdict") != "failed":
@@ -6334,16 +6309,10 @@ class Choreographer:
                 task_id=task_id,
                 verb="submit_root",
             )
-        # F016: submit_for_review returns None when the root->master PR was
-        # already opened (the task raced out of in_progress, or a prior call
-        # already transitioned it to awaiting_pr_review). The create_root_pr
-        # pre-side-effect already ran, so the PR exists, but the transition
-        # did not happen — dereferencing t.status here 500'd. Surface an
-        # actionable invalid_state so the PM re-fetches and reconciles (if the
-        # task is already awaiting_pr_review the PR is open — wait for the
-        # reviewer; otherwise re-delegate the fixes and retry) instead of a
-        # crash. The None-guard + success envelope share a finalize helper so
-        # submit_root's own return count stays under the branch-limit.
+        # submit_for_review returns None when the root->master PR was already
+        # opened (race out of in_progress / prior call). The PR exists but the
+        # transition did not — guard the None deref with an invalid_state so
+        # the PM re-fetches and reconciles instead of crashing.
         return await self._submit_root_finalize(
             main_pm_agent_id, task_id, t, role_str, briefing
         )
@@ -6358,7 +6327,7 @@ class Choreographer:
     ) -> Envelope:
         """Build the submit_root result envelope after the verb runner returns.
 
-        ``None`` (F016) → invalid_state rejection (the root->master PR was
+        ``None`` → invalid_state rejection (the root->master PR was
         already opened / the task raced out of in_progress); otherwise the
         success envelope keyed off the post-transition status.
         """
@@ -6627,17 +6596,14 @@ class Choreographer:
             verb="complete",
         ):
             return soup
-        # F001: a MegaTask umbrella is branchless by design and never goes
-        # through submit_root / pr_pass, so it sits in in_progress with no
-        # branch/PR. The ``complete`` action's source_statuses=
-        # {AWAITING_PM_REVIEW} spec gate would reject it before
-        # main_pm_complete's branchless-aware guard can run. Skip the spec
-        # gate for an in_progress batch umbrella and fall through to
-        # main_pm_complete, which walks in_progress -> awaiting_pm_review ->
-        # awaiting_ceo_approval (the CEO merges the root PR; no agent touches
-        # master). Role membership is preserved (role_str == "main_pm");
-        # main_pm_complete's own guard re-checks assignment, subtasks-
-        # terminal, and the journal:decision gate.
+        # A MegaTask umbrella is branchless by design and never goes through
+        # submit_root / pr_pass, so it sits in in_progress with no branch/PR.
+        # The ``complete`` action's source_statuses={AWAITING_PM_REVIEW} spec
+        # gate would reject it before main_pm_complete's branchless-aware guard
+        # can run; skip the spec gate for an in_progress batch umbrella and fall
+        # through to main_pm_complete (CEO merges the root PR; no agent touches
+        # master). Role membership is preserved; main_pm_complete re-checks
+        # assignment, subtasks-terminal, and the journal:decision gate.
         umbrella_in_progress = (
             role_str == "main_pm"
             and str(t.status) == "in_progress"

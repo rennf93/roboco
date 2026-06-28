@@ -1,12 +1,6 @@
-"""F013 — concurrent approve races on the shared release clone.
-
-The approve flow ran the ~40min ``ReleaseExecutor.execute`` with no guard, so
-two concurrent CEO ``POST /proposal/approve`` calls (double-click, panel retry)
-both found the same held proposal and raced on the shared, ``rm -rf``'d writable
-release clone — interleaving ``git add``/``commit``/``push`` and corrupting the
-release. The fix acquires a Redis ``SET NX`` mutex keyed by the proposal id
-before execute (TTL > the 40min CI ceiling) and releases it on completion; a
-second concurrent approve sees the lock held and refuses instead of racing.
+"""Concurrent CEO approve races on the shared release clone are serialized by a
+Redis ``SET NX`` mutex keyed by the proposal id; a second concurrent approve
+sees the lock held and refuses instead of racing on the writable clone.
 """
 
 from __future__ import annotations

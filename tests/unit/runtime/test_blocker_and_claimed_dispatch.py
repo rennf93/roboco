@@ -196,16 +196,9 @@ def test_in_progress_task_with_no_agent_returns_assignee() -> None:
 
 
 def test_claimed_task_with_unknown_assignee_returns_slug_for_release() -> None:
-    # F032: a claimed/in_progress task whose assignee is a stale/unknown UUID
-    # (no seeded agent) must reach the release-to-pending path. The human-only
-    # guard (role_for_slug_or_none) returns None for an unknown slug, and
-    # ``None in (CEO, PROMPTER, SECRETARY)`` is False — so it does NOT
-    # short-circuit, the slug falls through the grace window, and the resolver
-    # returns the unknown slug. _dispatch_claimed_without_agent then sees
-    # get_agent_role(slug) == "unknown" and releases the claim to pending for
-    # a role-matched reclaim. Before F031's role_for_slug_or_none fix the guard
-    # raised KeyError on the unknown slug, crashing the whole tick before the
-    # release path could run.
+    # A claimed/in_progress task whose assignee is a stale/unknown UUID (no
+    # seeded agent) must reach the release-to-pending path: the human-only guard
+    # returns None for unknown slugs, so the slug falls through and is released.
     orch = _orch()
     unknown_uuid = str(uuid4())
     task: dict[str, Any] = {

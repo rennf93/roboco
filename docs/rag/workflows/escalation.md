@@ -29,6 +29,8 @@ escalate_up(
 
 Auto-routes to your escalation target (you cannot choose it).
 
+`escalate_up` is refused on a **terminal** task (`completed` / `cancelled`) — it returns `invalid_state` rather than resurrecting a finished task. Escalate live work only.
+
 ## When to Escalate
 
 | Situation | Escalate To |

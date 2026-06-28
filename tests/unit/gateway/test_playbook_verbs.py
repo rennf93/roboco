@@ -115,7 +115,7 @@ async def test_approve_playbook_for_auditor(monkeypatch: pytest.MonkeyPatch) -> 
     assert env.error is None
     assert env.status == "playbook_approved"
     svc.approve.assert_awaited_once()
-    # F057: the status commit gates the index — commit then index, never index
+    # the status commit gates the index — commit then index, never index
     # before commit (the index write auto-commits on its own connection).
     actions.task.session.commit.assert_awaited_once()
     svc.index_approved.assert_awaited_once_with(approved)
@@ -138,7 +138,7 @@ async def test_reject_playbook_archives_for_auditor(
     )
     assert env.status == "playbook_archived"
     svc.reject.assert_awaited_once()
-    # F057: de-index is the post-commit step (commit gates it).
+    # de-index is the post-commit step (commit gates it).
     actions.task.session.commit.assert_awaited_once()
     svc.unindex_playbook.assert_awaited_once_with(archived)
 
@@ -147,7 +147,7 @@ async def test_reject_playbook_archives_for_auditor(
 async def test_archive_playbook_retires_approved_for_auditor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """archive_playbook is the distinct APPROVED->archived retire path (F109):
+    """archive_playbook is the distinct APPROVED->archived retire path:
     it calls ``svc.archive`` (NOT ``svc.reject``), commits, then de-indexes."""
     archived = MagicMock()
     archived.id = uuid4()
@@ -172,7 +172,7 @@ async def test_approve_playbook_invalid_state_envelope(
 ) -> None:
     """A status-precondition ConflictError from the service becomes a clean
     invalid_state envelope (not a 500) — the agent gets a remediate hint to
-    re-fetch the playbook's current status before re-trying (F109)."""
+    re-fetch the playbook's current status before re-trying."""
     svc = MagicMock()
     svc.approve = AsyncMock(
         side_effect=ConflictError("not draft", resource_type="playbook")

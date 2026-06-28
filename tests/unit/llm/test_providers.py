@@ -242,10 +242,9 @@ async def test_grok_spawn_mounts_auth_when_present(_isolate_grok_auth: Path) -> 
     ) as exec_mock:
         await provider.spawn(_config())
     cmd = list(exec_mock.call_args.args)
-    # F005: mount the host ~/.grok DIRECTORY (ro), not the single auth.json
-    # file — a single-file bind mount pins the inode, so the orchestrator's
-    # atomic auth.json refresh (rename) never reaches a running container.
-    # The entrypoint symlinks ~/.grok/auth.json at this RO dir mount.
+    # mount the host ~/.grok DIRECTORY (ro), not the single auth.json file — a
+    # single-file bind mount pins the inode, so the orchestrator's atomic
+    # auth.json refresh (rename) never reaches a running container.
     expected = f"{_isolate_grok_auth}:/home/agent/.grok-auth-ro:ro"
     assert expected in cmd
 

@@ -1,17 +1,8 @@
-"""F107 — Redis bus publish must be deferred until the DB commit lands.
+"""Redis bus publish must be deferred until the DB commit lands so a rollback
+drops the event (no phantom notification for a row that never became durable).
 
-`NotificationDeliveryService.deliver` historically published
-``NOTIFICATION_SENT`` to the Redis event bus *before* the caller committed
-the notification row. A commit failure (DB hiccup, constraint, asyncpg error)
-rolled the row back but left the bus event behind — connected WebSocket
-clients received a push for an id that no longer existed (a phantom
-notification). The fix defers the bus publish to the session's
-``after_commit`` so a rollback drops it; the row is durable by the time the
-event fires.
-
-These tests need a real ``AsyncSession`` (the deferral uses SQLAlchemy
-session commit/rollback events) plus a recording bus stand-in, so they are
-integration tests against the migrated Postgres test DB.
+Integration tests against the migrated Postgres DB: the deferral uses
+SQLAlchemy ``after_commit`` events and a recording bus stand-in.
 """
 
 from __future__ import annotations
@@ -129,12 +120,8 @@ async def _seed_agents_and_notification(
 async def test_deliver_does_not_publish_before_commit(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The bus event must NOT fire until the session commits (F107).
-
-    Currently RED: ``deliver`` publishes immediately, so the bus is non-empty
-    before any commit — the phantom window. With the deferred-publish fix,
-    ``deliver`` only schedules; the event fires on commit.
-    """
+    """The bus event must NOT fire until the session commits — ``deliver``
+    only schedules; the event fires on commit."""
     bus = _RecordingBus()
     monkeypatch.setattr(
         "roboco.services.notification_delivery.get_event_bus", lambda: bus
@@ -152,7 +139,7 @@ async def test_deliver_does_not_publish_before_commit(
 async def test_deliver_publishes_after_commit(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Commit drains the deferred publish — one event per recipient (F107)."""
+    """Commit drains the deferred publish — one event per recipient."""
     bus = _RecordingBus()
     monkeypatch.setattr(
         "roboco.services.notification_delivery.get_event_bus", lambda: bus
@@ -179,7 +166,7 @@ async def test_deliver_rollback_drops_phantom(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A rollback instead of commit drops the pending publish — no phantom
-    event for a row that never became durable (F107)."""
+    event for a row that never became durable."""
     bus = _RecordingBus()
     monkeypatch.setattr(
         "roboco.services.notification_delivery.get_event_bus", lambda: bus

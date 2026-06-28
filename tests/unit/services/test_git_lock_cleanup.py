@@ -1,14 +1,6 @@
-"""F019 — a git mutation op killed by ``_run_git``'s timeout orphans lock files.
-
-``subprocess.run(..., timeout=...)`` sends SIGKILL on timeout. A git mutation
-(commit / merge --ff-only / rebase / reset --hard / add) killed mid-write
-orphaned ``.git/index.lock`` (+ ``HEAD.lock`` / ``refs/**.lock`` /
-``packed-refs.lock``), wedging the workspace for every subsequent op —
-including the next fresh-claim ``reset --hard`` — with
-"Another git process seems to be running in this repository". The fix
-best-effort removes stale ``.git/**/*.lock`` files in the timeout branch
-before re-raising, since the git process is dead by the time the timeout
-fires.
+"""A git mutation op killed by ``_run_git``'s timeout best-effort removes
+orphaned ``.git/**/*.lock`` files before re-raising — the SIGKILL'd git
+process can't clean up itself, and the locks wedge every subsequent op.
 """
 
 from __future__ import annotations

@@ -1,13 +1,6 @@
-"""F078 — ``_GitReleaseOps`` subprocesses (git, ``make quality``, ``gh release
-create``, the release-clone ``git clone``) had no deadline: a hung child would
-block the CEO-gated release loop indefinitely.
-
-The fix wraps each ``proc.communicate()`` in ``asyncio.wait_for`` and, on
-expiry, ``proc.kill()``s the child and returns a non-zero rc (124) so the
-caller fails closed — mirroring the quality-gate ``_run_one`` kill-on-timeout
-idiom. The deadlines are generous (a full ``make quality`` run, a network
-push/clone can legitimately take minutes) so a healthy release is never
-wrongly aborted.
+"""``_GitReleaseOps`` subprocesses (git, ``make quality``, ``gh release create``,
+the release-clone ``git clone``) are wrapped in ``asyncio.wait_for`` with a
+kill-on-timeout fail-close so a hung child cannot block the release loop.
 
 These tests hang the subprocess (a never-resolving ``communicate``) and patch
 the timeout constants tiny so a deterministic fail-close is asserted in well

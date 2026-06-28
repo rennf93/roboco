@@ -1,18 +1,8 @@
-"""F056: ``create_session`` (and its delegate ``get_or_create_active_session``,
-plus the L1868 channel-post adapter that routes through it) must not orphan an
-ACTIVE session under concurrent posts.
+"""``create_session`` must not orphan an ACTIVE session under concurrent posts.
 
-``create_session`` does a plain check-then-create: read ``group.active_session_id``,
-reuse if ACTIVE, else INSERT a new ACTIVE session and point the group at it.
-Two concurrent posts can both miss the active session, both INSERT, and the
-second ``flush`` overwrites ``group.active_session_id`` — the first session
-stays ACTIVE but unreferenced (orphaned) forever. There is no DB uniqueness on
-``(group_id, status='active')`` (tables.py:1121-1125 only carries indexes), so
-nothing stops the double-insert.
-
-The fix: lock the group row (``SELECT ... FOR UPDATE``) and re-read
-``active_session_id`` under the lock before deciding to create, so concurrent
-callers serialize per group and the loser reuses the winner's session.
+Lock the group row (``SELECT ... FOR UPDATE``) and re-read
+``active_session_id`` under the lock before creating, so concurrent callers
+serialize per group and the loser reuses the winner's session.
 """
 
 from __future__ import annotations

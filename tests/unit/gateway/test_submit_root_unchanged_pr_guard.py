@@ -407,17 +407,16 @@ async def test_pr_pass_does_not_capture_head_sha() -> None:
 
 
 # ---------------------------------------------------------------------------
-# F016 — submit_root must not 500 when submit_for_review returns None
+# submit_root must not 500 when submit_for_review returns None
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_submit_root_invalid_state_when_submit_for_review_returns_none() -> None:
-    """F016: submit_for_review returns None when the root->master PR was already
-    opened (the task raced out of in_progress, or a prior call already
-    transitioned it). create_root_pr already ran as the pre-side-effect, so the
-    PR exists, but the transition did not happen. submit_root must surface an
-    invalid_state envelope, not dereference None.status and 500."""
+    """submit_for_review returns None when the root->master PR was already
+    opened (task raced out of in_progress, or a prior call transitioned it).
+    submit_root must surface ``invalid_state``, not dereference None.status
+    and 500."""
     c, main_pm_id, root_task_id = _resubmit_root(notes_structured=None)
     # The transition did not happen (PR already opened / task raced).
     c.task.submit_for_review.return_value = None

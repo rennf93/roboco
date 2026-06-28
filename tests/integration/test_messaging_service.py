@@ -1198,7 +1198,7 @@ async def _seed_messages_same_timestamp(
 async def test_get_messages_compound_before_cursor_no_skip_on_equal_timestamps(
     msg_setup: dict,
 ) -> None:
-    """Equal-timestamp messages must not be skipped across pages (F106).
+    """Equal-timestamp messages must not be skipped across pages.
 
     With a strict ``timestamp < before`` cursor and ``order_by(timestamp.desc())``,
     messages sharing the page's last timestamp are cut by ``limit`` on page 1
@@ -1239,7 +1239,7 @@ async def test_get_messages_compound_after_cursor_no_skip_on_equal_timestamps(
 ) -> None:
     """Forward pagination (``after``) with the compound ``(timestamp, id)``
     cursor tie-breaks on id so newer-direction pagination across equal
-    timestamps skips nothing either (F106).
+    timestamps skips nothing either.
 
     With a strict ``timestamp > after`` cursor, every row sharing the cursor's
     timestamp is EXCLUDED — so forward-paginating from a middle message would

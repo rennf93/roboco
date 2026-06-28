@@ -244,13 +244,10 @@ async def test_pr_fail_a2a_failure_is_swallowed() -> None:
 
 @pytest.mark.asyncio
 async def test_pr_fail_returns_invalid_state_when_runner_returns_none() -> None:
-    """F046: if a concurrent transition (cancel or a racing reviewer) moved the
-    task out of ``awaiting_pr_review`` between the precondition gate and the
-    runner's final composed action, ``run_intent`` returns None (the verb
-    runner's documented contract for a last-action source-status failure).
-    ``_gate_decision`` must surface a clean ``invalid_state`` rejection so the
-    reviewer re-fetches and re-issues — NOT dereference None and crash the
-    gate with a 500 AttributeError on ``t.assigned_to`` / ``t.status``.
+    """A concurrent transition (cancel or racing reviewer) moving the task
+    out of ``awaiting_pr_review`` after the gate makes ``run_intent`` return
+    None; ``_gate_decision`` must surface ``invalid_state`` rather than
+    dereference None and 500 on ``t.assigned_to`` / ``t.status``.
     """
     reviewer_id = uuid4()
     task_id = uuid4()
@@ -279,7 +276,7 @@ async def test_pr_fail_returns_invalid_state_when_runner_returns_none() -> None:
 
 @pytest.mark.asyncio
 async def test_pr_pass_returns_invalid_state_when_runner_returns_none() -> None:
-    """F046: the same None-guard covers pr_pass — a concurrent cancel between
+    """The same None-guard covers pr_pass — a concurrent cancel between
     gate and runner must surface invalid_state, not crash on ``str(t.status)``.
     """
     reviewer_id = uuid4()

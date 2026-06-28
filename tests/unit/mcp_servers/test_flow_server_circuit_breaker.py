@@ -432,17 +432,16 @@ def test_task_id_none_is_forwarded_as_null(flow_module: types.ModuleType) -> Non
 
 
 # ---------------------------------------------------------------------------
-# F068 — non-string-error / no-error-field rejection shapes are counted
+# Non-string-error / no-error-field rejection shapes are counted
 # ---------------------------------------------------------------------------
 
 
 def test_422_validation_failure_counts_as_incomplete_input(
     flow_module: types.ModuleType,
 ) -> None:
-    """F068: a 422 validation-failure body (`{"detail": [...]}`, no `error`)
-    must count toward the breaker as `incomplete_input` — a storm of 422s is
-    retry-storm-worthy. Mirrors do_server's classifier (the two servers share
-    the same breaker logic and must stay in parity).
+    """A 422 validation-failure body (`{"detail": [...]}`, no `error`) must count
+    toward the breaker as `incomplete_input` — a storm of 422s is retry-storm-worthy.
+    Mirrors do_server's classifier (the two servers share the same breaker logic).
     """
     factory, captured = _make_client(
         orchestrator_response={
@@ -475,8 +474,8 @@ def test_422_validation_failure_counts_as_incomplete_input(
 def test_dict_shaped_internal_error_counts_as_invalid_state(
     flow_module: types.ModuleType,
 ) -> None:
-    """F068: a 500 INTERNAL_ERROR dict-shaped response (generic_exception_handler)
-    counts as `invalid_state` — a storm of 500s previously bypassed the breaker.
+    """A 500 INTERNAL_ERROR dict-shaped response (generic_exception_handler) counts
+    as `invalid_state` — a storm of 500s is retry-storm-worthy.
     """
     factory, captured = _make_client(
         orchestrator_response={
@@ -506,9 +505,8 @@ def test_dict_shaped_internal_error_counts_as_invalid_state(
 def test_dict_shaped_not_found_does_not_count(
     flow_module: types.ModuleType,
 ) -> None:
-    """F068: a dict-shaped NOT_FOUND (404 family) does NOT count — parity with
-    the string-error contract that a `not_found` rejection isn't counted
-    (retrying a missing resource won't help until state changes).
+    """A dict-shaped NOT_FOUND (404 family) does NOT count — parity with the
+    string-error contract that a `not_found` rejection isn't counted.
     """
     factory, captured = _make_client(
         orchestrator_response={
@@ -524,8 +522,8 @@ def test_dict_shaped_not_found_does_not_count(
 
 
 # ---------------------------------------------------------------------------
-# F069 — a manifest-registered verb whose route is missing must return an
-# envelope rejection (not a raw 404 body) so the breaker counts it.
+# A manifest-registered verb whose route is missing must return an envelope
+# rejection (not a raw 404 body) so the breaker counts it.
 # ---------------------------------------------------------------------------
 
 
@@ -570,11 +568,9 @@ def _make_404_client() -> tuple[Any, list[tuple[str, dict[str, Any] | None]]]:
 def test_missing_route_404_returns_envelope_and_counts(
     flow_module: types.ModuleType,
 ) -> None:
-    """F069: a 404 from the orchestrator (manifest-registered verb with no
-    route) must surface as a proper `invalid_state` Envelope rejection — not
-    FastAPI's raw ``{"detail": "Not Found"}`` body — and the breaker must
-    count it. Without this, the agent retries the missing route forever and
-    the breaker never trips.
+    """A 404 from the orchestrator (manifest-registered verb with no route) must
+    surface as a proper `invalid_state` Envelope rejection — not FastAPI's raw
+    ``{"detail": "Not Found"}`` body — and the breaker must count it.
     """
     factory, captured = _make_404_client()
     with patch("httpx.Client", side_effect=factory):

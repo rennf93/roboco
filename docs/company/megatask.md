@@ -25,6 +25,8 @@ For each task it proposes, the agent declares a small **collision surface**: whi
 
 The waves are just ordinary task dependencies, so the same dependency-gate that already paces the rest of the company runs them: a wave starts only once the previous wave's tasks have reached a terminal state — normally each one's pull request is merged (a cancelled task releases the next wave too).
 
+The same collision-aware sequencing follows the work **down the chain**, not just at the top level. When a cell PM delegates a root-subtask into developer tasks, the dev-task collision surfaces flow through the same DAG — file-overlap serializes, migration-adders chain, shared-surface edits wait their turn — and cell tasks themselves wave-chain off their sibling root-subtasks. So a batch that spans a shared codebase stays ordered all the way to the leaves, not only at the umbrella. The task hierarchy is capped at four layers (umbrella → root → cell → dev) to fit this MegaTask shape.
+
 ## What gets created
 
 When you confirm, RoboCo creates one **umbrella** task that groups the batch, and one **root-subtask** per piece of work:

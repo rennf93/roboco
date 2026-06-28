@@ -366,13 +366,9 @@ async def test_resume_dispatches() -> None:
 
 @pytest.mark.asyncio
 async def test_triage_route_exists_and_dispatches() -> None:
-    """F067: POST /api/v1/flow/main_pm/triage must exist and wire to
-    choreographer.triage. The main_pm manifest (from lifecycle.intents_for_role)
-    advertises `triage` alongside `triage_all`, so a main_pm agent calling
-    `triage` must hit a real route — not a raw 404 that bypasses the circuit
-    breaker. Mirrors flow_cell_pm's /triage route (the choreographer.triage
-    impl is team-scoped and works for any PM role).
-    """
+    """POST /api/v1/flow/main_pm/triage wires to choreographer.triage (the
+    main_pm manifest advertises `triage` alongside `triage_all`); the
+    team-scoped choreographer.triage impl works for any PM role."""
     mock_chore = MagicMock()
     mock_chore.triage = AsyncMock(return_value=_make_envelope(status="idle"))
     client = TestClient(_build_app(mock_chore))

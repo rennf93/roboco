@@ -363,15 +363,14 @@ async def test_main_pm_complete_handles_escalate_returning_none() -> None:
 
 @pytest.mark.asyncio
 async def test_complete_escalates_batch_umbrella_from_in_progress() -> None:
-    """F001: a MegaTask umbrella is branchless by design and sits in
-    in_progress with no branch/PR. The ``complete`` verb's spec gate
-    (``complete`` action source_statuses={AWAITING_PM_REVIEW}) must NOT
-    reject it — the Main PM routes through main_pm_complete, which walks
-    in_progress -> awaiting_pm_review -> awaiting_ceo_approval. Calling the
-    ``complete`` ENTRY point (not main_pm_complete directly) must succeed
-    and escalate to the CEO. This exercises the real spec gate
-    (can_invoke_intent is pure) — the prior test mocked submit_pm_review and
-    called main_pm_complete directly, bypassing the gate (false green)."""
+    """A MegaTask umbrella is branchless by design and sits in ``in_progress``
+    with no branch/PR; the ``complete`` verb's spec gate
+    (``source_statuses={AWAITING_PM_REVIEW}``) must NOT reject it — the Main
+    PM routes through ``main_pm_complete``, walking in_progress ->
+    awaiting_pm_review -> awaiting_ceo_approval. Calling the ``complete``
+    ENTRY point (not ``main_pm_complete`` directly) must succeed and escalate
+    to the CEO; this exercises the real spec gate (``can_invoke_intent`` is
+    pure)."""
     pm_id = uuid4()
     umbrella_id = uuid4()
     batch_id = uuid4()

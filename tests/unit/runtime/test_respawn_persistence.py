@@ -83,13 +83,9 @@ def test_partition_drops_terminal_and_missing_rows() -> None:
 
 
 def test_partition_restamps_last_check_to_now_to_avoid_stale_tracing_gap() -> None:
-    # F034: a persisted last_check from BEFORE the restart would make the first
-    # post-restart ``_pm_made_rule_following_retry`` audit lookup
-    # (``since = record.get("last_check")``) match a PRE-restart tracing_gap
-    # row, falsely resetting the breaker on the very first post-restart spawn —
-    # exactly when a fresh strike count should be evaluating current state.
-    # Restore must re-stamp last_check to the restore time so only post-restart
-    # tracing gaps can reset the counter.
+    # Restore must re-stamp last_check to the restore time so a pre-restart
+    # tracing_gap row can't falsely reset the breaker on the first post-restart
+    # spawn.
     tid = uuid4()
     stale_check = datetime(2026, 6, 20, tzinfo=UTC)
     rows = [_row(tid, last_check=stale_check)]
@@ -380,7 +376,7 @@ async def test_restart_midloop_continues_identically_to_no_restart() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# F096 — fire-and-forget persist commit ordering
+# fire-and-forget persist commit ordering
 # --------------------------------------------------------------------------- #
 
 

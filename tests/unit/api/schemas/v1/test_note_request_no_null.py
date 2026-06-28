@@ -117,11 +117,8 @@ def test_note_request_coerces_string_next_steps_to_list() -> None:
 
 
 def test_note_request_coerces_string_where_to_look_to_list() -> None:
-    """F118: a single string for where_to_look is wrapped into a one-element
-    list. It is a list-typed handoff field like consequences/next_steps and
-    must tolerate a lone scalar — without this a well-intentioned
-    ``where_to_look="src/api/"`` 422'd at the route (no remediation envelope)
-    and the agent's retry loop tripped the do-server circuit breaker."""
+    """A single string for where_to_look is wrapped into a one-element list,
+    mirroring consequences/next_steps, so a lone scalar does not 422 the route."""
     req = NoteRequest.model_validate(
         {"text": "x", "scope": "handoff", "where_to_look": "src/api/auth.py"}
     )

@@ -167,13 +167,9 @@ async def test_merge_does_not_retry_when_method_allowed(
 async def test_merge_already_merged_pr_is_idempotent_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """F049: the CEO ``merge_pull_request`` path must treat an already-merged PR
-    as idempotent success, not raise GitError — mirroring ``_merge_with_retry``
-    (the agent-facing path). A merge PUT on an already-merged PR returns the
-    same 405 as a genuine "not mergeable" refusal, so without disambiguation a
-    CEO retry (double-click, or a re-merge after a network blip where the first
-    PUT actually landed) raises GitError instead of no-opping — surfacing a
-    spurious failure on the very master-merge path the CEO owns.
+    """The CEO ``merge_pull_request`` path treats an already-merged PR as
+    idempotent success (not GitError) — a merge PUT on an already-merged PR
+    returns the same 405 as a genuine refusal, so they must be disambiguated.
     """
 
     svc = _git_service()
@@ -216,8 +212,8 @@ async def test_merge_already_merged_pr_is_idempotent_success(
 async def test_merge_raises_when_not_merged_and_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """F049: a genuine merge refusal (not mergeable, NOT already-merged) still
-    raises GitError — the idempotency guard must not mask a real failure."""
+    """A genuine merge refusal (not mergeable, NOT already-merged) still raises
+    GitError — the idempotency guard must not mask a real failure."""
 
     svc = _git_service()
     monkeypatch.setattr(

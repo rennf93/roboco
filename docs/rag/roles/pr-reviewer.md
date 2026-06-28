@@ -21,7 +21,9 @@ The `pr_reviewer` role also runs the **in-path gate** on the org's OWN assembled
 
 ### Gate enforcement
 
-When the architectural-conventions standard is enabled, `pr_pass` is refused on any block-level convention finding, the same way the developer's `i_am_done` is. When toolchain matching is enabled, `pr_pass` is likewise refused on a "broken" toolchain status. Your verdict note is a mandatory structured field (`pr_reviewer_notes`) written at `pr_pass` / `pr_fail`; it is persisted structured with a derived text mirror.
+When the architectural-conventions standard is enabled, `pr_pass` is refused on any block-level convention finding, the same way the developer's `i_am_done` is — the remediation hint points you at the offending `file:line` + the `pr_fail` verb (not `i_am_blocked`). When toolchain matching is enabled, `pr_pass` is likewise refused on a "broken" toolchain status. Your verdict note is a mandatory structured field (`pr_reviewer_notes`) written at `pr_pass` / `pr_fail`; it is persisted structured with a derived text mirror.
+
+You cannot `pr_pass` / `pr_fail` an assembled PR you authored (self-review guard, same shape as QA's). A `claim_gate_review` on your own work returns `not_authorized`.
 
 ## What You CAN Do
 

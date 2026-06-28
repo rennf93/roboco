@@ -1,17 +1,6 @@
-"""F058: the FIRST release (no prior ``chore(release):`` commit) must still
-produce a non-empty version-bump plan.
-
-``_canonical_bump_files`` derived the bump-target set from the previous
-``chore(release):`` commit's touched files. On the first release ever there is
-no such commit, so it returned ``[]`` → ``assess`` set
-``version_bump_plan=[]`` → ``ReleaseExecutor.apply_version_bumps`` bumped NO
-files and published a tag masquerading as X.Y.Z with nothing actually changed.
-
-The fix: when no prior release commit exists, fall back to the version-
-reference scan — the files currently embedding the version string are exactly
-the set a first release must bump (and the set a subsequent release's
-``chore(release):`` commit would record as canonical). This is read-only
-derivation only; the CEO-approval gate and fail-closed executor are untouched.
+"""The FIRST release (no prior ``chore(release):`` commit) must still produce a
+non-empty version-bump plan: ``_canonical_bump_files`` falls back to the
+version-reference scan when no prior release commit exists.
 """
 
 from __future__ import annotations
@@ -60,7 +49,7 @@ def _first_release_repo(tmp_path: Path) -> Path:
 
 def test_canonical_bump_files_falls_back_on_first_release(tmp_path: Path) -> None:
     """No prior ``chore(release):`` commit ⇒ the canonical set is the version-
-    reference scan, NOT empty (the F058 regression: it returned ``[]``)."""
+    reference scan, NOT empty."""
     root = _first_release_repo(tmp_path)
     files = _canonical_bump_files(root, "0.1.0")
     assert files  # non-empty

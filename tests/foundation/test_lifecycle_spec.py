@@ -567,7 +567,7 @@ def test_can_invoke_intent_developer_open_pr_no_commits_tracing_gap() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# F101: open_pr must enforce the PR-open state gate (parity with the HTTP path)
+# open_pr must enforce the PR-open state gate (parity with the HTTP path)
 # --------------------------------------------------------------------------- #
 
 
@@ -584,10 +584,8 @@ def _owned_task(**overrides: Any) -> SimpleNamespace:
 
 
 def test_open_pr_rejected_on_claimed_task() -> None:
-    """F101: ``open_pr`` has ``composes=()`` so the spec gate applied NO
-    source-status check — a dev could open a PR from ``claimed`` (before
-    ``in_progress``), skipping the active-dev state the HTTP path's
-    ``_assert_pr_create_allowed`` enforces. The state gate now rejects it."""
+    """``open_pr`` must be rejected from ``claimed`` — only ``in_progress`` may
+    open a PR (mirrors the HTTP path's ``_assert_pr_create_allowed``)."""
     actor = uuid4()
     d = spec.can_invoke_intent(
         spec.Role.DEVELOPER,
@@ -673,14 +671,8 @@ def test_open_pr_state_gate_takes_priority_over_unowned() -> None:
 
 
 def test_escalate_up_rejected_on_completed_task() -> None:
-    """F043: a PM must not resurrect a COMPLETED task via escalate_up.
-
-    escalate_up has composes=() and historically no source-status guard, so the
-    spec gate accepted it on a terminal task and apply_escalation set it back to
-    BLOCKED — bypassing the state machine's terminal-state invariant. The spec
-    now rejects terminal tasks (completed / cancelled) before the journal:decision
-    write fires.
-    """
+    """A PM must not resurrect a COMPLETED task via ``escalate_up`` — the spec
+    gate rejects terminal tasks before the journal:decision write fires."""
     d = spec.can_invoke_intent(
         spec.Role.CELL_PM,
         "escalate_up",
@@ -692,7 +684,7 @@ def test_escalate_up_rejected_on_completed_task() -> None:
 
 
 def test_escalate_up_rejected_on_cancelled_task() -> None:
-    """F043: cancelled is terminal — escalate_up must not resurrect it either."""
+    """Cancelled is terminal — escalate_up must not resurrect it either."""
     d = spec.can_invoke_intent(
         spec.Role.MAIN_PM,
         "escalate_up",
@@ -704,7 +696,7 @@ def test_escalate_up_rejected_on_cancelled_task() -> None:
 
 
 def test_escalate_up_allowed_on_blocked_task() -> None:
-    """F043: the terminal guard must not over-restrict — BLOCKED is the natural
+    """The terminal guard must not over-restrict — BLOCKED is the natural
     escalation source and must still be allowed."""
     d = spec.can_invoke_intent(
         spec.Role.CELL_PM,

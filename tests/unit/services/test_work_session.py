@@ -78,7 +78,7 @@ async def test_has_unpushed_commits_false_when_session_missing() -> None:
 
 
 # ---------------------------------------------------------------------------
-# F062 — merge_pr must be idempotent + active-guarded like close()/complete()
+# merge_pr must be idempotent + active-guarded like close()/complete()
 # ---------------------------------------------------------------------------
 
 
@@ -114,9 +114,9 @@ async def test_merge_pr_completes_active_session() -> None:
 
 @pytest.mark.asyncio
 async def test_merge_pr_idempotent_on_already_completed_preserves_audit_trail() -> None:
-    """F062 (mode 1): a retried merge after a successful-but-unconfirmed GitHub
-    merge must NOT overwrite the original ``merged_by`` / ``pr_merged_at`` — the
-    merge audit trail is preserved. Mirrors close()'s idempotency guard."""
+    """A retried merge after a successful-but-unconfirmed GitHub merge must NOT
+    overwrite the original ``merged_by`` / ``pr_merged_at`` — the merge audit
+    trail is preserved. Mirrors close()'s idempotency guard."""
 
     original_merger = uuid4()
     original_ts = datetime(2026, 6, 1, 12, 0, tzinfo=UTC)
@@ -144,9 +144,9 @@ async def test_merge_pr_idempotent_on_already_completed_preserves_audit_trail() 
 
 @pytest.mark.asyncio
 async def test_merge_pr_does_not_resurrect_abandoned_session() -> None:
-    """F062 (mode 2): merge_pr on an ABANDONED session must NOT flip it to
-    COMPLETED — that would silently undo the single-active invariant's
-    abandonment and make discarded work look like a successful merge."""
+    """``merge_pr`` on an ABANDONED session must NOT flip it to COMPLETED — that
+    would silently undo the single-active invariant's abandonment and make
+    discarded work look like a successful merge."""
 
     ws = MagicMock(status=WorkSessionStatus.ABANDONED, pr_number=42, merged_by=None)
     svc, session = _merge_service()

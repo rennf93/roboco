@@ -282,16 +282,10 @@ class PRGateMixin(_Base):
                 task_id=task_id,
                 verb=verb,
             )
-        # F046: a concurrent transition (cancel, or a racing reviewer) between
-        # the precondition gate and the runner's final composed action makes
-        # the source-status check fail mid-flight and run_intent returns None
-        # (the verb runner's documented contract for a last-action source-status
-        # failure). Without this guard the dereferences below (t.assigned_to,
-        # t.status, _post_gate_review_to_pr(t, ...)) crash the gate with a 500
-        # AttributeError. Surface a clean invalid_state rejection so the
-        # reviewer re-fetches with evidence(task_id) and re-issues — the
-        # already-authored verdict note is harmless (the task is no longer in
-        # the gate state) and no PR post / a2a runs against a None task.
+        # A concurrent transition (cancel, racing reviewer) between the
+        # precondition gate and the runner's final action makes run_intent
+        # return None; guard the dereferences below with a clean rejection so
+        # the reviewer re-fetches and re-issues.
         if t is None:
             return await self._emit_rejection(
                 Envelope.invalid_state(

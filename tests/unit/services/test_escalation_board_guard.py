@@ -430,11 +430,8 @@ async def test_is_board_advisory_agent_classifies_roles() -> None:
 
 @pytest.mark.asyncio
 async def test_apply_escalation_refuses_completed_task() -> None:
-    # F043: a COMPLETED task is terminal — apply_escalation must not resurrect
-    # it to BLOCKED. The HTTP escalate route bypasses the spec gate, so the
-    # single write primitive must refuse terminal tasks itself. Returns False
-    # so callers (escalate / HTTP route) can surface a clean invalid_state / 409
-    # instead of mutating a finished task.
+    # apply_escalation must refuse terminal tasks: the HTTP route bypasses the
+    # spec gate, so the primitive guards itself and returns False for a 409.
     svc = _service()
     original_assignee = uuid4()
     task = MagicMock(
@@ -466,7 +463,7 @@ async def test_apply_escalation_refuses_completed_task() -> None:
 
 @pytest.mark.asyncio
 async def test_apply_escalation_refuses_cancelled_task() -> None:
-    # F043: cancelled is terminal too — must not be resurrected via escalation.
+    # cancelled is terminal too — must not be resurrected via escalation.
     svc = _service()
     task = MagicMock(
         id=uuid4(),
@@ -495,8 +492,8 @@ async def test_apply_escalation_refuses_cancelled_task() -> None:
 
 @pytest.mark.asyncio
 async def test_apply_escalation_blocks_non_terminal_task() -> None:
-    # F043: the terminal guard must not over-restrict — a normal in_progress
-    # task still escalates (blocked + reassigned) and returns True.
+    # the terminal guard must not over-restrict: a normal in_progress task
+    # still escalates (blocked + reassigned) and returns True.
     svc = _service()
     target_id = uuid4()
     task = MagicMock(

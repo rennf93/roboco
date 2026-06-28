@@ -1,12 +1,8 @@
-"""F024: the SSE ``subscribe_to_task`` endpoint must (a) be authenticated
-like the rest of the a2a message surface (F023) and (b) acquire a SHORT-LIVED
-DB session per poll iteration instead of holding the request-scoped
-``db: DbSession`` for the full SSE lifetime (up to 1 hour / 720 polls), which
-exhausted the asyncpg pool one connection per connected client.
-
-The fix mirrors F003's ``require_any_authenticated_agent`` for auth and uses
-``get_session_factory()`` inside the generator so each poll opens, queries,
-and closes its own session — no connection is held across ``asyncio.sleep``.
+"""SSE ``subscribe_to_task`` is authenticated like the rest of the a2a
+message surface and opens a SHORT-LIVED DB session per poll iteration
+(via ``get_session_factory()``) instead of holding the request-scoped
+``db: DbSession`` for the full SSE lifetime, which exhausted the asyncpg
+pool one connection per connected client.
 """
 
 from __future__ import annotations
@@ -112,9 +108,9 @@ async def test_subscribe_accepts_valid_token_then_404s_unknown_task(
 
 
 def test_subscribe_route_does_not_hold_request_scoped_db() -> None:
-    """F024: the route must NOT depend on ``get_db`` — the request-scoped
-    session would be held for the full SSE lifetime (up to 1 hour). Each
-    poll must open its own short-lived session via ``get_session_factory``.
+    """The route must NOT depend on ``get_db`` — the request-scoped session
+    would be held for the full SSE lifetime (up to 1 hour). Each poll opens
+    its own short-lived session via ``get_session_factory``.
     """
     subscribe_route = cast(
         "APIRoute",
@@ -146,13 +142,10 @@ def test_subscribe_route_does_not_hold_request_scoped_db() -> None:
 async def test_subscribe_opens_a_short_lived_session_per_poll(
     a2a_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """F024: each poll iteration opens its own session and closes it before
-    the next ``asyncio.sleep`` — never holding one connection across the full
-    SSE lifetime. We patch ``get_session_factory`` to count session opens,
-    patch ``A2AService.get_task`` to return a non-terminal task, patch
-    ``asyncio.sleep`` to no-op, and make ``request.is_disconnected`` return
-    True after a few polls to terminate the stream quickly. The count of
-    session opens must exceed 1 (one per poll, not one for the lifetime)."""
+    """Each poll iteration opens its own session and closes it before the next
+    ``asyncio.sleep`` — never holding one connection across the full SSE
+    lifetime. Asserts more than one session open (one per poll, not one for
+    the lifetime)."""
 
     monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", _SECRET)
     monkeypatch.setenv("ROBOCO_AGENT_AUTH_REQUIRED", "true")

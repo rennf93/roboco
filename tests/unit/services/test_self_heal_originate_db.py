@@ -151,9 +151,8 @@ async def test_originate_creates_pending_main_pm_assigned_task(
     # Assigned to the Main PM agent up front (not just team=main_pm) so that, once
     # the CEO approves it, the orchestrator dispatches it straight to that agent.
     assert task.assigned_to == MAIN_PM_UUID
-    # F059: held for the CEO's Approve-&-Start — NOT auto-confirmed. The
-    # orchestrator + give_me_work keep it out of dispatch until the CEO
-    # approves it (approve_and_start flips this True).
+    # held for the CEO's Approve-&-Start — NOT auto-confirmed: the orchestrator
+    # + give_me_work keep it out of dispatch until approve_and_start flips this.
     assert task.confirmed_by_human is False
     assert task.team == Team.MAIN_PM
     assert task.source == "self_heal"

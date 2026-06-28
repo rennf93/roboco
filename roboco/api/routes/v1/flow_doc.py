@@ -104,9 +104,8 @@ async def i_am_blocked(
     x_agent_id: _AgentIdHeader,
     choreographer: _ChoreographerDep,
 ) -> dict:
-    """F015: the documenter manifest registers ``i_am_blocked`` — surface the
-    route so a blocked documenter's escape hatch returns an envelope instead of
-    a 404."""
+    """Surface the ``i_am_blocked`` route so a blocked documenter's escape
+    hatch returns an envelope instead of a 404."""
     env = await choreographer.i_am_blocked(
         x_agent_id,
         body.task_id,

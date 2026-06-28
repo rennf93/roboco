@@ -1,21 +1,10 @@
-"""F072 — reaper Docker subprocess calls (``docker inspect`` / ``docker exec``)
-had no deadline: a hung Docker daemon or a stuck container FS would freeze the
-single asyncio event loop, because the reaper runs inline before every dispatch
-tick and shares that loop with every background sweeper (rate-limit probe,
-self-heal, ci-watch, dep-update, release-manager, grok-auth refresh).
-
-The fix bounds each call with ``asyncio.wait_for``; on expiry ``proc.kill()`` the
-child and either raise (``inspect`` / ``resolve_container_id`` — the callers
-already apply their own fail-direction) or return ``None`` (the gateway probe —
-inconclusive, the caller declines to act, matching its existing probe-failure
-contract). The deadlines are generous enough that a legitimate slow docker call
-is never wrongly aborted. ``_check_health`` is also hardened so one agent's hung
-inspect skips that agent, not the whole sweep — preserving the per-tick
-check-all-agents invariant the timeout-then-raise would otherwise break.
-
-Deterministic: the slow-docker tests patch the timeout constants tiny and use a
-never-resolving ``communicate``/``wait`` so a bounded fail-close is asserted in
-well under a second, never relying on real wall-clock timing of the defaults.
+"""Reaper Docker subprocess calls (``docker inspect`` / ``docker exec``) are
+bounded with ``asyncio.wait_for`` so a hung Docker daemon can't freeze the shared
+asyncio event loop (the reaper runs before every dispatch tick). On timeout the
+child is killed and the call either raises (``inspect`` /
+``resolve_container_id``) or returns ``None`` (gateway probe — inconclusive).
+``_check_health`` is hardened per-agent so one hung inspect skips that agent, not
+the whole sweep, preserving the per-tick check-all-agents invariant.
 """
 
 from __future__ import annotations

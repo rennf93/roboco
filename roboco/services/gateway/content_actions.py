@@ -1208,10 +1208,9 @@ class ContentActions:
         # A dependency block is a "wait silently" situation — never a CEO signal.
         # An agent must not page the CEO to relax or escalate a task that is
         # simply waiting on an unfinished upstream; that wait clears on its own.
-        # F048: also reject human-only recipients (prompter/secretary) — they
-        # have no agent ack path, so an ack-required signal would sit permanently
-        # unacked and suppress later same-purpose notifications via the dedup
-        # query. The CEO acks via the panel and stays an allowed recipient.
+        # Also reject human-only recipients (prompter/secretary) — they have no
+        # agent ack path, so an ack-required signal would sit permanently unacked
+        # and suppress later same-purpose notifications via the dedup query.
         if reject := await self._reject_disallowed_recipient(target, task_id):
             return reject
         await self.notifications.send_ack_notification(

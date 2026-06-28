@@ -56,7 +56,7 @@ _SDK_TIMEOUT = 2.0
 # FastAPI's default missing-route status. Every gateway route returns 200
 # with an Envelope (including not_found rejections), so a 404 from the
 # orchestrator is always a manifest-registered verb whose HTTP route is
-# missing — F069 synthesizes an invalid_state Envelope for it.
+# missing — synthesize an invalid_state Envelope for it.
 _MISSING_ROUTE_STATUS = 404
 
 # Envelope error kinds that count toward the per-verb circuit breaker.
@@ -70,8 +70,8 @@ _CIRCUIT_REJECTION_KINDS: frozenset[str] = frozenset(
 
 # Dict-shaped `error.code` values (from FastAPI's exception handlers —
 # `roboco_exception_handler` / `http_exception_handler` / `generic_exception_handler`)
-# mapped to the counted breaker kind they are semantically equivalent to. F068:
-# a 422 / 500 / 4xx-exception storm is retry-storm-worthy but the response body
+# mapped to the counted breaker kind they are semantically equivalent to. A
+# 422 / 500 / 4xx-exception storm is retry-storm-worthy but the response body
 # carries `error` as a DICT (not a string kind), so the breaker's string-only
 # check skipped it — unbounded retries. We classify by `error.code` so the SDK
 # actually records the attempt. Kinds not in `_CIRCUIT_REJECTION_KINDS` are
@@ -104,7 +104,7 @@ def _classify_rejection(payload: dict[str, Any]) -> str | None:
     The breaker only counts rejections whose kind is in
     ``_CIRCUIT_REJECTION_KINDS`` (the SDK's authoritative catalog). Three
     reachable rejection shapes must all map to a counted kind so a storm of
-    any of them trips the breaker (F068):
+    any of them trips the breaker:
 
     1. Envelope rejection: ``error`` is a STRING kind. Forward it if in
        the counted set (existing behaviour). Uncounted string kinds (e.g.
@@ -176,19 +176,15 @@ def _post(path: str, body: dict[str, Any]) -> dict[str, Any]:
             headers=_build_headers(),
             json=body,
         )
-        # F069: a 404 here means a manifest-registered verb has no matching
-        # route on the orchestrator (every gateway route returns 200 with an
-        # Envelope — including not_found rejections — so a 404 status with
-        # FastAPI's default body (``{"detail": "Not Found"}``, no ``error``
-        # field) is always a missing route, never a legit Envelope). That
-        # body is a non-envelope payload the breaker can't classify, so a
-        # storm of these bypassed the circuit breaker → unbounded retries on
-        # a verb that can never succeed. Synthesize an ``invalid_state``
-        # Envelope rejection so the breaker counts it (via
-        # ``_classify_rejection``) and the agent gets a remediation hint
-        # instead of a raw ``detail`` body. A 404 that DOES carry a real
-        # Envelope (an ``error`` field — e.g. a proxy re-status a 200
-        # rejection to 404) is surfaced as-is.
+        # A 404 here means a manifest-registered verb has no matching route on
+        # the orchestrator: every gateway route returns 200 with an Envelope
+        # (including not_found rejections), so FastAPI's default 404 body (no
+        # ``error`` field) is always a missing route, never a legit Envelope.
+        # Synthesize an ``invalid_state`` Envelope so the breaker counts it
+        # (via ``_classify_rejection``) and the agent gets a remediation hint
+        # instead of a raw ``detail`` body. A 404 carrying a real Envelope (an
+        # ``error`` field — e.g. a proxy re-status a 200 rejection to 404) is
+        # surfaced as-is.
         if response.status_code == _MISSING_ROUTE_STATUS:
             try:
                 body_404 = response.json()
@@ -270,11 +266,11 @@ def _record_and_check_circuit(
     # Gateway envelopes use a string `error` (kind); RobocoError-derived
     # exceptions surface a dict-shaped error via FastAPI's middleware, and
     # 422 validation failures carry a `detail` list with no `error` field
-    # at all. F068: classify all three rejection shapes so a storm of 500s
-    # or 422s counts toward the breaker (previously bypassed → unbounded
-    # retries). The dict-shape defence against `TypeError: unhashable type:
-    # 'dict'` lives in `_classify_rejection` (isinstance checks, never a
-    # `dict in frozenset` membership test).
+    # at all. Classify all three rejection shapes so a storm of 500s or 422s
+    # counts toward the breaker (previously bypassed → unbounded retries). The
+    # dict-shape defence against `TypeError: unhashable type: 'dict'` lives in
+    # `_classify_rejection` (isinstance checks, never a `dict in frozenset`
+    # membership test).
     rejection_kind = _classify_rejection(payload)
     if rejection_kind is None:
         return payload

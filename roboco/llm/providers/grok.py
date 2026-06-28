@@ -56,15 +56,11 @@ GROK_AUTH_HOST_PATH = os.environ.get("ROBOCO_HOST_GROK_DIR", str(Path.home() / "
 
 # In-container paths.
 _MCP_CONFIG_IN_CONTAINER = "/app/mcp-config.json"
-# F005: the host ~/.grok DIRECTORY is mounted read-only here (NOT the single
-# auth.json file). A single-file bind mount pins the inode, so the
-# orchestrator's atomic auth.json refresh (tmp+rename within the dir) never
-# reached a running container — a long-lived grok container hung at the login
-# prompt when the original ~6h token expired. A directory mount sees the
-# rename, so the refreshed token propagates to running containers. The
-# entrypoint symlinks ~/.grok/auth.json -> this RO mount so grok (and the
-# --check backstop) read the live credential while grok's own writable state
-# (config.toml, sessions/) still lands in the image's ~/.grok.
+# The host ~/.grok DIRECTORY (not a single auth.json file) is mounted RO here:
+# a single-file bind mount pins the inode so the orchestrator's atomic
+# tmp+rename refresh never reaches a running container. The entrypoint
+# symlinks ~/.grok/auth.json -> this RO mount; grok's writable state lives in
+# the image's ~/.grok.
 _GROK_AUTH_DIR_IN_CONTAINER = "/home/agent/.grok-auth-ro"
 # Per-agent data dir (the host side is reused from the shared assembly): the
 # entrypoint writes the captured token usage here so the orchestrator reads it
@@ -166,18 +162,16 @@ class GrokCliProvider(AgentProvider):
     def _append_grok_auth_mount(cmd: list[str]) -> None:
         """Mount the host's SuperGrok ``~/.grok`` directory (read-only).
 
-        F005: the mount is the DIRECTORY, not the single ``auth.json`` file.
-        A single-file bind mount pins the inode, so when the orchestrator
+        The mount is the DIRECTORY, not the single ``auth.json`` file: a
+        single-file bind mount pins the inode, so when the orchestrator
         atomically refreshes the token (``tmp.replace`` = rename within the
         host ``~/.grok``), a running container kept reading the stale inode and
         hung at grok's login prompt once the original ~6h token expired. A
         directory bind mount sees the rename, so the refreshed ``auth.json``
         propagates to running containers. The entrypoint symlinks
-        ``~/.grok/auth.json`` at this RO directory mount, so grok (and the
-        ``--check`` backstop) read the live credential while grok's own
-        writable state (``config.toml``, ``sessions/``) still lands in the
-        image's ``~/.grok``. Read-only so concurrent containers can't corrupt
-        the shared subscription credential.
+        ``~/.grok/auth.json`` at this RO directory mount; grok's own writable
+        state (``config.toml``, ``sessions/``) lands in the image's ``~/.grok``.
+        Read-only so concurrent containers can't corrupt the shared credential.
         """
         auth_dir = Path(GROK_AUTH_HOST_PATH)
         if (auth_dir / "auth.json").exists():

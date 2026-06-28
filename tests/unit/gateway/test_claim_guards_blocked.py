@@ -1,12 +1,6 @@
-"""F018 — ``already_active_guard`` must treat a ``blocked`` task as active.
-
-``_ACTIVE_BLOCKING_STATUSES`` excluded ``blocked``, so a developer with a
-blocked task could claim a second task (the guard passed). When the blocked
-task was later unblocked via ``unblock_with_restore`` it resumed to
-``in_progress`` — leaving the dev silently holding TWO ``in_progress`` tasks,
-violating the one-active-task-per-dev invariant the guard exists to enforce.
-A blocked task is still owned and will resume to active, so it must block a
-new claim.
+"""``already_active_guard`` must treat a ``blocked`` task as active. A blocked
+task is still owned and will resume to ``in_progress`` on unblock, so it must
+block a new claim (preserves the one-active-task-per-dev invariant).
 """
 
 from __future__ import annotations
@@ -25,7 +19,7 @@ def _task(*, status: str) -> MagicMock:
 
 
 def test_already_active_guard_blocks_when_agent_has_blocked_task() -> None:
-    """A blocked task the dev still owns must block a new claim (F018)."""
+    """A blocked task the dev still owns must block a new claim."""
     target_id = uuid4()
     blocked = _task(status="blocked")
     env = already_active_guard([blocked], target_id)

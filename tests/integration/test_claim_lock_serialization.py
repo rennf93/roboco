@@ -1,19 +1,8 @@
-"""F074 — real-Postgres proof that ``TaskService.acquire_claim_lock`` serializes
-concurrent claims by the SAME agent (the one-task-per-agent invariant) while NOT
-serializing claims by DIFFERENT agents.
-
-The choreographer-level ordering + coordinator-exemption is covered by the unit
-suite (``test_choreographer_claim_lock.py``); this test pins the DB-level
-contract the unit suite mocks out: that ``pg_advisory_xact_lock`` keyed by
-``hashtextextended(agent_id)`` actually blocks a second transaction trying to
-acquire the same agent's lock until the first commits/rolls back, and that a
-different agent's lock is uncontended. Skips when Postgres is unreachable.
-
-Each ``acquire_claim_lock`` call uses its own fresh session/engine. The
-blocking call's session is single-use: ``asyncio.wait_for`` cancelling an
-in-flight asyncpg query leaves the SQLAlchemy session mid-connection-checkout
-("provisioning a new connection"), so a throwaway session per timed acquire
-keeps the rest of the test on clean connections.
+"""Real-Postgres proof that ``TaskService.acquire_claim_lock`` serializes
+concurrent claims by the SAME agent (one-task-per-agent) while NOT serializing
+different agents. Skips when Postgres is unreachable; each ``acquire_claim_lock``
+uses a throwaway session so cancellation mid-checkout can't poison the rest of
+the test.
 """
 
 from __future__ import annotations

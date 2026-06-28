@@ -232,7 +232,7 @@ def test_team_for_slug() -> None:
 
 
 def test_role_for_slug_or_none_unknown_returns_none() -> None:
-    """F019/F031: a safe variant for defensive skip-guards — an unknown/stale
+    """A safe variant for defensive skip-guards — an unknown/stale
     slug returns None instead of raising KeyError, so a stale assignee or
     notification-target slug can't crash the whole dispatcher tick."""
     assert identity.role_for_slug_or_none("nonexistent-slug") is None

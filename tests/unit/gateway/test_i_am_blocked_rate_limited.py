@@ -508,12 +508,9 @@ class TestRateLimitTrackerActivateOnParking:
         assert env.status == "in_progress"
 
     async def test_activate_failure_is_logged_not_silent(self) -> None:
-        """F045: an activate() failure must be logged loudly, not bare-suppressed.
-
-        The probe-resume loop is tracker-driven, so a silent activate failure
-        strands every parked agent in WAITING_LONG with no probe ever running.
-        A loud error log makes the stranded-fleet condition visible to
-        operators (and pairs with the orchestrator's in-memory fallback sweep).
+        """An activate() failure must be logged loudly, not bare-suppressed —
+        the probe-resume loop is tracker-driven, so a silent failure strands
+        every parked agent in WAITING_LONG with no probe ever running.
         """
         agent_id = uuid4()
         task_id = uuid4()

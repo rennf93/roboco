@@ -39,14 +39,16 @@ Set `ROBOCO_AGENT_AUTH_REQUIRED=true` to require a signed token on every REST re
 !!! tip "How the panel authenticates as the CEO"
     The control panel acts as the CEO agent. In secure mode, nginx injects the panel's CEO `X-Agent-Token` so your browser session is authenticated without you handling the secret — you just use the panel as normal.
 
-## The WebSocket caveat
+## The WebSocket + live-chat streams
 
-Token enforcement is **REST-only**. The [WebSocket streams](./websockets.md) do not check the HMAC token:
+Secure mode extends beyond REST. When `ROBOCO_AGENT_AUTH_REQUIRED=true`:
 
-- The per-resource sockets (`/ws/channels|agents|sessions|notifications/{id}`) validate their `agent_id`/`viewer_id` query param against the database and channel access, but not a token.
-- `/ws/system` is fully unauthenticated.
+- The **per-resource WebSocket streams** (`/ws/channels|agents|sessions|notifications/{id}`) require the **CEO panel token** — the same signed `X-Agent-Token` nginx injects for the panel. An agent on the Docker network can no longer subscribe to another agent's notifications with no auth. They still validate `agent_id`/`viewer_id` against the DB and channel access on top.
+- The **`/api/v1/do/*` content routes** require a valid per-agent HMAC token bound to `X-Agent-ID` (the do router serves every role, so the gate is token-only, not role-specific).
+- The **live-chat bridges** (`/prompter/live/*`, `/secretary/live/*`) — the prompter/secretary intake chats — require the CEO panel token on their start/stream/status/messages/stop endpoints. They were the last panel-facing API surface that ran unauthenticated.
+- **`/ws/system`** stays operator-only and read-only by design (it carries system telemetry and accepts nothing from the client); it is not token-gated.
 
-The streams are read-only and carry no control surface or secrets, so this isn't a privilege-escalation path the way the REST headers are — but it does mean the orchestrator port should stay trusted-network-only until WebSocket auth lands, even when you've enabled secure-mode REST.
+A presented-but-forged token is rejected even in dev (header-trust) mode, so you can roll out tokens before flipping the switch without breaking anything. The container→relay internal callback is left ungated by design (internal Docker network, opaque session id).
 
 ## What to do
 

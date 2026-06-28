@@ -62,7 +62,7 @@ require_pr_reviewer = _require_roles(frozenset({Role.PR_REVIEWER}))
 
 
 def _require_authenticated_agent() -> params.Depends:
-    """Token-only guard for the content-tool (do) router (F003/F014).
+    """Token-only guard for the content-tool (do) router.
 
     The do router serves every role — content tools are role-uniform, with
     per-role removal handled in the spawn manifest — so, unlike the flow

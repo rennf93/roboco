@@ -1,24 +1,13 @@
-"""F064: per-connection send queue + send timeout — one slow WS client must
-not back-pressure ALL event delivery to ALL clients.
+"""Per-connection send queue + send timeout — one slow WS client must not
+back-pressure ALL event delivery to ALL clients.
 
-The old broadcast did ``await asyncio.gather(*[conn.send_text(data) for conn
-in connections], return_exceptions=True)`` with no per-connection send queue
-and no send timeout. If one client was slow to drain, ``conn.send_text(data)``
-awaited indefinitely on the transport, blocking the gather → the bridge
-handler → ``_dispatch_event`` → the whole ``_listen_loop`` for every event
-type and recipient.
-
-The fix gives each registered connection a bounded send queue + a sender
-coroutine that drains it, with ``send_text`` behind
+Each registered connection gets a bounded send queue + a sender coroutine
+that drains it, with ``send_text`` behind
 ``asyncio.wait_for(..., timeout=SEND_TIMEOUT_SECONDS)``. Broadcasts become
-fire-and-enqueue: a slow client's queue fills, then drops/overflows (logged
-as a warning) instead of blocking the fan-out. The listen loop is never
-blocked on a single client.
-
-Determinism: every slow-send test uses a ``receive``/``send_text`` that
-awaits a never-resolved ``Future`` and patches ``SEND_TIMEOUT_SECONDS`` to a
-tiny value, so assertions hold in well under a second and never rely on real
-wall-clock timing of the default timeout.
+fire-and-enqueue: a slow client's queue fills, then drops/overflows (logged)
+instead of blocking the fan-out. Tests patch ``SEND_TIMEOUT_SECONDS`` to a
+tiny value and use a never-resolved ``Future`` so assertions hold in well
+under a second, never relying on real wall-clock timing.
 """
 
 from __future__ import annotations
@@ -223,21 +212,17 @@ async def test_broadcast_send_timeout_protects_legacy_unregistered_socket() -> N
 
 
 # ---------------------------------------------------------------------------
-# Send-side failure proactively reaps the dead socket (F119)
+# Send-side failure proactively reaps the dead socket.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_sender_triggers_disconnect_on_send_error() -> None:
-    """F119: when send_text raises (transport closed / dead socket), the sender
-    task must proactively disconnect the socket from every subscription set —
-    not just stop sending and wait for the receive loop's idle timeout to reap
-    it. Without this a send-side-detected dead socket lingers in the sets and
-    broadcasts keep enqueuing into a queue whose consumer has exited
-    (queue-overflow log spam, then silent drops) for up to IDLE_TIMEOUT_SECONDS
-    until the receive loop's idle timeout finally fires. The send path provably
-    failed, so it should clean up immediately — the receive-side-only reap was
-    the gap the audit flagged."""
+    """When ``send_text`` raises (transport closed / dead socket), the sender
+    task must proactively disconnect the socket from every subscription set
+    rather than wait for the receive loop's idle timeout — otherwise a
+    send-side-detected dead socket lingers and broadcasts keep enqueuing into
+    a queue whose consumer has exited."""
     mgr = ConnectionManager()
     dead_ws = _make_ws(send_side_effect=ConnectionError("transport closed"))
     await mgr.connect_system(dead_ws)
@@ -257,10 +242,10 @@ async def test_sender_triggers_disconnect_on_send_error() -> None:
 
 @pytest.mark.asyncio
 async def test_sender_keeps_live_socket_on_send_timeout_only() -> None:
-    """F119: a send TIMEOUT alone (slow client, not a dead socket) must NOT
-    disconnect the socket — only a hard send Exception (transport closed) does.
-    A slow-but-live client should keep receiving once it drains; timing it out
-    is the existing F064 graceful-degradation path, not a reap trigger."""
+    """A send TIMEOUT alone (slow client, not a dead socket) must NOT disconnect
+    the socket — only a hard send Exception (transport closed) does. A
+    slow-but-live client should keep receiving once it drains; timing it out
+    is the graceful-degradation path, not a reap trigger."""
     mgr = ConnectionManager()
     hang: asyncio.Future[None] = asyncio.Future()
     slow_ws = _make_ws(send_side_effect=hang)

@@ -1,28 +1,14 @@
-"""F074 — the one-task-per-agent invariant had no DB-level enforcement.
+"""The one-task-per-agent invariant is enforced at the DB level by a
+PostgreSQL transaction-scoped advisory lock keyed by agent_id, acquired in
+``_claim_plan_start_gate`` BEFORE the guard reads (non-coordinator roles
+only) and held until the request transaction commits, so a second concurrent
+claim's guard read sees the first's committed in_progress task and is
+rejected.
 
-``_run_claim_guards`` read the agent's other tasks via unlocked SELECTs
-(``list_in_progress_for_agent`` / ``list_paused_for_agent``) BEFORE ``claim()``
-took its row lock, and ``claim()``'s ``FOR UPDATE`` locked only the TARGET row
-— not the agent-wide invariant. So two concurrent ``i_will_work_on`` calls by
-the SAME agent on TWO DIFFERENT pending tasks each locked their own target row
-(no contention), each read an empty in_progress set, each passed
-``already_active_guard``, and each claim+start succeeded → the agent ended with
-two in_progress tasks. The in-process ``asyncio.Lock`` serializes container
-spawns per agent but is lost on orchestrator-restart split-brain, so it is not
-a DB-level guarantee.
-
-The fix: a PostgreSQL transaction-scoped advisory lock keyed by agent_id,
-acquired in ``_claim_plan_start_gate`` BEFORE the guard reads (for non-
-coordinator roles only). Held until the request transaction commits, it spans
-the guard read + the savepoint + the claim write, so the second concurrent
-claim's guard read sees the first's committed in_progress task and is rejected.
-
-CRITICAL logical-regression guard: the advisory lock is acquired ONLY for non-
-coordinator roles. The PM coordinator concurrency feature (CLAUDE.md) lets a
-cell_pm / main_pm plan + delegate many roots in parallel — acquiring a per-
-agent advisory lock for a coordinator would serialize those claims and
-REGRESS that feature. So coordinators are exempt (matching the existing
-``_COORDINATOR_ROLES`` guard exemption for ``already_active`` / ``paused``).
+CRITICAL regression guard: the lock is acquired ONLY for non-coordinator
+roles — acquiring it for a coordinator would serialize a cell_pm / main_pm's
+parallel root planning and regress coordinator concurrency (matches the
+``_COORDINATOR_ROLES`` guard exemption).
 """
 
 from __future__ import annotations
@@ -281,22 +267,17 @@ async def test_coordinator_claim_does_not_acquire_lock() -> None:
 
 
 # ---------------------------------------------------------------------------
-# F124: the unmet_dependency guard reads dependency state via an unlocked
-# SELECT, then fires release_dependency_blocked_claim (a state mutation:
-# claimed/in_progress -> pending, clears branch_name, abandons WorkSession)
-# as a side-effect BEFORE returning the rejection. If an upstream dependency
-# completes (transitions to completed/cancelled) in the microseconds between
-# the read and the release, the task is NEEDLESSLY released — its branch
-# cleared + WorkSession abandoned + assignee bounced, only to be re-dispatched
-# + re-claimed when the dependency-completion re-dispatch fires. Dependencies
-# are monotonic (unmet -> met, terminal: completed/cancelled never reopen), so
-# a fresh re-read that now finds them met stays met: safe to proceed without
-# releasing. The fix re-checks unmet_dependency_ids immediately before the
-# release and skips it (returning None — proceed) when the upstream just
-# completed. The "still unmet" path is byte-for-byte the prior behavior.
+# the unmet_dependency guard reads dependency state via an unlocked SELECT,
+# then fires release_dependency_blocked_claim (claimed/in_progress -> pending,
+# clears branch_name, abandons WorkSession) BEFORE returning the rejection. If
+# the upstream completes in the microseconds between the read and the release,
+# the task is NEEDLESSLY released. Dependencies are monotonic (unmet -> met,
+# terminal never reopen), so a fresh re-read that now finds them met stays met:
+# safe to proceed without releasing. The fix re-checks unmet_dependency_ids
+# immediately before the release and skips it when the upstream just completed.
 # ---------------------------------------------------------------------------
 
-# Initial dependency read + the re-check before release (F124).
+# Initial dependency read + the re-check before release.
 _DEP_READ_INITIAL_PLUS_RECHECK = 2
 
 
@@ -320,12 +301,9 @@ def _dep_task_svc(agent_id: object, task_id: object, dep_id: object) -> AsyncMoc
 
 @pytest.mark.asyncio
 async def test_dependency_guard_skips_release_when_upstream_just_completed() -> None:
-    """F124: the first dependency read sees the upstream still unmet, but by the
-    re-check (a few microseconds later) it has completed. The guard must NOT
-    release the task — the dependency is now met, so the task can proceed.
-    Releasing would needlessly clear its branch + abandon its WorkSession only
-    to be re-dispatched + re-claimed when the dependency-completion re-dispatch
-    fires. Returns None (proceed), no release."""
+    """The first dependency read sees the upstream still unmet, but the re-check
+    sees it completed; the guard must NOT release the task (the dependency is
+    now met). Returns None (proceed), no release."""
     agent_id = uuid4()
     task_id = uuid4()
     dep_id = uuid4()
@@ -353,10 +331,10 @@ async def test_dependency_guard_skips_release_when_upstream_just_completed() -> 
 
 @pytest.mark.asyncio
 async def test_dependency_guard_releases_when_still_unmet_no_regression() -> None:
-    """F124 no-regression: both the first read AND the re-check see the upstream
-    still unmet. The guard releases the task to pending (stopping respawn churn
-    into a blocked task) and returns the rejection — byte-for-byte the prior
-    behavior. The re-check must not weaken the genuine-blocked release path."""
+    """No-regression: both the first read AND the re-check see the upstream
+    still unmet; the guard releases the task to pending and returns the
+    rejection, so the re-check must not weaken the genuine-blocked release
+    path."""
     agent_id = uuid4()
     task_id = uuid4()
     dep_id = uuid4()

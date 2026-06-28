@@ -570,13 +570,11 @@ class TestCEONotificationThreshold:
 
 
 class TestOrphanProviderFallback:
-    """F045: an activate() failure in the in-verb ``i_am_blocked(rate_limited)``
-    path leaves agents parked in ``_waiting_records`` but the provider never
-    makes it into the tracker — so the tracker-driven loop never probes it and
-    the parked agents strand in WAITING_LONG forever. The sweep must scan the
-    in-memory records for any ``rate_limit_lifted`` provider the tracker-listed
-    set did NOT cover and probe it via the time-expiry fallback so
-    ``_on_probe_success`` can resume them.
+    """An activate() failure in the ``i_am_blocked(rate_limited)`` path parks
+    agents in ``_waiting_records`` without entering the tracker, so the
+    tracker-driven loop never probes them. The sweep must scan the in-memory
+    records for any ``rate_limit_lifted`` provider the tracker missed and probe
+    it via the time-expiry fallback so ``_on_probe_success`` can resume them.
     """
 
     async def test_orphan_parked_agent_resumed_when_tracker_lacks_provider(

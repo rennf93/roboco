@@ -46,12 +46,12 @@ async def test_load_set_filters_command_one_per_repo() -> None:
 
 @pytest.mark.asyncio
 async def test_load_set_keeps_distinct_commands_per_repo() -> None:
-    """F115: a monorepo's several cell-projects each carrying their OWN
-    ``dep_update_command`` (different ecosystems → different lockfiles) must
-    ALL be probed — collapsing to the canonical cell's command would miss the
-    other cells' lockfile drift (under-count). Same repo, DIFFERENT commands →
-    one entry per (repo, command). The engine's per-git_url open-task dedup
-    still prevents duplicate update tasks for the repo."""
+    """A monorepo's several cell-projects each carrying their OWN
+    ``dep_update_command`` (different ecosystems → different lockfiles) must ALL
+    be probed — collapsing to the canonical cell's command would miss the other
+    cells' lockfile drift (under-count). Same repo, DIFFERENT commands → one
+    entry per (repo, command); per-git_url open-task dedup still prevents
+    duplicate update tasks for the repo."""
     orch = _orch()
     be = MagicMock(
         slug="be", git_url="https://x/a.git", dep_update_command="uv lock --upgrade"

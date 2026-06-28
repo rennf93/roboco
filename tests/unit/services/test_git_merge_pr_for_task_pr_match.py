@@ -1,13 +1,6 @@
-"""F050: merge_pr_for_task must not merge a caller-provided pr_number that
-doesn't match the task's recorded PR.
-
-``GitMergePRRequest.pr_number`` is caller-provided. When a ``task_id`` is
-present the service knows the task's *own* recorded PR (``task.pr_number``),
-set when the PR was opened. Without a match check a caller (a buggy client, a
-stale panel form, an agent that cached an old PR number) can ask the CEO/PM
-merge path to merge PR #N for task T whose recorded PR is #M — merging the
-wrong PR against the wrong task's work-session and auto-complete. The recorded
-PR is the source of truth; the caller's number must agree with it.
+"""``merge_pr_for_task`` rejects a caller-provided ``pr_number`` that doesn't
+match the task's recorded ``task.pr_number`` — the recorded PR is the source
+of truth, so a stale caller number can't merge the wrong PR for a task.
 """
 
 from __future__ import annotations

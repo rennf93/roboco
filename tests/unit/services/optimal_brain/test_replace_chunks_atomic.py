@@ -1,16 +1,7 @@
-"""F108 — ``VectorStore.replace_chunks`` must be a single atomic transaction.
-
-The replace-on-reingest path used to be ``delete_by_source`` (one pool
-connection) followed by ``add_chunks`` (a *second* pool connection). Two
-concurrent re-indexes of the same source interleaved across those two
-connections and produced duplicate chunk rows; an add failure after a
-successful delete also lost the source's index rows. The fix is a single
-``replace_chunks(source, chunks)`` that deletes + inserts on ONE connection
-inside ONE asyncpg transaction, so the whole replace is atomic.
-
-These tests mock the asyncpg pool/connection to assert the atomicity
-invariant (single acquire, transaction entered, delete + insert on the
-same connection) without standing up a pgvector DB.
+"""``VectorStore.replace_chunks`` is a single atomic transaction: delete +
+insert on ONE connection inside ONE asyncpg transaction, so concurrent
+re-indexes can't interleave and an insert failure can't lose the source's
+rows. These tests mock the asyncpg pool to assert that invariant.
 """
 
 from __future__ import annotations

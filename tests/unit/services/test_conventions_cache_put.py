@@ -1,4 +1,4 @@
-"""ConventionsService._cache_put isolates a concurrent-duplicate insert (F042).
+"""ConventionsService._cache_put isolates a concurrent-duplicate insert.
 
 Two task creates for the same project/HEAD can race to populate the
 conventions cache; the loser's INSERT fails the partial-unique index with
@@ -84,10 +84,10 @@ def _mapping() -> ConventionsStandard:
 
 @pytest.mark.asyncio
 async def test_cache_put_tolerates_concurrent_duplicate_without_poisoning() -> None:
-    # F042: the loser of a concurrent cache-populate race must not crash the
-    # shared task-create session. The duplicate IntegrityError is contained to
-    # a savepoint; _cache_put returns cleanly, the session is not poisoned, and
-    # no full rollback undoes the outer task-create transaction.
+    # The loser of a concurrent cache-populate race must not crash the shared
+    # task-create session: the duplicate IntegrityError is contained to a
+    # savepoint, the session is not poisoned, and no full rollback undoes the
+    # outer task-create transaction.
     session = _FakeSession(duplicate=True)
     svc = ConventionsService(session=cast("Any", session))
 

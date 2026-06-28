@@ -325,7 +325,7 @@ async def test_create_notification_skips_when_no_resolvable_recipients(
 
 
 # ---------------------------------------------------------------------------
-# F009 — requires_ack must follow ACK_REQUIRED_BY_TYPE, not the True default
+# requires_ack must follow ACK_REQUIRED_BY_TYPE, not the True default
 # ---------------------------------------------------------------------------
 
 
@@ -333,8 +333,8 @@ async def test_create_notification_skips_when_no_resolvable_recipients(
 async def test_informational_notification_does_not_require_ack(
     svc: NotificationService,
 ) -> None:
-    """F009: REVIEW_REQUEST / DOCUMENTATION_REQUEST / A2A_REQUEST are
-    informational (pickup proves receipt) — requires_ack must be False, not the
+    """REVIEW_REQUEST / DOCUMENTATION_REQUEST / A2A_REQUEST are informational
+    (pickup proves receipt) — requires_ack must be False, not the
     NotificationTable True default. A False type forced to True inflates the
     recipient's unacked set and soft-blocks i_am_idle → respawn churn."""
     aid = uuid4()
@@ -368,7 +368,7 @@ async def test_informational_notification_does_not_require_ack(
 async def test_action_required_notification_still_requires_ack(
     svc: NotificationService,
 ) -> None:
-    """F009: BLOCKER_ESCALATION / APPROVAL / ALERT are action-required —
+    """BLOCKER_ESCALATION / APPROVAL / ALERT are action-required —
     requires_ack stays True (ACK_REQUIRED_BY_TYPE maps them True)."""
     aid = uuid4()
     db = _FakeDb(agent_uuid=aid)
@@ -389,8 +389,8 @@ async def test_action_required_notification_still_requires_ack(
 async def test_create_notification_requires_ack_derives_from_type(
     svc: NotificationService,
 ) -> None:
-    """F009: a raw _create_notification call derives requires_ack from the type
-    via ACK_REQUIRED_BY_TYPE (KNOWLEDGE_SHARE → False)."""
+    """A raw _create_notification call derives requires_ack from the type via
+    ACK_REQUIRED_BY_TYPE (KNOWLEDGE_SHARE → False)."""
     aid = uuid4()
     db = _FakeDb(agent_uuid=aid)
     with _patch_db_context(db):

@@ -33,10 +33,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# F013: a Redis mutex guarding the ~40min release execute against concurrent
-# approves (CEO double-click / panel retry). TTL is a backstop above the CI
-# poll ceiling (ReleaseExecutor ~40min) so a crashed process can't hold the
-# release hostage forever; the lock is released explicitly on completion.
+# Redis mutex guarding the ~40min release execute against concurrent
+# approves; TTL backstops a crash, lock is released on completion.
 _RELEASE_LOCK_PREFIX = "roboco:release_proposal:"
 _RELEASE_LOCK_TTL_SECONDS = 3000  # 50 min > 40 min CI ceiling
 

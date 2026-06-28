@@ -45,9 +45,16 @@ Project GitHub tokens are **encrypted the moment you save them** (with `ROBOCO_E
 
 This is the guarantee that makes it safe to hand RoboCo a private repo: **your GitHub PAT is never present inside an agent container.** The orchestrator decrypts the token only at the moment of a git operation, injects it for that operation, and immediately after cloning **scrubs the token out of the clone's git config** — then verifies no token byte survives anywhere under `.git/`, destroying the workspace if one did. A compromised or misbehaving agent has nothing to exfiltrate, because the credential was never on its disk. The clone scrub is described in [Register a project](../get-started/first-project.md#what-happens-under-the-hood), and the broader sandboxing model in [the gateway](../company/agent-gateway.md).
 
-## WebSocket auth caveat
+## WebSocket + live-chat auth
 
-The per-resource WebSocket streams are keyed to a resource, but the operator stream is not authenticated. **`/ws/system` carries no per-agent keying and no token** even when `ROBOCO_AGENT_AUTH_REQUIRED=true` — secure mode does not extend to it. It is **read-only** (it carries system events like rate-limit lifecycle and usage snapshots; it accepts nothing from the client), so the exposure is limited to a reader seeing system telemetry. It is, however, one more reason the system must sit on a trusted network: anyone who can open that socket can watch the operator stream.
+Secure mode (`ROBOCO_AGENT_AUTH_REQUIRED=true`) extends to the live streams and the content routes, not just REST:
+
+- The **per-resource WebSocket streams** (`/ws/channels|agents|sessions|notifications/{id}`) require the **CEO panel token** — the signed `X-Agent-Token` nginx injects for the panel — on top of their `agent_id`/`viewer_id` DB validation. An agent on the Docker network can no longer subscribe to another agent's notifications with no auth.
+- The **`/api/v1/do/*` content routes** require a per-agent HMAC token bound to `X-Agent-ID`.
+- The **live-chat bridges** (`/prompter/live/*`, `/secretary/live/*`) require the CEO panel token — they were the last panel-facing surface that ran unauthenticated.
+- **`/ws/system`** is the one exception: it stays operator-only and read-only by design (system telemetry, no client input), and is not token-gated. It is one more reason the system must sit on a trusted network: anyone who can open that socket can watch the operator stream.
+
+A presented-but-forged token is rejected even in header-trust (dev) mode, so rolling out tokens before flipping the switch breaks nothing.
 
 ## Next
 

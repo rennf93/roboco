@@ -58,11 +58,11 @@ async def test_load_watch_set_filters_enabled_one_per_repo() -> None:
 
 @pytest.mark.asyncio
 async def test_load_watch_set_keeps_distinct_workflows_per_repo() -> None:
-    """F115: a monorepo's several cell-projects each carrying their OWN
-    ``ci_watch_workflow`` must ALL be watched — collapsing to the canonical
-    cell's workflow would miss a red on the other cells' workflows (under-count).
-    Same repo, DIFFERENT workflows → one entry per (repo, workflow). The engine's
-    per-git_url fix-task dedup still prevents duplicate fix tasks for the repo."""
+    """A monorepo's several cell-projects each carrying their OWN
+    ``ci_watch_workflow`` must ALL be watched — collapsing to the canonical cell's
+    workflow would miss a red on the other cells' workflows (under-count). Same
+    repo, DIFFERENT workflows → one entry per (repo, workflow); per-git_url dedup
+    still prevents duplicate fix tasks for the repo."""
     orch = _orch()
     be = MagicMock(
         slug="be",

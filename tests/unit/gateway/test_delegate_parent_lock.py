@@ -1,32 +1,14 @@
-"""F125 — the delegate sibling-dedup guard had a read/write TOCTOU.
+"""The delegate sibling-dedup guard is serialized by a PostgreSQL
+transaction-scoped advisory lock keyed by the parent task id, acquired at the
+TOP of the delegate body (before the first ``get_subtasks`` read) and held
+through ``create_subtask``'s flush + the outer request commit. Different
+parents hash to different keys (seed ``1``, disjoint from the per-agent claim
+lock's seed ``0``) so cross-parent delegates are not serialized.
 
-``_delegate_sibling_dedup_guard`` reads the parent's existing subtasks via an
-unlocked ``get_subtasks`` SELECT (the dedup read), then the verb body calls
-``create_subtask`` (the write) — with no DB serialization between the two. Two
-concurrent ``delegate`` calls for the SAME parent (a PM re-delegating while a
-stale-heartbeat reaper unclaims + re-dispatches, or two orchestrator ticks
-racing) each read an empty/duplicate-free sibling set, each pass the dedup
-guard, and each create a subtask → the parent gets the duplicate the guard
-exists to prevent (the smoke-run runaway pattern the guard was built for).
-
-The fix: a PostgreSQL transaction-scoped advisory lock keyed by the parent
-task id, acquired at the TOP of the delegate body — before the first
-``get_subtasks`` read (the briefing's context read AND the dedup guard's
-sibling read) and held through ``create_subtask``'s flush + the outer request
-commit. The second concurrent same-parent delegate blocks on the lock until
-the first commits; its dedup read then sees the first's committed sibling and
-is rejected. Different parents hash to different keys (seed ``1``, disjoint
-from the per-agent claim lock's seed ``0``) so cross-parent delegates are not
-serialized — the PM coordinator concurrency feature (parallel root planning)
-is preserved.
-
-CRITICAL logical-regression guard: the lock is per-PARENT, not per-agent. A
-single cell_pm / main_pm legitimately delegates many subtasks under one parent
-in quick succession (a per-dev sequenced queue), and a coordinator PM plans
-many roots in parallel. A per-agent lock would serialize all of a PM's
-delegates and regress coordinator concurrency; a per-parent lock serializes
-only same-parent delegates (the actual dedup invariant is per-parent) and
-leaves different parents untouched.
+CRITICAL regression guard: the lock is per-PARENT, not per-agent. A per-agent
+lock would serialize all of a coordinator PM's delegates and regress
+coordinator concurrency; the dedup invariant is per-parent, so only same-parent
+delegates serialize.
 """
 
 from __future__ import annotations

@@ -1,17 +1,7 @@
-"""F071 — the Secretary non-blocking spawn (``start_secretary_session`` →
-``_schedule_bg(_spawn_secretary_container_guarded)``) runs ``docker run`` and
-only registers the instance in ``_instances`` at the END. If shutdown arrives
-between ``docker run`` and the registration line, the container is started but
-the orchestrator has no handle to it — ``stop()`` iterates only ``_instances``,
-so the container is orphaned (leaked, must be cleaned up with ``docker rm``).
-Worse, the F070 drain can let the spawn coroutine COMPLETE the registration
-AFTER ``stop()`` already iterated ``_instances``, landing a live container into
-a shutting-down registry that nothing tears down.
-
-The fix: after ``docker run`` returns the container id, re-check ``self._running``
-and, if the orchestrator began shutting down, remove the just-started container
-and abort WITHOUT registering. The guarded wrapper closes the relay silently
-(shutdown is not a user-facing failure).
+"""The Secretary non-blocking spawn registers the instance in ``_instances``
+only at the END of ``docker run``; if shutdown arrives mid-spawn the container
+must be removed and the registration aborted, or ``stop()`` (which iterates only
+``_instances``) leaks an orphaned container into a shutting-down registry.
 """
 
 from __future__ import annotations
@@ -38,7 +28,7 @@ def _make_orchestrator() -> AgentOrchestrator:
     orch._instances = {}
     orch._bg_tasks = set()
     orch._running = True
-    # F093: concurrent secretary starts serialize on this lock; the constructor
+    # Concurrent secretary starts serialize on this lock; the constructor
     # (skipped here) initializes it.
     orch._secretary_spawn_lock = asyncio.Lock()
     return orch
@@ -170,12 +160,11 @@ async def test_running_spawn_registers_normally(
 
 
 # ---------------------------------------------------------------------------
-# F093 — concurrent Secretary starts must serialize. The Secretary agent id is a
-# single fixed id, so two concurrent ``spawn_secretary_session`` calls race on
-# the container name (``docker run --name roboco-agent-secretary``) and the
-# ``_instances[SECRETARY_AGENT_ID]`` write, orphaning a container + relay. The
-# spawn body runs under ``_secretary_spawn_lock`` so the second start only begins
-# once the first has fully registered (so the second's reap-prior sees it).
+# Concurrent Secretary starts must serialize — the single fixed Secretary agent
+# id makes two concurrent ``spawn_secretary_session`` calls race on the container
+# name and the ``_instances[SECRETARY_AGENT_ID]`` write. The spawn body runs
+# under ``_secretary_spawn_lock`` so the second start only begins once the first
+# has fully registered.
 # ---------------------------------------------------------------------------
 
 

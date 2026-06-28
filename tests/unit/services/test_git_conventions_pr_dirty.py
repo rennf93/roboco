@@ -1,15 +1,6 @@
-"""F051: open_conventions_pr must not operate on a dirty working tree.
-
-``open_conventions_pr`` cuts its scaffold branch in an agent's clone (or the
-project's shared ``workspace_path``). It does ``checkout <base>`` with
-``check=False`` and then ``checkout -B <scaffold>``. On a dirty tree the
-``checkout <base>`` either no-ops (already on base) or is refused and silently
-swallowed; ``checkout -B <scaffold>`` then carries the agent's uncommitted
-work onto the scaffold branch, and the ``commit`` sweeps it into the
-project-level conventions commit — the agent's in-progress change is gone
-from their working tree and rides a PR they never intended. Refuse a dirty
-tree up front (return None, no checkout) so an active workspace is never
-touched.
+"""``open_conventions_pr`` refuses a dirty working tree up front (returns
+None, no checkout) so an active agent workspace is never swept into a
+project-level conventions commit.
 """
 
 from __future__ import annotations

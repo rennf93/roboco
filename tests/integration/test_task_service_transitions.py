@@ -1657,11 +1657,9 @@ async def test_submit_for_pm_review_advances_with_notes(
 async def test_submit_for_pm_review_waives_branch_pr_for_batch_umbrella(
     task_setup: dict, db_session: AsyncSession
 ) -> None:
-    """F001: a MegaTask umbrella is branchless by design (no branch/PR) yet
-    must walk in_progress -> awaiting_pm_review so main_pm_complete can
-    escalate it to the CEO. submit_for_pm_review must waive the branch+PR
-    requirement for a batch umbrella, or umbrella completion deadlocks in
-    in_progress forever (the Main PM loops on `complete` -> invalid_state)."""
+    """A MegaTask umbrella is branchless by design yet must walk
+    in_progress -> awaiting_pm_review; submit_for_pm_review waives the
+    branch+PR requirement for a batch umbrella so completion does not deadlock."""
     svc = task_setup["svc"]
     task = await svc.create(_req(task_setup))
     task.status = TaskStatus.IN_PROGRESS
@@ -1682,13 +1680,10 @@ async def test_submit_for_pm_review_waives_branch_pr_for_batch_umbrella(
 async def test_activate_batch_root_subtasks_retypes_code_to_planning(
     task_setup: dict, db_session: AsyncSession
 ) -> None:
-    """F002: a board-routed MegaTask root-subtask is created in BACKLOG with
-    team=board and task_type=code (intake only coerces main_pm-team drafts, so a
-    board-routed code root-subtask reaches activation still code-typed). When
-    the CEO approves the umbrella, _activate_batch_root_subtasks flips the held
-    child to team=main_pm — but if it leaves task_type=code the combo
-    re-introduces the 2026-06-27 main_pm+code meltdown. The activation must
-    retype code->planning, mirroring approve_and_start's own retype."""
+    """A board-routed MegaTask root-subtask is created in BACKLOG with
+    task_type=code; _activate_batch_root_subtasks must retype it code->planning
+    when flipping team to main_pm, mirroring approve_and_start, or the
+    main_pm+code combo recurs."""
     svc = task_setup["svc"]
     # approve_and_start resolves the main-pm agent by slug — seed it.
     main_pm = AgentTable(

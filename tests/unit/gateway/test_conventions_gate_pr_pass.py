@@ -82,9 +82,9 @@ async def test_pr_pass_guard_blocks_when_validator_cannot_run(
 async def test_pr_pass_guard_could_not_run_remediation_uses_pr_fail(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # F044: _conventions_guard is the pr_pass (reviewer) path. A reviewer has no
+    # _conventions_guard is the pr_pass (reviewer) path. A reviewer has no
     # i_am_blocked verb, so the could_not_run remediation must point at pr_fail
-    # (the reviewer's reject lever) — not tell them to call a verb they lack.
+    # (the reviewer's reject lever), not a verb they lack.
     monkeypatch.setattr(settings, "conventions_enabled", True)
     c = _make_choreographer(check_result={"findings": [], "could_not_run": True})
     env = await c._conventions_guard(uuid4(), MagicMock(), {})
@@ -98,13 +98,11 @@ async def test_pr_pass_guard_could_not_run_remediation_uses_pr_fail(
 async def test_pr_pass_guard_block_remediation_uses_pr_fail_not_reviewer_waiver(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # F047: on the pr_pass (reviewer) path a block-level finding's remediation
-    # must point at pr_fail (the reviewer's only lever) and frame the waiver as
-    # the DEV's action — NOT tell the reviewer to "add a waiver to
-    # .roboco/conventions.yml in your branch". A pr_reviewer does not own the
-    # assembled cell→root / root→master branch and has no commit verb on it, so
-    # the shared dev-path waiver remediation is unreachable and would strand the
-    # gate on every false positive (no self-recovery).
+    # on the pr_pass (reviewer) path a block-level finding's remediation must
+    # point at pr_fail (the reviewer's only lever) and frame the waiver as the
+    # DEV's action — a pr_reviewer does not own the assembled branch and has no
+    # commit verb on it, so the dev-path waiver remediation would strand the
+    # gate on every false positive.
     monkeypatch.setattr(settings, "conventions_enabled", True)
     c = _make_choreographer(check_result=_BLOCK_RESULT)
     env = await c._conventions_guard(uuid4(), MagicMock(), {})

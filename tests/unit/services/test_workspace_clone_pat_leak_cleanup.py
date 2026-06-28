@@ -1,21 +1,9 @@
-"""F063 — a failed ``_configure_git`` must not leave the project PAT on disk.
+"""A failed ``_configure_git`` must not leave the project PAT on disk.
 
-``_clone_repo`` runs ``_do_clone`` (which writes the tokenized auth URL into
-``.git/config``), then ``_configure_git`` (which scrubs it via
-``git remote set-url origin <git_url>``), then ``_assert_no_pat_leak``. If
-``_configure_git`` raises ``CalledProcessError`` BEFORE the scrub completes
-(disk error, permission issue, broken git), the PAT stays in ``.git/config``
-and ``_assert_no_pat_leak`` never runs. The except clauses raised
-``WorkspaceError`` without removing the workspace, so on the next
-``ensure_workspace`` the health short-circuit (a valid ``.git`` with HEAD +
-objects) skipped straight past the leak — the agent was then mounted on a
-workspace whose ``.git/config`` still carried ``https://TOKEN@github.com/...``,
-letting it read and exfiltrate the project PAT.
-
-The fix: the clone-failure except clauses ``rmtree`` the workspace before
-raising, so a half-configured clone is destroyed and the next
-``ensure_workspace`` re-clones from scratch instead of short-circuiting past
-the leak.
+The clone-failure except clauses ``rmtree`` the workspace before raising, so a
+half-configured clone (PAT still in ``.git/config``) is destroyed and the next
+``ensure_workspace`` re-clones from scratch instead of short-circuiting past the
+leak on a valid ``.git`` health check.
 """
 
 from __future__ import annotations

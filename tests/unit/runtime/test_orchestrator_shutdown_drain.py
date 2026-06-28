@@ -1,22 +1,10 @@
-"""F070 — fire-and-forget ``_bg_tasks`` (respawn_tracker upserts, audit-log
-writes, intake first-message delivery) were never cancelled or drained on
-shutdown. ``Orchestrator.stop()`` cancelled only the named loop tasks and the
-agents, then returned, abandoning any in-flight ``_schedule_bg`` work.
+"""Drain ``_bg_tasks`` on shutdown so fire-and-forget writes (respawn_tracker
+upserts, audit-log writes, intake first-message delivery) are not abandoned.
 
-The data-loss tail: an in-flight ``_persist_respawn_record`` upsert dropped at
-shutdown means the last few gate-mutation strikes never reach the DB. The
-in-memory counter dies with the process; ``restore_respawn_tracker()`` on the
-next start repopulates a stale lower count and the dispatcher re-burns the
-full strike threshold (4 spawns) against a still-wedged task — the exact
-re-burn the durable tracker exists to stop. Audit-log writes (load-bearing for
-the cycle-time / rework metrics) are similarly dropped.
-
-The fix DRAINs ``_bg_tasks`` with a bounded timeout on shutdown — short DB
-writes finish before the process exits (data preserved), while a stuck task
-can't hang shutdown (it is cancelled once the drain deadline passes). Cancels
-outright would lose the data (the opposite of the goal), so the drain tries to
-let work complete first. The ``stop_agent`` loop is also wrapped so one agent's
-stop error can't skip the drain (which would still drop the data).
+Invariant: ``Orchestrator.stop()`` drains ``_bg_tasks`` with a bounded timeout —
+short DB writes finish before the process exits (data preserved), a stuck task
+is cancelled once the deadline passes (can't hang shutdown). The ``stop_agent``
+loop is wrapped so one agent's stop error can't skip the drain.
 """
 
 from __future__ import annotations
@@ -152,10 +140,9 @@ async def test_stop_failing_agent_does_not_skip_drain() -> None:
 
 @pytest.mark.asyncio
 async def test_stop_is_idempotent_double_call_is_noop() -> None:
-    """F117: stop() is idempotent. The lifespan shutdown path now stops the
-    orchestrator before closing the DB, and bootstrap's finally block re-calls
-    stop() as a safety net. The second call must be a clean no-op — not a
-    re-drain, not a re-stop of already-stopped agents — guarded by ``_stopped``."""
+    """stop() is idempotent: the lifespan path and bootstrap's finally block both
+    call it, so the second call must be a clean no-op — not a re-drain or re-stop
+    of already-stopped agents — guarded by ``_stopped``."""
     orch = _make_orchestrator()
     real_drain = orch._drain_bg_tasks
     drain_calls = 0

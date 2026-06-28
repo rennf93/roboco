@@ -75,12 +75,11 @@ async def test_create_notification_suppresses_same_purpose_duplicate() -> None:
 
 @pytest.mark.asyncio
 async def test_informational_knowledge_share_not_deduped() -> None:
-    """F010: KNOWLEDGE_SHARE (informational, requires_ack=False) must NOT be
-    deduped. Each learning broadcast carries distinct content (a new learning);
-    a recipient who never acks the prior one (acking is voluntary for
-    informational types) would permanently suppress every subsequent
-    knowledge-share from the same sender → silent learning-broadcast data loss.
-    The dedup's anti-loop rationale only applies to action-required types."""
+    """KNOWLEDGE_SHARE (informational, requires_ack=False) must NOT be deduped:
+    a recipient who never acks the prior one would permanently suppress every
+    subsequent knowledge-share from the same sender → silent learning-broadcast
+    data loss. The dedup's anti-loop rationale only applies to action-required
+    types."""
     db = MagicMock()
     # A same-purpose unacked KNOWLEDGE_SHARE prior exists — but it must NOT
     # suppress the new one.

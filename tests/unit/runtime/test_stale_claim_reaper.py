@@ -380,11 +380,10 @@ async def test_reap_releases_on_registry_miss_when_container_gone(
 async def test_reap_spares_provider_parked_agent_for_probe_resume(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """F035: a provider-parked agent (dead container, OFFLINE, with a
+    """A provider-parked agent (dead container, OFFLINE, with a
     ``rate_limit_lifted`` WaitingRecord) must NOT be reaped by the stale-claim
-    reaper. The probe-resume loop owns its recovery and respawns it when the
-    provider recovers; reaping would release the claim to pending, and then
-    probe-success would respawn the agent on a task it no longer owns.
+    reaper — reaping would release the claim to pending and probe-success would
+    respawn the agent on a task it no longer owns.
     """
     now = datetime.now(UTC)
     task_id = uuid4()

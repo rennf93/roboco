@@ -29,25 +29,21 @@ from roboco.services.repositories import resolve_agent_uuid
 router = APIRouter()
 log = structlog.get_logger()
 
-# F066: server-side idle timeout for WS receive loops. A half-open socket
-# (dead agent container, silent client) blocks ``receive_text()`` forever;
-# wrapping it in ``asyncio.wait_for`` reaps the socket after this many
-# seconds of silence. No env-var/config precedent exists in ``config.py``
-# for WS tuning, so this is a module constant — callers/tests patch it.
+# Server-side idle timeout for WS receive loops. A half-open socket (dead
+# agent container, silent client) blocks ``receive_text()`` forever;
+# ``asyncio.wait_for`` reaps the socket after this many seconds of silence.
 IDLE_TIMEOUT_SECONDS: float = 90.0
 
-# F064: per-connection send queue + send timeout. Each registered connection
-# owns a bounded ``asyncio.Queue`` drained by a sender task, so a slow client
-# can't back-pressure the fan-out: broadcast enqueues (non-blocking) and
-# returns immediately. When the queue is full the message is dropped + logged
-# (the client is lagging, not the whole fan-out). ``send_text`` itself is
-# wrapped in ``wait_for`` so a stuck transport doesn't wedge the sender.
+# Per-connection send queue + send timeout. Each registered connection owns a
+# bounded ``asyncio.Queue`` drained by a sender task, so a slow client can't
+# back-pressure the fan-out: broadcast enqueues (non-blocking) and returns
+# immediately; a full queue drops + logs (client lagging, not the fan-out).
 MAX_SEND_QUEUE: int = 256
 SEND_TIMEOUT_SECONDS: float = 10.0
 
 
 class _ClientConnection:
-    """F064: per-connection send queue + sender task.
+    """Per-connection send queue + sender task.
 
     Holds the bounded outbound queue drained by ``sender``; broadcast enqueues
     here instead of awaiting ``send_text`` directly, so one slow client cannot
@@ -63,20 +59,13 @@ class _ClientConnection:
 
 
 async def _require_panel_token(websocket: WebSocket) -> bool:
-    """F004: bind a per-agent WS upgrade to the panel/CEO HMAC token.
+    """Bind a per-agent WS upgrade to the panel/CEO HMAC token.
 
-    The /ws/* streams are operator-only — the control panel is the sole WS
-    client (agents use MCP verbs, not WS), and nginx injects the CEO panel
-    token as ``X-Agent-Token`` on /ws/ upgrades. Without verifying it the
-    per-agent endpoints (channels/agents/sessions/notifications) accepted a
-    bare ``agent_id`` query param with no auth, so in strict mode
-    (``ROBOCO_AGENT_AUTH_REQUIRED=true``) an agent on the Docker network
-    could hit e.g. ``/ws/notifications/{id}`` directly and subscribe to
-    another agent's notifications. This gate requires + verifies the token
-    against the CEO identity in strict mode, and rejects a presented-but-
-    forged token even in dev mode — the same contract as the HTTP
-    ``_check_agent_auth_token`` role gates. Returns True to proceed, False
-    to close with a policy violation (caller closes the socket).
+    /ws/* streams are operator-only (the panel is the sole WS client; agents
+    use MCP verbs). nginx injects the CEO panel token as ``X-Agent-Token``.
+    In strict mode (``ROBOCO_AGENT_AUTH_REQUIRED=true``) the token is required
+    + verified against the CEO identity; a presented-but-forged token is
+    rejected even in dev mode. Returns True to proceed, False to close.
     """
     token = websocket.headers.get("x-agent-token")
     if _auth_required() and not token:
@@ -119,15 +108,15 @@ class ConnectionManager:
         # websocket -> agent_id (for tracking who is connected)
         self.connection_agents: dict[WebSocket, UUID] = {}
 
-        # F064: websocket -> per-connection send queue + sender task. Every
-        # connect_* registers here; disconnect cancels + removes. Broadcast
-        # enqueues into these queues instead of awaiting send_text directly so
-        # one slow client can't block the fan-out.
+        # websocket -> per-connection send queue + sender task. Every connect_*
+        # registers here; disconnect cancels + removes. Broadcast enqueues into
+        # these queues instead of awaiting send_text directly so one slow client
+        # can't block the fan-out.
         self.connection_senders: dict[WebSocket, _ClientConnection] = {}
 
-        # F064: fire-and-forget fallback send tasks for unregistered sockets
-        # (legacy path). Held only to satisfy ruff RUF006 + to allow clean
-        # shutdown; each task removes itself on completion.
+        # Fire-and-forget fallback send tasks for unregistered sockets (legacy
+        # path). Held to satisfy ruff RUF006 + allow clean shutdown; each task
+        # removes itself on completion.
         self._pending_sends: set[asyncio.Task[None]] = set()
 
     def _register_sender(self, websocket: WebSocket) -> _ClientConnection:
@@ -246,21 +235,19 @@ class ConnectionManager:
         # Remove from tracking
         self.connection_agents.pop(websocket, None)
 
-        # F064: cancel + drop the per-connection sender task so a slow/stale
-        # client's queue doesn't leak after the socket is removed.
+        # Cancel + drop the per-connection sender task so a slow/stale client's
+        # queue doesn't leak after the socket is removed.
         conn = self.connection_senders.pop(websocket, None)
         if conn is not None and conn.sender is not None:
             conn.sender.cancel()
 
     def _enqueue_or_send(self, websocket: WebSocket, data: str) -> None:
-        """F064: fan out one message to one connection without blocking.
+        """Fan out one message to one connection without blocking.
 
-        Registered connections (created via ``connect_*``) get the message
-        enqueued into their bounded send queue — non-blocking, drop + warn on
-        overflow. An unregistered socket (legacy path: present in a
-        subscription set but not in ``connection_senders``) falls back to a
-        timeout-bounded ``send_text`` scheduled on the loop, so the broadcast
-        still never blocks on a single slow client.
+        Registered connections get the message enqueued into their bounded send
+        queue (non-blocking, drop + warn on overflow). An unregistered socket
+        falls back to a timeout-bounded ``send_text`` scheduled on the loop, so
+        the broadcast never blocks on a single slow client.
         """
         conn = self.connection_senders.get(websocket)
         if conn is not None:
@@ -380,7 +367,7 @@ async def channel_stream(
 
     Clients receive real-time messages for the channel.
     """
-    # F004: verify the panel/CEO token before any subject lookup.
+    # Verify the panel/CEO token before any subject lookup.
     if not await _require_panel_token(websocket):
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
@@ -428,10 +415,9 @@ async def channel_stream(
         # exit path (anyio closed-resource, CancelledError, transport errors).
         pass
     except TimeoutError:
-        # F066: idle timeout — the client has been silent for
-        # IDLE_TIMEOUT_SECONDS (likely a half-open socket from a dead
-        # container). Log and fall through to the finally so the socket is
-        # removed from every subscription set.
+        # Idle timeout — the client has been silent for IDLE_TIMEOUT_SECONDS
+        # (likely a half-open socket from a dead container). Fall through to
+        # the finally so the socket is removed from every subscription set.
         log.warning(
             "WebSocket idle timeout — disconnecting", timeout=IDLE_TIMEOUT_SECONDS
         )
@@ -449,7 +435,7 @@ async def agent_stream(
 
     Clients receive real-time LLM output from the agent.
     """
-    # F004: verify the panel/CEO token before any subject lookup.
+    # Verify the panel/CEO token before any subject lookup.
     if not await _require_panel_token(websocket):
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
@@ -494,10 +480,9 @@ async def agent_stream(
         # exit path (anyio closed-resource, CancelledError, transport errors).
         pass
     except TimeoutError:
-        # F066: idle timeout — the client has been silent for
-        # IDLE_TIMEOUT_SECONDS (likely a half-open socket from a dead
-        # container). Log and fall through to the finally so the socket is
-        # removed from every subscription set.
+        # Idle timeout — the client has been silent for IDLE_TIMEOUT_SECONDS
+        # (likely a half-open socket from a dead container). Fall through to
+        # the finally so the socket is removed from every subscription set.
         log.warning(
             "WebSocket idle timeout — disconnecting", timeout=IDLE_TIMEOUT_SECONDS
         )
@@ -515,7 +500,7 @@ async def session_stream(
 
     Clients receive real-time messages for a specific session.
     """
-    # F004: verify the panel/CEO token before any subject lookup.
+    # Verify the panel/CEO token before any subject lookup.
     if not await _require_panel_token(websocket):
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
@@ -558,10 +543,9 @@ async def session_stream(
         # exit path (anyio closed-resource, CancelledError, transport errors).
         pass
     except TimeoutError:
-        # F066: idle timeout — the client has been silent for
-        # IDLE_TIMEOUT_SECONDS (likely a half-open socket from a dead
-        # container). Log and fall through to the finally so the socket is
-        # removed from every subscription set.
+        # Idle timeout — the client has been silent for IDLE_TIMEOUT_SECONDS
+        # (likely a half-open socket from a dead container). Fall through to
+        # the finally so the socket is removed from every subscription set.
         log.warning(
             "WebSocket idle timeout — disconnecting", timeout=IDLE_TIMEOUT_SECONDS
         )
@@ -579,7 +563,7 @@ async def notification_stream(
 
     Agents receive real-time notifications via this stream.
     """
-    # F004: verify the panel/CEO token before any subject lookup.
+    # Verify the panel/CEO token before any subject lookup.
     if not await _require_panel_token(websocket):
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
@@ -611,10 +595,9 @@ async def notification_stream(
         # exit path (anyio closed-resource, CancelledError, transport errors).
         pass
     except TimeoutError:
-        # F066: idle timeout — the client has been silent for
-        # IDLE_TIMEOUT_SECONDS (likely a half-open socket from a dead
-        # container). Log and fall through to the finally so the socket is
-        # removed from every subscription set.
+        # Idle timeout — the client has been silent for IDLE_TIMEOUT_SECONDS
+        # (likely a half-open socket from a dead container). Fall through to
+        # the finally so the socket is removed from every subscription set.
         log.warning(
             "WebSocket idle timeout — disconnecting", timeout=IDLE_TIMEOUT_SECONDS
         )
@@ -649,10 +632,9 @@ async def system_stream(websocket: WebSocket) -> None:
         # exit path (anyio closed-resource, CancelledError, transport errors).
         pass
     except TimeoutError:
-        # F066: idle timeout — the client has been silent for
-        # IDLE_TIMEOUT_SECONDS (likely a half-open socket from a dead
-        # container). Log and fall through to the finally so the socket is
-        # removed from every subscription set.
+        # Idle timeout — the client has been silent for IDLE_TIMEOUT_SECONDS
+        # (likely a half-open socket from a dead container). Fall through to
+        # the finally so the socket is removed from every subscription set.
         log.warning(
             "WebSocket idle timeout — disconnecting", timeout=IDLE_TIMEOUT_SECONDS
         )

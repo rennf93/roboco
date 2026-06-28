@@ -279,7 +279,7 @@ def test_request_validation_handler_returns_422_with_details() -> None:
 
 
 # ---------------------------------------------------------------------------
-# F022: secret scrubbing in the 422 log line
+# secret scrubbing in the 422 log line
 # ---------------------------------------------------------------------------
 
 
@@ -296,10 +296,10 @@ class _SecretBody(BaseModel):
 
 
 def test_request_validation_handler_scrubs_secrets_from_log() -> None:
-    """F022: a 422 on a secret-bearing request must not dump the plaintext
-    secret into the log line — only the redacted placeholder. The 422
-    response body is unchanged (the client sent those values; the server
-    only redacts its own log)."""
+    """A 422 on a secret-bearing request must not dump the plaintext secret
+    into the log line — only the redacted placeholder. The 422 response body
+    is unchanged (the client sent those values; the server only redacts its
+    own log)."""
 
     app = FastAPI()
     setup_middleware(app)
@@ -354,8 +354,8 @@ def test_request_validation_handler_scrubs_secrets_from_log() -> None:
 
 
 def test_request_validation_handler_log_preserves_non_secret_fields() -> None:
-    """F022: non-secret fields in the body are still logged in full — only
-    the known credential-looking field names are redacted."""
+    """Non-secret fields in the body are still logged in full — only the
+    known credential-looking field names are redacted."""
 
     app = FastAPI()
     setup_middleware(app)

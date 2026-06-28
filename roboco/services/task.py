@@ -2316,19 +2316,13 @@ class TaskService(BaseService):
                 task.last_heartbeat_at = original_heartbeat
                 task.active_claimant_id = original_claimant_id
                 await self.session.flush()
-                # F060: emit the reversal audit row so the journey doesn't
-                # diverge from real state. The forward ``task.claimed`` row
-                # (emitted above via ``_validate_and_set_status``) was already
-                # committed by the audit service on its OWN connection — this
+                # emit the reversal audit row so the journey doesn't diverge
+                # from real state. The forward ``task.claimed`` audit row was
+                # already committed on the audit service's own connection; this
                 # rollback's flush reverts the task row but NOT that audit row.
-                # Without a matching reversal row the journey's last event stays
-                # ``task.claimed`` while the task is back to its pre-claim
-                # status, corrupting every downstream metric reconstructed from
-                # ``task.<status>`` events (cycle time, bottlenecks). Emitted
-                # only when the forward transition was made (the original status
-                # was claimable) and attributed to the claimant via the explicit
-                # ``audit_agent_id`` (``claimed_by`` was just rolled back to
-                # ``None``).
+                # Without a matching reversal row, downstream metrics
+                # (cycle time, bottlenecks) reconstructed from ``task.<status>``
+                # events would be corrupted.
                 if original_status in self._CLAIMABLE_STATUSES:
                     self._emit_status_transition_audit(
                         task,
@@ -5248,12 +5242,12 @@ class TaskService(BaseService):
 
         already = task.assigned_to == main_pm.id
         task.assigned_to = cast("Any", main_pm.id)
-        # F059: this is the CEO's start gate — approving the task confirms it for
-        # dispatch. A self-heal fix task is opened held (confirmed_by_human=False)
-        # so the orchestrator + give_me_work keep it out of dispatch until now;
-        # flipping it True lifts that hold. Idempotent for board/intake tasks,
-        # which are already confirmed at creation. (The release-manager proposal
-        # is not routed through approve_and_start — it has its own CEO routes.)
+        # this is the CEO's start gate — approving the task confirms it for
+        # dispatch. A self-heal fix task is opened held
+        # (confirmed_by_human=False) so dispatch skips it until now; flipping
+        # it True lifts that hold. Idempotent for board/intake tasks (already
+        # confirmed at creation). The release-manager proposal is not routed
+        # here — it has its own CEO routes.
         task.confirmed_by_human = cast("Any", True)
         # The board-reviewed coordination task now belongs to Main PM, who will
         # delegate it to the cells. Leaving team="board" is misleading once it's
@@ -5317,14 +5311,12 @@ class TaskService(BaseService):
             if child.batch_id is not None and child.status == TaskStatus.BACKLOG:
                 child.status = TaskStatus.PENDING
                 child.team = cast("Any", Team.MAIN_PM)
-                # F002: a board-routed root-subtask is created in BACKLOG with
-                # team=board and task_type=code (intake only coerces main_pm-team
-                # drafts, so a board-routed code root reaches activation still
-                # code-typed). Now that team is flipped to MAIN_PM, leaving
-                # task_type=code would re-introduce the 2026-06-27 main_pm+code
-                # meltdown. Retype code->planning, mirroring approve_and_start's
-                # own retype above — the activated child is a planning-typed
-                # coordination root the Main PM delegates to the cells.
+                # a board-routed root-subtask is created in BACKLOG with
+                # team=board and task_type=code. Now that team is flipped to
+                # MAIN_PM, leaving task_type=code would re-introduce the
+                # main_pm+code meltdown — retype code->planning so the activated
+                # child is a planning-typed coordination root the Main PM
+                # delegates to the cells.
                 if main_pm_cannot_own_code(team=child.team, task_type=child.task_type):
                     self.log.info(
                         "activate_batch_root_subtasks retyped main-pm code "

@@ -1,13 +1,8 @@
-"""F004: WebSocket streams must enforce the HMAC panel/CEO token gate when
-ROBOCO_AGENT_AUTH_REQUIRED=true.
-
-The /ws/* streams are operator-only (the panel is the sole WS client; agents
-use MCP verbs, not WS). nginx injects the CEO panel token as X-Agent-Token on
-/ws/ upgrades, but the endpoints never read or verified it — so in strict mode
-an agent on the Docker network could hit /ws/notifications/{id} directly and
-subscribe to another agent's notifications with no auth. The fix binds each
-per-agent WS upgrade to the CEO token: require + verify it in strict mode, and
-reject a forged token even in dev mode (same contract as the HTTP role gates).
+"""WebSocket streams (/ws/*, operator-only — the panel is the sole WS client)
+enforce the HMAC panel/CEO token gate when ROBOCO_AGENT_AUTH_REQUIRED=true:
+each per-agent WS upgrade requires + verifies the CEO token in strict mode
+and rejects a forged token even in dev mode (same contract as the HTTP role
+gates).
 """
 
 from __future__ import annotations

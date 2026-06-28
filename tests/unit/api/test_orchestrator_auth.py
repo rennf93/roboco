@@ -1,14 +1,8 @@
-"""F026: orchestrator control routes (/api/orchestrator/*) must be gated to
-the CEO/operator identity.
-
-``spawn_agent`` / ``stop_agent`` / ``resolve_wait`` / ``mark_waiting`` previously
-took no auth dependency at all — any client that could reach the API could
-spawn, stop, mark-waiting, or resolve-wait any agent. The fix mirrors the
-F004 panel-token guard (DB-free): bind the presented ``X-Agent-ID`` to a
-verified HMAC token and assert the role is CEO. In dev (header-trust) mode a
-missing token is a no-op (the panel/operator flow keeps working), but a
-presented-but-forged token is still rejected — same contract as the v1 flow
-role guards and the do router (F003).
+"""Orchestrator control routes (/api/orchestrator/*) are gated to the
+CEO/operator identity: the presented ``X-Agent-ID`` is bound to a verified
+HMAC token (DB-free panel-token guard) and the role asserted as CEO. In dev
+(header-trust) mode a missing token is a no-op; a presented-but-forged token
+is still rejected.
 """
 
 from __future__ import annotations

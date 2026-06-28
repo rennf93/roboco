@@ -1,4 +1,4 @@
-"""F003/F014: /api/v1/do/* must enforce the same HMAC agent-token gate as
+"""/api/v1/do/* must enforce the same HMAC agent-token gate as
 the /api/v1/flow/* routers.
 
 The do router serves every role (content tools are role-uniform), so it has

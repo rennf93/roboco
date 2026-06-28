@@ -1467,10 +1467,9 @@ async def _gate_task(task_setup: dict, db_session: AsyncSession) -> Any:
 async def test_pr_gate_claim_rejects_second_reviewer_race(
     task_setup: dict, db_session: AsyncSession
 ) -> None:
-    """F114: a second PR-reviewer race-claiming a gate task already claimed by a
-    reviewer must be refused (last-write-wins would otherwise overwrite the
-    first reviewer's claim and the first reviewer's pr_pass/pr_fail would
-    actor-mismatch)."""
+    """A second PR-reviewer race-claiming a gate task already claimed by another
+    reviewer is refused, so the first reviewer's claim and subsequent
+    pr_pass/pr_fail actor-checks are not overwritten."""
     svc = task_setup["svc"]
     reviewer1 = _reviewer("R1")
     reviewer2 = _reviewer("R2")
@@ -1497,10 +1496,9 @@ async def test_pr_gate_claim_rejects_second_reviewer_race(
 async def test_pr_gate_claim_allows_first_reviewer_when_pm_owns_root(
     task_setup: dict, db_session: AsyncSession
 ) -> None:
-    """F114 regression guard: the gate task is owned by the PM at entry
-    (submit_for_review does not clear ownership), so the FIRST reviewer must
-    still be allowed to claim — the guard only rejects a competing REVIEWER
-    claim, not the PM owner."""
+    """The first reviewer can still claim a gate task owned by the PM at entry
+    (submit_for_review does not clear ownership); the guard only rejects a
+    competing REVIEWER claim, not the PM owner."""
     svc = task_setup["svc"]
     pm = _pm("PM")
     reviewer = _reviewer("R")
@@ -1526,8 +1524,8 @@ async def test_pr_gate_claim_allows_first_reviewer_when_pm_owns_root(
 async def test_pr_gate_claim_idempotent_for_same_reviewer(
     task_setup: dict, db_session: AsyncSession
 ) -> None:
-    """F114: a reviewer re-claiming its OWN gate claim is idempotent (allowed),
-    not rejected — the guard only refuses a DIFFERENT reviewer."""
+    """A reviewer re-claiming its own gate claim is idempotent (allowed); the
+    guard only refuses a different reviewer."""
     svc = task_setup["svc"]
     reviewer = _reviewer("R")
     db_session.add(reviewer)

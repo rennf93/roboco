@@ -234,11 +234,9 @@ async def test_notify_auditor_rejected_with_not_authorized() -> None:
 
 @pytest.mark.asyncio
 async def test_notify_rejects_prompter_recipient() -> None:
-    """F048: the prompter (intake-1) is a human-only role with no agent ack
-    path. An ack-required ALERT sent to it sits permanently unacked and — via
-    the dedup query's ``~acked_by.contains`` — permanently suppresses any
-    later same-purpose notification to that role. The notify verb must reject
-    a prompter recipient at the handler, not deliver an un-ackable signal."""
+    """The prompter (intake-1) is human-only with no agent ack path, so an
+    ack-required ALERT to it would sit unacked and dedup-suppress later
+    same-purpose notifications — notify must reject it at the handler."""
     agent_id = uuid4()
     task_svc = AsyncMock()
     task_svc.get_active_task_for_agent.return_value = None
@@ -264,7 +262,7 @@ async def test_notify_rejects_prompter_recipient() -> None:
 
 @pytest.mark.asyncio
 async def test_notify_rejects_secretary_recipient() -> None:
-    """F048: the secretary (secretary-1) is human-only with no agent ack path —
+    """The secretary (secretary-1) is human-only with no agent ack path —
     same un-ackable-signal + dedup-suppression hazard as the prompter."""
     agent_id = uuid4()
     task_svc = AsyncMock()
@@ -292,9 +290,9 @@ async def test_notify_rejects_secretary_recipient() -> None:
 
 @pytest.mark.asyncio
 async def test_notify_allows_ceo_recipient() -> None:
-    """F048: the CEO is human-only too, but the human acks via the panel, so a
-    non-dependency-block CEO notification is a valid ack-required target. The
-    recipient guard must NOT over-exclude the CEO (only prompter/secretary)."""
+    """The CEO is human-only too, but acks via the panel, so a
+    non-dependency-block CEO notification is a valid ack-required target —
+    the guard must NOT over-exclude the CEO (only prompter/secretary)."""
     agent_id = uuid4()
     task_svc = AsyncMock()
     task_svc.get_active_task_for_agent.return_value = None

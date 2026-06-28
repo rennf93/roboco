@@ -111,7 +111,7 @@ master  ←  feature/main_pm/{root}   ←  feature/{cell}/{root}/{cell-pm}  ← 
 ```
 
 - A cell PM's `complete` merges a leaf PR into its cell branch; after the cell gate, its `complete` merges the cell→root PR into your root branch. You do not merge cell branches.
-- Once every cell's parent is terminal, **`submit_root(root_task_id, notes)`** opens the root→master PR and enters the in-path gate (`awaiting_pr_review`). The **main PR reviewer** checks the assembled root diff: `pr_pass` → `awaiting_pm_review`; `pr_fail` → `needs_revision` (owned by you, fix + re-`submit_root`).
+- Once every cell's parent is terminal, **`submit_root(root_task_id, notes)`** opens the root→master PR and enters the in-path gate (`awaiting_pr_review`). The **main PR reviewer** checks the assembled root diff: `pr_pass` → `awaiting_pm_review`; `pr_fail` → `needs_revision` (owned by you, fix + re-`submit_root`). The reviewer's verdict + issues are carried in your task handoff, and re-`submit_root` is refused if the root PR is **unchanged** since the last `pr_fail` — fix and commit before re-submitting.
 - After `pr_pass`, `complete(root_task_id, notes)` escalates the root to the CEO (`awaiting_ceo_approval`) — it does **not** merge. A branchless coordination root (product fan-out, no repo) skips the gate and `complete` escalates directly.
 - The CEO approves and merges the root→master PR from the panel. Only the CEO ever merges to `master`.
 

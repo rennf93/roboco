@@ -1,17 +1,7 @@
-"""F007 — the unchanged-PR re-submit loop-stopper is root-only; ``submit_up``
-(cell→root) had no head_sha guard, so a weak cell PM could re-submit the
-unchanged cell PR and loop ``awaiting_pr_review`` → ``pr_fail`` forever
-(the cell-level analogue of the 2026-06-27 root loop F016 closes).
+"""The unchanged-PR re-submit loop-stopper, applied to ``submit_up`` (cell→root).
 
-``pr_fail`` stamps the assembled PR's head SHA into
-``notes_structured.pr_review.head_sha`` for BOTH cell and root gate tasks
-(``pr_gate._capture_pr_head_sha`` / ``_record_gate_verdict`` are
-gate-verb-level, not root-level). So the same structural refusal applies
-to ``submit_up``: if the cell PR's current head SHA equals the SHA the
-last ``pr_fail`` recorded, no new dev work landed on the cell branch ⇒
-the diff is byte-identical ⇒ refuse, do not re-open the gate. Every
-ambiguous case FAILS OPEN, identical to the root guard (shared
-``_current_pr_head_sha``).
+Refuses to re-open the gate when the cell PR's head SHA equals the SHA the
+last ``pr_fail`` recorded (no new dev work landed); ambiguous cases FAIL OPEN.
 """
 
 from __future__ import annotations
@@ -145,25 +135,17 @@ async def test_submit_up_fail_open_when_no_prior_pr_fail_verdict() -> None:
 
 
 # ---------------------------------------------------------------------------
-# F122: when submit_for_review returns None (a concurrent state change moved
-# the task out of in_progress AFTER the create_pr pre-side-effect already
-# opened the cell→root PR), the invalid_state remediate must TELL the cell PM
-# the PR is already open. The old remediate ('must be in_progress with PR
-# ready') hid that the PR exists — so the agent could not tell an orphaned PR
-# was sitting on GitHub. The orphan is inherent to the correct pre-side-effect
-# ordering (submit_for_review's pr_created gate requires create_pr first, see
-# lifecycle.py:1338-1343) and is recoverable via create_pr's idempotent re-issue
-# — but only if the agent KNOWS the PR is open. Mirrors submit_root's F016
-# remediate (_impl.py:6305-6310).
+# submit_for_review returns None when the task raced out of in_progress after
+# create_pr already opened the cell→root PR; the remediate must tell the PM the
+# PR is open so the orphan is recoverable via create_pr's idempotent re-issue.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_submit_up_none_remediate_names_the_already_open_pr() -> None:
-    """F122: submit_for_review returns None (raced out of in_progress) AFTER
-    create_pr already opened the cell→root PR. The rejection remediate must
-    name the open PR and point the PM at re-fetching + reconciling, not the
-    misleading 'must be in_progress with PR ready' that hides the PR exists."""
+    """submit_for_review returns None (raced out of in_progress) AFTER create_pr
+    already opened the cell→root PR. The remediate must name the open PR and point
+    the PM at re-fetching + reconciling, not the misleading 'PR ready' hint."""
     c, cell_pm_id, cell_task_id = _resubmit_cell(notes_structured=None)
     # A concurrent transition (stale-heartbeat reaper unclaim, or a racing
     # i_am_blocked) moved the task out of in_progress between the precondition

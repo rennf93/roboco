@@ -147,12 +147,10 @@ async def test_lifespan_startup_and_shutdown_happy_path() -> None:
 
 @pytest.mark.asyncio
 async def test_lifespan_stops_orchestrator_before_closing_db_and_optimal() -> None:
-    """F117: orchestrator.stop() must run BEFORE close_optimal_service / close_db
-    on shutdown. stop() drains fire-and-forget DB writes (respawn_tracker
-    upserts, audit-log rows) and stop_agent finalizes work sessions / agent
-    state — all needing the DB still open. Closing the DB first (the old order,
-    where only bootstrap's finally called stop() after lifespan had already
-    closed the DB) silently dropped those final writes."""
+    """orchestrator.stop() runs BEFORE close_optimal_service / close_db on
+    shutdown — stop() drains fire-and-forget DB writes (respawn_tracker
+    upserts, audit-log rows) and finalizes work sessions, all needing the
+    DB still open."""
     order: list[str] = []
 
     def _record(label: str) -> AsyncMock:

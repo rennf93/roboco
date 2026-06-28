@@ -1,19 +1,9 @@
-"""F057: the PLAYBOOKS RAG index write must not commit independently of — and
-BEFORE — the playbook status transaction.
+"""The PLAYBOOKS RAG index write must not commit independently of — and BEFORE —
+the playbook status transaction.
 
-``approve()`` / ``reject()`` used to call ``_index_approved`` / ``_unindex_playbook``
-inline, AFTER ``flush()`` but BEFORE the caller's ``commit()``. The vector store
-writes chunks via its OWN pool connection (vector_store.py:211-237), which
-auto-commits immediately and independently of the SQLAlchemy session
-transaction. So a status-commit failure (or a crash between the index write and
-the commit) left the RAG corpus with an approved/archived playbook whose DB row
-was still DRAFT/APPROVED — a divergence agents then surfaced in briefings.
-
-The fix: ``approve()`` / ``reject()`` flush the status ONLY; the index/unindex
-is a separate post-commit step (``index_approved`` / ``unindex_playbook``) the
-caller runs AFTER the status transaction commits. Both entry points — the panel
-route (playbooks.py) and the Auditor gateway verb (content_actions.
-_curate_playbook) — commit-then-index, and skip the index if the commit fails.
+``approve()`` / ``reject()`` flush the status only; the index/unindex is a
+separate post-commit step the caller runs after the status commits (skipped if
+the commit fails), so the RAG corpus never diverges from the DB row.
 """
 
 from __future__ import annotations
@@ -61,7 +51,7 @@ async def test_approve_does_not_index_before_commit(
 ) -> None:
     """``approve()`` flushes the status change but must NOT write to the RAG
     index — that writes through its own auto-committing connection, so it would
-    durably land before the caller commits the status (the F057 divergence)."""
+    durably land before the caller commits the status (the divergence)."""
     monkeypatch.setattr(settings, "org_memory_enabled", True)
     session = AsyncMock()
     session.flush = AsyncMock()

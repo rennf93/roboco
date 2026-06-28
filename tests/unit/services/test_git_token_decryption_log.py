@@ -1,16 +1,8 @@
-"""F053: _token_for_project must log a Fernet decryption failure with the
-project context, not swallow it silently as 'no token'.
+"""Log a Fernet decryption failure with the project slug before returning None.
 
-On an encryption-key rotation the stored PAT (encrypted with the old key) can't
-be decrypted — ``crypto.decrypt_token`` raises ``EncryptionError``. The
-crypto layer logs a generic message, but ``_token_for_project`` catches the
-``EncryptionError`` and returns ``None`` with no project context, so every
-best-effort workspace git op (push, PR, clone-with-token) silently looks like
-'this project has no token' — indistinguishable from a project that genuinely
-never set one. The operator can't tell which project is wedged by a key
-rotation. Log the failure with the project slug before returning None (the
-best-effort skip behavior is preserved — this only makes the cause
-diagnosable).
+On a key rotation the stored PAT can't be decrypted; ``_token_for_project`` must
+not mask that as a silent 'no token' — log the project slug so the cause is
+diagnosable (best-effort skip behavior preserved).
 """
 
 from __future__ import annotations

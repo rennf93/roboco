@@ -438,12 +438,9 @@ def _canonical_bump_files(root: Path, version: str) -> list[str]:
             return sorted(
                 line.strip() for line in files_raw.splitlines() if line.strip()
             )
-    # F058: the FIRST release has no prior ``chore(release):`` commit, so the
-    # historical derivation returns ``[]`` and the executor would publish a tag
-    # with no files bumped (a no-op release masquerading as X.Y.Z). Fall back to
-    # the version-reference scan — the files currently embedding the version are
-    # exactly the set a first release must bump, and the set the first release
-    # commit then records as canonical for every subsequent release. Read-only.
+    # First release has no prior ``chore(release):`` commit, so derivation
+    # returns [] — fall back to the version-reference scan: files embedding the
+    # version are exactly the set a first release must bump. Read-only.
     return _tracked_files_with_version(root, version)
 
 

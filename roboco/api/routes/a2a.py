@@ -297,11 +297,10 @@ async def subscribe_to_task(
     Opens a persistent connection that streams task state changes
     until the task reaches a terminal state or client disconnects.
 
-    F024: each poll opens a SHORT-LIVED session via ``get_session_factory``
-    and closes it before the next ``asyncio.sleep`` — never holding one
-    asyncpg connection across the full SSE lifetime (up to 1 hour / 720
-    polls), which previously exhausted the pool one connection per connected
-    client. The route takes no ``db: DbSession`` for the same reason.
+    Each poll opens a SHORT-LIVED session via ``get_session_factory`` and
+    closes it before the next ``asyncio.sleep`` — never holding one asyncpg
+    connection across the full SSE lifetime (up to 1 hour / 720 polls). The
+    route takes no ``db: DbSession`` for the same reason.
     """
     session_factory = get_session_factory()
 
@@ -324,9 +323,9 @@ async def subscribe_to_task(
             if await request.is_disconnected():
                 break
 
-            # F024: refresh task state from a per-poll session that is
-            # released before the sleep below — never held across the poll
-            # interval, so the asyncpg pool is free between queries.
+            # Refresh task state from a per-poll session released before the
+            # sleep — never held across the poll interval, so the asyncpg pool
+            # is free between queries.
             async with session_factory() as session:
                 task = await A2AService(session).get_task(task_id)
             if task is None:

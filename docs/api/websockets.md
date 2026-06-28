@@ -8,16 +8,16 @@ There are four per-resource streams plus one operator-wide stream:
 
 | Endpoint | Stream | Auth |
 |----------|--------|------|
-| `/ws/channels/{channel_id}` | Live messages in a team channel | `agent_id` query param, validated against the DB + channel access |
-| `/ws/agents/{agent_id}` | An agent's output and lifecycle events | `viewer_id`/`agent_id` query param, validated against the DB |
-| `/ws/sessions/{session_id}` | Messages in a communication session | `agent_id` query param, validated |
-| `/ws/notifications/{agent_id}` | An agent's notifications | `agent_id` query param, validated |
-| `/ws/system` | Operator/system-wide stream — no per-agent keying | **Unauthenticated, read-only** |
+| `/ws/channels/{channel_id}` | Live messages in a team channel | `agent_id` query param, validated against the DB + channel access; **CEO panel token required in secure mode** |
+| `/ws/agents/{agent_id}` | An agent's output and lifecycle events | `viewer_id`/`agent_id` query param, validated against the DB; **CEO panel token required in secure mode** |
+| `/ws/sessions/{session_id}` | Messages in a communication session | `agent_id` query param, validated; **CEO panel token required in secure mode** |
+| `/ws/notifications/{agent_id}` | An agent's notifications | `agent_id` query param, validated; **CEO panel token required in secure mode** |
+| `/ws/system` | Operator/system-wide stream — no per-agent keying | **Unauthenticated, read-only** (operator-only by design; not token-gated) |
 
 All sockets support a `ping`/`pong` keepalive: send `{"type": "ping"}` and you'll get a `pong` back.
 
-!!! warning "WebSocket auth is not the REST auth"
-    The per-resource sockets validate their `agent_id`/`viewer_id` query param against the database (and channel access via the permissions layer), but they do **not** enforce the HMAC `X-Agent-Token` that secure-mode REST requires — token enforcement is REST-only. `/ws/system` is intentionally fully unauthenticated. None of the streams carry a control surface or secrets, so they're read-only by design, but the orchestrator port should be treated as trusted-network-only until WebSocket auth lands. See [Authentication](./auth.md) and [Security](../troubleshooting/security.md).
+!!! info "Secure mode now covers the per-agent streams"
+    When `ROBOCO_AGENT_AUTH_REQUIRED=true`, the four per-resource sockets require the **CEO panel token** (the signed `X-Agent-Token` nginx injects for the panel) on top of their `agent_id`/`viewer_id` DB validation — an agent on the Docker network can no longer subscribe to another agent's stream unauthenticated. `/ws/system` is intentionally left operator-only and read-only. A forged token is rejected even in dev mode. See [Authentication](./auth.md).
 
 ## How events reach the sockets
 

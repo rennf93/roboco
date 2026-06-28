@@ -14,7 +14,7 @@ Hierarchy: Umbrella (Main PM) → Root-subtasks (Main PM) → Cell tasks (cell P
 - The umbrella does **no git**. It is exempt from the branch gate (it reaches `in_progress` with no branch) and you must **not** call `submit_root` on it — it assembles no PR. Each root-subtask opens and is reviewed on its own PR.
 - The umbrella **completes** only when every root-subtask is terminal; then it escalates to the CEO (PR requirement waived).
 - The root-subtasks are sequenced: a wave's tasks dispatch only once the previous wave's tasks reach a terminal state (ordinary dependency-gating). You do not reorder them — the analyzer set the order at create time.
-- On the Board route the root-subtasks are held in `backlog` until the CEO approves the umbrella, then released to `pending`. On the Approve & Start route they start immediately.
+- On the Board route the root-subtasks are held in `backlog` until the CEO approves the umbrella, then released to `pending`. On the Approve & Start route they start immediately. On Board-route activation a `code`-typed root-subtask is **retyped to `planning`** — a Main PM never owns a `code` task (the `main_pm + code` combo is the 2026-06-27 meltdown trigger).
 
 ## For the Main PM
 

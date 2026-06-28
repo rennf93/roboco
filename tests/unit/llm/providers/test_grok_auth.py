@@ -112,11 +112,10 @@ def test_refresh_mints_new_token_when_stale(tmp_path: Path) -> None:
 
 
 def test_refresh_omitting_expires_in_still_marks_token_valid(tmp_path: Path) -> None:
-    """F092: if xAI's refresh response omits ``expires_in``, the access token's
-    JWT ``exp`` claim is the authoritative expiry — decode it so a fresh token
-    isn't left with the stale pre-refresh ``expires_at`` (which would make
-    ``is_valid`` / ``--check`` forever reject it and the refresh loop re-rotate
-    the single-use refresh token every tick)."""
+    """If xAI's refresh response omits ``expires_in``, the access token's JWT
+    ``exp`` claim is the authoritative expiry — decode it so a fresh token isn't
+    left with the stale pre-refresh ``expires_at`` (which would re-rotate the
+    single-use refresh token every tick)."""
     path = tmp_path / "auth.json"
     _write(path, _bundle(_PAST))
     exp_unix = int((datetime.now(UTC) + timedelta(hours=6)).timestamp())
@@ -136,10 +135,9 @@ def test_refresh_omitting_expires_in_still_marks_token_valid(tmp_path: Path) -> 
 def test_refresh_omitting_expires_in_with_unreadable_jwt_defaults_ttl(
     tmp_path: Path,
 ) -> None:
-    """F092 fallback: expires_in missing AND the access token isn't a JWT with a
-    readable ``exp`` — default to the documented ~6h TTL so a fresh token is
-    treated as live instead of stale, rather than forever rejected (the warning
-    is emitted via structlog, visible in the captured stdout)."""
+    """Fallback when ``expires_in`` is missing AND the access token isn't a JWT
+    with a readable ``exp``: default to the documented ~6h TTL so a fresh token
+    is treated as live instead of forever rejected."""
     path = tmp_path / "auth.json"
     _write(path, _bundle(_PAST))
 
@@ -185,12 +183,10 @@ def test_refresh_failed_when_no_access_token(tmp_path: Path) -> None:
 def test_refresh_persists_rotated_token_when_atomic_write_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """F006: a rotated refresh_token is single-use — xAI invalidates the old one
-    the moment it issues the new one. If the atomic write (tmp+replace) fails
-    after the rotation, the file keeps the now-dead old refresh_token and the
-    credential is permanently lost on the next refresh. The write must fall back
-    to a direct write so the rotated refresh_token survives even when the atomic
-    replace can't."""
+    """A rotated refresh_token is single-use — xAI invalidates the old one on
+    rotation. If the atomic write (tmp+replace) fails after rotation, the file
+    keeps the now-dead refresh_token and the credential is permanently lost; the
+    write must fall back to a direct write so the rotated token survives."""
     path = tmp_path / "auth.json"
     _write(path, _bundle(_PAST))
 

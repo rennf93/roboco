@@ -568,10 +568,9 @@ def _stop_agent_patches(orch: AgentOrchestrator) -> Any:
 
 
 async def test_stop_agent_releases_claim_when_release_claim_true() -> None:
-    """F120: stop_agent(release_claim=True) hands the agent's claimed task back
-    to the pool immediately. A SIGTERM/budget-kill mid-verb otherwise leaves
-    the task CLAIMED/IN_PROGRESS with no running agent for up to
-    stale_claim_reap_seconds (the reaper's heartbeat TTL)."""
+    """stop_agent(release_claim=True) releases the agent's claimed task to the
+    pool immediately, so a mid-verb SIGTERM/budget-kill doesn't strand the task
+    CLAIMED/IN_PROGRESS until the reaper's heartbeat TTL expires."""
     orch = _make_orchestrator()
     instance = _make_instance(_AGENT_ID)
     instance.current_task_id = str(uuid4())
@@ -631,10 +630,9 @@ async def test_stop_agent_does_not_release_claim_by_default() -> None:
 
 
 async def test_stop_agent_skips_release_for_provider_parked_agent() -> None:
-    """F120: a provider-parked agent (rate_limit_lifted WaitingRecord) must NOT
-    have its claim released even when release_claim=True. The probe-resume loop
-    owns its recovery and the claim must survive so probe-success revives the
-    SAME agent on the SAME task — reaping would let another agent claim it."""
+    """A provider-parked agent (rate_limit_lifted WaitingRecord) must NOT have
+    its claim released even when release_claim=True — the probe-resume loop
+    revives the SAME agent on the SAME task, so reaping would lose the claim."""
     orch = _make_orchestrator()
     instance = _make_instance(_AGENT_ID)
     instance.current_task_id = str(uuid4())

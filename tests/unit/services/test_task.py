@@ -1065,16 +1065,10 @@ async def test_ensure_branch_raises_when_neither_project_nor_product() -> None:
 
 @pytest.mark.asyncio
 async def test_finalize_claim_rollback_emits_reversal_audit() -> None:
-    """F060: when branch creation fails mid-claim, the rollback must emit a
-    REVERSAL audit row (CLAIMED -> original) so the audit journey doesn't
-    diverge from the real (rolled-back) task state.
-
-    The audit service writes on its own connection (fire-and-forget), so the
-    forward `task.claimed` row committed at the pre-branch flush is NOT undone
-    by the rollback's flush. Without a matching reversal row, the journey's
-    last event stays `task.claimed` while the task is back to PENDING — the
-    audit trail diverges from real state and corrupts every downstream metric
-    reconstructed from `task.<status>` events (cycle time, bottlenecks).
+    """When branch creation fails mid-claim, the rollback must emit a REVERSAL
+    audit row (CLAIMED -> original) so the audit journey matches the real
+    (rolled-back) task state. The audit service writes on its own connection, so
+    the forward `task.claimed` row is NOT undone by the rollback's flush.
     """
     session = MagicMock()
     session.flush = AsyncMock()
@@ -1121,19 +1115,11 @@ async def test_finalize_claim_rollback_emits_reversal_audit() -> None:
 
 @pytest.mark.asyncio
 async def test_emit_status_transition_audit_writes_in_session_atomically() -> None:
-    """F061/F073/F075: the status-transition audit row is written into the
-    CALLER's session (same transaction as the transition), not fire-and-forget
-    on a separate connection.
-
-    Fire-and-forget decouples the audit commit from the transition commit:
-    a transition that rolls back inside a verb savepoint leaves a PHANTOM audit
-    row (F075), and a swallowed persist failure means a committed transition
-    can have NO audit row (F073) — silently corrupting the cycle-time /
-    bottleneck metrics reconstructed from ``task.<status>`` events (F061).
-    Writing the row in-session makes it commit/roll back atomically with the
-    transition, closing all three. Asserted at the unit level: the row is
-    ``session.add``-ed (same txn) with the metric-reconstruction details, and
-    NO fire-and-forget background task is spawned.
+    """The status-transition audit row is written into the CALLER's session (same
+    transaction as the transition), not fire-and-forget on a separate connection,
+    so it commits/rolls back atomically with the transition and cannot diverge
+    from real state. Asserted at the unit level: the row is ``session.add``-ed
+    (same txn) and NO fire-and-forget background task is spawned.
     """
     session = MagicMock()
     added: list[object] = []

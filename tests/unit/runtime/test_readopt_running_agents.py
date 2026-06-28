@@ -82,11 +82,8 @@ async def test_readopt_swallows_probe_errors() -> None:
 
 @pytest.mark.asyncio
 async def test_readopt_records_container_id_so_health_check_can_see_exit() -> None:
-    # F033: a re-adopted instance registered with container_id=None is skipped by
-    # _check_health (`if instance.container_id is None: continue`), so when the
-    # container later exits the stopped-container handler never runs — the task
-    # is stranded under a phantom ACTIVE instance forever. Re-adopt must capture
-    # the real container id so the health loop can observe the later exit.
+    # Re-adopt must capture the real container id; a None container_id is skipped
+    # by _check_health, stranding the task under a phantom ACTIVE instance.
     orch = _orch()
     orch._inspect_container_state = AsyncMock(return_value=(True, 0))
     orch._resolve_container_id = AsyncMock(return_value="deadbeef1234")

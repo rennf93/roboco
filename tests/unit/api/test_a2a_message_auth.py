@@ -1,14 +1,6 @@
-"""F023: POST /api/a2a/message/send and /message/stream must enforce the same
-HMAC agent-token gate as the /api/v1/do/* router (F003).
-
-Both routes previously took only ``request: SendMessageRequest, db: DbSession``
-— no auth dependency. The sender was self-declared in the request body
-(``metadata.from_agent``), so any caller could impersonate any agent and
-inject A2A notifications that the orchestrator dispatcher picks up to spawn
-target agents. The fix reuses F003's ``require_any_authenticated_agent``
-(token-only, DB-free, no role assertion — the a2a router serves every role).
-In dev (header-trust) mode a missing token is a no-op; a presented-but-forged
-token is still rejected, exactly as the do router does.
+"""POST /api/a2a/message/send and /message/stream enforce the same HMAC
+agent-token gate as the /api/v1/do/* router (``require_any_authenticated_agent``,
+token-only, DB-free, no role assertion — the a2a router serves every role).
 """
 
 from __future__ import annotations

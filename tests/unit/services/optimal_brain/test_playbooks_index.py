@@ -44,8 +44,8 @@ def test_build_source_uri_none_when_missing() -> None:
 
 
 def test_delete_playbook_removes_its_chunks_by_source() -> None:
-    """F011: deleting a playbook removes its embedded chunks from the vector
-    store by the playbook's source URI (idempotent — no-op if absent). A
+    """Deleting a playbook removes its embedded chunks from the vector store
+    by the playbook's source URI (idempotent — no-op if absent). A
     rejected/archived playbook must not stay retrievable in the PLAYBOOKS index."""
     plugin = PlaybooksIndexPlugin.__new__(PlaybooksIndexPlugin)
     store = MagicMock()

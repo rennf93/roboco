@@ -38,6 +38,9 @@ The crucial property: **work is queued, never dropped.** Parked tasks wait; the 
 !!! tip "Parked is not stuck"
     If a run goes quiet, check the banner before assuming something broke. A parked provider with a counting-down timer is RoboCo waiting out a rate limit on purpose. The work is held and will resume — there's nothing for you to do.
 
+!!! info "Escape hatch for a probe that never recovers"
+    Park-and-probe assumes the provider comes back. If a provider's probe fails persistently (the secret was rotated, the endpoint moved), an escape hatch releases the parked work back to the pool instead of holding it forever — so a permanently-dead provider doesn't strand its tasks. Grok auth-missing (exit 78) is parked the same way rather than crash-retried straight back into the same missing-credential failure.
+
 ## Disk housekeeping: dangling-image prune
 
 Every agent-image rebuild leaves the previous build behind as a dangling (`<none>`) Docker image. Left alone they pile up and eat disk. The orchestrator's background sweep prunes them on a throttle (~6h): it removes **only** dangling images — a tagged image, or one still backing a running container, is never touched. It is gated by `ROBOCO_IMAGE_PRUNE_ENABLED`, which is **on by default**. This isn't a feature flag you opt into; it's an always-on safety net you can disable if you'd rather manage image cleanup yourself.
