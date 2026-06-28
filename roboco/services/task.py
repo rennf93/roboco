@@ -5934,6 +5934,33 @@ class TaskService(BaseService):
             task.dependency_ids = [*task.dependency_ids, depends_on_id]
             await self.session.flush()
 
+    async def wire_sibling_collision_dag(self, parent_task_id: UUID) -> None:
+        """Wire the dev-task collision DAG (multi-level sequencing edge kind 3).
+
+        Runs the deterministic collision-sequencing analyzer over a parent's
+        surfaced siblings and wires each returned edge as a real
+        ``dependency_ids`` entry via :meth:`add_dependency`, so a dev task whose
+        surface collides with an earlier sibling's stays PENDING (held by the
+        ``list_pending(filter_by_dependencies=True)`` gate) until that sibling
+        completes and :meth:`_unblock_dependents` releases it — cross-dev and
+        cross-reroute, the ordering the assignee-keyed spawn barrier could not
+        guarantee (live 2026-06-27 out-of-order break).
+
+        Incremental + idempotent: re-run after each delegate. A surfaced
+        sibling (``intends_to_touch`` / ``adds_migration`` / ``touches_shared``)
+        joins the DAG scoped to its ``project_id`` (two repos never collide);
+        a no-surface / no-project sibling is parallel to everything and
+        contributes no edge. ``dev_task_collision_edges`` orders siblings by
+        ``(priority, sequence)`` so re-runs only ADD edges (never flip an
+        existing pair's order), and ``add_dependency`` dedupes.
+        """
+        from roboco.services.sequencing import dev_task_collision_edges
+
+        siblings = await self.get_subtasks(parent_task_id)
+        edges = dev_task_collision_edges(siblings)
+        for depends_on_id, task_id in edges:
+            await self.add_dependency(UUID(str(task_id)), UUID(str(depends_on_id)))
+
     async def set_sequence(self, task_id: UUID, sequence: int) -> None:
         """Set a task's sibling-ordering sequence (lower = first).
 

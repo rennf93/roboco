@@ -205,3 +205,68 @@ class SequencingService:
                 seen.add(edge)
                 out.append(edge)
         return out
+
+
+# ---------------------------------------------------------------------------
+# dev_task_collision_edges — the dev-task collision DAG (edge kind 3).
+# ---------------------------------------------------------------------------
+
+# A collision needs at least two surfaced siblings to produce an edge.
+_MIN_COLLISION_PAIR = 2
+
+
+def dev_task_collision_edges(siblings: list) -> list[tuple[object, object]]:
+    """Wire the dev-task collision DAG for a parent's surfaced siblings.
+
+    Pure glue over :class:`SequencingService`: turns each surfaced sibling
+    (a task row with ``id`` / ``priority`` / ``sequence`` / ``intends_to_touch``
+    / ``adds_migration`` / ``touches_shared`` / ``project_id``) into a
+    :class:`DraftSurface`, runs the analyzer, and returns
+    ``(depends_on_id, task_id)`` pairs — *task depends-on depends_on* — ready
+    for ``TaskService.add_dependency``.
+
+    Incremental + idempotent by construction: a sibling with no collision
+    surface (empty ``intends_to_touch`` and not ``adds_migration`` /
+    ``touches_shared``) is parallel to everything and contributes no edges; a
+    sibling without a ``project_id`` cannot collide (collisions are scoped to
+    a repo) and is skipped. Siblings are ordered by ``(priority, sequence)``
+    before indexing so the analyzer's edge order is stable across re-runs
+    (a newly-delegated sibling takes a fresh ``sequence``; existing siblings
+    keep theirs), so re-running after each delegate only ADDS edges for the
+    new sibling's collisions — never flips an existing pair's order into a
+    reverse edge (which would cycle). ``add_dependency`` dedupes, so repeated
+    wiring is a no-op on already-wired pairs.
+    """
+    surfaced = [
+        s
+        for s in siblings
+        if getattr(s, "project_id", None)
+        and (
+            getattr(s, "intends_to_touch", None)
+            or getattr(s, "adds_migration", False)
+            or getattr(s, "touches_shared", False)
+        )
+    ]
+    if len(surfaced) < _MIN_COLLISION_PAIR:
+        return []
+    # Stable order across incremental re-runs: priority is set at creation,
+    # sequence is append-only (existing siblings keep theirs).
+    surfaced.sort(
+        key=lambda s: (int(getattr(s, "priority", 2)), int(getattr(s, "sequence", 0)))
+    )
+    surfaces = [
+        DraftSurface(
+            idx=i,
+            priority=int(getattr(s, "priority", 2)),
+            intends_to_touch=list(getattr(s, "intends_to_touch", None) or []),
+            adds_migration=bool(getattr(s, "adds_migration", False)),
+            touches_shared=bool(getattr(s, "touches_shared", False)),
+            project_id=str(s.project_id) if s.project_id is not None else None,
+        )
+        for i, s in enumerate(surfaced)
+    ]
+    # cell_of / cell_capacity are advisory (contention warnings only); dev
+    # tasks under one cell-task share the parent's cell, so a constant keeps
+    # any warning attributable. Empty capacity -> no warnings emitted.
+    plan = SequencingService().analyze(surfaces, lambda _idx: "", {})
+    return [(surfaced[a].id, surfaced[b].id) for a, b in plan.edges]

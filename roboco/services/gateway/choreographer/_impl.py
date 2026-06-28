@@ -4874,6 +4874,16 @@ class Choreographer:
         siblings = await self.task.get_subtasks(parent_task_id)
         next_seq = len([s for s in siblings if s.id != new_task.id])
         await self.task.set_sequence(new_task.id, next_seq)
+        # Wire the dev-task collision DAG (multi-level sequencing edge kind 3):
+        # run the deterministic analyzer over the parent's surfaced siblings
+        # and add_dependency each collision edge so a later dev task stays
+        # PENDING until the sibling it collides with completes (PR merged) —
+        # the cross-dev ordering the assignee-keyed spawn barrier could not
+        # guarantee (live 2026-06-27 out-of-order break). Incremental +
+        # idempotent: re-run after every delegate; add_dependency dedupes, and
+        # dev_task_collision_edges orders by (priority, sequence) so re-runs
+        # only add edges (never flip an existing pair's order into a cycle).
+        await self.task.wire_sibling_collision_dag(parent_task_id)
         # Thread the parent's existing session links onto the
         # new subtask so the assigned agent (dev/qa/doc) lands in the
         # group chat the PM has already been talking in. Pre-gateway

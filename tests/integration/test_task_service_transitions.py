@@ -721,6 +721,60 @@ async def test_create_subtask_round_trips_collision_surfaces_and_deps(
 
 
 @pytest.mark.asyncio
+async def test_wire_sibling_collision_dag_serializes_overlapping_dev_tasks(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """wire_sibling_collision_dag runs the collision analyzer over a parent's
+    surfaced dev-task siblings and wires dependency_ids so a later dev task
+    whose surface overlaps an earlier one stays PENDING until it completes.
+
+    T1 (a.py) and T2 (b.py) are disjoint -> parallel (no edge). T3 (a.py)
+    overlaps T1 -> T3 depends-on T1. The explicit `depends_on` override on T3
+    (forwarded through create_subtask in S1) is also present."""
+    svc = task_setup["svc"]
+    parent = await svc.create(_req(task_setup))
+    await db_session.flush()
+
+    async def _dev(seq: int, surface: list[str]) -> Any:
+        t = await svc.create_subtask(
+            TaskCreateRequest(
+                title=f"dev-{seq}",
+                description=f"dev task {seq} description long enough",
+                acceptance_criteria=["ac"],
+                team=Team.BACKEND,
+                created_by=task_setup["agent_id"],
+                project_id=task_setup["project_id"],
+                parent_task_id=parent.id,
+                task_type=TaskType.CODE,
+                nature=TaskNature.TECHNICAL,
+                sequence=seq,
+                intends_to_touch=surface,
+            )
+        )
+        await svc.set_sequence(t.id, seq)
+        return t
+
+    t1 = await _dev(0, ["roboco/api/a.py"])
+    t2 = await _dev(1, ["roboco/api/b.py"])
+    t3 = await _dev(2, ["roboco/api/a.py"])
+
+    await svc.wire_sibling_collision_dag(parent.id)
+
+    # Reload to read the wired dependency_ids.
+    r1 = await svc.get(t1.id)
+    r2 = await svc.get(t2.id)
+    r3 = await svc.get(t3.id)
+    assert r1 is not None and r2 is not None and r3 is not None
+    # T1 and T2 are disjoint -> parallel (no collision edge between them).
+    assert r1.dependency_ids == []
+    assert r2.dependency_ids == []
+    # T3 overlaps T1 (same file, same repo) -> T3 depends-on T1.
+    assert t1.id in r3.dependency_ids
+    # T2 does NOT collide with T3 (disjoint file) -> no T2->T3 edge.
+    assert t2.id not in r3.dependency_ids
+
+
+@pytest.mark.asyncio
 async def test_fail_qa_work_session_fallback_excludes_qa_session(
     task_setup: dict, db_session: AsyncSession
 ) -> None:
