@@ -3878,10 +3878,10 @@ class GitService(BaseService):
         self,
         pr_number: int,
         *,
+        project_id: UUID,
         comment: str | None = None,
         delete_branch: bool = True,
         actor_agent_id: UUID | None = None,
-        project_id: UUID | None = None,
     ) -> None:
         """Close PR ``pr_number`` on GitHub, optionally with an explanatory comment.
 
@@ -3890,20 +3890,24 @@ class GitService(BaseService):
         action agents had no verb for. Best-effort branch cleanup on close.
 
         ``pr_number`` alone is ambiguous across projects (GitHub numbers PRs
-        per-repo), so when the caller knows which project the PR belongs to it
-        MUST pass ``project_id`` — the task lookup is then scoped to it so a
-        same-numbered PR in another project's repo is never resolved by
-        accident. Idempotent: a PR that is already closed is a no-op (no
-        duplicate comment), so a retried close-on-land never re-comments.
+        per-repo, but ``tasks.pr_number`` stores the bare integer with no repo
+        scoping, so two tasks on different repos can share a number). The
+        caller MUST pass the ``project_id`` the PR belongs to — the task
+        lookup is scoped to it so a same-numbered PR in another project's repo
+        is never resolved (and closed) by accident. Mirrors :meth:`pr_merge`.
+        Idempotent: a PR that is already closed is a no-op (no duplicate
+        comment), so a retried close-on-land never re-comments.
         """
         from sqlalchemy import select
 
         from roboco.db.tables import TaskTable as _TaskTable
 
-        stmt = select(_TaskTable).where(_TaskTable.pr_number == pr_number)
-        if project_id is not None:
-            stmt = stmt.where(_TaskTable.project_id == project_id)
-        result = await self.session.execute(stmt.limit(1))
+        result = await self.session.execute(
+            select(_TaskTable)
+            .where(_TaskTable.pr_number == pr_number)
+            .where(_TaskTable.project_id == project_id)
+            .limit(1)
+        )
         task = result.scalar_one_or_none()
         if task is None:
             raise NotFoundError("PR", str(pr_number))
