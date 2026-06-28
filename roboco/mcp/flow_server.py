@@ -53,6 +53,11 @@ _TIMEOUT = 30
 # Tight timeout for SDK loopback — the SDK is a local sidecar; anything
 # slower than 2s is unhealthy and the gateway path must not stall on it.
 _SDK_TIMEOUT = 2.0
+# FastAPI's default missing-route status. Every gateway route returns 200
+# with an Envelope (including not_found rejections), so a 404 from the
+# orchestrator is always a manifest-registered verb whose HTTP route is
+# missing — F069 synthesizes an invalid_state Envelope for it.
+_MISSING_ROUTE_STATUS = 404
 
 # Envelope error kinds that count toward the per-verb circuit breaker.
 # Mirrors agent_sdk.server._CIRCUIT_REJECTION_KINDS; the SDK is the
@@ -61,6 +66,73 @@ _SDK_TIMEOUT = 2.0
 _CIRCUIT_REJECTION_KINDS: frozenset[str] = frozenset(
     {"tracing_gap", "invalid_state", "not_authorized", "incomplete_input"}
 )
+
+
+# Dict-shaped `error.code` values (from FastAPI's exception handlers —
+# `roboco_exception_handler` / `http_exception_handler` / `generic_exception_handler`)
+# mapped to the counted breaker kind they are semantically equivalent to. F068:
+# a 422 / 500 / 4xx-exception storm is retry-storm-worthy but the response body
+# carries `error` as a DICT (not a string kind), so the breaker's string-only
+# check skipped it — unbounded retries. We classify by `error.code` so the SDK
+# actually records the attempt. Kinds not in `_CIRCUIT_REJECTION_KINDS` are
+# never forwarded (the SDK ignores unknown kinds anyway).
+#
+# Classification is substring-based so the many custom RobocoError codes
+# (A2A_ACCESS_DENIED, NO_WRITE_ACCESS, TASK_NOT_OWNED, …) land on the right
+# counted kind without an exhaustive literal map. The NOT_FOUND family returns
+# None — parity with the string-error contract that a `not_found` rejection
+# does NOT count (retrying a missing resource won't help until state changes).
+def _classify_dict_error_code(code: str) -> str | None:
+    upper = code.upper()
+    if "NOT_FOUND" in upper:
+        return None
+    if (
+        "DENIED" in upper
+        or "AUTHORIZED" in upper
+        or "FORBIDDEN" in upper
+        or "PERMISSION" in upper
+    ):
+        return "not_authorized"
+    if upper == "INVALID_INPUT" or "VALIDATION" in upper:
+        return "incomplete_input"
+    return "invalid_state"
+
+
+def _classify_rejection(payload: dict[str, Any]) -> str | None:
+    """Return the breaker kind to forward for this payload, or None.
+
+    The breaker only counts rejections whose kind is in
+    ``_CIRCUIT_REJECTION_KINDS`` (the SDK's authoritative catalog). Three
+    reachable rejection shapes must all map to a counted kind so a storm of
+    any of them trips the breaker (F068):
+
+    1. Envelope rejection: ``error`` is a STRING kind. Forward it if in
+       the counted set (existing behaviour). Uncounted string kinds (e.g.
+       ``not_found``, ``transport_error``, ``circuit_open``) return None —
+       preserves the prior contract that those don't touch the SDK.
+    2. Exception-handler dict: ``error`` is a DICT
+       (``{code, message, details?}`` from ``roboco_exception_handler`` /
+       ``http_exception_handler`` / ``generic_exception_handler``). Map its
+       ``code`` to a counted kind — auth/permission/denied → ``not_authorized``,
+       ``INVALID_INPUT`` / validation → ``incomplete_input``, anything else
+       (INTERNAL_ERROR, API_ERROR, TASK_WRONG_STATUS, …) → ``invalid_state``.
+       NOT_FOUND-family codes return None (parity with string ``not_found``).
+    3. 422 validation failure: no ``error`` field, a ``detail`` list
+       (``request_validation_handler``). → ``incomplete_input``.
+
+    Successful envelopes (``status`` set, ``error`` None) and uncounted
+    string kinds return None — the SDK is not touched.
+    """
+    error = payload.get("error")
+    if isinstance(error, str):
+        return error if error in _CIRCUIT_REJECTION_KINDS else None
+    if isinstance(error, dict):
+        return _classify_dict_error_code(str(error.get("code") or ""))
+    if "detail" in payload:
+        # 422 request-validation body ({"detail": [...], "body": ...}).
+        return "incomplete_input"
+    return None
+
 
 mcp = FastMCP("roboco-flow")
 log = structlog.get_logger()
@@ -104,6 +176,47 @@ def _post(path: str, body: dict[str, Any]) -> dict[str, Any]:
             headers=_build_headers(),
             json=body,
         )
+        # F069: a 404 here means a manifest-registered verb has no matching
+        # route on the orchestrator (every gateway route returns 200 with an
+        # Envelope — including not_found rejections — so a 404 status with
+        # FastAPI's default body (``{"detail": "Not Found"}``, no ``error``
+        # field) is always a missing route, never a legit Envelope). That
+        # body is a non-envelope payload the breaker can't classify, so a
+        # storm of these bypassed the circuit breaker → unbounded retries on
+        # a verb that can never succeed. Synthesize an ``invalid_state``
+        # Envelope rejection so the breaker counts it (via
+        # ``_classify_rejection``) and the agent gets a remediation hint
+        # instead of a raw ``detail`` body. A 404 that DOES carry a real
+        # Envelope (an ``error`` field — e.g. a proxy re-status a 200
+        # rejection to 404) is surfaced as-is.
+        if response.status_code == _MISSING_ROUTE_STATUS:
+            try:
+                body_404 = response.json()
+            except (ValueError, json.JSONDecodeError):
+                body_404 = None
+            if isinstance(body_404, dict) and "error" in body_404:
+                # Real Envelope rejection surfaced under a 404 status —
+                # surface it as-is so the agent sees the real kind/remediate.
+                payload_404: dict[str, Any] = body_404
+            else:
+                verb = _verb_from_path(path)
+                payload_404 = {
+                    "error": "invalid_state",
+                    "message": (
+                        f"verb '{verb}' has no route on the orchestrator for"
+                        f" role {AGENT_ROLE!r} (path {path})"
+                    ),
+                    "remediate": (
+                        f"the {verb} verb is advertised in your manifest but"
+                        f" its HTTP route is missing — this is a server-side"
+                        f" wiring gap. Call"
+                        f" i_am_blocked(reason='verb {verb} 404s: no route')"
+                        f" or i_am_idle() so the operator can fix the route;"
+                        f" do not retry."
+                    ),
+                    "missing": [],
+                }
+            return _record_and_check_circuit(path, body, payload_404)
         try:
             payload: dict[str, Any] = response.json()
         except (ValueError, json.JSONDecodeError):
@@ -155,12 +268,15 @@ def _record_and_check_circuit(
     break the gateway path.
     """
     # Gateway envelopes use a string `error` (kind); RobocoError-derived
-    # exceptions surface a dict-shaped error via FastAPI's middleware. Only
-    # string kinds count toward the breaker; dicts pass straight through.
-    rejection_kind = payload.get("error")
-    if not isinstance(rejection_kind, str):
-        return payload
-    if rejection_kind not in _CIRCUIT_REJECTION_KINDS:
+    # exceptions surface a dict-shaped error via FastAPI's middleware, and
+    # 422 validation failures carry a `detail` list with no `error` field
+    # at all. F068: classify all three rejection shapes so a storm of 500s
+    # or 422s counts toward the breaker (previously bypassed → unbounded
+    # retries). The dict-shape defence against `TypeError: unhashable type:
+    # 'dict'` lives in `_classify_rejection` (isinstance checks, never a
+    # `dict in frozenset` membership test).
+    rejection_kind = _classify_rejection(payload)
+    if rejection_kind is None:
         return payload
 
     verb = _verb_from_path(path)
