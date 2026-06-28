@@ -492,29 +492,41 @@ class NotificationService:
             # type, a different task, a different sender, or a recipient who has
             # already acked all go through. Body text is NOT compared, so
             # rewording cannot defeat the guard.
+            #
+            # F010: the dedup only applies to ACTION-REQUIRED types
+            # (ACK_REQUIRED_BY_TYPE -> True). Informational types
+            # (KNOWLEDGE_SHARE / MENTION / A2A_REQUEST / BROADCAST / the
+            # pickup-proves-receipt triad) carry distinct content per send — a
+            # new learning, a new mention — and acking them is voluntary, so a
+            # recipient who never acks would let the dedup permanently suppress
+            # every subsequent same-sender broadcast (silent learning-broadcast
+            # data loss). The anti-loop rationale only holds for ack-required
+            # signals; informational ones are not deduped.
             related = params.related_task_id
-            dup_q = (
-                select(NotificationTable.id)
-                .where(NotificationTable.from_agent == from_agent_uuid)
-                .where(NotificationTable.type == params.notification_type)
-                .where(NotificationTable.to_agents.overlap(to_agents_uuids))
-                .where(~NotificationTable.acked_by.contains(to_agents_uuids))
-                .where(
-                    NotificationTable.related_task_id == related
-                    if related is not None
-                    else NotificationTable.related_task_id.is_(None)
+            is_ack_required = ACK_REQUIRED_BY_TYPE.get(params.notification_type, True)
+            if is_ack_required:
+                dup_q = (
+                    select(NotificationTable.id)
+                    .where(NotificationTable.from_agent == from_agent_uuid)
+                    .where(NotificationTable.type == params.notification_type)
+                    .where(NotificationTable.to_agents.overlap(to_agents_uuids))
+                    .where(~NotificationTable.acked_by.contains(to_agents_uuids))
+                    .where(
+                        NotificationTable.related_task_id == related
+                        if related is not None
+                        else NotificationTable.related_task_id.is_(None)
+                    )
+                    .limit(1)
                 )
-                .limit(1)
-            )
-            if await db.scalar(dup_q) is not None:
-                logger.info(
-                    "Suppressed duplicate notification (same purpose, unacked)",
-                    from_agent=str(from_agent_uuid),
-                    type=params.notification_type.value,
-                    related_task_id=str(related) if related is not None else None,
-                    to_agents=[str(a) for a in to_agents_uuids],
-                )
-                return
+                if await db.scalar(dup_q) is not None:
+                    logger.info(
+                        "Suppressed duplicate notification (same purpose, unacked)",
+                        from_agent=str(from_agent_uuid),
+                        type=params.notification_type.value,
+                        related_task_id=str(related) if related is not None else None,
+                        to_agents=[str(a) for a in to_agents_uuids],
+                    )
+                    return
             notification = NotificationTable(
                 type=params.notification_type,
                 priority=params.priority,

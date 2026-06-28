@@ -69,3 +69,53 @@ async def test_create_notification_suppresses_same_purpose_duplicate() -> None:
     db.add.assert_not_called()
     db.commit.assert_not_called()
     db.scalar.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_informational_knowledge_share_not_deduped() -> None:
+    """F010: KNOWLEDGE_SHARE (informational, requires_ack=False) must NOT be
+    deduped. Each learning broadcast carries distinct content (a new learning);
+    a recipient who never acks the prior one (acking is voluntary for
+    informational types) would permanently suppress every subsequent
+    knowledge-share from the same sender → silent learning-broadcast data loss.
+    The dedup's anti-loop rationale only applies to action-required types."""
+    db = MagicMock()
+    # A same-purpose unacked KNOWLEDGE_SHARE prior exists — but it must NOT
+    # suppress the new one.
+    db.scalar = AsyncMock(return_value=uuid4())
+    # ``db.add`` must give the row an id — the delivery path calls
+    # ``require_uuid(notification.id)``.
+    db.add = MagicMock(side_effect=lambda obj: setattr(obj, "id", uuid4()))
+    db.flush = AsyncMock()
+    db.commit = AsyncMock()
+
+    svc = NotificationService()
+    svc._resolve_recipients = AsyncMock(return_value=[uuid4()])  # type: ignore[method-assign]
+    params = CreateNotificationParams(
+        notification_type=NotificationType.KNOWLEDGE_SHARE,
+        priority=NotificationPriority.NORMAL,
+        from_agent="from-1",
+        to_agents=["to-1"],
+        subject="New Learning: bug",
+        body="a fresh learning the recipient has not seen",
+        related_task_id=None,
+    )
+    with (
+        patch(
+            "roboco.services.notification.get_db_context",
+            return_value=_FakeDBCtx(db),
+        ),
+        patch(
+            "roboco.services.notification._resolve_agent_uuid",
+            AsyncMock(return_value=uuid4()),
+        ),
+        patch(
+            "roboco.services.notification_delivery.get_notification_delivery_service",
+            lambda _db: MagicMock(deliver=AsyncMock(return_value=None)),
+        ),
+    ):
+        await svc._create_notification(params)
+
+    # Informational ⇒ NOT suppressed: a row was created + committed.
+    db.add.assert_called_once()
+    db.commit.assert_awaited_once()
