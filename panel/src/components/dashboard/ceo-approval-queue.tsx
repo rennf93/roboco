@@ -361,9 +361,7 @@ export function CeoApprovalQueue({ className }: CeoApprovalQueueProps) {
             <Label htmlFor="notes">
               {actionType === "reject"
                 ? "Reason for rejection (required)"
-                : actionType === "start"
-                  ? "Approval notes (required, ≥ 20 characters)"
-                  : "Notes (optional)"}
+                : "Approval notes (required, ≥ 20 characters)"}
             </Label>
             <Textarea
               id="notes"
@@ -372,7 +370,7 @@ export function CeoApprovalQueue({ className }: CeoApprovalQueueProps) {
                   ? "Explain what needs to be fixed..."
                   : actionType === "start"
                     ? "Why this is ready to build, scope to hold to, anything the Main PM should know..."
-                    : "Add any notes about this approval..."
+                    : "Why this is ready to ship, scope to hold to, anything to note..."
               }
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
