@@ -740,6 +740,13 @@ def _next_hint_open_pr(_t: Any) -> str:
     return "PR opened; call i_am_done(task_id, notes='...') when self-verified"
 
 
+def _next_hint_synced(_t: Any) -> str:
+    return (
+        "branch synced onto its base; continue editing + commit(message),"
+        " then open_pr(task_id) / i_am_done(task_id)"
+    )
+
+
 def _next_hint_after_claim(_t: Any) -> str:
     return (
         "edit + commit(message) for each meaningful change,"
@@ -1007,6 +1014,23 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         extra_preconditions=(PRECONDITION_OWNERSHIP, PRECONDITION_COMMITS),
         side_effects=(),
         next_hint=_next_hint_idle,
+    ),
+    "sync_branch": IntentSpec(
+        name="sync_branch",
+        allowed_roles=_DEV_ROLES,
+        description=(
+            "Rebase your task's branch onto its current base THROUGH the gate"
+            " (raw git is denied). Use when your branch has fallen behind its"
+            " base — e.g. a sibling task's PR merged into the parent branch"
+            " while you worked. Fetches origin, rebases head onto base, and"
+            " force-pushes (with-lease). No DB state change. On conflicts the"
+            " rebase is aborted and the conflicted files are returned — resolve"
+            " by hand, commit, then sync_branch again."
+        ),
+        composes=(),  # git-only verb — no DB transition; the handler runs the git op
+        extra_preconditions=(PRECONDITION_OWNERSHIP,),
+        side_effects=(),
+        next_hint=_next_hint_synced,
     ),
     "i_am_blocked": IntentSpec(
         name="i_am_blocked",

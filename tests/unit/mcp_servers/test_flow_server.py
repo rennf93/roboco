@@ -29,6 +29,7 @@ _FULL_MANIFEST = {
         "i_am_blocked",
         "unclaim",
         "resume",
+        "sync_branch",
         "i_am_idle",
         "claim_review",
         "pass",
@@ -212,6 +213,19 @@ def test_i_am_done_notes_defaults_to_empty(flow_module: types.ModuleType) -> Non
 
     _, kwargs = fake_client.post.call_args
     assert kwargs["json"]["notes"] == ""
+
+
+def test_sync_branch_posts_to_dev_path(flow_module: types.ModuleType) -> None:
+    """sync_branch forwards task_id to /api/v1/flow/developer/sync_branch."""
+    fake_client = _make_fake_client({"status": "ok"})
+
+    with patch("httpx.Client", return_value=fake_client):
+        result = flow_module.sync_branch("task-abc")
+
+    assert result == {"status": "ok"}
+    args, kwargs = fake_client.post.call_args
+    assert "/api/v1/flow/developer/sync_branch" in args[0]
+    assert kwargs["json"] == {"task_id": "task-abc"}
 
 
 def test_i_am_blocked_sends_reason(flow_module: types.ModuleType) -> None:

@@ -333,6 +333,21 @@ def resume(task_id: str) -> dict[str, Any]:
     return _post(_role_path("resume"), {"task_id": task_id})
 
 
+def sync_branch(task_id: str) -> dict[str, Any]:
+    """Re-sync your branch onto its base through the gate.
+
+    Rebases the task's branch onto its resolved parent/base branch (fetch +
+    rebase + force-with-lease push). Use this when your branch has fallen
+    behind its base and you need to pick up merged work before continuing —
+    raw git is denied, so this is the gate-level way to rebase. No lifecycle
+    transition: after it returns, keep editing + commit, then open_pr /
+    i_am_done as normal. On ``conflicts`` status the envelope's ``next`` tells
+    you the rebase aborted and your branch is unchanged — resolve the conflict
+    in your working tree first (the gate does not force a conflicted rebase).
+    """
+    return _post(_role_path("sync_branch"), {"task_id": task_id})
+
+
 def i_am_idle() -> dict[str, Any]:
     """Report no more work. Soft-blocks if you have unread A2A/mentions."""
     return _post(_role_path("i_am_idle"), {})
@@ -602,6 +617,7 @@ _TOOLS: dict[str, Any] = {
     "unclaim": unclaim,
     "reassign": reassign,
     "resume": resume,
+    "sync_branch": sync_branch,
     "i_am_idle": i_am_idle,
     # qa — keys are the public MCP tool names (what agents see and prompts
     # advertise). `pass`/`fail` are Python keywords so the IntentSpec uses

@@ -3310,6 +3310,156 @@ class Choreographer:
             context_briefing=briefing,
         ).with_introspection(task=after, role=role_str)
 
+    async def sync_branch(self, agent_id: UUID, task_id: UUID) -> Envelope:
+        """Rebase the caller's task branch onto its current base THROUGH the gate.
+
+        Raw shell git is denied to agents (the ``Bash(git:*)`` base deny), so a
+        developer whose branch fell behind its base — a sibling's PR merged
+        into the parent branch while they worked — had no gate-level rebase,
+        only the CEO/PM-only ``/rebase`` HTTP route. ``sync_branch`` is that
+        gate verb: it resolves the task's base via
+        ``merge_chain.resolve_parent_branch``, guards against rebasing into a
+        protected branch, then rebases + force-pushes (with-lease) via
+        ``GitService.sync_task_branch``. Git-only (no DB state change), like
+        ``open_pr``; the spec gate checks role + ownership, then the handler
+        guards branch + base, then runs the git op. Conflicts abort the rebase
+        (no force-push) and return the conflicted files — resolve by hand,
+        commit, then sync_branch again.
+        """
+        t = await self.task.get(task_id)
+        briefing = await self._briefing_for(agent_id, task_id, task=t)
+        agent = await self.task.agent_for(agent_id)
+        role_str = str(agent.role) if agent is not None else "developer"
+        # Preflight: not_found / unknown-role / spec-gate / no-branch /
+        # protected-base. Returns the rejection (None when all clear) AND the
+        # resolved base_branch the git op needs (empty when rejected).
+        rejection, base_branch = await self._sync_branch_preflight_rejection(
+            agent_id, task_id, t, agent, role_str, briefing
+        )
+        if rejection is not None:
+            return await self._emit_rejection(
+                rejection, agent_id=agent_id, task_id=task_id, verb="sync_branch"
+            )
+        try:
+            result = await self.git.sync_task_branch(
+                t, base_branch=base_branch, actor_agent_id=agent_id
+            )
+        except Exception as exc:
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=f"sync_branch failed: {exc}",
+                    remediate=(
+                        "the git rebase could not complete; escalate via"
+                        " i_am_blocked(reason='...') with the error"
+                    ),
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
+                agent_id=agent_id,
+                task_id=task_id,
+                verb="sync_branch",
+            )
+        # Heartbeat — the agent is actively working the task.
+        await self._touch(task_id)
+        status = str(result.get("status", "unknown"))
+        evidence = {
+            "rebase": result,
+            "base_branch": base_branch,
+            "head_branch": str(t.branch_name),
+        }
+        if status == "conflicts":
+            # The rebase was aborted (no force-push); tell the dev to resolve.
+            next_hint = (
+                f"sync_branch hit conflicts on {result.get('files', [])};"
+                " resolve by hand, commit(message='...'), then sync_branch again"
+            )
+        else:
+            next_hint = spec_module._INTENT_VERBS["sync_branch"].next_hint(t)
+        return Envelope.ok(
+            status=str(t.status),
+            task_id=str(task_id),
+            next=next_hint,
+            evidence=evidence,
+            context_briefing=briefing,
+        ).with_introspection(task=t, role=role_str)
+
+    async def _sync_branch_preflight_rejection(
+        self,
+        agent_id: UUID,
+        task_id: UUID,
+        t: Any,
+        agent: Any,
+        role_str: str,
+        briefing: dict[str, Any],
+    ) -> tuple[Envelope | None, str]:
+        """Role + spec-gate + branch/base guards for ``sync_branch``.
+
+        Returns ``(rejection_envelope, base_branch)``. When all guards pass the
+        rejection is ``None`` and ``base_branch`` is the resolved merge target
+        the handler hands to ``GitService.sync_task_branch``; on any guard
+        failure the envelope is set and ``base_branch`` is empty. Extracted so
+        ``sync_branch`` stays under the PLR0911 return budget (mirrors
+        ``_open_pr_preflight_rejection``).
+        """
+        if t is None:
+            return (
+                Envelope.not_found(message=f"task {task_id} not found"),
+                "",
+            )
+        try:
+            role = spec_module.Role(role_str)
+        except ValueError:
+            return (
+                Envelope.not_authorized(
+                    message=f"unknown role '{role_str}'",
+                    remediate="role is not declared in the lifecycle spec",
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
+                "",
+            )
+        spec_ctx = spec_module.Context(
+            actor_id=agent_id,
+            actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+        )
+        decision = spec_module.can_invoke_intent(role, "sync_branch", t, spec_ctx)
+        if not decision.allowed:
+            return (
+                Envelope.from_decision(decision, briefing=briefing).with_introspection(
+                    task=t, role=role_str
+                ),
+                "",
+            )
+        # The task must carry a branch (claimed/in_progress) — there is nothing
+        # to sync before the branch is cut, and branchless coordination roots
+        # carry none.
+        if not t.branch_name:
+            return (
+                Envelope.invalid_state(
+                    message=f"task {task_id} has no branch_name to sync",
+                    remediate="call i_will_work_on(task_id) first to cut a branch",
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
+                "",
+            )
+        base_branch = await resolve_parent_branch(t, self.task)
+        # Defense-in-depth: agents never rebase into a protected/default branch
+        # or a ``-``-prefixed (shell-injection) ref. A dev task's base is its
+        # parent (cell-task) branch, so this should never fire — but never let a
+        # rebase reach master through a branchless-parent fallback.
+        if base_branch.startswith("-") or base_branch in ("master", "main"):
+            return (
+                Envelope.invalid_state(
+                    message=f"resolved base branch '{base_branch}' is protected",
+                    remediate=(
+                        "the task's base resolved to master/main; sync_branch"
+                        " refuses to rebase into a protected branch — escalate"
+                        " via i_am_blocked(reason='...') if your base is wrong"
+                    ),
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
+                "",
+            )
+        return None, base_branch
+
     async def i_am_idle(self, agent_id: UUID) -> Envelope:
         """Report no more work. Soft-block if there are unread A2As or @mentions.
 

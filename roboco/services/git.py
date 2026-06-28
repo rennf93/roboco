@@ -3695,6 +3695,43 @@ class GitService(BaseService):
             git_token=git_token,
         )
 
+    async def sync_task_branch(
+        self,
+        task: Any,
+        *,
+        base_branch: str,
+        actor_agent_id: UUID | None = None,
+    ) -> dict[str, Any]:
+        """Rebase a task's branch onto ``base_branch`` through the gate.
+
+        Task-keyed twin of :meth:`rebase_pr_for_task`: ``head_branch`` is the
+        task's own ``branch_name`` and ``base_branch`` is supplied by the caller
+        (the choreographer resolves it via ``merge_chain.resolve_parent_branch``),
+        so this works BEFORE a PR exists — a developer mid-work whose branch
+        fell behind its base (a sibling's PR merged into the parent branch) can
+        rebase through the dev ``sync_branch`` verb instead of the CEO/PM-only
+        ``/rebase`` HTTP route. Mirrors ``rebase_pr_for_task``'s workspace/token
+        resolution and delegates to :meth:`rebase_onto_base`, returning the same
+        classification dict (``rebased`` / ``superseded`` / ``conflicts``).
+
+        The caller MUST ensure ``base_branch`` is not a protected branch —
+        agents never rebase into master/main; the choreographer guards this.
+        """
+        if not task.branch_name:
+            raise ValueError("sync_task_branch requires a task with a branch_name")
+        project = await self._project_for_task(task)
+        if project is None:
+            raise NotFoundError("Project for task", str(task.id))
+        workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
+        workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
+        git_token = await self._get_project_token_or_raise(project.slug)
+        return await self.rebase_onto_base(
+            workspace,
+            head_branch=task.branch_name,
+            base_branch=base_branch,
+            git_token=git_token,
+        )
+
     async def close_pull_request(
         self,
         pr_number: int,

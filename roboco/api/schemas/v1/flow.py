@@ -114,6 +114,17 @@ class ResumeRequest(BaseModel):
     task_id: UUID
 
 
+class SyncBranchRequest(BaseModel):
+    """HTTP body for the dev `sync_branch` verb.
+
+    Rebases the task's branch onto its resolved base (parent branch) through the
+    gate, so a developer whose branch has fallen behind can re-sync without raw
+    git (which is denied to agents). Git-only — no DB state transition.
+    """
+
+    task_id: UUID
+
+
 class IAmIdleRequest(BaseModel):
     """Empty request body."""
 
