@@ -4504,6 +4504,13 @@ class AgentOrchestrator:
                     error=str(exc),
                 )
                 continue
+            # F040: finalize the spawn session BEFORE popping the instance so
+            # the captured usage/cost is recorded in the DB/dashboard.
+            # _finalize_spawn_session reads self._instances[agent_id] for the
+            # model + usage_session_id; popping first would lose them and leave
+            # the session row open (ended_at IS NULL) — the burn invisible.
+            with contextlib.suppress(Exception):
+                await self._finalize_spawn_session(agent_id, exit_reason="cost_cap")
             self._instances.pop(agent_id, None)
             # Interactive roles (intake/secretary) have an open panel relay; a
             # raw kill would leave the SSE hanging (frozen chat). Close it with a
