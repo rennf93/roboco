@@ -77,3 +77,21 @@ async def test_readopt_swallows_probe_errors() -> None:
     n = await orch._readopt_running_agents()
 
     assert n == 0  # best-effort: a probe failure never raises into startup
+
+
+@pytest.mark.asyncio
+async def test_readopt_records_container_id_so_health_check_can_see_exit() -> None:
+    # F033: a re-adopted instance registered with container_id=None is skipped by
+    # _check_health (`if instance.container_id is None: continue`), so when the
+    # container later exits the stopped-container handler never runs — the task
+    # is stranded under a phantom ACTIVE instance forever. Re-adopt must capture
+    # the real container id so the health loop can observe the later exit.
+    orch = _orch()
+    orch._inspect_container_state = AsyncMock(return_value=(True, 0))  # type: ignore[method-assign]
+    orch._resolve_container_id = AsyncMock(return_value="deadbeef1234")  # type: ignore[method-assign]
+
+    await orch._readopt_running_agents()
+
+    inst = orch._instances[next(iter(orch._instances))]
+    assert inst.container_id == "deadbeef1234"
+    assert inst.state == AgentState.ACTIVE

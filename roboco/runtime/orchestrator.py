@@ -5482,6 +5482,30 @@ Start by:
         return is_running, exit_code
 
     @staticmethod
+    async def _resolve_container_id(container_name: str) -> str | None:
+        """Return the Docker container id for ``container_name`` via `docker inspect`.
+
+        Used at startup re-adoption (F033) so a re-adopted ACTIVE instance
+        carries the real container id — ``_check_health`` skips
+        ``container_id is None`` instances, so without it a later container exit
+        is invisible to the health loop and the task strands. Returns ``None``
+        when the id can't be resolved (caller treats that as best-effort
+        degraded re-adoption, still covered by the reaper's liveness fallback).
+        """
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "inspect",
+            "-f",
+            "{{.Id}}",
+            container_name,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await proc.communicate()
+        cid = stdout.decode().strip()
+        return cid or None
+
+    @staticmethod
     async def _probe_gateway_health(slug: str) -> bool | None:
         """Probe an agent container's gateway out-of-band: healthy / broken / unknown.
 
@@ -7710,8 +7734,24 @@ Start now: evidence(task_id="{task_id}")
                 continue
             if not is_running:
                 continue
+            # F033: capture the real container id. _check_health skips
+            # ``container_id is None`` instances, so a re-adopted instance
+            # without the id would be invisible to the health loop — when the
+            # container later exits the stopped-container handler never runs
+            # and the task strands under a phantom ACTIVE instance. Best-effort:
+            # a probe failure degrades to the prior None (still re-adopted as
+            # ACTIVE; the reaper's Docker-liveness fallback covers it).
+            container_id: str | None = None
+            try:
+                container_id = await self._resolve_container_id(
+                    f"roboco-agent-{slug}"
+                )
+            except Exception:
+                container_id = None
             self._instances[slug] = AgentInstance(
-                agent_id=slug, state=AgentState.ACTIVE
+                agent_id=slug,
+                state=AgentState.ACTIVE,
+                container_id=container_id,
             )
             readopted += 1
         if readopted:
