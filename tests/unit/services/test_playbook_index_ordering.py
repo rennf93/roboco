@@ -37,7 +37,10 @@ _APPROVER = uuid4()
 def _playbook_mock() -> Any:
     pb = MagicMock(name="playbook")
     pb.id = _PID
-    pb.status = "approved"
+    # approve/reject act on a DRAFT (their legitimate starting state — F109
+    # guards both to DRAFT-only). The index/unindex ordering assertions below
+    # are independent of the starting status.
+    pb.status = "draft"
     pb.title = "T"
     pb.problem = "P"
     pb.procedure = "Pr"

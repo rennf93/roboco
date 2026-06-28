@@ -1,14 +1,16 @@
-"""PlaybookService.reject must flush the status change WITHOUT de-indexing
-inline, and ``unindex_playbook`` is the separate post-commit de-index step.
+"""PlaybookService.reject/archive must flush the status change WITHOUT
+de-indexing inline, and ``unindex_playbook`` is the separate post-commit step.
 
 A rejected/archived playbook that was previously approved must stop surfacing in
-agent briefings, so a reject drops its chunks + tracking row. Originally (F011)
-``reject`` called an ``_unindex_playbook`` helper inline. F057 split that out:
-the RAG index write runs through its own auto-committing pool connection, so
-de-indexing inline (before the caller commits the status) would drop a playbook
-from the corpus even if the status transaction rolled back — a divergence. So
-``reject`` now flushes the status ONLY; ``unindex_playbook`` is a separate
-public step the caller runs AFTER committing. Both helpers stay gated on
+agent briefings, so the curation drop its chunks + tracking row. Originally
+(F011) ``reject`` called an ``_unindex_playbook`` helper inline. F057 split that
+out: the RAG index write runs through its own auto-committing pool connection,
+so de-indexing inline (before the caller commits the status) would drop a
+playbook from the corpus even if the status transaction rolled back — a
+divergence. So ``reject``/``archive`` now flush the status ONLY;
+``unindex_playbook`` is a separate public step the caller runs AFTER
+committing. F109 split the APPROVED->archived retire path into ``archive``
+(distinct from ``reject``, which declines a DRAFT). Both helpers stay gated on
 ``org_memory_enabled`` (inert when the loop is off) and best-effort.
 """
 
@@ -49,11 +51,13 @@ def _session_with(pb: Any) -> MagicMock:
 
 
 @pytest.mark.asyncio
-async def test_reject_archives_but_does_not_deindex_inline(
+async def test_archive_archives_but_does_not_deindex_inline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``reject`` flushes the ARCHIVED status but must NOT touch the RAG index —
-    the de-index is a separate post-commit step (F057 ordering)."""
+    """``archive`` flushes the ARCHIVED status but must NOT touch the RAG index —
+    the de-index is a separate post-commit step (F057 ordering). Archive retires
+    an APPROVED playbook (F109); the previously-approved one was indexed on
+    approval, so the post-commit ``unindex_playbook`` is what removes it."""
     monkeypatch.setattr(settings, "org_memory_enabled", True)
     playbook_id = uuid4()
     pb = _mock_playbook(playbook_id, status=PlaybookStatus.APPROVED.value)
@@ -67,7 +71,7 @@ async def test_reject_archives_but_does_not_deindex_inline(
             AsyncMock(return_value=optimal),
         ),
     ):
-        out = await svc.reject(playbook_id, approver_id=uuid4(), reason="stale")
+        out = await svc.archive(playbook_id, approver_id=uuid4())
 
     assert out.status == PlaybookStatus.ARCHIVED.value
     optimal.unindex_playbook.assert_not_awaited()

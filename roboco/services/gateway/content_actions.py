@@ -777,12 +777,11 @@ class ContentActions:
         )
 
     async def archive_playbook(self, *, agent_id: UUID, playbook_id: UUID) -> Envelope:
-        """Auditor archives a playbook (-> archived)."""
+        """Auditor archives an approved playbook (-> archived, retired)."""
         return await self._curate_playbook(
             agent_id=agent_id,
             playbook_id=playbook_id,
-            action="reject",
-            reason="archived",
+            action="archive",
         )
 
     async def _curate_playbook(
@@ -801,7 +800,7 @@ class ContentActions:
                 remediate="Only the Auditor approves/rejects/archives playbooks.",
                 context_briefing={},
             )
-        from roboco.services.base import NotFoundError
+        from roboco.services.base import ConflictError, NotFoundError
         from roboco.services.playbook import get_playbook_service
 
         svc = get_playbook_service(self.task.session)
@@ -809,6 +808,9 @@ class ContentActions:
             if action == "approve":
                 playbook = await svc.approve(playbook_id, approver_id=agent_id)
                 status = "playbook_approved"
+            elif action == "archive":
+                playbook = await svc.archive(playbook_id, approver_id=agent_id)
+                status = "playbook_archived"
             else:
                 playbook = await svc.reject(
                     playbook_id, approver_id=agent_id, reason=reason or action
@@ -816,6 +818,20 @@ class ContentActions:
                 status = "playbook_archived"
         except NotFoundError:
             return Envelope.not_found(message=f"playbook {playbook_id} not found")
+        except ConflictError as exc:
+            # A status-precondition violation (approve/reject on a non-draft,
+            # archive on a non-approved) is a clean invalid_state, not a 500 —
+            # the agent gets a remediate hint to re-fetch the playbook's
+            # current status before re-trying.
+            return Envelope.invalid_state(
+                message=str(exc),
+                remediate=(
+                    "Only a draft can be approved/rejected; only an approved "
+                    "playbook can be archived. Re-list drafts/approved to see "
+                    "the playbook's current status before re-trying."
+                ),
+                context_briefing={"playbook_id": str(playbook_id)},
+            )
         # Commit the status change BEFORE touching the RAG index: the index write
         # runs through its own auto-committing connection, so indexing before the
         # status commit would durably land (or drop) a playbook in the corpus even

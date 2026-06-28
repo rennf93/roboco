@@ -78,11 +78,42 @@ class PlaybookService(BaseService):
         agents then surfaced in briefings.
         """
         playbook = await self._get_or_raise(playbook_id)
+        if playbook.status != PlaybookStatus.DRAFT.value:
+            raise ConflictError(
+                f"Playbook {playbook_id} is {playbook.status}, not draft — "
+                "only a draft can be approved",
+                resource_type="playbook",
+            )
         playbook.status = PlaybookStatus.APPROVED.value
         playbook.approved_by = approver_id
         playbook.approved_at = datetime.now(UTC)
         await self.session.flush()
         self.log.info("Playbook approved", playbook_id=str(playbook_id))
+        return playbook
+
+    async def archive(self, playbook_id: UUID, approver_id: UUID) -> PlaybookTable:
+        """Auditor retires an APPROVED playbook: approved -> archived.
+
+        The distinct curation transition from :meth:`reject`: ``reject``
+        declines a DRAFT (never published); ``archive`` retires an APPROVED
+        playbook already in circulation. Both end in ARCHIVED, but they start
+        from different states, so each guards its own precondition. An ARCHIVED
+        playbook is terminal — neither approve, reject, nor archive may touch
+        it again. Like reject, the status flush is the only in-tx step; the
+        post-commit ``unindex_playbook`` is the caller's separate step.
+        """
+        playbook = await self._get_or_raise(playbook_id)
+        if playbook.status != PlaybookStatus.APPROVED.value:
+            raise ConflictError(
+                f"Playbook {playbook_id} is {playbook.status}, not approved — "
+                "only an approved playbook can be archived",
+                resource_type="playbook",
+            )
+        playbook.status = PlaybookStatus.ARCHIVED.value
+        playbook.approved_by = approver_id
+        playbook.approved_at = datetime.now(UTC)
+        await self.session.flush()
+        self.log.info("Playbook archived", playbook_id=str(playbook_id))
         return playbook
 
     async def index_approved(self, playbook: PlaybookTable) -> None:
@@ -129,6 +160,12 @@ class PlaybookService(BaseService):
         post-commit step (see ``approve`` for the ordering rationale).
         """
         playbook = await self._get_or_raise(playbook_id)
+        if playbook.status != PlaybookStatus.DRAFT.value:
+            raise ConflictError(
+                f"Playbook {playbook_id} is {playbook.status}, not draft — "
+                "only a draft can be rejected",
+                resource_type="playbook",
+            )
         playbook.status = PlaybookStatus.ARCHIVED.value
         playbook.approved_by = approver_id
         playbook.approved_at = datetime.now(UTC)
