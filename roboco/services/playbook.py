@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from roboco.config import settings
 from roboco.db.tables import PlaybookTable
@@ -42,7 +43,18 @@ class PlaybookService(BaseService):
     service_name: ClassVar[str] = "playbook"
 
     async def draft(self, data: PlaybookCreate, created_by: UUID) -> PlaybookTable:
-        """Create a DRAFT playbook; slug is derived from the title (unique)."""
+        """Create a DRAFT playbook; slug is derived from the title (unique).
+
+        The ``_get_by_slug`` pre-check is a fast-path for UX, not the
+        authoritative guard: two concurrent same-title drafts both miss it
+        (neither sees the other's uncommitted row), so the loser's flush hits
+        the ``playbooks.slug`` UNIQUE constraint and raises ``IntegrityError``.
+        The DB constraint is the real guard; isolating the insert in a savepoint
+        and converting the ``IntegrityError`` into the same ``ConflictError``
+        the pre-check raises closes the TOCTOU — the loser gets a clean conflict
+        (409), not an unhandled 500. The savepoint also rolls back only the
+        failed insert, leaving the caller's pending transaction usable.
+        """
         slug = _slugify(data.title)
         if await self._get_by_slug(slug) is not None:
             raise ConflictError(
@@ -63,7 +75,14 @@ class PlaybookService(BaseService):
             created_by=created_by,
         )
         self.session.add(playbook)
-        await self.session.flush()
+        try:
+            async with self.session.begin_nested():
+                await self.session.flush()
+        except IntegrityError as exc:
+            raise ConflictError(
+                f"Playbook with slug '{slug}' already exists",
+                resource_type="playbook",
+            ) from exc
         self.log.info("Playbook drafted", playbook_id=str(playbook.id), slug=slug)
         return playbook
 
