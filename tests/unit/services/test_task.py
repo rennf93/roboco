@@ -1076,8 +1076,9 @@ async def test_finalize_claim_rollback_emits_reversal_audit() -> None:
     audit trail diverges from real state and corrupts every downstream metric
     reconstructed from `task.<status>` events (cycle time, bottlenecks).
     """
-    svc = TaskService(MagicMock())
-    svc.session.flush = AsyncMock()
+    session = MagicMock()
+    session.flush = AsyncMock()
+    svc = TaskService(session)
 
     task = _build_task(
         status=TaskStatus.PENDING,
@@ -1134,9 +1135,10 @@ async def test_emit_status_transition_audit_writes_in_session_atomically() -> No
     ``session.add``-ed (same txn) with the metric-reconstruction details, and
     NO fire-and-forget background task is spawned.
     """
-    svc = TaskService(MagicMock())
+    session = MagicMock()
     added: list[object] = []
-    svc.session.add = MagicMock(side_effect=added.append)  # type: ignore[assignment]
+    session.add.side_effect = added.append
+    svc = TaskService(session)
     prior_bg = set(svc._background_tasks)
 
     task = MagicMock(id=uuid4(), claimed_by=uuid4(), team=Team.BACKEND)

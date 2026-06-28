@@ -533,9 +533,11 @@ async def test_apply_escalation_emits_blocked_audit_event() -> None:
     The audit row is written into the caller's session (F061/F073/F075: it
     commits atomically with the transition, not fire-and-forget on a separate
     connection), so we assert on the ``AuditLogTable`` added to the session."""
-    svc = _service()
+    session = MagicMock()
+    session.flush = AsyncMock()
     added: list[object] = []
-    svc.session.add = MagicMock(side_effect=added.append)  # type: ignore[assignment]
+    session.add.side_effect = added.append
+    svc = TaskService(session)
     task = MagicMock(
         id=uuid4(),
         parent_task_id=uuid4(),
@@ -573,9 +575,11 @@ async def test_unblock_with_restore_emits_audit_event() -> None:
     The audit row is written into the caller's session (F061/F073/F075: atomic
     with the transition, not fire-and-forget), so we assert on the
     ``AuditLogTable`` added to the session."""
-    svc = _service()
+    session = MagicMock()
+    session.flush = AsyncMock()
     added: list[object] = []
-    svc.session.add = MagicMock(side_effect=added.append)  # type: ignore[assignment]
+    session.add.side_effect = added.append
+    svc = TaskService(session)
     task = MagicMock(
         id=uuid4(),
         status=TaskStatus.BLOCKED,
