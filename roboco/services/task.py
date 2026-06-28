@@ -4090,13 +4090,41 @@ class TaskService(BaseService):
                 original_developer=original_dev,
             )
         else:
-            # If no original developer found, unassign so it can be claimed
-            task.assigned_to = None
-            task.claimed_by = None
-            self.log.warning(
-                "No original developer found, task unassigned",
-                task_id=str(task_id),
+            # A dev task in needs_revision must go back to THE DEV, never to
+            # the pool. ``submit_for_qa`` sets the ``original_developer`` marker
+            # on the normal path, so a missing marker means the task did not
+            # pass through it. Unassigning here used to drop the task into the
+            # pool, where a cell PM (PMs can re-claim needs_revision) would
+            # grab it — exactly "needs revision on a dev task sent to the cell
+            # PM" (live 2026-06-27). Fall back to the developer who actually
+            # worked it: the most recent work session whose agent is a
+            # developer (the QA's own session excluded). Only unassign when no
+            # developer ever touched the task.
+            fallback_dev = await self._resolve_revision_dev(
+                task, exclude=to_python_uuid(qa_agent_id)
             )
+            if fallback_dev is not None:
+                task.assigned_to = cast("Any", fallback_dev)
+                task.claimed_by = cast("Any", fallback_dev)
+                # Self-heal the marker so a subsequent re-fail takes the fast
+                # path and the QA-review index (below) attributes the work to
+                # the right developer. The marker is unreliable in practice
+                # (live 2026-06-27: never persisted), so the work session is
+                # the load-bearing resolver; stamping it here makes the two
+                # paths converge instead of the marker staying absent forever.
+                markers.set_original_developer(task, str(fallback_dev))
+                self.log.info(
+                    "Task reassigned to revision developer (marker missing)",
+                    task_id=str(task_id),
+                    revision_developer=str(fallback_dev),
+                )
+            else:
+                task.assigned_to = None
+                task.claimed_by = None
+                self.log.warning(
+                    "No developer found for revision; task unassigned",
+                    task_id=str(task_id),
+                )
 
         await self.session.flush()
 
@@ -4124,6 +4152,41 @@ class TaskService(BaseService):
 
         self.log.info("Task failed QA", task_id=str(task_id))
         return task
+
+    async def _resolve_revision_dev(
+        self, task: TaskTable, *, exclude: UUID | None
+    ) -> UUID | None:
+        """The developer who should receive a needs_revision dev task when the
+        ``original_developer`` marker is missing.
+
+        A dev task in needs_revision must return to the dev, never the pool: an
+        unassigned needs_revision task is claimable by a cell PM, which is how a
+        dev task's revision landed on the cell PM live (2026-06-27). Resolves the
+        developer who actually worked it — the most recent work session on the
+        task whose agent is a developer (the QA's own session, ``exclude``, is
+        skipped so the fallback can't hand the task back to QA). Returns None
+        only when no developer ever touched the task (then unassign is the last
+        resort).
+        """
+        conditions = [WorkSessionTable.task_id == task.id]
+        if exclude is not None:
+            conditions.append(WorkSessionTable.agent_id != exclude)
+        result = await self.session.execute(
+            select(WorkSessionTable)
+            .where(and_(*conditions))
+            .order_by(WorkSessionTable.started_at.desc())
+        )
+        for ws in result.scalars().all():
+            agent_id = to_python_uuid(ws.agent_id)
+            if agent_id is None:
+                continue
+            agent = await self.agent_for(agent_id)
+            if agent is None:
+                continue
+            role = agent.role.value if hasattr(agent.role, "value") else str(agent.role)
+            if role == "developer":
+                return agent_id
+        return None
 
     async def docs_complete(
         self,

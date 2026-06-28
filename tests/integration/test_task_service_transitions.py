@@ -18,6 +18,7 @@ from roboco.db.tables import (
     JournalEntryTable,
     ProductTable,
     ProjectTable,
+    WorkSessionTable,
 )
 from roboco.events import EventType
 from roboco.foundation.policy.content import markers
@@ -31,6 +32,7 @@ from roboco.models.base import (
     TaskType,
 )
 from roboco.models.task import TaskCreateRequest
+from roboco.models.work_session import WorkSessionStatus
 from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.base import NotFoundError
 from roboco.services.task import SoftBlockInfo, TaskService
@@ -600,6 +602,148 @@ async def test_fail_qa_with_no_original_dev_unassigns(
     failed = await svc.fail_qa(task.id, notes="needs more")
     assert failed is not None
     assert failed.assigned_to is None
+
+
+@pytest.mark.asyncio
+async def test_fail_qa_routes_to_dev_via_work_session_when_marker_missing(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """A dev task in needs_revision with a MISSING original_developer marker
+    routes back to the developer who worked it (resolved from the work
+    session), NOT to the pool.
+
+    Unassigning sends the task to the pool where a cell PM (PMs can re-claim
+    needs_revision) grabs it — the live 2026-06-27 "needs revision on a dev
+    task sent to the cell PM" bug. The marker is the fast path; the work
+    session is the load-bearing fallback (the marker is unreliable in
+    practice). The fallback also self-heals the marker so a subsequent
+    re-fail takes the fast path.
+    """
+    svc = task_setup["svc"]
+    dev_id = task_setup["agent_id"]
+    task = await svc.create(_req(task_setup))
+    task.branch_name = "feature/backend/abc"
+    await db_session.flush()
+
+    # The dev worked the task (a work session exists) but the marker was never
+    # set — e.g. the task was rerouted before submit_for_qa ran, or the marker
+    # failed to persist (live observation). This is the "OG DEV NEVER
+    # PERSISTED" scenario.
+    ws = WorkSessionTable(
+        id=uuid4(),
+        project_id=task_setup["project_id"],
+        task_id=task.id,
+        agent_id=dev_id,
+        branch_name="feature/backend/abc",
+        base_branch="main",
+        target_branch="main",
+        status=WorkSessionStatus.ACTIVE,
+    )
+    db_session.add(ws)
+
+    # A separate QA agent claims and fails the task.
+    qa = AgentTable(
+        id=uuid4(),
+        name="QA",
+        slug=f"be-qa-{uuid4().hex[:8]}",
+        role=AgentRole.QA,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="qa",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(qa)
+    await db_session.flush()
+
+    task.status = TaskStatus.AWAITING_QA
+    task.assigned_to = qa.id
+    task.claimed_by = qa.id
+    # No orchestration_markers — extract_original_developer returns None.
+    await db_session.flush()
+
+    failed = await svc.fail_qa(task.id, notes="needs more")
+    assert failed is not None
+    assert failed.status == TaskStatus.NEEDS_REVISION
+    # Routed back to the dev — NOT unassigned (pool, where a cell PM would
+    # claim it) and NOT left on the QA.
+    assert failed.assigned_to == dev_id
+    assert failed.claimed_by == dev_id
+    # Self-healed: the marker is now stamped so the next fail_qa uses the
+    # fast path and the QA-review index attributes the work correctly.
+    assert markers.get_original_developer(failed) == str(dev_id)
+
+
+@pytest.mark.asyncio
+async def test_fail_qa_work_session_fallback_excludes_qa_session(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """The work-session fallback must not hand the task back to the QA.
+
+    If the only developer work session were the QA's (it isn't — QA sessions
+    are skipped at creation — but defensively the exclude filter must keep a
+    QA-attributed session from being misread as the revision dev), the
+    fallback would loop the task back to the reviewer. The exclude filter
+    (qa_agent_id) guarantees only a real developer is resolved.
+    """
+    svc = task_setup["svc"]
+    dev_id = task_setup["agent_id"]
+    task = await svc.create(_req(task_setup))
+    task.branch_name = "feature/backend/abc"
+    await db_session.flush()
+
+    qa = AgentTable(
+        id=uuid4(),
+        name="QA",
+        slug=f"be-qa-{uuid4().hex[:8]}",
+        role=AgentRole.QA,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="qa",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(qa)
+    await db_session.flush()
+
+    # A QA-attributed work session (older) and a dev-attributed one (newer).
+    qa_ws = WorkSessionTable(
+        id=uuid4(),
+        project_id=task_setup["project_id"],
+        task_id=task.id,
+        agent_id=qa.id,
+        branch_name="feature/backend/abc",
+        base_branch="main",
+        target_branch="main",
+        status=WorkSessionStatus.ACTIVE,
+    )
+    dev_ws = WorkSessionTable(
+        id=uuid4(),
+        project_id=task_setup["project_id"],
+        task_id=task.id,
+        agent_id=dev_id,
+        branch_name="feature/backend/abc",
+        base_branch="main",
+        target_branch="main",
+        status=WorkSessionStatus.ACTIVE,
+    )
+    db_session.add_all([qa_ws, dev_ws])
+    await db_session.flush()
+
+    task.status = TaskStatus.AWAITING_QA
+    task.assigned_to = qa.id
+    task.claimed_by = qa.id
+    await db_session.flush()
+
+    failed = await svc.fail_qa(task.id, notes="needs more")
+    assert failed is not None
+    # Resolved to the dev, NOT the QA — the exclude filter did its job.
+    assert failed.assigned_to == dev_id
+    assert failed.assigned_to != qa.id
 
 
 # ---------------------------------------------------------------------------
