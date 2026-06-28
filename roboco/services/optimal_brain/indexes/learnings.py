@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
 
-from roboco.models.optimal import IndexType, SearchResult
+from roboco.models.optimal import IndexType, SearchOutcome, SearchResult
 from roboco.services.optimal_brain.indexes.base import BaseIndexPlugin, IngestResult
 
 
@@ -40,6 +40,58 @@ class LearningsIndexPlugin(BaseIndexPlugin):
     @property
     def index_type(self) -> IndexType:
         return IndexType.LEARNINGS
+
+    async def search_with_embedding(
+        self,
+        query_embedding: list[float],
+        query_text: str,
+        top_k: int = 5,
+        filters: dict[str, Any] | None = None,
+        *,
+        include_private: bool = False,
+    ) -> SearchOutcome:
+        """Enforce ``shareable=True`` on cross-agent retrieval by default.
+
+        A private LEARNING journal entry is recorded here with
+        ``shareable=False`` (recorded for completeness, never meant to surface
+        to other agents). The shared retrieval path — ``OptimalService.search``
+        used by the briefing / ``similar_memory`` — calls here with no
+        ``include_private``; the base ``_citations_to_results`` only filters
+        when a ``shareable`` filter is present, so a ``shareable=False`` chunk
+        would sail through into another agent's briefing (a private reflection
+        leaked across the cross-agent corpus). Force ``shareable=True`` in the
+        filters unless the caller explicitly opts into private view
+        (``include_private=True`` — the ``search_learnings(shareable_only=False)``
+        audit/admin path), in which case the caller's filters are respected
+        as-is (no shareable filter → all entries).
+        """
+        effective = dict(filters) if filters else {}
+        if not include_private:
+            effective["shareable"] = True
+        return await super().search_with_embedding(
+            query_embedding, query_text, top_k=top_k, filters=effective
+        )
+
+    async def search(
+        self,
+        query: str,
+        top_k: int = 5,
+        filters: dict[str, Any] | None = None,
+        *,
+        include_private: bool = False,
+    ) -> SearchOutcome:
+        """Embed-then-search entry point; threads ``include_private`` to
+        ``search_with_embedding`` so the shareable default applies to both
+        entry points (``OptimalService.search`` calls ``search_with_embedding``
+        directly; ``search_learnings`` / ``get_learnings_by_*`` call here)."""
+        query_embedding = await self._compute_query_embedding(query)
+        return await self.search_with_embedding(
+            query_embedding,
+            query,
+            top_k=top_k,
+            filters=filters,
+            include_private=include_private,
+        )
 
     def prepare_metadata(
         self,
@@ -148,7 +200,15 @@ class LearningsIndexPlugin(BaseIndexPlugin):
         if shareable_only:
             filters["shareable"] = True
 
-        outcome = await self.search(query=query, top_k=top_k, filters=filters)
+        # ``shareable_only=False`` is the explicit opt-in to the private/admin
+        # view of the corpus — thread ``include_private=True`` so the plugin's
+        # shareable default (forced on every other shared path) is NOT applied.
+        outcome = await self.search(
+            query=query,
+            top_k=top_k,
+            filters=filters,
+            include_private=not shareable_only,
+        )
         return outcome.results
 
     async def get_learnings_by_category(
