@@ -7,7 +7,7 @@ provenance (and fabricated approval attribution for a rejected draft that was
 never approved). These two columns record who retired it and when, leaving
 ``approved_by``/``approved_at`` to record only the approval.
 
-Revision ID: 053_playbook_archived_attribution
+Revision ID: 053_playbook_archived_attr
 Revises: 052_task_cell_projects
 Create Date: 2026-06-30
 """
@@ -17,7 +17,7 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "053_playbook_archived_attribution"
+revision = "053_playbook_archived_attr"
 down_revision = "052_task_cell_projects"
 branch_labels = None
 depends_on = None

@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import warnings
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
@@ -97,7 +98,21 @@ def _postgres_reachable() -> bool:
         return False
 
 
+def _warn_if_pg_unavailable(available: bool, host: str, port: int) -> None:
+    """#90: warn loudly when the test DB is unreachable so a green run of all-skips
+    is not mistaken for a pass. The per-test ``pytest.skip`` still applies; this
+    only adds a visible import-time warning."""
+    if not available:
+        warnings.warn(
+            f"Postgres unreachable at {host}:{port} — every DB test will be "
+            "SKIPPED. Set ROBOCO_TEST_DB_HOST/PORT/USER/PASSWORD or start "
+            "Postgres (local: ROBOCO_TEST_DB_PORT=55432 ROBOCO_TEST_DB_USER=renzof).",
+            stacklevel=2,
+        )
+
+
 _PG_AVAILABLE = _postgres_reachable()
+_warn_if_pg_unavailable(_PG_AVAILABLE, _TEST_DB_HOST, _TEST_DB_PORT)
 
 # Sanity-check imported tables registered themselves on Base.metadata. Tied to
 # `roboco_tables` so static analysis treats the import as load-bearing.
