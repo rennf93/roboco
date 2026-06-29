@@ -441,6 +441,15 @@ def _canonical_bump_files(root: Path, version: str) -> list[str]:
     # First release has no prior ``chore(release):`` commit, so derivation
     # returns [] — fall back to the version-reference scan: files embedding the
     # version are exactly the set a first release must bump. Read-only.
+    #
+    # This makes ``_version_ref_gaps`` empty on first release BY DESIGN: the
+    # bump plan IS every version-bearing file, so the completeness invariant
+    # (every version-bearing file is in the plan) holds vacuously — there is no
+    # file that "holds the version but won't be bumped." The CEO still sees the
+    # set via ``version_bump_plan`` in the report. Re-introducing the old
+    # ``return []`` would flag EVERY version-bearing file as a gap on first
+    # release (false alarms). Subsequent releases derive the plan from the last
+    # release commit, so a NEWLY version-bearing file correctly shows as a gap.
     return _tracked_files_with_version(root, version)
 
 

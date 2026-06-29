@@ -35,10 +35,20 @@ def _report() -> ReleaseReadinessReport:
 class _FakeOps:
     """Records the call sequence; flags drive gate/CI/already-published outcomes."""
 
-    def __init__(self, *, already: bool = False, gate: bool = True, ci: bool = True):
+    def __init__(
+        self,
+        *,
+        already: bool = False,
+        gate: bool = True,
+        ci: bool = True,
+        commit_raises: str | None = None,
+        publish_raises: str | None = None,
+    ):
         self._already = already
         self._gate = gate
         self._ci = ci
+        self._commit_raises = commit_raises
+        self._publish_raises = publish_raises
         self.calls: list[str] = []
         self.bumped_plan: list[str] | None = None
         self.bumped_version: str | None = None
@@ -62,6 +72,8 @@ class _FakeOps:
 
     async def commit_and_push(self, _version: str) -> str:
         self.calls.append("commit")
+        if self._commit_raises is not None:
+            raise RuntimeError(self._commit_raises)
         return "deadbeef"
 
     async def wait_for_ci(self, _commit_sha: str) -> bool:
@@ -70,6 +82,8 @@ class _FakeOps:
 
     async def publish_release(self, version: str, _notes: str) -> str:
         self.calls.append("publish")
+        if self._publish_raises is not None:
+            raise RuntimeError(self._publish_raises)
         return f"https://github.com/x/roboco/releases/tag/v{version}"
 
 
@@ -127,6 +141,37 @@ async def test_already_published_is_a_noop() -> None:
     assert "bump" not in ops.calls
     assert "commit" not in ops.calls
     assert "publish" not in ops.calls
+
+
+@pytest.mark.asyncio
+async def test_commit_push_failure_returns_structured_commit_failed() -> None:
+    """#88: a RuntimeError from commit_and_push (gpgsign/pre-commit/non-ff
+    push) becomes a structured ``commit_failed`` result — not a 500 bubbling
+    out of ``approve``. Fail-closed: publish never runs."""
+    ops = _FakeOps(commit_raises="release push failed: non-fast-forward")
+    result = await ReleaseExecutor(ops).execute(_report())
+    assert result.status == "commit_failed"
+    assert result.commit_sha is None
+    assert result.release_url is None
+    assert "commit_failed" in result.detail or "push failed" in result.detail
+    assert "publish" not in ops.calls
+    assert "ci" not in ops.calls
+
+
+@pytest.mark.asyncio
+async def test_publish_failure_returns_structured_publish_failed() -> None:
+    """#88: a RuntimeError from ``gh release create`` (auth/quota/network) becomes
+    a structured ``publish_failed`` result. The commit is already pushed and CI
+    is green, so the release is half-landed — the CEO can retry ``gh release
+    create`` for the same version (the executor is idempotent on the commit
+    side). No 500."""
+    ops = _FakeOps(publish_raises="gh release create failed: forbidden")
+    result = await ReleaseExecutor(ops).execute(_report())
+    assert result.status == "publish_failed"
+    assert result.commit_sha == "deadbeef"
+    assert result.release_url is None
+    assert "gh release create failed" in result.detail
+    assert ops.calls.count("publish") == _ONE
 
 
 def test_release_result_carries_outcome_fields() -> None:

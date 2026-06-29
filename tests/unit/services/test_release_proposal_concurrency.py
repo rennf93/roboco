@@ -5,14 +5,19 @@ sees the lock held and refuses instead of racing on the writable clone.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
 from roboco.models.base import TaskStatus
+from roboco.services import release_proposal as rp
 from roboco.services.release_executor import ReleaseResult
-from roboco.services.release_proposal import ReleaseProposalService
+from roboco.services.release_proposal import (
+    _RELEASE_LOCK_PREFIX,
+    ReleaseProposalService,
+)
 
 
 def _task(*, source: str = "release_manager") -> MagicMock:
@@ -30,26 +35,55 @@ def _session() -> MagicMock:
 
 
 class _FakeRedis:
-    """Single-key SET NX / DEL recorder for the release-proposal lock."""
+    """In-memory single-key store backing the release-proposal lock.
+
+    Models ``SET NX EX``, ``GET``, ``EXPIRE`` and the two Lua scripts the
+    service uses (compare-and-del release, compare-and-expire heartbeat) so the
+    fencing token and heartbeat are observable without a real Redis.
+    """
 
     def __init__(self, *, held: bool = False) -> None:
-        self._held = held
+        self._force_held = held
+        self._store: dict[str, str] = {}
         self.set_calls: list[tuple[str, str, bool, int]] = []
-        self.del_calls: list[str] = []
+        self.eval_calls: list[tuple[str, tuple[Any, ...]]] = []
+        self.expire_calls: list[tuple[str, Any]] = []
 
     async def set(
         self, name: str, value: str, *, nx: bool = False, ex: int = 0
     ) -> bool:
         self.set_calls.append((name, value, nx, ex))
-        if nx and self._held:
+        if nx and (self._force_held or name in self._store):
             return False
-        self._held = True
+        self._store[name] = value
         return True
 
+    async def get(self, name: str) -> str | None:
+        return self._store.get(name)
+
+    async def expire(self, name: str, seconds: int) -> bool:
+        if name in self._store:
+            self.expire_calls.append((name, seconds))
+            return True
+        return False
+
     async def delete(self, name: str) -> int:
-        self.del_calls.append(name)
-        self._held = False
-        return 1
+        return 1 if self._store.pop(name, None) is not None else 0
+
+    async def eval(self, script: str, _numkeys: int, *args: Any) -> int:
+        self.eval_calls.append((script, args))
+        key = args[0]
+        token = args[1]
+        if "expire" in script:
+            if self._store.get(key) == token:
+                self.expire_calls.append((key, args[2]))
+                return 1
+            return 0
+        # compare-and-del release
+        if self._store.get(key) == token:
+            self._store.pop(key, None)
+            return 1
+        return 0
 
     async def aclose(self) -> None:
         return None
@@ -139,7 +173,10 @@ async def test_approve_acquires_lock_then_runs_executor_and_releases() -> None:
     assert nx is True
     assert ex >= _FORTY_MIN_SECONDS  # > the 40 min CI ceiling
     assert name.endswith(str(task.id))
-    assert fake_redis.del_calls == [name]
+    # Released via the fenced compare-and-del (a bare delete would not record
+    # an eval); the lock is no longer held.
+    assert await fake_redis.get(name) is None
+    assert any("del" in s for s, _ in fake_redis.eval_calls)
     w["executor"].execute.assert_awaited_once()
 
 
@@ -205,5 +242,154 @@ async def test_failed_execute_releases_lock_so_ceo_can_retry() -> None:
     assert result.status == "gate_failed"
     # Proposal stays open (not COMPLETED) for retry...
     assert task.status != TaskStatus.COMPLETED.value
-    # ...and the lock is released so the retry can acquire it.
-    assert len(fake_redis.del_calls) == 1
+    # ...and the lock is released via the fenced compare-and-del so the retry
+    # can acquire it.
+    assert len(fake_redis.set_calls) == 1
+    name, _value, _nx, _ex = fake_redis.set_calls[0]
+    assert await fake_redis.get(name) is None
+    assert any("del" in s for s, _ in fake_redis.eval_calls)
+
+
+@pytest.mark.asyncio
+async def test_fenced_release_does_not_delete_a_usurper_lock() -> None:
+    """The first execute's late finally must not release a lock a usurper
+    re-acquired after TTL expiry — the fencing token makes release compare-and-del."""
+    task = _task()
+    fake_redis = _FakeRedis()
+    lock_key = f"{_RELEASE_LOCK_PREFIX}{task.id}"
+    svc = ReleaseProposalService(_session())
+
+    with patch(
+        "roboco.services.release_proposal.redis.from_url", return_value=fake_redis
+    ):
+        token_a = await svc._acquire_release_lock(lock_key)
+        assert token_a is not None
+        assert await fake_redis.get(lock_key) == token_a
+
+        # TTL expired mid-execute and a second approve re-acquired with its own token.
+        fake_redis._store[lock_key] = "usurper-token"
+
+        # The first execute's finally runs late and tries to release its stale token.
+        await svc._release_release_lock(lock_key, token_a)
+
+    # The usurper's lock survives — a bare DEL would have deleted it.
+    assert await fake_redis.get(lock_key) == "usurper-token"
+
+    # And the positive case: releasing with the owning token does clear it.
+    with patch(
+        "roboco.services.release_proposal.redis.from_url", return_value=fake_redis
+    ):
+        await svc._release_release_lock(lock_key, "usurper-token")
+    assert await fake_redis.get(lock_key) is None
+
+
+@pytest.mark.asyncio
+async def test_redis_outage_returns_redis_unavailable_not_already_in_progress() -> None:
+    """#89: when Redis itself is unreachable, ``approve`` stays fail-closed
+    (execute never runs) but returns a distinct ``redis_unavailable`` result so
+    the CEO sees the real cause — not a misleading ``already_in_progress``
+    (which would imply a concurrent approve to wait out)."""
+    task = _task()
+    published = ReleaseResult(
+        status="published",
+        version="0.13.0",
+        files_changed=[],
+        commit_sha=None,
+        release_url=None,
+        detail="ok",
+    )
+
+    broken_redis = MagicMock()
+    broken_redis.set = AsyncMock(side_effect=ConnectionError("redis down"))
+    broken_redis.aclose = AsyncMock()
+
+    task_svc = MagicMock()
+    task_svc.get = AsyncMock(return_value=task)
+    executor = MagicMock()
+    executor.execute = AsyncMock(return_value=published)
+    markers_mod = MagicMock()
+    markers_mod.get_release_report = MagicMock(return_value=_REPORT)
+    report = MagicMock()
+    report.proposed_version = "0.13.0"
+    report_from_dict_mock = MagicMock(return_value=report)
+
+    svc = ReleaseProposalService(_session())
+    with (
+        patch(
+            "roboco.services.release_proposal.get_task_service", return_value=task_svc
+        ),
+        patch(
+            "roboco.services.release_proposal.get_release_executor",
+            AsyncMock(return_value=executor),
+        ),
+        patch("roboco.services.release_proposal.markers", markers_mod),
+        patch(
+            "roboco.services.release_proposal.report_from_dict",
+            report_from_dict_mock,
+        ),
+        patch(
+            "roboco.services.release_proposal.redis.from_url", return_value=broken_redis
+        ),
+    ):
+        result = await svc.approve(task.id)
+
+    assert result is not None
+    assert result.status == "redis_unavailable"
+    assert result.release_url is None
+    # Fail-closed: the executor MUST NOT run without the mutex.
+    executor.execute.assert_not_awaited()
+    # The report is built before the lock attempt so the result carries the
+    # proposed version even on an infra failure (the CEO sees which version
+    # the approval was for).
+    report_from_dict_mock.assert_called_once_with(_REPORT)
+    # And the proposal is not marked COMPLETED.
+    assert task.status != TaskStatus.COMPLETED.value
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_refreshes_lock_and_is_cancelled_in_finally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The heartbeat refreshes the TTL while the execute owns the lock and is
+    cancelled (no leaked task) before the fenced release."""
+    monkeypatch.setattr(rp, "_RELEASE_LOCK_HEARTBEAT_SECONDS", 0.001)
+
+    task = _task()
+    fake_redis = _FakeRedis()
+    published = ReleaseResult(
+        status="published",
+        version="0.13.0",
+        files_changed=["pyproject.toml"],
+        commit_sha="abc",
+        release_url="https://x",
+        detail="ok",
+    )
+
+    async def _slow_execute(_report: Any) -> ReleaseResult:
+        # Yield long enough for ≥1 heartbeat refresh to land.
+        await asyncio.sleep(0.02)
+        return published
+
+    w = _wire(task, _REPORT, published, fake_redis)
+    w["executor"].execute = AsyncMock(side_effect=_slow_execute)
+    svc = ReleaseProposalService(_session())
+
+    with (
+        w["patches"][0],
+        w["patches"][1],
+        w["patches"][2],
+        w["patches"][3],
+        w["patches"][4],
+    ):
+        result = await svc.approve(task.id)
+
+    assert result is not None
+    assert result.status == "published"
+    name, _token, _nx, _ex = fake_redis.set_calls[0]
+    # At least one compare-and-expire refreshed the TTL — the fake only records
+    # an expire when the stored value still equals our fencing token, so this
+    # proves the heartbeat extended a lock we still owned.
+    assert len(fake_redis.expire_calls) >= 1
+    assert all(k == name for k, _ttl in fake_redis.expire_calls)
+    # And the lock was released at the end.
+    assert await fake_redis.get(name) is None

@@ -12,6 +12,7 @@ real git / ``make quality`` / ``gh`` work on a writable clone.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -96,7 +97,25 @@ class ReleaseExecutor:
                 detail="make quality failed — aborted before commit (fail-closed).",
             )
 
-        commit_sha = await self._ops.commit_and_push(version)
+        try:
+            commit_sha = await self._ops.commit_and_push(version)
+        except RuntimeError as exc:
+            # The ops layer raises RuntimeError on a failed add/commit/push
+            # (gpgsign/pre-commit reject/no-op bump/non-fast-forward push). That
+            # is the correct fail-closed abort at the ops layer; the EXECUTOR
+            # turns it into a structured outcome so the CEO sees the cause
+            # instead of a 500 bubbling out of ``approve``.
+            logger.error("release commit/push failed", error=str(exc)[:300])
+            return ReleaseResult(
+                status="commit_failed",
+                version=version,
+                files_changed=files,
+                commit_sha=None,
+                release_url=None,
+                detail=(
+                    f"release commit/push failed — not published (fail-closed): {exc}"
+                )[:280],
+            )
 
         if not await self._ops.wait_for_ci(commit_sha):
             return ReleaseResult(
@@ -108,7 +127,24 @@ class ReleaseExecutor:
                 detail="release-commit CI was not green — not published (fail-closed).",
             )
 
-        release_url = await self._ops.publish_release(version, report.drafted_changelog)
+        try:
+            release_url = await self._ops.publish_release(
+                version, report.drafted_changelog
+            )
+        except RuntimeError as exc:
+            # ``gh release create`` failed (auth/quota/network). The commit is
+            # already pushed and CI is green, so the release is half-landed —
+            # surface it as a structured outcome (not a 500) so the CEO can
+            # retry ``gh release create`` for the same version.
+            logger.error("release publish failed", error=str(exc)[:300])
+            return ReleaseResult(
+                status="publish_failed",
+                version=version,
+                files_changed=files,
+                commit_sha=commit_sha,
+                release_url=None,
+                detail=f"gh release create failed — not published (fail-closed): {exc}",
+            )
         logger.info(
             "release published",
             version=version,
@@ -155,7 +191,12 @@ async def _await_proc(
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except TimeoutError:
-        proc.kill()
+        # Reap the killed child so its PID/PGID and the pipe transport are
+        # released — a kill without a wait leaves a zombie that wedges the
+        # release loop's next clone (and leaks FDs over a long release session).
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()  # already-exited between the timeout and the kill is fine
+        await proc.wait()
         return _TIMEOUT_RC, f"subprocess timed out after {int(timeout)}s"
     return proc.returncode or 0, out.decode("utf-8", "replace")
 
