@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import uuid4
 
+import pytest
 from roboco.foundation.identity import Role
 from roboco.foundation.policy.lifecycle import (
     Context,
@@ -42,6 +43,10 @@ def test_sync_branch_is_dev_only() -> None:
 @dataclass
 class _Task:
     assigned_to: object = None
+    # An active dev state by default so the ownership / role tests don't trip the
+    # source-status gate (which they're not exercising). Rejection tests pass an
+    # explicit non-active status.
+    status: object = "in_progress"
 
 
 def test_sync_branch_requires_ownership() -> None:
@@ -58,15 +63,46 @@ def test_sync_branch_requires_ownership() -> None:
 
 
 def test_sync_branch_allowed_when_owner() -> None:
-    # composes=() and the only precondition is ownership, so the owner passes the
-    # spec gate. (The choreographer handler does the git work + branch/base
-    # guards separately.)
+    # composes=() and the only preconditions are ownership + an active
+    # source-status, so the owner of an in_progress task passes the spec gate.
+    # (The choreographer handler does the git work + branch/base guards
+    # separately.)
     owner = uuid4()
-    task = _Task(assigned_to=owner)
+    task = _Task(assigned_to=owner, status="in_progress")
     decision = can_invoke_intent(
         Role.DEVELOPER, "sync_branch", task, Context(actor_id=owner)
     )
     assert isinstance(decision, Decision)
+    assert decision.allowed
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["completed", "cancelled", "paused", "blocked", "awaiting_qa", "pending"],
+)
+def test_sync_branch_rejects_non_active_status(status: str) -> None:
+    """#50: sync_branch composes=() so without a source-status gate the spec
+    accepted a terminal / paused / blocked / reviewing task and the handler
+    rebased a branch whose task was no longer the dev's to move. The owner of a
+    non-active task is now rejected as invalid_state."""
+    owner = uuid4()
+    task = _Task(assigned_to=owner, status=status)
+    decision = can_invoke_intent(
+        Role.DEVELOPER, "sync_branch", task, Context(actor_id=owner)
+    )
+    assert not decision.allowed
+    assert decision.rejection_kind == "invalid_state"
+
+
+@pytest.mark.parametrize("status", ["claimed", "verifying", "needs_revision"])
+def test_sync_branch_allows_active_dev_status(status: str) -> None:
+    """The active dev working states (claimed / in_progress / verifying /
+    needs_revision) are exactly where a behind-base rebase is meaningful."""
+    owner = uuid4()
+    task = _Task(assigned_to=owner, status=status)
+    decision = can_invoke_intent(
+        Role.DEVELOPER, "sync_branch", task, Context(actor_id=owner)
+    )
     assert decision.allowed
 
 

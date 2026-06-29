@@ -76,6 +76,24 @@ def test_submit_root_is_main_pm_only_and_opens_a_pr() -> None:
     assert iv.pre_side_effects == ("create_root_pr",)
 
 
+def test_submit_root_rejects_a_code_typed_root() -> None:
+    """#148: submit_root's prose asserts 'a Main-PM root is planning-typed,
+    never code' — the spec must back that claim, not only the upstream creation
+    guard (``main_pm_cannot_own_code``). A code-typed root is rejected at the
+    spec gate as invalid_state (defense in depth: such a root is already
+    unreachable via creation, but the spec mustn't accept it either)."""
+    t = _task("in_progress", team="main_pm", task_type="code")
+    d = spec.can_invoke_intent(Role.MAIN_PM, "submit_root", t)
+    assert not d.allowed
+    assert d.rejection_kind == "invalid_state"
+
+
+def test_submit_root_allows_a_planning_typed_root() -> None:
+    """The legitimate Main-PM root shape — planning-typed, in_progress — passes."""
+    t = _task("in_progress", team="main_pm", task_type="planning")
+    assert spec.can_invoke_intent(Role.MAIN_PM, "submit_root", t).allowed
+
+
 def test_gate_cannot_skip_straight_to_terminal_or_ceo() -> None:
     targets = spec.STATUS_GRAPH[Status.AWAITING_PR_REVIEW]
     assert Status.COMPLETED not in targets

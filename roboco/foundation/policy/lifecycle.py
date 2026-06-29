@@ -1014,6 +1014,72 @@ PRECONDITION_PR_OPEN_STATE = Precondition(
 )
 
 
+# The states from which a dev may re-sync their branch onto its base. A rebase
+# is meaningful only while the dev actively works the task and the branch is
+# live — once the task is paused / blocked / handed to QA-doc-PM-CEO review /
+# terminal, the dev is no longer the actor and a rebase runs against a branch
+# whose task is no longer theirs to move. ``sync_branch`` composes=() (no
+# composed action supplies a source-status gate), so without this precondition
+# the spec gate accepted a COMPLETED/CANCELLED/PAUSED/BLOCKED task and the
+# choreographer handler rebased a dead/parked branch (#50).
+SYNC_BRANCH_STATES: frozenset[Status] = frozenset(
+    {
+        Status.CLAIMED,
+        Status.IN_PROGRESS,
+        Status.VERIFYING,
+        Status.NEEDS_REVISION,
+    }
+)
+
+
+def _p_sync_branch_state(task: Any, _agent: Any, _ctx: Any) -> bool:
+    """True iff the task is in a sync_branch-eligible active dev state."""
+    status = getattr(task, "status", None)
+    value = status.value if isinstance(status, Status) else str(status)
+    return value in {s.value for s in SYNC_BRANCH_STATES}
+
+
+PRECONDITION_SYNC_BRANCH_STATE = Precondition(
+    key="sync_branch_state",
+    check=_p_sync_branch_state,
+    remediate=(
+        "sync_branch is only valid while you actively work the task "
+        "(claimed / in_progress / verifying / needs_revision); a paused, "
+        "blocked, reviewing, or terminal task's branch is not yours to move"
+    ),
+    missing_token="sync_branch_state",
+    rejection_kind="invalid_state",
+)
+
+
+# submit_root's prose asserts "a Main-PM root is planning-typed, never code".
+# The creation path (``main_pm_cannot_own_code``) already blocks a code-typed
+# Main-PM root at TaskService.create / intake / approve_and_start, so such a
+# root is unreachable in production — but the spec gate must back the claim too
+# (defense in depth: a future creation-path change can't quietly make submit_root
+# accept a code root). Scoped to submit_root only, NOT the shared
+# ``submit_for_review`` action (which cell_pm+code submit_up legitimately uses).
+def _p_root_not_code(task: Any, _agent: Any, _ctx: Any) -> bool:
+    tt = getattr(task, "task_type", None)
+    value = (
+        tt.value if isinstance(tt, TaskType) else (str(tt) if tt is not None else None)
+    )
+    return value != TaskType.CODE.value
+
+
+PRECONDITION_ROOT_NOT_CODE = Precondition(
+    key="root_not_code",
+    check=_p_root_not_code,
+    remediate=(
+        "a Main-PM root is planning-typed, never code; the root assembles the "
+        "cells' merged work — a code-typed root belongs to a developer, not the "
+        "Main PM. Reassign the code work to a dev and keep the root planning-typed"
+    ),
+    missing_token="root_not_code",
+    rejection_kind="invalid_state",
+)
+
+
 _INTENT_VERBS: dict[str, IntentSpec] = {
     # Phase 1: developer verbs
     "give_me_work": IntentSpec(
@@ -1118,7 +1184,10 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
             " by hand, commit, then sync_branch again."
         ),
         composes=(),  # git-only verb — no DB transition; the handler runs the git op
-        extra_preconditions=(PRECONDITION_OWNERSHIP,),
+        extra_preconditions=(
+            PRECONDITION_OWNERSHIP,
+            PRECONDITION_SYNC_BRANCH_STATE,
+        ),
         side_effects=(),
         next_hint=_next_hint_synced,
     ),
@@ -1385,7 +1454,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
             " task_type-keyed — a Main-PM root is planning-typed, never code."
         ),
         composes=("submit_for_review",),
-        extra_preconditions=(),
+        extra_preconditions=(PRECONDITION_ROOT_NOT_CODE,),
         # The root→master PR must exist before the reviewer can review it —
         # opened here (parent=master, is_root_pr=True), mirroring submit_up's
         # pre-create of the cell→root PR.
