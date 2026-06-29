@@ -52,9 +52,31 @@ def test_resolve_rejects_nul(tmp_path: Path) -> None:
 
 
 def test_resolve_rejects_dotdot(tmp_path: Path) -> None:
-    # The existing '..' policy is preserved (no behavior change).
+    # A '..' segment is still rejected (traversal).
     with pytest.raises(ValidationError):
         _resolve_contained_path(tmp_path, "backend/../etc/passwd")
+
+
+def test_resolve_rejects_dot_segment(tmp_path: Path) -> None:
+    # rel='.' resolves to the base dir itself and would hand read_doc/delete_doc
+    # a directory (500 / failed unlink). Reject it cleanly.
+    with pytest.raises(ValidationError):
+        _resolve_contained_path(tmp_path, ".")
+
+
+def test_resolve_rejects_inner_dot_segment(tmp_path: Path) -> None:
+    # A '.' segment mid-path (a/./b) is also rejected.
+    with pytest.raises(ValidationError):
+        _resolve_contained_path(tmp_path, "backend/./endpoints.md")
+
+
+def test_resolve_accepts_dotdot_inside_filename(tmp_path: Path) -> None:
+    # '..' as CHARACTERS inside a single component (not a '..' segment) is a
+    # legit filename — the old '..' substring ban false-rejected this; the
+    # segment check allows it (it resolves safely under base).
+    resolved = _resolve_contained_path(tmp_path, "v1..v2.md")
+    assert resolved == (tmp_path / "v1..v2.md").resolve()
+    assert tmp_path.resolve() in resolved.parents
 
 
 def test_resolve_accepts_nested_relative(tmp_path: Path) -> None:
@@ -110,6 +132,18 @@ async def test_read_doc_rejects_traversal(tmp_path: Path) -> None:
         pytest.raises(ValidationError),
     ):
         await svc.read_doc(agent_id="be-doc", path="backend/../../etc/passwd")
+
+
+@pytest.mark.asyncio
+async def test_read_doc_rejects_dot_segment_cleanly(tmp_path: Path) -> None:
+    # path='.' must raise ValidationError (clean 400), NOT reach the read sink
+    # and 500 on a directory. Proves the guard fails graceful, not loud.
+    svc = DocsService(MagicMock())
+    with (
+        patch("roboco.services.docs.DOCS_BASE_PATH", tmp_path),
+        pytest.raises(ValidationError),
+    ):
+        await svc.read_doc(agent_id="be-doc", path=".")
 
 
 @pytest.mark.asyncio

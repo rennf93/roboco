@@ -126,13 +126,19 @@ def _resolve_contained_path(base: Path, rel: str) -> Path:
     A bare ``..`` substring guard is bypassable: an absolute ``rel`` makes
     ``base / rel`` evaluate to ``rel`` itself (pathlib resets on an absolute
     right operand), so ``/etc/passwd`` would escape ``base`` and reach the
-    ``read_text`` / ``unlink`` sink. Reject empty/NUL/``..``, then resolve
-    both sides and require the target to be ``base`` or a descendant.
+    ``read_text`` / ``unlink`` sink. Reject empty/NUL and any ``.``, ``..``,
+    or empty SEGMENT. Split the raw string (not ``Path(rel).parts`` — pathlib
+    collapses ``.`` and empty segments on 3.13, hiding them) so ``v1..v2.md``
+    (``..`` inside a filename, no bad segment) is allowed while ``a/./b`` and
+    ``.`` are rejected. Then resolve both sides and require the target to be
+    ``base`` or a descendant.
     """
     if not rel or "\x00" in rel:
         raise ValidationError("Path cannot be empty or contain NUL", field="path")
-    if ".." in rel:
-        raise ValidationError("Path cannot contain '..'", field="path")
+    if any(seg in ("", ".", "..") for seg in rel.split("/")):
+        raise ValidationError(
+            "Path cannot contain '.', '..', or empty segments", field="path"
+        )
     base_resolved = base.resolve()
     full = (base / rel).resolve()
     if full != base_resolved and base_resolved not in full.parents:
