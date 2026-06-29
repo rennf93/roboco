@@ -12,7 +12,7 @@ Also implements the ACK system for tracking acknowledgments.
 import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import ClassVar, Literal
+from typing import ClassVar, Literal, cast
 from uuid import UUID
 
 import structlog
@@ -29,6 +29,7 @@ from roboco.events import Event, EventType, get_event_bus
 from roboco.foundation.policy.communications import ACK_REQUIRED_BY_TYPE
 from roboco.models.base import AgentRole, NotificationPriority, NotificationType
 from roboco.services.base import BaseService, NotFoundError
+from roboco.services.notification_dedup import all_recipients_recently_notified
 from roboco.utils.converters import require_uuid
 
 _log = structlog.get_logger(service="notification_delivery")
@@ -873,6 +874,27 @@ class NotificationDeliveryService(BaseService):
 
     async def _persist_and_deliver(self, notification: NotificationTable) -> None:
         """Add to session, flush (to get an id), deliver. Caller commits."""
+        # Bounded re-fire guard (loop-prone types): this path bypasses the DB
+        # dedup in NotificationService._create_notification, so apply the same
+        # 60s Redis SET-NX window here. Fail-open: Redis down → deliver. Casts
+        # peel the SA UUID column type-leak (mypy sees sqltypes.UUID, not uuid).
+        if await all_recipients_recently_notified(
+            ntype=notification.type,
+            from_agent=cast("UUID | None", notification.from_agent),
+            recipients=cast("list[UUID]", notification.to_agents),
+            related_task_id=cast("UUID | None", notification.related_task_id),
+        ):
+            _log.info(
+                "Suppressed re-fire notification (loop-prone, recent window)",
+                from_agent=str(notification.from_agent)
+                if notification.from_agent is not None
+                else None,
+                type=notification.type.value if notification.type is not None else None,
+                related_task_id=str(notification.related_task_id)
+                if notification.related_task_id is not None
+                else None,
+            )
+            return
         self.session.add(notification)
         await self.session.flush()
         await self.deliver(require_uuid(notification.id))

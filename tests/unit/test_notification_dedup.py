@@ -121,3 +121,97 @@ async def test_informational_knowledge_share_not_deduped() -> None:
     # Informational ⇒ NOT suppressed: a row was created + committed.
     db.add.assert_called_once()
     db.commit.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Bounded re-fire guard (loop-prone types) — sweep #4
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_notification_suppresses_refire_when_guard_true() -> None:
+    """A re-fire (guard True) short-circuits before the DB dedup query AND
+    before any row is created/delivered — even though TASK_ASSIGNMENT is an
+    action-required type the DB dedup never fires for."""
+    db = MagicMock()
+    db.scalar = AsyncMock()
+    db.add = MagicMock()
+    db.flush = AsyncMock()
+    db.commit = AsyncMock()
+
+    svc = NotificationService()
+    cc: Any = svc
+    cc._resolve_recipients = AsyncMock(return_value=[uuid4()])
+    params = CreateNotificationParams(
+        notification_type=NotificationType.TASK_ASSIGNMENT,
+        priority=NotificationPriority.NORMAL,
+        from_agent="from-1",
+        to_agents=["to-1"],
+        subject="s",
+        body="b",
+        related_task_id="t1",
+    )
+    with (
+        patch(
+            "roboco.services.notification.get_db_context",
+            return_value=_FakeDBCtx(db),
+        ),
+        patch(
+            "roboco.services.notification._resolve_agent_uuid",
+            AsyncMock(return_value=uuid4()),
+        ),
+        patch(
+            "roboco.services.notification.all_recipients_recently_notified",
+            AsyncMock(return_value=True),
+        ),
+    ):
+        await svc._create_notification(params)
+
+    db.add.assert_not_called()
+    db.commit.assert_not_called()
+    db.scalar.assert_not_awaited()  # returned before the DB dedup query
+
+
+@pytest.mark.asyncio
+async def test_create_notification_passes_through_when_guard_false() -> None:
+    """First fire (guard False) proceeds to row create + deliver."""
+    db = MagicMock()
+    db.add = MagicMock(side_effect=lambda obj: setattr(obj, "id", uuid4()))
+    db.flush = AsyncMock()
+    db.commit = AsyncMock()
+    db.scalar = AsyncMock()  # TASK_ASSIGNMENT is_ack_required=False → not awaited
+
+    svc = NotificationService()
+    cc: Any = svc
+    cc._resolve_recipients = AsyncMock(return_value=[uuid4()])
+    params = CreateNotificationParams(
+        notification_type=NotificationType.TASK_ASSIGNMENT,
+        priority=NotificationPriority.NORMAL,
+        from_agent="from-1",
+        to_agents=["to-1"],
+        subject="s",
+        body="b",
+        related_task_id="t1",
+    )
+    with (
+        patch(
+            "roboco.services.notification.get_db_context",
+            return_value=_FakeDBCtx(db),
+        ),
+        patch(
+            "roboco.services.notification._resolve_agent_uuid",
+            AsyncMock(return_value=uuid4()),
+        ),
+        patch(
+            "roboco.services.notification.all_recipients_recently_notified",
+            AsyncMock(return_value=False),
+        ),
+        patch(
+            "roboco.services.notification_delivery.get_notification_delivery_service",
+            lambda _db: MagicMock(deliver=AsyncMock(return_value=None)),
+        ),
+    ):
+        await svc._create_notification(params)
+
+    db.add.assert_called_once()
+    db.commit.assert_awaited_once()
