@@ -1963,7 +1963,7 @@ class AgentOrchestrator:
         # pointing at it (F123). A pruned/evicted worktree would start the
         # agent in a missing dir; idempotent re-add, no-op for branchless spawns.
         await self._ensure_worktree_before_spawn(
-            git_context, project_slug, team, agent_id
+            git_context, project_slug, team, agent_id, task_id
         )
 
         agent_settings_path = self._generate_agent_settings(
@@ -2004,6 +2004,7 @@ class AgentOrchestrator:
         project_slug: str,
         team: str,
         agent_id: str,
+        task_id: str | None,
     ) -> None:
         """Re-attach the task's per-task worktree before the container starts.
 
@@ -2012,8 +2013,14 @@ class AgentOrchestrator:
         down) would start the agent in a missing directory. Idempotent —
         ``ensure_worktree_for_resume`` is a no-op when the worktree is present
         and re-adds it (no ``-b``) from the surviving branch ref when pruned.
-        No-op for branchless / no-task spawns (no worktree). Best-effort: a
-        failure warns and never blocks the spawn.
+        No-op for branchless / no-task spawns (no worktree).
+
+        A fatal git-state failure (``WorkspaceError`` — the branch ref is gone,
+        so the worktree can't be re-added) releases the claim and aborts the
+        spawn so the next claim rebuilds the worktree via ``create_branch``
+        rather than launching the container at a missing ``-w`` path. A
+        transient failure (DB/other) aborts without releasing — the next tick
+        retries the same claim.
         """
         if not (git_context and git_context.task_short_id and git_context.branch_name):
             return
@@ -2024,20 +2031,47 @@ class AgentOrchestrator:
             )
         )
         from roboco.db.base import get_db_context
-        from roboco.services.workspace import WorkspaceService
+        from roboco.services.workspace import WorkspaceError, WorkspaceService
 
         try:
             async with get_db_context() as db:
                 await WorkspaceService(db).ensure_worktree_for_resume(
                     clone_root, worktree, git_context.branch_name
                 )
-        except Exception as e:
-            logger.warning(
-                "worktree ensure before spawn failed",
+        except WorkspaceError as e:
+            # Fatal git state: the branch ref is gone, so the worktree cannot be
+            # re-added here. Release the claim so the next claim rebuilds the
+            # worktree via create_branch, and abort before docker run -w lands
+            # on a missing path. The release is best-effort (suppressed) so a
+            # release failure never masks the fatal error.
+            logger.error(
+                "worktree ensure failed (fatal); releasing claim for rebuild",
                 agent_id=agent_id,
                 task_short_id=git_context.task_short_id,
                 error=str(e),
             )
+            if task_id:
+                with contextlib.suppress(Exception):
+                    await self._release_claim_to_pending(task_id)
+            raise AgentReadinessError(
+                f"worktree ensure failed for {agent_id}"
+                f" (task={task_id}, branch={git_context.branch_name}): {e};"
+                f" claim released for rebuild"
+            ) from e
+        except Exception as e:
+            # Transient (DB hiccup, etc.): abort so we don't launch at a
+            # possibly-missing path, but do NOT release — a fresh claim would
+            # not help and re-cloning is destructive. Next tick retries.
+            logger.warning(
+                "worktree ensure failed (transient); aborting spawn",
+                agent_id=agent_id,
+                task_short_id=git_context.task_short_id,
+                error=str(e),
+            )
+            raise AgentReadinessError(
+                f"worktree ensure failed (transient) for {agent_id}"
+                f" (task={task_id}): {e}; will retry next tick"
+            ) from e
 
     async def _launch_spawn(
         self,
