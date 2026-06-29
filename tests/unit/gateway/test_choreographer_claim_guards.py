@@ -584,18 +584,18 @@ async def test_main_pm_can_plan_second_root_despite_active_and_paused() -> None:
         assigned_to=None,
         parent_task_id=None,
         sequence=0,
-        task_type="code",
+        task_type="planning",
         team="main_pm",
     )
     claimed = MagicMock(
-        id=task_id, status="claimed", plan=None, assigned_to=pm_id, task_type="code"
+        id=task_id, status="claimed", plan=None, assigned_to=pm_id, task_type="planning"
     )
     started = MagicMock(
         id=task_id,
         status="in_progress",
         plan={"text": "x"},
         assigned_to=pm_id,
-        task_type="code",
+        task_type="planning",
     )
     # The coordinator already holds one in_progress root and one paused root —
     # both would trip the guards for a non-PM caller.
@@ -654,7 +654,7 @@ async def test_main_pm_recovers_claimed_root_with_paused_sibling() -> None:
         assigned_to=pm_id,
         parent_task_id=None,
         sequence=0,
-        task_type="code",
+        task_type="planning",
         team="main_pm",
         branch_name="feature/main_pm/abc",
     )
@@ -663,7 +663,7 @@ async def test_main_pm_recovers_claimed_root_with_paused_sibling() -> None:
         status="in_progress",
         plan={"text": "x"},
         assigned_to=pm_id,
-        task_type="code",
+        task_type="planning",
     )
     other_paused = MagicMock(id=uuid4(), status="paused")
     task_svc = _task_svc_with(

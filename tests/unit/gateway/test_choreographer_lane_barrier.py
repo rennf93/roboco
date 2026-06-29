@@ -159,7 +159,11 @@ async def test_claim_guard_allows_when_lane_clear() -> None:
 @pytest.mark.asyncio
 async def test_claim_guard_fail_closed_on_lookup_error() -> None:
     """If the lane lookup raises, the claim is refused (fail-closed) rather
-    than letting an out-of-order start through on a DB hiccup."""
+    than letting an out-of-order start through on a DB hiccup. The fail-closed
+    path returns the error envelope WITHOUT releasing the claim (#29): a
+    transient lookup error must not bounce the dev + abandon their work
+    session when the lane may actually be free — they retry give_me_work and
+    keep their claim."""
     task_svc, agent_id = _dev_agent_task_svc()
     task = _claim_task()
     task_svc.get.return_value = task
@@ -172,6 +176,8 @@ async def test_claim_guard_fail_closed_on_lookup_error() -> None:
     )
     assert guard is not None
     assert guard.error == "invalid_state"
+    # No claim release on a transient lookup error — the dev keeps their claim.
+    task_svc.release_dependency_blocked_claim.assert_not_awaited()
 
 
 @pytest.mark.asyncio

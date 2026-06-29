@@ -919,6 +919,7 @@ class Choreographer:
         agent_id: UUID,
         task: Any,
         role_str: str | None = None,
+        skip_dev_guards: bool = False,
     ) -> Envelope | None:
         """Run concurrency-invariant claim guards. Returns rejection or None.
 
@@ -934,9 +935,16 @@ class Choreographer:
         guard ``unmet_dependency`` still applies to everyone. A ``None`` role
         keeps the full guards (safe default for non-PM callers).
 
+        ``skip_dev_guards`` skips the dev-only guards (``already_active`` /
+        ``paused`` / ``_lane_claim_guard``) for a non-transitioning inspection
+        claim — a pr_reviewer claiming an awaiting_pr_review gate task does not
+        start work, so the single-active-task / code-lane invariants that gate a
+        developer starting a code task do not apply (the dependency guard still
+        runs). See ``claim_gate_review`` (#192).
+
         Pre-gateway location: _helpers.py:124-204.
         """
-        if role_str not in self._COORDINATOR_ROLES:
+        if not skip_dev_guards and role_str not in self._COORDINATOR_ROLES:
             in_progress = await self.task.list_in_progress_for_agent(agent_id)
             if guard := already_active_guard(in_progress, task.id):
                 return guard
@@ -972,6 +980,8 @@ class Choreographer:
                 # unless the task is currently claimed/in_progress.
                 await self.task.release_dependency_blocked_claim(task.id)
                 return guard
+        if skip_dev_guards:
+            return None
         return await self._lane_claim_guard(task)
 
     async def _lane_claim_guard(self, task: Any) -> Envelope | None:
@@ -6233,7 +6243,15 @@ class Choreographer:
                 return None
             sha = await self.git.get_pr_head_sha(slug, int(pr_number))
             return sha if isinstance(sha, str) else None
-        except Exception:
+        except Exception as exc:
+            # Fail-open (never wedge the PM on a lookup error), but log so a
+            # regression in the slug resolver / git helper doesn't silently
+            # turn the pr_fail re-submit loop-stopper into a no-op (#5).
+            logger.warning(
+                "unchanged_pr_guard head_sha lookup failed (fail-open)",
+                pr_number=pr_number,
+                error=str(exc),
+            )
             return None
 
     async def _submit_up_unchanged_pr_guard(

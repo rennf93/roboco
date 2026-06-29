@@ -29,6 +29,7 @@ from uuid import uuid4
 import pytest
 from roboco.foundation.policy import lifecycle as spec_module
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
+from structlog.testing import capture_logs
 
 SHA_OLD = "aaaa1111bbbb2222cccc3333dddd4444eeee5555"
 SHA_NEW = "9999888877776666555544443333222211110000"
@@ -247,6 +248,39 @@ async def test_submit_root_fail_open_when_git_lookup_raises() -> None:
     assert env.status == "awaiting_pr_review"
 
 
+@pytest.mark.asyncio
+async def test_submit_root_fail_open_logs_when_slug_resolver_raises() -> None:
+    """#5: a regression in ``_project_slug_for`` (or ``get_pr_head_sha``) used to
+    make the loop-stopper a SILENT no-op — the broad ``except Exception`` in
+    ``_current_pr_head_sha`` swallowed it with no log, re-opening the
+    pr_fail re-submit loop invisibly. The gate still fails open (do NOT
+    invert to fail-closed — that would wedge the PM), but the swallow must
+    now emit a warning so a resolver regression is visible to the operator."""
+    c, main_pm_id, root_task_id = _resubmit_root(
+        notes_structured={
+            "pr_review": {"verdict": "failed", "head_sha": SHA_OLD, "summary": "..."}
+        }
+    )
+    cc: Any = c
+    cc._project_slug_for = AsyncMock(side_effect=RuntimeError("resolver regression"))
+
+    with capture_logs() as logs:
+        env = await c.submit_root(
+            main_pm_id, root_task_id, notes="re-submit; slug resolver blew up"
+        )
+
+    # Still fail-open — never wedge the PM on a lookup error.
+    assert env.error is None, env.as_dict()
+    assert env.status == "awaiting_pr_review"
+    # ...but the swallow is no longer silent.
+    assert any(
+        entry["log_level"] == "warning"
+        and "head_sha" in entry["event"]
+        and "resolver regression" in str(entry.get("error", ""))
+        for entry in logs
+    ), [e.get("event") for e in logs if e["log_level"] == "warning"]
+
+
 # ---------------------------------------------------------------------------
 # The capture side — pr_fail stamps the head SHA into notes_structured
 # ---------------------------------------------------------------------------
@@ -370,6 +404,91 @@ async def test_pr_fail_capture_best_effort_when_git_raises() -> None:
     assert env.status == "needs_revision"
     record_spy.assert_called_once()
     assert record_spy.call_args.kwargs["head_sha"] is None
+
+
+@pytest.mark.asyncio
+async def test_pr_fail_re_captures_head_sha_after_transition_commits() -> None:
+    """#189: ``_record_gate_verdict_for`` captures the PR head SHA BEFORE
+    ``run_intent`` commits the transition (so the verdict note rides the same
+    commit). If the assembled PR advances between that capture and the commit,
+    the recorded SHA is stale vs the PR head at the moment of needs_revision —
+    and the ``submit_root`` loop-stopper then false-ALLOWS an unchanged
+    re-submit (current head vs an older recorded head ⇒ "different" ⇒ allow),
+    re-opening the pr_fail loop. The fix re-captures the SHA AFTER the
+    transition commits and re-stamps the note when it changed, so the recorded
+    SHA is the PR head at the moment of needs_revision. Here the PR advances
+    from SHA_OLD (pre-transition capture) to SHA_NEW (post-transition
+    re-capture): the final recorded head_sha is SHA_NEW."""
+    reviewer_id = uuid4()
+    pm_id = uuid4()
+    task_id = uuid4()
+    t_before = MagicMock(
+        id=task_id,
+        assigned_to=reviewer_id,
+        pr_number=139,
+        parent_task_id=uuid4(),
+        status="awaiting_pr_review",
+    )
+    t_after = MagicMock(
+        id=task_id, assigned_to=pm_id, pr_number=139, status="needs_revision"
+    )
+
+    c = _make_choreographer_for_gate()
+    record_spy = _stub_gate_path(
+        c, reviewer_id=reviewer_id, t_before=t_before, t_after=t_after
+    )
+    cc: Any = c
+    cc._project_slug_for = AsyncMock(return_value="proj-slug")
+    # Pre-transition capture -> SHA_OLD; post-transition re-capture -> SHA_NEW
+    # (cell work landed on the root branch mid-gate).
+    c.git.get_pr_head_sha = AsyncMock(side_effect=[SHA_OLD, SHA_NEW])
+
+    env = await c.pr_fail(reviewer_id, task_id, ["a concrete issue"])
+
+    assert env.status == "needs_revision"
+    # The pre-transition call wrote SHA_OLD; the post-transition re-stamp wrote
+    # SHA_NEW (the authoritative head at needs_revision time). The ordered
+    # sequence pins both calls in order (a list compare, not a magic count).
+    shas = [c.kwargs["head_sha"] for c in record_spy.call_args_list]
+    assert shas == [SHA_OLD, SHA_NEW]
+
+
+@pytest.mark.asyncio
+async def test_pr_fail_skips_re_stamp_when_head_sha_unchanged() -> None:
+    """#189 companion: when the PR head did NOT advance between the pre-transition
+    capture and the commit, the re-capture matches and the gate does NOT re-stamp
+    (no second note write) — the pre-transition SHA already records the truth.
+    This keeps the no-advance case to a single ``_record_gate_verdict`` call and
+    a single GitHub head-sha lookup pair (no extra write when nothing moved)."""
+    reviewer_id = uuid4()
+    pm_id = uuid4()
+    task_id = uuid4()
+    t_before = MagicMock(
+        id=task_id,
+        assigned_to=reviewer_id,
+        pr_number=139,
+        parent_task_id=uuid4(),
+        status="awaiting_pr_review",
+    )
+    t_after = MagicMock(
+        id=task_id, assigned_to=pm_id, pr_number=139, status="needs_revision"
+    )
+
+    c = _make_choreographer_for_gate()
+    record_spy = _stub_gate_path(
+        c, reviewer_id=reviewer_id, t_before=t_before, t_after=t_after
+    )
+    cc: Any = c
+    cc._project_slug_for = AsyncMock(return_value="proj-slug")
+    # PR head stable across the gate.
+    c.git.get_pr_head_sha = AsyncMock(return_value=SHA_OLD)
+
+    env = await c.pr_fail(reviewer_id, task_id, ["a concrete issue"])
+
+    assert env.status == "needs_revision"
+    # No advance -> single pre-transition write, no re-stamp.
+    record_spy.assert_called_once()
+    assert record_spy.call_args.kwargs["head_sha"] == SHA_OLD
 
 
 @pytest.mark.asyncio

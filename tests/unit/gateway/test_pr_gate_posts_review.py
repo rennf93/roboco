@@ -103,3 +103,25 @@ async def test_github_failure_is_swallowed() -> None:
     c = _make_choreographer(git)
     # Must not raise.
     await c._post_gate_review_to_pr(_task(parent_task_id=uuid4()), "pr_pass", "r", "n")
+
+
+@pytest.mark.asyncio
+async def test_slug_resolver_failure_is_swallowed() -> None:
+    """#82: ``_post_gate_review_to_pr`` resolves the project slug via
+    ``_project_slug_for`` (which walks ``resolve_task_project_slug`` and sorts a
+    ``cell_projects`` map by ``m.team.value``). A malformed cell_map entry (a
+    mapping missing ``.team``) makes that sort raise ``AttributeError``; the
+    gate verdict must still be best-effort — the DB transition already
+    committed, so a slug error must NOT propagate and 500 the reviewer (which
+    would also skip the pr_fail a2a delivery that runs right after this).
+    Mirror ``_capture_pr_head_sha``: catch + log + skip the post. The post
+    itself is not awaited (no slug to post to); the call simply returns."""
+    git = AsyncMock()
+    c = _make_choreographer(git)
+    # A malformed cell_map sort key — the resolver blows up mid-resolve.
+    c._project_slug_for = AsyncMock(side_effect=AttributeError("team"))
+    # Must not raise.
+    await c._post_gate_review_to_pr(
+        _task(parent_task_id=uuid4()), "pr_fail", "be-pr-reviewer", "Issues:\n- x"
+    )
+    git.post_pr_review.assert_not_awaited()

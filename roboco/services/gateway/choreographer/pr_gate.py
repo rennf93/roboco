@@ -81,7 +81,11 @@ class PRGateMixin(_Base):
                 task_id=task_id,
                 verb="claim_gate_review",
             )
-        guard = await self._run_claim_guards(agent_id=reviewer_agent_id, task=t)
+        guard = await self._run_claim_guards(
+            agent_id=reviewer_agent_id,
+            task=t,
+            skip_dev_guards=True,
+        )
         if guard:
             guard.with_introspection(task=t, role=role_str)
             return await self._emit_rejection(
@@ -228,19 +232,55 @@ class PRGateMixin(_Base):
 
     async def _record_gate_verdict_for(
         self, verb: str, t: Any, notes: str, *, issues: tuple[str, ...]
-    ) -> None:
+    ) -> str | None:
         """Author the canonical pr_review verdict note before the transition.
 
         On pr_fail also stamp the assembled PR's head SHA so the next submit_root
         can structurally refuse to re-submit the unchanged root (the 2026-06-27
         infinite pr_fail re-submit loop). Best-effort: a capture failure leaves
         head_sha absent and submit_root fails open rather than wedging the PM.
+
+        Returns the captured head_sha for pr_fail (None for pr_pass) so the caller
+        can re-capture after the transition commits and re-stamp if the PR head
+        advanced in between (#189 staleness).
         """
         if verb == "pr_fail":
             head_sha = await self._capture_pr_head_sha(t)
             self._record_gate_verdict(t, verb, notes, issues=issues, head_sha=head_sha)
-        else:
-            self._record_gate_verdict(t, verb, notes, issues=issues)
+            return head_sha
+        self._record_gate_verdict(t, verb, notes, issues=issues)
+        return None
+
+    async def _re_stamp_pr_fail_head_sha_if_advanced(
+        self,
+        t: Any,
+        notes: str,
+        *,
+        issues: tuple[str, ...],
+        pre_sha: str | None,
+    ) -> None:
+        """Re-capture the PR head SHA after the transition commits and re-stamp
+        the verdict note when it advanced past the pre-transition capture (#189).
+
+        The pre-transition capture can go stale if cell work lands on the root
+        branch between that capture and the commit; a stale recorded SHA makes
+        ``submit_root`` false-allow an unchanged re-submit and re-opens the
+        pr_fail loop. Re-stamping only on a real advance keeps the no-advance
+        case to a single note write. Best-effort: a re-capture failure leaves
+        the pre-transition SHA in place (the fail-open direction).
+        """
+        try:
+            post_sha = await self._capture_pr_head_sha(t)
+        except Exception:
+            logger.exception(
+                "pr_fail head-sha re-capture failed (keeping pre-transition sha)",
+                task_id=str(getattr(t, "id", "")),
+            )
+            return
+        if post_sha is not None and post_sha != pre_sha:
+            self._record_gate_verdict(
+                t, "pr_fail", notes, issues=issues, head_sha=post_sha
+            )
 
     async def _post_gate_review(
         self, t: Any, agent: Any, role_str: str, verb: str, notes: str
@@ -319,7 +359,7 @@ class PRGateMixin(_Base):
         # Author the canonical pr_review verdict note BEFORE the transition so it
         # is persisted by the same commit (mirrors post_pr_review) and stays in
         # lock-step with the decision (pr_fail overwrites an earlier pr_pass).
-        await self._record_gate_verdict_for(verb, t, notes, issues=issues)
+        pre_sha = await self._record_gate_verdict_for(verb, t, notes, issues=issues)
         runner = self._verb_runner()
         try:
             t = await runner.run_intent(verb, t, agent, spec_ctx)
@@ -355,6 +395,18 @@ class PRGateMixin(_Base):
                 agent_id=reviewer_agent_id,
                 task_id=task_id,
                 verb=verb,
+            )
+        # pr_fail: re-capture the PR head SHA AFTER the transition commits. The
+        # pre-transition capture (in _record_gate_verdict_for) can go stale if
+        # cell work lands on the root branch between that capture and the commit
+        # — a stale recorded SHA would make submit_root false-allow an unchanged
+        # re-submit (current head vs an older recorded head ⇒ "different") and
+        # re-open the pr_fail loop. Re-stamp the note only when the head actually
+        # advanced, so the no-advance case stays a single note write. Best-effort:
+        # a re-capture failure leaves the pre-transition SHA in place (fail-open).
+        if verb == "pr_fail":
+            await self._re_stamp_pr_fail_head_sha_if_advanced(
+                t, notes, issues=issues, pre_sha=pre_sha
             )
         # Post the gate verdict on the PR itself (best-effort, after the DB
         # transition — a GitHub failure must not roll back the gate decision).
@@ -512,7 +564,14 @@ class PRGateMixin(_Base):
         For the org's own PRs ``git.post_pr_review`` already downgrades a
         forbidden self-review to a COMMENT, so the verdict lands regardless.
         """
-        slug = await self._project_slug_for(t)
+        try:
+            slug = await self._project_slug_for(t)
+        except Exception:
+            logger.exception(
+                "gate review PR post: slug resolve failed",
+                task_id=str(getattr(t, "id", "")),
+            )
+            return
         pr_number = getattr(t, "pr_number", None)
         if not slug or not pr_number:
             return

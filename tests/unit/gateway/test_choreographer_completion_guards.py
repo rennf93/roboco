@@ -427,3 +427,53 @@ async def test_complete_escalates_batch_umbrella_from_in_progress() -> None:
     assert body["status"] == "awaiting_ceo_approval"
     task_svc.submit_pm_review.assert_awaited_once()
     task_svc.escalate_to_ceo.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_complete_rejects_non_batch_branchless_in_progress_root() -> None:
+    """#30 negative pin: the ``_is_umbrella_in_progress`` bypass is gated on a
+    genuine batch umbrella (``is_batch_umbrella`` = batch_id set AND no parent).
+    A NON-batch branchless Main-PM root (a product-only delivery root,
+    ``batch_id=None``) sitting in ``in_progress`` must NOT bypass the complete
+    spec gate — the gate enforces ``source_statuses={AWAITING_PM_REVIEW}`` and
+    rejects ``in_progress`` with ``invalid_state`` rather than falling through
+    to ``main_pm_complete``. A regression that loosened the predicate (e.g.
+    keying on ``branch_name is None`` alone) would let any branchless root
+    walk past the awaiting_pm_review checkpoint; this pins the tight predicate."""
+    pm_id = uuid4()
+    root_id = uuid4()
+    t = MagicMock(
+        id=root_id,
+        status="in_progress",
+        assigned_to=pm_id,
+        parent_task_id=None,
+        batch_id=None,  # NOT a batch umbrella -> bypass must NOT fire.
+        branch_name=None,
+        pr_number=None,
+        pr_created=False,
+        pr_url=None,
+        team="main_pm",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = MagicMock(role="main_pm", slug="main-pm")
+    task_svc.all_subtasks_terminal.return_value = True
+    task_svc.get_subtasks.return_value = []
+    task_svc.submit_pm_review = AsyncMock()
+    task_svc.escalate_to_ceo = AsyncMock()
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
+    journal_svc.has_reflect_for_task.return_value = True
+    deps = _make_deps(task=task_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.complete(
+        pm_id, root_id, notes="non-batch branchless root is not awaiting_pm_review"
+    )
+    body = env.as_dict()
+    # The spec gate ran (not bypassed) and rejected the in_progress source status.
+    assert body.get("error") == "invalid_state", body
+    # The bypass did NOT fire -> main_pm_complete never ran.
+    task_svc.submit_pm_review.assert_not_awaited()
+    task_svc.escalate_to_ceo.assert_not_awaited()
