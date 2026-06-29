@@ -40,6 +40,16 @@ def _slug_row(slug: str) -> MagicMock:
     return MagicMock(scalar_one_or_none=MagicMock(return_value=slug))
 
 
+def _svc(execute: object) -> tuple[TaskService, MagicMock]:
+    # Build the session as a local MagicMock and preset `execute` on it before
+    # handing it to TaskService — assigning to `svc.session.execute` directly
+    # trips mypy's method-assign (session is typed as a real AsyncSession).
+    session = MagicMock()
+    session.execute = execute
+    session.flush = AsyncMock()
+    return TaskService(session), session
+
+
 # ---------------------------------------------------------------------------
 # complete (cell PM, awaiting_pm_review -> completed, after leaf PR merge)
 # ---------------------------------------------------------------------------
@@ -48,7 +58,7 @@ def _slug_row(slug: str) -> MagicMock:
 @pytest.mark.asyncio
 async def test_complete_removes_assignee_worktree_best_effort() -> None:
     task = _build_task(status=TaskStatus.AWAITING_PM_REVIEW)
-    svc = TaskService(MagicMock(flush=AsyncMock()))
+    svc, _ = _svc(AsyncMock(return_value=_slug_row("roboco-api")))
     _bind(svc, "get", AsyncMock(return_value=task))
     _bind(svc, "_get_completing_agent_role", AsyncMock(return_value="cell_pm"))
     _bind(svc, "_validate_completion_prerequisites", AsyncMock(return_value=[]))
@@ -61,7 +71,6 @@ async def test_complete_removes_assignee_worktree_best_effort() -> None:
     _bind(svc, "_unblock_dependents", AsyncMock())
     remove = AsyncMock()
     _bind(svc, "_remove_task_worktree_best_effort", remove)
-    svc.session.execute = AsyncMock(return_value=_slug_row("roboco-api"))
 
     result = await svc.complete(task.id)
 
@@ -74,7 +83,8 @@ async def test_complete_skips_worktree_cleanup_for_branchless_task() -> None:
     # A branchless/umbrella task had no worktree cut — removal must be a no-op
     # (and must not even probe the project slug).
     task = _build_task(status=TaskStatus.AWAITING_PM_REVIEW, branch_name=None)
-    svc = TaskService(MagicMock(flush=AsyncMock()))
+    execute = AsyncMock()
+    svc, session = _svc(execute)
     _bind(svc, "get", AsyncMock(return_value=task))
     _bind(svc, "_get_completing_agent_role", AsyncMock(return_value="cell_pm"))
     _bind(svc, "_validate_completion_prerequisites", AsyncMock(return_value=[]))
@@ -87,20 +97,19 @@ async def test_complete_skips_worktree_cleanup_for_branchless_task() -> None:
     _bind(svc, "_unblock_dependents", AsyncMock())
     remove = AsyncMock()
     _bind(svc, "_remove_task_worktree_best_effort", remove)
-    svc.session.execute = AsyncMock()
 
     result = await svc.complete(task.id)
 
     assert result is task
     remove.assert_not_awaited()
-    svc.session.execute.assert_not_awaited()
+    session.execute.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_complete_not_blocked_by_worktree_removal_failure() -> None:
     # Best-effort: a git/FS failure during cleanup must NOT fail the completion.
     task = _build_task(status=TaskStatus.AWAITING_PM_REVIEW)
-    svc = TaskService(MagicMock(flush=AsyncMock()))
+    svc, _ = _svc(AsyncMock(return_value=_slug_row("roboco-api")))
     _bind(svc, "get", AsyncMock(return_value=task))
     _bind(svc, "_get_completing_agent_role", AsyncMock(return_value="cell_pm"))
     _bind(svc, "_validate_completion_prerequisites", AsyncMock(return_value=[]))
@@ -113,7 +122,6 @@ async def test_complete_not_blocked_by_worktree_removal_failure() -> None:
     _bind(svc, "_unblock_dependents", AsyncMock())
     remove = AsyncMock(side_effect=RuntimeError("git worktree remove failed"))
     _bind(svc, "_remove_task_worktree_best_effort", remove)
-    svc.session.execute = AsyncMock(return_value=_slug_row("roboco-api"))
 
     result = await svc.complete(task.id)
 
@@ -128,7 +136,7 @@ async def test_complete_not_blocked_by_worktree_removal_failure() -> None:
 @pytest.mark.asyncio
 async def test_ceo_approve_removes_assignee_worktree_best_effort() -> None:
     task = _build_task(status=TaskStatus.AWAITING_CEO_APPROVAL, work_session_id=None)
-    svc = TaskService(MagicMock(flush=AsyncMock()))
+    svc, _ = _svc(AsyncMock(return_value=_slug_row("roboco-api")))
     _bind(svc, "get", AsyncMock(return_value=task))
     _bind(svc, "_validate_and_set_status", MagicMock())
     _bind(svc, "_extract_completion_learnings", AsyncMock())
@@ -136,7 +144,6 @@ async def test_ceo_approve_removes_assignee_worktree_best_effort() -> None:
     _bind(svc, "_emit_task_event", AsyncMock())
     remove = AsyncMock()
     _bind(svc, "_remove_task_worktree_best_effort", remove)
-    svc.session.execute = AsyncMock(return_value=_slug_row("roboco-api"))
 
     result = await svc.ceo_approve(task.id)
 
@@ -147,7 +154,7 @@ async def test_ceo_approve_removes_assignee_worktree_best_effort() -> None:
 @pytest.mark.asyncio
 async def test_ceo_approve_skips_worktree_cleanup_for_branchless_task() -> None:
     task = _build_task(status=TaskStatus.AWAITING_CEO_APPROVAL, branch_name=None)
-    svc = TaskService(MagicMock(flush=AsyncMock()))
+    svc, _ = _svc(AsyncMock())
     _bind(svc, "get", AsyncMock(return_value=task))
     _bind(svc, "_validate_and_set_status", MagicMock())
     _bind(svc, "_extract_completion_learnings", AsyncMock())
@@ -155,7 +162,6 @@ async def test_ceo_approve_skips_worktree_cleanup_for_branchless_task() -> None:
     _bind(svc, "_emit_task_event", AsyncMock())
     remove = AsyncMock()
     _bind(svc, "_remove_task_worktree_best_effort", remove)
-    svc.session.execute = AsyncMock()
 
     result = await svc.ceo_approve(task.id)
 
