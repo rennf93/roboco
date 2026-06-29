@@ -94,6 +94,50 @@ async def test_ensure_worktree_symlinks_venv_to_clone_root(clone: Path) -> None:
     assert venv_link.resolve() == (clone / ".venv").resolve()
 
 
+async def test_ensure_worktree_no_dangling_venv_symlink_when_clone_root_venv_missing(
+    clone: Path,
+) -> None:
+    # If the clone-root venv is not yet provisioned, the worktree .venv symlink
+    # must NOT be created — a dangling ../../.venv symlink makes uv error or
+    # re-sync a worktree-local venv that the lexists guard then can't replace.
+    # install_dev_deps provisions clone_root/.venv before the first worktree
+    # add on the fresh-claim path, so this only fires in the near-zero gap.
+    svc = _service()
+    assert not (clone / ".venv").exists()
+    wt = clone / ".worktrees" / "a3c40fe7"
+
+    with patch("roboco.services.workspace._ensure_agent_owned"):
+        await svc.ensure_worktree(clone, wt, "feature/a3c40fe7", "main")
+
+    link = wt / ".venv"
+    assert not link.is_symlink(), (
+        "no symlink when clone-root venv is absent (would dangle)"
+    )
+    assert not link.exists()
+
+
+async def test_ensure_worktree_links_venv_once_clone_root_venv_provisioned(
+    clone: Path,
+) -> None:
+    # Self-heal: a worktree claimed before the clone-root venv existed gets no
+    # symlink; once install_dev_deps provisions clone_root/.venv, the next
+    # ensure (resume path) links it.
+    svc = _service()
+    wt = clone / ".worktrees" / "a3c40fe7"
+
+    with patch("roboco.services.workspace._ensure_agent_owned"):
+        await svc.ensure_worktree(clone, wt, "feature/a3c40fe7", "main")
+    assert not (wt / ".venv").is_symlink()
+
+    (clone / ".venv").mkdir()  # install_dev_deps completes
+    with patch("roboco.services.workspace._ensure_agent_owned"):
+        await svc.ensure_worktree_for_resume(clone, wt, "feature/a3c40fe7")
+
+    link = wt / ".venv"
+    assert link.is_symlink()
+    assert link.resolve() == (clone / ".venv").resolve()
+
+
 async def test_ensure_worktree_idempotent_on_existing_worktree(clone: Path) -> None:
     svc = _service()
     wt = clone / ".worktrees" / "a3c40fe7"

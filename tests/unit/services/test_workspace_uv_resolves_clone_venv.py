@@ -82,7 +82,7 @@ def _service() -> WorkspaceService:
 def test_worktree_venv_symlink_points_at_clone_root(clone: Path) -> None:
     svc = _service()
     worktree = clone / ".worktrees" / "abc12345"
-    svc._link_shared_venv(worktree)
+    svc._link_shared_venv(worktree, clone)
 
     link = worktree / ".venv"
     assert link.is_symlink(), "worktree/.venv must be a symlink"

@@ -478,16 +478,23 @@ class WorkspaceService:
         )
 
     @staticmethod
-    def _link_shared_venv(worktree: Path) -> None:
+    def _link_shared_venv(worktree: Path, clone_root: Path) -> None:
         """Symlink ``worktree/.venv -> ../../.venv`` (the clone-root venv).
 
         uv discovers ``.venv`` next to the worktree's ``pyproject.toml``; without
         the symlink it re-syncs a fresh venv per worktree. The relative target
         holds because every worktree sits at ``{clone_root}/.worktrees/{id}``
         (two levels deep). Idempotent: leaves an existing symlink/dir alone.
+        Only links once the clone-root venv exists — otherwise the symlink
+        dangles and uv errors or re-syncs a worktree-local venv that the
+        lexists guard then can't replace. install_dev_deps provisions
+        clone_root/.venv before the first worktree add on the fresh-claim path,
+        so a later ensure (resume) self-heals the link.
         """
         link = worktree / ".venv"
         if os.path.lexists(link):
+            return
+        if not (clone_root / ".venv").exists():
             return
         worktree.mkdir(parents=True, exist_ok=True)
         link.symlink_to("../../.venv")
@@ -523,7 +530,7 @@ class WorkspaceService:
                 raise WorkspaceError(
                     f"git worktree add failed for {branch}: {res.stderr.strip()}"
                 )
-        self._link_shared_venv(worktree)
+        self._link_shared_venv(worktree, clone_root)
         await asyncio.to_thread(_ensure_agent_owned, worktree)
         await asyncio.to_thread(_ensure_agent_owned, clone_root)
 
@@ -544,7 +551,7 @@ class WorkspaceService:
                 raise WorkspaceError(
                     f"git worktree re-add failed for {branch}: {res.stderr.strip()}"
                 )
-        self._link_shared_venv(worktree)
+        self._link_shared_venv(worktree, clone_root)
         await asyncio.to_thread(_ensure_agent_owned, worktree)
         await asyncio.to_thread(_ensure_agent_owned, clone_root)
 
