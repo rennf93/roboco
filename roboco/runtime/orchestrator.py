@@ -2037,6 +2037,11 @@ class AgentOrchestrator:
                 is auto-blocked before we raise so the dispatcher doesn't
                 keep retrying.
         """
+        # agent_id flows into path building (log dirs, settings, container
+        # names) — reject a traversal-shaped id at the chokepoint, before any
+        # filesystem op. The orchestrator only ever assigns plain slug/uuid
+        # ids, so this never fires on a real agent.
+        AgentOrchestrator._safe_agent_path_segment(agent_id)
         # Human-only roles (ceo / prompter / secretary) are NEVER spawned by a
         # dispatcher. The CEO is the human operator; intake (prompter) and
         # secretary are human-driven interactive chats launched through their
@@ -2597,8 +2602,13 @@ class AgentOrchestrator:
 
         if exists:
             slug = container_name.removeprefix("roboco-agent-")
-            log_dir = Path("/data/logs/agents") / slug
             try:
+                # slug builds a path under /data/logs/agents — reject a
+                # traversal-shaped slug before the join (defense-in-depth;
+                # spawn_agent already validates the agent_id this container
+                # name is derived from). A bad slug skips the log dump.
+                AgentOrchestrator._safe_agent_path_segment(slug)
+                log_dir = Path("/data/logs/agents") / slug
                 log_dir.mkdir(parents=True, exist_ok=True)
                 timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
                 log_path = log_dir / f"{timestamp}.log"

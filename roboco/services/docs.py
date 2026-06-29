@@ -120,6 +120,26 @@ def _coerce_doc_ref(d: object) -> DocRef:
     raise TypeError(f"unsupported Task.documents element: {type(d).__name__}")
 
 
+def _resolve_contained_path(base: Path, rel: str) -> Path:
+    """Resolve ``base / rel`` and prove the result stays under ``base``.
+
+    A bare ``..`` substring guard is bypassable: an absolute ``rel`` makes
+    ``base / rel`` evaluate to ``rel`` itself (pathlib resets on an absolute
+    right operand), so ``/etc/passwd`` would escape ``base`` and reach the
+    ``read_text`` / ``unlink`` sink. Reject empty/NUL/``..``, then resolve
+    both sides and require the target to be ``base`` or a descendant.
+    """
+    if not rel or "\x00" in rel:
+        raise ValidationError("Path cannot be empty or contain NUL", field="path")
+    if ".." in rel:
+        raise ValidationError("Path cannot contain '..'", field="path")
+    base_resolved = base.resolve()
+    full = (base / rel).resolve()
+    if full != base_resolved and base_resolved not in full.parents:
+        raise ValidationError("Path escapes the docs directory", field="path")
+    return full
+
+
 # =============================================================================
 # SERVICE
 # =============================================================================
@@ -466,17 +486,10 @@ class DocsService(BaseService):
                 reason=f"Role '{role}' cannot read documentation.",
             )
 
-        # 2. Validate path (no traversal)
-        if ".." in path:
-            raise ValidationError(
-                "Path cannot contain '..'",
-                field="path",
-            )
+        # 2. Validate + contain path (reject absolute/traversal escape)
+        full_path = _resolve_contained_path(DOCS_BASE_PATH, path)
 
-        # 3. Build full path
-        full_path = DOCS_BASE_PATH / path
-
-        # 4. Read file
+        # 3. Read file
         content = await self._read_file(full_path)
         size_bytes = len(content.encode("utf-8"))
 
@@ -551,16 +564,12 @@ class DocsService(BaseService):
                 ),
             )
 
-        # 2. Validate path
-        if ".." in path:
-            raise ValidationError("Path cannot contain '..'", field="path")
-
-        # 3. Build full path and verify file exists
-        full_path = DOCS_BASE_PATH / path
+        # 2. Validate + contain path (reject absolute/traversal escape)
+        full_path = _resolve_contained_path(DOCS_BASE_PATH, path)
         if not full_path.exists():
             raise NotFoundError("Documentation file", path)
 
-        # 4. Delete file
+        # 3. Delete file
         await self._delete_file(full_path)
 
         self.log.info("Documentation deleted", agent_id=agent_id, path=path)

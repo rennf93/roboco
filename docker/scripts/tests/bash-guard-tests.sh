@@ -92,6 +92,25 @@ run_case "deny wget api.github"     2 "wget https://api.github.com/repos/foo"
 run_case "deny rm -rf /app"         2 "rm -rf /app/roboco"
 run_case "deny rm -rf /etc"         2 "rm -rf /etc"
 
+# ---------- /app venv protection (exit 2) ----------
+# /app/.venv is the image-baked MCP-gateway venv. Retargeting uv onto it
+# rebuilds + bricks every gateway tool (be-dev-1 root cause, 2026-06-29).
+# The package-mutation block (uv sync/pip install + /app target) and the
+# uv-run block (uv run --active, or uv run with an explicit /app target).
+run_case "deny uv sync --project /app"        2 "uv sync --project /app"
+run_case "deny uv pip install /app venv"      2 "uv pip install --python /app/.venv/bin/python foo"
+run_case "deny cd /app && uv sync"            2 "cd /app && uv sync"
+# uv run --active: in the agent VIRTUAL_ENV=/app/.venv is baked globally, so
+# --active ALWAYS retargets onto /app/.venv → uv rebuilds it → bricked gateway.
+run_case "deny uv run --active"               2 "uv run --active pytest"
+run_case "deny uv run --active ruff"          2 "uv run --active ruff check ."
+run_case "deny env venv /app uv run active"   2 "VIRTUAL_ENV=/app/.venv uv run --active pytest"
+# uv run with an explicit /app target (same brick, literal /app in the command).
+run_case "deny uv run --project /app"         2 "uv run --project /app pytest"
+run_case "deny uv run --directory /app"       2 "uv run --directory /app pytest"
+run_case "deny cd /app && uv run"             2 "cd /app && uv run pytest"
+run_case "deny UV_PROJECT_ENV=/app uv run"    2 "UV_PROJECT_ENVIRONMENT=/app/.venv uv run pytest"
+
 # ---------- ALLOW cases (exit 0) — must NOT be denied ----------
 run_case "allow set -e"                 0 "set -e"
 run_case "allow set -euo pipefail"      0 "set -euo pipefail"
@@ -100,6 +119,10 @@ run_case "allow env VAR=val cmd"        0 "env FOO=bar uv run pytest"
 run_case "allow env -i cmd"             0 "env -i HOME=/tmp ls /tmp"
 run_case "allow ls"                     0 "ls -la /workspace"
 run_case "allow uv run ruff"            0 "uv run ruff check ."
+run_case "allow uv run pytest"          0 "uv run pytest -q"
+run_case "allow uv run --no-sync"       0 "uv run --no-sync pytest -q"
+run_case "allow uv run --with dep"      0 "uv run --with httpx python -c 'pass'"
+run_case "allow uv run in workspace"    0 "cd /data/workspaces/proj && uv run pytest"
 run_case "allow pnpm typecheck"         0 "pnpm typecheck"
 run_case "allow rm in workspace"        0 "rm -rf /workspace/tmp"
 run_case "allow declare -a arr"         0 "declare -a arr=(a b c)"

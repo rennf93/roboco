@@ -38,6 +38,13 @@ def _reset_state() -> Iterator[None]:
     srv._state.reset()
 
 
+@pytest.fixture(autouse=True)
+def _transcript_base(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # /usage/sync contains transcript_path under ROBOCO_TRANSCRIPT_DIR; point
+    # it at the test's tmp_path so the under-base transcripts here pass the guard.
+    monkeypatch.setenv("ROBOCO_TRANSCRIPT_DIR", str(tmp_path))
+
+
 @pytest.fixture
 def client() -> TestClient:
     return TestClient(srv.app)

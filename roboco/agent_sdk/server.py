@@ -21,7 +21,7 @@ from typing import Any, Literal
 import httpx
 import structlog
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 from roboco.agent_sdk.models import (
     A2AMessage,
@@ -744,6 +744,37 @@ def _token_usage_snapshot() -> TokenUsageStatus:
     )
 
 
+def _transcript_root() -> Path:
+    """The dir all Claude Code transcripts live under (no session file)."""
+    return Path(
+        os.environ.get(
+            "ROBOCO_TRANSCRIPT_DIR", str(Path.home() / ".claude" / "projects")
+        )
+    ).resolve()
+
+
+def _contained_transcript_path(raw: str) -> Path:
+    """Resolve ``raw`` and prove it is a ``.jsonl`` transcript under the root.
+
+    /usage/sync is an unauthenticated container-internal endpoint; a forged
+    path could stat/read arbitrary files. Require a ``.jsonl`` suffix and
+    that the resolved path stays under the transcript root.
+    """
+    if not raw or "\x00" in raw or not raw.endswith(".jsonl"):
+        raise HTTPException(
+            status_code=400,
+            detail="transcript_path must be a .jsonl transcript under the projects dir",
+        )
+    root = _transcript_root()
+    full = Path(raw).resolve()
+    if full != root and root not in full.parents:
+        raise HTTPException(
+            status_code=400,
+            detail="transcript_path escapes the transcript dir",
+        )
+    return full
+
+
 @app.post("/usage/sync", response_model=TokenUsageStatus)
 async def usage_sync(req: TranscriptSyncRequest) -> TokenUsageStatus:
     """Parse the Claude Code transcript and *set* cumulative token totals.
@@ -755,7 +786,7 @@ async def usage_sync(req: TranscriptSyncRequest) -> TokenUsageStatus:
     tool use and again at Stop. An unchanged transcript (same size + mtime)
     short-circuits without re-parsing.
     """
-    path = Path(req.transcript_path)
+    path = _contained_transcript_path(req.transcript_path)
     try:
         stat = path.stat()
     except OSError:
