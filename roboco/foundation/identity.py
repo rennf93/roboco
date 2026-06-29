@@ -311,6 +311,24 @@ def role_for_slug_or_none(slug: str) -> Role | None:
     return row.role if row is not None else None
 
 
+def role_for_uuid_or_none(agent_uuid: object | None) -> Role | None:
+    """Resolve a seeded agent's ``UUID`` to its ``Role`` (None if unknown).
+
+    The create path carries ``assigned_to`` as a UUID, not a slug, so the
+    role-vs-task_type guard needs a UUID→role lookup. Built once over the
+    seeded ``AGENTS`` table; a non-seeded / stale UUID returns None (the guard
+    treats None as "not a PM" and proceeds — the team-based ``main_pm`` check
+    still holds the line for the main-pm team).
+    """
+    if agent_uuid is None:
+        return None
+    key = str(agent_uuid)
+    for row in AGENTS.values():
+        if str(row.uuid) == key:
+            return row.role
+    return None
+
+
 def team_for_slug(slug: str) -> Team:
     """Shorthand for `agent_for_slug(slug).team`."""
     return agent_for_slug(slug).team

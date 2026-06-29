@@ -434,6 +434,10 @@ async def test_confirm_live_draft_main_pm_route_assigns_main_pm(
     row = await db_session.get(TaskTable, task_id)
     assert row.status == TaskStatus.PENDING
     assert row.assigned_to == UUID(AGENT_UUIDS["main-pm"])
+    # A PM coordinates — a code task handed to the Main PM is coerced to
+    # planning (the PM/code invariant; the draft's team=backend is honored but
+    # the type is retyped so the combo never persists).
+    assert row.task_type == TaskType.PLANNING
 
 
 @pytest.mark.asyncio

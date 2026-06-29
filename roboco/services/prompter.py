@@ -21,7 +21,11 @@ from sqlalchemy import select
 
 from roboco.db.tables import AgentTable, TaskTable
 from roboco.foundation.identity import CELL_TEAMS
-from roboco.foundation.policy.batch import is_batch_umbrella, main_pm_cannot_own_code
+from roboco.foundation.policy.batch import (
+    is_batch_umbrella,
+    main_pm_cannot_own_code,
+    pm_cannot_own_code,
+)
 from roboco.foundation.policy.content.validators import coerce_str_list
 from roboco.foundation.policy.sequencing.models import DraftSurface, SequencePlan
 from roboco.models.base import (
@@ -333,6 +337,26 @@ class PrompterService:
                 title=_text(draft_data.get("title")) or "",
             )
             task_type = TaskType.PLANNING
+        elif resolved_assigned_to is not None:
+            # A PM assignee (cell or main) coordinates — it never owns a code
+            # task. The team-based coercion above only catches team=main_pm; a
+            # route="main_pm" / cell-PM-assignee draft can carry a cell team
+            # (e.g. team=backend) so the combo would otherwise persist. Coerce
+            # code->planning whenever the resolved assignee is a PM, mirroring
+            # the team path. A brand-new intake task is never in needs_revision,
+            # so the issue-resolution carve-out does not apply here.
+            from roboco.foundation.identity import role_for_uuid_or_none
+
+            assignee_role = role_for_uuid_or_none(resolved_assigned_to)
+            if assignee_role is not None and pm_cannot_own_code(
+                role=assignee_role, task_type=task_type, is_issue_resolution=False
+            ):
+                self.log.info(
+                    "PM-assignee intake task coerced code->planning",
+                    role=str(getattr(assignee_role, "value", assignee_role)),
+                    title=_text(draft_data.get("title")) or "",
+                )
+                task_type = TaskType.PLANNING
 
         req = TaskCreateRequest(
             title=draft_data["title"],

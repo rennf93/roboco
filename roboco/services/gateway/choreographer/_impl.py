@@ -4680,15 +4680,19 @@ class Choreographer:
             )
         return None
 
-    _CELL_PM_SLUGS: ClassVar[frozenset[str]] = frozenset({"be-pm", "fe-pm", "ux-pm"})
-
     @staticmethod
     def _validate_assignee_task_type(assigned_to: str, task_type: str) -> str | None:
         """Reject role-vs-type misclassifications.
 
         Rules:
-        - delegating to a Cell PM requires
-          ``task_type='planning'``. Cell PMs decompose; they don't execute.
+        - delegating to a PM (Cell PM OR Main PM) requires
+          ``task_type='planning'``. PMs decompose/coordinate; they don't
+          execute. A freshly delegated subtask is never in ``needs_revision``,
+          so the issue-resolution carve-out (a PM taking a code task to resolve
+          review issues) does not apply here — that lives at the claim gate
+          (``lifecycle._check_claim_rules_narrow`` via ``pm_cannot_own_code``).
+          Main PM was previously omitted (only the cell-PM slug set was
+          checked), leaving a delegate-to-main-pm-as-code hole.
         - (2026-05-11 smoke): delegating to a Developer requires
           ``task_type in {'code', 'documentation', 'research'}``. Devs
           implement. Planning/design/administrative belong to PMs/board.
@@ -4709,12 +4713,17 @@ class Choreographer:
         """
         from roboco.foundation.identity import AGENTS, Role, Team
 
-        if assigned_to in Choreographer._CELL_PM_SLUGS and task_type != "planning":
-            return (
-                f"task_type={task_type!r} is invalid for assignee {assigned_to!r}: "
-                f"Cell PMs own planning tasks, not code/documentation/etc."
-            )
         agent = AGENTS.get(assigned_to)
+        if (
+            agent is not None
+            and agent.role in (Role.CELL_PM, Role.MAIN_PM)
+            and task_type != "planning"
+        ):
+            return (
+                f"task_type={task_type!r} is invalid for assignee"
+                f" {assigned_to!r}: PMs own planning tasks, not"
+                f" code/documentation/etc."
+            )
         if agent is None:
             return None
         if agent.role is Role.DEVELOPER:
@@ -4767,13 +4776,19 @@ class Choreographer:
         """
         from roboco.foundation.identity import AGENTS, Role, Team
 
-        if assigned_to in Choreographer._CELL_PM_SLUGS:
+        agent = AGENTS.get(assigned_to)
+        if agent is not None and agent.role is Role.MAIN_PM:
+            return (
+                "Main PMs own PLANNING tasks — they coordinate across cells and "
+                "delegate execution. Pass task_type='planning' when delegating to "
+                "the Main PM; route code work to a developer via the cell PM."
+            )
+        if agent is not None and agent.role is Role.CELL_PM:
             return (
                 "Cell PMs (be-pm/fe-pm/ux-pm) own PLANNING tasks — they "
                 "decompose the slice and delegate code work to devs. Pass "
                 "task_type='planning' when delegating to a Cell PM."
             )
-        agent = AGENTS.get(assigned_to)
         if agent is not None and agent.role is Role.DEVELOPER:
             if agent.team is Team.UX_UI:
                 return (

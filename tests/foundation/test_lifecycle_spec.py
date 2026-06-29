@@ -247,6 +247,10 @@ def test_status_transitions_includes_ceo_paths() -> None:
     ) in sources
     assert (spec.Status.AWAITING_CEO_APPROVAL, spec.Status.COMPLETED) in sources
     assert (spec.Status.AWAITING_CEO_APPROVAL, spec.Status.NEEDS_REVISION) in sources
+    # #100: a branchless coordination root rejected by the CEO routes to PENDING
+    # (Main PM re-plans) — the edge is in the spec so the audited privileged
+    # override that applies it can't be wedged by future admin-override tightening.
+    assert (spec.Status.AWAITING_CEO_APPROVAL, spec.Status.PENDING) in sources
     # A blocked task the PM cannot resolve can also be surfaced to the CEO.
     assert (spec.Status.BLOCKED, spec.Status.AWAITING_CEO_APPROVAL) in sources
 
@@ -717,7 +721,12 @@ def test_valid_next_verbs_developer_in_progress_includes_open_pr_and_i_am_done()
 
 
 def test_valid_next_verbs_pm_pending_includes_i_will_plan() -> None:
-    verbs = spec.valid_next_verbs(spec.Role.CELL_PM, _stub_task(status="pending"))
+    # A PM i_will_plan's a PLANNING task (coordination), not a code task — the
+    # PM/code claim carve-out (Fix 2) removes i_will_plan from a pending code
+    # task's verb set, so the legitimate path is exercised with task_type=planning.
+    verbs = spec.valid_next_verbs(
+        spec.Role.CELL_PM, _stub_task(status="pending", task_type="planning")
+    )
     assert "i_will_plan" in verbs
 
 
@@ -891,3 +900,65 @@ def test_unmigrated_is_pinned() -> None:
         )
         == spec.UNMIGRATED
     )
+
+
+# --- PM/code claim invariant (Fix 2 + bug-1): the claim gate does NOT block a
+# PM claiming a code task. A PM's only claim verb is i_will_plan, and planning a
+# code-typed PARENT (to decompose + delegate the code) is legitimate (bug-1:
+# scoping pm_cannot_execute_code to i_will_plan deadlocked the slice). Execution
+# is blocked at the intent level — i_will_work_on is _DEV_ROLES only. The
+# create/delegate guards (pm_cannot_own_code) block a PM from being ASSIGNED a
+# fresh code task; the needs_revision carve-out (a PM resolving review issues
+# directly / recovering a rejected coordination task) is naturally allowed
+# because PMs claim NEEDS_REVISION. These pin that the claim gate does not
+# regress bug-1.
+
+
+def _claim_task(*, status: str, task_type: str) -> Any:
+    return SimpleNamespace(status=status, task_type=task_type)
+
+
+def test_claim_allows_cell_pm_claiming_code_from_pending() -> None:
+    """bug-1: a cell PM i_will_plan-ing a code-typed parent (PENDING) to plan +
+    delegate the code MUST be allowed — rejecting it deadlocks the slice."""
+    t = _claim_task(status="pending", task_type="code")
+    d = spec.can_invoke_action(spec.Role.CELL_PM, "claim", t)
+    assert d.allowed, d.message
+
+
+def test_claim_allows_cell_pm_claiming_code_from_needs_revision() -> None:
+    """Carve-out: a PM may take a code task in needs_revision to resolve the
+    review/QA issues directly / recover a rejected coordination task."""
+    t = _claim_task(status="needs_revision", task_type="code")
+    d = spec.can_invoke_action(spec.Role.CELL_PM, "claim", t)
+    assert d.allowed, d.message
+
+
+def test_claim_allows_main_pm_claiming_code_from_needs_revision() -> None:
+    """The same carve-out holds for the Main PM (coordination-recovery path)."""
+    t = _claim_task(status="needs_revision", task_type="code")
+    d = spec.can_invoke_action(spec.Role.MAIN_PM, "claim", t)
+    assert d.allowed, d.message
+
+
+def test_claim_allows_main_pm_claiming_code_from_pending() -> None:
+    """bug-1 parity: a Main PM planning a code-typed parent (PENDING) is allowed
+    for the same reason as the cell PM — execution is blocked at i_will_work_on,
+    not at the claim gate."""
+    t = _claim_task(status="pending", task_type="code")
+    d = spec.can_invoke_action(spec.Role.MAIN_PM, "claim", t)
+    assert d.allowed, d.message
+
+
+def test_claim_allows_pm_claiming_planning_from_pending() -> None:
+    """A PM claiming a planning task is the legitimate coordination path."""
+    t = _claim_task(status="pending", task_type="planning")
+    assert spec.can_invoke_action(spec.Role.CELL_PM, "claim", t).allowed
+    assert spec.can_invoke_action(spec.Role.MAIN_PM, "claim", t).allowed
+
+
+def test_claim_allows_developer_claiming_code_from_pending() -> None:
+    """A developer claiming fresh code is unaffected (the PM invariant is
+    enforced at create/delegate + i_will_work_on, not the claim gate)."""
+    t = _claim_task(status="pending", task_type="code")
+    assert spec.can_invoke_action(spec.Role.DEVELOPER, "claim", t).allowed

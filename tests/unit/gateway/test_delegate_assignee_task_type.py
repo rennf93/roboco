@@ -135,6 +135,43 @@ def test_remediate_for_cell_pm_keeps_planning_hint() -> None:
     assert _CELL_PM_PLANNING_HINT in hint
 
 
+# --- PM/code guard: main_pm coverage (closes the delegate-to-main-pm hole) ---
+
+
+@pytest.mark.parametrize(
+    ("assigned_to", "task_type", "allowed"),
+    [
+        # A PM — cell OR main — may only be delegated planning.
+        ("be-pm", "planning", True),
+        ("main-pm", "planning", True),
+        ("be-pm", "code", False),
+        ("main-pm", "code", False),
+        ("fe-pm", "documentation", False),
+        ("main-pm", "research", False),
+    ],
+)
+def test_validate_assignee_task_type_pm_planning_only(
+    assigned_to: str, task_type: str, allowed: bool
+) -> None:
+    """Both PM roles (cell + main) accept planning only — main_pm was previously
+    omitted (only the cell-PM slug set was checked), leaving a delegate-to-main-pm
+    as code hole."""
+    err = Choreographer._validate_assignee_task_type(assigned_to, task_type)
+    if allowed:
+        assert err is None, f"{assigned_to}/{task_type} should be allowed, got {err!r}"
+    else:
+        assert err is not None, f"{assigned_to}/{task_type} should be rejected"
+        assert assigned_to in err
+
+
+def test_remediate_for_main_pm_routes_code_to_dev() -> None:
+    hint = Choreographer._assignee_task_type_remediate("main-pm")
+    assert "Main PM" in hint
+    assert "planning" in hint.lower()
+    # Not the generic Cell-PM planning hint.
+    assert _CELL_PM_PLANNING_HINT not in hint
+
+
 # --- Behavior 2: static-guard envelope wiring ---------------------------
 
 

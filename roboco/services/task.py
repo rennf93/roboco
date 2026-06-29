@@ -41,6 +41,7 @@ from roboco.foundation.policy.batch import (
     is_branchless_coordination,
     is_valid_batch_shape,
     main_pm_cannot_own_code,
+    pm_cannot_own_code,
 )
 from roboco.foundation.policy.content import markers
 from roboco.foundation.policy.content.validators import ContentValidationError
@@ -890,6 +891,27 @@ class TaskService(BaseService):
                 " code.",
                 field="task_type",
             )
+
+        # Role-based PM/code guard: even when the team is a cell (so the
+        # team-based check above passes), a freshly created task assigned TO a
+        # PM (cell or main) must not be `code` — a PM coordinates, it does not
+        # execute, and a brand-new task is never in needs_revision so the
+        # issue-resolution carve-out does not apply. Closes the create-with-
+        # cell-PM-assignee hole the team-based check misses.
+        if req.assigned_to:
+            from roboco.foundation.identity import role_for_uuid_or_none
+
+            assignee_role = role_for_uuid_or_none(req.assigned_to)
+            if assignee_role is not None and pm_cannot_own_code(
+                role=assignee_role, task_type=req.task_type, is_issue_resolution=False
+            ):
+                raise ValidationError(
+                    "PM_NO_CODE: the assignee is a PM — PMs coordinate, they"
+                    " do not execute code. Re-draft as `planning` and delegate"
+                    " the code to a developer, or assign the code task to a"
+                    " developer.",
+                    field="task_type",
+                )
 
         # Stable per-criterion ids (1:1 with acceptance_criteria) so children can
         # reference specific parent criteria; generated here when not supplied.

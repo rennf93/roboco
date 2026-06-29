@@ -1514,6 +1514,15 @@ def _check_claim_rules_narrow(role: Role, task: Any) -> Decision | None:
     """
     status = Status(getattr(task, "status", ""))
     role_claim_statuses = CLAIM_RULES.get(role, frozenset())
+    # PM/code invariant is NOT enforced here. A PM's only claim verb is
+    # i_will_plan, and a cell/main PM planning a code-typed PARENT (to decompose
+    # + delegate the code) is legitimate (bug-1: scoping pm_cannot_execute_code
+    # to i_will_plan deadlocked the slice). Execution is already blocked at the
+    # intent level — i_will_work_on is _DEV_ROLES only, so a PM cannot execute
+    # code via the execution verb. The create/delegate guards
+    # (pm_cannot_own_code) block a PM from being ASSIGNED a fresh code task; the
+    # needs_revision carve-out (a PM resolving review issues directly) is
+    # naturally allowed because PMs claim NEEDS_REVISION.
     if status in role_claim_statuses:
         return None
     allowed_list = sorted(s.value for s in role_claim_statuses)
