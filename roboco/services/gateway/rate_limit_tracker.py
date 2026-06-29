@@ -19,13 +19,14 @@ from roboco.config import settings
 
 # Server-side atomic read-modify-write scripts. Redis single-threads a Lua
 # ``EVAL``, so the GET → decode → mutate → SET inside one script is indivisible:
-# a concurrent ``activate()`` (a re-park) is serialized entirely before or after
-# the script, never interleaved between the script's GET and SET. Without this
-# the counter update was a non-atomic ``get_state`` → mutate → ``set`` in Python,
-# so a re-park's fresh episode blob (``probe_failures: 0`` + fresh
-# ``activated_at`` / ``retry_after`` / ``affected_agents`` / ``kind``) could be
-# clobbered by the stale increment writing back the OLD blob — un-resetting the
-# counter and overwriting the fresh episode metadata. The scripts mutate ONLY
+# a concurrent op is serialized entirely before or after the script, never
+# interleaved between the script's GET and SET. Without this the counter update
+# was a non-atomic ``get_state`` → mutate → ``set`` in Python, so a re-park's
+# fresh episode blob could be clobbered by the stale increment writing back the
+# OLD blob. ``activate`` is itself a Lua merge (not a blind SET): it refreshes
+# the episode metadata but carries over the previous ``probe_failures`` count,
+# so a re-park can no longer wipe an in-flight increment (resetting the give-up
+# / CEO-notify count mid-episode). The counter scripts mutate ONLY
 # ``probe_failures`` so every other episode field survives the bump.
 _INCREMENT_PROBE_FAILURES = """\
 -- roboco:increment_probe_failures
@@ -55,6 +56,32 @@ end
 local state = cjson.decode(raw)
 state['probe_failures'] = 0
 redis.call('SET', key, cjson.encode(state))
+"""
+
+# activate merges: it refreshes the episode metadata (kind / activated_at /
+# retry_after / affected_agents) but carries over the previous probe_failures
+# count. A blind SET here (the old impl) reset probe_failures to 0, so a
+# probe-failure increment that just landed — or was in flight — could be wiped
+# by a concurrent re-park, resetting the give-up / CEO-notify count mid-episode.
+# Like increment/reset, the read-merge-write runs server-side as one atomic Lua
+# EVAL, so it is indivisible w.r.t. the counter scripts.
+_ACTIVATE_RATE_LIMIT = """\
+-- roboco:activate_rate_limit
+local key = KEYS[1]
+local fresh = ARGV[1]
+local raw = redis.call('GET', key)
+if raw then
+  local prev = cjson.decode(raw)
+  local old_pf = prev['probe_failures']
+  if old_pf ~= nil then
+    local new_state = cjson.decode(fresh)
+    new_state['probe_failures'] = old_pf
+    redis.call('SET', key, cjson.encode(new_state))
+    return old_pf
+  end
+end
+redis.call('SET', key, fresh)
+return 0
 """
 
 
@@ -131,7 +158,9 @@ class RateLimitStateTracker:
             "affected_agents": affected_agents or [],
             "probe_failures": 0,
         }
-        await r.set(self._key(), json.dumps(state))
+        # Atomic merge (see _ACTIVATE_RATE_LIMIT): the previous probe_failures
+        # count is carried over so a re-park cannot wipe an in-flight increment.
+        await r.eval(_ACTIVATE_RATE_LIMIT, 1, self._key(), json.dumps(state))
 
     async def clear(self) -> None:
         """Remove rate-limit state for this provider."""

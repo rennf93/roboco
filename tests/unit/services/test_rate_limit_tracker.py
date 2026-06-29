@@ -47,9 +47,10 @@ def _make_redis_mock(initial_store: dict[str, Any] | None = None) -> AsyncMock:
         return 1 if store.pop(key, None) is not None else 0
 
     async def _eval(script: str, _numkeys: int, *keys_and_args: Any) -> Any:
-        # Mirror the tracker's two atomic Lua scripts (see rate_limit_tracker.py)
-        # so the counter update is observable in-process. Single-threaded tests
-        # get the same result production gets from Redis' single-threaded Lua.
+        # Mirror the tracker's atomic Lua scripts (see rate_limit_tracker.py)
+        # so the counter update + activate merge are observable in-process.
+        # Single-threaded tests get the same result production gets from Redis'
+        # single-threaded Lua.
         key = keys_and_args[0]
         raw = store.get(key)
         text = raw.decode() if isinstance(raw, bytes) else (str(raw) if raw else None)
@@ -69,6 +70,16 @@ def _make_redis_mock(initial_store: dict[str, Any] | None = None) -> AsyncMock:
                 state["probe_failures"] = 0
             store[key] = json.dumps(state)
             return None
+        if "roboco:activate_rate_limit" in script:
+            # Mirror the production merge: carry over the previous probe_failures
+            # (if any) into the fresh episode blob from ARGV[1].
+            fresh = json.loads(keys_and_args[1])
+            if text is not None:
+                prev = json.loads(text)
+                if "probe_failures" in prev and prev["probe_failures"] is not None:
+                    fresh["probe_failures"] = prev["probe_failures"]
+            store[key] = json.dumps(fresh)
+            return fresh.get("probe_failures", 0)
         raise AssertionError(f"unknown eval script: {script[:80]}")
 
     mock = AsyncMock()
