@@ -73,6 +73,8 @@ Escalate to your role's escalation_target.
 
 **Composes:** (no atomic actions)
 
+**Preconditions:** non_terminal
+
 
 ## fail_review
 
@@ -162,7 +164,7 @@ Push the branch and open a PR. Atomic - preconditions (assignee, >=1 commit, no 
 
 **Side effects:** push_branch, create_pr
 
-**Preconditions:** commits>=1, no_prior_pr, owns_task
+**Preconditions:** commits>=1, no_prior_pr, owns_task, pr_open_state
 
 
 ## pass_review
@@ -221,7 +223,7 @@ Resume a paused task you own. paused -> in_progress.
 
 ## submit_root
 
-Main PM opens the root→master PR and moves the root task to awaiting_pr_review for the main reviewer (the root analogue of the cell PM's submit_up). After pr_pass, call complete to escalate to the CEO. Only for code roots; branchless coordination roots skip the gate and complete directly.
+Main PM opens the root→master PR and moves the root task to awaiting_pr_review for the main reviewer (the root analogue of the cell PM's submit_up). After pr_pass, call complete to escalate to the CEO. For branch-bearing roots (a Main-PM root-subtask assembles the cells' merged work); branchless coordination roots skip the gate and complete directly. The gate is branch-keyed, not task_type-keyed — a Main-PM root is planning-typed, never code.
 
 **Allowed roles:** main_pm
 
@@ -239,6 +241,17 @@ Cell PM opens the cell→root PR and moves the cell task into the PR-review gate
 **Composes:** submit_for_review
 
 **Pre side effects:** create_pr
+
+
+## sync_branch
+
+Rebase your task's branch onto its current base THROUGH the gate (raw git is denied). Use when your branch has fallen behind its base — e.g. a sibling task's PR merged into the parent branch while you worked. Fetches origin, rebases head onto base, and force-pushes (with-lease). No DB state change. On conflicts the rebase is aborted and the conflicted files are returned — resolve by hand, commit, then sync_branch again.
+
+**Allowed roles:** developer
+
+**Composes:** (no atomic actions)
+
+**Preconditions:** owns_task
 
 
 ## triage
