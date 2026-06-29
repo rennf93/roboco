@@ -34,6 +34,7 @@ from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
 
 from roboco.agents_config import get_agent_role
+from roboco.config import settings
 from roboco.db.tables import ModelAssignmentTable, ProviderConfigTable
 from roboco.models.base import AssignmentScope, ModelProvider
 from roboco.models.llm_catalog import (
@@ -84,10 +85,12 @@ async def probe_ollama_tags(base_url: str) -> tuple[list[str], str | None]:
     except httpx.HTTPStatusError as exc:
         return [], f"Server at {base_url} returned HTTP {exc.response.status_code}"
     except Exception as exc:
+        # Log the exception class only — ``str(exc)`` can carry connection
+        # internals / stack traces that don't belong in a structured log.
         _log.error(
             "Unexpected error probing Ollama server",
             base_url=base_url,
-            error=str(exc),
+            error=exc.__class__.__name__,
         )
         return [], "An unexpected error occurred while probing the self-hosted server."
 
@@ -135,6 +138,23 @@ class ModelRoutingService(BaseService):
             route = await self._route_from_resolved(resolved, agent_slug)
             if route is not None:
                 return route
+        elif resolved is not None and not resolved.provider.enabled:
+            # Configured but disabled — distinguishable from "no assignment"
+            # so the bypass is surfaced, not silent. Default stays graceful (a
+            # stalled spawn is worse than a routing miss); ROBOCO_ROUTING_STRICT
+            # opts into fail-closed for operators who'd rather it stall.
+            self.log.warning(
+                "Configured provider is disabled; downgrading to legacy Anthropic path",
+                agent_slug=agent_slug,
+                role=role,
+                provider_id=str(resolved.provider.id),
+            )
+            if settings.routing_strict:
+                raise RuntimeError(
+                    f"routing_strict: agent {agent_slug!r} has a disabled configured "
+                    f"provider {resolved.provider.id}; refusing to silently downgrade "
+                    f"to the legacy Anthropic path"
+                )
         return self._legacy_route(role)
 
     async def _resolve_assignment(

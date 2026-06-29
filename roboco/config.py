@@ -175,6 +175,18 @@ class Settings(BaseSettings):
         description="Base URL for Ollama native API (embeddings, model mgmt)",
     )
 
+    routing_strict: bool = Field(
+        default=False,
+        description=(
+            "Fail-closed model routing: when an agent has a configured "
+            "model_assignment whose provider is disabled (or otherwise "
+            "unroutable), raise instead of silently downgrading to the "
+            "legacy Anthropic path. Off (default) => graceful degradation "
+            "with a warning, so a misconfigured provider never stalls a "
+            "spawn; the warning still surfaces the bypass so it isn't silent."
+        ),
+    )
+
     # ==========================================================================
     # Agent runtime toolchain matching (default-off)
     # ==========================================================================

@@ -46,6 +46,8 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
     "Run the deterministic release-readiness sweep and propose a release for you to approve or reject — it never publishes without your approval, and the executor is fail-closed on a red gate.",
   org_memory_enabled:
     "Close the learn→reuse loop: distill a lesson at task completion, index journal reflections, and auto-inject similar past lessons + approved playbooks into an agent's briefing on claim.",
+  routing_strict:
+    "Fail-closed model routing: refuse to silently downgrade an agent to the legacy Anthropic path when its configured provider is disabled (raise instead). Off => graceful degradation with a warning.",
 };
 
 export function FeatureFlagsCard() {
