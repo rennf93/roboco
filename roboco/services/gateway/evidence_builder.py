@@ -86,6 +86,27 @@ def _typed(value: Any, expected: type | tuple[type, ...], default: Any) -> Any:
     return value if isinstance(value, expected) else default
 
 
+def _has_prior_work(
+    commits: list,
+    acceptance: list,
+    highlights: list,
+    pr_number: int | None,
+    dev_summary: str | None,
+    completed_deps: list,
+    pr_review: dict[str, Any] | None,
+) -> bool:
+    """True when any resumable prior-work signal is present on the task."""
+    return bool(
+        commits
+        or acceptance
+        or highlights
+        or pr_number is not None
+        or dev_summary
+        or completed_deps
+        or pr_review is not None
+    )
+
+
 def build_task_handoff(
     task: Any, journal_highlights: list[dict[str, Any]]
 ) -> dict[str, Any] | None:
@@ -111,16 +132,15 @@ def build_task_handoff(
     # the concrete issues in every PM briefing so a respawned PM doesn't
     # re-submit the same PR blind.
     pr_review = _extract_pr_review(getattr(task, "notes_structured", None))
-    has_prior = bool(
-        commits
-        or acceptance
-        or highlights
-        or pr_number is not None
-        or dev_summary
-        or completed_deps
-        or pr_review is not None
-    )
-    if not has_prior:
+    if not _has_prior_work(
+        commits,
+        acceptance,
+        highlights,
+        pr_number,
+        dev_summary,
+        completed_deps,
+        pr_review,
+    ):
         return None
     handoff: dict[str, Any] = {
         "pr_number": pr_number,

@@ -41,7 +41,7 @@ class _FakeNested:
     async def __aenter__(self) -> None:
         self._session.savepoint_started += 1
 
-    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+    async def __aexit__(self, exc_type: Any, exc: Any, _tb: Any) -> None:
         if self._session._duplicate:
             self._session.savepoint_rolled_back = True
             raise IntegrityError(

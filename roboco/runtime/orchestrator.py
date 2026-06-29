@@ -5961,6 +5961,54 @@ Start by:
             return None
         return rc == 0
 
+    async def _maybe_park_for_exit_error(
+        self, agent_id: str, instance: Any, graceful: bool
+    ) -> bool:
+        """Park the provider on a session/usage limit or a server overload detected
+        in the dead container's output, instead of crash-retrying into it. Returns
+        True when parked (caller returns); False to proceed with normal handling.
+        The probe-resume loop revives the task when the limit lifts / overload clears.
+        """
+        if graceful:
+            return False
+        rate_limited_provider = await self._provider_rate_limit_park_target(
+            agent_id, instance
+        )
+        if rate_limited_provider is not None:
+            logger.warning(
+                "Session/usage limit detected in agent output; parking provider",
+                agent_id=agent_id,
+                provider=rate_limited_provider,
+                task_id=instance.current_task_id,
+            )
+            await self._park_provider_unavailable(
+                agent_id,
+                instance,
+                provider=rate_limited_provider,
+                retry_after=_RATE_LIMIT_RETRY_AFTER_S,
+                kind="rate_limited",
+            )
+            return True
+        overloaded_provider = await self._provider_overload_park_target(
+            agent_id, instance
+        )
+        if overloaded_provider is not None:
+            logger.warning(
+                "Provider overload detected in agent output; parking provider",
+                agent_id=agent_id,
+                provider=overloaded_provider,
+                task_id=instance.current_task_id,
+            )
+            await self._park_provider_unavailable(
+                agent_id,
+                instance,
+                provider=overloaded_provider,
+                retry_after=_OVERLOAD_RETRY_AFTER_S,
+                kind="overloaded",
+            )
+            return True
+        return False
+
     async def _handle_stopped_container(
         self, agent_id: str, instance: Any, exit_code: int | None
     ) -> None:
@@ -5990,53 +6038,11 @@ Start by:
             await self._park_grok_auth_unavailable(agent_id, instance)
             return
         graceful = exit_code == 0
-        # Session/usage-limit parking: the Claude session ("5-hour") limit is a
-        # 429 the SDK does not retry — the container exits non-zero with a
-        # 0-token rejection. Detect it in the dead container's output and park
-        # the provider (instead of crash-respawning straight back into the
-        # limit); the probe-resume loop revives the task when the quota resets.
-        if not graceful:
-            rate_limited_provider = await self._provider_rate_limit_park_target(
-                agent_id, instance
-            )
-            if rate_limited_provider is not None:
-                logger.warning(
-                    "Session/usage limit detected in agent output; parking provider",
-                    agent_id=agent_id,
-                    provider=rate_limited_provider,
-                    task_id=instance.current_task_id,
-                )
-                await self._park_provider_unavailable(
-                    agent_id,
-                    instance,
-                    provider=rate_limited_provider,
-                    retry_after=_RATE_LIMIT_RETRY_AFTER_S,
-                    kind="rate_limited",
-                )
-                return
-        # Server-overload parking: a persistent 529/500/503 from the model API
-        # kills the run (the SDK already retries transient ones). Detect the
-        # overload marker in the dead container's output and park the provider —
-        # the same break as a 429 — instead of crash-retrying into the overload.
-        if not graceful:
-            overloaded_provider = await self._provider_overload_park_target(
-                agent_id, instance
-            )
-            if overloaded_provider is not None:
-                logger.warning(
-                    "Provider overload detected in agent output; parking provider",
-                    agent_id=agent_id,
-                    provider=overloaded_provider,
-                    task_id=instance.current_task_id,
-                )
-                await self._park_provider_unavailable(
-                    agent_id,
-                    instance,
-                    provider=overloaded_provider,
-                    retry_after=_OVERLOAD_RETRY_AFTER_S,
-                    kind="overloaded",
-                )
-                return
+        # Park the provider on a session/usage limit or a server overload detected
+        # in the dead container's output instead of crash-retrying into it. The
+        # probe-resume loop revives the task when the limit lifts / overload clears.
+        if await self._maybe_park_for_exit_error(agent_id, instance, graceful):
+            return
         if graceful:
             logger.info(
                 "Agent container exited gracefully",
@@ -8590,6 +8596,26 @@ Start now: evidence(task_id="{task_id}")
             grace = settings.gateway_health_grace_seconds
         return (now - first_seen).total_seconds() >= grace
 
+    async def _should_skip_live_reap(self, t: Any, ts: Any) -> bool:
+        """True when a live container should be spared from reaping.
+
+        A live container normally protects its task; on a registry MISS (e.g. the
+        orchestrator restarted and forgot a still-running container) fall back to
+        asking Docker. A live container is spared UNLESS it is wedged (grok) or
+        its gateway is broken-but-alive past the grace window — both checks kill +
+        evict it (returning False here) so the caller falls through to release +
+        respawn. Short-circuits like the original ``and``: when not live, neither
+        kill nor recovery check is awaited.
+        """
+        live = self._assignee_has_active_instance(
+            t
+        ) or await self._assignee_container_running(t)
+        return (
+            live
+            and not await self._maybe_kill_wedged_grok(t, ts)
+            and not await self._maybe_recover_broken_gateway(t)
+        )
+
     async def _reap_with_service(self, svc: "TaskService") -> None:
         """Inner reap loop, parameterized by the TaskService to use.
 
@@ -8606,26 +8632,11 @@ Start now: evidence(task_id="{task_id}")
         for t in candidates:
             ts = t.last_heartbeat_at
             if ts is None or ts < cutoff:
-                # A live container normally protects its task. Prefer the
-                # in-memory registry; on a registry MISS (e.g. the orchestrator
-                # restarted and forgot a still-running container) fall back to
-                # asking Docker, so we don't reap a task out from under a live
-                # agent. The sole exception is a wedged GROK container — ACTIVE
-                # yet firing no verb — which the live skip would shield forever:
-                # kill + evict it past the grok-idle TTL (then fall through to
-                # release); a live non-grok agent, or a grok within the TTL, is
-                # skipped.
-                live = self._assignee_has_active_instance(
-                    t
-                ) or await self._assignee_container_running(t)
-                # A live container is spared UNLESS it is wedged (grok) or its
-                # gateway is broken-but-alive past the grace window — both get
-                # killed + evicted here so we fall through to release + respawn.
-                if (
-                    live
-                    and not await self._maybe_kill_wedged_grok(t, ts)
-                    and not await self._maybe_recover_broken_gateway(t)
-                ):
+                # A live container is spared unless it is wedged (grok) or its
+                # gateway is broken-but-alive past the grace window — see
+                # _should_skip_live_reap, which kills + evicts those so we fall
+                # through to release + respawn.
+                if await self._should_skip_live_reap(t, ts):
                     continue
                 # A provider-parked agent (session-limit / overload / grok-429)
                 # is OFFLINE with a dead container and a ``rate_limit_lifted``

@@ -6481,6 +6481,38 @@ class TaskService(BaseService):
     def _task_status_value(task: TaskTable) -> str:
         return task.status.value if hasattr(task.status, "value") else str(task.status)
 
+    @staticmethod
+    def _raise_if_self_review(agent: AgentContext, task: TaskTable) -> None:
+        """Refuse a QA/Documenter claim of a task it itself developed."""
+        if agent.role in (AgentRole.QA, AgentRole.DOCUMENTER):
+            original_dev = extract_original_developer(task)
+            if original_dev and str(agent.agent_id) == original_dev:
+                raise UnauthorizedError(
+                    action="claim",
+                    reason=(
+                        "SELF_REVIEW: Cannot claim a task that you developed. "
+                        f"Leave it for another {agent.role.value}."
+                    ),
+                )
+
+    @staticmethod
+    def _raise_if_main_pm_code_claim(
+        claimant_is_main_pm: bool, task: TaskTable
+    ) -> None:
+        """Refuse a Main-PM claim of a code task it would have to execute."""
+        if (
+            claimant_is_main_pm
+            and _task_type_is_code(task.task_type)
+            and task.status != TaskStatus.NEEDS_REVISION
+        ):
+            raise UnauthorizedError(
+                action="claim",
+                reason=(
+                    "MAIN_PM_NO_CODE: A Main PM coordinates — it does not own a"
+                    " code task. Leave it for a developer; delegate instead."
+                ),
+            )
+
     async def claim_task_for_agent(
         self,
         task_id: UUID,
@@ -6497,16 +6529,7 @@ class TaskService(BaseService):
             )
 
         # QA / Documenter cannot claim what they themselves developed.
-        if agent.role in (AgentRole.QA, AgentRole.DOCUMENTER):
-            original_dev = extract_original_developer(task)
-            if original_dev and str(agent.agent_id) == original_dev:
-                raise UnauthorizedError(
-                    action="claim",
-                    reason=(
-                        "SELF_REVIEW: Cannot claim a task that you developed. "
-                        f"Leave it for another {agent.role.value}."
-                    ),
-                )
+        self._raise_if_self_review(agent, task)
 
         can_assign = permissions.can_perform_task_action(
             agent, TaskAction.ASSIGN, task.team
@@ -6549,18 +6572,7 @@ class TaskService(BaseService):
             claimant_is_main_pm = await self._is_main_pm_agent(claim_agent_id)
         else:
             claimant_is_main_pm = agent.role == AgentRole.MAIN_PM
-        if (
-            claimant_is_main_pm
-            and _task_type_is_code(task.task_type)
-            and task.status != TaskStatus.NEEDS_REVISION
-        ):
-            raise UnauthorizedError(
-                action="claim",
-                reason=(
-                    "MAIN_PM_NO_CODE: A Main PM coordinates — it does not own a"
-                    " code task. Leave it for a developer; delegate instead."
-                ),
-            )
+        self._raise_if_main_pm_code_claim(claimant_is_main_pm, task)
 
         claimed = await self.claim(
             task_id, claim_agent_id, allow_reassign=allow_reassign

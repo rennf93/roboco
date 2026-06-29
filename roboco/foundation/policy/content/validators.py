@@ -116,19 +116,22 @@ def _extract_strs(item: Any) -> list[str]:
         stripped = item.strip()
         return [stripped] if stripped else []
     if isinstance(item, dict):
-        for key in _TEXT_KEYS:
-            if key in item:
-                return _extract_strs(item[key])
-        # No recognized key: keep any bare string values the dict carries.
-        return [
-            str(v).strip() for v in item.values() if isinstance(v, str) and v.strip()
-        ]
+        return _extract_strs_from_dict(item)
     if isinstance(item, list):
         out: list[str] = []
         for sub in item:
             out.extend(_extract_strs(sub))
         return out
     return []
+
+
+def _extract_strs_from_dict(item: dict) -> list[str]:
+    """Resolve a dict element to strings via the first recognized text key,
+    else any bare string values it carries (recurses through SDK ``$text`` wrappers)."""
+    for key in _TEXT_KEYS:
+        if key in item:
+            return _extract_strs(item[key])
+    return [str(v).strip() for v in item.values() if isinstance(v, str) and v.strip()]
 
 
 def coerce_str_list(value: Any) -> list[str]:

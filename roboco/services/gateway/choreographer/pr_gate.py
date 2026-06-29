@@ -226,6 +226,69 @@ class PRGateMixin(_Base):
             )
         return (t, agent, role_str, briefing, spec_ctx)
 
+    async def _record_gate_verdict_for(
+        self, verb: str, t: Any, notes: str, *, issues: tuple[str, ...]
+    ) -> None:
+        """Author the canonical pr_review verdict note before the transition.
+
+        On pr_fail also stamp the assembled PR's head SHA so the next submit_root
+        can structurally refuse to re-submit the unchanged root (the 2026-06-27
+        infinite pr_fail re-submit loop). Best-effort: a capture failure leaves
+        head_sha absent and submit_root fails open rather than wedging the PM.
+        """
+        if verb == "pr_fail":
+            head_sha = await self._capture_pr_head_sha(t)
+            self._record_gate_verdict(t, verb, notes, issues=issues, head_sha=head_sha)
+        else:
+            self._record_gate_verdict(t, verb, notes, issues=issues)
+
+    async def _post_gate_review(
+        self, t: Any, agent: Any, role_str: str, verb: str, notes: str
+    ) -> None:
+        """Post the gate verdict to the PR itself (best-effort, after the DB
+        transition — a GitHub failure must not roll back the gate decision)."""
+        reviewer_slug = getattr(agent, "slug", None) or role_str
+        await self._post_gate_review_to_pr(t, verb, reviewer_slug, notes)
+
+    async def _deliver_pr_fail_to_owner(
+        self, t: Any, reviewer_agent_id: UUID, task_id: UUID, notes: str
+    ) -> None:
+        """a2a the pr_fail change-requests to the owning PM (best-effort).
+
+        The verdict is posted on the PR but never reaches a PM-readable channel
+        (no a2a, and _briefing_for / build_task_handoff read neither
+        pr_reviewer_notes nor notes_structured.pr_review), so without this the
+        owning PM respawned into needs_revision re-submits the same PR blind —
+        an infinite pr_fail loop (live on 9980d0a0 / PR #138). Mirrors QA's
+        fail_review a2a. A Main-PM branch-bearing root is assembled cell work the
+        Main PM can't fix directly, so steer it to re-delegate + wait for
+        re-assembly rather than re-submit the unchanged root.
+        """
+        if t.assigned_to is None:
+            return
+        team = getattr(t, "team", None)
+        team_value = str(getattr(team, "value", team))
+        is_main_pm_root = team_value == spec_module.Team.MAIN_PM.value and bool(
+            getattr(t, "branch_name", None)
+        )
+        steer = (
+            " Assembled cell work failed — re-delegate the fixes to the"
+            " owning cell PM(s) and wait for re-assembly; do NOT re-submit"
+            " the root."
+            if is_main_pm_root
+            else ""
+        )
+        try:
+            await self.a2a.send(
+                from_agent=reviewer_agent_id,
+                to_agent=t.assigned_to,
+                skill="code_review",
+                task_id=task_id,
+                body=f"PR review needs changes. {notes}{steer}",
+            )
+        except Exception:
+            logger.exception("pr_fail a2a to owning PM failed", task_id=str(task_id))
+
     async def _gate_decision(
         self,
         reviewer_agent_id: UUID,
@@ -253,21 +316,10 @@ class PRGateMixin(_Base):
             )
             if blocked is not None:
                 return blocked
-        # Author the canonical pr_review verdict note BEFORE the transition so
-        # it is persisted by the same commit (mirrors post_pr_review). This is
-        # what keeps notes_structured.pr_review in lock-step with the decision —
-        # a later pr_fail overwrites an earlier pr_pass verdict instead of
-        # leaving a stale "passed" on a task that was just sent back. On pr_fail
-        # also stamp the assembled PR's head SHA so the next submit_root can
-        # structurally refuse to re-submit the unchanged root (the 2026-06-27
-        # infinite pr_fail re-submit loop). Best-effort: a capture failure
-        # (no token, no PR, GitHub error) leaves head_sha absent and the
-        # submit_root gate fails open rather than wedging the PM.
-        if verb == "pr_fail":
-            head_sha = await self._capture_pr_head_sha(t)
-            self._record_gate_verdict(t, verb, notes, issues=issues, head_sha=head_sha)
-        else:
-            self._record_gate_verdict(t, verb, notes, issues=issues)
+        # Author the canonical pr_review verdict note BEFORE the transition so it
+        # is persisted by the same commit (mirrors post_pr_review) and stays in
+        # lock-step with the decision (pr_fail overwrites an earlier pr_pass).
+        await self._record_gate_verdict_for(verb, t, notes, issues=issues)
         runner = self._verb_runner()
         try:
             t = await runner.run_intent(verb, t, agent, spec_ctx)
@@ -304,54 +356,13 @@ class PRGateMixin(_Base):
                 task_id=task_id,
                 verb=verb,
             )
-        # Leave the gate verdict on the PR itself so there's a visible trail on
-        # the very PR the PM (or CEO) merges. Best-effort and AFTER the DB
-        # transition — a GitHub failure must not roll back the gate decision.
-        reviewer_slug = getattr(agent, "slug", None) or role_str
-        await self._post_gate_review_to_pr(t, verb, reviewer_slug, notes)
-        # Deliver the change-requests to the owner that now has to act on them
-        # — the cell PM the runner just re-assigned via _revision_pm_for_task.
-        # The reviewer posts the verdict on the PR itself but that never reaches
-        # any PM-readable channel (no a2a, and _briefing_for / build_task_handoff
-        # read neither pr_reviewer_notes nor notes_structured.pr_review). Without
-        # this the owning PM respawned into needs_revision saw a generic "needs
-        # revision" with zero concrete issues, concluded nothing to rework, and
-        # re-submitted the same PR — an infinite pr_fail loop (live on
-        # 9980d0a0 / PR #138). Mirrors QA's fail_review a2a to the dev (qa.py:671).
-        # Best-effort: the transition already committed, so a delivery failure
-        # must not roll the verdict back or 500 the reviewer.
-        if verb == "pr_fail" and t.assigned_to is not None:
-            # A Main-PM branch-bearing root is an assembled cell→root / root→master
-            # PR — coordination, not the Main PM's own code. The rejection is
-            # about the cells' merged code, which the Main PM cannot fix directly
-            # (no code verb). Steer the a2a body to re-delegate + wait for
-            # re-assembly so the PM doesn't re-submit the unchanged root (the
-            # 2026-06-27 infinite pr_fail loop). The Envelope ``next`` hint makes
-            # the same steer via _next_hint_pr_fail.
-            team = getattr(t, "team", None)
-            team_value = str(getattr(team, "value", team))
-            is_main_pm_root = team_value == spec_module.Team.MAIN_PM.value and bool(
-                getattr(t, "branch_name", None)
-            )
-            steer = (
-                " Assembled cell work failed — re-delegate the fixes to the"
-                " owning cell PM(s) and wait for re-assembly; do NOT re-submit"
-                " the root."
-                if is_main_pm_root
-                else ""
-            )
-            try:
-                await self.a2a.send(
-                    from_agent=reviewer_agent_id,
-                    to_agent=t.assigned_to,
-                    skill="code_review",
-                    task_id=task_id,
-                    body=f"PR review needs changes. {notes}{steer}",
-                )
-            except Exception:
-                logger.exception(
-                    "pr_fail a2a to owning PM failed", task_id=str(task_id)
-                )
+        # Post the gate verdict on the PR itself (best-effort, after the DB
+        # transition — a GitHub failure must not roll back the gate decision).
+        await self._post_gate_review(t, agent, role_str, verb, notes)
+        # a2a the pr_fail change-requests to the owning PM (best-effort) — see
+        # _deliver_pr_fail_to_owner for the rationale and the Main-PM-root steer.
+        if verb == "pr_fail":
+            await self._deliver_pr_fail_to_owner(t, reviewer_agent_id, task_id, notes)
         return Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),

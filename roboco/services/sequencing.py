@@ -215,6 +215,21 @@ class SequencingService:
 _MIN_COLLISION_PAIR = 2
 
 
+def _surfaced_siblings(siblings: list) -> list:
+    """Siblings carrying a collision surface: a project to collide within and at
+    least one of intends_to_touch / adds_migration / touches_shared."""
+    return [
+        s
+        for s in siblings
+        if getattr(s, "project_id", None)
+        and (
+            getattr(s, "intends_to_touch", None)
+            or getattr(s, "adds_migration", False)
+            or getattr(s, "touches_shared", False)
+        )
+    ]
+
+
 def dev_task_collision_edges(siblings: list) -> list[tuple[object, object]]:
     """Wire the dev-task collision DAG for a parent's surfaced siblings.
 
@@ -237,16 +252,7 @@ def dev_task_collision_edges(siblings: list) -> list[tuple[object, object]]:
     reverse edge (which would cycle). ``add_dependency`` dedupes, so repeated
     wiring is a no-op on already-wired pairs.
     """
-    surfaced = [
-        s
-        for s in siblings
-        if getattr(s, "project_id", None)
-        and (
-            getattr(s, "intends_to_touch", None)
-            or getattr(s, "adds_migration", False)
-            or getattr(s, "touches_shared", False)
-        )
-    ]
+    surfaced = _surfaced_siblings(siblings)
     if len(surfaced) < _MIN_COLLISION_PAIR:
         return []
     # Stable order across incremental re-runs: priority is set at creation,

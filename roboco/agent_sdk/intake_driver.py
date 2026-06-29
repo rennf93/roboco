@@ -103,22 +103,30 @@ def _coerce_draft(data: Any) -> dict[str, Any] | None:
     if not (isinstance(data, dict) and isinstance(data.get("title"), str)):
         return None
     coerced = dict(data)
+    _coerce_spec_fields(coerced, coerce_str_list)
+    return coerced
+
+
+def _coerce_spec_fields(
+    coerced: dict[str, Any], coerce: Callable[[Any], list[str]]
+) -> None:
+    """Coerce the list-shaped spec fields in place: wrap the_work, flatten the
+    string-list fields, and flatten each the_work unit's items to ``list[str]``."""
     if "the_work" in coerced:
         coerced["the_work"] = _coerce_to_list(coerced["the_work"])
     for key in _STR_LIST_FIELDS:
         if key in coerced:
-            coerced[key] = coerce_str_list(coerced[key])
+            coerced[key] = coerce(coerced[key])
     work = coerced.get("the_work")
     if isinstance(work, list):
         coerced["the_work"] = [
             {
                 **unit,
-                "items": coerce_str_list(unit.get("items")),
+                "items": coerce(unit.get("items")),
             }
             for unit in work
             if isinstance(unit, dict)
         ]
-    return coerced
 
 
 def _extract_draft(text: str) -> dict[str, Any] | None:

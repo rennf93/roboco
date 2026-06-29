@@ -193,6 +193,55 @@ class PrompterService:
             return Team.BOARD
         return Team.MAIN_PM
 
+    def _validate_and_coerce_draft(self, draft_data: dict[str, Any]) -> None:
+        """Validate title + acceptance criteria, then flatten the list-shaped
+        fields (acceptance_criteria / what_this_builds / notes / each the_work
+        unit's items) to ``list[str]`` in place.
+
+        Raises ``ValidationError`` (clean 400) for a missing title or empty /
+        missing acceptance criteria — a malformed draft (e.g. an incomplete
+        ``propose_batch`` item) would otherwise hit a bare ``KeyError`` and
+        surface as an opaque 500. Coercion runs here too because a draft can
+        arrive via re-draft / localStorage, not only the intake choke point.
+        """
+        if not draft_data.get("title"):
+            raise ValidationError(
+                message="This task draft is missing a title.", field="title"
+            )
+        if not draft_data.get("acceptance_criteria"):
+            raise ValidationError(
+                message="This task draft is missing acceptance criteria.",
+                field="acceptance_criteria",
+            )
+        draft_data["acceptance_criteria"] = coerce_str_list(
+            draft_data.get("acceptance_criteria")
+        )
+        draft_data["what_this_builds"] = coerce_str_list(
+            draft_data.get("what_this_builds")
+        )
+        draft_data["notes"] = coerce_str_list(draft_data.get("notes"))
+        for unit in draft_data.get("the_work") or []:
+            if isinstance(unit, dict):
+                unit["items"] = coerce_str_list(unit.get("items"))
+        if not draft_data["acceptance_criteria"]:
+            raise ValidationError(
+                message="This task draft is missing acceptance criteria.",
+                field="acceptance_criteria",
+            )
+
+    def _resolve_draft_assignee(
+        self, assigned_to: UUID | None, draft_data: dict[str, Any]
+    ) -> UUID | None:
+        """Explicit confirm-button assignment wins; else fall back to any assignee
+        carried on the draft."""
+        if assigned_to is not None:
+            return assigned_to
+        if not draft_data.get("assigned_to"):
+            return None
+        with contextlib.suppress(ValueError):
+            return UUID(str(draft_data["assigned_to"]))
+        return None
+
     async def create_task_from_draft(
         self,
         draft_data: dict[str, Any],
@@ -223,40 +272,7 @@ class PrompterService:
         draft through to the task so the analyzer's surface is persisted.
         """
         place = placement or BatchPlacement()
-        # A draft must carry a title + acceptance criteria — without this a
-        # malformed draft (e.g. an agent's incomplete propose_batch item) hits a
-        # bare KeyError below and surfaces as an opaque 500 instead of a clean,
-        # actionable 400.
-        if not draft_data.get("title"):
-            raise ValidationError(
-                message="This task draft is missing a title.", field="title"
-            )
-        if not draft_data.get("acceptance_criteria"):
-            raise ValidationError(
-                message="This task draft is missing acceptance criteria.",
-                field="acceptance_criteria",
-            )
-        # Flatten the string-list fields to list[str]. The agent sometimes emits
-        # these as XML-ish <item>…</item> elements the SDK parses into dict
-        # wrappers ({"item": {"$text": "…"}}); left as-is they crash the
-        # VARCHAR[] insert (asyncpg: "expected str, got dict") and dump str(dict)
-        # into the rendered description. Coerce here too — a draft can arrive
-        # via redraft/localStorage, not only the intake choke point.
-        draft_data["acceptance_criteria"] = coerce_str_list(
-            draft_data.get("acceptance_criteria")
-        )
-        draft_data["what_this_builds"] = coerce_str_list(
-            draft_data.get("what_this_builds")
-        )
-        draft_data["notes"] = coerce_str_list(draft_data.get("notes"))
-        for unit in draft_data.get("the_work") or []:
-            if isinstance(unit, dict):
-                unit["items"] = coerce_str_list(unit.get("items"))
-        if not draft_data["acceptance_criteria"]:
-            raise ValidationError(
-                message="This task draft is missing acceptance criteria.",
-                field="acceptance_criteria",
-            )
+        self._validate_and_coerce_draft(draft_data)
         # Recompose the description from the (possibly edited) structured fields —
         # the task always carries a freshly-composed, consistent description.
         draft_data["description"] = compose_description(draft_data)
@@ -291,10 +307,7 @@ class PrompterService:
         # Explicit assignment (from the confirm button) wins; else fall back to
         # any assignee carried on the draft. Resolved before team routing — the
         # owner decides the team for a product.
-        resolved_assigned_to: UUID | None = assigned_to
-        if resolved_assigned_to is None and draft_data.get("assigned_to"):
-            with contextlib.suppress(ValueError):
-                resolved_assigned_to = UUID(str(draft_data["assigned_to"]))
+        resolved_assigned_to = self._resolve_draft_assignee(assigned_to, draft_data)
 
         team = await self._resolve_owning_team(
             draft_data,

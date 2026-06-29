@@ -61,6 +61,7 @@ if TYPE_CHECKING:
     # etc.) via MRO, but ``_LegacyChoreographer`` itself does not inherit
     # ``ChoreographerHelpers`` — so mypy can't see those names on ``self`` here.
     # The cast below reaches the typed view the mixins use (``_Base`` pattern).
+    from roboco.models.base import TaskNature
     from roboco.services.gateway.choreographer._protocol import ChoreographerHelpers
 
 # Minimum character length enforced on rich_plan["approach"] by the PM
@@ -5136,34 +5137,19 @@ class Choreographer:
             message=f"cannot resolve a project for the {inputs.team} subtask",
         )
 
-    async def _create_subtask_from_inputs(
-        self,
-        pm_agent_id: UUID,
-        parent_task_id: UUID,
-        parent: Any,
+    @staticmethod
+    def _require_subtask_completeness(
         inputs: DelegateInputs,
-    ) -> Any:
-        """Resolve enums + AGENT_UUIDS slug and call TaskService.create_subtask.
-
-        By contract, callers (the `delegate` verb body) MUST run
-        `_delegate_completeness_check` first, so `inputs.acceptance_criteria`
-        and `inputs.nature` are guaranteed non-None / non-empty here. The
-        defensive `TaskCompletenessError` raises preserve correctness if
-        a future caller bypasses the gateway path — defense-in-depth in
-        line with the service-layer raise.
+    ) -> tuple[TaskNature, list[str]]:
+        """Defensive completeness check (callers run ``_delegate_completeness_check``
+        first); returns the validated ``TaskNature`` and the non-empty
+        ``acceptance_criteria``. Raises ``TaskCompletenessError`` with field hints
+        if a non-gateway caller bypassed the gateway check — never silently
+        substitutes an empty acceptance list.
         """
         from roboco.foundation.policy.task_completeness import TaskCompletenessError
         from roboco.models.base import TaskNature
-        from roboco.models.task import TaskCreateRequest
-        from roboco.seeds.initial_data import AGENT_UUIDS
 
-        team_enum, type_enum, complexity_enum = self._resolve_delegate_enums(inputs)
-        assignee_id = UUID(AGENT_UUIDS[inputs.assigned_to])
-        # The `or []` collapse was removed. The gateway runs
-        # `_delegate_completeness_check` BEFORE this helper, so empty/None
-        # acceptance_criteria here means a non-gateway caller bypassed the
-        # check. Raise so the service-layer raise can attach the
-        # field hints — never silently substitute.
         if not inputs.acceptance_criteria:
             raise TaskCompletenessError(
                 missing=["acceptance_criteria"],
@@ -5180,9 +5166,7 @@ class Choreographer:
         if inputs.nature is None:
             raise TaskCompletenessError(
                 missing=["nature"],
-                field_hints={
-                    "nature": "one of: technical | non_technical",
-                },
+                field_hints={"nature": "one of: technical | non_technical"},
                 message=(
                     "_create_subtask_from_inputs called with no nature — "
                     "completeness check must run first"
@@ -5196,11 +5180,39 @@ class Choreographer:
                 field_hints={"nature": "one of: technical | non_technical"},
                 message=f"invalid nature {inputs.nature!r}: {exc}",
             ) from exc
+        return nature_enum, inputs.acceptance_criteria
+
+    async def _create_subtask_from_inputs(
+        self,
+        pm_agent_id: UUID,
+        parent_task_id: UUID,
+        parent: Any,
+        inputs: DelegateInputs,
+    ) -> Any:
+        """Resolve enums + AGENT_UUIDS slug and call TaskService.create_subtask.
+
+        By contract, callers (the `delegate` verb body) MUST run
+        `_delegate_completeness_check` first, so `inputs.acceptance_criteria`
+        and `inputs.nature` are guaranteed non-None / non-empty here. The
+        defensive `TaskCompletenessError` raises preserve correctness if
+        a future caller bypasses the gateway path — defense-in-depth in
+        line with the service-layer raise.
+        """
+        from roboco.models.task import TaskCreateRequest
+        from roboco.seeds.initial_data import AGENT_UUIDS
+
+        team_enum, type_enum, complexity_enum = self._resolve_delegate_enums(inputs)
+        assignee_id = UUID(AGENT_UUIDS[inputs.assigned_to])
+        # The gateway runs `_delegate_completeness_check` BEFORE this helper, so
+        # empty/None acceptance_criteria or nature here means a non-gateway caller
+        # bypassed the check — _require_subtask_completeness raises with field
+        # hints rather than silently substituting.
+        nature_enum, acceptance_criteria = self._require_subtask_completeness(inputs)
         resolved_project_id = await self._resolve_subtask_project(parent, inputs)
         req = TaskCreateRequest(
             title=inputs.title,
             description=inputs.description,
-            acceptance_criteria=inputs.acceptance_criteria,
+            acceptance_criteria=acceptance_criteria,
             parent_ac_refs=inputs.covers_parent_criteria or [],
             team=team_enum,
             created_by=pm_agent_id,
@@ -6542,6 +6554,18 @@ class Choreographer:
             context_briefing=await self._briefing_for(main_pm_agent_id, root_task_id),
         ).with_introspection(task=t, role="main_pm")
 
+    @staticmethod
+    def _is_umbrella_in_progress(t: Any, role_str: str) -> bool:
+        """A MegaTask umbrella sits in_progress branchless (no submit_root/pr_pass),
+        so the complete spec gate (AWAITING_PM_REVIEW only) would reject it before
+        main_pm_complete's branchless-aware guard runs — this lets it fall through
+        to main_pm_complete (CEO merges the root PR; no agent touches master)."""
+        return (
+            role_str == "main_pm"
+            and str(t.status) == "in_progress"
+            and is_batch_umbrella(batch_id=t.batch_id, parent_task_id=t.parent_task_id)
+        )
+
     async def complete(self, agent_id: UUID, task_id: UUID, notes: str) -> Envelope:
         """Dispatch to cell_pm_complete or main_pm_complete based on agent role.
 
@@ -6596,19 +6620,11 @@ class Choreographer:
             verb="complete",
         ):
             return soup
-        # A MegaTask umbrella is branchless by design and never goes through
-        # submit_root / pr_pass, so it sits in in_progress with no branch/PR.
-        # The ``complete`` action's source_statuses={AWAITING_PM_REVIEW} spec
-        # gate would reject it before main_pm_complete's branchless-aware guard
-        # can run; skip the spec gate for an in_progress batch umbrella and fall
-        # through to main_pm_complete (CEO merges the root PR; no agent touches
-        # master). Role membership is preserved; main_pm_complete re-checks
-        # assignment, subtasks-terminal, and the journal:decision gate.
-        umbrella_in_progress = (
-            role_str == "main_pm"
-            and str(t.status) == "in_progress"
-            and is_batch_umbrella(batch_id=t.batch_id, parent_task_id=t.parent_task_id)
-        )
+        # An in_progress batch umbrella is branchless and skips the complete spec
+        # gate (AWAITING_PM_REVIEW only) to fall through to main_pm_complete —
+        # see _is_umbrella_in_progress. Role membership is preserved; main_pm_complete
+        # re-checks assignment, subtasks-terminal, and the journal:decision gate.
+        umbrella_in_progress = self._is_umbrella_in_progress(t, role_str)
         if not umbrella_in_progress:
             decision = spec_module.can_invoke_intent(role, "complete", t, spec_ctx)
             if not decision.allowed:
