@@ -4932,6 +4932,7 @@ class TaskService(BaseService):
             task, TaskStatus.COMPLETED, completing_agent_role or "cell_pm"
         )
         await self._close_work_session_for_task(task, reason="task completed")
+        await self._remove_task_worktree_on_terminal(task)
         await self.session.flush()
 
         await self._trigger_completion_hooks(task, agent_id)
@@ -5198,6 +5199,7 @@ class TaskService(BaseService):
         # Validate transition with CEO role requirement
         self._validate_and_set_status(task, TaskStatus.COMPLETED, "ceo")
         await self.session.flush()
+        await self._remove_task_worktree_on_terminal(task)
 
         # Extract learnings (fire-and-forget)
         bg_task = asyncio.create_task(self._extract_completion_learnings(task, None))
@@ -5595,6 +5597,34 @@ class TaskService(BaseService):
         )
         worktree = clone_root / ".worktrees" / str(task.id)[:8]
         await ws_service.remove_worktree(clone_root, worktree)
+
+    async def _remove_task_worktree_on_terminal(self, task: TaskTable) -> None:
+        """Best-effort per-task worktree removal on terminal completion.
+
+        Mirrors the cancel-path cleanup but WITHOUT deleting the remote branch
+        (the merge path already deleted it). A completed/merged task would
+        otherwise leak its worktree on disk until the whole agent is deleted
+        (F123). Best-effort: never raises, so a cleanup failure can't block
+        completion. No-op for branchless tasks (no worktree was ever cut).
+        Terminal-only by call site — earlier review states may bounce
+        ``needs_revision`` and need the worktree back.
+        """
+        if not task.branch_name:
+            return
+        try:
+            result = await self.session.execute(
+                select(ProjectTable.slug).where(ProjectTable.id == task.project_id)
+            )
+            project_slug = result.scalar_one_or_none()
+            if not project_slug:
+                return
+            await self._remove_task_worktree_best_effort(task, project_slug)
+        except Exception as e:
+            self.log.warning(
+                "Terminal worktree cleanup skipped",
+                task_id=str(task.id),
+                error=str(e),
+            )
 
     async def _close_work_session_for_task(self, task: TaskTable, reason: str) -> None:
         """Close the task's work session on successful completion.
