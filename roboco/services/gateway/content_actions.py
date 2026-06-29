@@ -843,8 +843,31 @@ class ContentActions:
         # if this transaction rolled back — a divergence agents surface in
         # briefings. ``get_db`` commits the session again after the route returns
         # (a no-op on the now-clean transaction); this explicit commit is what
-        # gates the index.
-        await self.task.session.commit()
+        # gates the index. A poisoned session (a prior mid-verb failure rolled it
+        # back -> PendingRollbackError) must NOT 500 the curation verb NOR fall
+        # through to index an uncommitted playbook: surface a clean invalid_state
+        # and skip the index. See #55.
+        from sqlalchemy.exc import PendingRollbackError
+
+        try:
+            await self.task.session.commit()
+        except PendingRollbackError:
+            logger.warning(
+                "playbook curate: gating commit on a rolled-back session",
+                action=action,
+                playbook_id=str(playbook_id),
+            )
+            return Envelope.invalid_state(
+                message=(
+                    "the DB session was rolled back by a prior failure; the "
+                    "playbook status change was not committed"
+                ),
+                remediate=(
+                    "re-fetch the playbook's current status and re-try the "
+                    "curation verb"
+                ),
+                context_briefing={"playbook_id": str(playbook_id)},
+            )
         if action == "approve":
             await svc.index_approved(playbook)
         else:

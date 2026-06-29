@@ -14,6 +14,7 @@ import pytest
 from roboco.services.base import ConflictError
 from roboco.services.gateway.content_actions import ContentActions, ContentActionsDeps
 from roboco.services.gateway.role_config import get_role_config
+from sqlalchemy.exc import PendingRollbackError
 
 _DRAFT_ROLES = ("developer", "qa", "documenter", "cell_pm", "main_pm")
 _CURATE_VERBS = ("approve_playbook", "reject_playbook", "archive_playbook")
@@ -183,3 +184,52 @@ async def test_approve_playbook_invalid_state_envelope(
     )
     assert env.error == "invalid_state"
     assert env.remediate  # the agent is told how to recover
+
+
+@pytest.mark.asyncio
+async def test_curate_poisoned_session_returns_envelope_not_500(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The gating ``session.commit()`` runs before the RAG index. If a prior
+    mid-verb failure poisoned the caller's session (PendingRollbackError), the
+    commit raises — the curation verb must surface a clean invalid_state
+    envelope (not a 500) AND must NOT proceed to index an uncommitted playbook
+    into the corpus. See #55."""
+    approved = MagicMock()
+    approved.id = uuid4()
+    approved.status = "approved"
+    svc = MagicMock()
+    svc.approve = AsyncMock(return_value=approved)
+    svc.index_approved = AsyncMock()
+    monkeypatch.setattr("roboco.services.playbook.get_playbook_service", lambda _s: svc)
+    actions = _actions("auditor")
+    actions.task.session.commit = AsyncMock(
+        side_effect=PendingRollbackError("session was rolled back")
+    )
+    env = await actions.approve_playbook(agent_id=uuid4(), playbook_id=uuid4())
+    assert env.error == "invalid_state"
+    assert env.remediate  # tell the agent how to recover (re-fetch + retry)
+    # The status change did NOT commit, so we must not have indexed it.
+    svc.index_approved.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_curate_clean_session_commits_once_then_indexes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On a healthy session the gating commit succeeds exactly once and the
+    index follows — pinning that the #55 guard did not invert to fail-closed
+    or double-commit on the happy path."""
+    approved = MagicMock()
+    approved.id = uuid4()
+    approved.status = "approved"
+    svc = MagicMock()
+    svc.approve = AsyncMock(return_value=approved)
+    svc.index_approved = AsyncMock()
+    monkeypatch.setattr("roboco.services.playbook.get_playbook_service", lambda _s: svc)
+    actions = _actions("auditor")
+    actions.task.session.commit = AsyncMock()
+    env = await actions.approve_playbook(agent_id=uuid4(), playbook_id=uuid4())
+    assert env.error is None
+    actions.task.session.commit.assert_awaited_once()
+    svc.index_approved.assert_awaited_once_with(approved)
