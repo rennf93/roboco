@@ -71,7 +71,7 @@ async def _seed_project(db: AsyncSession, slug: str) -> ProjectTable:
     return project
 
 
-def _task(project_id, *, branch: str, status: TaskStatus) -> TaskTable:
+def _task(project_id: UUID, *, branch: str, status: TaskStatus) -> TaskTable:
     return TaskTable(
         id=uuid4(),
         title=f"task {branch}",
@@ -102,8 +102,10 @@ async def test_branch_owned_only_by_its_own_project(db_session: AsyncSession) ->
     proj_b = await _seed_project(db_session, "gca-collide-b")
     db_session.add_all(
         [
-            _task(proj_a.id, branch=_BRANCH, status=TaskStatus.IN_PROGRESS),
-            _task(proj_b.id, branch=_BRANCH, status=TaskStatus.COMPLETED),
+            _task(
+                cast("UUID", proj_a.id), branch=_BRANCH, status=TaskStatus.IN_PROGRESS
+            ),
+            _task(cast("UUID", proj_b.id), branch=_BRANCH, status=TaskStatus.COMPLETED),
         ]
     )
     await db_session.flush()

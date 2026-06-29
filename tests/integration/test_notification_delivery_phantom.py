@@ -8,7 +8,7 @@ SQLAlchemy ``after_commit`` events and a recording bus stand-in.
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from uuid import UUID, uuid4
 
 import pytest
@@ -99,7 +99,7 @@ async def _seed_agents_and_notification(
             metrics={},
         )
         db.add(r)
-        recipient_ids.append(r.id)
+        recipient_ids.append(cast("UUID", r.id))
     await db.flush()
 
     notification = NotificationTable(
@@ -113,7 +113,7 @@ async def _seed_agents_and_notification(
     )
     db.add(notification)
     await db.flush()
-    return notification.id, notification
+    return cast("UUID", notification.id), notification
 
 
 @pytest.mark.asyncio

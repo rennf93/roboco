@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 from uuid import UUID
 
@@ -19,6 +19,9 @@ from roboco.runtime.orchestrator import (
     AgentOrchestrator,
 )
 from roboco.services import prompter_live
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 def _make_orchestrator() -> AgentOrchestrator:
@@ -97,7 +100,7 @@ def _wire_secretary_spawn_mocks(
 
 
 @pytest.fixture(autouse=True)
-def _fresh_registry() -> None:
+def _fresh_registry() -> Iterator[None]:
     """Isolate the process-wide live registry per test."""
     prev = prompter_live._RegistryHolder.instance
     prompter_live._RegistryHolder.instance = prompter_live.PrompterLiveRegistry()

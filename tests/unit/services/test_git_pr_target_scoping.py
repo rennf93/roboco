@@ -90,8 +90,11 @@ async def test_pr_target_requires_project_id() -> None:
     recorder: list[object] = []
     svc = _service(recorder)
 
+    # Bind to an Any-typed local so mypy doesn't flag the missing project_id;
+    # the call still reaches the runtime, where it raises TypeError as asserted.
+    target: Any = svc.pr_target
     with pytest.raises(TypeError):
-        await svc.pr_target(_PR_NUMBER)  # missing required project_id
+        await target(_PR_NUMBER)
 
     # The unscoped lookup was never issued — no SQL reached the session.
     assert recorder == []

@@ -152,7 +152,10 @@ async def test_stop_is_idempotent_double_call_is_noop() -> None:
         drain_calls += 1
         await real_drain()
 
-    orch._drain_bg_tasks = counting_drain
+    # Override via an Any-typed view so the assignment bypasses mypy's
+    # method-assign check while staying a plain attribute write (no setattr).
+    orch_any: Any = orch
+    orch_any._drain_bg_tasks = counting_drain
 
     await orch.stop()
     assert drain_calls == 1, "first stop() drained the bg tasks"

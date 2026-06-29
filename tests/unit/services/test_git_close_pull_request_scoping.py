@@ -86,8 +86,11 @@ async def test_close_pull_request_requires_project_id() -> None:
     recorder: list[object] = []
     svc = _service(recorder)
 
+    # Bind to an Any-typed local so mypy doesn't flag the missing project_id;
+    # the call still reaches the runtime, where it raises TypeError as asserted.
+    closer: Any = svc.close_pull_request
     with pytest.raises(TypeError):
-        await svc.close_pull_request(_PR_NUMBER, comment="superseded")  # no project_id
+        await closer(_PR_NUMBER, comment="superseded")
 
     # The unscoped lookup was never issued — no SQL reached the session.
     assert recorder == []

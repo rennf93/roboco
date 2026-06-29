@@ -61,7 +61,9 @@ def _wire(monitor: dict[str, Any]) -> Any:
         # Mirrors the real prepare's registration side-effect so the RED test
         # observes the STARTING instance the current code leaks.
         cfg = SimpleNamespace(provider_type="anthropic", model="opus")
-        inst = AgentInstance(agent_id="be-dev-1", state=AgentState.STARTING, config=cfg)
+        inst = AgentInstance(
+            agent_id="be-dev-1", state=AgentState.STARTING, config=None
+        )
         return cfg, inst, None
 
     return _readiness_gate, _git_context, _route, _prepare
@@ -116,7 +118,7 @@ async def test_not_parked_spawn_still_runs_prepare_and_launches(
         return AgentInstance(
             agent_id="be-dev-1",
             state=AgentState.ACTIVE,
-            config=SimpleNamespace(provider_type="anthropic", model="opus"),
+            config=None,
         )
 
     monkeypatch.setattr(orch, "_readiness_gate", _rg)
@@ -146,7 +148,7 @@ async def test_running_agent_not_bailed_by_parked_check(
     existing = AgentInstance(
         agent_id="be-dev-1",
         state=AgentState.ACTIVE,
-        config=SimpleNamespace(provider_type="anthropic", model="opus"),
+        config=None,
     )
     orch._instances["be-dev-1"] = existing
 

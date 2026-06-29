@@ -280,4 +280,6 @@ async def test_check_health_skips_agent_on_inspect_timeout_not_aborts(
     assert hang.killed
     # a2 WAS reached despite a1's timeout — the sweep continued.
     handle.assert_awaited_once()
-    assert handle.await_args.args[0] == "a2"
+    call = handle.await_args
+    assert call is not None
+    assert call.args[0] == "a2"

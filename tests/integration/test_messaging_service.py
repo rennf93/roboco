@@ -1170,14 +1170,20 @@ async def _seed_messages_same_timestamp(
     timestamp so the equal-timestamp pagination skip is reproducible. Returns
     ``(session_id, message_ids)``."""
     ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
-    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
-    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    grp = await svc.create_group(
+        GroupCreateRequest(name="g1", channel_id=cast("uuid.UUID", ch.id))
+    )
+    sess = await svc.create_session(
+        SessionCreateRequest(group_id=cast("uuid.UUID", grp.id))
+    )
     ids: list[UUID] = []
     for i in range(count):
         m = await svc.send_message(
-            MessageCreateRequest(agent_id=aid, session_id=sess.id, content=f"m-{i}")
+            MessageCreateRequest(
+                agent_id=aid, session_id=cast("uuid.UUID", sess.id), content=f"m-{i}"
+            )
         )
-        ids.append(m.id)
+        ids.append(cast("uuid.UUID", m.id))
     fixed = datetime.now(UTC)
     rows = (
         (
@@ -1191,7 +1197,7 @@ async def _seed_messages_same_timestamp(
     for row in rows:
         row.timestamp = fixed
     await session.flush()
-    return sess.id, ids
+    return cast("uuid.UUID", sess.id), ids
 
 
 @pytest.mark.asyncio
