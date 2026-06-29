@@ -24,6 +24,7 @@ from roboco.db.tables import (
     SessionTaskTable,
     WorkSessionTable,
 )
+from roboco.exceptions import TaskLifecycleError
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import (
     ChannelType,
@@ -844,6 +845,52 @@ async def test_cancel_descendants_cascades_for_authorized_pm(
     assert refreshed_child is not None
     # Child cascades to cancelled along with the parent.
     assert refreshed_child.status == TaskStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_cancel_refuses_when_descendant_role_forbidden(
+    task_setup: dict, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#103: a non-terminal descendant the caller's role can't cancel refuses
+    the whole cancel — never silently skips the descendant and leaves an
+    orphaned subtree under a cancelled parent.
+
+    The current spec gates every cancel edge to {cell_pm, main_pm, ceo}
+    uniformly, so a PM cancel won't naturally hit a role-forbidden
+    descendant. Simulate the future-regression shape (a per-edge role gate
+    that re-excludes a state) by stubbing ``_validate_and_set_status`` to
+    raise ``TaskLifecycleError`` for the descendant only — the parent's
+    cancel stays valid. The broad ``except Exception`` swallow used to
+    skip the descendant and cancel the parent anyway (orphan); it must
+    now refuse.
+    """
+    svc = task_setup["svc"]
+    parent = await svc.create(_req(task_setup))
+    child = await svc.create(_req(task_setup, parent_task_id=parent.id))
+    await db_session.flush()
+
+    real_validate = svc._validate_and_set_status
+
+    def stub_validate(task: Any, new_status: Any, agent_role: Any) -> Any:
+        if task.id == child.id:
+            raise TaskLifecycleError(
+                current_status=task.status.value,
+                target_status=new_status.value,
+                message="simulated per-edge role gate excludes this descendant",
+            )
+        return real_validate(task, new_status, agent_role)
+
+    monkeypatch.setattr(svc, "_validate_and_set_status", stub_validate)
+
+    with pytest.raises(TaskLifecycleError, match="orphaned subtree"):
+        await svc.cancel(parent.id, agent_role="cell_pm")
+
+    refreshed_parent = await svc.get(parent.id)
+    assert refreshed_parent is not None
+    assert refreshed_parent.status != TaskStatus.CANCELLED
+    refreshed_child = await svc.get(child.id)
+    assert refreshed_child is not None
+    assert refreshed_child.status != TaskStatus.CANCELLED
 
 
 # ---------------------------------------------------------------------------

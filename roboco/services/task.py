@@ -51,6 +51,7 @@ from roboco.models.base import (
     BlockerResolverType,
     Complexity,
     JournalEntryType,
+    NotificationPriority,
     TaskNature,
     TaskStatus,
     TaskType,
@@ -101,6 +102,31 @@ _ROLE_CLAIM_STATUSES: dict[str, set[TaskStatus]] = {
         TaskStatus.AWAITING_PM_REVIEW,
     },
 }
+
+# Statuses a task may be escalated FROM into BLOCKED. The strict transition
+# validator only allows IN_PROGRESS→BLOCKED, but a chain escalation legitimately
+# blocks a task from any active work state (and re-escalates an already-blocked
+# task to a new target). BACKLOG is excluded — a never-activated task has no
+# business being escalated to BLOCKED (no spec edge, nonsensical). Terminal
+# statuses are refused separately by ``_is_terminal_task``. This is the explicit
+# escalation exemption to the validator: an enumerated source set, not an
+# arbitrary source→BLOCKED write.
+_ESCALATABLE_TO_BLOCKED: frozenset[TaskStatus] = frozenset(
+    {
+        TaskStatus.PENDING,
+        TaskStatus.CLAIMED,
+        TaskStatus.IN_PROGRESS,
+        TaskStatus.VERIFYING,
+        TaskStatus.AWAITING_QA,
+        TaskStatus.NEEDS_REVISION,
+        TaskStatus.AWAITING_DOCUMENTATION,
+        TaskStatus.AWAITING_PR_REVIEW,
+        TaskStatus.AWAITING_PM_REVIEW,
+        TaskStatus.AWAITING_CEO_APPROVAL,
+        TaskStatus.PAUSED,
+        TaskStatus.BLOCKED,
+    }
+)
 
 
 # Board / advisory roles review and advise; they never own or execute a
@@ -541,6 +567,14 @@ class TaskService(BaseService):
 
     service_name: ClassVar[str] = "task"
     _background_tasks: ClassVar[set[asyncio.Task[None]]] = set()
+    # #216: consecutive FS/permission failures during terminal worktree
+    # cleanup. A systemic FS issue (stuck mount, perms) would otherwise leak
+    # per-task worktrees indefinitely with only a warning log; after this many
+    # consecutive OSError failures a CEO alert fires once (suppressed until a
+    # success resets the streak). Class-level so it spans all cleanup calls.
+    _worktree_cleanup_fail_streak: ClassVar[int] = 0
+    _worktree_cleanup_escalated: ClassVar[bool] = False
+    _WORKTREE_CLEANUP_ESCALATE_AFTER: ClassVar[int] = 3
 
     # =========================================================================
     # STATUS TRANSITION HELPER
@@ -699,7 +733,9 @@ class TaskService(BaseService):
         # Rework counter: a bounce INTO needs_revision (not a re-entry) is one
         # rework cycle. Incremented at this single chokepoint — every transition
         # path funnels its audit through here exactly once — so the rework rate
-        # is an O(1) column read. Synchronous (part of this unit of work).
+        # is an O(1) column read. Synchronous (part of this unit of work). The
+        # pre-block RESTORE path undoes this bump when it restores to a
+        # snapshotted needs_revision (same cycle resuming, not a new rejection).
         if (
             to_status == TaskStatus.NEEDS_REVISION.value
             and from_status != TaskStatus.NEEDS_REVISION.value
@@ -5009,6 +5045,23 @@ class TaskService(BaseService):
                 target=target_slug,
             )
             return False
+        current = (
+            task.status
+            if isinstance(task.status, TaskStatus)
+            else TaskStatus(str(task.status))
+        )
+        if current not in _ESCALATABLE_TO_BLOCKED:
+            # No arbitrary source→BLOCKED write: a status outside the escalation
+            # exemption (e.g. BACKLOG, never activated) has no spec edge into
+            # BLOCKED. Refuse rather than bypass the validator silently.
+            self.log.warning(
+                "Refusing escalation from non-escalatable status",
+                task_id=str(task.id),
+                status=str(task.status),
+                escalator=escalator_slug,
+                target=target_slug,
+            )
+            return False
         if _board_cannot_own(task) and await self._is_board_advisory_agent(
             target_agent_id
         ):
@@ -5220,13 +5273,14 @@ class TaskService(BaseService):
         task.completed_at = datetime.now(UTC)
         # Validate transition with CEO role requirement
         self._validate_and_set_status(task, TaskStatus.COMPLETED, "ceo")
-        await self.session.flush()
+        # Mirror ``complete()``: close the work session (the PR is merged) and
+        # run the full completion-hook fan-out (commits + dev_notes indexing),
+        # not a lone learnings task. Without this the work session stayed ACTIVE
+        # forever after a CEO approval and code/decision RAG indexing was skipped.
+        await self._close_work_session_for_task(task, reason="ceo approved")
         await self._remove_task_worktree_on_terminal(task)
-
-        # Extract learnings (fire-and-forget)
-        bg_task = asyncio.create_task(self._extract_completion_learnings(task, None))
-        self._background_tasks.add(bg_task)
-        bg_task.add_done_callback(self._background_tasks.discard)
+        await self.session.flush()
+        await self._trigger_completion_hooks(task, None)
 
         # Unblock any tasks waiting on this one
         await self._unblock_dependents(task_id)
@@ -5356,6 +5410,7 @@ class TaskService(BaseService):
         released = False
         for child in await self.get_subtasks(cast("UUID", umbrella.id)):
             if child.batch_id is not None and child.status == TaskStatus.BACKLOG:
+                pre_status = child.status.value
                 child.status = TaskStatus.PENDING
                 child.team = cast("Any", Team.MAIN_PM)
                 # a board-routed root-subtask is created in BACKLOG with
@@ -5371,6 +5426,20 @@ class TaskService(BaseService):
                         task_id=str(child.id),
                     )
                     child.task_type = cast("Any", TaskType.PLANNING)
+                # No status change may bypass the audit log — record the
+                # backlog→pending activation so the child's lifecycle
+                # reconstruction (the metric source of truth) keeps its start.
+                # audit_agent_id is None: approve_and_start receives no approver
+                # id, and the audit_log.agent_id FK is nullable — attributing a
+                # hardcoded ceo uuid would FK-violate when the ceo agent row is
+                # absent. agent_role="ceo" still labels the actor.
+                self._emit_status_transition_audit(
+                    child,
+                    from_status=pre_status,
+                    to_status=TaskStatus.PENDING.value,
+                    agent_role="ceo",
+                    audit_agent_id=None,
+                )
                 released = True
         if released:
             await self.session.flush()
@@ -5641,12 +5710,63 @@ class TaskService(BaseService):
             if not project_slug:
                 return
             await self._remove_task_worktree_best_effort(task, project_slug)
+        except OSError as e:
+            # FS/permission failure (stuck mount, perms) — systemic, not
+            # task-specific. Track the streak and escalate a CEO alert once
+            # after N consecutive failures so worktrees don't leak silently.
+            TaskService._worktree_cleanup_fail_streak += 1
+            self.log.warning(
+                "Terminal worktree cleanup skipped (FS/permission)",
+                task_id=str(task.id),
+                streak=TaskService._worktree_cleanup_fail_streak,
+                error=str(e),
+            )
+            if (
+                TaskService._worktree_cleanup_fail_streak
+                >= TaskService._WORKTREE_CLEANUP_ESCALATE_AFTER
+                and not TaskService._worktree_cleanup_escalated
+            ):
+                TaskService._worktree_cleanup_escalated = True
+                self.log.error(
+                    "Recurring worktree-cleanup FS failure escalating to CEO",
+                    streak=TaskService._worktree_cleanup_fail_streak,
+                    task_id=str(task.id),
+                )
+                await self._escalate_worktree_cleanup_failure(task, e)
         except Exception as e:
+            # Non-FS failure (git, DB) — task-specific, best-effort, no streak.
+            TaskService._worktree_cleanup_fail_streak = 0
             self.log.warning(
                 "Terminal worktree cleanup skipped",
                 task_id=str(task.id),
                 error=str(e),
             )
+        else:
+            TaskService._worktree_cleanup_fail_streak = 0
+            TaskService._worktree_cleanup_escalated = False
+
+    async def _escalate_worktree_cleanup_failure(
+        self, task: TaskTable, exc: BaseException
+    ) -> None:
+        """Best-effort CEO alert on recurring worktree-cleanup FS failure."""
+        try:
+            from roboco.services.notification import NotificationService
+
+            await NotificationService().send_ack_notification(
+                from_agent="system",
+                to_agent="ceo",
+                body=(
+                    f"Recurring worktree-cleanup FS failure "
+                    f"(last error: {str(exc)[:160]}). "
+                    f"Task {task.id} terminal worktree could not be removed — "
+                    "per-task worktrees may be leaking on disk. Investigate the "
+                    "workspace mount / permissions."
+                ),
+                priority=NotificationPriority.HIGH,
+                task_id=str(task.id),
+            )
+        except Exception as e:
+            self.log.warning("Worktree-cleanup escalation notify failed", error=str(e))
 
     async def _close_work_session_for_task(self, task: TaskTable, reason: str) -> None:
         """Close the task's work session on successful completion.
@@ -5690,9 +5810,13 @@ class TaskService(BaseService):
         # Cancel all descendants first (children, grandchildren, etc.)
         # Skip tasks already in terminal states (completed or cancelled).
         # Route every descendant through _validate_and_set_status so role
-        # restrictions (e.g., only CEO can cancel awaiting_ceo_approval) still
-        # apply to cascaded cancels — skip descendants that fail validation
-        # rather than bypassing the rules.
+        # restrictions still apply to cascaded cancels. A non-terminal
+        # descendant the caller's role can't cancel REFUSES the whole
+        # cancel — never silently skip it and leave an orphaned subtree
+        # under a cancelled parent. (The spec gates every cancel edge to
+        # {cell_pm, main_pm, ceo} uniformly, so a PM/CEO cancel won't hit
+        # this; the narrow catch + refusal keeps a future per-edge role
+        # gate from silently orphaning.) Non-validation errors propagate.
         descendants = await self.get_all_descendants(task_id)
         cancelled_count = 0
         for descendant in descendants:
@@ -5702,15 +5826,23 @@ class TaskService(BaseService):
                 self._validate_and_set_status(
                     descendant, TaskStatus.CANCELLED, agent_role
                 )
-            except Exception as e:
+            except TaskLifecycleError as e:
                 self.log.warning(
-                    "Skipping cascade-cancel of descendant; role not permitted",
+                    "Refusing cascade-cancel: caller role cannot cancel descendant",
                     descendant_id=str(descendant.id),
                     descendant_status=descendant.status.value,
                     agent_role=agent_role,
                     error=str(e),
                 )
-                continue
+                raise TaskLifecycleError(
+                    current_status=descendant.status.value,
+                    target_status=TaskStatus.CANCELLED.value,
+                    message=(
+                        f"Cannot cancel descendant {descendant.id} in state "
+                        f"{descendant.status.value} with role {agent_role!r}; "
+                        "refusing parent cancel to avoid an orphaned subtree."
+                    ),
+                ) from e
             cancelled_count += 1
             await self._abandon_work_session_for_task(
                 descendant, reason="parent task cancelled"
@@ -8269,7 +8401,9 @@ class TaskService(BaseService):
         await self.session.flush()
         # This restore path sets the status directly (bypassing the strict
         # transition validator), so emit the audit explicitly — no status
-        # change may skip the audit log.
+        # change may skip the audit log. A restore to a snapshotted
+        # needs_revision is the same rework cycle resuming, not a fresh
+        # rejection, so undo the bump the chokepoint applied above.
         self._emit_status_transition_audit(
             task,
             from_status=pre_status,
@@ -8277,6 +8411,11 @@ class TaskService(BaseService):
             agent_role=None,
             audit_agent_id=restored_owner,
         )
+        if (
+            restored_status == TaskStatus.NEEDS_REVISION
+            and pre_status != TaskStatus.NEEDS_REVISION.value
+        ):
+            task.revision_count = max((task.revision_count or 1) - 1, 0)
         return task
 
     async def cell_pm_complete(

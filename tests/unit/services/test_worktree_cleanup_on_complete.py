@@ -12,7 +12,7 @@ failure never blocks completion.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -139,7 +139,8 @@ async def test_ceo_approve_removes_assignee_worktree_best_effort() -> None:
     svc, _ = _svc(AsyncMock(return_value=_slug_row("roboco-api")))
     _bind(svc, "get", AsyncMock(return_value=task))
     _bind(svc, "_validate_and_set_status", MagicMock())
-    _bind(svc, "_extract_completion_learnings", AsyncMock())
+    _bind(svc, "_close_work_session_for_task", AsyncMock())
+    _bind(svc, "_trigger_completion_hooks", AsyncMock())
     _bind(svc, "_unblock_dependents", AsyncMock())
     _bind(svc, "_emit_task_event", AsyncMock())
     remove = AsyncMock()
@@ -157,7 +158,8 @@ async def test_ceo_approve_skips_worktree_cleanup_for_branchless_task() -> None:
     svc, _ = _svc(AsyncMock())
     _bind(svc, "get", AsyncMock(return_value=task))
     _bind(svc, "_validate_and_set_status", MagicMock())
-    _bind(svc, "_extract_completion_learnings", AsyncMock())
+    _bind(svc, "_close_work_session_for_task", AsyncMock())
+    _bind(svc, "_trigger_completion_hooks", AsyncMock())
     _bind(svc, "_unblock_dependents", AsyncMock())
     _bind(svc, "_emit_task_event", AsyncMock())
     remove = AsyncMock()
@@ -167,3 +169,134 @@ async def test_ceo_approve_skips_worktree_cleanup_for_branchless_task() -> None:
 
     assert result is task
     remove.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ceo_approve_closes_work_session_and_triggers_completion_hooks() -> None:
+    """#21/#98: ceo_approve must close the work session and run the full
+    completion-hook fan-out (commits + dev_notes indexing), mirroring
+    ``complete()`` — not hand-roll a lone learnings task and leave the work
+    session ACTIVE forever. The PR-merged gate already ran above."""
+    task = _build_task(status=TaskStatus.AWAITING_CEO_APPROVAL, work_session_id=None)
+    svc, _ = _svc(AsyncMock(return_value=_slug_row("roboco-api")))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    _bind(svc, "_validate_and_set_status", MagicMock())
+    close_ws = AsyncMock()
+    hooks = AsyncMock()
+    _bind(svc, "_close_work_session_for_task", close_ws)
+    _bind(svc, "_trigger_completion_hooks", hooks)
+    _bind(svc, "_unblock_dependents", AsyncMock())
+    _bind(svc, "_emit_task_event", AsyncMock())
+    _bind(svc, "_remove_task_worktree_best_effort", AsyncMock())
+
+    result = await svc.ceo_approve(task.id)
+
+    assert result is task
+    close_ws.assert_awaited_once()
+    # The hooks fire with the CEO actor (None) — same as complete() for a
+    # non-agent completion path.
+    hooks.assert_awaited_once_with(task, None)
+
+
+# ---------------------------------------------------------------------------
+# #216: recurring FS/permission cleanup failure escalates to the CEO
+# ---------------------------------------------------------------------------
+
+
+def _reset_cleanup_streak() -> None:
+    TaskService._worktree_cleanup_fail_streak = 0
+    TaskService._worktree_cleanup_escalated = False
+
+
+@pytest.mark.asyncio
+async def test_recurring_worktree_cleanup_failure_escalates_to_ceo() -> None:
+    """#216: a recurring FS/permission failure (stuck mount, perms) used to
+    leak worktrees indefinitely with only a warning log. After N consecutive
+    OSError failures a CEO alert fires once; further failures are suppressed
+    until a success resets the streak."""
+    _reset_cleanup_streak()
+    n = TaskService._WORKTREE_CLEANUP_ESCALATE_AFTER
+    task = _build_task(status=TaskStatus.COMPLETED)
+    svc, _ = _svc(AsyncMock(return_value=_slug_row("roboco-api")))
+    _bind(
+        svc,
+        "_remove_task_worktree_best_effort",
+        AsyncMock(side_effect=PermissionError("denied")),
+    )
+
+    with patch(
+        "roboco.services.notification.NotificationService.send_ack_notification",
+        new=AsyncMock(),
+    ) as notifier:
+        for _ in range(n - 1):
+            await svc._remove_task_worktree_on_terminal(task)
+        notifier.assert_not_awaited()
+        await svc._remove_task_worktree_on_terminal(task)  # Nth failure
+        notifier.assert_awaited_once()
+        call = notifier.await_args
+        assert call is not None
+        assert call.kwargs["to_agent"] == "ceo"
+        assert str(task.id) in str(call.kwargs.get("task_id") or call.args)
+        # Suppressed on the (N+1)th — one escalation per failure streak.
+        await svc._remove_task_worktree_on_terminal(task)
+        notifier.assert_awaited_once()
+
+    _reset_cleanup_streak()
+
+
+@pytest.mark.asyncio
+async def test_worktree_cleanup_success_resets_failure_streak() -> None:
+    """A successful cleanup resets the streak + escalation flag, so a later
+    failure streak must re-accumulate to the full threshold before escalating."""
+    _reset_cleanup_streak()
+    n = TaskService._WORKTREE_CLEANUP_ESCALATE_AFTER
+    task = _build_task(status=TaskStatus.COMPLETED)
+    svc, _ = _svc(AsyncMock(return_value=_slug_row("roboco-api")))
+    remove = AsyncMock(side_effect=PermissionError("denied"))
+    _bind(svc, "_remove_task_worktree_best_effort", remove)
+
+    with patch(
+        "roboco.services.notification.NotificationService.send_ack_notification",
+        new=AsyncMock(),
+    ) as notifier:
+        for _ in range(n - 1):
+            await svc._remove_task_worktree_on_terminal(task)
+        notifier.assert_not_awaited()
+        # A success resets the streak.
+        remove.side_effect = None
+        await svc._remove_task_worktree_on_terminal(task)
+        # Re-introduce failures: needs a full N again, not 1.
+        remove.side_effect = PermissionError("denied")
+        for _ in range(n - 1):
+            await svc._remove_task_worktree_on_terminal(task)
+        notifier.assert_not_awaited()
+        await svc._remove_task_worktree_on_terminal(task)  # Nth of new streak
+        notifier.assert_awaited_once()
+
+    _reset_cleanup_streak()
+
+
+@pytest.mark.asyncio
+async def test_non_fs_worktree_cleanup_failure_does_not_escalate() -> None:
+    """A non-FS failure (git RuntimeError, DB error) is task-specific, not the
+    systemic operator-actionable FS case — it logs but never escalates, and it
+    resets the streak so an interleaved FS streak can't ride on it."""
+    _reset_cleanup_streak()
+    n = TaskService._WORKTREE_CLEANUP_ESCALATE_AFTER
+    task = _build_task(status=TaskStatus.COMPLETED)
+    svc, _ = _svc(AsyncMock(return_value=_slug_row("roboco-api")))
+    _bind(
+        svc,
+        "_remove_task_worktree_best_effort",
+        AsyncMock(side_effect=RuntimeError("git worktree remove failed")),
+    )
+
+    with patch(
+        "roboco.services.notification.NotificationService.send_ack_notification",
+        new=AsyncMock(),
+    ) as notifier:
+        for _ in range(n + 2):
+            await svc._remove_task_worktree_on_terminal(task)
+        notifier.assert_not_awaited()
+
+    _reset_cleanup_streak()

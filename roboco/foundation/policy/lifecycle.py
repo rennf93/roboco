@@ -350,6 +350,19 @@ _STATUS_TRANSITIONS: tuple[StatusTransition, ...] = (
         "ceo_reject",
         frozenset({Role.CEO}),
     ),
+    # A branchless coordination root (product integration root / MegaTask
+    # umbrella) has no developer to revise it, so CEO rejection routes it to
+    # PENDING for the Main PM to re-plan — not NEEDS_REVISION (dev-claim-only,
+    # would deadlock the root). The runtime applies this via the audited
+    # privileged override (admin_set_status); the edge is in the spec so future
+    # admin-override tightening can't wedge the path, and so the transition is
+    # acknowledged as CEO-legal rather than an unsanctioned out-of-band write.
+    StatusTransition(
+        Status.AWAITING_CEO_APPROVAL,
+        Status.PENDING,
+        "ceo_reject_to_pool",
+        frozenset({Role.CEO}),
+    ),
     # Direct PM submission for non-dev tasks
     StatusTransition(
         Status.IN_PROGRESS,
@@ -634,6 +647,16 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
         allowed_roles=frozenset({Role.CEO}),
         source_statuses=frozenset({Status.AWAITING_CEO_APPROVAL}),
         target_status=Status.NEEDS_REVISION,
+        allowed_task_types=None,
+        preconditions=(),
+        self_review_block=False,
+        needs_team_match=False,
+    ),
+    "ceo_reject_to_pool": ActionSpec(
+        name="ceo_reject_to_pool",
+        allowed_roles=frozenset({Role.CEO}),
+        source_statuses=frozenset({Status.AWAITING_CEO_APPROVAL}),
+        target_status=Status.PENDING,
         allowed_task_types=None,
         preconditions=(),
         self_review_block=False,
