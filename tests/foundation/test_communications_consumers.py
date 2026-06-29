@@ -18,10 +18,9 @@ from roboco.services.gateway import content_actions
 
 # Cell-member roles that are subject to a channel's team_scope. Cross-cell
 # roles (MAIN_PM, AUDITOR, CEO, board) are NOT filtered — they participate
-# regardless of which team a cell channel scopes to.
-_TEAM_SCOPED_ROLES: frozenset[Role] = frozenset(
-    {Role.DEVELOPER, Role.QA, Role.DOCUMENTER, Role.CELL_PM}
-)
+# regardless of which team a cell channel scopes to. Single-sourced in the
+# foundation module under test.
+_TEAM_SCOPED_ROLES: frozenset[Role] = communications.TEAM_SCOPED_ROLES
 
 
 def _expected_slugs(role_set: frozenset[Role], team_scope: Team | None) -> set[str]:

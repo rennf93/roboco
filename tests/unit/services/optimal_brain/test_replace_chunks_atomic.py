@@ -123,3 +123,24 @@ async def test_replace_chunks_skips_chunks_without_embeddings() -> None:
     assert conn.execute.await_count == 1  # DELETE ran
     _sql, records = conn.executemany.await_args.args
     assert len(records) == 1  # only the embedded chunk inserted
+
+
+@pytest.mark.asyncio
+async def test_replace_chunks_does_not_wipe_on_all_none_embeddings() -> None:
+    """#181: chunks were passed (an embedder ran) but NONE produced a usable
+    embedding — that is an embedder failure, not a deliberate clear. Wiping the
+    source's existing rows on a failed embed would lose good index rows for
+    nothing. The replace must no-op (no DELETE) in that case, distinct from the
+    deliberate empty-list clear (which DOES delete)."""
+    store, conn, _pool = _make_store_with_conn()
+    source = "roboco://learnings/lrn-deadbeef"
+
+    chunks = [
+        Chunk(text="failed-embed-1", source=source, metadata={}),  # no embedding
+        Chunk(text="failed-embed-2", source=source, metadata={}),  # no embedding
+    ]
+    await store.replace_chunks(source, chunks)
+
+    # No-op: no connection acquired, no DELETE, no INSERT — existing rows kept.
+    assert conn.execute.await_count == 0
+    assert conn.executemany.await_count == 0

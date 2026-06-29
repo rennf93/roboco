@@ -340,16 +340,10 @@ def get_pm_for_agent(agent_id: str) -> str | None:
 # Cross-cell roles (MAIN_PM, AUDITOR, CEO, board) are not subject to team_scope;
 # only cell-member roles (DEVELOPER/QA/DOCUMENTER/CELL_PM) are filtered.
 
-# Cell-member roles subject to team_scope filtering. Lifted to module scope so
-# tests and downstream consumers can introspect the rule.
-_TEAM_SCOPED_ROLES: Final[frozenset[_foundation.Role]] = frozenset(
-    {
-        _foundation.Role.DEVELOPER,
-        _foundation.Role.QA,
-        _foundation.Role.DOCUMENTER,
-        _foundation.Role.CELL_PM,
-    }
-)
+# Cell-member roles subject to team_scope filtering. Single-sourced in
+# ``foundation.policy.communications.TEAM_SCOPED_ROLES``; re-exported here so
+# tests and downstream consumers can introspect the rule under the legacy name.
+_TEAM_SCOPED_ROLES: Final[frozenset[_foundation.Role]] = _comms.TEAM_SCOPED_ROLES
 
 
 def _slugs_for_role_set(

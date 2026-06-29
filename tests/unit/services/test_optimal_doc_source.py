@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -25,6 +25,11 @@ from roboco.models.optimal import (
     IndexType,
 )
 from roboco.services.optimal import OptimalService
+from roboco.services.optimal_brain.indexes.base import IngestResult
+from roboco.services.optimal_brain.indexes.learnings import (
+    LearningsIndexPlugin,
+    RecordLearningParams,
+)
 
 
 class _StubOptimalService(OptimalService):
@@ -150,3 +155,57 @@ async def test_record_review_raises_when_file_path_empty() -> None:
 
     with pytest.raises(ValueError, match="file_path is required"):
         await svc.record_review(params)
+
+
+# --- #182/#183: record_learning tracking-row URI must match the chunk URI ---
+
+
+@pytest.mark.asyncio
+async def test_record_learning_tracking_source_matches_chunk_uri() -> None:
+    """#182/#183: the indexed_documents tracking row's ``source`` must be the
+    SAME URI the learnings plugin embedded the chunks under, so a later
+    de-index/lookup-by-source against the tracking row finds the chunk rows.
+    The plugin returns ``doc_id`` (``lrn-{hash100}``); the tracking source must
+    be ``roboco://learnings/{doc_id}`` — NOT a locally-recomputed
+    ``learn-{md5(full_content)}`` that never matches the chunk rows."""
+    captured: dict[str, str] = {}
+
+    class _CapturingOptimalService(_StubOptimalService):
+        async def _track_indexed_document(
+            self,
+            index_type: IndexType,
+            source: str,
+            title: str | None = None,
+            preview: str | None = None,
+            metadata: dict | None = None,
+        ) -> None:
+            del index_type, title, preview, metadata
+            captured["source"] = source
+
+    svc = _CapturingOptimalService()
+    # Real plugin instance so the isinstance(plugin, LearningsIndexPlugin) branch
+    # fires; mock only the embedding coroutine to return a known doc_id.
+    plugin = LearningsIndexPlugin()
+    ingest = IngestResult(doc_id="lrn-deadbeefdead", chunk_count=2, success=True)
+    with patch.object(plugin, "record_learning", AsyncMock(return_value=ingest)):
+        svc._plugins = {IndexType.LEARNINGS: plugin}
+        svc._initialized = True
+
+        # Content longer than 100 chars — the old code hashed the FULL content
+        # while the plugin hashes only the first 100, so a mismatched recompute
+        # diverges even on the hash input, not just the prefix.
+        long_content = "x" * 250
+        params = RecordLearningParams(
+            content=long_content,
+            category="error_handling",
+            agent_id=uuid4(),
+            shareable=True,
+        )
+        doc_id = await svc.record_learning(params)
+
+    assert doc_id == "lrn-deadbeefdead"
+    # The tracking source matches the chunk URI the plugin used (prefix lrn-,
+    # the plugin's doc_id) — no locally-recomputed learn-/{full-hash} divergence.
+    assert captured["source"] == f"roboco://learnings/{doc_id}"
+    assert captured["source"].startswith("roboco://learnings/lrn-")
+    assert "learn-" not in captured["source"]

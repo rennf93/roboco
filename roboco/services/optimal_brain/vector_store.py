@@ -264,6 +264,18 @@ class VectorStore:
             for chunk in chunks
             if chunk.embedding is not None
         ]
+        # #181: an empty ``chunks`` list is a deliberate clear (matches the
+        # prior delete-then-no-op-add behavior). But chunks passed with NO
+        # usable embedding is an embedder failure — wiping the source's existing
+        # rows on a failed embed would lose good index rows for nothing. No-op
+        # there (distinct from the deliberate empty-list clear below).
+        if chunks and not records:
+            logger.warning(
+                "replace_chunks: every chunk lacked an embedding (embedder "
+                "failure?); skipping wipe to preserve existing rows",
+                extra={"source": source, "chunk_count": len(chunks)},
+            )
+            return
         pool = self._require_pool()
         # One acquire, one transaction: the DELETE and INSERT share a single
         # connection and commit together (or roll back together on failure).

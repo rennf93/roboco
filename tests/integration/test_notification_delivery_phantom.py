@@ -180,3 +180,74 @@ async def test_deliver_rollback_drops_phantom(
     await _await_drain(db_session)
 
     assert bus.published == []
+
+
+# --- #64: acknowledge must defer the ACK event (no phantom on rollback) ---
+
+
+@pytest.mark.asyncio
+async def test_acknowledge_does_not_publish_before_commit(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ACK bus event must NOT fire until the session commits — ``acknowledge``
+    only schedules via the outbox; the event fires on commit, not at call time."""
+    bus = _RecordingBus()
+    monkeypatch.setattr(
+        "roboco.services.notification_delivery.get_event_bus", lambda: bus
+    )
+
+    notif_id, notif = await _seed_agents_and_notification(db_session, recipients=1)
+    recipient_id = notif.to_agents[0]
+    service = get_notification_delivery_service(db_session)
+    await service.acknowledge(notif_id, recipient_id, ack_type="received")
+
+    # Pre-commit: nothing published yet (the ack row state is not durable).
+    assert bus.published == []
+
+
+@pytest.mark.asyncio
+async def test_acknowledge_publishes_after_commit(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Commit drains the deferred ACK publish — exactly one NOTIFICATION_ACKED."""
+    bus = _RecordingBus()
+    monkeypatch.setattr(
+        "roboco.services.notification_delivery.get_event_bus", lambda: bus
+    )
+
+    notif_id, notif = await _seed_agents_and_notification(db_session, recipients=1)
+    recipient_id = notif.to_agents[0]
+    service = get_notification_delivery_service(db_session)
+    await service.acknowledge(notif_id, recipient_id, ack_type="received")
+    assert bus.published == []  # still nothing before commit
+
+    await db_session.commit()
+    await _await_drain(db_session)
+
+    assert len(bus.published) == 1
+    assert bus.published[0].type == EventType.NOTIFICATION_ACKED
+    assert bus.published[0].data["notification_id"] == str(notif_id)
+    assert bus.published[0].data["agent_id"] == str(recipient_id)
+    assert bus.published[0].data["ack_type"] == "received"
+
+
+@pytest.mark.asyncio
+async def test_acknowledge_rollback_drops_phantom(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rollback instead of commit drops the pending ACK publish — no phantom
+    ACK event for an acknowledgement that never became durable."""
+    bus = _RecordingBus()
+    monkeypatch.setattr(
+        "roboco.services.notification_delivery.get_event_bus", lambda: bus
+    )
+
+    notif_id, notif = await _seed_agents_and_notification(db_session, recipients=1)
+    recipient_id = notif.to_agents[0]
+    service = get_notification_delivery_service(db_session)
+    await service.acknowledge(notif_id, recipient_id, ack_type="received")
+
+    await db_session.rollback()
+    await _await_drain(db_session)
+
+    assert bus.published == []
