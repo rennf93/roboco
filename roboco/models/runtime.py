@@ -30,6 +30,12 @@ class SpawnGitContext:
 
     project_slug: str | None = None
     branch_name: str | None = None
+    # Short id (task id[:8]) of the task whose per-task worktree the agent
+    # must edit in. Set only for tasks that carry a branch (a real worktree
+    # exists under {clone_root}/.worktrees/{task_short_id}/); branchless
+    # coordination roots leave it None so the spawn cwd falls back to the
+    # clone root.
+    task_short_id: str | None = None
 
 
 @dataclass

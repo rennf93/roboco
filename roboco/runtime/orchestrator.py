@@ -470,6 +470,42 @@ def _agent_workspace_path(project_slug: str, team: str, agent_id: str) -> str:
     return f"/data/workspaces/{project_slug}/{team}/{agent_id}"
 
 
+def _agent_worktree_path(
+    project_slug: str, team: str, agent_id: str, task_short_id: str
+) -> str:
+    """Per-task worktree path inside the container (F123).
+
+    Each task with a branch gets its own working tree under the clone root at
+    ``{clone_root}/.worktrees/{task_short_id}/`` so a coordinator PM's parallel
+    roots (or a dev's parallel tasks) never clobber one shared checkout.
+    """
+    return (
+        f"/data/workspaces/{project_slug}/{team}/{agent_id}/.worktrees/{task_short_id}"
+    )
+
+
+def _agent_cwd_path(
+    project_slug: str,
+    team: str,
+    agent_id: str,
+    git_context: SpawnGitContext | None,
+) -> str:
+    """The container cwd + Edit/Write scope for a workspace role (F123).
+
+    A task carrying a branch edits in its per-task worktree; a branchless or
+    no-task spawn stays at the clone root. ONE formula shared by
+    ``_append_workspace_cwd`` (docker ``-w``) and ``_get_role_permissions``
+    (Edit/Write allowlist via ``_prepare_agent_spawn``) so the cwd and the
+    allowlist scope can never drift to different paths.
+    """
+    clone_root = _agent_workspace_path(project_slug, team, agent_id)
+    if git_context and git_context.task_short_id:
+        return _agent_worktree_path(
+            project_slug, team, agent_id, git_context.task_short_id
+        )
+    return clone_root
+
+
 def _cell_workspace_path(project_slug: str, team: str) -> str:
     """Cell-level workspace path (documenter scope).
 
@@ -1656,10 +1692,15 @@ class AgentOrchestrator:
         project_slug = task.get("project_slug")
         if not project_slug:
             return None
-        return SpawnGitContext(
-            project_slug=project_slug,
-            branch_name=task.get("branch_name"),
-        )
+        branch_name = task.get("branch_name")
+        ctx = SpawnGitContext(project_slug=project_slug, branch_name=branch_name)
+        # A branch-bearing task edits in a per-task worktree keyed by the short
+        # id; a branchless coordination root (umbrella / no-project product
+        # root) has no worktree, so task_short_id stays None and the spawn cwd
+        # falls back to the clone root.
+        if branch_name and task.get("id"):
+            ctx.task_short_id = str(task["id"])[:8]
+        return ctx
 
     def _fire_audit(
         self,
@@ -1758,10 +1799,12 @@ class AgentOrchestrator:
                 branch_name, project_slug = row
                 if not project_slug:
                     return None
-                return SpawnGitContext(
-                    project_slug=project_slug,
-                    branch_name=branch_name,
+                ctx = SpawnGitContext(
+                    project_slug=project_slug, branch_name=branch_name
                 )
+                if branch_name and task_id:
+                    ctx.task_short_id = str(task_id)[:8]
+                return ctx
         except Exception as e:
             logger.warning(
                 "Could not derive git context from task_id",
@@ -1908,16 +1951,26 @@ class AgentOrchestrator:
         if not model:
             model = route.model_name
 
-        workspace_path = _agent_workspace_path(project_slug, team, agent_id)
         cell_workspace_path = _cell_workspace_path(project_slug, team)
+        # The agent's edit scope + container cwd: the per-task worktree when
+        # the task carries a branch (F123), else the clone root. Routed through
+        # _agent_cwd_path so the Edit/Write allowlist (_generate_agent_settings
+        # -> _get_role_permissions) and the docker -w (_append_workspace_cwd)
+        # resolve the SAME path.
+        cwd_path = _agent_cwd_path(project_slug, team, agent_id, git_context)
+
+        # Re-attach the task's worktree before the container launches with -w
+        # pointing at it (F123). A pruned/evicted worktree would start the
+        # agent in a missing dir; idempotent re-add, no-op for branchless spawns.
+        await self._ensure_worktree_before_spawn(
+            git_context, project_slug, team, agent_id
+        )
 
         agent_settings_path = self._generate_agent_settings(
-            agent_id, canonical_role, workspace_path, cell_workspace_path
+            agent_id, canonical_role, cwd_path, cell_workspace_path
         )
 
-        briefing_path = await self._write_agent_briefing(
-            agent_id, task_id, workspace_path
-        )
+        briefing_path = await self._write_agent_briefing(agent_id, task_id, cwd_path)
 
         await self._ensure_agent_image(agent_id)
         mcp_config_path = await self._generate_mcp_config(agent_id, git_context)
@@ -1944,6 +1997,47 @@ class AgentOrchestrator:
         )
         self._instances[agent_id] = instance
         return config, instance, agent_settings_path
+
+    async def _ensure_worktree_before_spawn(
+        self,
+        git_context: SpawnGitContext | None,
+        project_slug: str,
+        team: str,
+        agent_id: str,
+    ) -> None:
+        """Re-attach the task's per-task worktree before the container starts.
+
+        The container launches with ``-w`` at the worktree; a pruned/evicted
+        worktree (reaper, disk pressure, manual cleanup while the agent was
+        down) would start the agent in a missing directory. Idempotent —
+        ``ensure_worktree_for_resume`` is a no-op when the worktree is present
+        and re-adds it (no ``-b``) from the surviving branch ref when pruned.
+        No-op for branchless / no-task spawns (no worktree). Best-effort: a
+        failure warns and never blocks the spawn.
+        """
+        if not (git_context and git_context.task_short_id and git_context.branch_name):
+            return
+        clone_root = Path(_agent_workspace_path(project_slug, team, agent_id))
+        worktree = Path(
+            _agent_worktree_path(
+                project_slug, team, agent_id, git_context.task_short_id
+            )
+        )
+        from roboco.db.base import get_db_context
+        from roboco.services.workspace import WorkspaceService
+
+        try:
+            async with get_db_context() as db:
+                await WorkspaceService(db).ensure_worktree_for_resume(
+                    clone_root, worktree, git_context.branch_name
+                )
+        except Exception as e:
+            logger.warning(
+                "worktree ensure before spawn failed",
+                agent_id=agent_id,
+                task_short_id=git_context.task_short_id,
+                error=str(e),
+            )
 
     async def _launch_spawn(
         self,
@@ -2357,7 +2451,15 @@ class AgentOrchestrator:
         team = get_agent_team(config.agent_id) or ""
         project = _resolve_project_slug_from_git_context(config.git_context)
         if role in AgentOrchestrator._ROLES_WITH_AGENT_WORKSPACE:
-            cmd.extend(["-w", _agent_workspace_path(project, team, config.agent_id)])
+            # Per-task worktree when the task has a branch (F123), else the
+            # clone root. _agent_cwd_path is the SAME formula the Edit/Write
+            # allowlist is built from, so -w and the allowlist match exactly.
+            cmd.extend(
+                [
+                    "-w",
+                    _agent_cwd_path(project, team, config.agent_id, config.git_context),
+                ]
+            )
         elif role in AgentOrchestrator._ROLES_WITH_CELL_WORKSPACE:
             cmd.extend(["-w", _cell_workspace_path(project, team)])
 

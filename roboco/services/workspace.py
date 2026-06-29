@@ -181,6 +181,42 @@ def _ensure_agent_owned(workspace: Path) -> None:
         )
 
 
+def _resolve_clone_root(workspace: Path) -> Path:
+    """The clone root for a workspace or one of its linked worktrees.
+
+    ``.venv`` and ``.uv-python`` live at the clone root and are shared by every
+    worktree under ``{clone_root}/.worktrees/{id}/``. Given a worktree path,
+    return its clone root; given the clone root itself, return it unchanged.
+    Pure path logic keyed on the ``.worktrees`` layout from ``get_worktree_path``
+    — no git call needed.
+    """
+    if workspace.parent.name == ".worktrees":
+        return workspace.parent.parent
+    return workspace
+
+
+def _uv_subprocess_env(workspace: Path) -> dict[str, str]:
+    """Env for a uv subprocess run by the orchestrator (root).
+
+    Pins ``UV_PYTHON_INSTALL_DIR`` to ``<clone_root>/.uv-python`` so a non-system
+    Python (e.g. 3.14) uv fetches lands INSIDE the workspace bind mount — not in
+    ``/root/.local/share/uv/python`` (root-owned, ``/root`` is 0700, outside the
+    mount). The workspace ``.venv/bin/python`` then symlinks to an agent-owned
+    CPython on the shared volume, which ``_ensure_agent_owned`` chowns (``.uv-python``
+    is not in ``_PRUNE_DIRS``), so the agent (uid 1000) can traverse it. Without
+    this every ``uv run`` died on ``Permission denied`` canonicalizing the venv
+    symlink (live be-dev-1 brick). Per-workspace → per-project isolation intact.
+
+    Worktree-aware (F123): when the CWD is a per-task worktree, resolve up to the
+    clone root so the shared ``.uv-python`` is reused instead of re-fetching a
+    managed CPython per worktree.
+    """
+    env = dict(os.environ)
+    clone_root = _resolve_clone_root(workspace)
+    env["UV_PYTHON_INSTALL_DIR"] = str(clone_root / ".uv-python")
+    return env
+
+
 # Thin wrapper around time.monotonic so tests can patch _monotonic without
 # affecting asyncio's own use of time.monotonic (which runs during event-loop
 # teardown and would exhaust a side_effect iterator if patched directly).
@@ -393,6 +429,136 @@ class WorkspaceService:
             )
         team_str = team.value if isinstance(team, Team) else str(team)
         return self.root / project_slug / team_str / agent_slug
+
+    def get_clone_root_path(
+        self,
+        project_slug: str,
+        team: Team | str,
+        agent_slug: str,
+    ) -> Path:
+        """The persistent clone root for an agent on a project.
+
+        Same path as ``get_workspace_path`` (the real ``.git`` object store +
+        shared ``.venv`` / ``.uv-python`` live here). Named separately so the
+        worktree code can express clone-root vs per-task-worktree intent.
+        """
+        return self.get_workspace_path(project_slug, team, agent_slug)
+
+    def get_worktree_path(
+        self,
+        project_slug: str,
+        team: Team | str,
+        agent_slug: str,
+        task_short_id: str,
+    ) -> Path:
+        """Per-task working tree: ``{clone_root}/.worktrees/{task_short_id}``.
+
+        Each task/branch gets its own checkout via ``git worktree add`` so a
+        coordinator PM holding multiple in_progress roots never clobbers one
+        root's working tree by checking out another's branch (F123). The clone
+        root (object store + venv) is shared underneath.
+        """
+        if not task_short_id:
+            raise WorkspaceError(
+                f"Cannot resolve worktree path for {agent_slug}: "
+                "task_short_id is empty."
+            )
+        clone_root = self.get_clone_root_path(project_slug, team, agent_slug)
+        return clone_root / ".worktrees" / task_short_id
+
+    @staticmethod
+    def _worktree_git(
+        clone_root: Path, args: list[str], check: bool = True
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", "-C", str(clone_root), *args],
+            capture_output=True,
+            text=True,
+            check=check,
+        )
+
+    @staticmethod
+    def _link_shared_venv(worktree: Path) -> None:
+        """Symlink ``worktree/.venv -> ../../.venv`` (the clone-root venv).
+
+        uv discovers ``.venv`` next to the worktree's ``pyproject.toml``; without
+        the symlink it re-syncs a fresh venv per worktree. The relative target
+        holds because every worktree sits at ``{clone_root}/.worktrees/{id}``
+        (two levels deep). Idempotent: leaves an existing symlink/dir alone.
+        """
+        link = worktree / ".venv"
+        if os.path.lexists(link):
+            return
+        worktree.mkdir(parents=True, exist_ok=True)
+        link.symlink_to("../../.venv")
+
+    async def ensure_worktree(
+        self, clone_root: Path, worktree: Path, branch: str, base: str
+    ) -> None:
+        """Create the per-task linked worktree on ``branch`` from ``base``.
+
+        Idempotent: a present, registered worktree is left in place (re-claim,
+        re-spawn). A new branch uses ``git worktree add -b <branch> <base>``; an
+        already-existing branch (re-claim after rollback) reuses it with
+        ``worktree add <branch>``. Then symlinks the shared clone-root venv and
+        chowns BOTH the worktree and the clone root (shared ``.git/worktrees`` /
+        ``.venv`` / ``.uv-python``). F123: replaces the shared-clone
+        ``reset --hard`` + ``checkout -b`` that clobbered a still-active root.
+        """
+        if not (worktree.exists() and (worktree / ".git").is_file()):
+            branch_exists = (
+                self._worktree_git(
+                    clone_root,
+                    ["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+                    check=False,
+                ).returncode
+                == 0
+            )
+            if branch_exists:
+                add_args = ["worktree", "add", str(worktree), branch]
+            else:
+                add_args = ["worktree", "add", str(worktree), "-b", branch, base]
+            res = self._worktree_git(clone_root, add_args, check=False)
+            if res.returncode != 0:
+                raise WorkspaceError(
+                    f"git worktree add failed for {branch}: {res.stderr.strip()}"
+                )
+        self._link_shared_venv(worktree)
+        await asyncio.to_thread(_ensure_agent_owned, worktree)
+        await asyncio.to_thread(_ensure_agent_owned, clone_root)
+
+    async def ensure_worktree_for_resume(
+        self, clone_root: Path, worktree: Path, branch: str
+    ) -> None:
+        """Re-add a pruned/evicted worktree on resume (no ``-b`` — branch exists).
+
+        Committed work survives in the branch ref; only the working tree was
+        removed (reaper / cancel / disk pressure). Idempotent: a present
+        worktree is a no-op.
+        """
+        if not (worktree.exists() and (worktree / ".git").is_file()):
+            res = self._worktree_git(
+                clone_root, ["worktree", "add", str(worktree), branch], check=False
+            )
+            if res.returncode != 0:
+                raise WorkspaceError(
+                    f"git worktree re-add failed for {branch}: {res.stderr.strip()}"
+                )
+        self._link_shared_venv(worktree)
+        await asyncio.to_thread(_ensure_agent_owned, worktree)
+        await asyncio.to_thread(_ensure_agent_owned, clone_root)
+
+    async def remove_worktree(self, clone_root: Path, worktree: Path) -> None:
+        """Remove a per-task worktree (cancel / terminal / reaper evict).
+
+        Best-effort ``git worktree remove --force`` then ``prune`` so no dangling
+        admin dir collides with a future re-claim. No-op if the worktree is
+        already gone.
+        """
+        self._worktree_git(
+            clone_root, ["worktree", "remove", "--force", str(worktree)], check=False
+        )
+        self._worktree_git(clone_root, ["worktree", "prune"], check=False)
 
     async def resolve_workspace(
         self,
@@ -1177,6 +1343,7 @@ class WorkspaceService:
             return subprocess.run(
                 argv,
                 cwd=str(workspace),
+                env=_uv_subprocess_env(workspace),
                 capture_output=True,
                 text=True,
                 timeout=settings.workspace_dep_install_timeout_seconds,
@@ -1233,6 +1400,7 @@ class WorkspaceService:
             return subprocess.run(
                 argv,
                 cwd=str(workspace),
+                env=_uv_subprocess_env(workspace),
                 capture_output=True,
                 text=True,
                 timeout=settings.workspace_dep_install_timeout_seconds,

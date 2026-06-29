@@ -37,6 +37,8 @@ __pycache__/
 venv/
 ENV/
 env/
+# Per-workspace uv managed CPython (UV_PYTHON_INSTALL_DIR); lives in clone + worktrees
+.uv-python/
 
 # uv
 .uv/

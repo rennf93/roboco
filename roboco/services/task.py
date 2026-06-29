@@ -8,6 +8,7 @@ Handles status transitions, assignments, and queries.
 import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 from uuid import UUID, uuid4
 
@@ -1888,10 +1889,17 @@ class TaskService(BaseService):
             parent_branch=parent_branch,
         )
 
-        branch_name, _ = await git_service.create_branch(workspace, team, request)
-
-        task.branch_name = branch_name
-        await self.session.flush()
+        try:
+            branch_name, _ = await git_service.create_branch(workspace, team, request)
+            task.branch_name = branch_name
+            await self.session.flush()
+        except Exception:
+            # create_branch cuts a per-task worktree at
+            # {workspace}/.worktrees/{task-short}/; tear it down on failure so a
+            # claim retry doesn't collide with a stale worktree at that path
+            # (F123). Best-effort, no-op if the worktree was never created.
+            await self._remove_task_worktree(workspace, require_uuid(task.id))
+            raise
 
         self.log.info(
             "Auto-created hierarchical branch",
@@ -1901,6 +1909,21 @@ class TaskService(BaseService):
             parent_branch=parent_branch or "default",
         )
         return branch_name
+
+    async def _remove_task_worktree(self, clone_root: Path, task_id: UUID) -> None:
+        """Best-effort removal of a task's per-task worktree (F123 rollback)."""
+        from roboco.services.workspace import get_workspace_service
+
+        worktree = clone_root / ".worktrees" / str(task_id)[:8]
+        try:
+            await get_workspace_service(self.session).remove_worktree(
+                clone_root, worktree
+            )
+        except Exception:
+            self.log.warning(
+                "worktree cleanup on claim rollback failed",
+                task_id=str(task_id),
+            )
 
     async def _distinct_projects_for_task(self, task: TaskTable) -> list[UUID]:
         """The distinct projects a coordination root's map spans — one
@@ -5519,10 +5542,14 @@ class TaskService(BaseService):
         await ws_service.abandon(require_uuid(task.work_session_id), reason=reason)
 
     async def _delete_task_branch_best_effort(self, task: TaskTable) -> None:
-        """Delete the task's remote branch on cancel. Never raises.
+        """Delete the task's remote branch + per-task worktree on cancel.
 
-        Skipped for tasks that didn't make it to a branch yet, or whose
-        PR already merged (merge path deletes the source branch).
+        Best-effort, never raises. Skipped for tasks that didn't make it to a
+        branch yet, or whose PR already merged (merge path deletes the source
+        branch). The worktree at ``{clone_root}/.worktrees/{task-short}/`` is
+        removed from the assignee's clone so cancelled tasks don't leak full
+        working trees on disk (F123). The stale-claim reaper must NOT call this
+        — it routes to ``pending`` for a re-claim that reuses the worktree.
         """
         branch = task.branch_name
         if not branch:
@@ -5538,6 +5565,7 @@ class TaskService(BaseService):
 
             git_service = get_git_service(self.session)
             await git_service.delete_task_branch(project_slug, str(branch))
+            await self._remove_task_worktree_best_effort(task, project_slug)
         except Exception as e:
             # Cleanup is best-effort — don't fail the cancel if the
             # remote is unreachable or the branch is already gone.
@@ -5547,6 +5575,26 @@ class TaskService(BaseService):
                 branch=str(branch),
                 error=str(e),
             )
+
+    async def _remove_task_worktree_best_effort(
+        self, task: TaskTable, project_slug: str
+    ) -> None:
+        """Remove the per-task worktree from the assignee's clone. Never raises.
+
+        No-op when the task has no resolvable assignee (pooled/unassigned at
+        cancel) or the assignee carries no team (can't form a clone path).
+        """
+        assignee = task.assignee
+        if assignee is None or assignee.team is None or assignee.slug is None:
+            return
+        from roboco.services.workspace import get_workspace_service
+
+        ws_service = get_workspace_service(self.session)
+        clone_root = ws_service.get_clone_root_path(
+            project_slug, assignee.team, assignee.slug
+        )
+        worktree = clone_root / ".worktrees" / str(task.id)[:8]
+        await ws_service.remove_worktree(clone_root, worktree)
 
     async def _close_work_session_for_task(self, task: TaskTable, reason: str) -> None:
         """Close the task's work session on successful completion.

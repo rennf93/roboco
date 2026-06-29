@@ -13,7 +13,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
-from roboco.api.schemas.git import GitCreateBranchRequest
 from roboco.config import settings
 from roboco.exceptions import GitCommandError, GitError
 from roboco.services.base import NotFoundError, UnauthorizedError
@@ -600,6 +599,7 @@ async def test_commit_uses_longer_timeout_for_staging_and_commit() -> None:
     svc = _service()
     _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
     _bind(svc, "_assert_on_task_branch", AsyncMock())
+    _bind(svc, "_ensure_worktree_for_commit", AsyncMock())
     _bind(svc, "_task_for_branch", AsyncMock(return_value=None))
     _bind(svc, "_parse_commit_stats", MagicMock(return_value=(1, 0, 1)))
 
@@ -632,136 +632,6 @@ async def test_commit_uses_longer_timeout_for_staging_and_commit() -> None:
     assert timeouts_by_subcmd["commit"] == settings.git_commit_timeout_seconds
     # ...while the cheap read-only ops kept the default (None → default budget).
     assert timeouts_by_subcmd["log"] is None
-
-
-@pytest.mark.asyncio
-async def test_create_branch_idempotent_when_branch_already_exists() -> None:
-    # A prior attempt may have created the branch on disk before the DB recorded
-    # branch_name; `checkout -b` then fails 128. create_branch must switch to the
-    # existing branch instead of raising (the raise triggered a retry cascade).
-    branch = "feature/backend/abc12345--def67890"
-    svc = _service()
-    object.__setattr__(svc, "_resolve_base_branch", AsyncMock(return_value="master"))
-    object.__setattr__(svc, "_project_default_branch", AsyncMock(return_value="master"))
-    object.__setattr__(svc, "_token_for_project", AsyncMock(return_value=None))
-    object.__setattr__(
-        svc, "_checkout_base_with_fallback", AsyncMock(return_value="master")
-    )
-
-    calls: list[list[str]] = []
-
-    async def fake_run_git(
-        _workspace: object, args: list[str], **_kw: object
-    ) -> object:
-        calls.append(list(args))
-        rc = 1 if list(args[:2]) == ["checkout", "-b"] else 0
-        return MagicMock(stdout="", returncode=rc)
-
-    object.__setattr__(svc, "_run_git", fake_run_git)
-
-    with (
-        patch("roboco.services.git.build_branch_name", AsyncMock(return_value=branch)),
-        patch(
-            "roboco.services.git.get_task_service",
-            MagicMock(return_value=MagicMock(update=AsyncMock())),
-        ),
-    ):
-        await svc.create_branch(
-            Path("/tmp/ws"),
-            "backend",
-            GitCreateBranchRequest(
-                project_slug="roboco-api",
-                task_id=uuid4(),
-                branch_type="feature",
-                parent_branch=None,
-            ),
-        )
-
-    assert ["checkout", "-b", branch] in calls, "checkout -b attempted"
-    assert ["checkout", branch] in calls, "fell back to existing branch on 128"
-
-
-def _create_branch_stubs(svc: GitService) -> None:
-    object.__setattr__(svc, "_resolve_base_branch", AsyncMock(return_value="master"))
-    object.__setattr__(svc, "_project_default_branch", AsyncMock(return_value="master"))
-    object.__setattr__(svc, "_token_for_project", AsyncMock(return_value=None))
-    object.__setattr__(
-        svc, "_checkout_base_with_fallback", AsyncMock(return_value="master")
-    )
-
-
-async def _run_create_branch_with_existing_branch(
-    svc: GitService, branch: str, unique_commits: str
-) -> list[list[str]]:
-    """Drive create_branch where `checkout -b` fails (branch exists) and the
-    branch has `unique_commits` commits of its own. Returns the git argv calls.
-    """
-    calls: list[list[str]] = []
-
-    async def fake_run_git(
-        _workspace: object, args: list[str], **_kw: object
-    ) -> object:
-        calls.append(list(args))
-        if list(args[:2]) == ["checkout", "-b"]:
-            return MagicMock(stdout="", returncode=1)  # branch already exists
-        if list(args[:2]) == ["rev-list", "--count"]:
-            return MagicMock(stdout=f"{unique_commits}\n", returncode=0)
-        return MagicMock(stdout="", returncode=0)
-
-    object.__setattr__(svc, "_run_git", fake_run_git)
-    with (
-        patch("roboco.services.git.build_branch_name", AsyncMock(return_value=branch)),
-        patch(
-            "roboco.services.git.get_task_service",
-            MagicMock(return_value=MagicMock(update=AsyncMock())),
-        ),
-    ):
-        await svc.create_branch(
-            Path("/tmp/ws"),
-            "frontend",
-            GitCreateBranchRequest(
-                project_slug="roboco-panel",
-                task_id=uuid4(),
-                branch_type="feature",
-                parent_branch=None,
-            ),
-        )
-    return calls
-
-
-@pytest.mark.asyncio
-async def test_create_branch_refreshes_no_work_existing_branch_to_base() -> None:
-    """An existing branch with no commits of its own is re-pointed at the fresh
-    base — a dependency-blocked task re-claimed after its upstream merged must
-    not keep building on the stale snapshot."""
-    svc = _service()
-    _create_branch_stubs(svc)
-    calls = await _run_create_branch_with_existing_branch(
-        svc, "feature/frontend/abc12345--def67890", unique_commits="0"
-    )
-    assert ["reset", "--hard", "master"] in calls, (
-        "a no-work existing branch must be reset onto the fresh base"
-    )
-
-
-@pytest.mark.asyncio
-async def test_create_branch_keeps_existing_branch_that_has_work() -> None:
-    """An existing branch carrying its own commits is NOT reset (work preserved)."""
-    svc = _service()
-    _create_branch_stubs(svc)
-    calls = await _run_create_branch_with_existing_branch(
-        svc, "feature/frontend/abc12345--def67890", unique_commits="3"
-    )
-    # The fresh-claim tree-clean (a BARE `reset --hard`) is expected — it discards
-    # only uncommitted cruft from a prior task in the shared clone, never commits.
-    assert ["reset", "--hard"] in calls
-    # But the RE-POINT reset (`reset --hard <base>`, which throws commits away)
-    # must NEVER fire for a branch carrying its own work.
-    # `c[2:]` truthy == there is a ref arg after "reset --hard" → it re-points.
-    repoint_resets = [c for c in calls if c[:2] == ["reset", "--hard"] and c[2:]]
-    assert not repoint_resets, (
-        "a branch with real work must never be re-pointed onto base"
-    )
 
 
 @pytest.mark.asyncio

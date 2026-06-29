@@ -126,6 +126,33 @@ _GIT_EXECUTOR = ThreadPoolExecutor(
 _SLOW_GIT_OP_MS = 5000.0
 
 
+def resolve_git_dir(workspace: Path) -> Path | None:
+    """Resolve the real ``.git`` directory for a workspace or linked worktree.
+
+    A normal clone's ``.git`` is a directory. A linked worktree's ``.git`` is a
+    *file* containing ``gitdir: <path>`` pointing into the clone root's
+    ``.git/worktrees/<id>/``. Callers that rglob locks / parse config must go
+    through here, not assume ``workspace / ".git"`` is a directory.
+
+    Returns the resolved git dir, or None if the workspace has no git metadata.
+    """
+    dot_git = workspace / ".git"
+    if dot_git.is_dir():
+        return dot_git
+    if dot_git.is_file():
+        try:
+            first = dot_git.read_text().splitlines()[0].strip()
+        except (OSError, IndexError):
+            return None
+        if not first.startswith("gitdir: "):
+            return None
+        target = Path(first[len("gitdir: ") :].strip())
+        if not target.is_absolute():
+            target = (workspace / target).resolve()
+        return target if target.is_dir() else None
+    return None
+
+
 def _remove_stale_git_locks(workspace: Path) -> None:
     """Best-effort removal of orphaned ``.git/**/*.lock`` files.
 
@@ -137,9 +164,13 @@ def _remove_stale_git_locks(workspace: Path) -> None:
     the timeout fires the git process is dead, so its orphaned locks are safe
     to remove. Best-effort: any error (no .git, race with a real process) is
     swallowed — this only ever *helps*, never blocks.
+
+    Worktree-aware (F123): a linked worktree's ``.git`` is a gitdir pointer —
+    route through ``resolve_git_dir`` so locks inside ``.git/worktrees/<id>/``
+    are reached.
     """
-    git_dir = workspace / ".git"
-    if not git_dir.is_dir():
+    git_dir = resolve_git_dir(workspace)
+    if git_dir is None or not git_dir.is_dir():
         return
     try:
         for lock in git_dir.rglob("*.lock"):
@@ -712,6 +743,31 @@ class GitService(BaseService):
             )
         return task
 
+    @staticmethod
+    def _worktree_for_task(clone_root: Path, task_id: UUID) -> Path:
+        """Per-task worktree path under a clone root (F123).
+
+        Matches ``create_branch``'s ``{clone_root}/.worktrees/{task_id[:8]}``
+        layout so commit/checkout/rebase paths resolve the same worktree the
+        claim cut and the spawn cwd pointed the agent at.
+        """
+        return clone_root / ".worktrees" / str(task_id)[:8]
+
+    async def _ensure_worktree_for_commit(
+        self, clone_root: Path, worktree: Path, branch: str | None
+    ) -> None:
+        """Ensure a task's worktree is attached before a cwd-dependent git op.
+
+        Resume re-adds a pruned worktree, but a worktree can also be evicted
+        mid-task (disk pressure, manual cleanup); a commit/checkout against a
+        missing dir fails opaquely. Idempotent — no-op when the worktree is
+        present, re-adds (no ``-b``) from the surviving branch ref when pruned.
+        """
+        if not branch:
+            return
+        workspace_service = get_workspace_service(self.session)
+        await workspace_service.ensure_worktree_for_resume(clone_root, worktree, branch)
+
     async def _assert_on_task_branch(
         self, workspace: Path, task_branch: str | None
     ) -> None:
@@ -835,7 +891,14 @@ class GitService(BaseService):
         """
         if data.task_id is not None:
             task = await self._assert_task_owned_with_branch(data.task_id, agent_id)
-            workspace = await self.get_workspace(data.project_slug, agent_id)
+            clone_root = await self.get_workspace(data.project_slug, agent_id)
+            # Commit inside the task's per-task worktree (F123), not the shared
+            # clone — the clone's HEAD may be parked on the default branch.
+            worktree = self._worktree_for_task(clone_root, data.task_id)
+            await self._ensure_worktree_for_commit(
+                clone_root, worktree, task.branch_name
+            )
+            workspace = worktree
             await self._assert_on_task_branch(workspace, task.branch_name)
         else:
             workspace = await self.get_workspace(data.project_slug, agent_id)
@@ -993,66 +1056,55 @@ class GitService(BaseService):
             timeout=_network_git_timeout(),
         )
 
-        # The dev workspace is one persistent clone shared across this dev's
-        # tasks, so a finished/abandoned prior task can leave it dirty and on a
-        # sibling branch. Without a clean tree the base + feature checkouts below
-        # fail; and because this git work is a side-effect that runs AFTER the
-        # claim's DB transition has committed, a failed checkout leaves the
-        # workspace on the wrong branch while the task is already marked
-        # assigned — so the dev's next commit is rejected with BRANCH_MISMATCH.
-        # This runs only on a FRESH claim (resume short-circuits in _dev_reentry
-        # before reaching here), so any uncommitted changes are abandoned cruft
-        # from a finished task — safe to discard. `reset --hard` clears tracked
-        # changes; the gitignored .venv (and other ignored files) are untouched.
-        await self._run_git(workspace, ["reset", "--hard"], check=False)
+        # --- F123: per-task worktree, not a shared-clone checkout. ---
+        # The dev clone is one persistent checkout shared across this dev's
+        # tasks, and a coordinator PM may hold several in_progress roots at
+        # once. The old `reset --hard` + `checkout -b` on the shared clone
+        # clobbered a still-active sibling root's working tree (live on NAS:
+        # main-pm ping-ponged two roots on one clone). Each task now gets its
+        # own linked worktree under {clone_root}/.worktrees/{task-short}/ via
+        # `git worktree add`; the clone's HEAD is never moved by a claim, so
+        # sibling roots' trees are isolated. This runs only on a FRESH claim
+        # (resume short-circuits in _dev_reentry before reaching here).
+        worktree_path = workspace / ".worktrees" / str(task_id)[:8]
 
-        base_branch = await self._checkout_base_with_fallback(
-            workspace, base_branch, default_branch, task_id
+        # Branch from the fetched remote tip (matches the old
+        # `merge --ff-only origin/<base>` intent — build on the latest remote
+        # base, not a stale local checkout). Fall back to origin/<default> if
+        # <base> isn't on the remote yet (the ls-remote above already retargets
+        # base_branch to default in that case; this covers a residual miss).
+        base_ref = f"origin/{base_branch}"
+        ref_check = await self._run_git(
+            workspace, ["rev-parse", "--verify", "--quiet", base_ref], check=False
+        )
+        if ref_check.returncode != 0:
+            base_ref = f"origin/{default_branch}"
+            base_branch = default_branch
+
+        # ensure_worktree: `git worktree add -b <branch> <base>` for a new
+        # branch, or `worktree add <branch>` (reuse) for an existing on-disk
+        # branch (a prior attempt that rolled back DB fields but left the
+        # branch). Idempotent on an already-present worktree (re-claim).
+        workspace_service = get_workspace_service(self.session)
+        await workspace_service.ensure_worktree(
+            workspace, worktree_path, branch_name, base_ref
         )
 
-        # Fast-forward the checked-out base to the freshly-fetched remote tip.
-        # A plain `git pull origin <base>` is fragile in automation: if the
-        # local base has diverged at all it aborts with exit 128 ("Need to
-        # specify how to reconcile divergent branches" / refusing to merge
-        # unrelated histories), which then blows up the whole claim. We only
-        # ever want the latest remote base before cutting a branch, so a local
-        # `merge --ff-only origin/<base>` is the right intent — and it uses the
-        # ref the scoped fetch above already updated (no second network call).
-        # check=False: a non-fast-forward (divergent local) or a base that
-        # isn't on the remote yet leaves the checked-out base as the branch
-        # point instead of aborting branch creation.
-        await self._run_git(
+        # An existing branch with no commits of its own — a dependency-blocked
+        # task re-claimed after its upstream merged — is re-pointed at the fresh
+        # base so the agent builds on the current tip. Runs on the WORKTREE,
+        # never the shared clone. A freshly `-b`'d branch is already at base, so
+        # this is a no-op for new branches; a branch carrying real work
+        # (unique > 0) is left exactly as-is.
+        unique = await self._run_git(
             workspace,
-            ["merge", "--ff-only", f"origin/{base_branch}"],
+            ["rev-list", "--count", f"{base_ref}..{branch_name}"],
             check=False,
         )
-        # Idempotent branch creation: a prior attempt may have created the
-        # branch on disk but failed before the DB recorded branch_name (the
-        # claim rolls back its fields, but the on-disk branch persists). A
-        # plain `checkout -b` then fails "already exists" (exit 128), and the
-        # resulting error-handling cascade is how a retry spirals. Switch to
-        # the existing branch instead.
-        created = await self._run_git(
-            workspace, ["checkout", "-b", branch_name], check=False
-        )
-        if created.returncode != 0:
-            await self._run_git(workspace, ["checkout", branch_name])
-            # The branch already existed on disk. If it carries no commits of
-            # its own — a dependency-blocked task branched before its upstream
-            # merged into the integration branch, then released and re-claimed —
-            # re-point it at the freshly-pulled base so the agent builds on the
-            # current integration tip, not a stale snapshot. Guarded on "no
-            # commits unique to the branch": a branch with real work is left
-            # exactly as-is.
-            unique = await self._run_git(
-                workspace,
-                ["rev-list", "--count", f"{base_branch}..{branch_name}"],
-                check=False,
+        if unique.returncode == 0 and unique.stdout.strip() == "0":
+            await self._run_git(
+                worktree_path, ["reset", "--hard", base_ref], check=False
             )
-            if unique.returncode == 0 and unique.stdout.strip() == "0":
-                await self._run_git(
-                    workspace, ["reset", "--hard", base_branch], check=False
-                )
         await self._run_git(
             workspace,
             ["push", "-u", "origin", branch_name],
@@ -3773,14 +3825,18 @@ class GitService(BaseService):
             raise NotFoundError("Project for task", str(task.id))
 
         workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
-        workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
+        clone_root = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
         git_token = await self._get_project_token_or_raise(project.slug)
-        owner, repo = self._parse_github_remote(workspace)
+        owner, repo = self._parse_github_remote(clone_root)
 
         refs = await self._get_pr_refs(owner, repo, pr_number, git_token)
         if refs is None:
             return {"status": "unknown"}
         head_branch, base_branch = refs
+        # Rebase inside the per-task worktree (F123): the PR head branch is
+        # checked out there, so a checkout in the clone root would be refused.
+        workspace = self._worktree_for_task(clone_root, require_uuid(task.id))
+        await self._ensure_worktree_for_commit(clone_root, workspace, head_branch)
         return await self.rebase_onto_base(
             workspace,
             head_branch=head_branch,
@@ -3816,8 +3872,13 @@ class GitService(BaseService):
         if project is None:
             raise NotFoundError("Project for task", str(task.id))
         workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
-        workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
+        clone_root = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
         git_token = await self._get_project_token_or_raise(project.slug)
+        # Rebase inside the per-task worktree (F123): the branch is checked out
+        # there, so a checkout in the clone root would be refused ("already
+        # checked out at '<worktree>'") and the behind-base recovery loop dies.
+        workspace = self._worktree_for_task(clone_root, require_uuid(task.id))
+        await self._ensure_worktree_for_commit(clone_root, workspace, task.branch_name)
         return await self.rebase_onto_base(
             workspace,
             head_branch=task.branch_name,
@@ -4248,9 +4309,13 @@ class GitService(BaseService):
         and downstream gateway code only consume `sha`; the rest is included
         so we don't have to invent a new shape later.
         """
-        workspace = await self._workspace_for_branch(
+        clone_root = await self._workspace_for_branch(
             branch_name, actor_agent_id=actor_agent_id
         )
+        # Commit inside the task's per-task worktree (F123), not the shared
+        # clone — keyed by the task id so it matches create_branch's layout.
+        workspace = self._worktree_for_task(clone_root, task_id)
+        await self._ensure_worktree_for_commit(clone_root, workspace, branch_name)
         await self._assert_on_task_branch(workspace, branch_name)
 
         # Stage files explicitly when provided; otherwise stage everything
@@ -4318,7 +4383,7 @@ class GitService(BaseService):
             branch = task.branch_name
             if not branch:
                 return {"findings": [], "could_not_run": False}
-            workspace = await self._workspace_for_branch(
+            clone_root = await self._workspace_for_branch(
                 branch, actor_agent_id=actor_agent_id
             )
             changed = await self.list_changed_files(
@@ -4332,6 +4397,12 @@ class GitService(BaseService):
             }
         if not changed:
             return {"findings": [], "could_not_run": False}
+        # Validate the worktree's working tree (F123): the dev's changes live in
+        # the per-task worktree, not the clone root (which sits on the default
+        # branch). A validator run against the clone root reads stale/default
+        # content and false-passes on newly-added files.
+        workspace = self._worktree_for_task(clone_root, require_uuid(task.id))
+        await self._ensure_worktree_for_commit(clone_root, workspace, branch)
         return await self._run_conventions_validator(workspace, changed)
 
     async def _run_conventions_validator(
