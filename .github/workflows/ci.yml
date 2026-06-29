@@ -132,6 +132,16 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
+        with:
+          # The release-readiness smoke test calls ``git describe --tags`` to
+          # find the most recent release tag. ``actions/checkout``'s default
+          # shallow + no-tags clone makes that return empty, which made
+          # ``test_gather_snapshot_reads_the_real_repo`` fail with
+          # ``last_tag is None`` even though master had a tagged v0.13.0.
+          # ``fetch-depth: 0`` clones full history; the default ``fetch-tags``
+          # would still skip tags on shallow clones, so we also pin it true.
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Set up Node
         uses: actions/setup-node@v6
