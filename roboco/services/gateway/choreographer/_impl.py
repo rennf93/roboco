@@ -6038,6 +6038,10 @@ class Choreographer:
                     "already present in the base via a sibling PR that merged "
                     "first. Completing the task without a redundant merge."
                 ),
+                # Preserve the superseded branch (audit / reference), matching
+                # the orchestrator supersede path. close_pull_request defaults
+                # to non-destructive now; explicit here so the two paths agree.
+                delete_branch=False,
                 actor_agent_id=pm_agent_id,
                 project_id=cast("UUID", t.project_id),
             )
