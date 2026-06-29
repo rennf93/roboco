@@ -32,7 +32,9 @@ export function MessageItem({ message }: MessageItemProps) {
       </Avatar>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
-          <span className="font-medium text-sm">{getAgentDisplayName(message.agent_id)}</span>
+          <span className="font-medium text-sm">
+            {getAgentDisplayName(message.agent_id)}
+          </span>
           <span className="text-xs text-muted-foreground flex items-center gap-1">
             <Clock className="h-3 w-3" />
             {formatTime(message.timestamp)}

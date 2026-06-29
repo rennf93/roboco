@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from roboco.db.base import get_db_context
 from roboco.db.tables import AgentTable, NotificationTable
+from roboco.foundation.policy.communications import ACK_REQUIRED_BY_TYPE
 from roboco.models import NotificationPriority, NotificationType
 from roboco.models.notification import CreateNotificationParams
 from roboco.utils.converters import require_uuid
@@ -491,29 +492,35 @@ class NotificationService:
             # type, a different task, a different sender, or a recipient who has
             # already acked all go through. Body text is NOT compared, so
             # rewording cannot defeat the guard.
+            #
+            # Dedup only applies to ACTION-REQUIRED types; informational types
+            # carry distinct content per send and acking is voluntary, so
+            # deduping them would silently drop broadcasts.
             related = params.related_task_id
-            dup_q = (
-                select(NotificationTable.id)
-                .where(NotificationTable.from_agent == from_agent_uuid)
-                .where(NotificationTable.type == params.notification_type)
-                .where(NotificationTable.to_agents.overlap(to_agents_uuids))
-                .where(~NotificationTable.acked_by.contains(to_agents_uuids))
-                .where(
-                    NotificationTable.related_task_id == related
-                    if related is not None
-                    else NotificationTable.related_task_id.is_(None)
+            is_ack_required = ACK_REQUIRED_BY_TYPE.get(params.notification_type, True)
+            if is_ack_required:
+                dup_q = (
+                    select(NotificationTable.id)
+                    .where(NotificationTable.from_agent == from_agent_uuid)
+                    .where(NotificationTable.type == params.notification_type)
+                    .where(NotificationTable.to_agents.overlap(to_agents_uuids))
+                    .where(~NotificationTable.acked_by.contains(to_agents_uuids))
+                    .where(
+                        NotificationTable.related_task_id == related
+                        if related is not None
+                        else NotificationTable.related_task_id.is_(None)
+                    )
+                    .limit(1)
                 )
-                .limit(1)
-            )
-            if await db.scalar(dup_q) is not None:
-                logger.info(
-                    "Suppressed duplicate notification (same purpose, unacked)",
-                    from_agent=str(from_agent_uuid),
-                    type=params.notification_type.value,
-                    related_task_id=str(related) if related is not None else None,
-                    to_agents=[str(a) for a in to_agents_uuids],
-                )
-                return
+                if await db.scalar(dup_q) is not None:
+                    logger.info(
+                        "Suppressed duplicate notification (same purpose, unacked)",
+                        from_agent=str(from_agent_uuid),
+                        type=params.notification_type.value,
+                        related_task_id=str(related) if related is not None else None,
+                        to_agents=[str(a) for a in to_agents_uuids],
+                    )
+                    return
             notification = NotificationTable(
                 type=params.notification_type,
                 priority=params.priority,
@@ -522,6 +529,10 @@ class NotificationService:
                 subject=params.subject,
                 body=params.body,
                 related_task_id=params.related_task_id,
+                # requires_ack follows ACK_REQUIRED_BY_TYPE (action-required vs
+                # informational), not the column's True default; default True
+                # for an unmapped type preserves the safe action-required bias.
+                requires_ack=ACK_REQUIRED_BY_TYPE.get(params.notification_type, True),
             )
             db.add(notification)
             await db.flush()

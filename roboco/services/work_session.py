@@ -506,6 +506,17 @@ class WorkSessionService(BaseService):
         if not work_session:
             return None
 
+        # Idempotency + active-guard (F062), mirroring close(): a session that is
+        # already terminal (COMPLETED — a retried merge after a
+        # successful-but-unconfirmed GitHub merge; or ABANDONED — a superseded
+        # session) is returned unchanged. Without this, a retry overwrote
+        # merged_by / pr_merged_at with the retry's actor/timestamp (corrupting
+        # the merge audit trail) and an ABANDONED session was resurrected to
+        # COMPLETED (undoing the single-active abandonment). Not a warning
+        # because the caller may legitimately double-call on retry/idempotency.
+        if work_session.status != WorkSessionStatus.ACTIVE:
+            return work_session
+
         work_session.pr_status = "merged"
         work_session.pr_merged_at = datetime.now(UTC)
         work_session.merged_by = cast("Any", merged_by)

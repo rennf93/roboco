@@ -18,36 +18,36 @@ triggers only its own recovery helper.
 
 from __future__ import annotations
 
-from typing import cast
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from roboco.runtime.orchestrator import AgentOrchestrator
 
 
-def _orch() -> AgentOrchestrator:
+def _orch() -> Any:
     with patch.object(AgentOrchestrator, "__init__", return_value=None):
         return AgentOrchestrator.__new__(AgentOrchestrator)
 
 
-def _ready_orch() -> AgentOrchestrator:
+def _ready_orch() -> Any:
     """Orchestrator with every closure gate stubbed so _maybe_spawn_pm_closure
     reaches the spawn (descendants terminal, not recently paused, not
     already promoted, PM idle)."""
     orch = _orch()
-    orch._is_recently_paused = MagicMock(return_value=False)  # type: ignore[method-assign]
-    orch._fetch_all_descendants = AsyncMock(  # type: ignore[method-assign]
+    orch._is_recently_paused = MagicMock(return_value=False)
+    orch._fetch_all_descendants = AsyncMock(
         return_value=[{"id": "leaf", "status": "completed"}]
     )
-    orch._all_descendants_terminal = MagicMock(return_value=True)  # type: ignore[method-assign]
-    orch._already_promoted_for_closure = MagicMock(return_value=False)  # type: ignore[method-assign]
-    orch._closure_pm_for_team = MagicMock(return_value="be-pm")  # type: ignore[method-assign]
-    orch._is_agent_active = MagicMock(return_value=False)  # type: ignore[method-assign]
-    orch._build_pm_closure_prompt = MagicMock(return_value="PROMPT")  # type: ignore[method-assign]
-    orch._task_git_context = MagicMock(return_value=None)  # type: ignore[method-assign]
-    orch.spawn_agent = AsyncMock()  # type: ignore[method-assign]
-    orch._auto_resume_paused_parent = AsyncMock()  # type: ignore[method-assign]
-    orch._auto_recover_blocked_parent = AsyncMock()  # type: ignore[method-assign]
+    orch._all_descendants_terminal = MagicMock(return_value=True)
+    orch._already_promoted_for_closure = MagicMock(return_value=False)
+    orch._closure_pm_for_team = MagicMock(return_value="be-pm")
+    orch._is_agent_active = MagicMock(return_value=False)
+    orch._build_pm_closure_prompt = MagicMock(return_value="PROMPT")
+    orch._task_git_context = MagicMock(return_value=None)
+    orch.spawn_agent = AsyncMock()
+    orch._auto_resume_paused_parent = AsyncMock()
+    orch._auto_recover_blocked_parent = AsyncMock()
     return orch
 
 
@@ -102,7 +102,7 @@ async def test_non_paused_parent_is_not_resumed() -> None:
 async def test_resume_skipped_when_closure_gate_blocks_spawn() -> None:
     """If descendants aren't terminal there is no spawn — and no resume."""
     orch = _ready_orch()
-    orch._all_descendants_terminal = MagicMock(return_value=False)  # type: ignore[method-assign]
+    orch._all_descendants_terminal = MagicMock(return_value=False)
     client = AsyncMock()
 
     await orch._maybe_spawn_pm_closure(

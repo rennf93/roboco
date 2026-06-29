@@ -86,6 +86,27 @@ def _typed(value: Any, expected: type | tuple[type, ...], default: Any) -> Any:
     return value if isinstance(value, expected) else default
 
 
+def _has_prior_work(
+    commits: list,
+    acceptance: list,
+    highlights: list,
+    pr_number: int | None,
+    dev_summary: str | None,
+    completed_deps: list,
+    pr_review: dict[str, Any] | None,
+) -> bool:
+    """True when any resumable prior-work signal is present on the task."""
+    return bool(
+        commits
+        or acceptance
+        or highlights
+        or pr_number is not None
+        or dev_summary
+        or completed_deps
+        or pr_review is not None
+    )
+
+
 def build_task_handoff(
     task: Any, journal_highlights: list[dict[str, Any]]
 ) -> dict[str, Any] | None:
@@ -106,17 +127,22 @@ def build_task_handoff(
     # Upstream dependencies that completed and were cleared — present only on a
     # just-unblocked task, so the revived dependent knows what it can build on.
     completed_deps = _typed(getattr(task, "completed_dependency_ids", None), list, [])
-    has_prior = bool(
-        commits
-        or acceptance
-        or highlights
-        or pr_number is not None
-        or dev_summary
-        or completed_deps
-    )
-    if not has_prior:
+    # The persisted in-path PR-review gate verdict + concrete issues.
+    # ``pr_fail`` writes ``notes_structured.pr_review``; surfacing it here puts
+    # the concrete issues in every PM briefing so a respawned PM doesn't
+    # re-submit the same PR blind.
+    pr_review = _extract_pr_review(getattr(task, "notes_structured", None))
+    if not _has_prior_work(
+        commits,
+        acceptance,
+        highlights,
+        pr_number,
+        dev_summary,
+        completed_deps,
+        pr_review,
+    ):
         return None
-    return {
+    handoff: dict[str, Any] = {
         "pr_number": pr_number,
         "pr_url": _typed(task.pr_url, str, None),
         "branch_name": _typed(task.branch_name, str, None),
@@ -129,6 +155,40 @@ def build_task_handoff(
             str(d) for d in completed_deps[:BRIEFING_LIST_CAP]
         ],
     }
+    if pr_review is not None:
+        handoff["pr_review"] = pr_review
+    return handoff
+
+
+def _extract_pr_review(notes_structured: Any) -> dict[str, Any] | None:
+    """Pull the canonical ``pr_review`` slot out of ``notes_structured``.
+
+    Returns ``None`` when there is no structured note, no ``pr_review`` key, or
+    the slot isn't a dict — so the handoff omits the field entirely (no
+    misleading empty slot) for a task with no prior gate verdict. Only the
+    well-typed scalar/list fields the gate writes are forwarded; anything else
+    degrades to a safe default so a malformed slot never leaks a non-JSON
+    object into the briefing.
+    """
+    if not isinstance(notes_structured, dict):
+        return None
+    raw = notes_structured.get("pr_review")
+    if not isinstance(raw, dict):
+        return None
+    verdict = _typed(raw.get("verdict"), str, None)
+    summary = _typed(raw.get("summary"), str, None)
+    issues = _typed(raw.get("issues"), list, [])
+    head_sha = _typed(raw.get("head_sha"), str, None)
+    if not (verdict or summary or issues or head_sha):
+        return None
+    surface: dict[str, Any] = {"issues": list(issues[:BRIEFING_LIST_CAP])}
+    if verdict:
+        surface["verdict"] = verdict
+    if summary:
+        surface["summary"] = summary
+    if head_sha:
+        surface["head_sha"] = head_sha
+    return surface
 
 
 def build_context_briefing(inputs: BriefingInputs) -> dict[str, Any]:

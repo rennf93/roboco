@@ -71,7 +71,7 @@ export function useAgentJournalEntries(
     task_id?: string;
     limit?: number;
     offset?: number;
-  }
+  },
 ) {
   return useQuery<JournalEntry[]>({
     queryKey: [...journalKeys.entries(), "agent", agentIdOrSlug, params],

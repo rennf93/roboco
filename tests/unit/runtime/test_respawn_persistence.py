@@ -11,6 +11,7 @@ manufacturing a spawn.
 
 from __future__ import annotations
 
+import asyncio
 import copy
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -20,6 +21,7 @@ from uuid import uuid4
 
 import pytest
 from roboco.runtime.orchestrator import AgentOrchestrator
+from sqlalchemy.dialects import postgresql
 
 _SEEDED_COUNT = 3  # a persisted strike count, one below the trip threshold
 _STRIKE_COUNT = 2
@@ -31,6 +33,7 @@ def _new_orchestrator() -> AgentOrchestrator:
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
     cast("Any", orch)._pm_respawn_tracker = {}
     cast("Any", orch)._bg_tasks = set()
+    cast("Any", orch)._respawn_persist_lock = asyncio.Lock()
     return orch
 
 
@@ -77,6 +80,22 @@ def test_partition_drops_terminal_and_missing_rows() -> None:
         ("be-pm", cancelled),
         ("be-pm", gone),
     }
+
+
+def test_partition_restamps_last_check_to_now_to_avoid_stale_tracing_gap() -> None:
+    # Restore must re-stamp last_check to the restore time so a pre-restart
+    # tracing_gap row can't falsely reset the breaker on the first post-restart
+    # spawn.
+    tid = uuid4()
+    stale_check = datetime(2026, 6, 20, tzinfo=UTC)
+    rows = [_row(tid, last_check=stale_check)]
+    restore_now = datetime(2026, 6, 28, 12, 0, tzinfo=UTC)
+    restored, stale = AgentOrchestrator._partition_respawn_rows(
+        rows, {tid: "in_progress"}, now=restore_now
+    )
+    assert stale == []
+    assert restored[("be-pm", str(tid))]["last_check"] == restore_now
+    assert restored[("be-pm", str(tid))]["last_check"] != stale_check
 
 
 # --------------------------------------------------------------------------- #
@@ -239,6 +258,47 @@ async def test_persist_record_swallows_db_failure() -> None:
         )
 
 
+@pytest.mark.asyncio
+async def test_persist_record_uses_atomic_upsert_no_delete_then_insert() -> None:
+    """Wedge #3 (2026-06-27 live meltdown): the persist did delete-then-insert in
+    its own transaction. A respawn loop fires count 1->2->3->4 in quick
+    succession, scheduling a fire-and-forget persist per increment; two of those
+    for the same (agent_slug, task_id) race in separate transactions and the
+    loser's INSERT hit pk_respawn_tracker UniqueViolation, so the durable count
+    stuck at the first INSERT's value and a restart re-burned the strike
+    threshold — exactly the re-burn this feature was built to stop. The persist
+    must be a single atomic ON CONFLICT DO UPDATE upsert (no DELETE, no db.add):
+    concurrent upserts on the same key serialize at row level and never collide.
+    """
+    orch = _new_orchestrator()
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=MagicMock())
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=db)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    factory = MagicMock(return_value=ctx)
+    with patch("roboco.db.base.get_session_factory", return_value=factory):
+        await orch._persist_respawn_record(
+            "be-pm",
+            str(uuid4()),
+            {
+                "count": 4,
+                "last_status": "pending",
+                "last_check": datetime.now(UTC),
+                "tracing_resets": 0,
+                "notified": True,
+            },
+        )
+    # One atomic statement, no ORM add, no delete.
+    assert db.execute.await_count == 1
+    db.add.assert_not_called()
+    stmt = db.execute.await_args.args[0]
+    sql = str(stmt.compile(dialect=postgresql.dialect()))
+    assert "ON CONFLICT" in sql
+    assert "DO UPDATE" in sql
+    assert "DELETE" not in sql.upper()
+
+
 # --------------------------------------------------------------------------- #
 # Safety regression + transparency
 # --------------------------------------------------------------------------- #
@@ -313,3 +373,78 @@ async def test_restart_midloop_continues_identically_to_no_restart() -> None:
     tail = [await _spawn(loaded) for _ in range(spawns - restart_after)]
 
     assert tail == full[restart_after:]
+
+
+# --------------------------------------------------------------------------- #
+# fire-and-forget persist commit ordering
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_persist_commits_in_schedule_order_not_out_of_order() -> None:
+    """Two fire-and-forget persists for the same ``(agent_slug, task_id)`` must
+    COMMIT in the order they were scheduled (logical order: count 1 -> 2 -> 3
+    -> 4), not in whatever order their DB transactions happen to resolve.
+
+    Without serialization, a slow stale persist (count=2) scheduled first can
+    commit AFTER a fast fresh persist (count=4) scheduled second, leaving the
+    durable row at the stale low count — and a restart re-burns the strike
+    threshold from that stale value (the exact re-burn this feature stops). The
+    fix serializes same-key persists so commit order = schedule order, and the
+    durable row ends at the latest logical value (4), never the stale one (2).
+    """
+    orch = _new_orchestrator()
+    tid = str(uuid4())
+    key = ("be-pm", tid)
+    now = datetime.now(UTC)
+
+    committed_counts: list[int] = []
+    # Per-execute delay, popped in execute-call order. The FIRST execute called
+    # (the stale count=2 persist, scheduled first = FIFO) is SLOW; the second
+    # (the fresh count=4 persist) is fast. Without serialization the fast one
+    # commits first -> durable ends at the stale 2.
+    delays = [0.05, 0.0]
+
+    def _make_db() -> Any:
+        captured: dict[str, int] = {}
+
+        async def _execute(stmt: Any) -> Any:
+            compiled = stmt.compile(dialect=postgresql.dialect())
+            captured["count"] = int(dict(compiled.params)["count"])
+            await asyncio.sleep(delays.pop(0))
+            return MagicMock()
+
+        async def _commit() -> None:
+            committed_counts.append(captured["count"])
+
+        db = MagicMock()
+        db.execute = _execute
+        db.commit = _commit
+        db.add = MagicMock()
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=db)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        return ctx
+
+    factory = MagicMock(side_effect=_make_db)
+    with patch("roboco.db.base.get_session_factory", return_value=factory):
+        # Schedule the stale persist (count=2) first.
+        orch._pm_respawn_tracker[key] = {
+            "count": 2,
+            "last_status": "pending",
+            "last_check": now,
+            "tracing_resets": 0,
+            "notified": False,
+        }
+        orch._schedule_respawn_persist("be-pm", tid, orch._pm_respawn_tracker[key])
+        # Then mutate to the fresh value (count=4) and schedule the fresh
+        # persist second — logical order is 2 -> 4.
+        orch._pm_respawn_tracker[key]["count"] = 4
+        orch._schedule_respawn_persist("be-pm", tid, orch._pm_respawn_tracker[key])
+
+        # Let both fire-and-forget bg tasks run to completion.
+        await asyncio.sleep(0.2)
+
+    # Commits happened in schedule order (2 then 4), so the durable row ends at
+    # the LATEST logical value (4) — never the stale 2.
+    assert committed_counts == [2, 4]

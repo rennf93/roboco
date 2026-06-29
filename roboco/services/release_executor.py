@@ -132,6 +132,33 @@ class ReleaseExecutor:
 _CI_POLL_INTERVAL_SECONDS = 30
 _CI_MAX_POLLS = 80  # ~40 min ceiling
 
+# Subprocess deadlines. A hung git / make / gh would otherwise block the
+# CEO-gated release loop indefinitely. Each is generous enough that a
+# legitimate, slow operation is never wrongly aborted — only a true hang fails
+# closed. Mirrors the quality-gate ``_run_one`` kill-on-timeout idiom.
+_GIT_OP_TIMEOUT_SECONDS = 300  # git add/commit/rev-parse/ls-remote/push
+_RELEASE_GATE_TIMEOUT_SECONDS = 1800  # make quality — full ruff/mypy/pytest suite
+_PUBLISH_TIMEOUT_SECONDS = 300  # gh release create
+_CLONE_TIMEOUT_SECONDS = 600  # git clone / rm -rf the release clone
+
+# The conventional non-zero rc a timed-out subprocess reports so every caller's
+# fail-closed branch (rc != 0) fires instead of hanging the release loop.
+_TIMEOUT_RC = 124
+
+
+async def _await_proc(
+    proc: asyncio.subprocess.Process, timeout: float
+) -> tuple[int, str]:
+    """Communicate with a subprocess under a deadline; on expiry ``kill()`` the
+    child so a hang fails closed instead of wedging the release loop, and
+    return a non-zero rc so every caller's fail-closed branch fires."""
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except TimeoutError:
+        proc.kill()
+        return _TIMEOUT_RC, f"subprocess timed out after {int(timeout)}s"
+    return proc.returncode or 0, out.decode("utf-8", "replace")
+
 
 @dataclass(frozen=True)
 class _ReleaseContext:
@@ -164,8 +191,7 @@ class _GitReleaseOps:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
-        out, _ = await proc.communicate()
-        return proc.returncode or 0, out.decode("utf-8", "replace")
+        return await _await_proc(proc, _GIT_OP_TIMEOUT_SECONDS)
 
     async def is_already_published(self, version: str) -> bool:
         rc, out = await self._git("ls-remote", "--tags", "origin", f"v{version}")
@@ -212,17 +238,27 @@ class _GitReleaseOps:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
-        out, _ = await proc.communicate()
-        if proc.returncode != 0:
+        rc, out = await _await_proc(proc, _RELEASE_GATE_TIMEOUT_SECONDS)
+        if rc != 0:
             logger.warning(
-                "release gate (make quality) failed",
-                tail=out.decode("utf-8", "replace")[-2000:],
+                "release gate (make quality) failed or timed out",
+                tail=out[-2000:],
             )
-        return proc.returncode == 0
+        return rc == 0
 
     async def commit_and_push(self, version: str) -> str:
-        await self._git("add", "-A")
-        await self._git("commit", "-S", "-m", f"chore(release): {version}")
+        add_rc, add_out = await self._git("add", "-A")
+        if add_rc != 0:
+            logger.error("release git add failed", error=add_out.strip()[:300])
+            raise RuntimeError(f"release git add failed: {add_out.strip()[:200]}")
+        commit_rc, commit_out = await self._git(
+            "commit", "-S", "-m", f"chore(release): {version}"
+        )
+        if commit_rc != 0:
+            # A failed commit (gpgsign/pre-commit reject/no-op bump) must abort
+            # before push — otherwise the pre-bump base gets tagged as the release.
+            logger.error("release commit failed", error=commit_out.strip()[:300])
+            raise RuntimeError(f"release commit failed: {commit_out.strip()[:200]}")
         _, out = await self._git("rev-parse", "HEAD")
         sha = out.strip()
         push_rc, push_out = await self._git(
@@ -269,9 +305,9 @@ class _GitReleaseOps:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
-        out, _ = await proc.communicate()
-        text = out.decode("utf-8", "replace").strip()
-        if proc.returncode != 0:
+        rc, out = await _await_proc(proc, _PUBLISH_TIMEOUT_SECONDS)
+        text = out.strip()
+        if rc != 0:
             logger.error("gh release create failed", error=text[:300])
             raise RuntimeError(f"gh release create failed: {text[:200]}")
         url = next(
@@ -349,5 +385,4 @@ async def _run(cmd: list[str]) -> tuple[int, str]:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
     )
-    out, _ = await proc.communicate()
-    return proc.returncode or 0, out.decode("utf-8", "replace")
+    return await _await_proc(proc, _CLONE_TIMEOUT_SECONDS)

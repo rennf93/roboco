@@ -52,7 +52,7 @@ A swim-lane board of the delivery pipeline, switched with the `?view=` query par
 | **PR Review** | `pr-review` | assembled PRs at the in-path review gate |
 | **PM** | `pm` | tasks awaiting PM review and merge |
 
-Each board is a read-at-a-glance view of where work sits in the [lifecycle](../company/task-lifecycle.md). Switching tabs updates the URL, so a specific board is shareable.
+Each board is a read-at-a-glance view of where work sits in the [lifecycle](../company/task-lifecycle.md). Switching tabs updates the URL, so a specific board is shareable. A drag that would skip a lifecycle precondition (moving a task past a gate it hasn't passed) opens a confirmation dialog first, so an accidental drop can't silently bypass the flow.
 
 ## Next
 

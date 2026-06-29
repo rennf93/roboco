@@ -69,18 +69,34 @@ interface EditTaskDialogProps {
 }
 
 // Inner component that resets when task.id changes via key
-function EditTaskDialogInner({ task, onOpenChange }: { task: Task; onOpenChange: (open: boolean) => void }) {
+function EditTaskDialogInner({
+  task,
+  onOpenChange,
+}: {
+  task: Task;
+  onOpenChange: (open: boolean) => void;
+}) {
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description);
   const [team, setTeam] = useState<Team>(task.team);
   const [priority, setPriority] = useState<number>(task.priority);
-  const [complexity, setComplexity] = useState<Complexity>(task.estimated_complexity);
-  const [nature, setNature] = useState<TaskNature>(task.nature ?? TaskNature.TECHNICAL);
-  const [taskType, setTaskType] = useState<TaskType>(task.task_type ?? TaskType.CODE);
+  const [complexity, setComplexity] = useState<Complexity>(
+    task.estimated_complexity,
+  );
+  const [nature, setNature] = useState<TaskNature>(
+    task.nature ?? TaskNature.TECHNICAL,
+  );
+  const [taskType, setTaskType] = useState<TaskType>(
+    task.task_type ?? TaskType.CODE,
+  );
   const [projectId, setProjectId] = useState<string>(task.project_id ?? "");
-  const [assignedTo, setAssignedTo] = useState<string | null>(task.assigned_to ?? null);
+  const [assignedTo, setAssignedTo] = useState<string | null>(
+    task.assigned_to ?? null,
+  );
   const [targetDate, setTargetDate] = useState<string>(
-    task.target_date ? new Date(task.target_date).toISOString().slice(0, 16) : ""
+    task.target_date
+      ? new Date(task.target_date).toISOString().slice(0, 16)
+      : "",
   );
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
@@ -189,7 +205,10 @@ function EditTaskDialogInner({ task, onOpenChange }: { task: Task; onOpenChange:
             </div>
             <div className="space-y-2">
               <Label>Complexity</Label>
-              <Select value={complexity} onValueChange={(v) => setComplexity(v as Complexity)}>
+              <Select
+                value={complexity}
+                onValueChange={(v) => setComplexity(v as Complexity)}
+              >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -204,7 +223,10 @@ function EditTaskDialogInner({ task, onOpenChange }: { task: Task; onOpenChange:
             </div>
             <div className="space-y-2">
               <Label>Nature</Label>
-              <Select value={nature} onValueChange={(v) => setNature(v as TaskNature)}>
+              <Select
+                value={nature}
+                onValueChange={(v) => setNature(v as TaskNature)}
+              >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -222,7 +244,11 @@ function EditTaskDialogInner({ task, onOpenChange }: { task: Task; onOpenChange:
           {/* Advanced Options */}
           <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
             <CollapsibleTrigger asChild>
-              <Button variant="ghost" type="button" className="w-full justify-between">
+              <Button
+                variant="ghost"
+                type="button"
+                className="w-full justify-between"
+              >
                 <span>Advanced Options</span>
                 {advancedOpen ? (
                   <ChevronDown className="h-4 w-4" />
@@ -257,13 +283,18 @@ function EditTaskDialogInner({ task, onOpenChange }: { task: Task; onOpenChange:
               <div className="space-y-4 pt-4 border-t">
                 <div className="flex items-center gap-2 mb-2">
                   <GitBranch className="h-4 w-4 text-muted-foreground" />
-                  <span className="font-medium text-sm">Git & Work Configuration</span>
+                  <span className="font-medium text-sm">
+                    Git & Work Configuration
+                  </span>
                 </div>
 
                 {/* Task Type */}
                 <div className="space-y-2">
                   <Label>Task Type</Label>
-                  <Select value={taskType} onValueChange={(v) => setTaskType(v as TaskType)}>
+                  <Select
+                    value={taskType}
+                    onValueChange={(v) => setTaskType(v as TaskType)}
+                  >
                     <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>
@@ -316,7 +347,17 @@ function EditTaskDialogInner({ task, onOpenChange }: { task: Task; onOpenChange:
 }
 
 // Wrapper component that uses key to reset form when task changes
-export function EditTaskDialog({ task, open, onOpenChange }: EditTaskDialogProps) {
+export function EditTaskDialog({
+  task,
+  open,
+  onOpenChange,
+}: EditTaskDialogProps) {
   if (!open) return null;
-  return <EditTaskDialogInner key={task.id} task={task} onOpenChange={onOpenChange} />;
+  return (
+    <EditTaskDialogInner
+      key={task.id}
+      task={task}
+      onOpenChange={onOpenChange}
+    />
+  );
 }

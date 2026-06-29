@@ -36,12 +36,13 @@ from roboco.models.base import (
 )
 from roboco.models.permissions import AgentContext
 from roboco.models.task import TaskCreateRequest
-from roboco.models.work_session import WorkSessionStatus
+from roboco.models.work_session import WorkSessionCreate, WorkSessionStatus
 from roboco.services.task import (
     SoftBlockInfo,
     SoftBlockInput,
     TaskService,
 )
+from roboco.services.work_session import WorkSessionService
 from sqlalchemy import select
 
 if TYPE_CHECKING:
@@ -446,6 +447,49 @@ async def test_create_work_session_no_project_returns_none(
         task, task_setup["agent_id"], "developer"
     )
     assert out is None
+
+
+@pytest.mark.asyncio
+async def test_create_work_session_delegates_to_service_create(
+    task_setup: dict, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The claim path must create the WorkSession via ``WorkSessionService.create``
+    (single source of truth) rather than constructing a ``WorkSessionTable``
+    directly, so service-layer validation (existing-active check, supersede
+    invariant) is not bypassed."""
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup))
+    task.branch_name = "feature/backend/delegate"
+    await db_session.flush()
+
+    captured: dict[str, Any] = {}
+    original_create = WorkSessionService.create
+
+    async def _spy_create(_self: Any, data: WorkSessionCreate) -> Any:
+        # Record the WorkSessionCreate the claim path handed to the service,
+        # then run the real create so the row persists (the FK on
+        # tasks.work_session_id requires a real work_sessions row).
+        captured["data"] = data
+        return await original_create(_self, data)
+
+    monkeypatch.setattr(WorkSessionService, "create", _spy_create)
+
+    out = await svc._create_work_session_if_needed(
+        task, task_setup["agent_id"], "developer"
+    )
+
+    assert out is not None
+    assert "data" in captured
+    sent = captured["data"]
+    assert isinstance(sent, WorkSessionCreate)
+    assert sent.project_id == task_setup["project_id"]
+    assert sent.task_id == task.id
+    assert sent.agent_id == task_setup["agent_id"]
+    assert sent.branch_name == "feature/backend/delegate"
+    # Root task targets the project default branch.
+    assert sent.target_branch == sent.base_branch
+    # The claim path links the session back onto the task.
+    assert task.work_session_id == out.id
 
 
 # ---------------------------------------------------------------------------

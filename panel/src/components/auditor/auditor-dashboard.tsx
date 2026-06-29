@@ -39,7 +39,7 @@ export function AuditorDashboard() {
       {
         onSuccess: () => toast.success("Audit report generated successfully"),
         onError: () => toast.error("Failed to generate audit report"),
-      }
+      },
     );
   };
 
@@ -48,7 +48,9 @@ export function AuditorDashboard() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Auditor Dashboard</h1>
+          <h1 className="text-3xl font-bold tracking-tight">
+            Auditor Dashboard
+          </h1>
           <p className="text-muted-foreground">
             Quality oversight, flagging, and reporting
           </p>
@@ -58,7 +60,10 @@ export function AuditorDashboard() {
             <RefreshCw className="h-4 w-4 mr-2" />
             Refresh
           </Button>
-          <Button onClick={handleGenerateReport} disabled={createReport.isPending}>
+          <Button
+            onClick={handleGenerateReport}
+            disabled={createReport.isPending}
+          >
             <FileText className="h-4 w-4 mr-2" />
             Generate Report
           </Button>

@@ -68,7 +68,7 @@ class IndexConfig:
     chunk_size: int = 512
     chunk_overlap: int = 50
     embedding_model: str = "qwen3-embedding:0.6b"
-    llm_model: str = "glm-5:cloud"
+    llm_model: str = "glm-5.2:cloud"
     llm_base_url: str = "http://roboco-ollama:11434/v1"
 
     @classmethod
@@ -465,8 +465,16 @@ class BaseIndexPlugin(ABC):
             )
 
         if self.replace_on_reingest:
-            await store.delete_by_source(doc.source)
-        await store.add_chunks(chunks_with_embeddings)
+            # Atomic delete + insert in one transaction (F108): the prior
+            # separate delete_by_source + add_chunks awaited on two pool
+            # connections, so concurrent re-indexes of the same source
+            # interleaved and produced duplicate chunk rows. replace_chunks
+            # does both on a single connection inside a transaction, so the
+            # whole replace is atomic (last committer wins, no duplicates, and
+            # a failed insert reverts the delete — no data loss).
+            await store.replace_chunks(doc.source, chunks_with_embeddings)
+        else:
+            await store.add_chunks(chunks_with_embeddings)
         return len(chunks)
 
     def _prepare_docs_for_batch(

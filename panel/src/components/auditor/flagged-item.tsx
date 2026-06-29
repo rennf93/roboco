@@ -36,7 +36,11 @@ function formatTime(timestamp: string): string {
   return `${diffDays}d ago`;
 }
 
-export function FlaggedItem({ flag, onResolve, onReportToCeo }: FlaggedItemProps) {
+export function FlaggedItem({
+  flag,
+  onResolve,
+  onReportToCeo,
+}: FlaggedItemProps) {
   const isResolved = !!flag.resolved_at;
 
   return (
@@ -63,7 +67,9 @@ export function FlaggedItem({ flag, onResolve, onReportToCeo }: FlaggedItemProps
                 </Badge>
               )}
             </div>
-            <p className="text-sm text-muted-foreground mb-2">{flag.description}</p>
+            <p className="text-sm text-muted-foreground mb-2">
+              {flag.description}
+            </p>
             <div className="flex items-center gap-4 text-xs text-muted-foreground">
               <span className="flex items-center gap-1">
                 <Clock className="h-3 w-3" />

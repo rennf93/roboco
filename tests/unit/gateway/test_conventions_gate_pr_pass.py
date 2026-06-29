@@ -79,6 +79,46 @@ async def test_pr_pass_guard_blocks_when_validator_cannot_run(
 
 
 @pytest.mark.asyncio
+async def test_pr_pass_guard_could_not_run_remediation_uses_pr_fail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # _conventions_guard is the pr_pass (reviewer) path. A reviewer has no
+    # i_am_blocked verb, so the could_not_run remediation must point at pr_fail
+    # (the reviewer's reject lever), not a verb they lack.
+    monkeypatch.setattr(settings, "conventions_enabled", True)
+    c = _make_choreographer(check_result={"findings": [], "could_not_run": True})
+    env = await c._conventions_guard(uuid4(), MagicMock(), {})
+    assert env is not None
+    body = env.as_dict()
+    assert "i_am_blocked" not in body["remediate"]
+    assert "pr_fail" in body["remediate"]
+
+
+@pytest.mark.asyncio
+async def test_pr_pass_guard_block_remediation_uses_pr_fail_not_reviewer_waiver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # on the pr_pass (reviewer) path a block-level finding's remediation must
+    # point at pr_fail (the reviewer's only lever) and frame the waiver as the
+    # DEV's action — a pr_reviewer does not own the assembled branch and has no
+    # commit verb on it, so the dev-path waiver remediation would strand the
+    # gate on every false positive.
+    monkeypatch.setattr(settings, "conventions_enabled", True)
+    c = _make_choreographer(check_result=_BLOCK_RESULT)
+    env = await c._conventions_guard(uuid4(), MagicMock(), {})
+    assert env is not None
+    body = env.as_dict()
+    remediate = body["remediate"]
+    # The reviewer's lever is pr_fail, not committing a waiver themselves.
+    assert "pr_fail" in remediate
+    # The offending finding is carried so the reviewer can paste it as an issue.
+    assert "app/routers/u.py:2" in remediate
+    # The reviewer must NOT be told to add a waiver "in your branch" — they
+    # can't commit to the assembled PR branch. The waiver is the dev's job.
+    assert "in your branch" not in remediate
+
+
+@pytest.mark.asyncio
 async def test_pr_pass_guard_inert_when_flag_off(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

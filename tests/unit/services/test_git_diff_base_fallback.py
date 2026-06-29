@@ -18,7 +18,7 @@ import pytest
 from roboco.services.git import GitService
 
 
-def _git_service() -> GitService:
+def _git_service() -> Any:
     return GitService.__new__(GitService)
 
 
@@ -26,8 +26,8 @@ def _git_service() -> GitService:
 async def test_resolve_diff_base_uses_parent_when_pushed() -> None:
     """When origin/<parent> exists, use it (normal case)."""
     svc = _git_service()
-    svc._run_git = AsyncMock()  # type: ignore[method-assign]
-    svc._ref_exists = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    svc._run_git = AsyncMock()
+    svc._ref_exists = AsyncMock(return_value=True)
     ws = Path("/tmp/ws")
 
     base = await svc._resolve_diff_base(
@@ -42,12 +42,10 @@ async def test_resolve_diff_base_falls_back_when_parent_absent() -> None:
     """When origin/<parent> does NOT exist (cell-PM branch never pushed),
     fall back to the repo default branch via origin/HEAD."""
     svc = _git_service()
-    svc._run_git = AsyncMock()  # type: ignore[method-assign]
+    svc._run_git = AsyncMock()
     # parent ref absent → _ref_exists False for the parent check.
-    svc._ref_exists = AsyncMock(return_value=False)  # type: ignore[method-assign]
-    svc._default_branch_ref = AsyncMock(  # type: ignore[method-assign]
-        return_value="origin/master"
-    )
+    svc._ref_exists = AsyncMock(return_value=False)
+    svc._default_branch_ref = AsyncMock(return_value="origin/master")
     ws = Path("/tmp/ws")
 
     base = await svc._resolve_diff_base(
@@ -84,7 +82,7 @@ async def test_default_branch_ref_fallback_when_no_head() -> None:
         # symbolic-ref fails; fetches succeed but ref never verifies.
         return type("R", (), {"returncode": 1, "stdout": ""})()
 
-    svc._ref_exists = AsyncMock(return_value=False)  # type: ignore[method-assign]
+    svc._ref_exists = AsyncMock(return_value=False)
     with patch.object(svc, "_run_git", new=fake_run):
         ref = await svc._default_branch_ref(Path("/tmp/ws"))
     assert ref == "origin/master"
@@ -107,8 +105,8 @@ _BR = "feature/backend/root1234--cellpm56--dev78901"
 async def test_resolve_head_ref_prefers_local_branch_in_dev_clone() -> None:
     """Dev's own clone has the local branch — use it unchanged."""
     svc = _git_service()
-    svc._run_git = AsyncMock()  # type: ignore[method-assign]
-    svc._ref_exists = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    svc._run_git = AsyncMock()
+    svc._ref_exists = AsyncMock(return_value=True)
 
     head = await svc._resolve_head_ref(Path("/tmp/ws"), _BR)
     assert head == _BR
@@ -119,7 +117,7 @@ async def test_resolve_head_ref_falls_back_to_origin_in_foreign_clone() -> None:
     """QA/doc/PM clone has no local branch but origin/<branch> exists
     (open_pr pushed it) — diff must target origin/<branch>."""
     svc = _git_service()
-    svc._run_git = AsyncMock()  # type: ignore[method-assign]
+    svc._run_git = AsyncMock()
 
     async def ref_exists(_ws: Any, ref: str) -> bool:
         # local branch absent; only the remote-tracking ref resolves.
@@ -141,7 +139,7 @@ async def test_resolve_head_ref_fetches_branch_before_resolving() -> None:
         calls.append(args)
         return type("R", (), {"returncode": 0, "stdout": ""})()
 
-    svc._ref_exists = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    svc._ref_exists = AsyncMock(return_value=True)
     with patch.object(svc, "_run_git", new=fake_run):
         await svc._resolve_head_ref(Path("/tmp/ws"), _BR)
     assert ["fetch", "origin", _BR] in calls
@@ -153,18 +151,10 @@ async def test_diff_targets_origin_head_in_foreign_clone() -> None:
     base...origin/<branch>, not base...<bare-local-branch> (which is
     unresolvable there and silently produced an empty diff)."""
     svc = _git_service()
-    svc._workspace_for_branch = AsyncMock(  # type: ignore[method-assign]
-        return_value=Path("/tmp/qa-ws")
-    )
-    svc._resolve_diff_base = AsyncMock(  # type: ignore[method-assign]
-        return_value="origin/master"
-    )
-    svc._resolve_head_ref = AsyncMock(  # type: ignore[method-assign]
-        return_value=f"origin/{_BR}"
-    )
-    svc._token_for_branch = AsyncMock(  # type: ignore[method-assign]
-        return_value="tok"
-    )
+    svc._workspace_for_branch = AsyncMock(return_value=Path("/tmp/qa-ws"))
+    svc._resolve_diff_base = AsyncMock(return_value="origin/master")
+    svc._resolve_head_ref = AsyncMock(return_value=f"origin/{_BR}")
+    svc._token_for_branch = AsyncMock(return_value="tok")
     captured: list[list[str]] = []
 
     async def fake_run(_ws: Any, args: list[str], **_kw: Any) -> Any:
@@ -187,18 +177,10 @@ async def test_diff_targets_origin_head_in_foreign_clone() -> None:
 async def test_list_changed_files_targets_origin_head_in_foreign_clone() -> None:
     """Same fix on the files_changed path (#154 evidence)."""
     svc = _git_service()
-    svc._workspace_for_branch = AsyncMock(  # type: ignore[method-assign]
-        return_value=Path("/tmp/qa-ws")
-    )
-    svc._resolve_diff_base = AsyncMock(  # type: ignore[method-assign]
-        return_value="origin/master"
-    )
-    svc._resolve_head_ref = AsyncMock(  # type: ignore[method-assign]
-        return_value=f"origin/{_BR}"
-    )
-    svc._token_for_branch = AsyncMock(  # type: ignore[method-assign]
-        return_value="tok"
-    )
+    svc._workspace_for_branch = AsyncMock(return_value=Path("/tmp/qa-ws"))
+    svc._resolve_diff_base = AsyncMock(return_value="origin/master")
+    svc._resolve_head_ref = AsyncMock(return_value=f"origin/{_BR}")
+    svc._token_for_branch = AsyncMock(return_value="tok")
     captured: list[list[str]] = []
 
     async def fake_run(_ws: Any, args: list[str], **_kw: Any) -> Any:
@@ -219,18 +201,10 @@ async def test_diff_honours_explicit_base_with_resolved_head() -> None:
     """The incremental dev path (base=HEAD~1) still works: explicit base
     is preserved, head still goes through _resolve_head_ref."""
     svc = _git_service()
-    svc._workspace_for_branch = AsyncMock(  # type: ignore[method-assign]
-        return_value=Path("/tmp/dev-ws")
-    )
-    svc._resolve_diff_base = AsyncMock(  # type: ignore[method-assign]
-        return_value="SHOULD_NOT_BE_USED"
-    )
-    svc._resolve_head_ref = AsyncMock(  # type: ignore[method-assign]
-        return_value=_BR
-    )
-    svc._token_for_branch = AsyncMock(  # type: ignore[method-assign]
-        return_value=None
-    )
+    svc._workspace_for_branch = AsyncMock(return_value=Path("/tmp/dev-ws"))
+    svc._resolve_diff_base = AsyncMock(return_value="SHOULD_NOT_BE_USED")
+    svc._resolve_head_ref = AsyncMock(return_value=_BR)
+    svc._token_for_branch = AsyncMock(return_value=None)
     captured: list[list[str]] = []
 
     async def fake_run(_ws: Any, args: list[str], **_kw: Any) -> Any:
@@ -266,10 +240,8 @@ async def test_resolve_diff_base_refetches_default_branch_with_token() -> None:
         return type("R", (), {"returncode": 0, "stdout": ""})()
 
     # parent ref never exists → fall back to default branch.
-    svc._ref_exists = AsyncMock(return_value=False)  # type: ignore[method-assign]
-    svc._default_branch_ref = AsyncMock(  # type: ignore[method-assign]
-        return_value="origin/master"
-    )
+    svc._ref_exists = AsyncMock(return_value=False)
+    svc._default_branch_ref = AsyncMock(return_value="origin/master")
 
     with patch.object(svc, "_run_git", new=fake_run):
         base = await svc._resolve_diff_base(Path("/tmp/ws"), _BR, token="tok")
@@ -291,7 +263,7 @@ async def test_resolve_head_ref_fetch_is_authenticated() -> None:
         seen.append((args, kw.get("token")))
         return type("R", (), {"returncode": 0, "stdout": ""})()
 
-    svc._ref_exists = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    svc._ref_exists = AsyncMock(return_value=True)
     with patch.object(svc, "_run_git", new=fake_run):
         await svc._resolve_head_ref(Path("/tmp/ws"), _BR, token="tok")
     assert (["fetch", "origin", _BR], "tok") in seen
@@ -302,5 +274,5 @@ async def test_token_for_branch_is_best_effort_none() -> None:
     """Unresolvable branch/project must yield None (degrade to unauth),
     never raise inside the evidence-assembly path."""
     svc = _git_service()
-    svc._task_for_branch = AsyncMock(return_value=None)  # type: ignore[method-assign]
+    svc._task_for_branch = AsyncMock(return_value=None)
     assert await svc._token_for_branch(_BR) is None

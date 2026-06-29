@@ -1,6 +1,11 @@
 import api from "./client";
 import { isMockMode } from "@/lib/mock-data";
-import type { Product, ProductCreate, ProductSummary, ProductUpdate } from "@/types";
+import type {
+  Product,
+  ProductCreate,
+  ProductSummary,
+  ProductUpdate,
+} from "@/types";
 
 export const productsApi = {
   list: async (): Promise<ProductSummary[]> => {

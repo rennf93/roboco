@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+from roboco.services.base import ValidationError
 from roboco.services.gateway.choreographer import (
     Choreographer,
     ChoreographerDeps,
@@ -284,3 +285,45 @@ async def test_delegate_blocks_when_parent_quick_context_empty() -> None:
     assert body["error"] == "tracing_gap"
     assert "quick_context>=min" in body["missing"]
     task_svc.create_subtask.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delegate_past_max_depth_returns_invalid_state_not_500() -> None:
+    """Bug B: delegating past MAX_TASK_DEPTH raised a bare ValueError that
+    escaped uncaught as a 500 ExceptionGroup. ``_validate_parent_depth`` now
+    raises ``ValidationError`` (a ServiceError), and the choreographer
+    translates it to an ``invalid_state`` envelope whose remediate carries the
+    "create as a sibling" instruction — so the PM gets a clean, actionable
+    rejection instead of a crash, and the agent loop doesn't respawn-blind.
+    """
+    pm_id = uuid4()
+    parent_id = uuid4()
+    parent = MagicMock(
+        id=parent_id,
+        project_id=uuid4(),
+        status="in_progress",
+        assigned_to=pm_id,
+        quick_context="Decomposition planned; cells implement their slice next.",
+    )
+    depth_msg = (
+        "Task hierarchy would exceed MAX_TASK_DEPTH=4. Create this work as a "
+        "sibling of the deepest task instead of a further nested subtask."
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = parent
+    task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
+    task_svc.get_subtasks.return_value = []
+    # create_subtask -> create -> _validate_parent_depth raises ValidationError.
+    task_svc.create_subtask.side_effect = ValidationError(
+        depth_msg, field="parent_task_id"
+    )
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.delegate(pm_id, parent_id, _delegate_inputs())
+    body = env.as_dict()
+    assert body["error"] == "invalid_state"
+    assert "MAX_TASK_DEPTH" in body["message"]
+    # The remediation must reach the agent — the whole point of the fix.
+    assert "sibling" in body["remediate"]
+    task_svc.create_subtask.assert_awaited_once()

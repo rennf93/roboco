@@ -205,3 +205,22 @@ async def test_resume_dispatches_task_id() -> None:
     )
     assert resp.status_code == _HTTP_200
     mock_chore.resume.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_sync_branch_dispatches_task_id() -> None:
+    """POST sync_branch forwards task_id to Choreographer.sync_branch (git-only)."""
+    mock_chore = MagicMock()
+    mock_chore.sync_branch = AsyncMock(
+        return_value=_make_envelope(status="ok", task_id=_TASK_ID)
+    )
+    client = TestClient(_build_app(mock_chore))
+    resp = client.post(
+        "/api/v1/flow/developer/sync_branch",
+        json={"task_id": _TASK_ID},
+        headers=_HEADERS,
+    )
+    assert resp.status_code == _HTTP_200
+    mock_chore.sync_branch.assert_awaited_once()
+    # the only positional arg beyond x_agent_id is task_id
+    assert str(mock_chore.sync_branch.call_args.args[1]) == _TASK_ID

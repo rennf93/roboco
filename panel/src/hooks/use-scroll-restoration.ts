@@ -10,7 +10,9 @@ import { useEffect, useRef } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useUIStore } from "@/lib/stores/ui-store";
 
-export function useScrollRestoration(scrollContainerRef?: React.RefObject<HTMLElement>) {
+export function useScrollRestoration(
+  scrollContainerRef?: React.RefObject<HTMLElement>,
+) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const { setScrollPosition, getScrollPosition } = useUIStore();
@@ -27,7 +29,10 @@ export function useScrollRestoration(scrollContainerRef?: React.RefObject<HTMLEl
     const handleScroll = () => {
       const position = isWindow
         ? { x: window.scrollX, y: window.scrollY }
-        : { x: (container as HTMLElement).scrollLeft, y: (container as HTMLElement).scrollTop };
+        : {
+            x: (container as HTMLElement).scrollLeft,
+            y: (container as HTMLElement).scrollTop,
+          };
 
       setScrollPosition(routeKey, position);
     };

@@ -56,19 +56,77 @@ class StreamChunk:
     data: dict[str, Any] = field(default_factory=dict)
 
 
+def _coerce_to_list(value: Any) -> list[Any]:
+    """Wrap a lone scalar/dict into a one-element list; drop junk to ``[]``.
+
+    Mirrors ``content.validators.coerce_to_list`` but always returns a list
+    (never ``None``) and never passes a non-list, non-scalar/dict through — the
+    panel treats these fields as arrays and would crash on anything else. A
+    bare string/dict is the well-intentioned single-item case (wrap it); a
+    number/bool/None is not a work unit, so it is dropped.
+    """
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str | dict):
+        return [value]
+    return []
+
+
+# Fields that are lists of plain strings (vs ``the_work``, a list of work-unit
+# dicts). The agent may emit these as XML-ish ``<item>…</item>`` elements, which
+# the SDK parses into ``[{"item": {"$text": "…"}}, …]`` — coerce to flat str
+# lists so they reach the panel and a VARCHAR[] column as strings, not dicts.
+_STR_LIST_FIELDS = ("acceptance_criteria", "what_this_builds", "notes")
+
+
 def _coerce_draft(data: Any) -> dict[str, Any] | None:
     """Return ``data`` as a draft dict (with a string ``title``), else ``None``.
 
-    Accepts a dict, or a JSON string the agent may have passed.
+    Accepts a dict, or a JSON string the agent may have passed. Coerces the
+    list-shaped spec fields: ``the_work`` (a list of work-unit dicts) is wrapped
+    to a list, and each ``the_work`` entry's ``items`` plus the string-list
+    fields (``acceptance_criteria``, ``what_this_builds``, ``notes``) are
+    flattened to ``list[str]`` — the agent sometimes emits these as XML-ish
+    ``<item>…</item>`` elements that the SDK parses into dict wrappers, which
+    would crash a ``VARCHAR[]`` insert and dump ``str(dict)`` into the rendered
+    description. The panel renders ``(draft.the_work ?? []).map(...)`` and
+    throws if ``the_work`` is a bare object, so this is the single choke point
+    that keeps a non-array from ever reaching SSE.
     """
+    from roboco.foundation.policy.content.validators import coerce_str_list
+
     if isinstance(data, str):
         try:
             data = json.loads(data)
         except (ValueError, TypeError):
             return None
-    if isinstance(data, dict) and isinstance(data.get("title"), str):
-        return data
-    return None
+    if not (isinstance(data, dict) and isinstance(data.get("title"), str)):
+        return None
+    coerced = dict(data)
+    _coerce_spec_fields(coerced, coerce_str_list)
+    return coerced
+
+
+def _coerce_spec_fields(
+    coerced: dict[str, Any], coerce: Callable[[Any], list[str]]
+) -> None:
+    """Coerce the list-shaped spec fields in place: wrap the_work, flatten the
+    string-list fields, and flatten each the_work unit's items to ``list[str]``."""
+    if "the_work" in coerced:
+        coerced["the_work"] = _coerce_to_list(coerced["the_work"])
+    for key in _STR_LIST_FIELDS:
+        if key in coerced:
+            coerced[key] = coerce(coerced[key])
+    work = coerced.get("the_work")
+    if isinstance(work, list):
+        coerced["the_work"] = [
+            {
+                **unit,
+                "items": coerce(unit.get("items")),
+            }
+            for unit in work
+            if isinstance(unit, dict)
+        ]
 
 
 def _extract_draft(text: str) -> dict[str, Any] | None:
@@ -391,9 +449,11 @@ def build_intake_options(
         "propose_draft",
         "Submit the finished task draft for the human to review and confirm. Call "
         "this once the spec is complete. Pass a JSON object: title, objective, "
-        "what_this_builds[], the_work[] ({team, summary, items}), notes[], "
-        "acceptance_criteria[], team, scale, task_type, nature, "
-        "estimated_complexity, priority.",
+        "what_this_builds[], the_work[] ({team, summary, items, project_id}), "
+        "notes[], acceptance_criteria[], team, scale, task_type, nature, "
+        "estimated_complexity, priority. A multi-cell task (be+fe, fe+uxui) puts "
+        "one entry per cell in the_work, each with its cell's project_id (the "
+        "per-cell repo); the system builds the cell->project map from them.",
         {"draft": dict},
     )
     async def _propose_draft(_args: dict[str, Any]) -> dict[str, Any]:
@@ -411,9 +471,11 @@ def build_intake_options(
         "and confirm together. Use this (instead of propose_draft) when the CEO "
         "asked for multiple tasks across the scoped repos. Pass {drafts: [draft, "
         "...], title: '...'} where each draft has the same fields as propose_draft "
-        "PLUS its own project_id (which repo it targets) and collision surface "
-        "(intends_to_touch[], adds_migration, touches_shared) so the system can "
-        "sequence them into conflict-free waves.",
+        "PLUS a collision surface (intends_to_touch[], adds_migration, "
+        "touches_shared) so the system can sequence them into conflict-free waves. "
+        "Each draft targets its repos via the per-cell project_id on its the_work[] "
+        "entries (a multi-cell task has one project_id per cell; a single-cell task "
+        "may use one the_work entry or a top-level project_id).",
         {"drafts": list, "title": str},
     )
     async def _propose_batch(_args: dict[str, Any]) -> dict[str, Any]:

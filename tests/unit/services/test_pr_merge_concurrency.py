@@ -110,7 +110,9 @@ async def test_pr_merge_retries_once_on_409_conflict() -> None:
     _bind(svc, "_sync_target_branch", sync_branch)
 
     with _patch_project_service(fake_project):
-        out = await svc.pr_merge(11, target="feature/backend/parent")
+        out = await svc.pr_merge(
+            11, target="feature/backend/parent", project_id=project_id
+        )
 
     assert out == {"merge_commit_sha": "merged-sha"}
     # _call_merge_api invoked twice — once 409, once 200.
@@ -151,7 +153,7 @@ async def test_pr_merge_raises_after_second_409() -> None:
     _bind(svc, "_sync_target_branch", AsyncMock(return_value="abc"))
 
     with _patch_project_service(fake_project), pytest.raises(GitError) as exc_info:
-        await svc.pr_merge(11, target="feature/backend/parent")
+        await svc.pr_merge(11, target="feature/backend/parent", project_id=project_id)
 
     assert "409" in str(exc_info.value)
     # No infinite retries — exactly two attempts.
@@ -188,7 +190,7 @@ async def test_pr_merge_does_not_retry_on_non_409_error() -> None:
     _bind(svc, "_sync_target_branch", AsyncMock(return_value="abc"))
 
     with _patch_project_service(fake_project), pytest.raises(GitError):
-        await svc.pr_merge(11, target="feature/backend/parent")
+        await svc.pr_merge(11, target="feature/backend/parent", project_id=project_id)
 
     # Only one merge attempt — non-409 error path skips retry.
     assert call_seq.await_count == 1
@@ -224,7 +226,7 @@ async def test_pr_merge_locks_parent_task_with_for_update() -> None:
     _bind(svc, "_sync_target_branch", AsyncMock(return_value="abc"))
 
     with _patch_project_service(fake_project):
-        await svc.pr_merge(11, target="feature/backend/parent")
+        await svc.pr_merge(11, target="feature/backend/parent", project_id=project_id)
 
     # Two SELECTs: PR lookup (no lock) + parent lock (FOR UPDATE).
     assert session.execute.await_count == _EXPECTED_SELECT_CALLS
@@ -272,8 +274,60 @@ async def test_pr_merge_skips_parent_lock_for_root_task() -> None:
     _bind(svc, "_sync_target_branch", AsyncMock(return_value="abc"))
 
     with _patch_project_service(fake_project):
-        out = await svc.pr_merge(11, target="master")
+        out = await svc.pr_merge(11, target="master", project_id=project_id)
 
     assert out == {"merge_commit_sha": "abc"}
     # Only the PR-lookup SELECT runs — no second SELECT for parent lock.
     assert session.execute.await_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Regression: PR numbers are per-repo on GitHub but stored globally in
+# tasks.pr_number with no uniqueness/repo scoping. Two tasks on different
+# projects/repos can share a pr_number, so a bare `where(pr_number ==
+# X).limit(1)` resolves non-deterministically — it merged the wrong repo's
+# PR and marked the WRONG task's work session merged, leaving the real
+# task's session `pr_status="open"` so `complete()` rejected (returned
+# None) and the cell PM 500'd on `t.status` and thrashed. The task lookup
+# MUST be scoped by the caller's project_id (mirrors close_pull_request).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pr_merge_scopes_task_lookup_by_project_id() -> None:
+    project_id = uuid4()
+    fake_task = MagicMock(
+        id=uuid4(),
+        project_id=project_id,
+        parent_task_id=None,  # root — no parent lock SELECT
+        assigned_to=uuid4(),
+        work_session_id=None,
+    )
+    fake_project = MagicMock(slug="roboco")
+
+    session = MagicMock()
+    pr_result = MagicMock()
+    pr_result.scalar_one_or_none.return_value = fake_task
+    session.execute = AsyncMock(return_value=pr_result)
+    session.commit = AsyncMock()
+    session.rollback = AsyncMock()
+    session.flush = AsyncMock()
+
+    svc = GitService(session)
+    _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
+    _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
+    _bind(svc, "_parse_github_remote", MagicMock(return_value=("acme", "repo")))
+    _bind(svc, "_call_merge_api", AsyncMock(return_value=_fake_response(200)))
+    _bind(svc, "_delete_pr_branch_best_effort", AsyncMock())
+    _bind(svc, "_sync_target_branch", AsyncMock(return_value="sha"))
+
+    with _patch_project_service(fake_project):
+        await svc.pr_merge(11, target="feature/x", project_id=project_id)
+
+    lookup_stmt = session.execute.await_args_list[0].args[0]
+    sql = str(lookup_stmt.compile(compile_kwargs={"literal_binds": True}))
+    assert "pr_number" in sql
+    assert "project_id" in sql
+    # The scoped project_id value is bound into the WHERE (Postgres renders
+    # UUID literals without hyphens), not just the column name.
+    assert project_id.hex in sql

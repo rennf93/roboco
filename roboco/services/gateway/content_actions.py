@@ -36,6 +36,36 @@ if TYPE_CHECKING:
 logger = structlog.get_logger()
 
 
+def _merge_resumption_fields(
+    section: dict[str, Any] | None,
+    *,
+    done: str,
+    next: str,
+    where_to_look: list[str] | None,
+) -> dict[str, Any] | None:
+    """Fold the top-level resumption fields into the handoff ``section``.
+
+    ``section: dict[str, Any]`` renders a tool schema with no visible
+    sub-fields, so a weak model (minimax-m3) emits ``section={}`` and the
+    resumption gate rejects ``done — Field required`` (the 2026-06-27 PM
+    respawn-loop meltdown). The top-level ``done`` / ``next`` /
+    ``where_to_look`` string fields are the LLM-facing contract — they show
+    up in the tool schema as discrete fields the same model fills fine. Here
+    they fill any keys the explicit ``section`` omits without overwriting
+    keys the agent already supplied, so a capable model passing ``section``
+    directly is unaffected. Returns ``None`` when nothing was supplied so the
+    downstream ``{'summary': text}`` fallback + gate remediation still fire.
+    """
+    merged: dict[str, Any] = dict(section) if section else {}
+    if done and "done" not in merged:
+        merged["done"] = done
+    if next and "next" not in merged:
+        merged["next"] = next
+    if where_to_look and "where_to_look" not in merged:
+        merged["where_to_look"] = where_to_look
+    return merged or None
+
+
 # Scope catalog is canonical in foundation.policy.journaling.
 # Derived here as a string frozenset for the existing call sites that
 # compare strings rather than the Scope enum.
@@ -57,6 +87,29 @@ _COMMIT_ALLOWED_ROLES: frozenset[str] = frozenset({"developer", "documenter"})
 _NOTIFY_ALLOWED_ROLES: frozenset[str] = frozenset(
     r.value for r in _comms.NOTIFY_SENDER_ROLES
 )
+
+# Roles with NO agent-comms surface (CLAUDE.md): auditor (silent observer),
+# pr_reviewer (posts review findings on the PR itself — no say/dm), prompter
+# and secretary (human-only, restricted to note + evidence — no say/dm/notify).
+# The spawn manifest already omits say/dm from these roles' tool surfaces, but
+# that is convention-only — this frozenset is the handler-level defence-in-depth
+# that refuses any call that bypassed the manifest (direct verb dispatch, test
+# harness, future routing change), so the no-comms invariant holds regardless of
+# how the call arrived. Matches the explicit role-frozenset gates on commit /
+# notify / pitch / playbook / open_session.
+_NO_COMMS_ROLES: frozenset[str] = frozenset(
+    {"auditor", "pr_reviewer", "prompter", "secretary"}
+)
+
+
+def _no_comms_remediate(role: str) -> str:
+    """Role-appropriate remediation for a no-comms role blocked at say/dm."""
+    if role == "auditor":
+        return "record observations via note(scope='reflect') instead"
+    if role == "pr_reviewer":
+        return "post review findings on the PR itself via pr_pass/pr_fail instead"
+    # prompter / secretary are human-only (note + evidence).
+    return "use note() to record; this human-only role has no agent-comms surface"
 
 
 _DECISION_SECTIONS: tuple[tuple[str, str], ...] = (
@@ -530,6 +583,11 @@ class ContentActions:
             if await self._board_may_co_review(agent_id, t):
                 return None
             return _ownership_violation(task_id)
+        # assigned_to is stale across a reap/handoff (persists until
+        # reassignment; active_claimant_id is cleared on release). Require
+        # the active claim so a reaped agent can't keep posting.
+        if t.assigned_to == agent_id:
+            return await self._active_claim_violation(agent_id, t)
         return None
 
     async def note(
@@ -541,6 +599,9 @@ class ContentActions:
         task_id: UUID | None = None,
         structured: dict[str, Any] | None = None,
         section: dict[str, Any] | None = None,
+        done: str = "",
+        next: str = "",
+        where_to_look: list[str] | None = None,
     ) -> Envelope:
         """Write a journal entry, or (scope='handoff') the role's note section.
 
@@ -553,6 +614,17 @@ class ContentActions:
 
         - decision: context, options[], chosen, rationale, consequences
         - reflect: what_done, what_learned, what_struggled, next_steps
+
+        For ``scope='handoff'`` the resumption section (PM / coordinator
+        roles) can be authored two ways: the nested ``section`` dict, OR the
+        top-level ``done`` / ``next`` / ``where_to_look`` string fields. The
+        top-level path is the LLM-facing contract — ``section: dict[str, Any]``
+        renders a tool schema with no visible sub-fields, so a weak model
+        (minimax-m3) emits ``section={}`` and the resumption gate rejects
+        ``done — Field required``; the top-level typed strings show up in the
+        tool schema as discrete fields the same model fills fine (proven on
+        the decision scope). Top-level fields fill any keys the explicit
+        ``section`` omits without overwriting supplied ones.
 
         The note is always recorded. List-typed fields tolerate a
         lone scalar (wrapped into a one-element list) and missing decision/
@@ -571,7 +643,12 @@ class ContentActions:
             # a journal entry. Content quality is enforced by the content model
             # (apply_structured_note), so skip the journal-text soup check.
             return await self._record_section_handoff(
-                agent_id=agent_id, text=text, task_id=task_id, structured=section
+                agent_id=agent_id,
+                text=text,
+                task_id=task_id,
+                structured=_merge_resumption_fields(
+                    section, done=done, next=next, where_to_look=where_to_look
+                ),
             )
         return await self._write_journal_note(
             agent_id=agent_id,
@@ -705,12 +782,11 @@ class ContentActions:
         )
 
     async def archive_playbook(self, *, agent_id: UUID, playbook_id: UUID) -> Envelope:
-        """Auditor archives a playbook (-> archived)."""
+        """Auditor archives an approved playbook (-> archived, retired)."""
         return await self._curate_playbook(
             agent_id=agent_id,
             playbook_id=playbook_id,
-            action="reject",
-            reason="archived",
+            action="archive",
         )
 
     async def _curate_playbook(
@@ -729,7 +805,7 @@ class ContentActions:
                 remediate="Only the Auditor approves/rejects/archives playbooks.",
                 context_briefing={},
             )
-        from roboco.services.base import NotFoundError
+        from roboco.services.base import ConflictError, NotFoundError
         from roboco.services.playbook import get_playbook_service
 
         svc = get_playbook_service(self.task.session)
@@ -737,6 +813,9 @@ class ContentActions:
             if action == "approve":
                 playbook = await svc.approve(playbook_id, approver_id=agent_id)
                 status = "playbook_approved"
+            elif action == "archive":
+                playbook = await svc.archive(playbook_id, approver_id=agent_id)
+                status = "playbook_archived"
             else:
                 playbook = await svc.reject(
                     playbook_id, approver_id=agent_id, reason=reason or action
@@ -744,6 +823,32 @@ class ContentActions:
                 status = "playbook_archived"
         except NotFoundError:
             return Envelope.not_found(message=f"playbook {playbook_id} not found")
+        except ConflictError as exc:
+            # A status-precondition violation (approve/reject on a non-draft,
+            # archive on a non-approved) is a clean invalid_state, not a 500 —
+            # the agent gets a remediate hint to re-fetch the playbook's
+            # current status before re-trying.
+            return Envelope.invalid_state(
+                message=str(exc),
+                remediate=(
+                    "Only a draft can be approved/rejected; only an approved "
+                    "playbook can be archived. Re-list drafts/approved to see "
+                    "the playbook's current status before re-trying."
+                ),
+                context_briefing={"playbook_id": str(playbook_id)},
+            )
+        # Commit the status change BEFORE touching the RAG index: the index write
+        # runs through its own auto-committing connection, so indexing before the
+        # status commit would durably land (or drop) a playbook in the corpus even
+        # if this transaction rolled back — a divergence agents surface in
+        # briefings. ``get_db`` commits the session again after the route returns
+        # (a no-op on the now-clean transaction); this explicit commit is what
+        # gates the index.
+        await self.task.session.commit()
+        if action == "approve":
+            await svc.index_approved(playbook)
+        else:
+            await svc.unindex_playbook(playbook)
         return Envelope.ok(
             status=status,
             task_id=None,
@@ -921,17 +1026,23 @@ class ContentActions:
             get_agent_channels,
         )
 
-        # Spec §5.5: auditor is silent — defense-in-depth runtime guard.
-        # The spawn manifest already omits `say` from the auditor's tool
-        # surface, but that is convention-only. This guard refuses any
+        # Spec §5.5: silent / no-comms roles — defense-in-depth runtime guard.
+        # The spawn manifest already omits `say` from these roles' tool
+        # surfaces, but that is convention-only. This guard refuses any
         # call that bypassed the manifest (direct verb dispatch, test
-        # harness, future routing change) so the silent-observer rule
-        # holds regardless of how the call arrived.
+        # harness, future routing change) so the no-comms rule holds
+        # regardless of how the call arrived. Covers auditor (silent
+        # observer), pr_reviewer (posts findings on the PR), and the
+        # human-only prompter / secretary (note + evidence only).
         agent = await self.task.agent_for(agent_id)
-        if agent is not None and str(agent.role) == "auditor":
+        caller_role = str(agent.role) if agent is not None else ""
+        if caller_role in _NO_COMMS_ROLES:
             return Envelope.not_authorized(
-                message="auditor is a silent observer; say is not permitted",
-                remediate="record observations via note(scope='reflect') instead",
+                message=(
+                    f"role '{caller_role}' is a silent / no-comms role;"
+                    " say is not permitted"
+                ),
+                remediate=_no_comms_remediate(caller_role),
                 context_briefing={},
             )
 
@@ -978,14 +1089,19 @@ class ContentActions:
         """A2A direct message. Requires task_id (active or explicit)."""
         if rej := self._reject_soup(text, field="message", min_chars=2):
             return rej
-        # Spec §5.5: auditor is silent — defense-in-depth runtime guard.
-        # See say() above for rationale. Mirrored here because dm() is
-        # the other channel through which the auditor could "speak".
+        # Spec §5.5: silent / no-comms roles — defense-in-depth runtime guard.
+        # See say() for rationale. Mirrored here because dm() is the other
+        # channel through which a no-comms role could "speak". Covers auditor,
+        # pr_reviewer, and the human-only prompter / secretary.
         agent = await self.task.agent_for(agent_id)
-        if agent is not None and str(agent.role) == "auditor":
+        caller_role = str(agent.role) if agent is not None else ""
+        if caller_role in _NO_COMMS_ROLES:
             return Envelope.not_authorized(
-                message="auditor is a silent observer; dm is not permitted",
-                remediate="record observations via note(scope='reflect') instead",
+                message=(
+                    f"role '{caller_role}' is a silent / no-comms role;"
+                    " dm is not permitted"
+                ),
+                remediate=_no_comms_remediate(caller_role),
                 context_briefing={},
             )
 
@@ -1092,7 +1208,10 @@ class ContentActions:
         # A dependency block is a "wait silently" situation — never a CEO signal.
         # An agent must not page the CEO to relax or escalate a task that is
         # simply waiting on an unfinished upstream; that wait clears on its own.
-        if reject := await self._reject_ceo_dependency_notify(target, task_id):
+        # Also reject human-only recipients (prompter/secretary) — they have no
+        # agent ack path, so an ack-required signal would sit permanently unacked
+        # and suppress later same-purpose notifications via the dedup query.
+        if reject := await self._reject_disallowed_recipient(target, task_id):
             return reject
         await self.notifications.send_ack_notification(
             from_agent=agent_id,
@@ -1107,6 +1226,44 @@ class ContentActions:
             next="continue",
             context_briefing={},
         )
+
+    async def _reject_disallowed_recipient(
+        self, target: str, task_id: UUID | None
+    ) -> Envelope | None:
+        """Rejection envelope for a notify() recipient the design disallows.
+
+        Two cases, checked in order:
+        1. F048 — a human-only recipient (prompter/secretary) with no agent ack
+           path. The knowledge-share path already excludes all three human-only
+           roles (learning.py); the general notify path did not, so an
+           ack-required ALERT could reach a human-driven role and sit permanently
+           unacked (polluting the panel's pending-ack view and, via the dedup
+           query's ``~acked_by.contains``, permanently suppressing any later
+           same-purpose notification from the same sender to that human role).
+           The CEO is human too but acks via the panel, so it is NOT rejected
+           here (its only disallowed case — a dependency-block page — is case 2).
+        2. A CEO notification about an open dependency block — pure noise; the
+           wait clears when the upstream completes.
+        """
+        from roboco.agents_config import get_agent_role
+
+        recipient_role = get_agent_role(target)
+        if recipient_role in ("prompter", "secretary"):
+            return Envelope.not_authorized(
+                message=(
+                    f"cannot notify {target!r} — the {recipient_role} is a"
+                    " human-only role with no agent ack path; an ack-required"
+                    " signal would sit permanently unacked and suppress later"
+                    " same-purpose notifications via the dedup query"
+                ),
+                remediate=(
+                    "use say() to a channel the human reads, or escalate via the"
+                    " CEO route. ack-required notify() targets must be agents"
+                    " (or the CEO, who acks via the panel)"
+                ),
+                context_briefing={},
+            )
+        return await self._reject_ceo_dependency_notify(target, task_id)
 
     async def _reject_ceo_dependency_notify(
         self, target: str, task_id: UUID | None

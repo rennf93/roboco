@@ -9,11 +9,12 @@ decision points deterministically (logs + tracker + finalize stubbed).
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import pytest
 from roboco.config import settings
-from roboco.models.runtime import AgentInstance
+from roboco.models.runtime import AgentInstance, WaitingRecord
 from roboco.runtime.orchestrator import (
     _OVERLOAD_RETRY_AFTER_S,
     _RATE_LIMIT_RETRY_AFTER_S,
@@ -52,12 +53,16 @@ def orch(monkeypatch: pytest.MonkeyPatch) -> AgentOrchestrator:
     # transcript fallback empty by default so dev environments with stray
     # transcripts do not make the tests flaky.
     monkeypatch.setattr(orch, "_transcript_tail_text", lambda _a, _lines=80: "")
+    orch._waiting_records = {}
+    orch._rate_limit_ceo_notified = set()
+    orch._instances = {}
     return orch
 
 
 class _FakeTracker:
     def __init__(self) -> None:
         self.activated_with: dict[str, object] | None = None
+        self.clear = AsyncMock()
 
     async def activate(
         self, *, retry_after: float, affected_agents: list[str], kind: str
@@ -96,6 +101,44 @@ async def test_clean_output_is_not_overload(
     monkeypatch.setattr(
         orch, "_tail_container_logs", AsyncMock(return_value=_CLEAN_LOG)
     )
+    assert await orch._provider_overload_park_target("be-dev-1", _instance()) is None
+
+
+@pytest.mark.asyncio
+async def test_detects_overload_marker_in_transcript(
+    orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The overload marker may appear only in the durable Claude transcript, not
+    # stdout; without reading it an overload is missed and the agent
+    # crash-respawns straight back into it.
+    monkeypatch.setattr(settings, "overload_break_enabled", True)
+    monkeypatch.setattr(orch, "_tail_container_logs", AsyncMock(return_value=""))
+    monkeypatch.setattr(
+        orch, "_transcript_tail_text", lambda _a, _lines=80: _OVERLOAD_LOG
+    )
+    assert (
+        await orch._provider_overload_park_target("be-dev-1", _instance())
+        == "anthropic"
+    )
+
+
+@pytest.mark.asyncio
+async def test_agent_writing_about_error_500_does_not_park(
+    orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An agent merely writing about an HTTP error code in its own notes must NOT
+    # trip the detector and park the whole fleet — markers must be specific to
+    # the API error formatter, not bare "error NNN".
+    monkeypatch.setattr(settings, "overload_break_enabled", True)
+    agent_note = (
+        "be-dev-1: the /health endpoint returned error 500 on retry; "
+        "adding a backoff. Also saw error 529 and error 503 upstream. "
+        "Not a model-API issue."
+    )
+    monkeypatch.setattr(
+        orch, "_tail_container_logs", AsyncMock(return_value=agent_note)
+    )
+    monkeypatch.setattr(orch, "_transcript_tail_text", lambda _a, _lines=80: "")
     assert await orch._provider_overload_park_target("be-dev-1", _instance()) is None
 
 
@@ -151,6 +194,63 @@ async def test_park_offlines_and_activates_with_kind(
         "affected_agents": ["be-dev-1"],
         "kind": "overloaded",
     }
+
+
+@pytest.mark.asyncio
+async def test_park_registers_waiting_record_so_probe_can_resume(
+    orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The probe-resume loop reads _waiting_records filtered by
+    # waiting_for == "rate_limit_lifted" + context.provider; without a record
+    # here recovery falls to the 600s stale-claim reaper instead of the
+    # probe-success path.
+    orch._waiting_records = {}
+    inst = _instance()
+    inst.current_task_id = "task-1"
+    tracker = _FakeTracker()
+    monkeypatch.setattr(orch, "_make_tracker", lambda _p: tracker)
+    monkeypatch.setattr(orch, "_finalize_spawn_session", AsyncMock())
+    monkeypatch.setattr(orch, "_persist_waiting_record", AsyncMock())
+
+    await orch._park_provider_unavailable(
+        "be-dev-1", inst, provider="anthropic", retry_after=45.0, kind="rate_limited"
+    )
+
+    assert "be-dev-1" in orch._waiting_records
+    rec = orch._waiting_records["be-dev-1"]
+    assert rec.waiting_for == "rate_limit_lifted"
+    assert rec.context.get("provider") == "anthropic"
+    assert rec.task_id == "task-1"
+    assert orch._parked_agents_for("anthropic") == ["be-dev-1"]
+
+
+@pytest.mark.asyncio
+async def test_probe_success_respawns_parked_agent(
+    orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Once the probe succeeds, the parked agent must be respawned via
+    # resolve_wait — not left stranded for the 600s reaper.
+    orch._waiting_records = {
+        "be-dev-1": WaitingRecord(
+            agent_id="be-dev-1",
+            task_id="task-1",
+            waiting_for="rate_limit_lifted",
+            waiting_since=datetime.now(UTC),
+            context={"provider": "anthropic"},
+        )
+    }
+    tracker = _FakeTracker()
+    tracker.clear = AsyncMock()
+    monkeypatch.setattr(orch, "_make_tracker", lambda _p: tracker)
+    monkeypatch.setattr(orch, "_delete_waiting_record", AsyncMock())
+    monkeypatch.setattr(orch, "_generate_resume_prompt", lambda _r, _res: "resume")
+    spawn = AsyncMock()
+    monkeypatch.setattr(orch, "spawn_agent", spawn)
+
+    await orch._on_probe_success("anthropic", tracker)
+
+    spawn.assert_awaited_once()  # parked agent respawned, not stranded
+    assert "be-dev-1" not in orch._waiting_records
 
 
 # ---------------------------------------------------------------------------

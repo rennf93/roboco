@@ -20,7 +20,8 @@ Coverage:
 from __future__ import annotations
 
 import json
-from contextlib import asynccontextmanager
+from contextlib import ExitStack, asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -31,8 +32,10 @@ from roboco.models.runtime import (
     AgentInstance,
     OrchestratorAgentConfig,
     OrchestratorAgentState,
+    WaitingRecord,
 )
 from roboco.runtime.orchestrator import AgentOrchestrator
+from roboco.utils.converters import require_uuid
 
 # ---------------------------------------------------------------------------
 # Module-level constants (ruff PLR2004: no magic values in comparisons)
@@ -545,6 +548,148 @@ async def test_stop_agent_finalizes_before_lock() -> None:
 
     # _finalize_spawn_session must have been called exactly once with our agent id
     assert finalized == [_AGENT_ID]
+
+
+# ---------------------------------------------------------------------------
+# stop_agent — release_claim (F120): hand a stopped agent's claimed task back
+# to the pool immediately instead of waiting for the stale-claim reaper's TTL.
+# ---------------------------------------------------------------------------
+
+
+def _stop_agent_patches(orch: AgentOrchestrator) -> Any:
+    """Stub Docker + finalize so stop_agent runs without real Docker/DB."""
+    mock_proc = MagicMock()
+    mock_proc.wait = AsyncMock()
+    return (
+        patch.object(orch, "_finalize_spawn_session", AsyncMock()),
+        patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_proc)),
+        patch.object(orch, "_remove_container", AsyncMock()),
+    )
+
+
+async def test_stop_agent_releases_claim_when_release_claim_true() -> None:
+    """stop_agent(release_claim=True) releases the agent's claimed task to the
+    pool immediately, so a mid-verb SIGTERM/budget-kill doesn't strand the task
+    CLAIMED/IN_PROGRESS until the reaper's heartbeat TTL expires."""
+    orch = _make_orchestrator()
+    instance = _make_instance(_AGENT_ID)
+    instance.current_task_id = str(uuid4())
+    orch._instances[_AGENT_ID] = instance
+
+    released: list[str] = []
+
+    async def _fake_release(agent_id: str, task_id: str) -> None:
+        released.append((agent_id, task_id))  # type: ignore[arg-type]
+
+    with ExitStack() as stack:
+        for cm in _stop_agent_patches(orch):
+            stack.enter_context(cm)
+        stack.enter_context(
+            patch.object(
+                orch,
+                "_release_stopped_agent_claim",
+                side_effect=_fake_release,
+                create=True,
+            )
+        )
+        await orch.stop_agent(_AGENT_ID, graceful=True, release_claim=True)
+
+    assert released == [(_AGENT_ID, instance.current_task_id)]
+
+
+async def test_stop_agent_does_not_release_claim_by_default() -> None:
+    """Default stop_agent (release_claim=False) must NOT release the claim —
+    preserves the existing behavior for the provider-park / waiting path
+    (mark_waiting_long) and the interactive stops, which manage their own
+    claim lifecycle via the reaper's provider-park guard. No regression."""
+    orch = _make_orchestrator()
+    instance = _make_instance(_AGENT_ID)
+    instance.current_task_id = str(uuid4())
+    orch._instances[_AGENT_ID] = instance
+
+    released: list[str] = []
+
+    async def _fake_release(agent_id: str, task_id: str) -> None:
+        released.append((agent_id, task_id))  # type: ignore[arg-type]
+
+    with ExitStack() as stack:
+        for cm in _stop_agent_patches(orch):
+            stack.enter_context(cm)
+        stack.enter_context(
+            patch.object(
+                orch,
+                "_release_stopped_agent_claim",
+                side_effect=_fake_release,
+                create=True,
+            )
+        )
+        # Default — release_claim omitted.
+        await orch.stop_agent(_AGENT_ID, graceful=True)
+
+    assert released == [], "default stop_agent must not release the claim"
+
+
+async def test_stop_agent_skips_release_for_provider_parked_agent() -> None:
+    """A provider-parked agent (rate_limit_lifted WaitingRecord) must NOT have
+    its claim released even when release_claim=True — the probe-resume loop
+    revives the SAME agent on the SAME task, so reaping would lose the claim."""
+    orch = _make_orchestrator()
+    instance = _make_instance(_AGENT_ID)
+    instance.current_task_id = str(uuid4())
+    orch._instances[_AGENT_ID] = instance
+    # Parked on a rate limit — the claim must survive.
+    orch._waiting_records[_AGENT_ID] = WaitingRecord(
+        agent_id=_AGENT_ID,
+        task_id=instance.current_task_id,
+        waiting_for="rate_limit_lifted",
+        waiting_since=datetime.now(UTC),
+    )
+
+    released: list[str] = []
+
+    async def _fake_release(agent_id: str, task_id: str) -> None:
+        released.append((agent_id, task_id))  # type: ignore[arg-type]
+
+    with ExitStack() as stack:
+        for cm in _stop_agent_patches(orch):
+            stack.enter_context(cm)
+        stack.enter_context(
+            patch.object(
+                orch,
+                "_release_stopped_agent_claim",
+                side_effect=_fake_release,
+                create=True,
+            )
+        )
+        await orch.stop_agent(_AGENT_ID, graceful=True, release_claim=True)
+
+    assert released == [], "provider-parked agent's claim must not be released"
+
+
+async def test_release_stopped_agent_claim_calls_unclaim_for_reaper() -> None:
+    """The release helper opens a fresh session and routes through the hardened
+    TaskService.unclaim_for_reaper (status-checked + idempotent), committing."""
+    orch = _make_orchestrator()
+    task_id = str(uuid4())
+
+    svc = MagicMock()
+    svc.unclaim_for_reaper = AsyncMock()
+
+    @asynccontextmanager
+    async def _factory_ctx() -> Any:
+        db = MagicMock()
+        db.commit = AsyncMock()
+        yield db
+
+    fake_factory = MagicMock(return_value=_factory_ctx())
+
+    with (
+        patch("roboco.db.base.get_session_factory", return_value=fake_factory),
+        patch("roboco.services.task.TaskService", return_value=svc),
+    ):
+        await orch._release_stopped_agent_claim(_AGENT_ID, task_id)
+
+    svc.unclaim_for_reaper.assert_awaited_once_with(require_uuid(task_id))
 
 
 # ---------------------------------------------------------------------------

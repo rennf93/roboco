@@ -229,3 +229,15 @@ def test_team_for_slug() -> None:
     assert identity.team_for_slug("be-dev-1") == identity.Team.BACKEND
     assert identity.team_for_slug("ceo") == identity.Team.BOARD
     assert identity.team_for_slug("head-marketing") == identity.Team.BOARD
+
+
+def test_role_for_slug_or_none_unknown_returns_none() -> None:
+    """A safe variant for defensive skip-guards — an unknown/stale
+    slug returns None instead of raising KeyError, so a stale assignee or
+    notification-target slug can't crash the whole dispatcher tick."""
+    assert identity.role_for_slug_or_none("nonexistent-slug") is None
+
+
+def test_role_for_slug_or_none_known_returns_role() -> None:
+    assert identity.role_for_slug_or_none("be-pm") == identity.Role.CELL_PM
+    assert identity.role_for_slug_or_none("ceo") == identity.Role.CEO

@@ -2,7 +2,12 @@
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { TrendingUp, CheckCircle, BarChart3, AlertTriangle } from "lucide-react";
+import {
+  TrendingUp,
+  CheckCircle,
+  BarChart3,
+  AlertTriangle,
+} from "lucide-react";
 
 interface KeyMetricsProps {
   metrics: Record<string, unknown> | undefined;
@@ -71,11 +76,7 @@ export function KeyMetricsPanel({ metrics, isLoading }: KeyMetricsProps) {
                     {m.label}
                   </div>
                   <span className="font-medium">
-                    {value != null
-                      ? m.format
-                        ? m.format(value)
-                        : value
-                      : "-"}
+                    {value != null ? (m.format ? m.format(value) : value) : "-"}
                   </span>
                 </div>
               );

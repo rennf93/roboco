@@ -16,7 +16,7 @@ const TIMESTAMP = "2026-06-20T12:00:00.000Z";
 function makeHitEvent(
   provider = "anthropic",
   retryAfterSeconds = 60,
-  affectedAgents: string[] = []
+  affectedAgents: string[] = [],
 ): RateLimitHitEvent {
   return {
     type: "RATE_LIMIT_HIT",
@@ -38,14 +38,14 @@ function makeLiftedEvent(provider = "anthropic"): RateLimitLiftedEvent {
 function makeApiEntry(
   provider: string,
   hitAt = TIMESTAMP,
-  retryAfterSeconds = 30
+  retryAfterSeconds = 30,
 ): RateLimitEntry {
   return {
     provider,
     affectedAgents: [],
     hitAt,
     resumeAt: new Date(
-      new Date(hitAt).getTime() + retryAfterSeconds * 1000
+      new Date(hitAt).getTime() + retryAfterSeconds * 1000,
     ).toISOString(),
     retryAfterSeconds,
   };
@@ -105,7 +105,7 @@ describe("useRateLimitStore — hitRateLimit", () => {
     const entry = useRateLimitStore.getState().limits.get("anthropic");
 
     const expectedResumeAt = new Date(
-      new Date(TIMESTAMP).getTime() + retryAfterSeconds * 1000
+      new Date(TIMESTAMP).getTime() + retryAfterSeconds * 1000,
     ).toISOString();
     expect(entry?.resumeAt).toBe(expectedResumeAt);
   });
@@ -155,7 +155,7 @@ describe("useRateLimitStore — liftRateLimit", () => {
     expect(() =>
       useRateLimitStore
         .getState()
-        .liftRateLimit(makeLiftedEvent("non-existent"))
+        .liftRateLimit(makeLiftedEvent("non-existent")),
     ).not.toThrow();
     expect(useRateLimitStore.getState().limits.size).toBe(0);
   });

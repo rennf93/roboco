@@ -377,7 +377,7 @@ async def test_pr_target_returns_base_ref() -> None:
         _patch_project_service(fake_project),
         patch("roboco.services.git.httpx.AsyncClient", return_value=fake_client),
     ):
-        out = await svc.pr_target(42)
+        out = await svc.pr_target(42, project_id=project_id)
     assert out == "feature/parent"
 
 
@@ -387,7 +387,7 @@ async def test_pr_target_raises_when_pr_not_found() -> None:
     result.scalar_one_or_none.return_value = None
     svc = _service(execute_returns=result)
     with pytest.raises(NotFoundError):
-        await svc.pr_target(99)
+        await svc.pr_target(99, project_id=uuid4())
 
 
 # ---------------------------------------------------------------------------
@@ -549,14 +549,19 @@ async def test_pr_merge_returns_merge_commit_dict() -> None:
     # Merges flow UP the chain (cell -> Main-PM branch), never into master via
     # this agent path — target is the integration branch, not the default branch.
     with _patch_project_service(fake_project):
-        out = await svc.pr_merge(11, target="feature/main_pm/root1234")
+        out = await svc.pr_merge(
+            11, target="feature/main_pm/root1234", project_id=project_id
+        )
     assert out == {"merge_commit_sha": "abc123sha"}
 
 
 @pytest.mark.asyncio
 async def test_pr_merge_into_default_branch_is_ceo_only() -> None:
     """The agent merge path refuses to merge into a repo's default branch."""
-    fake_task = MagicMock(project_id=uuid4(), parent_task_id=None, assigned_to=uuid4())
+    project_id = uuid4()
+    fake_task = MagicMock(
+        project_id=project_id, parent_task_id=None, assigned_to=uuid4()
+    )
     fake_project = MagicMock(slug="roboco")
     result = MagicMock()
     result.scalar_one_or_none.return_value = fake_task
@@ -573,7 +578,7 @@ async def test_pr_merge_into_default_branch_is_ceo_only() -> None:
         _patch_project_service(fake_project),
         pytest.raises(UnauthorizedError, match="CEO_ONLY"),
     ):
-        await svc.pr_merge(11, target="master")
+        await svc.pr_merge(11, target="master", project_id=project_id)
     # Guard fires before any GitHub merge call.
     merge_api.assert_not_called()
 

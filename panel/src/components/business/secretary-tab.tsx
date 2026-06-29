@@ -26,7 +26,12 @@ interface DirectiveCardProps {
   busy: boolean;
 }
 
-function DirectiveCard({ directive, onConfirm, onReject, busy }: DirectiveCardProps) {
+function DirectiveCard({
+  directive,
+  onConfirm,
+  onReject,
+  busy,
+}: DirectiveCardProps) {
   const [rejectOpen, setRejectOpen] = useState(false);
   const payloadKeys = Object.keys(directive.payload);
 

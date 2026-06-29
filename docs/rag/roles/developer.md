@@ -58,7 +58,7 @@ i_am_idle()                    → no work in your queue right now
 
 | MCP server            | Verbs you can call |
 |-----------------------|--------------------|
-| `roboco-flow`         | `give_me_work`, `i_will_work_on`, `open_pr`, `i_am_done`, `i_am_blocked`, `unclaim`, `resume`, `i_am_idle` |
+| `roboco-flow`         | `give_me_work`, `i_will_work_on`, `open_pr`, `i_am_done`, `i_am_blocked`, `unclaim`, `resume`, `sync_branch`, `i_am_idle` |
 | `roboco-do`           | `commit`, `note`, `say`, `dm`, `evidence` |
 | `roboco-git-readonly` | `roboco_git_status`, `roboco_git_log`, `roboco_git_diff`, `roboco_git_branch_list` |
 | `roboco-optimal`      | `roboco_ask_mentor`, `roboco_kb_search` |

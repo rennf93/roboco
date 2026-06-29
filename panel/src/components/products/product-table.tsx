@@ -67,7 +67,9 @@ export function ProductTable({ products, isLoading }: ProductTableProps) {
                     >
                       {product.name}
                     </Button>
-                    <p className="text-xs text-muted-foreground font-mono">{product.slug}</p>
+                    <p className="text-xs text-muted-foreground font-mono">
+                      {product.slug}
+                    </p>
                   </div>
                 </TableCell>
                 <TableCell>

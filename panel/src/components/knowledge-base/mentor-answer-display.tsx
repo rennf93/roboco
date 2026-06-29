@@ -72,12 +72,19 @@ export function MentorAnswerDisplay({
         <h3 className="text-lg font-medium mb-1">AI Mentor</h3>
         <p className="text-sm text-muted-foreground max-w-md">
           Your personalized AI mentor that knows your role and past experiences.
-          Ask questions about standards, workflows, or get guidance on your tasks.
+          Ask questions about standards, workflows, or get guidance on your
+          tasks.
         </p>
         <div className="flex gap-2 mt-4 flex-wrap justify-center">
-          <Badge variant="outline" className="text-xs">Role-aware</Badge>
-          <Badge variant="outline" className="text-xs">Personal context</Badge>
-          <Badge variant="outline" className="text-xs">Follow-ups</Badge>
+          <Badge variant="outline" className="text-xs">
+            Role-aware
+          </Badge>
+          <Badge variant="outline" className="text-xs">
+            Personal context
+          </Badge>
+          <Badge variant="outline" className="text-xs">
+            Follow-ups
+          </Badge>
         </div>
       </div>
     );
@@ -117,7 +124,10 @@ export function MentorAnswerDisplay({
 
   // Calculate total sources searched
   const totalSearched = response.search_stats
-    ? Object.values(response.search_stats).reduce((sum, count) => sum + (count > 0 ? count : 0), 0)
+    ? Object.values(response.search_stats).reduce(
+        (sum, count) => sum + (count > 0 ? count : 0),
+        0,
+      )
     : 0;
 
   return (
@@ -145,18 +155,22 @@ export function MentorAnswerDisplay({
                   {response.agent_role}
                 </Badge>
                 {response.agent_team && (
-                  <span className="text-muted-foreground">({response.agent_team})</span>
+                  <span className="text-muted-foreground">
+                    ({response.agent_team})
+                  </span>
                 )}
               </span>
             )}
-            {response.journal_entries_used !== undefined && response.journal_entries_used > 0 && (
-              <span className="flex items-center gap-1.5">
-                <BookMarked className="h-3.5 w-3.5 text-muted-foreground" />
-                <span className="text-muted-foreground">
-                  {response.journal_entries_used} personal journal{response.journal_entries_used !== 1 ? "s" : ""} used
+            {response.journal_entries_used !== undefined &&
+              response.journal_entries_used > 0 && (
+                <span className="flex items-center gap-1.5">
+                  <BookMarked className="h-3.5 w-3.5 text-muted-foreground" />
+                  <span className="text-muted-foreground">
+                    {response.journal_entries_used} personal journal
+                    {response.journal_entries_used !== 1 ? "s" : ""} used
+                  </span>
                 </span>
-              </span>
-            )}
+              )}
           </div>
         </div>
       )}
@@ -180,52 +194,56 @@ export function MentorAnswerDisplay({
       </Card>
 
       {/* Suggested Follow-ups */}
-      {response.suggested_followups && response.suggested_followups.length > 0 && (
-        <div className="space-y-2">
-          <div className="flex items-center gap-2 text-sm font-medium">
-            <Lightbulb className="h-4 w-4 text-yellow-500" />
-            Follow-up Questions
+      {response.suggested_followups &&
+        response.suggested_followups.length > 0 && (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 text-sm font-medium">
+              <Lightbulb className="h-4 w-4 text-yellow-500" />
+              Follow-up Questions
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {response.suggested_followups.map((followup, index) => (
+                <Button
+                  key={index}
+                  variant="outline"
+                  size="sm"
+                  className="text-xs h-auto py-1.5 px-3"
+                  onClick={() => onFollowUp?.(followup)}
+                >
+                  <MessageCircleQuestion className="h-3 w-3 mr-1.5" />
+                  {followup}
+                </Button>
+              ))}
+            </div>
           </div>
-          <div className="flex flex-wrap gap-2">
-            {response.suggested_followups.map((followup, index) => (
-              <Button
-                key={index}
-                variant="outline"
-                size="sm"
-                className="text-xs h-auto py-1.5 px-3"
-                onClick={() => onFollowUp?.(followup)}
-              >
-                <MessageCircleQuestion className="h-3 w-3 mr-1.5" />
-                {followup}
-              </Button>
-            ))}
-          </div>
-        </div>
-      )}
+        )}
 
       {/* Search Stats */}
-      {response.search_stats && Object.keys(response.search_stats).length > 0 && (
-        <div className="space-y-2">
-          <div className="flex items-center gap-2 text-sm font-medium">
-            <BarChart3 className="h-4 w-4 text-muted-foreground" />
-            Search Stats
-            <span className="text-xs text-muted-foreground font-normal">
-              ({totalSearched} total results)
-            </span>
+      {response.search_stats &&
+        Object.keys(response.search_stats).length > 0 && (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 text-sm font-medium">
+              <BarChart3 className="h-4 w-4 text-muted-foreground" />
+              Search Stats
+              <span className="text-xs text-muted-foreground font-normal">
+                ({totalSearched} total results)
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {Object.entries(response.search_stats).map(
+                ([indexType, count]) => (
+                  <Badge
+                    key={indexType}
+                    variant={count > 0 ? "secondary" : "outline"}
+                    className={`text-xs ${count === -1 ? "text-red-500" : ""}`}
+                  >
+                    {indexType}: {count === -1 ? "error" : count}
+                  </Badge>
+                ),
+              )}
+            </div>
           </div>
-          <div className="flex flex-wrap gap-1.5">
-            {Object.entries(response.search_stats).map(([indexType, count]) => (
-              <Badge
-                key={indexType}
-                variant={count > 0 ? "secondary" : "outline"}
-                className={`text-xs ${count === -1 ? "text-red-500" : ""}`}
-              >
-                {indexType}: {count === -1 ? "error" : count}
-              </Badge>
-            ))}
-          </div>
-        </div>
-      )}
+        )}
 
       {/* Citations */}
       {response.sources.length > 0 && (

@@ -14,6 +14,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from roboco.config import settings
 from roboco.db.tables import PlaybookTable
@@ -42,7 +43,18 @@ class PlaybookService(BaseService):
     service_name: ClassVar[str] = "playbook"
 
     async def draft(self, data: PlaybookCreate, created_by: UUID) -> PlaybookTable:
-        """Create a DRAFT playbook; slug is derived from the title (unique)."""
+        """Create a DRAFT playbook; slug is derived from the title (unique).
+
+        The ``_get_by_slug`` pre-check is a fast-path for UX, not the
+        authoritative guard: two concurrent same-title drafts both miss it
+        (neither sees the other's uncommitted row), so the loser's flush hits
+        the ``playbooks.slug`` UNIQUE constraint and raises ``IntegrityError``.
+        The DB constraint is the real guard; isolating the insert in a savepoint
+        and converting the ``IntegrityError`` into the same ``ConflictError``
+        the pre-check raises closes the TOCTOU — the loser gets a clean conflict
+        (409), not an unhandled 500. The savepoint also rolls back only the
+        failed insert, leaving the caller's pending transaction usable.
+        """
         slug = _slugify(data.title)
         if await self._get_by_slug(slug) is not None:
             raise ConflictError(
@@ -63,26 +75,73 @@ class PlaybookService(BaseService):
             created_by=created_by,
         )
         self.session.add(playbook)
-        await self.session.flush()
+        try:
+            async with self.session.begin_nested():
+                await self.session.flush()
+        except IntegrityError as exc:
+            raise ConflictError(
+                f"Playbook with slug '{slug}' already exists",
+                resource_type="playbook",
+            ) from exc
         self.log.info("Playbook drafted", playbook_id=str(playbook.id), slug=slug)
         return playbook
 
     async def approve(self, playbook_id: UUID, approver_id: UUID) -> PlaybookTable:
-        """Auditor approves a draft: draft -> approved, stamped."""
+        """Auditor approves a draft: draft -> approved, stamped.
+
+        Flushes the status change ONLY — the RAG index write (``index_approved``)
+        is a SEPARATE step the caller runs AFTER committing the status. The vector
+        store writes through its own auto-committing pool connection, so indexing
+        inline (before the status commit) would durably land an approved playbook
+        in the corpus even if the status transaction rolled back — a divergence
+        agents then surfaced in briefings.
+        """
         playbook = await self._get_or_raise(playbook_id)
+        if playbook.status != PlaybookStatus.DRAFT.value:
+            raise ConflictError(
+                f"Playbook {playbook_id} is {playbook.status}, not draft — "
+                "only a draft can be approved",
+                resource_type="playbook",
+            )
         playbook.status = PlaybookStatus.APPROVED.value
         playbook.approved_by = approver_id
         playbook.approved_at = datetime.now(UTC)
         await self.session.flush()
-        await self._index_approved(playbook)
         self.log.info("Playbook approved", playbook_id=str(playbook_id))
         return playbook
 
-    async def _index_approved(self, playbook: PlaybookTable) -> None:
+    async def archive(self, playbook_id: UUID, approver_id: UUID) -> PlaybookTable:
+        """Auditor retires an APPROVED playbook: approved -> archived.
+
+        The distinct curation transition from :meth:`reject`: ``reject``
+        declines a DRAFT (never published); ``archive`` retires an APPROVED
+        playbook already in circulation. Both end in ARCHIVED, but they start
+        from different states, so each guards its own precondition. An ARCHIVED
+        playbook is terminal — neither approve, reject, nor archive may touch
+        it again. Like reject, the status flush is the only in-tx step; the
+        post-commit ``unindex_playbook`` is the caller's separate step.
+        """
+        playbook = await self._get_or_raise(playbook_id)
+        if playbook.status != PlaybookStatus.APPROVED.value:
+            raise ConflictError(
+                f"Playbook {playbook_id} is {playbook.status}, not approved — "
+                "only an approved playbook can be archived",
+                resource_type="playbook",
+            )
+        playbook.status = PlaybookStatus.ARCHIVED.value
+        playbook.approved_by = approver_id
+        playbook.approved_at = datetime.now(UTC)
+        await self.session.flush()
+        self.log.info("Playbook archived", playbook_id=str(playbook_id))
+        return playbook
+
+    async def index_approved(self, playbook: PlaybookTable) -> None:
         """Embed an approved playbook into the PLAYBOOKS RAG index (best-effort).
 
-        Gated on ``org_memory_enabled`` so the feature is fully inert when off;
-        a failure (e.g. the embedder is down) never blocks the approval.
+        Post-commit step: the caller commits the ``draft -> approved`` status
+        change FIRST, then runs this so the index never leads the status
+        transaction. Gated on ``org_memory_enabled`` so the feature is fully inert
+        when off; a failure (e.g. the embedder is down) never blocks the approval.
         """
         if not settings.org_memory_enabled:
             return
@@ -114,14 +173,47 @@ class PlaybookService(BaseService):
     async def reject(
         self, playbook_id: UUID, approver_id: UUID, reason: str
     ) -> PlaybookTable:
-        """Auditor rejects a playbook: -> archived (reason recorded in the log)."""
+        """Auditor rejects a playbook: -> archived (reason recorded in the log).
+
+        Flushes the status change ONLY — ``unindex_playbook`` is a separate
+        post-commit step (see ``approve`` for the ordering rationale).
+        """
         playbook = await self._get_or_raise(playbook_id)
+        if playbook.status != PlaybookStatus.DRAFT.value:
+            raise ConflictError(
+                f"Playbook {playbook_id} is {playbook.status}, not draft — "
+                "only a draft can be rejected",
+                resource_type="playbook",
+            )
         playbook.status = PlaybookStatus.ARCHIVED.value
         playbook.approved_by = approver_id
         playbook.approved_at = datetime.now(UTC)
         await self.session.flush()
         self.log.info("Playbook rejected", playbook_id=str(playbook_id), reason=reason)
         return playbook
+
+    async def unindex_playbook(self, playbook: PlaybookTable) -> None:
+        """De-index a playbook from the PLAYBOOKS RAG index (best-effort).
+
+        The mirror of :meth:`_index_approved`: a rejected/archived playbook that
+        was previously approved+indexed must stop surfacing in agent briefings,
+        so ``reject`` drops its chunks + tracking row. Gated on
+        ``org_memory_enabled`` (inert when the loop is off) and best-effort (a
+        failure never blocks the curation). Idempotent on a never-indexed draft.
+        """
+        if not settings.org_memory_enabled:
+            return
+        try:
+            from roboco.services.optimal import get_optimal_service
+
+            optimal = await get_optimal_service()
+            await optimal.unindex_playbook(str(playbook.id))
+        except Exception as exc:
+            self.log.warning(
+                "Playbook de-index-on-reject failed (best-effort)",
+                playbook_id=str(playbook.id),
+                error=str(exc),
+            )
 
     async def list_drafts(self) -> list[PlaybookTable]:
         return await self._list_by_status(PlaybookStatus.DRAFT)

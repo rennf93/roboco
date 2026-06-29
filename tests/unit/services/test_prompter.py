@@ -31,6 +31,8 @@ from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.base import ServiceError, ValidationError
 from roboco.services.prompter import (
     PrompterService,
+    _cell_teams,
+    _draft_cell_map,
     compose_description,
     derive_scale,
     get_prompter_service,
@@ -91,6 +93,50 @@ def test_derive_scale_single_vs_multi() -> None:
     # Non-cell teams (e.g. main_pm) do not count toward cell breadth.
     assert derive_scale([{"team": "backend"}, {"team": "main_pm"}]) == "single"
     assert derive_scale([]) == "single"
+
+
+# -----------------------------------------------------------------------------
+# the_work shape tolerance — the intake agent is an LLM and sometimes emits
+# the_work as a list of bare team-name strings ("backend") instead of the
+# documented {team, summary, items} objects. Every consumer must tolerate that
+# without raising (regression: preview-batch used to 500 with
+# "'str' object has no attribute 'get'").
+# -----------------------------------------------------------------------------
+
+
+def test_cell_teams_tolerates_bare_string_entries() -> None:
+    # The LLM emitted the_work as a list of team names, not objects.
+    assert _cell_teams(["backend", "frontend", "backend"]) == ["backend", "frontend"]
+    # A bare string that isn't a cell is skipped, just like a non-cell dict.
+    assert _cell_teams(["backend", "main_pm"]) == ["backend"]
+    assert _cell_teams(["nonsense"]) == []
+
+
+def test_lead_cell_team_tolerates_bare_string_entries() -> None:
+    draft = {"the_work": ["frontend", "backend"]}
+    assert PrompterService._lead_cell_team(draft, default=Team.BACKEND) is Team.FRONTEND
+    # First valid cell wins; an invalid bare string is skipped.
+    draft = {"the_work": ["nonsense", "ux_ui"]}
+    assert PrompterService._lead_cell_team(draft, default=Team.BACKEND) is Team.UX_UI
+
+
+def test_derive_scale_tolerates_bare_string_entries() -> None:
+    assert derive_scale(["backend"]) == "single"
+    assert derive_scale(["backend", "frontend"]) == "multi"
+
+
+def test_compose_description_renders_bare_string_work_entries() -> None:
+    draft = {
+        "objective": "Fix the intake batch preview.",
+        "the_work": ["backend", "frontend"],
+        "acceptance_criteria": ["Preview no longer 500s"],
+    }
+    md = compose_description(draft)
+    # Each bare string renders as a cell heading; multi-cell gets the board-led line.
+    assert "## The Work" in md
+    assert "**Backend**" in md
+    assert "**Frontend**" in md
+    assert "Board-led" in md
 
 
 def test_compose_description_single_cell_markdown() -> None:
@@ -423,6 +469,9 @@ async def test_confirm_live_draft_product_routes_to_main_pm(db_session: Any) -> 
     assert row.team == Team.MAIN_PM
     assert row.product_id == product_id
     assert row.project_id is None
+    # A Main-PM coordination root is never code — intake coerces code->planning
+    # so main_pm + code can never coexist (the 2026-06-27 meltdown shape).
+    assert row.task_type == TaskType.PLANNING
 
 
 # =============================================================================
@@ -510,6 +559,8 @@ async def test_confirm_live_batch_builds_umbrella_and_sequenced_subtasks(
     assert umbrella.team == Team.MAIN_PM
     assert umbrella.status == TaskStatus.PENDING
     assert umbrella.branch_name is None  # branchless
+    # A Main-PM coordination root is never code — the umbrella is planning-typed.
+    assert umbrella.task_type == TaskType.PLANNING
 
     a, b, c = [await db_session.get(TaskTable, UUID(sid)) for sid in ids]
     for sub in (a, b, c):
@@ -517,6 +568,11 @@ async def test_confirm_live_batch_builds_umbrella_and_sequenced_subtasks(
         assert sub.batch_id == umbrella.batch_id
         assert sub.team == Team.MAIN_PM
         assert sub.status == TaskStatus.PENDING
+        # Each root-subtask is a Main-PM coordination root: code->planning coerced
+        # at intake so main_pm + code can never coexist (the 2026-06-27 meltdown
+        # shape). It still gets its own branch + PR + submit_root + pr_review gate
+        # — the gate is branch-keyed, not task_type-keyed.
+        assert sub.task_type == TaskType.PLANNING
     assert a.project_id == project1
     assert b.project_id == project1
     assert c.project_id == project2
@@ -630,3 +686,216 @@ def test_preview_batch_rejects_empty() -> None:
     service = get_prompter_service()
     with pytest.raises(ValidationError):
         service.preview_batch([])
+
+
+def test_preview_batch_tolerates_bare_string_the_work() -> None:
+    """Regression: the LLM sometimes emits the_work as bare team-name strings.
+    preview_batch must not 500 on that shape (it did: 'str' has no 'get')."""
+    service = get_prompter_service()
+    drafts: list[dict[str, Any]] = [
+        {
+            "title": "A",
+            "project_id": str(uuid4()),
+            "the_work": ["backend"],
+            "intends_to_touch": ["a.py"],
+        },
+        {
+            "title": "B",
+            "project_id": str(uuid4()),
+            "the_work": ["backend", "frontend"],
+            "intends_to_touch": ["b.py"],
+        },
+    ]
+    result = service.preview_batch(drafts)
+    assert isinstance(result["waves"], list)
+    assert isinstance(result["warnings"], list)
+
+
+# =============================================================================
+# Per-cell project map (multi-cell MegaTask root-subtask seam) — pure helpers
+# =============================================================================
+
+
+def _work(team: str, project_id: UUID | None) -> dict[str, Any]:
+    entry: dict[str, Any] = {"team": team, "summary": "s", "items": ["x"]}
+    if project_id is not None:
+        entry["project_id"] = str(project_id)
+    return entry
+
+
+def test_draft_cell_map_collects_per_cell_projects_in_order() -> None:
+    """A multi-cell draft yields one (team, project_id) per the_work entry,
+    in the_work order, de-duped by team."""
+    be_proj, fe_proj = uuid4(), uuid4()
+    draft = {
+        "the_work": [
+            _work("backend", be_proj),
+            _work("frontend", fe_proj),
+        ]
+    }
+    assert _draft_cell_map(draft) == [(Team.BACKEND, be_proj), (Team.FRONTEND, fe_proj)]
+
+
+def test_draft_cell_map_dedupes_repeated_team_keeping_first() -> None:
+    """Two entries for the same cell (LLM noise) keep the first mapping — a
+    task_cell_projects row is unique per (task, team)."""
+    first, second = uuid4(), uuid4()
+    draft = {
+        "the_work": [
+            _work("backend", first),
+            _work("backend", second),
+        ]
+    }
+    assert _draft_cell_map(draft) == [(Team.BACKEND, first)]
+
+
+def test_draft_cell_map_skips_entries_without_project_id() -> None:
+    """An entry with no project_id (single-cell legacy or a bare team string) is
+    skipped — the draft then falls back to its top-level project_id."""
+    be_proj = uuid4()
+    draft = {
+        "the_work": [
+            _work("backend", be_proj),
+            {"team": "frontend", "summary": "s", "items": []},  # no project_id
+        ]
+    }
+    assert _draft_cell_map(draft) == [(Team.BACKEND, be_proj)]
+
+
+def test_draft_cell_map_empty_when_no_entry_has_project_id() -> None:
+    """A legacy single-cell draft (top-level project_id, bare-string the_work)
+    yields an empty map — the caller falls back to the top-level project_id."""
+    assert _draft_cell_map({"the_work": ["backend", "frontend"]}) == []
+    assert _draft_cell_map({"the_work": [{"team": "backend"}]}) == []
+
+
+def test_draft_cell_map_ignores_off_enum_teams_and_bad_uuids() -> None:
+    """Off-enum team names and malformed project_ids are skipped, not crashed on
+    (the intake agent is an LLM)."""
+    good = uuid4()
+    draft = {
+        "the_work": [
+            _work("backend", good),
+            {"team": "marketing", "project_id": str(uuid4())},  # not a cell
+            _work("frontend", None),  # missing
+            {"team": "ux_ui", "project_id": "not-a-uuid"},  # bad uuid
+        ]
+    }
+    assert _draft_cell_map(draft) == [(Team.BACKEND, good)]
+
+
+def test_validate_batch_scope_accepts_single_multi_cell_draft() -> None:
+    """One 2-cell draft already spans ≥2 distinct projects → valid MegaTask."""
+    be_proj, fe_proj = uuid4(), uuid4()
+    drafts = [
+        {
+            "title": "S1",
+            "acceptance_criteria": ["a"],
+            "the_work": [
+                _work("backend", be_proj),
+                _work("frontend", fe_proj),
+            ],
+        }
+    ]
+    # Must not raise: 2 distinct projects across the one draft's cells.
+    PrompterService._validate_batch_scope(drafts, [be_proj, fe_proj])
+
+
+def test_validate_batch_scope_rejects_out_of_scope_per_cell_project() -> None:
+    """A per-cell project_id outside the scoped set is refused."""
+    in_scope, out_of_scope = uuid4(), uuid4()
+    drafts = [
+        {
+            "title": "S1",
+            "acceptance_criteria": ["a"],
+            "the_work": [
+                _work("backend", in_scope),
+                _work("frontend", out_of_scope),
+            ],
+        }
+    ]
+    with pytest.raises(ValidationError, match="outside this MegaTask"):
+        PrompterService._validate_batch_scope(drafts, [in_scope, uuid4()])
+
+
+def test_validate_batch_scope_rejects_draft_with_no_project() -> None:
+    """A draft with neither a per-cell map nor a top-level project_id is refused."""
+    drafts = [
+        {
+            "title": "S1",
+            "acceptance_criteria": ["a"],
+            "the_work": [_work("backend", None), _work("frontend", None)],
+        }
+    ]
+    with pytest.raises(ValidationError, match="has no project"):
+        PrompterService._validate_batch_scope(drafts, [uuid4(), uuid4()])
+
+
+def test_validate_batch_scope_distinct_count_spans_all_cells() -> None:
+    """The ≥2 minimum counts distinct projects across ALL drafts' cells, not per
+    draft. Two single-cell drafts on the same project still fail (degenerate)."""
+    only = uuid4()
+    drafts = [
+        {
+            "title": "A",
+            "acceptance_criteria": ["a"],
+            "the_work": [_work("backend", only)],
+        },
+        {
+            "title": "B",
+            "acceptance_criteria": ["b"],
+            "the_work": [_work("frontend", only)],  # same project, different cell
+        },
+    ]
+    with pytest.raises(ValidationError, match="at least two distinct projects"):
+        PrompterService._validate_batch_scope(drafts, [only, uuid4()])
+
+
+def test_validate_batch_scope_legacy_single_cell_drafts_still_work() -> None:
+    """Back-compat: drafts using a top-level project_id (no the_work map) still
+    validate against the scope and the ≥2 distinct minimum."""
+    p1, p2 = uuid4(), uuid4()
+    drafts = [
+        {"title": "A", "acceptance_criteria": ["a"], "project_id": str(p1)},
+        {"title": "B", "acceptance_criteria": ["b"], "project_id": str(p2)},
+    ]
+    PrompterService._validate_batch_scope(drafts, [p1, p2])
+
+
+@pytest.mark.asyncio
+async def test_resolve_owning_team_multi_cell_map_routes_to_main_pm() -> None:
+    """A multi-cell ad-hoc map is a coordination root (mirrors a product root), so
+    it routes to the Main PM — never the lead cell (a cell PM can't delegate
+    cross-cell; that would deadlock the fan-out). No DB access on this branch."""
+    service = get_prompter_service()  # no db — the cell-map branch never reads it
+    be_proj, fe_proj = uuid4(), uuid4()
+    draft = {
+        "the_work": [
+            _work("backend", be_proj),
+            _work("frontend", fe_proj),
+        ]
+    }
+    team = await service._resolve_owning_team(
+        draft,
+        resolved_product_id=None,
+        resolved_assigned_to=None,
+        team_override=None,
+        default_lead=Team.BACKEND,
+    )
+    assert team is Team.MAIN_PM
+
+
+@pytest.mark.asyncio
+async def test_resolve_owning_team_single_cell_still_routes_to_lead_cell() -> None:
+    """A single-cell project draft (no product, no multi-cell map) keeps its
+    legacy owner: the lead cell."""
+    service = get_prompter_service()
+    draft = {"the_work": [_work("backend", uuid4())]}
+    team = await service._resolve_owning_team(
+        draft,
+        resolved_product_id=None,
+        resolved_assigned_to=None,
+        team_override=None,
+        default_lead=Team.BACKEND,
+    )
+    assert team is Team.BACKEND

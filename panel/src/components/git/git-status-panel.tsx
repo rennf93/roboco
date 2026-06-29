@@ -46,7 +46,8 @@ export function GitStatusPanel({ status, isLoading }: GitStatusPanelProps) {
     );
   }
 
-  const hasChanges = status.staged_files.length > 0 ||
+  const hasChanges =
+    status.staged_files.length > 0 ||
     status.unstaged_files.length > 0 ||
     status.untracked_files.length > 0;
 
@@ -108,7 +109,9 @@ export function GitStatusPanel({ status, isLoading }: GitStatusPanelProps) {
                         className="flex items-center gap-2 text-sm py-0.5 px-2 rounded hover:bg-muted"
                       >
                         <FileCode className="h-3.5 w-3.5 text-green-600" />
-                        <span className="truncate font-mono text-xs">{file}</span>
+                        <span className="truncate font-mono text-xs">
+                          {file}
+                        </span>
                       </div>
                     ))}
                   </div>
@@ -128,7 +131,9 @@ export function GitStatusPanel({ status, isLoading }: GitStatusPanelProps) {
                         className="flex items-center gap-2 text-sm py-0.5 px-2 rounded hover:bg-muted"
                       >
                         <FileX className="h-3.5 w-3.5 text-orange-600" />
-                        <span className="truncate font-mono text-xs">{file}</span>
+                        <span className="truncate font-mono text-xs">
+                          {file}
+                        </span>
                       </div>
                     ))}
                   </div>
@@ -148,7 +153,9 @@ export function GitStatusPanel({ status, isLoading }: GitStatusPanelProps) {
                         className="flex items-center gap-2 text-sm py-0.5 px-2 rounded hover:bg-muted"
                       >
                         <FilePlus className="h-3.5 w-3.5 text-blue-600" />
-                        <span className="truncate font-mono text-xs">{file}</span>
+                        <span className="truncate font-mono text-xs">
+                          {file}
+                        </span>
                       </div>
                     ))}
                   </div>

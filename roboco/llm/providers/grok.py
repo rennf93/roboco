@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
@@ -36,6 +37,8 @@ from roboco.llm.providers.base import AgentProvider, ProviderError, SpawnResult
 
 if TYPE_CHECKING:
     from roboco.models.runtime import OrchestratorAgentConfig as AgentConfig
+
+_log = logging.getLogger(__name__)
 
 # The Grok agent image (own image, like every other agent role). Overridable for
 # tests / staged rollout.
@@ -53,7 +56,12 @@ GROK_AUTH_HOST_PATH = os.environ.get("ROBOCO_HOST_GROK_DIR", str(Path.home() / "
 
 # In-container paths.
 _MCP_CONFIG_IN_CONTAINER = "/app/mcp-config.json"
-_GROK_AUTH_IN_CONTAINER = "/home/agent/.grok/auth.json"
+# The host ~/.grok DIRECTORY (not a single auth.json file) is mounted RO here:
+# a single-file bind mount pins the inode so the orchestrator's atomic
+# tmp+rename refresh never reaches a running container. The entrypoint
+# symlinks ~/.grok/auth.json -> this RO mount; grok's writable state lives in
+# the image's ~/.grok.
+_GROK_AUTH_DIR_IN_CONTAINER = "/home/agent/.grok-auth-ro"
 # Per-agent data dir (the host side is reused from the shared assembly): the
 # entrypoint writes the captured token usage here so the orchestrator reads it
 # back at finalize, the grok analogue of the mounted Claude transcript.
@@ -152,19 +160,35 @@ class GrokCliProvider(AgentProvider):
 
     @staticmethod
     def _append_grok_auth_mount(cmd: list[str]) -> None:
-        """Mount the host's SuperGrok ``auth.json`` (read-only) into ~/.grok.
+        """Mount the host's SuperGrok ``~/.grok`` directory (read-only).
 
-        Read-only so concurrent containers can't corrupt the shared subscription
-        credential; grok writes its per-run state (the rendered ``config.toml``,
-        ``sessions/``) into the image's own ``~/.grok``. The ~6h token is kept
-        live host-side by the orchestrator (``_refresh_grok_auth`` ->
-        :func:`roboco.llm.providers.grok_auth.refresh_if_stale`), so a fresh
-        credential is always what gets mounted; the entrypoint fails fast if it
-        somehow still finds an expired one rather than hanging at grok's login.
+        The mount is the DIRECTORY, not the single ``auth.json`` file: a
+        single-file bind mount pins the inode, so when the orchestrator
+        atomically refreshes the token (``tmp.replace`` = rename within the
+        host ``~/.grok``), a running container kept reading the stale inode and
+        hung at grok's login prompt once the original ~6h token expired. A
+        directory bind mount sees the rename, so the refreshed ``auth.json``
+        propagates to running containers. The entrypoint symlinks
+        ``~/.grok/auth.json`` at this RO directory mount; grok's own writable
+        state (``config.toml``, ``sessions/``) lands in the image's ``~/.grok``.
+        Read-only so concurrent containers can't corrupt the shared credential.
         """
-        auth_json = Path(GROK_AUTH_HOST_PATH) / "auth.json"
-        if auth_json.exists():
-            cmd.extend(["-v", f"{auth_json}:{_GROK_AUTH_IN_CONTAINER}:ro"])
+        auth_dir = Path(GROK_AUTH_HOST_PATH)
+        if (auth_dir / "auth.json").exists():
+            cmd.extend(["-v", f"{auth_dir}:{_GROK_AUTH_DIR_IN_CONTAINER}:ro"])
+        else:
+            # The mount is the grok subscription credential — without it the
+            # container starts but the entrypoint ``--check`` backstop refuses
+            # to run (exit 78) and the agent is doomed. Fail loud at spawn time
+            # so the operator sees the missing credential immediately instead
+            # of diagnosing a later exit-78 from the container log markers.
+            _log.warning(
+                "grok host auth.json not found at %s — spawn will start the "
+                "container but it is doomed to exit 78 (no SuperGrok credential). "
+                "Run `grok login` on the host (or set ROBOCO_HOST_GROK_DIR to the "
+                "directory holding auth.json) before spawning Grok agents.",
+                auth_dir / "auth.json",
+            )
 
     @staticmethod
     def _append_usage_mount(cmd: list[str], hosts: dict[str, str | None]) -> None:

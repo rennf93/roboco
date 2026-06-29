@@ -18,6 +18,7 @@ from roboco.db.tables import (
     JournalEntryTable,
     ProductTable,
     ProjectTable,
+    WorkSessionTable,
 )
 from roboco.events import EventType
 from roboco.foundation.policy.content import markers
@@ -31,6 +32,7 @@ from roboco.models.base import (
     TaskType,
 )
 from roboco.models.task import TaskCreateRequest
+from roboco.models.work_session import WorkSessionStatus
 from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.base import NotFoundError
 from roboco.services.task import SoftBlockInfo, TaskService
@@ -602,6 +604,396 @@ async def test_fail_qa_with_no_original_dev_unassigns(
     assert failed.assigned_to is None
 
 
+@pytest.mark.asyncio
+async def test_fail_qa_routes_to_dev_via_work_session_when_marker_missing(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """A dev task in needs_revision with a MISSING original_developer marker
+    routes back to the developer who worked it (resolved from the work
+    session), NOT to the pool.
+
+    Unassigning sends the task to the pool where a cell PM (PMs can re-claim
+    needs_revision) grabs it — the live 2026-06-27 "needs revision on a dev
+    task sent to the cell PM" bug. The marker is the fast path; the work
+    session is the load-bearing fallback (the marker is unreliable in
+    practice). The fallback also self-heals the marker so a subsequent
+    re-fail takes the fast path.
+    """
+    svc = task_setup["svc"]
+    dev_id = task_setup["agent_id"]
+    task = await svc.create(_req(task_setup))
+    task.branch_name = "feature/backend/abc"
+    await db_session.flush()
+
+    # The dev worked the task (a work session exists) but the marker was never
+    # set — e.g. the task was rerouted before submit_for_qa ran, or the marker
+    # failed to persist (live observation). This is the "OG DEV NEVER
+    # PERSISTED" scenario.
+    ws = WorkSessionTable(
+        id=uuid4(),
+        project_id=task_setup["project_id"],
+        task_id=task.id,
+        agent_id=dev_id,
+        branch_name="feature/backend/abc",
+        base_branch="main",
+        target_branch="main",
+        status=WorkSessionStatus.ACTIVE,
+    )
+    db_session.add(ws)
+
+    # A separate QA agent claims and fails the task.
+    qa = AgentTable(
+        id=uuid4(),
+        name="QA",
+        slug=f"be-qa-{uuid4().hex[:8]}",
+        role=AgentRole.QA,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="qa",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(qa)
+    await db_session.flush()
+
+    task.status = TaskStatus.AWAITING_QA
+    task.assigned_to = qa.id
+    task.claimed_by = qa.id
+    # No orchestration_markers — extract_original_developer returns None.
+    await db_session.flush()
+
+    failed = await svc.fail_qa(task.id, notes="needs more")
+    assert failed is not None
+    assert failed.status == TaskStatus.NEEDS_REVISION
+    # Routed back to the dev — NOT unassigned (pool, where a cell PM would
+    # claim it) and NOT left on the QA.
+    assert failed.assigned_to == dev_id
+    assert failed.claimed_by == dev_id
+    # Self-healed: the marker is now stamped so the next fail_qa uses the
+    # fast path and the QA-review index attributes the work correctly.
+    assert markers.get_original_developer(failed) == str(dev_id)
+
+
+@pytest.mark.asyncio
+async def test_create_subtask_round_trips_collision_surfaces_and_deps(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """create_subtask forwards intends_to_touch / adds_migration /
+    touches_shared / sequence / dependency_ids onto the created subtask.
+
+    Previously these were dropped inside create_subtask's `prepared`
+    TaskCreateRequest, so a dev task delegated with a collision surface or an
+    explicit dependency lost it before persistence — the root cause of
+    dev-task dependency_ids always being [] (the live 2026-06-27 out-of-order
+    break). The base ``create`` persists them (task.py:878-884); this test
+    locks the forwarding through create_subtask.
+    """
+    svc = task_setup["svc"]
+    parent = await svc.create(_req(task_setup))
+    await db_session.flush()
+    dep_id = uuid4()
+    sub = await svc.create_subtask(
+        TaskCreateRequest(
+            title="child",
+            description="child description with enough length",
+            acceptance_criteria=["ac1"],
+            team=Team.BACKEND,
+            created_by=task_setup["agent_id"],
+            project_id=task_setup["project_id"],
+            parent_task_id=parent.id,
+            task_type=TaskType.CODE,
+            nature=TaskNature.TECHNICAL,
+            estimated_complexity=Complexity.MEDIUM,
+            sequence=3,
+            dependency_ids=[dep_id],
+            intends_to_touch=["roboco/services/foo.py"],
+            adds_migration=True,
+            touches_shared=True,
+        )
+    )
+    assert sub.intends_to_touch == ["roboco/services/foo.py"]
+    assert sub.adds_migration is True
+    assert sub.touches_shared is True
+    expected_sequence = 3
+    assert sub.sequence == expected_sequence
+    assert sub.dependency_ids == [dep_id]
+
+
+@pytest.mark.asyncio
+async def test_wire_sibling_collision_dag_serializes_overlapping_dev_tasks(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """wire_sibling_collision_dag runs the collision analyzer over a parent's
+    surfaced dev-task siblings and wires dependency_ids so a later dev task
+    whose surface overlaps an earlier one stays PENDING until it completes.
+
+    T1 (a.py) and T2 (b.py) are disjoint -> parallel (no edge). T3 (a.py)
+    overlaps T1 -> T3 depends-on T1. The explicit `depends_on` override on T3
+    (forwarded through create_subtask in S1) is also present."""
+    svc = task_setup["svc"]
+    parent = await svc.create(_req(task_setup))
+    await db_session.flush()
+
+    async def _dev(seq: int, surface: list[str]) -> Any:
+        t = await svc.create_subtask(
+            TaskCreateRequest(
+                title=f"dev-{seq}",
+                description=f"dev task {seq} description long enough",
+                acceptance_criteria=["ac"],
+                team=Team.BACKEND,
+                created_by=task_setup["agent_id"],
+                project_id=task_setup["project_id"],
+                parent_task_id=parent.id,
+                task_type=TaskType.CODE,
+                nature=TaskNature.TECHNICAL,
+                estimated_complexity=Complexity.MEDIUM,
+                sequence=seq,
+                intends_to_touch=surface,
+            )
+        )
+        await svc.set_sequence(t.id, seq)
+        return t
+
+    t1 = await _dev(0, ["roboco/api/a.py"])
+    t2 = await _dev(1, ["roboco/api/b.py"])
+    t3 = await _dev(2, ["roboco/api/a.py"])
+
+    await svc.wire_sibling_collision_dag(parent.id)
+
+    # Reload to read the wired dependency_ids.
+    r1 = await svc.get(t1.id)
+    r2 = await svc.get(t2.id)
+    r3 = await svc.get(t3.id)
+    assert r1 is not None and r2 is not None and r3 is not None
+    # T1 and T2 are disjoint -> parallel (no collision edge between them).
+    assert r1.dependency_ids == []
+    assert r2.dependency_ids == []
+    # T3 overlaps T1 (same file, same repo) -> T3 depends-on T1.
+    assert t1.id in r3.dependency_ids
+    # T2 does NOT collide with T3 (disjoint file) -> no T2->T3 edge.
+    assert t2.id not in r3.dependency_ids
+
+
+@pytest.mark.asyncio
+async def test_wire_cell_task_wave_chain_chains_to_predecessor_cell_tasks(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """Kind 2: a cell-task under root-subtask R1 depends on every cell-task
+    under R0, where R1 depends-on R0 (the kind-1 wave-chain edge on R1).
+
+    A root-subtask may fan to several cell-tasks (different cells) — both of
+    R0's cell-tasks are wired onto R1's cell-task so its branch carries the
+    whole previous wave's merged cell work. Idempotent (add_dependency dedupes).
+    """
+    svc = task_setup["svc"]
+    # Two root-subtasks; R1 depends-on R0 (the kind-1 edge lives on R1).
+    r0 = await svc.create(
+        _req(
+            task_setup,
+            title="r0",
+            team=Team.MAIN_PM,
+            task_type=TaskType.PLANNING,
+            nature=TaskNature.TECHNICAL,
+        )
+    )
+    r1 = await svc.create(
+        _req(
+            task_setup,
+            title="r1",
+            team=Team.MAIN_PM,
+            task_type=TaskType.PLANNING,
+            nature=TaskNature.TECHNICAL,
+            dependency_ids=[UUID(str(r0.id))],
+        )
+    )
+    await db_session.flush()
+
+    async def _cell(parent_id: UUID, team: Team) -> Any:
+        return await svc.create_subtask(
+            TaskCreateRequest(
+                title=f"ct-{team.value}",
+                description="cell task description long enough",
+                acceptance_criteria=["ac"],
+                team=team,
+                created_by=task_setup["agent_id"],
+                project_id=task_setup["project_id"],
+                parent_task_id=parent_id,
+                task_type=TaskType.CODE,
+                nature=TaskNature.TECHNICAL,
+                estimated_complexity=Complexity.MEDIUM,
+            )
+        )
+
+    # R0 fans to two cell-tasks (backend + frontend — the cross-cell fanout the
+    # CEO confirmed a root-subtask may carry).
+    ct0a = await _cell(UUID(str(r0.id)), Team.BACKEND)
+    ct0b = await _cell(UUID(str(r0.id)), Team.FRONTEND)
+    # R1's cell-task.
+    ct1 = await _cell(UUID(str(r1.id)), Team.BACKEND)
+
+    await svc.wire_cell_task_wave_chain(ct1.id)
+    # Idempotent: a second run adds no duplicates.
+    await svc.wire_cell_task_wave_chain(ct1.id)
+
+    r1ct = await svc.get(ct1.id)
+    assert r1ct is not None
+    # ct1 depends on BOTH of R0's cell-tasks (the whole previous wave's set).
+    assert UUID(str(ct0a.id)) in r1ct.dependency_ids
+    assert UUID(str(ct0b.id)) in r1ct.dependency_ids
+    # Idempotency: each predecessor appears once.
+    assert r1ct.dependency_ids.count(UUID(str(ct0a.id))) == 1
+
+
+@pytest.mark.asyncio
+async def test_wire_by_osmosis_edge_first_dev_task_depends_on_prev_wave_tail(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """Kind 4: the first dev task (sequence 0) of a cell-task under R1 depends
+    on the tail (highest-sequence) dev task of R0's cell-task. A non-first dev
+    task (sequence > 0) gets no by-osmosis edge (it inherits the tail via the
+    kind-3 collision DAG or shares the merged base)."""
+    svc = task_setup["svc"]
+    r0 = await svc.create(
+        _req(
+            task_setup,
+            title="r0",
+            team=Team.MAIN_PM,
+            task_type=TaskType.PLANNING,
+            nature=TaskNature.TECHNICAL,
+        )
+    )
+    r1 = await svc.create(
+        _req(
+            task_setup,
+            title="r1",
+            team=Team.MAIN_PM,
+            task_type=TaskType.PLANNING,
+            nature=TaskNature.TECHNICAL,
+            dependency_ids=[UUID(str(r0.id))],
+        )
+    )
+    await db_session.flush()
+
+    async def _sub(parent_id: UUID, seq: int) -> Any:
+        t = await svc.create_subtask(
+            TaskCreateRequest(
+                title=f"t{seq}",
+                description=f"subtask {seq} description long enough",
+                acceptance_criteria=["ac"],
+                team=Team.BACKEND,
+                created_by=task_setup["agent_id"],
+                project_id=task_setup["project_id"],
+                parent_task_id=parent_id,
+                task_type=TaskType.CODE,
+                nature=TaskNature.TECHNICAL,
+                estimated_complexity=Complexity.MEDIUM,
+                sequence=seq,
+            )
+        )
+        await svc.set_sequence(t.id, seq)
+        return t
+
+    # R0's cell-task with two dev tasks; tail = sequence 1.
+    ct0 = await _sub(UUID(str(r0.id)), 0)
+    d0a = await _sub(UUID(str(ct0.id)), 0)
+    d0b = await _sub(UUID(str(ct0.id)), 1)  # tail
+    # R1's cell-task with the first dev task (sequence 0) + a later one.
+    ct1 = await _sub(UUID(str(r1.id)), 0)
+    first = await _sub(UUID(str(ct1.id)), 0)
+    second = await _sub(UUID(str(ct1.id)), 1)
+
+    await svc.wire_by_osmosis_edge(first.id)
+    await svc.wire_by_osmosis_edge(second.id)
+
+    rf = await svc.get(first.id)
+    rs = await svc.get(second.id)
+    assert rf is not None and rs is not None
+    # The first dev task carries the by-osmosis edge to R0's cell-task's TAIL
+    # (d0b, sequence 1) — not the non-tail d0a.
+    assert UUID(str(d0b.id)) in rf.dependency_ids
+    assert UUID(str(d0a.id)) not in rf.dependency_ids
+    # The second dev task (sequence 1) gets NO by-osmosis edge.
+    assert UUID(str(d0b.id)) not in rs.dependency_ids
+
+
+@pytest.mark.asyncio
+async def test_fail_qa_work_session_fallback_excludes_qa_session(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """The work-session fallback must not hand the task back to the QA.
+
+    If the only developer work session were the QA's (it isn't — QA sessions
+    are skipped at creation — but defensively the exclude filter must keep a
+    QA-attributed session from being misread as the revision dev), the
+    fallback would loop the task back to the reviewer. The exclude filter
+    (qa_agent_id) guarantees only a real developer is resolved.
+    """
+    svc = task_setup["svc"]
+    dev_id = task_setup["agent_id"]
+    task = await svc.create(_req(task_setup))
+    task.branch_name = "feature/backend/abc"
+    await db_session.flush()
+
+    qa = AgentTable(
+        id=uuid4(),
+        name="QA",
+        slug=f"be-qa-{uuid4().hex[:8]}",
+        role=AgentRole.QA,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="qa",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(qa)
+    await db_session.flush()
+
+    # A QA-attributed work session (older, abandoned) and a dev-attributed one
+    # (newer, active). Only one ACTIVE session may exist per task
+    # (``uq_work_sessions_one_active_per_task``), so the QA session is
+    # ABANDONED — realistic for a stale QA review session and still in the
+    # fallback query's result set (the query filters by task_id + agent_id,
+    # not by status). The exclude filter (``agent_id != qa_agent_id``) is
+    # what must keep the QA session from being misread as the revision dev.
+    qa_ws = WorkSessionTable(
+        id=uuid4(),
+        project_id=task_setup["project_id"],
+        task_id=task.id,
+        agent_id=qa.id,
+        branch_name="feature/backend/abc",
+        base_branch="main",
+        target_branch="main",
+        status=WorkSessionStatus.ABANDONED,
+    )
+    dev_ws = WorkSessionTable(
+        id=uuid4(),
+        project_id=task_setup["project_id"],
+        task_id=task.id,
+        agent_id=dev_id,
+        branch_name="feature/backend/abc",
+        base_branch="main",
+        target_branch="main",
+        status=WorkSessionStatus.ACTIVE,
+    )
+    db_session.add_all([qa_ws, dev_ws])
+    await db_session.flush()
+
+    task.status = TaskStatus.AWAITING_QA
+    task.assigned_to = qa.id
+    task.claimed_by = qa.id
+    await db_session.flush()
+
+    failed = await svc.fail_qa(task.id, notes="needs more")
+    assert failed is not None
+    # Resolved to the dev, NOT the QA — the exclude filter did its job.
+    assert failed.assigned_to == dev_id
+    assert failed.assigned_to != qa.id
+
+
 # ---------------------------------------------------------------------------
 # ceo_approve / ceo_reject — happy paths
 # ---------------------------------------------------------------------------
@@ -697,6 +1089,25 @@ async def test_ceo_reject_routes_coordination_task_to_main_pm(
                 metrics={},
             )
         )
+    # The CEO rejects the task; ceo_reject emits an audit row keyed to the CEO
+    # agent, so the CEO row must exist (fk_audit_log_agent_id_agents).
+    ceo_id = UUID(AGENT_UUIDS["ceo"])
+    if await db_session.get(AgentTable, ceo_id) is None:
+        db_session.add(
+            AgentTable(
+                id=ceo_id,
+                name="CEO",
+                slug="ceo",
+                role=AgentRole.CEO,
+                team=Team.MAIN_PM,
+                status=AgentStatus.ACTIVE,
+                model_config={},
+                system_prompt="ceo",
+                capabilities=[],
+                permissions=[],
+                metrics={},
+            )
+        )
     product = ProductTable(
         name="P", slug=f"p-{uuid4().hex[:8]}", created_by=task_setup["agent_id"]
     )
@@ -742,6 +1153,27 @@ async def test_ceo_reject_routes_batch_umbrella_to_main_pm(
                 system_prompt="pm",
                 capabilities=[],
                 permissions={},
+                metrics={},
+            )
+        )
+        await db_session.flush()
+
+    # The CEO rejects the umbrella; ceo_reject emits an audit row keyed to the
+    # CEO agent, so the CEO row must exist (fk_audit_log_agent_id_agents).
+    ceo_id = UUID(AGENT_UUIDS["ceo"])
+    if await db_session.get(AgentTable, ceo_id) is None:
+        db_session.add(
+            AgentTable(
+                id=ceo_id,
+                name="CEO",
+                slug="ceo",
+                role=AgentRole.CEO,
+                team=Team.MAIN_PM,
+                status=AgentStatus.ACTIVE,
+                model_config={},
+                system_prompt="ceo",
+                capabilities=[],
+                permissions=[],
                 metrics={},
             )
         )
@@ -1219,6 +1651,90 @@ async def test_submit_for_pm_review_advances_with_notes(
     )
     assert out is not None
     assert out.status == TaskStatus.AWAITING_PM_REVIEW
+
+
+@pytest.mark.asyncio
+async def test_submit_for_pm_review_waives_branch_pr_for_batch_umbrella(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """A MegaTask umbrella is branchless by design yet must walk
+    in_progress -> awaiting_pm_review; submit_for_pm_review waives the
+    branch+PR requirement for a batch umbrella so completion does not deadlock."""
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup))
+    task.status = TaskStatus.IN_PROGRESS
+    task.project_id = None  # umbrella: branchless, no repo, no PR
+    task.product_id = None
+    task.batch_id = uuid4()
+    task.parent_task_id = None  # umbrella is top-level
+    task.branch_name = None
+    task.pr_created = False
+    task.pr_number = None
+    await db_session.flush()
+    out = await svc.submit_for_pm_review(task.id, agent_role="main_pm")
+    assert out is not None
+    assert out.status == TaskStatus.AWAITING_PM_REVIEW
+
+
+@pytest.mark.asyncio
+async def test_activate_batch_root_subtasks_retypes_code_to_planning(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """A board-routed MegaTask root-subtask is created in BACKLOG with
+    task_type=code; _activate_batch_root_subtasks must retype it code->planning
+    when flipping team to main_pm, mirroring approve_and_start, or the
+    main_pm+code combo recurs."""
+    svc = task_setup["svc"]
+    # approve_and_start resolves the main-pm agent by slug — seed it.
+    main_pm = AgentTable(
+        id=uuid4(),
+        name="Main PM",
+        slug="main-pm",
+        role=AgentRole.MAIN_PM,
+        team=Team.MAIN_PM,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="main-pm",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(main_pm)
+    await db_session.flush()
+
+    batch = uuid4()
+    # Umbrella: board-routed, pending, board review complete, branchless.
+    umbrella = await svc.create(_req(task_setup, title="umbrella"))
+    umbrella.status = TaskStatus.PENDING
+    umbrella.team = cast("Any", Team.BOARD)
+    umbrella.board_review_complete = True
+    umbrella.project_id = None
+    umbrella.product_id = None
+    umbrella.batch_id = batch
+    umbrella.parent_task_id = None
+    umbrella.task_type = cast("Any", TaskType.PLANNING)
+    await db_session.flush()
+
+    # Root-subtask: held in BACKLOG on the board, code-typed (the danger case).
+    child = await svc.create(
+        _req(task_setup, title="root-sub", parent_task_id=umbrella.id)
+    )
+    child.status = TaskStatus.BACKLOG
+    child.team = cast("Any", Team.BOARD)
+    child.batch_id = batch
+    child.parent_task_id = umbrella.id
+    child.task_type = cast("Any", TaskType.CODE)
+    await db_session.flush()
+
+    approved = await svc.approve_and_start(umbrella.id)
+    assert approved is not None
+
+    refreshed = await svc.get(child.id)
+    assert refreshed is not None
+    assert refreshed.status == TaskStatus.PENDING
+    assert refreshed.team == Team.MAIN_PM
+    # The fix: a main_pm team may not own a code task -> retype to planning.
+    assert refreshed.task_type == TaskType.PLANNING
 
 
 # ---------------------------------------------------------------------------

@@ -52,7 +52,10 @@ export function EntryFilter({
           className="pl-9"
         />
       </div>
-      <Select value={typeFilter} onValueChange={(v) => onTypeChange(v as JournalEntryType | "all")}>
+      <Select
+        value={typeFilter}
+        onValueChange={(v) => onTypeChange(v as JournalEntryType | "all")}
+      >
         <SelectTrigger className="w-auto min-w-32 shrink-0">
           <SelectValue placeholder="Filter by type" />
         </SelectTrigger>

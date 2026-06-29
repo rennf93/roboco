@@ -25,7 +25,10 @@ function formatDuration(date: string): string {
   return `${diffDays}d`;
 }
 
-export function ActiveBlockersPanel({ tasks, isLoading }: ActiveBlockersPanelProps) {
+export function ActiveBlockersPanel({
+  tasks,
+  isLoading,
+}: ActiveBlockersPanelProps) {
   // Filter blocked tasks and sort by how long they've been blocked
   const blockedTasks = (tasks ?? [])
     .filter((t) => t.status === TaskStatus.BLOCKED)
@@ -78,7 +81,8 @@ export function ActiveBlockersPanel({ tasks, isLoading }: ActiveBlockersPanelPro
                     <p className="text-sm truncate">{task.title}</p>
                     <div className="flex items-center gap-1 mt-1 text-xs text-muted-foreground">
                       <Clock className="h-3 w-3" />
-                      Blocked for {formatDuration(task.updated_at ?? task.created_at)}
+                      Blocked for{" "}
+                      {formatDuration(task.updated_at ?? task.created_at)}
                     </div>
                   </div>
                 </div>

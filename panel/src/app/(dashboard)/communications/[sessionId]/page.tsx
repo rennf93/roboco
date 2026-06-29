@@ -37,9 +37,10 @@ function SessionDetailContent() {
   const groupId = searchParams.get("group");
 
   // Build back URL preserving context
-  const backUrl = channelId && groupId
-    ? `/communications?channel=${channelId}&group=${groupId}`
-    : "/communications";
+  const backUrl =
+    channelId && groupId
+      ? `/communications?channel=${channelId}&group=${groupId}`
+      : "/communications";
   const queryClient = useQueryClient();
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -52,12 +53,20 @@ function SessionDetailContent() {
   // is what stops the panel from accumulating a 404 storm across every dead
   // session it has opened. `refetchMessages` (the manual Refresh button) stays
   // available for live sessions.
-  const { data: session, isLoading: loadingSession, refetch: refetchSession } = useSession(sessionId);
-  const { data: messagesData, isLoading: loadingMessages, refetch: refetchMessages } = useSessionMessages(sessionId);
+  const {
+    data: session,
+    isLoading: loadingSession,
+    refetch: refetchSession,
+  } = useSession(sessionId);
+  const {
+    data: messagesData,
+    isLoading: loadingMessages,
+    refetch: refetchMessages,
+  } = useSessionMessages(sessionId);
 
   // Sort messages chronologically (oldest first for chat UI)
   const messages = [...(messagesData?.items || [])].sort(
-    (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
   );
 
   // Track if we've done the initial scroll
@@ -73,11 +82,19 @@ function SessionDetailContent() {
 
   // Send message mutation
   const sendMessage = useMutation({
-    mutationFn: async ({ content, type }: { content: string; type: string }) => {
+    mutationFn: async ({
+      content,
+      type,
+    }: {
+      content: string;
+      type: string;
+    }) => {
       return messagesApi.send(sessionId, content, type);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["messages", "list", sessionId] });
+      queryClient.invalidateQueries({
+        queryKey: ["messages", "list", sessionId],
+      });
       toast.success("Message sent");
     },
     onError: (error: Error) => {
@@ -95,7 +112,8 @@ function SessionDetailContent() {
   };
 
   // Get primary task
-  const primaryTask = session?.task_links?.find(t => t.is_primary) || session?.task_links?.[0];
+  const primaryTask =
+    session?.task_links?.find((t) => t.is_primary) || session?.task_links?.[0];
 
   if (loadingSession) {
     return (
@@ -122,7 +140,8 @@ function SessionDetailContent() {
               <MessageSquare className="h-12 w-12 mx-auto mb-4 text-muted-foreground/50" />
               <h3 className="text-lg font-medium mb-2">Session Not Found</h3>
               <p className="text-sm text-muted-foreground">
-                The session you&apos;re looking for doesn&apos;t exist or has been deleted.
+                The session you&apos;re looking for doesn&apos;t exist or has
+                been deleted.
               </p>
             </div>
           </CardContent>
@@ -162,7 +181,9 @@ function SessionDetailContent() {
       <Card className="mb-4 shrink-0">
         <CardContent className="py-3">
           <div className="flex items-center gap-4 flex-wrap">
-            <Badge variant={session.status === "active" ? "default" : "secondary"}>
+            <Badge
+              variant={session.status === "active" ? "default" : "secondary"}
+            >
               {session.status}
             </Badge>
             <div className="flex items-center gap-1 text-sm text-muted-foreground">
@@ -175,7 +196,8 @@ function SessionDetailContent() {
             </div>
             {session.closed_at && (
               <div className="flex items-center gap-1 text-sm text-muted-foreground">
-                Closed: {format(new Date(session.closed_at), "MMM d, yyyy h:mm a")}
+                Closed:{" "}
+                {format(new Date(session.closed_at), "MMM d, yyyy h:mm a")}
               </div>
             )}
 
@@ -190,7 +212,8 @@ function SessionDetailContent() {
                       href={`/tasks/${primaryTask.task_id}`}
                       className="text-sm text-primary hover:underline"
                     >
-                      {primaryTask.task_title || `Task ${primaryTask.task_id.slice(0, 8)}`}
+                      {primaryTask.task_title ||
+                        `Task ${primaryTask.task_id.slice(0, 8)}`}
                     </Link>
                   )}
                   {session.task_links.length > 1 && (
@@ -232,7 +255,9 @@ function SessionDetailContent() {
               <div className="text-center py-12 text-muted-foreground">
                 <MessageSquare className="h-12 w-12 mx-auto mb-2 opacity-50" />
                 <p>No messages in this session</p>
-                <p className="text-sm">Use the composer below to start the conversation</p>
+                <p className="text-sm">
+                  Use the composer below to start the conversation
+                </p>
               </div>
             ) : (
               <div className="space-y-3">

@@ -22,7 +22,17 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { MoreHorizontal, Play, Pause, CheckCircle, XCircle, Pencil, Trash2, Clock, MessageSquare } from "lucide-react";
+import {
+  MoreHorizontal,
+  Play,
+  Pause,
+  CheckCircle,
+  XCircle,
+  Pencil,
+  Trash2,
+  Clock,
+  MessageSquare,
+} from "lucide-react";
 import { toast } from "sonner";
 import { EditTaskDialog } from "./edit-task-dialog";
 import { RequiredNotesDialog } from "./task-detail/task-action-dialogs";
@@ -155,7 +165,10 @@ export function TaskActions({
                 Awaiting PM Activation
               </DropdownMenuItem>
               {!hasSessions && (
-                <DropdownMenuItem disabled className="text-muted-foreground text-xs">
+                <DropdownMenuItem
+                  disabled
+                  className="text-muted-foreground text-xs"
+                >
                   <MessageSquare className="h-4 w-4 mr-2" />
                   Needs session created
                 </DropdownMenuItem>
@@ -202,26 +215,32 @@ export function TaskActions({
             </DropdownMenuItem>
           )}
 
-          {task.status !== TaskStatus.COMPLETED && 
-           task.status !== TaskStatus.CANCELLED && 
-           task.status !== TaskStatus.BACKLOG && (
-            <>
-              <DropdownMenuSeparator />
+          {task.status !== TaskStatus.COMPLETED &&
+            task.status !== TaskStatus.CANCELLED &&
+            task.status !== TaskStatus.BACKLOG && (
+              <>
+                <DropdownMenuSeparator />
 
-              <DropdownMenuItem onClick={() => handleAction("complete")}>
-                <CheckCircle className="h-4 w-4 mr-2" />
-                Complete
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => handleAction("cancel")} className="text-orange-600">
-                <XCircle className="h-4 w-4 mr-2" />
-                Cancel
-              </DropdownMenuItem>
-            </>
-          )}
+                <DropdownMenuItem onClick={() => handleAction("complete")}>
+                  <CheckCircle className="h-4 w-4 mr-2" />
+                  Complete
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => handleAction("cancel")}
+                  className="text-orange-600"
+                >
+                  <XCircle className="h-4 w-4 mr-2" />
+                  Cancel
+                </DropdownMenuItem>
+              </>
+            )}
 
           {/* Cancel for backlog tasks (allowed - can remove from backlog) */}
           {isBacklog && (
-            <DropdownMenuItem onClick={() => handleAction("cancel")} className="text-orange-600">
+            <DropdownMenuItem
+              onClick={() => handleAction("cancel")}
+              className="text-orange-600"
+            >
               <XCircle className="h-4 w-4 mr-2" />
               Cancel
             </DropdownMenuItem>
@@ -244,11 +263,7 @@ export function TaskActions({
       </DropdownMenu>
 
       {/* Edit Dialog */}
-      <EditTaskDialog
-        task={task}
-        open={editOpen}
-        onOpenChange={setEditOpen}
-      />
+      <EditTaskDialog task={task} open={editOpen} onOpenChange={setEditOpen} />
 
       {/* Complete Dialog */}
       <RequiredNotesDialog
@@ -285,7 +300,8 @@ export function TaskActions({
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Task?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently delete &quot;{task.title}&quot;. This action cannot be undone.
+              This will permanently delete &quot;{task.title}&quot;. This action
+              cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

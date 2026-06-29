@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Any, Literal
 # Re-exported here so callers can import `Role` from this module alongside
 # the lifecycle tables that depend on it. New consumers may also import
 # from `roboco.foundation.identity` directly.
-from roboco.foundation.identity import Role
+from roboco.foundation.identity import Role, Team
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -740,6 +740,13 @@ def _next_hint_open_pr(_t: Any) -> str:
     return "PR opened; call i_am_done(task_id, notes='...') when self-verified"
 
 
+def _next_hint_synced(_t: Any) -> str:
+    return (
+        "branch synced onto its base; continue editing + commit(message),"
+        " then open_pr(task_id) / i_am_done(task_id)"
+    )
+
+
 def _next_hint_after_claim(_t: Any) -> str:
     return (
         "edit + commit(message) for each meaningful change,"
@@ -776,6 +783,27 @@ def _next_hint_qa_review(_t: Any) -> str:
 
 
 def _next_hint_dev_revise(_t: Any) -> str:
+    return "idle - dev will revise and re-submit"
+
+
+def _next_hint_pr_fail(t: Any) -> str:
+    # Steer a pr_fail verdict by owner shape. A Main-PM branch-bearing root is
+    # an assembled cell→root / root→master PR — coordination, not the Main PM's
+    # own code. The rejection is about the cells' merged code, which the Main PM
+    # cannot fix directly (no code verb); it must re-delegate the fixes to the
+    # owning cell PM(s) and wait for re-assembly. Re-submitting the unchanged
+    # root is the 2026-06-27 infinite pr_fail loop. A cell/dev task is revised
+    # in place by its dev, so keep the dev-revise hint there.
+    team = getattr(t, "team", None)
+    team_value = str(getattr(team, "value", team))
+    branch = bool(getattr(t, "branch_name", None))
+    if team_value == Team.MAIN_PM.value and branch:
+        return (
+            "assembled cell work failed review — re-delegate the fixes to the"
+            " owning cell PM(s) via delegate(...), then wait for the cell"
+            " subtasks to complete and the PR to be re-assembled; do NOT"
+            " re-submit the root until then"
+        )
     return "idle - dev will revise and re-submit"
 
 
@@ -863,6 +891,21 @@ def _p_owns_task(task: Any, _agent: Any, ctx: Any) -> bool:
     return getattr(task, "assigned_to", None) == getattr(ctx, "actor_id", None)
 
 
+def _p_non_terminal(task: Any, _agent: Any, _ctx: Any) -> bool:
+    """True unless the task is in a terminal state (completed / cancelled).
+
+    Escalation is a "I'm blocked, hand this up" action — it must never resurrect
+    a task the lifecycle has already terminated. ``escalate_up`` has
+    ``composes=()`` (no composed action supplies a source-status gate), so
+    without this precondition the spec gate accepts a COMPLETED/CANCELLED task
+    and ``apply_escalation`` sets it back to BLOCKED, bypassing the state
+    machine's terminal-state invariant (F043).
+    """
+    status = getattr(task, "status", None)
+    value = status.value if isinstance(status, Status) else str(status)
+    return value not in (Status.COMPLETED.value, Status.CANCELLED.value)
+
+
 PRECONDITION_PLAN = Precondition(
     key="plan",
     check=_p_has_plan_or_supplied,
@@ -894,6 +937,57 @@ PRECONDITION_OWNERSHIP = Precondition(
     remediate="task is not assigned to you; call give_me_work() to find your work",
     missing_token="owns_task",
     rejection_kind="not_authorized",
+)
+
+PRECONDITION_NON_TERMINAL = Precondition(
+    key="non_terminal",
+    check=_p_non_terminal,
+    remediate=(
+        "task is in a terminal state (completed / cancelled) and cannot be"
+        " escalated — terminal tasks must not be resurrected to blocked"
+    ),
+    missing_token="non_terminal",
+    rejection_kind="invalid_state",
+)
+
+
+# The set of states from which a PR may be opened — the lifecycle-owned canon.
+# The HTTP PR-create path (GitService._assert_pr_create_allowed) and the gateway
+# ``open_pr`` intent must agree on this, so it lives here (the policy layer) as
+# the single source and the service derives its str set from it. A PR opens
+# during active dev (in_progress / verifying), the doc phase
+# (awaiting_documentation), QA review (awaiting_qa), or a rework cycle
+# (needs_revision) — never from claim/pause/block/terminal, which the HTTP path
+# already blocked but the gateway ``open_pr`` (composes=() → no source-status
+# gate) historically did not (F101).
+PR_OPEN_STATES: frozenset[Status] = frozenset(
+    {
+        Status.IN_PROGRESS,
+        Status.VERIFYING,
+        Status.AWAITING_QA,
+        Status.AWAITING_DOCUMENTATION,
+        Status.NEEDS_REVISION,
+    }
+)
+
+
+def _p_pr_open_state(task: Any, _agent: Any, _ctx: Any) -> bool:
+    """True iff the task is in a PR-open-eligible state (see ``PR_OPEN_STATES``)."""
+    status = getattr(task, "status", None)
+    value = status.value if isinstance(status, Status) else str(status)
+    return value in {s.value for s in PR_OPEN_STATES}
+
+
+PRECONDITION_PR_OPEN_STATE = Precondition(
+    key="pr_open_state",
+    check=_p_pr_open_state,
+    remediate=(
+        "open_pr is only valid during active dev states "
+        "(in_progress / verifying / awaiting_qa / awaiting_documentation / "
+        "needs_revision); move the task into one of those first"
+    ),
+    missing_token="pr_open_state",
+    rejection_kind="invalid_state",
 )
 
 
@@ -968,6 +1062,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         composes=(),
         extra_preconditions=(
             PRECONDITION_OWNERSHIP,
+            PRECONDITION_PR_OPEN_STATE,
             PRECONDITION_COMMITS,
             PRECONDITION_NO_PR,
         ),
@@ -986,6 +1081,23 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         extra_preconditions=(PRECONDITION_OWNERSHIP, PRECONDITION_COMMITS),
         side_effects=(),
         next_hint=_next_hint_idle,
+    ),
+    "sync_branch": IntentSpec(
+        name="sync_branch",
+        allowed_roles=_DEV_ROLES,
+        description=(
+            "Rebase your task's branch onto its current base THROUGH the gate"
+            " (raw git is denied). Use when your branch has fallen behind its"
+            " base — e.g. a sibling task's PR merged into the parent branch"
+            " while you worked. Fetches origin, rebases head onto base, and"
+            " force-pushes (with-lease). No DB state change. On conflicts the"
+            " rebase is aborted and the conflicted files are returned — resolve"
+            " by hand, commit, then sync_branch again."
+        ),
+        composes=(),  # git-only verb — no DB transition; the handler runs the git op
+        extra_preconditions=(PRECONDITION_OWNERSHIP,),
+        side_effects=(),
+        next_hint=_next_hint_synced,
     ),
     "i_am_blocked": IntentSpec(
         name="i_am_blocked",
@@ -1152,7 +1264,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         composes=("pr_fail",),
         extra_preconditions=(),
         side_effects=(),
-        next_hint=_next_hint_dev_revise,
+        next_hint=_next_hint_pr_fail,
     ),
     # Phase 3: documenter verbs
     "claim_doc_task": IntentSpec(
@@ -1192,7 +1304,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         allowed_roles=_PM_ROLES,
         description="Escalate to your role's escalation_target.",
         composes=(),  # special - uses TaskService.escalate
-        extra_preconditions=(),
+        extra_preconditions=(PRECONDITION_NON_TERMINAL,),
         side_effects=(),
         next_hint=lambda _t: "idle until escalation target acts",
     ),
@@ -1244,8 +1356,10 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
             "Main PM opens the root→master PR and moves the root task to"
             " awaiting_pr_review for the main reviewer (the root analogue of the"
             " cell PM's submit_up). After pr_pass, call complete to escalate to"
-            " the CEO. Only for code roots; branchless coordination roots skip"
-            " the gate and complete directly."
+            " the CEO. For branch-bearing roots (a Main-PM root-subtask assembles"
+            " the cells' merged work); branchless coordination roots skip the"
+            " gate and complete directly. The gate is branch-keyed, not"
+            " task_type-keyed — a Main-PM root is planning-typed, never code."
         ),
         composes=("submit_for_review",),
         extra_preconditions=(),
@@ -1475,13 +1589,16 @@ def _check_intent_preconditions(
     first_missing = next(
         p for p in spec_intent.extra_preconditions if p.missing_token == missing[0]
     )
-    if first_missing.rejection_kind == "not_authorized":
-        return Decision.reject(
-            kind="not_authorized",
-            message=first_missing.remediate,
-            remediate=first_missing.remediate,
-        )
-    return Decision.tracing_gap(missing=missing, remediate=first_missing.remediate)
+    if first_missing.rejection_kind == "tracing_gap":
+        return Decision.tracing_gap(missing=missing, remediate=first_missing.remediate)
+    # A precondition may declare a non-tracing rejection kind (not_authorized
+    # for ownership, invalid_state for the terminal-state guard on escalate_up).
+    # Honor it directly so the envelope signals the right failure flavor.
+    return Decision.reject(
+        kind=first_missing.rejection_kind,
+        message=first_missing.remediate,
+        remediate=first_missing.remediate,
+    )
 
 
 def can_invoke_intent(

@@ -27,7 +27,7 @@ export const useRateLimitStore = create<RateLimitState>((set) => ({
         affectedAgents: event.affectedAgents,
         hitAt: event.timestamp,
         resumeAt: new Date(
-          new Date(event.timestamp).getTime() + event.retryAfterSeconds * 1000
+          new Date(event.timestamp).getTime() + event.retryAfterSeconds * 1000,
         ).toISOString(),
         retryAfterSeconds: event.retryAfterSeconds,
       };

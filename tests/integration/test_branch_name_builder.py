@@ -174,3 +174,50 @@ async def test_get_root_task_id_too_deep_raises() -> None:
     )
     with pytest.raises(BranchNameError, match="too deep"):
         await get_root_task_id(uuid4(), fake_svc)
+
+
+@pytest.mark.asyncio
+async def test_build_branch_name_allows_four_level_megatask_hierarchy() -> None:
+    """The MegaTask hierarchy is 4 layers — umbrella (Main PM, depth 0) →
+    root-subtask (Main PM, depth 1) → cell task (cell PM, depth 2) → dev
+    subtask (depth 3). MAX_TASK_DEPTH was sized for the 3-layer normal flow
+    (root→cell→dev = depths 0,1,2) and never raised when MegaTask added the
+    umbrella layer, so cell-PM delegation of dev subtasks was rejected with
+    MAX_TASK_DEPTH=3 and the cell PM deadlocked into a respawn loop
+    (2026-06-27 live meltdown — be-pm on task 9980d0a0). The cap must
+    accommodate the 4-level MegaTask: a dev subtask's branch name builds as a
+    4-segment path (umbrella--root--cell--dev), not raise 'too deep'."""
+    umbrella, root, cell, dev = uuid4(), uuid4(), uuid4(), uuid4()
+    tasks = {
+        dev: SimpleNamespace(id=dev, parent_task_id=cell),
+        cell: SimpleNamespace(id=cell, parent_task_id=root),
+        root: SimpleNamespace(id=root, parent_task_id=umbrella),
+        umbrella: SimpleNamespace(id=umbrella, parent_task_id=None),
+    }
+    fake_svc = AsyncMock()
+    fake_svc.get.side_effect = lambda task_id: tasks[task_id]
+
+    name = await build_branch_name(dev, "feature", "backend", fake_svc)
+
+    assert name == (
+        f"feature/backend/{str(umbrella)[:8]}--{str(root)[:8]}"
+        f"--{str(cell)[:8]}--{str(dev)[:8]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_root_task_id_returns_umbrella_for_four_level_hierarchy() -> None:
+    """Companion to the branch-name test: the root of a 4-level MegaTask chain
+    is the umbrella, and it must be reachable (not truncated as 'too deep')
+    under the raised cap."""
+    umbrella, root, cell, dev = uuid4(), uuid4(), uuid4(), uuid4()
+    tasks = {
+        dev: SimpleNamespace(id=dev, parent_task_id=cell),
+        cell: SimpleNamespace(id=cell, parent_task_id=root),
+        root: SimpleNamespace(id=root, parent_task_id=umbrella),
+        umbrella: SimpleNamespace(id=umbrella, parent_task_id=None),
+    }
+    fake_svc = AsyncMock()
+    fake_svc.get.side_effect = lambda task_id: tasks[task_id]
+
+    assert await get_root_task_id(dev, fake_svc) == umbrella

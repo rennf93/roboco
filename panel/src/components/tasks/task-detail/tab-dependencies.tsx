@@ -7,7 +7,17 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { ArrowUp, Link2, AlertTriangle, Plus, Trash2, X, Check, Hash, Pencil } from "lucide-react";
+import {
+  ArrowUp,
+  Link2,
+  AlertTriangle,
+  Plus,
+  Trash2,
+  X,
+  Check,
+  Hash,
+  Pencil,
+} from "lucide-react";
 import Link from "next/link";
 import { toast } from "sonner";
 
@@ -78,7 +88,9 @@ function DependencyList({
       setNewId("");
       // Keep adding mode open for quick entry
     } catch {
-      toast.error(`Failed to add ${field === "dependency_ids" ? "dependency" : "blocker"}`);
+      toast.error(
+        `Failed to add ${field === "dependency_ids" ? "dependency" : "blocker"}`,
+      );
     }
   };
 
@@ -91,7 +103,9 @@ function DependencyList({
         updates: { [field]: newIds },
       });
     } catch {
-      toast.error(`Failed to remove ${field === "dependency_ids" ? "dependency" : "blocker"}`);
+      toast.error(
+        `Failed to remove ${field === "dependency_ids" ? "dependency" : "blocker"}`,
+      );
     }
   };
 
@@ -118,11 +132,7 @@ function DependencyList({
             )}
           </CardTitle>
           {!isAdding && (
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={() => setIsAdding(true)}
-            >
+            <Button size="sm" variant="ghost" onClick={() => setIsAdding(true)}>
               <Plus className="h-4 w-4 mr-1" />
               Add
             </Button>
@@ -141,10 +151,14 @@ function DependencyList({
           <ul className="space-y-2">
             {ids.map((depId) => (
               <li key={depId} className="group">
-                <div className={`flex items-center gap-2 p-3 rounded-lg ${itemBorderClass} ${itemBgClass} transition-colors`}>
+                <div
+                  className={`flex items-center gap-2 p-3 rounded-lg ${itemBorderClass} ${itemBgClass} transition-colors`}
+                >
                   <Link2 className="h-4 w-4 text-muted-foreground shrink-0" />
                   <Link href={`/tasks/${depId}`} className="flex-1">
-                    <span className="font-mono text-sm hover:underline">{depId.slice(0, 8)}...</span>
+                    <span className="font-mono text-sm hover:underline">
+                      {depId.slice(0, 8)}...
+                    </span>
                   </Link>
                   <Badge variant="outline" className={badgeClass}>
                     {badgeLabel}
@@ -212,7 +226,9 @@ export function TabDependencies({ task }: TabDependenciesProps) {
   const parentInputRef = useRef<HTMLInputElement>(null);
 
   // Display prop value when not editing, local value when editing
-  const parentValue = editingParent ? localParentValue : (task.parent_task_id ?? "");
+  const parentValue = editingParent
+    ? localParentValue
+    : (task.parent_task_id ?? "");
   const setParentValue = (value: string) => setLocalParentValue(value);
 
   // Start editing - copy current prop value to local state
@@ -389,8 +405,14 @@ export function TabDependencies({ task }: TabDependenciesProps) {
               title="Click to edit"
             >
               <Link2 className="h-4 w-4 text-muted-foreground" />
-              <Link href={`/tasks/${task.parent_task_id}`} className="flex-1" onClick={(e) => e.stopPropagation()}>
-                <span className="font-mono text-sm hover:underline">{task.parent_task_id.slice(0, 8)}...</span>
+              <Link
+                href={`/tasks/${task.parent_task_id}`}
+                className="flex-1"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <span className="font-mono text-sm hover:underline">
+                  {task.parent_task_id.slice(0, 8)}...
+                </span>
               </Link>
               <Badge variant="outline" className="ml-auto">
                 View Parent

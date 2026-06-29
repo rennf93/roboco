@@ -13,6 +13,7 @@ safety properties the Grok provider must hold:
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -241,7 +242,10 @@ async def test_grok_spawn_mounts_auth_when_present(_isolate_grok_auth: Path) -> 
     ) as exec_mock:
         await provider.spawn(_config())
     cmd = list(exec_mock.call_args.args)
-    expected = f"{_isolate_grok_auth / 'auth.json'}:/home/agent/.grok/auth.json:ro"
+    # mount the host ~/.grok DIRECTORY (ro), not the single auth.json file — a
+    # single-file bind mount pins the inode, so the orchestrator's atomic
+    # auth.json refresh (rename) never reaches a running container.
+    expected = f"{_isolate_grok_auth}:/home/agent/.grok-auth-ro:ro"
     assert expected in cmd
 
 
@@ -254,7 +258,27 @@ async def test_grok_spawn_omits_auth_mount_when_absent() -> None:
     ) as exec_mock:
         await provider.spawn(_config())
     cmd = list(exec_mock.call_args.args)
-    assert not any("/home/agent/.grok/auth.json" in c for c in cmd)
+    assert not any("/home/agent/.grok-auth-ro" in c for c in cmd)
+
+
+async def test_grok_spawn_warns_when_auth_absent(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A missing host auth.json must not be silent — the spawn is doomed to
+    exit 78, so the operator gets a spawn-time WARNING naming the missing file
+    and the remediation (``grok login`` on the host). Without it the container
+    silently started and only failed later at the entrypoint ``--check``.
+    """
+    caplog.set_level("WARNING", logger="roboco.llm.providers.grok")
+    host = _FakeHost()
+    provider = GrokCliProvider(host)
+    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())):
+        await provider.spawn(_config())
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert warnings, "expected a spawn-time WARNING for the missing host auth.json"
+    msg = warnings[0].getMessage()
+    assert "auth.json" in msg
+    assert "grok login" in msg  # names the remediation
 
 
 async def test_grok_spawn_prompt_is_injection_safe() -> None:
@@ -299,7 +323,8 @@ async def test_claude_spawn_delegates_to_host() -> None:
 
 async def test_claude_spawn_wraps_host_error() -> None:
     host = _FakeHost()
-    host._spawn_container = AsyncMock(side_effect=RuntimeError("docker down"))  # type: ignore[method-assign]
+    cc: Any = host
+    cc._spawn_container = AsyncMock(side_effect=RuntimeError("docker down"))
     provider = ClaudeCodeProvider(host)
     with pytest.raises(ProviderError, match="docker down"):
         await provider.spawn(_config())

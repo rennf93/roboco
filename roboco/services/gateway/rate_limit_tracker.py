@@ -17,6 +17,46 @@ import redis.asyncio as redis
 
 from roboco.config import settings
 
+# Server-side atomic read-modify-write scripts. Redis single-threads a Lua
+# ``EVAL``, so the GET → decode → mutate → SET inside one script is indivisible:
+# a concurrent ``activate()`` (a re-park) is serialized entirely before or after
+# the script, never interleaved between the script's GET and SET. Without this
+# the counter update was a non-atomic ``get_state`` → mutate → ``set`` in Python,
+# so a re-park's fresh episode blob (``probe_failures: 0`` + fresh
+# ``activated_at`` / ``retry_after`` / ``affected_agents`` / ``kind``) could be
+# clobbered by the stale increment writing back the OLD blob — un-resetting the
+# counter and overwriting the fresh episode metadata. The scripts mutate ONLY
+# ``probe_failures`` so every other episode field survives the bump.
+_INCREMENT_PROBE_FAILURES = """\
+-- roboco:increment_probe_failures
+local key = KEYS[1]
+local raw = redis.call('GET', key)
+if not raw then
+  redis.call('SET', key, cjson.encode({probe_failures = 1}))
+  return 1
+end
+local state = cjson.decode(raw)
+local cur = state['probe_failures']
+if cur == nil then cur = 0 end
+local new_count = cur + 1
+state['probe_failures'] = new_count
+redis.call('SET', key, cjson.encode(state))
+return new_count
+"""
+
+_RESET_PROBE_FAILURES = """\
+-- roboco:reset_probe_failures
+local key = KEYS[1]
+local raw = redis.call('GET', key)
+if not raw then
+  redis.call('SET', key, cjson.encode({probe_failures = 0}))
+  return
+end
+local state = cjson.decode(raw)
+state['probe_failures'] = 0
+redis.call('SET', key, cjson.encode(state))
+"""
+
 
 class RateLimitStateTracker:
     """Track rate-limit state for a single AI provider in Redis.
@@ -120,20 +160,22 @@ class RateLimitStateTracker:
         probes have failed since the rate limit was activated.  The
         orchestrator uses this to decide whether to keep waiting or give
         up entirely.
+
+        Atomic: the read-modify-write runs server-side as a Lua ``EVAL`` so a
+        concurrent ``activate()`` re-park cannot interleave between the GET and
+        SET and clobber the fresh episode blob with a stale one.
         """
         r = await self._conn()
-        state = await self.get_state()
-        new_count: int = state.get("probe_failures", 0) + 1
-        state["probe_failures"] = new_count
-        await r.set(self._key(), json.dumps(state))
-        return new_count
+        new_count = await r.eval(_INCREMENT_PROBE_FAILURES, 1, self._key())
+        return int(new_count)
 
     async def reset_probe_failures(self) -> None:
-        """Reset the probe-failure counter to 0."""
+        """Reset the probe-failure counter to 0.
+
+        Atomic: server-side Lua ``EVAL`` (see ``increment_probe_failures``).
+        """
         r = await self._conn()
-        state = await self.get_state()
-        state["probe_failures"] = 0
-        await r.set(self._key(), json.dumps(state))
+        await r.eval(_RESET_PROBE_FAILURES, 1, self._key())
 
     # ------------------------------------------------------------------
     # Class-level helpers

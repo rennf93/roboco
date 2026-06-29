@@ -6,7 +6,8 @@ import type { ProjectCreate, ProjectUpdate } from "@/types";
 export const projectKeys = {
   all: ["projects"] as const,
   lists: () => [...projectKeys.all, "list"] as const,
-  list: (filters?: ProjectFilters) => [...projectKeys.lists(), filters] as const,
+  list: (filters?: ProjectFilters) =>
+    [...projectKeys.lists(), filters] as const,
   details: () => [...projectKeys.all, "detail"] as const,
   detail: (id: string) => [...projectKeys.details(), id] as const,
 };
@@ -43,8 +44,13 @@ export function useUpdateProject() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ projectId, updates }: { projectId: string; updates: ProjectUpdate }) =>
-      projectsApi.update(projectId, updates),
+    mutationFn: ({
+      projectId,
+      updates,
+    }: {
+      projectId: string;
+      updates: ProjectUpdate;
+    }) => projectsApi.update(projectId, updates),
     onSuccess: (project) => {
       queryClient.invalidateQueries({ queryKey: projectKeys.lists() });
       queryClient.setQueryData(projectKeys.detail(project.id), project);
@@ -56,8 +62,13 @@ export function useSetWorkspace() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: ({ projectId, localPath }: { projectId: string; localPath: string }) =>
-      projectsApi.setWorkspace(projectId, localPath),
+    mutationFn: ({
+      projectId,
+      localPath,
+    }: {
+      projectId: string;
+      localPath: string;
+    }) => projectsApi.setWorkspace(projectId, localPath),
     onSuccess: (project) => {
       queryClient.invalidateQueries({ queryKey: projectKeys.lists() });
       queryClient.setQueryData(projectKeys.detail(project.id), project);

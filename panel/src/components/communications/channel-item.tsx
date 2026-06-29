@@ -27,7 +27,7 @@ export function ChannelItem({
         "w-full h-auto justify-start gap-2 px-2 py-1.5 font-normal whitespace-normal",
         isSelected
           ? "bg-primary/10 text-primary hover:bg-primary/10 hover:text-primary"
-          : "text-muted-foreground hover:bg-muted hover:text-foreground"
+          : "text-muted-foreground hover:bg-muted hover:text-foreground",
       )}
     >
       {channel.is_private ? (

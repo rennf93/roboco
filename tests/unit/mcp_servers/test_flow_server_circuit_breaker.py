@@ -429,3 +429,159 @@ def test_task_id_none_is_forwarded_as_null(flow_module: types.ModuleType) -> Non
     _, sdk_body = sdk_calls[0]
     assert sdk_body["task_id"] is None
     assert sdk_body["verb"] == "give_me_work"
+
+
+# ---------------------------------------------------------------------------
+# Non-string-error / no-error-field rejection shapes are counted
+# ---------------------------------------------------------------------------
+
+
+def test_422_validation_failure_counts_as_incomplete_input(
+    flow_module: types.ModuleType,
+) -> None:
+    """A 422 validation-failure body (`{"detail": [...]}`, no `error`) must count
+    toward the breaker as `incomplete_input` — a storm of 422s is retry-storm-worthy.
+    Mirrors do_server's classifier (the two servers share the same breaker logic).
+    """
+    factory, captured = _make_client(
+        orchestrator_response={
+            "detail": [
+                {
+                    "loc": ["body", "task_id"],
+                    "msg": "field required",
+                    "type": "value_error.missing",
+                }
+            ],
+            "body": None,
+        },
+        sdk_response={
+            "verb": "i_am_done",
+            "task_id": "task-A",
+            "attempts": 1,
+            "limit": 3,
+            "window_seconds": 60,
+            "open": False,
+            "circuit_envelope": None,
+        },
+    )
+    with patch("httpx.Client", side_effect=factory):
+        flow_module.i_am_done("task-A")
+    sdk_calls = [(url, body) for url, body in captured if "test-sdk" in url]
+    assert len(sdk_calls) == 1
+    assert sdk_calls[0][1]["rejection_kind"] == "incomplete_input"
+
+
+def test_dict_shaped_internal_error_counts_as_invalid_state(
+    flow_module: types.ModuleType,
+) -> None:
+    """A 500 INTERNAL_ERROR dict-shaped response (generic_exception_handler) counts
+    as `invalid_state` — a storm of 500s is retry-storm-worthy.
+    """
+    factory, captured = _make_client(
+        orchestrator_response={
+            "error": {
+                "code": "INTERNAL_ERROR",
+                "message": "An internal error occurred",
+                "details": {"correlation_id": "abc"},
+            }
+        },
+        sdk_response={
+            "verb": "i_am_done",
+            "task_id": "task-A",
+            "attempts": 1,
+            "limit": 3,
+            "window_seconds": 60,
+            "open": False,
+            "circuit_envelope": None,
+        },
+    )
+    with patch("httpx.Client", side_effect=factory):
+        flow_module.i_am_done("task-A")
+    sdk_calls = [(url, body) for url, body in captured if "test-sdk" in url]
+    assert len(sdk_calls) == 1
+    assert sdk_calls[0][1]["rejection_kind"] == "invalid_state"
+
+
+def test_dict_shaped_not_found_does_not_count(
+    flow_module: types.ModuleType,
+) -> None:
+    """A dict-shaped NOT_FOUND (404 family) does NOT count — parity with the
+    string-error contract that a `not_found` rejection isn't counted.
+    """
+    factory, captured = _make_client(
+        orchestrator_response={
+            "error": {"code": "TASK_NOT_FOUND", "message": "no such task"}
+        },
+        sdk_response=None,  # SDK must not be touched
+    )
+    with patch("httpx.Client", side_effect=factory):
+        result = flow_module.i_am_done("task-A")
+    assert isinstance(result["error"], dict)
+    assert result["error"]["code"] == "TASK_NOT_FOUND"
+    assert all("test-sdk" not in url for url, _ in captured)
+
+
+# ---------------------------------------------------------------------------
+# A manifest-registered verb whose route is missing must return an envelope
+# rejection (not a raw 404 body) so the breaker counts it.
+# ---------------------------------------------------------------------------
+
+
+def _make_404_client() -> tuple[Any, list[tuple[str, dict[str, Any] | None]]]:
+    """Build an httpx.Client mock whose orchestrator call returns FastAPI's
+    default 404 body (``{"detail": "Not Found"}``, status 404) — the shape a
+    manifest-registered verb sees when its route is missing. The SDK call
+    returns a not-yet-open breaker so the original envelope is preserved.
+    """
+    captured: list[tuple[str, dict[str, Any] | None]] = []
+
+    def _client_factory(*_args: Any, **_kwargs: Any) -> MagicMock:
+        client = MagicMock()
+        client.__enter__ = MagicMock(return_value=client)
+        client.__exit__ = MagicMock(return_value=False)
+
+        def _post(url: str, **kwargs: Any) -> MagicMock:
+            captured.append((url, kwargs.get("json")))
+            resp = MagicMock()
+            if "test-sdk" in url:
+                resp.json.return_value = {
+                    "verb": "triage",
+                    "task_id": None,
+                    "attempts": 1,
+                    "limit": 3,
+                    "window_seconds": 60,
+                    "open": False,
+                    "circuit_envelope": None,
+                }
+            else:
+                # FastAPI's default 404 for a missing route.
+                resp.status_code = 404
+                resp.json.return_value = {"detail": "Not Found"}
+            return resp
+
+        client.post.side_effect = _post
+        return client
+
+    return _client_factory, captured
+
+
+def test_missing_route_404_returns_envelope_and_counts(
+    flow_module: types.ModuleType,
+) -> None:
+    """A 404 from the orchestrator (manifest-registered verb with no route) must
+    surface as a proper `invalid_state` Envelope rejection — not FastAPI's raw
+    ``{"detail": "Not Found"}`` body — and the breaker must count it.
+    """
+    factory, captured = _make_404_client()
+    with patch("httpx.Client", side_effect=factory):
+        result = flow_module.triage()
+    # Envelope rejection, not the raw 404 body.
+    assert result["error"] == "invalid_state"
+    assert "remediate" in result
+    assert "detail" not in result  # the raw 404 body was not passed through
+    # Breaker was notified so a storm of these trips it.
+    sdk_calls = [(url, body) for url, body in captured if "test-sdk" in url]
+    assert len(sdk_calls) == 1
+    _, sdk_body = sdk_calls[0]
+    assert sdk_body is not None
+    assert sdk_body["rejection_kind"] == "invalid_state"

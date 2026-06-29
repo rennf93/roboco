@@ -25,7 +25,17 @@ down_revision = "015_drop_task_execution_outputs"
 branch_labels = None
 depends_on = None
 
-_TEAM_ENUM = sa.Enum(
+# Reuse the existing Postgres "team" enum in place (created in 001_initial_schema,
+# widened since by later migrations). ``create_type=False`` MUST be set on the
+# postgres-native ``postgresql.ENUM``: it's that class's ``create_type`` attribute
+# that ``_check_for_name_in_memos`` reads to suppress the redundant ``CREATE TYPE``
+# on ``op.create_table`` (checkfirst=False, so the has_type probe is skipped). On
+# the generic ``sa.Enum`` the kwarg is silently dropped, so the CREATE TYPE would
+# fire and crash a boot against a DB where the enum pre-exists ("type 'team'
+# already exists"). The member list is inert under create_type=False (it never
+# creates/alters the type), so it reflects the enum as it stood at 016's time,
+# not the later-widened set. See project_migration_enum_create_type_gotcha.
+_TEAM_ENUM = postgresql.ENUM(
     "backend",
     "frontend",
     "ux_ui",

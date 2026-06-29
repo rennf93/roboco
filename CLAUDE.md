@@ -80,7 +80,7 @@ pnpm test
 | Cache/Queue | Redis |
 | Container Runtime | Docker + Docker Compose |
 | Cloud LLM | Claude API (claude-opus-4-6) + xAI Grok (official `grok` CLI, SuperGrok subscription) |
-| Local LLM | Ollama (glm-5:cloud for RAG/hybrid retrieval) |
+| Local LLM | Ollama (glm-5.2:cloud for RAG/hybrid retrieval) |
 | Embeddings | qwen3-embedding:0.6b (1024 dim) |
 | Frontend | Next.js 16 + TypeScript + Tailwind + Radix UI (in `panel/`) |
 | Edge / Proxy | nginx (single entry point on port 3000) |
@@ -341,7 +341,7 @@ Each agent gets a **spawn manifest** at `/app/tool-manifest.json` listing the ve
 
 | Role          | Flow verbs (beyond `i_am_idle`)                                                                  |
 |---------------|--------------------------------------------------------------------------------------------------|
-| developer     | `give_me_work`, `i_will_work_on`, `open_pr`, `i_am_done`, `i_am_blocked`, `resume`, `unclaim`     |
+| developer     | `give_me_work`, `i_will_work_on`, `open_pr`, `i_am_done`, `i_am_blocked`, `resume`, `sync_branch`, `unclaim`     |
 | qa            | `give_me_work`, `claim_review`, `pass_review`, `fail_review`, `i_am_blocked`, `resume`, `unclaim` |
 | documenter    | `give_me_work`, `claim_doc_task`, `i_documented`, `i_am_blocked`, `resume`, `unclaim`             |
 | cell_pm       | `give_me_work`, `i_will_plan`, `delegate`, `complete`, `submit_up`, `triage`, `unblock`, `escalate_up`, `reassign`, `resume`, `unclaim` |
@@ -464,7 +464,7 @@ ROBOCO_RAG_USE_HYBRID_SEARCH=true
 
 # AI/LLM
 ROBOCO_DEFAULT_EMBEDDING_MODEL=qwen3-embedding:0.6b
-ROBOCO_LOCAL_LLM_MODEL=glm-5:cloud
+ROBOCO_LOCAL_LLM_MODEL=glm-5.2:cloud
 ROBOCO_LOCAL_LLM_BASE_URL=http://roboco-ollama:11434/v1
 ROBOCO_OLLAMA_BASE_URL=http://roboco-ollama:11434
 ```
@@ -524,7 +524,7 @@ The startup order is critical due to dependencies:
 postgres ──┐
 redis ─────┼──> ollama ──> ollama-init ──> orchestrator ──> panel ──> nginx
            │        │            │
-           │        │            └── Pulls qwen3-embedding:0.6b, glm-5:cloud
+           │        │            └── Pulls qwen3-embedding:0.6b, glm-5.2:cloud
            │        └── Healthcheck: ollama list
            └── Healthcheck: pg_isready, redis-cli ping
 ```

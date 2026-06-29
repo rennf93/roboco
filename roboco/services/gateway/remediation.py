@@ -94,6 +94,7 @@ def hint_for_short_quick_context(*, min_chars: int, task_id: str) -> str:
     return (
         f"your quick_context section is empty or under {min_chars} chars. Before "
         f"delegate, call note(scope='handoff', task_id='{task_id}', "
-        "section={'done': '<state so far>', 'next': '<what the cell should do>'})"
-        " to leave a resumption handoff, then retry."
+        "done='<state so far>', next='<what the cell should do>') to leave a "
+        "resumption handoff (pass done and next as top-level string args, not "
+        "nested in section), then retry."
     )

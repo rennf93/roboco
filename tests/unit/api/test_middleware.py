@@ -38,6 +38,7 @@ from roboco.services.base import (
 from roboco.services.base import (
     ValidationError as ServiceValidationError,
 )
+from structlog.testing import capture_logs
 
 # ---------------------------------------------------------------------------
 # get_status_code
@@ -275,3 +276,107 @@ def test_request_validation_handler_returns_422_with_details() -> None:
     body = response.json()
     assert "detail" in body
     assert "body" in body
+
+
+# ---------------------------------------------------------------------------
+# secret scrubbing in the 422 log line
+# ---------------------------------------------------------------------------
+
+
+class _SecretBody(BaseModel):
+    """Module-level model so FastAPI can resolve the annotation under
+    `from __future__ import annotations` (function-local classes with complex
+    field types aren't resolvable from the function's module globals)."""
+
+    name: str
+    git_token: str | None = None
+    api_key: str | None = None
+    auth_token: str | None = None
+    nested: dict[str, Any] | None = None
+
+
+def test_request_validation_handler_scrubs_secrets_from_log() -> None:
+    """A 422 on a secret-bearing request must not dump the plaintext secret
+    into the log line — only the redacted placeholder. The 422 response body
+    is unchanged (the client sent those values; the server only redacts its
+    own log)."""
+
+    app = FastAPI()
+    setup_middleware(app)
+
+    @app.post("/project")
+    async def _create(_data: _SecretBody) -> Any:
+        return {"ok": True}
+
+    secret_pat = "ghp_livesecret_123456"
+    secret_key = "ollama-key-do-not-log"
+    secret_token = "bearer-should-not-leak"
+    payload = {
+        # Missing required `name` -> 422, but the secret fields are still
+        # parsed into rve.body and would be logged verbatim without the scrub.
+        "git_token": secret_pat,
+        "api_key": secret_key,
+        "auth_token": secret_token,
+        "nested": {"git_token": "nested-secret-abc", "safe": "keep"},
+    }
+
+    client = TestClient(app, raise_server_exceptions=False)
+    with capture_logs() as logs:
+        response = client.post("/project", json=payload)
+
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+    # The response body is NOT scrubbed (the client sent these values).
+    resp_body = response.json()
+    assert resp_body["body"]["git_token"] == secret_pat
+    assert resp_body["body"]["api_key"] == secret_key
+
+    # Exactly one "Request validation failed" warning was emitted.
+    fails = [e for e in logs if e["event"] == "Request validation failed"]
+    assert len(fails) == 1
+    logged_body = fails[0]["body"]
+
+    # The log line must not contain any of the plaintext secrets.
+    assert secret_pat not in str(logged_body)
+    assert secret_key not in str(logged_body)
+    assert secret_token not in str(logged_body)
+    assert "nested-secret-abc" not in str(logged_body)
+
+    # The redaction placeholder appears for each secret field (so ops can see
+    # WHICH secret field was present), and the per-field errors are still
+    # logged (they don't carry secrets).
+    assert logged_body["git_token"] == "***REDACTED***"
+    assert logged_body["api_key"] == "***REDACTED***"
+    assert logged_body["auth_token"] == "***REDACTED***"
+    assert logged_body["nested"]["git_token"] == "***REDACTED***"
+    assert logged_body["nested"]["safe"] == "keep"  # non-secret preserved
+    assert "errors" in fails[0]
+
+
+def test_request_validation_handler_log_preserves_non_secret_fields() -> None:
+    """Non-secret fields in the body are still logged in full — only the
+    known credential-looking field names are redacted."""
+
+    app = FastAPI()
+    setup_middleware(app)
+
+    @app.post("/project")
+    async def _create(_data: _SecretBody) -> Any:
+        return {"ok": True}
+
+    client = TestClient(app, raise_server_exceptions=False)
+    # `title` is not a field on _SecretBody -> 422, and `title` is non-secret
+    # so it should still appear in the log; `git_token` is secret and must be
+    # redacted.
+    with capture_logs() as logs:
+        response = client.post(
+            "/project",
+            json={"title": "visible-title", "git_token": "ghp_secret_xyz"},
+        )
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+    fails = [e for e in logs if e["event"] == "Request validation failed"]
+    assert len(fails) == 1
+    logged_body = fails[0]["body"]
+    assert logged_body["title"] == "visible-title"  # non-secret preserved
+    assert logged_body["git_token"] == "***REDACTED***"  # secret redacted
+    assert "ghp_secret_xyz" not in str(logged_body)

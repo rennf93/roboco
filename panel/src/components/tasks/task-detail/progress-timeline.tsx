@@ -33,7 +33,7 @@ function formatTime(timestamp: string): string {
 export function ProgressTimeline({ updates }: ProgressTimelineProps) {
   // Sort by most recent first
   const sortedUpdates = [...updates].sort(
-    (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+    (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
   );
 
   // Get latest percentage if available
@@ -61,7 +61,9 @@ export function ProgressTimeline({ updates }: ProgressTimelineProps) {
       </CardHeader>
       <CardContent>
         {sortedUpdates.length === 0 ? (
-          <p className="text-muted-foreground italic">No progress updates yet.</p>
+          <p className="text-muted-foreground italic">
+            No progress updates yet.
+          </p>
         ) : (
           <div className="relative">
             {/* Timeline line */}
@@ -89,7 +91,10 @@ export function ProgressTimeline({ updates }: ProgressTimelineProps) {
                     {update.percentage !== null && (
                       <div className="mt-2">
                         <div className="flex items-center gap-2">
-                          <Progress value={update.percentage} className="h-1.5 flex-1" />
+                          <Progress
+                            value={update.percentage}
+                            className="h-1.5 flex-1"
+                          />
                           <span className="text-xs text-muted-foreground w-10 text-right">
                             {update.percentage}%
                           </span>

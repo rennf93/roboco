@@ -39,7 +39,7 @@ export const cockpitApi = {
   // lighter than /summary, which runs the full goals/usage/counts/pitches fan-out.
   signals: async (): Promise<CockpitSignal[]> => {
     const { data } = await api.get<{ signals: CockpitSignal[] }>(
-      "/cockpit/signals"
+      "/cockpit/signals",
     );
     return data.signals;
   },

@@ -15,6 +15,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 
 import pytest
 from roboco.models.runtime import AgentInstance
@@ -167,6 +168,22 @@ def test_hitl_blocked_claimed_task_is_skipped() -> None:
     assert orch._claimed_task_needs_agent(task) is None
 
 
+def test_claimed_task_assigned_to_ceo_is_not_respawned() -> None:
+    # A claimed/in_progress task whose assignee is the CEO (or any human-only
+    # role) has no container to respawn — the CEO is the human operator. The
+    # resolver must return None so the dispatcher neither spawns a CEO
+    # container NOR releases a human-owned task to pending. Defense-in-depth
+    # for the spawn_agent human-role chokepoint (2026-06-27 CEO-spawn incident).
+    orch = _orch()
+    task: dict[str, Any] = {
+        "id": "t1",
+        "status": "in_progress",
+        "assigned_to": AGENT_UUIDS["ceo"],
+        "updated_at": _STALE,
+    }
+    assert orch._claimed_task_needs_agent(task) is None
+
+
 def test_in_progress_task_with_no_agent_returns_assignee() -> None:
     orch = _orch()
     task: dict[str, Any] = {
@@ -176,6 +193,22 @@ def test_in_progress_task_with_no_agent_returns_assignee() -> None:
         "updated_at": _STALE,
     }
     assert orch._claimed_task_needs_agent(task) == "fe-dev-2"
+
+
+def test_claimed_task_with_unknown_assignee_returns_slug_for_release() -> None:
+    # A claimed/in_progress task whose assignee is a stale/unknown UUID (no
+    # seeded agent) must reach the release-to-pending path: the human-only guard
+    # returns None for unknown slugs, so the slug falls through and is released.
+    orch = _orch()
+    unknown_uuid = str(uuid4())
+    task: dict[str, Any] = {
+        "id": "t1",
+        "status": "claimed",
+        "assigned_to": unknown_uuid,
+        "updated_at": _STALE,
+    }
+    # Returns the (unknown) slug, NOT None — the release path is reachable.
+    assert orch._claimed_task_needs_agent(task) == unknown_uuid
 
 
 # ---------------------------------------------------------------------------

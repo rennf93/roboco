@@ -22,13 +22,7 @@ import {
   DialogFooter,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import {
-  GitBranch,
-  Check,
-  Cloud,
-  Plus,
-  RefreshCw,
-} from "lucide-react";
+import { GitBranch, Check, Cloud, Plus, RefreshCw } from "lucide-react";
 
 interface GitBranchPanelProps {
   branches: GitBranchListResponse | undefined;
@@ -146,7 +140,9 @@ export function GitBranchPanel({
                   onClick={handleCreateBranch}
                   disabled={!taskId.trim() || isCreating}
                 >
-                  {isCreating && <RefreshCw className="h-4 w-4 mr-2 animate-spin" />}
+                  {isCreating && (
+                    <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
+                  )}
                   Create Branch
                 </Button>
               </DialogFooter>
@@ -166,7 +162,9 @@ export function GitBranchPanel({
                 {localBranches.map((branch) => (
                   <Button
                     key={branch.name}
-                    onClick={() => !branch.is_current && onCheckout(branch.name)}
+                    onClick={() =>
+                      !branch.is_current && onCheckout(branch.name)
+                    }
                     disabled={branch.is_current || isCheckingOut}
                     variant="ghost"
                     className={

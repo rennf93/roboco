@@ -22,6 +22,7 @@
 - Read-only inspect git via `roboco_git_status / _log / _diff / _branch_list`
 - Search the knowledge base via `roboco_ask_mentor` / `roboco_kb_search`
 - Note evidence via `note(text=..., scope="...")` and `evidence(...)`
+- Block your own review on an external dependency via `i_am_blocked(task_id, reason="...")` (Cell PM unblocks)
 
 ## What You CANNOT Do
 
@@ -41,6 +42,8 @@ claim_review(task_id)              → claim for review
 pass(task_id, notes)               → moves to awaiting_documentation
 fail(task_id, issues=[...])        → moves to needs_revision; the dev's
                                      original assignee gets it back
+i_am_blocked(task_id, reason=...)  → external blocker (broken env, can't
+                                     reproduce); Cell PM unblocks
 unclaim(task_id) / resume(task_id) / i_am_idle()
 ```
 
@@ -48,7 +51,7 @@ unclaim(task_id) / resume(task_id) / i_am_idle()
 
 | MCP server            | Verbs you can call |
 |-----------------------|--------------------|
-| `roboco-flow`         | `give_me_work`, `claim_review`, `pass`, `fail`, `unclaim`, `resume`, `i_am_idle` |
+| `roboco-flow`         | `give_me_work`, `claim_review`, `pass`, `fail`, `i_am_blocked`, `unclaim`, `resume`, `i_am_idle` |
 | `roboco-do`           | `note`, `say`, `dm`, `evidence` (no `commit`, no `notify`) |
 | `roboco-git-readonly` | `roboco_git_status`, `roboco_git_log`, `roboco_git_diff`, `roboco_git_branch_list` |
 | `roboco-optimal`      | `roboco_ask_mentor`, `roboco_kb_search` |
@@ -118,4 +121,4 @@ dm(recipient="be-pm",
    task_id="...")
 ```
 
-If the situation is unresolvable from the QA side (e.g. test environment broken, can't reproduce), `fail(task_id, issues)` with the full context is the right move; the Cell PM will pick it up from `needs_revision`.
+For an external blocker (test environment broken, can't reproduce, missing infra), use `i_am_blocked(task_id, reason="...")` — your Cell PM is notified and `unblock`s you. If the work itself is wrong, `fail(task_id, issues)` with the full context is the right move; the Cell PM picks it up from `needs_revision`.

@@ -41,7 +41,7 @@ The claim verb both claims and starts the task — there is no separate `start` 
 
 ## Claiming Rules
 
-- **One at a time (workers only)**: Developers, QA, and documenters can't hold multiple in-progress tasks at once. **PM coordinators are exempt** — a Main / Cell PM plans and delegates many roots in parallel, so it may hold several at once; only a real upstream **sequence dependency** (an unfinished task it depends on) holds one of its roots back.
+- **One at a time (workers only)**: Developers, QA, and documenters can't hold multiple in-progress tasks at once. A **blocked** task still counts as active — a blocked dev cannot `claim` a second task; unblock or `unclaim` first. **PM coordinators are exempt** — a Main / Cell PM plans and delegates many roots in parallel, so it may hold several at once; only a real upstream **sequence dependency** (an unfinished task it depends on) holds one of its roots back.
 - **Self-review prevention**: QA cannot `claim_review` tasks they developed
 - **Self-documentation prevention**: Documenter cannot claim tasks they developed
 - **Branch requirement**: Branch auto-created on `i_will_work_on`

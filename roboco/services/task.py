@@ -11,8 +11,10 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, func, or_, select, text, update
+from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import InstanceState
 
 from roboco.db.tables import (
     AgentTable,
@@ -20,6 +22,7 @@ from roboco.db.tables import (
     JournalTable,
     ProjectTable,
     SessionTaskTable,
+    TaskCellProjectTable,
     TaskTable,
     WorkSessionTable,
 )
@@ -36,6 +39,7 @@ from roboco.foundation.policy.batch import (
     is_batch_umbrella,
     is_branchless_coordination,
     is_valid_batch_shape,
+    main_pm_cannot_own_code,
 )
 from roboco.foundation.policy.content import markers
 from roboco.foundation.policy.content.validators import ContentValidationError
@@ -52,16 +56,18 @@ from roboco.models.base import (
 )
 from roboco.models.permissions import AgentContext, TaskAction
 from roboco.models.task import TaskCreateRequest
-from roboco.models.work_session import WorkSessionStatus
+from roboco.models.work_session import WorkSessionCreate
 from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.base import (
     BaseService,
+    ConflictError,
     NotFoundError,
     ServiceError,
     UnauthorizedError,
     ValidationError,
 )
 from roboco.services.content_notes import apply_structured_note
+from roboco.services.work_session import WorkSessionService
 from roboco.utils.converters import require_uuid, to_python_uuid
 
 if TYPE_CHECKING:
@@ -190,6 +196,65 @@ def _board_cannot_own(task: TaskTable) -> bool:
         or _is_cell_team_task(task)
         or _is_coordination_task(task)
     )
+
+
+def _task_type_is_code(task_type: Any) -> bool:
+    """True when ``task_type`` is ``TaskType.CODE`` (enum member or its value).
+
+    Robust to the two shapes SQLAlchemy hands back: the ``TaskType`` enum or
+    its raw ``"code"`` string (the latter on detached/partially-hydrated rows).
+    Used by the Main-PM claim guard, which keys on the task's *type* (a Main PM
+    cannot execute code) rather than the team+type combo the create / reassign
+    guards use — claiming is owning, and a Main PM claiming a code task is a
+    mismatch regardless of the task's team.
+    """
+    value = task_type.value if isinstance(task_type, TaskType) else task_type
+    return str(value) == TaskType.CODE.value
+
+
+def _is_terminal_task(task: TaskTable) -> bool:
+    """True when ``task`` is in a terminal state (completed / cancelled).
+
+    Terminal tasks must never be resurrected by a side-channel write
+    (escalation → BLOCKED, reassign, dependency-revival). The lifecycle spec
+    guards the gateway verbs, but the HTTP routes and direct service callers
+    bypass it, so the single write primitives consult this too (F043). Robust
+    to the enum-or-raw-string shapes SQLAlchemy hands back.
+    """
+    status = getattr(task, "status", None)
+    value = status.value if isinstance(status, TaskStatus) else str(status)
+    return value in (TaskStatus.COMPLETED.value, TaskStatus.CANCELLED.value)
+
+
+_PM_OWNED_CELL_TASK_TYPES: frozenset[str] = frozenset(
+    {
+        TaskType.PLANNING.value,
+        TaskType.RESEARCH.value,
+        TaskType.ADMINISTRATIVE.value,
+        TaskType.DOCUMENTATION.value,
+        TaskType.DESIGN.value,
+    }
+)
+
+
+def _is_cell_pm_owned_task(task: TaskTable) -> bool:
+    """True for a descendant cell-team task that must be owned by its cell PM.
+
+    A cell team's planning / research / administrative / documentation / design
+    work is not Main-PM work — the Main PM coordinates across cells, but each
+    cell's own non-code work belongs to that cell's PM. Assigning such a child
+    to main-pm deadlocks because the Main PM's escalation chain points up, not
+    across to the cell PM who can actually decompose it. ``code`` is excluded
+    because leaf code work is delegated by the cell PM to a developer, not
+    owned by the cell PM itself.
+    """
+    if task.parent_task_id is None:
+        return False
+    team_value = getattr(task.team, "value", task.team)
+    if str(team_value) not in _CELL_TEAMS:
+        return False
+    task_type_value = getattr(task.task_type, "value", task.task_type)
+    return str(task_type_value) in _PM_OWNED_CELL_TASK_TYPES
 
 
 # Notes fields (dev_notes, qa_notes, quick_context) are append-only —
@@ -533,6 +598,7 @@ class TaskService(BaseService):
                 product_id=task.product_id,
                 batch_id=task.batch_id,
                 parent_task_id=task.parent_task_id,
+                has_cell_projects=bool(task.cell_projects),
             ),
             # An external-PR review task reviews someone else's PR read-only —
             # no branch of its own — so it is branch-gate exempt.
@@ -598,25 +664,40 @@ class TaskService(BaseService):
         task without routing through the strict transition validator — record
         the same audit event. No status change may bypass the audit log.
 
-        Fire-and-forget, but we hold a strong reference to the background task
-        (via ``_background_tasks``): the event loop only weak-refs tasks, so
-        without it the audit write can be garbage-collected before it commits.
+        The row is written into the CALLER's session (``self.session.add``),
+        so it commits / rolls back ATOMICALLY with the status transition — the
+        audit journey can never diverge from real task state. This closes three
+        facets of the fire-and-forget decoupling gap:
+
+        * F061/F073 — the audit commit is no longer decoupled on a separate
+          connection whose failures were swallowed; a committed transition now
+          ALWAYS has its audit row (same transaction), and a persist failure
+          fails the transition (fail-closed for the metric source of truth)
+          instead of silently dropping the row.
+        * F075 — a transition rolled back inside a verb savepoint
+          (``_verb_runner`` wraps composed actions in ``begin_nested``) now
+          rolls its audit row back too — no phantom ``task.<status>`` row for a
+          transition that did not stick. (The claim-branch-failure rollback in
+          ``_finalize_claim`` is one such site; the savepoint rollback handles
+          the general case.)
+
+        The ``revision_count`` rework counter is incremented synchronously
+        here (the single chokepoint every transition funnels through).
 
         The explicit ``audit_agent_id`` (capture-before-mutate) wins: callers
         like ``submit_for_qa`` clear ``task.claimed_by`` before transitioning
         but still want the row attributed to the outgoing agent. Otherwise fall
-        back to ``task.claimed_by``.
+        back to ``task.claimed_by``. A structurally-invalid id coerces to
+        ``None`` (mirroring ``AuditService._coerce_uuid``) so the row still
+        lands unattributed rather than FK-violating; a valid-but-deleted agent
+        id is a real bug worth surfacing as a transition failure.
         """
-        import asyncio
-        import contextlib
-
-        from roboco.services.audit import get_audit_service
+        from roboco.db.tables import AuditLogTable
 
         # Rework counter: a bounce INTO needs_revision (not a re-entry) is one
         # rework cycle. Incremented at this single chokepoint — every transition
         # path funnels its audit through here exactly once — so the rework rate
-        # is an O(1) column read. Synchronous (part of this unit of work),
-        # unlike the fire-and-forget audit rows below.
+        # is an O(1) column read. Synchronous (part of this unit of work).
         if (
             to_status == TaskStatus.NEEDS_REVISION.value
             and from_status != TaskStatus.NEEDS_REVISION.value
@@ -630,6 +711,13 @@ class TaskService(BaseService):
         else:
             resolved_audit_agent_id = None
 
+        agent_uuid: UUID | None = None
+        if resolved_audit_agent_id:
+            try:
+                agent_uuid = UUID(resolved_audit_agent_id)
+            except (ValueError, AttributeError):
+                agent_uuid = None
+
         details = {
             "from_status": from_status,
             "to_status": to_status,
@@ -638,20 +726,17 @@ class TaskService(BaseService):
                 task.team.value if hasattr(task.team, "value") else str(task.team)
             ),
         }
-        audit = get_audit_service()
-        with contextlib.suppress(RuntimeError):
-            loop = asyncio.get_running_loop()
-            for event_type in self._audit_events_for(to_status, agent_role):
-                bg = loop.create_task(
-                    audit.log_task_event(
-                        event_type=event_type,
-                        task_id=str(task.id),
-                        agent_id=resolved_audit_agent_id,
-                        details=details,
-                    )
+        for event_type in self._audit_events_for(to_status, agent_role):
+            self.session.add(
+                AuditLogTable(
+                    event_type=event_type,
+                    agent_id=agent_uuid,
+                    target_type="task",
+                    target_id=task.id,
+                    severity="info",
+                    details=dict(details),
                 )
-                self._background_tasks.add(bg)
-                bg.add_done_callback(self._background_tasks.discard)
+            )
 
     @staticmethod
     def _audit_events_for(to_status: str, agent_role: str | None) -> list[str]:
@@ -678,10 +763,14 @@ class TaskService(BaseService):
     async def _validate_parent_depth(self, parent_task_id: UUID) -> None:
         """Enforce MAX_TASK_DEPTH at creation time.
 
-        Walks up the parent chain counting ancestors. Raises ValueError if
-        adding a child under this parent would exceed MAX_TASK_DEPTH.
-        Previously this was only enforced at branch-name generation time,
-        so invalid hierarchies could be created and only fail later at claim.
+        Walks up the parent chain counting ancestors. Raises ValidationError
+        (a ServiceError the API/gateway translate to a clean 400 / remediation
+        envelope) if adding a child under this parent would exceed
+        MAX_TASK_DEPTH. Previously this raised a bare ValueError that escaped
+        uncaught as a 500 (the message told the agent to create a sibling, but
+        it never reached the agent as a handled error), and before that it was
+        only enforced at branch-name generation time, so invalid hierarchies
+        could be created and only fail later at claim.
         """
         from roboco.templates.git.constants import MAX_TASK_DEPTH
 
@@ -691,19 +780,24 @@ class TaskService(BaseService):
         while current_id is not None:
             key = str(current_id)
             if key in visited:
-                raise ValueError(
-                    f"Circular reference detected at {key} while validating depth"
+                raise ValidationError(
+                    f"Circular reference detected at {key} while validating depth",
+                    field="parent_task_id",
                 )
             visited.add(key)
             parent = await self.get(current_id)
             if parent is None:
-                raise ValueError(f"Parent task {current_id} not found")
+                raise ValidationError(
+                    f"Parent task {current_id} not found",
+                    field="parent_task_id",
+                )
             depth += 1
             if depth >= MAX_TASK_DEPTH:
-                raise ValueError(
+                raise ValidationError(
                     f"Task hierarchy would exceed MAX_TASK_DEPTH={MAX_TASK_DEPTH}. "
                     "Create this work as a sibling of the deepest task instead "
-                    "of a further nested subtask."
+                    "of a further nested subtask.",
+                    field="parent_task_id",
                 )
             parent_parent = parent.parent_task_id
             current_id = UUID(str(parent_parent)) if parent_parent else None
@@ -712,18 +806,22 @@ class TaskService(BaseService):
     def _require_target_or_umbrella(req: TaskCreateRequest) -> None:
         """Service-layer invariant (covers every create path — API, a2a, gateway).
 
-        A task targets a single repo (``project_id``) or fans out across cells via
-        a product (``product_id``) — it must have one or the other, EXCEPT a
-        MegaTask umbrella, which targets neither (it groups N root-subtasks that
-        each carry their own project) and is branchless.
+        A task targets a single repo (``project_id``), fans out across cells via a
+        product (``product_id``), or carries an ad-hoc per-cell map
+        (``cell_projects``) — it must have exactly one, EXCEPT a MegaTask umbrella,
+        which targets neither (it groups N root-subtasks that each carry their own
+        project) and is branchless.
         """
         if req.project_id is not None or req.product_id is not None:
+            return
+        if req.cell_projects:
             return
         if is_batch_umbrella(batch_id=req.batch_id, parent_task_id=req.parent_task_id):
             return
         raise ValueError(
-            "task needs a project_id (the repo it targets) or a product_id "
-            "(a cell->project map for a fan-out task)"
+            "task needs a project_id (the repo it targets), a product_id "
+            "(a cell->project map for a fan-out task), or cell_projects "
+            "(an ad-hoc per-cell map for a multi-cell coordination root)"
         )
 
     async def _validate_batch_membership(self, req: TaskCreateRequest) -> None:
@@ -742,11 +840,12 @@ class TaskService(BaseService):
             parent_task_id=req.parent_task_id,
             project_id=req.project_id,
             product_id=req.product_id,
+            has_cell_projects=bool(req.cell_projects),
         ):
             raise ValueError(
                 "batch_id is only valid on a MegaTask umbrella (targets neither "
-                "project nor product) or a root-subtask (targets exactly one); "
-                "refusing a stray batch_id on any other task."
+                "project, product, nor a cell map) or a root-subtask (targets "
+                "exactly one); refusing a stray batch_id on any other task."
             )
         if req.parent_task_id is None:
             return  # a well-formed umbrella
@@ -773,6 +872,23 @@ class TaskService(BaseService):
 
         if req.parent_task_id:
             await self._validate_parent_depth(req.parent_task_id)
+
+        # Impossibility backstop: a Main PM coordinates — it never owns a code
+        # task. ``main_pm`` + ``code`` on the same task is the structural
+        # mismatch behind the 2026-06-27 MegaTask meltdown (a root-subtask the
+        # git/PR/review layer treated as code while ownership treated it as
+        # coordination — never reconciled, pr_fail looped). Intake
+        # (create_task_from_draft) coerces code→planning, so this fires only on
+        # a non-intake create (the HTTP route / a direct internal create) that
+        # tries to persist the forbidden combo.
+        if main_pm_cannot_own_code(team=req.team, task_type=req.task_type):
+            raise ValidationError(
+                "MAIN_PM_NO_CODE: A Main PM task coordinates — it does not"
+                " execute code. Re-draft as `planning` with coordination-level"
+                " acceptance criteria, or target a cell so a developer owns the"
+                " code.",
+                field="task_type",
+            )
 
         # Stable per-criterion ids (1:1 with acceptance_criteria) so children can
         # reference specific parent criteria; generated here when not supplied.
@@ -812,6 +928,22 @@ class TaskService(BaseService):
         self.session.add(task)
         await self.session.flush()
 
+        # Persist the ad-hoc per-cell project map (a MegaTask root-subtask
+        # spanning multiple cells). Added as explicit rows with the flushed
+        # task id rather than via the `cell_projects` collection (which is
+        # unloaded on a freshly-built task — mutating it would trigger a lazy
+        # load). Unique (task_id, team) is enforced by the table; a caller
+        # passing duplicate teams raises IntegrityError here, which is the
+        # right failure for a malformed request.
+        for mapping in req.cell_projects:
+            self.session.add(
+                TaskCellProjectTable(
+                    task_id=cast("UUID", task.id),
+                    team=mapping.team,
+                    project_id=mapping.project_id,
+                )
+            )
+
         # Inherit parent task's primary session for subtasks
         if req.parent_task_id:
             await self._inherit_parent_session(
@@ -826,6 +958,12 @@ class TaskService(BaseService):
             title=req.title,
             team=req.team if isinstance(req.team, str) else req.team.value,
         )
+        # NOTE: cell-team PM-owned invariants are enforced on the reassign path
+        # (`reassign` / `reassign_active_claim` → `_resolve_cell_pm_redirect`)
+        # — not at create. Direct task.assigned_to writes in the escalation
+        # chain (e.g. the orchestrator's `_dispatch_revision_coordination_roots`)
+        # bypass this; they are TODO-listed at the call sites.
+
         await self._attach_baseline_constraints(task)
         return task
 
@@ -1006,19 +1144,26 @@ class TaskService(BaseService):
         await self.session.flush()
         return task
 
-    async def active_task_owns_branch(self, branch_name: str) -> bool:
-        """True if a non-terminal task already owns this git branch.
+    async def active_task_owns_branch(self, branch_name: str, project_id: UUID) -> bool:
+        """True if a non-terminal task on ``project_id`` already owns this branch.
 
         Lets the internal-PR reviewer skip the org's own in-flight integration
         PRs — those whose head branch a live task created via the agent
         task-flow (and which therefore already pass QA + PM review) — and review
         only org-repo PRs opened outside that flow.
+
+        Scoped to the polled project: a branch in project A's repo can only be
+        owned by a task whose ``project_id == A`` (each task branches in its
+        own project's repo, including each root-subtask of a multi-repo
+        MegaTask). An unscoped lookup would match the wrong project's task on a
+        cross-project branch_name collision and false-skip project A's PR.
         """
         if not branch_name:
             return False
         result = await self.session.execute(
             select(TaskTable.id).where(
                 TaskTable.branch_name == branch_name,
+                TaskTable.project_id == project_id,
                 TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
             )
         )
@@ -1495,6 +1640,37 @@ class TaskService(BaseService):
         )
         return task
 
+    async def _task_has_cell_map(self, task: TaskTable) -> bool:
+        """True iff ``task`` carries an ad-hoc per-cell project map.
+
+        The ``cell_projects`` relationship is ``lazy="selectin"`` — it loads on
+        a task *query*, not on a freshly created/flushed instance. Reading the
+        attribute on an unloaded instance fires a greenlet-less lazy SELECT that
+        rolls the async transaction back (``MissingGreenlet`` then
+        ``PendingRollbackError``), so we must NOT touch it blindly. We peek the
+        instance state (no IO): if the map is already loaded (the claim path
+        queries the task, so selectin fired) we read it directly; if it is
+        genuinely unloaded we ask the DB with an awaited count instead. A
+        non-ORM stub (unit-test MagicMock) isn't a real ``InstanceState``, so we
+        fall back to its plain ``cell_projects`` attribute.
+        """
+        # ``sa_inspect`` is typed to return ``InstanceState`` for a mapped
+        # ``TaskTable``, but unit-test stubs pass a ``MagicMock`` whose fake
+        # inspector is NOT a real ``InstanceState`` — annotate ``object`` so the
+        # non-InstanceState fallback stays reachable (and routes the stub to its
+        # plain ``cell_projects`` attribute).
+        state: object = sa_inspect(task)
+        if isinstance(state, InstanceState):
+            if "cell_projects" not in state.unloaded:
+                return bool(task.cell_projects)
+            stmt = (
+                select(func.count())
+                .select_from(TaskCellProjectTable)
+                .where(TaskCellProjectTable.task_id == task.id)
+            )
+            return (await self.session.scalar(stmt) or 0) > 0
+        return bool(task.cell_projects)
+
     async def _ensure_branch_for_task(
         self,
         task: TaskTable,
@@ -1521,12 +1697,13 @@ class TaskService(BaseService):
 
         if not task.project_id:
             # A coordination/fan-out task carries a product (a cell->project
-            # map) but no repo of its own. Per the CEO-locked branch model it is
-            # the Main-PM integration point: it cuts feature/main_pm/{root} off
-            # master in EACH repo the product spans, so cells branch off it
-            # (not off master) and only the CEO merges the root into master.
-            # Only a task with neither project nor product is misconfigured.
-            if task.product_id:
+            # map) or an ad-hoc cell_projects map but no repo of its own. Per
+            # the CEO-locked branch model it is the Main-PM integration point:
+            # it cuts feature/main_pm/{root} off master in EACH repo the map
+            # spans, so cells branch off it (not off master) and only the CEO
+            # merges the root into master. Only a task with neither project,
+            # product, nor a cell map is misconfigured.
+            if task.product_id or await self._task_has_cell_map(task):
                 return await self._ensure_coordination_root_branches(task, agent_id)
             # A MegaTask umbrella is branchless by design: it spans many projects
             # (no single master to branch off) and assembles no PR of its own —
@@ -1537,9 +1714,9 @@ class TaskService(BaseService):
             ):
                 return ""
             raise ValueError(
-                "Task requires a project_id (a repo) or a product_id (a "
-                "cell->project map) to create a branch. Assign one before "
-                "claiming."
+                "Task requires a project_id (a repo), a product_id, or a "
+                "cell_projects map (a cell->project map) to create a branch. "
+                "Assign one before claiming."
             )
 
         return await self._auto_create_branch(task, agent_id)
@@ -1725,33 +1902,55 @@ class TaskService(BaseService):
         )
         return branch_name
 
+    async def _distinct_projects_for_task(self, task: TaskTable) -> list[UUID]:
+        """The distinct projects a coordination root's map spans — one
+        ``feature/main_pm/{root}`` integration branch each.
+
+        A coordination root carries EITHER a product (``product_id`` → its
+        ``product_projects`` map) OR an ad-hoc per-cell map (``cell_projects``).
+        Both yield the same thing: the distinct project_ids the root spans,
+        de-duped (a monorepo mapped across cells yields one project per distinct
+        project, in team order). Empty when the root has neither (the umbrella,
+        which never reaches here, or a not-yet-mapped product — caller returns
+        ``""`` so delegation falls back to the parent's project).
+        """
+        from roboco.services.product import get_product_service
+
+        if task.product_id is not None:
+            return await get_product_service(self.session).distinct_project_ids(
+                UUID(str(task.product_id))
+            )
+        # Ad-hoc cell_projects map: de-dupe by project_id, in team order (mirrors
+        # ProductService.distinct_project_ids' ordering + dedup semantics).
+        seen: dict[UUID, None] = {}
+        for mapping in sorted(task.cell_projects, key=lambda m: m.team.value):
+            seen.setdefault(UUID(str(mapping.project_id)), None)
+        return list(seen)
+
     async def _ensure_coordination_root_branches(
         self,
         task: TaskTable,
         agent_id: UUID,
     ) -> str:
-        """Cut the Main-PM integration branch in every repo the product spans.
+        """Cut the Main-PM integration branch in every repo the map spans.
 
-        The coordination root carries a product (a cell->repo map) but no
-        project of its own. Per the CEO-locked model, the Main-PM root branches
-        ``feature/main_pm/{root}`` OFF master in each distinct repo; cells then
-        branch off it (via the parent-branch resolution) instead of off master,
-        so cell work never targets master — only the CEO merges the root branch
-        into master, per repo. Monorepo => one branch; multi-repo => N.
+        The coordination root carries a product (a cell->repo map) or an ad-hoc
+        ``cell_projects`` map, but no project of its own. Per the CEO-locked model,
+        the Main-PM root branches ``feature/main_pm/{root}`` OFF master in each
+        distinct repo the map spans; cells then branch off it (via the
+        parent-branch resolution) instead of off master, so cell work never
+        targets master — only the CEO merges the root branch into master, per
+        repo. Monorepo => one branch; multi-repo => N.
 
         Returns the shared branch name (identical across repos), or ``""`` when
-        the product has no cell->repo map yet (delegation then falls back to the
-        parent's project per the routing spec, and the root stays branchless).
+        the map has no projects yet (delegation then falls back to the parent's
+        project per the routing spec, and the root stays branchless).
         """
-        from roboco.services.product import get_product_service
         from roboco.services.project import get_project_service
 
-        product_service = get_product_service(self.session)
         project_service = get_project_service(self.session)
 
-        project_ids = await product_service.distinct_project_ids(
-            UUID(str(task.product_id))
-        )
+        project_ids = await self._distinct_projects_for_task(task)
         branch_name = ""
         for project_id in project_ids:
             project = await project_service.get(project_id)
@@ -1803,11 +2002,12 @@ class TaskService(BaseService):
             parent_task_id=getattr(task, "parent_task_id", None),
             project_id=getattr(task, "project_id", None),
             product_id=getattr(task, "product_id", None),
+            has_cell_projects=bool(getattr(task, "cell_projects", None)),
         ):
             raise ValueError(
                 "this update would break the task's MegaTask shape: a batch "
-                "member must stay an umbrella (targets neither project nor "
-                "product) or a root-subtask (exactly one target, parented)."
+                "member must stay an umbrella (targets neither project, product, "
+                "nor a cell map) or a root-subtask (exactly one target, parented)."
             )
 
     async def update(
@@ -2116,6 +2316,25 @@ class TaskService(BaseService):
                 task.last_heartbeat_at = original_heartbeat
                 task.active_claimant_id = original_claimant_id
                 await self.session.flush()
+                # emit the reversal audit row so the journey doesn't diverge
+                # from real state. The forward ``task.claimed`` audit row was
+                # already committed on the audit service's own connection; this
+                # rollback's flush reverts the task row but NOT that audit row.
+                # Without a matching reversal row, downstream metrics
+                # (cycle time, bottlenecks) reconstructed from ``task.<status>``
+                # events would be corrupted.
+                if original_status in self._CLAIMABLE_STATUSES:
+                    self._emit_status_transition_audit(
+                        task,
+                        from_status=TaskStatus.CLAIMED.value,
+                        to_status=(
+                            original_status.value
+                            if isinstance(original_status, TaskStatus)
+                            else str(original_status)
+                        ),
+                        agent_role=agent_role,
+                        audit_agent_id=agent_id,
+                    )
                 raise
             await self.session.refresh(task)
 
@@ -2124,6 +2343,105 @@ class TaskService(BaseService):
         bg_task = asyncio.create_task(self._inject_proactive_context(task, agent_id))
         self._background_tasks.add(bg_task)
         bg_task.add_done_callback(self._background_tasks.discard)
+
+    async def acquire_claim_lock(self, agent_id: UUID) -> None:
+        """Take a per-agent transaction-scoped advisory lock.
+
+        ``claim``'s ``SELECT ... FOR UPDATE`` serializes concurrent claims of
+        the SAME task, but the one-task-per-agent invariant is an agent-WIDE
+        guard: two concurrent claims by the SAME agent on TWO DIFFERENT pending
+        tasks lock different rows and both pass the already_active guard (each
+        reads an empty in_progress set before either commits). A
+        ``pg_advisory_xact_lock`` keyed by the agent serializes the WHOLE
+        claim+guard+start critical section per agent — held until the outer
+        request transaction commits, the second concurrent claim blocks until
+        the first commits, then its guard read sees the first's committed
+        in_progress task and is rejected.
+
+        Transaction-scoped (not session-scoped) so it auto-releases on commit
+        or rollback and cannot outlive the request. ``hashtextextended`` maps a
+        UUID to a ``bigint`` key; a hash collision only causes benign false
+        serialization (two different agents momentarily serializing), never a
+        false negative — so it is not a correctness concern.
+        """
+        await self.session.execute(
+            text(
+                "SELECT pg_advisory_xact_lock(hashtextextended(CAST(:aid AS text), 0))"
+            ),
+            {"aid": str(agent_id)},
+        )
+
+    async def acquire_delegate_parent_lock(self, parent_task_id: UUID) -> None:
+        """Take a per-parent transaction-scoped advisory lock for delegate.
+
+        The sibling-dedup guard (``_delegate_sibling_dedup_guard``) reads the
+        parent's existing subtasks via an unlocked ``get_subtasks`` SELECT,
+        then the verb body calls ``create_subtask`` (the write) — with no DB
+        serialization between the two. Two concurrent ``delegate`` calls for
+        the SAME parent (a PM re-delegating while a reaper re-dispatches, or
+        two orchestrator ticks racing) each read a duplicate-free sibling set,
+        each pass the guard, and each create a subtask → the parent gets the
+        duplicate the guard exists to prevent. A ``pg_advisory_xact_lock``
+        keyed by the parent serializes the WHOLE dedup-read -> create critical
+        section per parent — held until the outer request transaction commits,
+        the second concurrent same-parent delegate blocks until the first
+        commits, then its dedup read sees the first's committed sibling and is
+        rejected.
+
+        Per-PARENT (not per-agent): a coordinator PM legitimately delegates many
+        subtasks under one parent in quick succession and plans many roots in
+        parallel — a per-agent lock would serialize all of a PM's delegates and
+        regress coordinator concurrency. The per-parent lock serializes only
+        same-parent delegates (the dedup invariant is per-parent) and leaves
+        different parents untouched. Seed ``1`` keeps this in a disjoint key
+        space from the per-agent claim lock (seed ``0``). Transaction-scoped so
+        it auto-releases on commit or rollback and cannot outlive the request.
+        ``hashtextextended`` maps a UUID to a ``bigint`` key; a hash collision
+        only causes benign false serialization (two different parents
+        momentarily serializing), never a false negative.
+        """
+        await self.session.execute(
+            text(
+                "SELECT pg_advisory_xact_lock(hashtextextended(CAST(:pid AS text), 1))"
+            ),
+            {"pid": str(parent_task_id)},
+        )
+
+    async def acquire_task_lock(self, task_id: UUID) -> None:
+        """Take a per-task transaction-scoped advisory lock.
+
+        ``open_pr``'s idempotent re-entry guard reads ``t.pr_number`` from an
+        unlocked fetch, then runs the PR-opening runner + emits the 70%
+        "opened PR #N" milestone — a read-then-act with no DB serialization.
+        Two concurrent ``open_pr`` calls on the SAME task (the
+        alive-but-unresponsive respawn race) both fetch ``pr_number=None``,
+        both pass the guard, both run the runner (``create_pr``'s GitHub 422
+        'already exists' path ensures only one PR), and both emit the
+        milestone → a double-emitted progress entry (the audit/milestone
+        view double-counts one PR-open). A ``pg_advisory_xact_lock`` keyed by
+        the task serializes the WHOLE fetch -> guard -> runner -> milestone
+        critical section per task — held until the outer request transaction
+        commits, the second concurrent same-task ``open_pr`` blocks until the
+        first commits, its fetch then sees the first's committed ``pr_number``,
+        the idempotent guard fires, and it short-circuits without re-emitting
+        the milestone.
+
+        Per-TASK (not per-agent): the single-active-task guard means a dev
+        holds one task at a time, so concurrent ``open_pr`` on the SAME task is
+        purely the respawn-race bug case — no legitimate concurrency is
+        regressed. Seed ``2`` keeps this in a disjoint key space from the
+        per-agent claim lock (seed ``0``) and the per-parent delegate lock
+        (seed ``1``). Transaction-scoped so it auto-releases on commit or
+        rollback and cannot outlive the request. ``hashtextextended`` maps a
+        UUID to a ``bigint`` key; a hash collision only causes benign false
+        serialization, never a false negative.
+        """
+        await self.session.execute(
+            text(
+                "SELECT pg_advisory_xact_lock(hashtextextended(CAST(:tid AS text), 2))"
+            ),
+            {"tid": str(task_id)},
+        )
 
     async def claim(
         self, task_id: UUID, agent_id: UUID, allow_reassign: bool = False
@@ -2245,31 +2563,6 @@ class TaskService(BaseService):
     # GIT WORK SESSION INTEGRATION
     # =========================================================================
 
-    async def _supersede_other_active_sessions(
-        self, task_id: UUID, keep_agent_id: UUID
-    ) -> None:
-        """Abandon any ACTIVE work session for a task owned by a different agent.
-
-        Enforces the single-active-per-task invariant at claim time: a re-claim
-        by a different agent (pool release, reaper unclaim, escalation redirect)
-        otherwise left the prior holder's ACTIVE row open, and the duplicate
-        ACTIVE rows crashed ``WorkSessionService.get_active_for_task`` with
-        ``MultipleResultsFound`` — the i_will_plan respawn-loop wedge.
-        """
-        stale = await self.session.execute(
-            select(WorkSessionTable).where(
-                and_(
-                    WorkSessionTable.task_id == task_id,
-                    WorkSessionTable.agent_id != keep_agent_id,
-                    WorkSessionTable.status == WorkSessionStatus.ACTIVE,
-                )
-            )
-        )
-        for prior in stale.scalars().all():
-            prior.status = WorkSessionStatus.ABANDONED
-            prior.ended_at = datetime.now(UTC)
-        await self.session.flush()
-
     async def _create_work_session_if_needed(
         self,
         task: TaskTable,
@@ -2322,34 +2615,6 @@ class TaskService(BaseService):
             )
             return None
 
-        # Check if session already exists for this task+agent (resilient to any
-        # legacy duplicate ACTIVE rows — see
-        # WorkSessionService.get_active_for_task).
-        existing = await self.session.execute(
-            select(WorkSessionTable)
-            .where(
-                and_(
-                    WorkSessionTable.task_id == task.id,
-                    WorkSessionTable.agent_id == agent_id,
-                    WorkSessionTable.status == WorkSessionStatus.ACTIVE,
-                )
-            )
-            .order_by(WorkSessionTable.started_at.desc())
-        )
-        if existing.scalars().first():
-            self.log.debug(
-                "Work session already exists",
-                task_id=str(task.id),
-                agent_id=str(agent_id),
-            )
-            return None
-
-        # Single-active-per-task invariant: close any OTHER agent's stale ACTIVE
-        # session for this task before opening a new one (a re-claim by a
-        # different agent otherwise left duplicate ACTIVE rows that crashed
-        # get_active_for_task with MultipleResultsFound — the respawn-loop wedge).
-        await self._supersede_other_active_sessions(cast("UUID", task.id), agent_id)
-
         # Determine target branch:
         # - For subtasks: merge into parent task's branch
         # - For parent tasks: merge into default branch (master)
@@ -2363,19 +2628,34 @@ class TaskService(BaseService):
             if parent_branch:
                 target_branch = str(parent_branch)
 
-        # Create the work session
-        work_session = WorkSessionTable(
-            project_id=project_id,
-            task_id=task.id,
-            agent_id=agent_id,
-            branch_name=branch_name,
-            base_branch=target_branch,  # Created from target
-            target_branch=target_branch,  # Will merge back to target
-            status=WorkSessionStatus.ACTIVE,
-        )
-
-        self.session.add(work_session)
-        await self.session.flush()
+        # Create the work session through the validated service path (F113): the
+        # service-layer ``WorkSessionService.create`` is the single source of
+        # truth — it enforces the existing-active check (ConflictError on a
+        # duplicate), the single-active-per-task supersede invariant, and
+        # project/task existence. Constructing ``WorkSessionTable`` directly
+        # here duplicated that validation and the two sites had drifted. The
+        # ``ConflictError`` maps to the "if needed" idempotent semantics — an
+        # agent re-claiming its own already-active session is a no-op (None),
+        # not an error. The supersede still runs inside ``create`` before the
+        # insert (closing any OTHER agent's stale ACTIVE row first).
+        try:
+            work_session = await WorkSessionService(self.session).create(
+                WorkSessionCreate(
+                    project_id=cast("UUID", project_id),
+                    task_id=cast("UUID", task.id),
+                    agent_id=agent_id,
+                    branch_name=branch_name,
+                    base_branch=target_branch,  # Created from target
+                    target_branch=target_branch,  # Will merge back to target
+                )
+            )
+        except ConflictError:
+            self.log.debug(
+                "Work session already exists",
+                task_id=str(task.id),
+                agent_id=str(agent_id),
+            )
+            return None
 
         # Link session to task
         task.work_session_id = cast("Any", work_session.id)
@@ -3932,13 +4212,41 @@ class TaskService(BaseService):
                 original_developer=original_dev,
             )
         else:
-            # If no original developer found, unassign so it can be claimed
-            task.assigned_to = None
-            task.claimed_by = None
-            self.log.warning(
-                "No original developer found, task unassigned",
-                task_id=str(task_id),
+            # A dev task in needs_revision must go back to THE DEV, never to
+            # the pool. ``submit_for_qa`` sets the ``original_developer`` marker
+            # on the normal path, so a missing marker means the task did not
+            # pass through it. Unassigning here used to drop the task into the
+            # pool, where a cell PM (PMs can re-claim needs_revision) would
+            # grab it — exactly "needs revision on a dev task sent to the cell
+            # PM" (live 2026-06-27). Fall back to the developer who actually
+            # worked it: the most recent work session whose agent is a
+            # developer (the QA's own session excluded). Only unassign when no
+            # developer ever touched the task.
+            fallback_dev = await self._resolve_revision_dev(
+                task, exclude=to_python_uuid(qa_agent_id)
             )
+            if fallback_dev is not None:
+                task.assigned_to = cast("Any", fallback_dev)
+                task.claimed_by = cast("Any", fallback_dev)
+                # Self-heal the marker so a subsequent re-fail takes the fast
+                # path and the QA-review index (below) attributes the work to
+                # the right developer. The marker is unreliable in practice
+                # (live 2026-06-27: never persisted), so the work session is
+                # the load-bearing resolver; stamping it here makes the two
+                # paths converge instead of the marker staying absent forever.
+                markers.set_original_developer(task, str(fallback_dev))
+                self.log.info(
+                    "Task reassigned to revision developer (marker missing)",
+                    task_id=str(task_id),
+                    revision_developer=str(fallback_dev),
+                )
+            else:
+                task.assigned_to = None
+                task.claimed_by = None
+                self.log.warning(
+                    "No developer found for revision; task unassigned",
+                    task_id=str(task_id),
+                )
 
         await self.session.flush()
 
@@ -3966,6 +4274,41 @@ class TaskService(BaseService):
 
         self.log.info("Task failed QA", task_id=str(task_id))
         return task
+
+    async def _resolve_revision_dev(
+        self, task: TaskTable, *, exclude: UUID | None
+    ) -> UUID | None:
+        """The developer who should receive a needs_revision dev task when the
+        ``original_developer`` marker is missing.
+
+        A dev task in needs_revision must return to the dev, never the pool: an
+        unassigned needs_revision task is claimable by a cell PM, which is how a
+        dev task's revision landed on the cell PM live (2026-06-27). Resolves the
+        developer who actually worked it — the most recent work session on the
+        task whose agent is a developer (the QA's own session, ``exclude``, is
+        skipped so the fallback can't hand the task back to QA). Returns None
+        only when no developer ever touched the task (then unassign is the last
+        resort).
+        """
+        conditions = [WorkSessionTable.task_id == task.id]
+        if exclude is not None:
+            conditions.append(WorkSessionTable.agent_id != exclude)
+        result = await self.session.execute(
+            select(WorkSessionTable)
+            .where(and_(*conditions))
+            .order_by(WorkSessionTable.started_at.desc())
+        )
+        for ws in result.scalars().all():
+            agent_id = to_python_uuid(ws.agent_id)
+            if agent_id is None:
+                continue
+            agent = await self.agent_for(agent_id)
+            if agent is None:
+                continue
+            role = agent.role.value if hasattr(agent.role, "value") else str(agent.role)
+            if role == "developer":
+                return agent_id
+        return None
 
     async def docs_complete(
         self,
@@ -4258,7 +4601,16 @@ class TaskService(BaseService):
         return task
 
     def _validate_submit_review_status(self, task: TaskTable, task_id: UUID) -> bool:
-        """Task must be in_progress with branch + PR; otherwise log + False."""
+        """Task must be in_progress with branch + PR; otherwise log + False.
+
+        A MegaTask umbrella is branchless by design (it assembles no PR of
+        its own; each root-subtask carries its own project/branch/PR), yet it
+        still walks in_progress -> awaiting_pm_review so ``main_pm_complete``
+        can escalate it to the CEO. Waive the branch+PR requirement for a
+        batch umbrella — without this, umbrella completion deadlocks in
+        in_progress (``submit_pm_review`` returns None, the Main PM loops on
+        ``complete`` -> invalid_state forever).
+        """
         if task.status != TaskStatus.IN_PROGRESS:
             self.log.warning(
                 "Cannot submit for PM review - task not in progress",
@@ -4266,13 +4618,16 @@ class TaskService(BaseService):
                 current_status=task.status.value,
             )
             return False
-        if not task.branch_name:
+        is_umbrella = is_batch_umbrella(
+            batch_id=task.batch_id, parent_task_id=task.parent_task_id
+        )
+        if not task.branch_name and not is_umbrella:
             self.log.warning(
                 "Cannot submit for PM review - no branch (claim task first)",
                 task_id=str(task_id),
             )
             return False
-        if not task.pr_created or not task.pr_number:
+        if (not task.pr_created or not task.pr_number) and not is_umbrella:
             self.log.warning(
                 "Cannot submit for PM review - PR must be created first",
                 task_id=str(task_id),
@@ -4568,7 +4923,7 @@ class TaskService(BaseService):
         escalator_slug: str,
         target_slug: str,
         reason: str,
-    ) -> None:
+    ) -> bool:
         """Apply the state mutations for a generic chain escalation.
 
         Sets the task to BLOCKED, reassigns to the escalation target, and
@@ -4579,6 +4934,13 @@ class TaskService(BaseService):
         subsequent `unblock` call hands the task back to the original dev
         and the orchestrator re-spawns them. Without this, escalation
         loses the dev's identity permanently.
+
+        Returns True when the escalation was applied (or diverted to the pool
+        by the board/main-pm guard); False when refused because the task is in
+        a terminal state (COMPLETED / CANCELLED) — a terminal task must not be
+        resurrected to BLOCKED (F043). The gateway ``escalate_up`` path also
+        guards this in the lifecycle spec, but the HTTP escalate route bypasses
+        the spec gate, so the single write primitive refuses it here too.
 
         Invariant: a board/advisory role is NEVER assigned a task it cannot own
         — a descendant executable task (code / documentation / design), a cell's
@@ -4592,6 +4954,15 @@ class TaskService(BaseService):
         it. Enforced here — the single write primitive — so both the gateway
         ``escalate`` verb and the HTTP escalate route are covered.
         """
+        if _is_terminal_task(task):
+            self.log.warning(
+                "Refusing to escalate a terminal task (no resurrection to blocked)",
+                task_id=str(task.id),
+                status=str(task.status),
+                escalator=escalator_slug,
+                target=target_slug,
+            )
+            return False
         if _board_cannot_own(task) and await self._is_board_advisory_agent(
             target_agent_id
         ):
@@ -4601,7 +4972,25 @@ class TaskService(BaseService):
                 blocked_target_slug=target_slug,
                 reason=reason,
             )
-            return
+            return True
+        # Impossibility backstop: a Main-PM target must never receive (back) a
+        # main_pm + code task — a coordinator with no code verb cannot fix the
+        # code, so escalating it to Main PM perpetuates the mismatch (the
+        # 2026-06-27 meltdown shape). Scoped to the team+type combo (NOT a broad
+        # code+main-pm-target rule) so a legacy main_pm+code task can still be
+        # escalated to a cell dev — the correct remediation. The combo is
+        # uncreatable going forward (create backstop + intake coercion), so this
+        # is a backstop for legacy / direct-ORM-write tasks.
+        if main_pm_cannot_own_code(
+            team=task.team, task_type=task.task_type
+        ) and await self._is_main_pm_agent(target_agent_id):
+            await self._release_code_task_to_pool(
+                task=task,
+                escalator_slug=escalator_slug,
+                blocked_target_slug=target_slug,
+                reason=reason,
+            )
+            return True
         if task.assigned_to and not task.blocker_raised_by:
             task.blocker_raised_by = cast("Any", task.assigned_to)
         # Capture before mutating: the audit row must record the real prior
@@ -4642,6 +5031,7 @@ class TaskService(BaseService):
             escalator=escalator_slug,
             target=target_slug,
         )
+        return True
 
     # =========================================================================
     # CEO APPROVAL WORKFLOW
@@ -4852,11 +5242,32 @@ class TaskService(BaseService):
 
         already = task.assigned_to == main_pm.id
         task.assigned_to = cast("Any", main_pm.id)
+        # this is the CEO's start gate — approving the task confirms it for
+        # dispatch. A self-heal fix task is opened held
+        # (confirmed_by_human=False) so dispatch skips it until now; flipping
+        # it True lifts that hold. Idempotent for board/intake tasks (already
+        # confirmed at creation). The release-manager proposal is not routed
+        # here — it has its own CEO routes.
+        task.confirmed_by_human = cast("Any", True)
         # The board-reviewed coordination task now belongs to Main PM, who will
         # delegate it to the cells. Leaving team="board" is misleading once it's
         # off the board — reflect the new owner. Team.MAIN_PM is a valid non-cell
         # team and does not affect dispatch (which routes by assignee, not team).
         task.team = cast("Any", Team.MAIN_PM)
+        # A board-approved task handed to Main PM must not stay `code` — a Main
+        # PM coordinates, it never owns a code task (the 2026-06-27 meltdown was
+        # a main_pm + code root). A board-routed PROJECT code task reaches here
+        # with team=cell and task_type=code (intake only coerces main_pm-team
+        # drafts); once team is flipped to MAIN_PM the combo would persist.
+        # Retype code→planning so it's a planning-typed coordination root the
+        # Main PM delegates to the cells. (Intake coerces this too; this is the
+        # board-review backstop.)
+        if main_pm_cannot_own_code(team=task.team, task_type=task.task_type):
+            self.log.info(
+                "approve_and_start retyped main-pm code task to planning",
+                task_id=str(task_id),
+            )
+            task.task_type = cast("Any", TaskType.PLANNING)
 
         if notes:
             # Coordination metadata, not a human handoff — store as a marker so
@@ -4900,6 +5311,19 @@ class TaskService(BaseService):
             if child.batch_id is not None and child.status == TaskStatus.BACKLOG:
                 child.status = TaskStatus.PENDING
                 child.team = cast("Any", Team.MAIN_PM)
+                # a board-routed root-subtask is created in BACKLOG with
+                # team=board and task_type=code. Now that team is flipped to
+                # MAIN_PM, leaving task_type=code would re-introduce the
+                # main_pm+code meltdown — retype code->planning so the activated
+                # child is a planning-typed coordination root the Main PM
+                # delegates to the cells.
+                if main_pm_cannot_own_code(team=child.team, task_type=child.task_type):
+                    self.log.info(
+                        "activate_batch_root_subtasks retyped main-pm code "
+                        "root-subtask to planning",
+                        task_id=str(child.id),
+                    )
+                    child.task_type = cast("Any", TaskType.PLANNING)
                 released = True
         if released:
             await self.session.flush()
@@ -5006,6 +5430,7 @@ class TaskService(BaseService):
             product_id=task.product_id,
             batch_id=task.batch_id,
             parent_task_id=task.parent_task_id,
+            has_cell_projects=bool(task.cell_projects),
         )
         if not is_coordination_root:
             self._validate_and_set_status(task, TaskStatus.NEEDS_REVISION, "ceo")
@@ -5680,6 +6105,107 @@ class TaskService(BaseService):
             task.dependency_ids = [*task.dependency_ids, depends_on_id]
             await self.session.flush()
 
+    async def wire_sibling_collision_dag(self, parent_task_id: UUID) -> None:
+        """Wire the dev-task collision DAG (multi-level sequencing edge kind 3).
+
+        Runs the deterministic collision-sequencing analyzer over a parent's
+        surfaced siblings and wires each returned edge as a real
+        ``dependency_ids`` entry via :meth:`add_dependency`, so a dev task whose
+        surface collides with an earlier sibling's stays PENDING (held by the
+        ``list_pending(filter_by_dependencies=True)`` gate) until that sibling
+        completes and :meth:`_unblock_dependents` releases it — cross-dev and
+        cross-reroute, the ordering the assignee-keyed spawn barrier could not
+        guarantee (live 2026-06-27 out-of-order break).
+
+        Incremental + idempotent: re-run after each delegate. A surfaced
+        sibling (``intends_to_touch`` / ``adds_migration`` / ``touches_shared``)
+        joins the DAG scoped to its ``project_id`` (two repos never collide);
+        a no-surface / no-project sibling is parallel to everything and
+        contributes no edge. ``dev_task_collision_edges`` orders siblings by
+        ``(priority, sequence)`` so re-runs only ADD edges (never flip an
+        existing pair's order), and ``add_dependency`` dedupes.
+        """
+        from roboco.services.sequencing import dev_task_collision_edges
+
+        siblings = await self.get_subtasks(parent_task_id)
+        edges = dev_task_collision_edges(siblings)
+        for depends_on_id, task_id in edges:
+            await self.add_dependency(UUID(str(task_id)), UUID(str(depends_on_id)))
+
+    async def wire_cell_task_wave_chain(self, cell_task_id: UUID) -> None:
+        """Wire the cell-task wave chain (multi-level sequencing edge kind 2).
+
+        A new cell-task (under root-subtask ``UT_n``) depends on every cell-task
+        under every root-subtask ``UT_n`` itself depends on — ``UT_n`` 's
+        ``dependency_ids`` are the kind-1 wave-chain edges, so this chains the
+        cell-tasks of wave *k* onto the cell-tasks of wave *k-1*. A root-subtask
+        may fan to several cell-tasks (different cells), so the previous wave's
+        "cell-task" is a SET, not a single task, and the new cell-task waits for
+        the whole set so its branch carries the merged tail.
+
+        ``UT_n`` is held PENDING by ``list_pending(filter_by_dependencies=True)``
+        until its kind-1 predecessors are terminal, so by the time the Main PM
+        delegates ``UT_n`` 's cell-tasks the predecessor cell-tasks already exist
+        and are terminal — the edge is therefore a no-op gate in the common case
+        but documents the lineage and protects against any re-ordering.
+        Idempotent (``add_dependency`` dedupes) + best-effort (missing
+        predecessor / cell-task contributes no edge).
+        """
+        from roboco.services.sequencing import cell_task_wave_chain_depends_on
+
+        cell_task = await self.get(cell_task_id)
+        if cell_task is None or cell_task.parent_task_id is None:
+            return
+        root = await self.get(UUID(str(cell_task.parent_task_id)))
+        if root is None:
+            return
+        predecessor_root_ids = list(root.dependency_ids)
+        cell_tasks_by_root: dict = {}
+        for pred_root_id in predecessor_root_ids:
+            cell_tasks_by_root[pred_root_id] = await self.get_subtasks(
+                UUID(str(pred_root_id))
+            )
+        for dep_id in cell_task_wave_chain_depends_on(
+            predecessor_root_ids, cell_tasks_by_root
+        ):
+            await self.add_dependency(cell_task_id, UUID(str(dep_id)))
+
+    async def wire_by_osmosis_edge(self, dev_task_id: UUID) -> None:
+        """Wire the by-osmosis edge (multi-level sequencing edge kind 4).
+
+        The FIRST dev task (``sequence == 0``) under a cell-task depends on each
+        predecessor cell-task's tail (highest-``sequence``) dev task, so the new
+        wave's first branch carries the previous wave's fully-merged tail. The
+        predecessor cell-tasks are re-derived from the cell-task's root-subtask's
+        kind-1 ``dependency_ids`` (the same source :meth:`wire_cell_task_wave_chain`
+        uses), not from the cell-task's own ``dependency_ids`` — which also carry
+        UX/product-fanout deps the by-osmosis edge must not pick up.
+
+        Subsequent dev tasks (``sequence > 0``) inherit the tail via the kind-3
+        collision DAG or share the cell branch's already-merged base, so they
+        take no explicit edge. Idempotent + best-effort: a predecessor cell-task
+        with no dev tasks, or a missing predecessor, contributes no edge; a tail
+        already terminal is a no-op gate.
+        """
+        from roboco.services.sequencing import by_osmosis_tail_dev_tasks
+
+        dev_task = await self.get(dev_task_id)
+        if dev_task is None or dev_task.parent_task_id is None:
+            return
+        is_first = int(getattr(dev_task, "sequence", 0)) == 0
+        cell_task = await self.get(UUID(str(dev_task.parent_task_id)))
+        if cell_task is None or cell_task.parent_task_id is None:
+            return
+        root = await self.get(UUID(str(cell_task.parent_task_id)))
+        if root is None:
+            return
+        groups: list = []
+        for pred_root_id in list(root.dependency_ids):
+            for pred_ct in await self.get_subtasks(UUID(str(pred_root_id))):
+                groups.append(await self.get_subtasks(UUID(str(pred_ct.id))))
+        for dep_id in by_osmosis_tail_dev_tasks(is_first, groups):
+            await self.add_dependency(dev_task_id, UUID(str(dep_id)))
+
     async def set_sequence(self, task_id: UUID, sequence: int) -> None:
         """Set a task's sibling-ordering sequence (lower = first).
 
@@ -5955,6 +6481,38 @@ class TaskService(BaseService):
     def _task_status_value(task: TaskTable) -> str:
         return task.status.value if hasattr(task.status, "value") else str(task.status)
 
+    @staticmethod
+    def _raise_if_self_review(agent: AgentContext, task: TaskTable) -> None:
+        """Refuse a QA/Documenter claim of a task it itself developed."""
+        if agent.role in (AgentRole.QA, AgentRole.DOCUMENTER):
+            original_dev = extract_original_developer(task)
+            if original_dev and str(agent.agent_id) == original_dev:
+                raise UnauthorizedError(
+                    action="claim",
+                    reason=(
+                        "SELF_REVIEW: Cannot claim a task that you developed. "
+                        f"Leave it for another {agent.role.value}."
+                    ),
+                )
+
+    @staticmethod
+    def _raise_if_main_pm_code_claim(
+        claimant_is_main_pm: bool, task: TaskTable
+    ) -> None:
+        """Refuse a Main-PM claim of a code task it would have to execute."""
+        if (
+            claimant_is_main_pm
+            and _task_type_is_code(task.task_type)
+            and task.status != TaskStatus.NEEDS_REVISION
+        ):
+            raise UnauthorizedError(
+                action="claim",
+                reason=(
+                    "MAIN_PM_NO_CODE: A Main PM coordinates — it does not own a"
+                    " code task. Leave it for a developer; delegate instead."
+                ),
+            )
+
     async def claim_task_for_agent(
         self,
         task_id: UUID,
@@ -5971,16 +6529,7 @@ class TaskService(BaseService):
             )
 
         # QA / Documenter cannot claim what they themselves developed.
-        if agent.role in (AgentRole.QA, AgentRole.DOCUMENTER):
-            original_dev = extract_original_developer(task)
-            if original_dev and str(agent.agent_id) == original_dev:
-                raise UnauthorizedError(
-                    action="claim",
-                    reason=(
-                        "SELF_REVIEW: Cannot claim a task that you developed. "
-                        f"Leave it for another {agent.role.value}."
-                    ),
-                )
+        self._raise_if_self_review(agent, task)
 
         can_assign = permissions.can_perform_task_action(
             agent, TaskAction.ASSIGN, task.team
@@ -6000,6 +6549,30 @@ class TaskService(BaseService):
         # keeps the owner and never re-claims here.
         if task.status == TaskStatus.AWAITING_PM_REVIEW:
             return await self._claim_review_state(task_id, claim_agent_id)
+
+        # Impossibility backstop (C8): a Main PM coordinates — it never claims a
+        # CODE task to EXECUTE (claiming here is owning through the lifecycle,
+        # NOT delegating; delegation uses the `delegate` verb, not claim).
+        # Scoped to run only AFTER the awaiting_pm_review review-claim above
+        # returned, so the legitimate Main-PM review/merge path is untouched, AND
+        # to skip NEEDS_REVISION — the coordination-recovery path. ``CLAIM_RULES``
+        # lets a PM re-claim NEEDS_REVISION to re-delegate the fixes after a
+        # pr_fail / qa_fail / ceo_reject; blocking that wedges the PM in
+        # needs_revision with no actor and no exit (the 2026-06-27 c80e19ff loop:
+        # a legacy coordination root still typed `code` until the Phase 3b deploy
+        # retype recovers through exactly this claim). The recovery claim
+        # re-delegates — it does not execute code — so a code-typed coordination
+        # root MUST pass through. The dispatcher never offers code leaf tasks to
+        # main-pm (code→dev), so the guard is still an effective backstop against
+        # a rogue / on-behalf-of-main-pm claim of a code leaf from PENDING; the
+        # needs_revision exemption only re-opens the documented recovery path.
+        # The effective claimant is the reassign target when ``allow_reassign``
+        # (claim on behalf of), else the caller.
+        if allow_reassign:
+            claimant_is_main_pm = await self._is_main_pm_agent(claim_agent_id)
+        else:
+            claimant_is_main_pm = agent.role == AgentRole.MAIN_PM
+        self._raise_if_main_pm_code_claim(claimant_is_main_pm, task)
 
         claimed = await self.claim(
             task_id, claim_agent_id, allow_reassign=allow_reassign
@@ -6635,6 +7208,13 @@ class TaskService(BaseService):
         `list_pending(filter_by_dependencies=True)`, so the dependency gate
         must be applied here too.
 
+        F059: a self-heal fix task held for the CEO's Approve-&-Start
+        (``source=self_heal`` + ``confirmed_by_human=False``) is NOT offered
+        here — an already-alive PM must not grab it via give_me_work before the
+        CEO opens the gate. The hold is scoped to self-heal: ordinary delegated
+        subtasks default to ``confirmed_by_human=False`` (the PM delegated them,
+        which is itself the authorization to start) and MUST still be offered.
+
         Ordered by sequence asc, then priority asc, then created_at asc so
         earlier-sequence tasks win.
         """
@@ -6643,6 +7223,10 @@ class TaskService(BaseService):
             .where(
                 TaskTable.assigned_to == agent_id,
                 TaskTable.status == TaskStatus.PENDING,
+                or_(
+                    TaskTable.source != SELF_HEAL_SOURCE,
+                    TaskTable.confirmed_by_human.is_(True),
+                ),
             )
             .order_by(
                 TaskTable.sequence,
@@ -6915,6 +7499,83 @@ class TaskService(BaseService):
         await self.session.flush()
         return task
 
+    async def _maybe_divert_board_advisory_reassign(
+        self, task: TaskTable, task_id: UUID, new_assignee: UUID | None
+    ) -> TaskTable | None:
+        """Divert a board/advisory → cell-task reassign to the pool, or None.
+
+        Invariant backstop: never plant a board/advisory role as the owner of a
+        cell task. ``apply_escalation`` guards the escalate path; this guards the
+        direct reassign setter (gateway handoffs + HTTP route). A refused
+        hand-off is diverted to the pool for a role-matched claim. Normal
+        handoff targets (qa/documenter/cell_pm) are not board roles, so the
+        guard never fires for them.
+
+        Returns the refreshed task when it diverted (the caller returns it as
+        the reassign result), or ``None`` when no diversion applies and the
+        caller should proceed with the normal handoff.
+        """
+        if not (
+            new_assignee is not None
+            and _board_cannot_own(task)
+            and await self._is_board_advisory_agent(new_assignee)
+        ):
+            return None
+        await self._divert_owned_task_to_pool(
+            task,
+            note=(
+                "\n\n[REASSIGN REDIRECTED] attempted to assign this cell task"
+                " to a board/advisory role that cannot own cell-executed work."
+                " Released to the pool for a role-matched claim instead."
+            ),
+        )
+        self.log.info(
+            "Cell task reassign to a board/advisory role diverted to pool",
+            task_id=str(task_id),
+            refused_assignee=str(new_assignee),
+        )
+        return task
+
+    async def _maybe_divert_main_pm_code_reassign(
+        self, task: TaskTable, task_id: UUID, new_assignee: UUID | None
+    ) -> TaskTable | None:
+        """Divert a main_pm+code → Main-PM reassign to the pool, or None.
+
+        Twin of ``_maybe_divert_board_advisory_reassign`` for the
+        impossibility invariant: a Main-PM target must never receive (back) a
+        ``main_pm`` + ``code`` task — a coordinator with no code verb cannot
+        fix the code, so re-handing it to Main PM perpetuates the mismatch
+        (the 2026-06-27 meltdown shape). Scoped to the team+type combo (NOT a
+        broad code+main-pm-target rule) so a legacy main_pm+code task can still
+        be reassigned to a cell dev — the correct remediation. The combo is
+        uncreatable going forward (create backstop + intake coercion +
+        approve_and_start retype), so this is a backstop for legacy /
+        direct-ORM-write tasks.
+
+        Returns the refreshed task when it diverted, or ``None`` when no
+        diversion applies and the caller should proceed with the normal handoff.
+        """
+        if not (
+            new_assignee is not None
+            and main_pm_cannot_own_code(team=task.team, task_type=task.task_type)
+            and await self._is_main_pm_agent(new_assignee)
+        ):
+            return None
+        await self._divert_owned_task_to_pool(
+            task,
+            note=(
+                "\n\n[REASSIGN REDIRECTED] attempted to hand this main_pm + code"
+                " task to a Main PM that cannot own code. Released to the pool"
+                " for a role-matched claim instead."
+            ),
+        )
+        self.log.info(
+            "main_pm + code task reassign to a Main PM diverted to pool",
+            task_id=str(task_id),
+            refused_assignee=str(new_assignee),
+        )
+        return task
+
     async def reassign(
         self, task_id: UUID, new_assignee: UUID | None
     ) -> TaskTable | None:
@@ -6931,40 +7592,139 @@ class TaskService(BaseService):
         task = await self.get(task_id)
         if task is None:
             return None
-        # Invariant backstop: never plant a board/advisory role as the owner of a
-        # cell task. `apply_escalation` guards the escalate path; this guards the
-        # direct reassign setter (gateway handoffs + HTTP route). A refused
-        # hand-off is diverted to the pool for a role-matched claim. Normal
-        # handoff targets (qa/documenter/cell_pm) are not board roles, so the
-        # guard never fires for them.
-        if (
-            new_assignee is not None
-            and _board_cannot_own(task)
-            and await self._is_board_advisory_agent(new_assignee)
-        ):
-            await self._divert_owned_task_to_pool(
-                task,
-                note=(
-                    "\n\n[REASSIGN REDIRECTED] attempted to assign this cell task"
-                    " to a board/advisory role that cannot own cell-executed work."
-                    " Released to the pool for a role-matched claim instead."
-                ),
-            )
+        # Board/advisory → cell-task hand-off is diverted to the pool (see
+        # `_maybe_divert_board_advisory_reassign`); otherwise proceed with the
+        # normal handoff + cell-PM redirect.
+        diverted = await self._maybe_divert_board_advisory_reassign(
+            task, task_id, new_assignee
+        )
+        if diverted is not None:
+            return diverted
+        # main_pm + code → Main-PM hand-off is diverted to the pool (see
+        # `_maybe_divert_main_pm_code_reassign`); otherwise proceed with the
+        # normal handoff + cell-PM redirect.
+        diverted = await self._maybe_divert_main_pm_code_reassign(
+            task, task_id, new_assignee
+        )
+        if diverted is not None:
+            return diverted
+        # Invariant backstop: cell-team planning/research/administrative children
+        # must be owned by their cell PM. If the caller tried to hand such a task
+        # to main-pm (or another mismatched owner), redirect to the cell PM.
+        redirect = await self._resolve_cell_pm_redirect(task, new_assignee)
+        effective_assignee = redirect.effective_assignee
+        if redirect.redirected:
             self.log.info(
-                "Cell task reassign to a board/advisory role diverted to pool",
+                "Reassign redirected to cell PM",
                 task_id=str(task_id),
-                refused_assignee=str(new_assignee),
+                requested_assignee=str(new_assignee),
+                effective_assignee=str(effective_assignee),
+                reason=redirect.reason,
             )
-            return task
-        task.assigned_to = cast("Any", new_assignee) if new_assignee else None
-        task.claimed_by = cast("Any", new_assignee) if new_assignee else None
+            if redirect.dev_notes_line is not None:
+                task.dev_notes = (task.dev_notes or "") + redirect.dev_notes_line
+
+        task.assigned_to = (
+            cast("Any", effective_assignee) if effective_assignee else None
+        )
+        task.claimed_by = (
+            cast("Any", effective_assignee) if effective_assignee else None
+        )
         await self.session.flush()
         self.log.info(
             "Task reassigned",
             task_id=str(task_id),
-            new_assignee=str(new_assignee) if new_assignee else None,
+            new_assignee=str(effective_assignee) if effective_assignee else None,
         )
         return task
+
+    @dataclass(frozen=True)
+    class _CellPmRedirect:
+        """Outcome of an `_resolve_cell_pm_redirect` call.
+
+        ``effective_assignee`` is the UUID the caller should persist (possibly
+        ``None`` when the task was queued for a missing cell PM).
+        ``redirected`` is ``True`` iff ``effective_assignee`` differs from the
+        caller's requested assignee — used by callers to decide whether to log
+        a redirect. ``reason`` is a short tag that names the redirect reason
+        ("to_cell_pm", "queued_no_cell_pm"). ``dev_notes_line`` is the audit
+        text to append to ``task.dev_notes`` (only set when a redirect
+        happened) so a redirect is visible in the task body, not just in logs.
+        """
+
+        effective_assignee: UUID | None
+        redirected: bool
+        reason: str
+        dev_notes_line: str | None
+
+    async def _resolve_cell_pm_redirect(
+        self, task: TaskTable, requested_assignee: UUID | None
+    ) -> "TaskService._CellPmRedirect":
+        """Decide whether ``task`` must be redirected to its cell PM.
+
+        Returns a dataclass describing the outcome. Behavior:
+
+        - Not a cell-team PM-owned child → keep ``requested_assignee`` unchanged.
+        - No cell PM exists for the team → **queue the task** (``None``
+          assignee, ``ERROR`` log) rather than silently assigning to
+          ``requested_assignee``. The system is in a bad state; this is
+          observable in logs and the task sits in ``PENDING`` until the agent
+          table is repaired.
+        - Cell PM exists and matches → keep ``requested_assignee``.
+        - Cell PM exists and differs → redirect to the cell PM and write the
+          standard ``[ASSIGNMENT REDIRECTED]`` line to ``dev_notes`` so the
+          audit is visible in the task body.
+        """
+        noop = TaskService._CellPmRedirect(
+            effective_assignee=requested_assignee,
+            redirected=False,
+            reason="noop",
+            dev_notes_line=None,
+        )
+        if not _is_cell_pm_owned_task(task):
+            return noop
+        assert task.team is not None  # guarded by _is_cell_pm_owned_task
+        team_enum = Team(str(getattr(task.team, "value", task.team)))
+        cell_pm = await self.cell_pm_for_team(team_enum)
+        if cell_pm is None:
+            self.log.error(
+                "Cell-team PM-owned task has no cell PM agent row; "
+                "queueing without an assignee. Repair agents table.",
+                task_id=str(getattr(task, "id", None)),
+                team=team_enum.value,
+            )
+            type_value = (
+                task.task_type.value
+                if isinstance(task.task_type, TaskType)
+                else task.task_type
+            )
+            return TaskService._CellPmRedirect(
+                effective_assignee=None,
+                redirected=(requested_assignee is not None),
+                reason="queued_no_cell_pm",
+                dev_notes_line=(
+                    f"\n\n[ASSIGNMENT REDIRECTED] cell-team {team_enum.value} "
+                    f"{type_value} task queued with no assignee because no "
+                    f"cell PM agent row exists; was {requested_assignee}."
+                ),
+            )
+        if requested_assignee == cell_pm.id:
+            return noop
+        type_value = (
+            task.task_type.value
+            if isinstance(task.task_type, TaskType)
+            else task.task_type
+        )
+        return TaskService._CellPmRedirect(
+            effective_assignee=cast("UUID", cell_pm.id),
+            redirected=True,
+            reason="to_cell_pm",
+            dev_notes_line=(
+                f"\n\n[ASSIGNMENT REDIRECTED] cell-team {team_enum.value} "
+                f"{type_value} task must be owned by its cell PM; reassigned "
+                f"from {requested_assignee} to {cell_pm.slug}."
+            ),
+        )
 
     async def reassign_active_claim(
         self, task_id: UUID, new_assignee: UUID
@@ -7002,17 +7762,53 @@ class TaskService(BaseService):
                 refused_assignee=str(new_assignee),
             )
             return task
+        # Impossibility backstop (mirrors `reassign`): an active main_pm + code
+        # claim must not be handed to a Main PM — divert to the pool. Scoped to
+        # the team+type combo so a legacy main_pm+code task can still be
+        # reassign-claimed by a cell dev (the correct remediation).
+        if main_pm_cannot_own_code(
+            team=task.team, task_type=task.task_type
+        ) and await self._is_main_pm_agent(new_assignee):
+            await self._divert_owned_task_to_pool(
+                task,
+                note=(
+                    "\n\n[REASSIGN REDIRECTED] attempted to hand this active"
+                    " main_pm + code task to a Main PM that cannot own code."
+                    " Released to the pool for a role-matched claim instead."
+                ),
+            )
+            self.log.info(
+                "Active main_pm + code task reassign to a Main PM diverted",
+                task_id=str(task_id),
+                refused_assignee=str(new_assignee),
+            )
+            return task
+        # Invariant backstop: an active claim on a cell-team planning/research/
+        # administrative task must land on the cell PM, not main-pm.
+        redirect = await self._resolve_cell_pm_redirect(task, new_assignee)
+        effective_assignee = redirect.effective_assignee
+        if redirect.redirected:
+            self.log.info(
+                "Active claim redirected",
+                task_id=str(task_id),
+                requested_assignee=str(new_assignee),
+                effective_assignee=str(effective_assignee),
+                reason=redirect.reason,
+            )
+            if redirect.dev_notes_line is not None:
+                task.dev_notes = (task.dev_notes or "") + redirect.dev_notes_line
+
         now = datetime.now(UTC)
-        task.assigned_to = cast("Any", new_assignee)
-        task.claimed_by = cast("Any", new_assignee)
+        task.assigned_to = cast("Any", effective_assignee)
+        task.claimed_by = cast("Any", effective_assignee)
         task.claimed_at = now
         task.last_heartbeat_at = now
-        task.active_claimant_id = cast("Any", new_assignee)
+        task.active_claimant_id = cast("Any", effective_assignee)
         await self.session.flush()
         self.log.info(
             "Active task reassigned to a fresh claimant",
             task_id=str(task_id),
-            new_assignee=str(new_assignee),
+            new_assignee=str(effective_assignee),
         )
         return task
 
@@ -7157,7 +7953,47 @@ class TaskService(BaseService):
         The in-path PR-review gate mirrors QA's claim_review: status stays at
         awaiting_pr_review while the reviewer inspects the assembled diff;
         pr_pass / pr_fail perform the transition.
+
+        Single-claimant guard: two reviewers race-claiming the same gate task
+        would otherwise overwrite the first's claim (last-write-wins) and the
+        first reviewer's subsequent pr_pass / pr_fail would actor-mismatch
+        against the new owner — wasting a review cycle. The guard refuses a
+        second reviewer when the task is already actively claimed by a
+        DIFFERENT PR-reviewer. The gate task is owned by the PM at entry
+        (``submit_for_review`` does not clear ownership, unlike
+        ``submit_for_qa``), so the guard must distinguish a PM/dev owner —
+        which the first reviewer legitimately overclaims — from a competing
+        reviewer claim. It does this by checking the existing claimant's
+        ROLE: only a PR-reviewer active claimant is a competing review claim.
+        The row is locked ``FOR UPDATE`` so concurrent claim attempts serialize
+        at the DB level (the second claim sees the first's committed claim),
+        mirroring the dev ``claim`` path. A re-claim by the SAME reviewer is
+        idempotent (the ``existing != reviewer_agent_id`` check skips the
+        guard).
         """
+        lock_result = await self.session.execute(
+            select(TaskTable)
+            .where(TaskTable.id == task_id)
+            .with_for_update(of=TaskTable)
+        )
+        task = lock_result.scalar_one_or_none()
+        if task is None or task.status != TaskStatus.AWAITING_PR_REVIEW:
+            return None
+        existing = to_python_uuid(task.active_claimant_id)
+        if existing is not None and existing != reviewer_agent_id:
+            existing_agent = await self.agent_for(existing)
+            if (
+                existing_agent is not None
+                and existing_agent.role == AgentRole.PR_REVIEWER.value
+            ):
+                self.log.warning(
+                    "pr_gate_claim rejected - gate task already claimed by"
+                    " another reviewer",
+                    task_id=str(task_id),
+                    existing_claimant=str(existing),
+                    requesting_reviewer=str(reviewer_agent_id),
+                )
+                return None
         return await self._qa_or_doc_claim(
             reviewer_agent_id, task_id, TaskStatus.AWAITING_PR_REVIEW
         )
@@ -7410,14 +8246,14 @@ class TaskService(BaseService):
 
         # The board/advisory guard lives in apply_escalation so the HTTP
         # escalate route is covered too; nothing extra to do here.
-        await self.apply_escalation(
+        applied = await self.apply_escalation(
             task=task,
             target_agent_id=UUID(str(target.id)),
             escalator_slug=agent.slug,
             target_slug=target_slug,
             reason=reason,
         )
-        return task
+        return task if applied else None
 
     async def _is_board_advisory_agent(self, agent_id: UUID) -> bool:
         """True if ``agent_id`` is a board/advisory role (PO / marketing / auditor)."""
@@ -7426,6 +8262,19 @@ class TaskService(BaseService):
         )
         role = result.scalar_one_or_none()
         return role in _BOARD_ADVISORY_ROLES
+
+    async def _is_main_pm_agent(self, agent_id: UUID) -> bool:
+        """True if ``agent_id`` is the Main PM role (the coordinator with no code verb).
+
+        Twin of ``_is_board_advisory_agent`` for the impossibility invariant —
+        consulted by the escalation / reassign / claim guards that divert or
+        refuse a ``main_pm`` + ``code`` hand-off to a Main-PM target.
+        """
+        result = await self.session.execute(
+            select(AgentTable.role).where(AgentTable.id == agent_id)
+        )
+        role = result.scalar_one_or_none()
+        return role == AgentRole.MAIN_PM
 
     async def _divert_owned_task_to_pool(self, task: TaskTable, *, note: str) -> None:
         """Clear ownership and return ``task`` to PENDING for a role-matched claim.
@@ -7532,22 +8381,33 @@ class TaskService(BaseService):
         if target is None:
             return None
 
-        await self.apply_escalation(
+        applied = await self.apply_escalation(
             task=task,
             target_agent_id=UUID(str(target.id)),
             escalator_slug=agent.slug,
             target_slug=target.slug,
             reason=reason,
         )
-        return task
+        # apply_escalation refuses terminal tasks (F043); mirror escalate()'s
+        # contract so the gateway emits a clean invalid_state envelope.
+        return task if applied else None
 
     async def list_in_progress_for_agent(self, agent_id: UUID) -> list[TaskTable]:
-        """In-progress tasks currently assigned to the agent."""
+        """Tasks the agent is still on the hook for — in_progress OR blocked.
+
+        F018: ``blocked`` is included because a blocked task is still owned and
+        ``unblock_with_restore`` resumes it to ``in_progress``; the claim guard
+        (``already_active_guard``) must see it or a dev could claim a second
+        task while blocked and end up with two ``in_progress`` tasks once the
+        first is unblocked. Callers that only want pausable (in_progress) tasks
+        — the ``i_am_idle`` auto-pause path — filter on ``status`` themselves
+        (``pause()`` no-ops on non-in_progress regardless).
+        """
         query = (
             select(TaskTable)
             .where(
                 TaskTable.assigned_to == agent_id,
-                TaskTable.status == TaskStatus.IN_PROGRESS,
+                TaskTable.status.in_([TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED]),
             )
             .order_by(TaskTable.priority, TaskTable.updated_at.desc())
         )
@@ -7634,6 +8494,17 @@ class TaskService(BaseService):
             task_type=req.task_type,
             nature=req.nature,
             status=req.status or inferred_status,
+            # Forward ordering + collision surface so a dev task delegated with
+            # surfaces/dependencies keeps them (multi-level sequencing — edge
+            # kinds 3 & 4). Previously dropped here, which is why dev-task
+            # dependency_ids was always [] and the only ordering was the weak
+            # assignee-keyed spawn barrier (live 2026-06-27 out-of-order break).
+            sequence=req.sequence,
+            dependency_ids=list(req.dependency_ids) if req.dependency_ids else [],
+            batch_id=req.batch_id,
+            intends_to_touch=req.intends_to_touch,
+            adds_migration=req.adds_migration,
+            touches_shared=req.touches_shared,
         )
         return await self.create(prepared)
 

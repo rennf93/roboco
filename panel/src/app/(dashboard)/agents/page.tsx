@@ -32,11 +32,11 @@ export default function AgentsPage() {
   const { data: usageRows } = useAgentUsage();
 
   // Check if it's a connection error (backend not running)
-  const isOffline = error && (
-    error.message?.includes("Network Error") ||
-    error.message?.includes("ECONNREFUSED") ||
-    (error as { code?: string })?.code === "ERR_NETWORK"
-  );
+  const isOffline =
+    error &&
+    (error.message?.includes("Network Error") ||
+      error.message?.includes("ECONNREFUSED") ||
+      (error as { code?: string })?.code === "ERR_NETWORK");
 
   // Convert agents array to a record keyed by agent_id for easy lookup
   const agentStatuses = useMemo(() => {
@@ -86,7 +86,9 @@ export default function AgentsPage() {
           <OrchestratorStatusCards status={status} isLoading={isLoading} />
 
           {/* Waiting Agents Alert */}
-          {waitingAgents && <WaitingAgentsAlert waitingAgents={waitingAgents} />}
+          {waitingAgents && (
+            <WaitingAgentsAlert waitingAgents={waitingAgents} />
+          )}
         </>
       )}
 

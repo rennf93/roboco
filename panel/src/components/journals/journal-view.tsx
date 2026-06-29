@@ -2,7 +2,11 @@
 
 import { useState, useMemo } from "react";
 import { JournalEntryType, Agent } from "@/types";
-import { useJournalByAgent, useAgentJournalEntries, useMyGrowthMetrics } from "@/hooks/use-journals";
+import {
+  useJournalByAgent,
+  useAgentJournalEntries,
+  useMyGrowthMetrics,
+} from "@/hooks/use-journals";
 import { useTasks } from "@/hooks/use-tasks";
 import { GrowthSummary } from "./growth-summary";
 import { EntryCard } from "./entry-card";
@@ -28,8 +32,12 @@ export function JournalView({
   onTaskChange,
 }: JournalViewProps) {
   // Use internal state if no external control provided
-  const [internalTypeFilter, setInternalTypeFilter] = useState<JournalEntryType | "all">("all");
-  const [internalTaskFilter, setInternalTaskFilter] = useState<string | null>(null);
+  const [internalTypeFilter, setInternalTypeFilter] = useState<
+    JournalEntryType | "all"
+  >("all");
+  const [internalTaskFilter, setInternalTaskFilter] = useState<string | null>(
+    null,
+  );
   const [searchQuery, setSearchQuery] = useState("");
 
   // Use external or internal state
@@ -39,12 +47,14 @@ export function JournalView({
   const handleTaskChange = onTaskChange ?? setInternalTaskFilter;
 
   // Fetch journal and entries for the selected agent using their slug
-  const { data: journal, isLoading: loadingJournal } = useJournalByAgent(agent.agent_id);
+  const { data: journal, isLoading: loadingJournal } = useJournalByAgent(
+    agent.agent_id,
+  );
 
   // Fetch ALL entries (without task filter) to build the task dropdown options
   const { data: allEntries } = useAgentJournalEntries(
     agent.agent_id,
-    typeFilter !== "all" ? { entry_type: typeFilter } : {}
+    typeFilter !== "all" ? { entry_type: typeFilter } : {},
   );
 
   // Fetch filtered entries for display
@@ -53,7 +63,7 @@ export function JournalView({
     {
       ...(typeFilter !== "all" ? { entry_type: typeFilter } : {}),
       ...(taskFilter ? { task_id: taskFilter } : {}),
-    }
+    },
   );
   const { data: growth, isLoading: loadingGrowth } = useMyGrowthMetrics();
   const { data: allTasks, isLoading: loadingTasks } = useTasks();
@@ -62,9 +72,7 @@ export function JournalView({
   // This shows only tasks that the agent actually has journal entries about
   const tasks = useMemo(() => {
     const entryTaskIds = new Set(
-      (allEntries ?? [])
-        .filter((e) => e.task_id)
-        .map((e) => e.task_id!)
+      (allEntries ?? []).filter((e) => e.task_id).map((e) => e.task_id!),
     );
     return (allTasks ?? []).filter((task) => entryTaskIds.has(task.id));
   }, [allEntries, allTasks]);
@@ -88,9 +96,12 @@ export function JournalView({
           <User className="h-6 w-6 text-muted-foreground" />
         </div>
         <div>
-          <h2 className="text-xl font-semibold">{getAgentDisplayName(agent.agent_id)}</h2>
+          <h2 className="text-xl font-semibold">
+            {getAgentDisplayName(agent.agent_id)}
+          </h2>
           <p className="text-sm text-muted-foreground capitalize">
-            {agent.role.replace(/_/g, " ")} - {agent.team?.replace(/_/g, " ") || "N/A"}
+            {agent.role.replace(/_/g, " ")} -{" "}
+            {agent.team?.replace(/_/g, " ") || "N/A"}
           </p>
         </div>
       </div>

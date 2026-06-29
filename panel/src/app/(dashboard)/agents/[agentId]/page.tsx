@@ -2,12 +2,32 @@
 
 import { useParams, useRouter } from "next/navigation";
 import { formatDistanceToNow } from "date-fns";
-import { useAgentStatus, useStopAgent, useSpawnAgent, useAgentDefinition } from "@/hooks/use-agents";
+import {
+  useAgentStatus,
+  useStopAgent,
+  useSpawnAgent,
+  useAgentDefinition,
+} from "@/hooks/use-agents";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ArrowLeft, Play, Square, AlertTriangle, Clock, RefreshCw, User, Users } from "lucide-react";
+import {
+  ArrowLeft,
+  Play,
+  Square,
+  AlertTriangle,
+  Clock,
+  RefreshCw,
+  User,
+  Users,
+} from "lucide-react";
 import { toast } from "sonner";
 import {
   AgentStatusCards,
@@ -50,13 +70,19 @@ export default function AgentDetailPage() {
 
   // Get display values from definition or fallback
   const displayName = definition?.name || agentId;
-  const roleLabel = definition?.role ? ROLE_LABELS[definition.role] || definition.role : null;
-  const teamLabel = definition?.team ? TEAM_LABELS[definition.team] || definition.team : null;
+  const roleLabel = definition?.role
+    ? ROLE_LABELS[definition.role] || definition.role
+    : null;
+  const teamLabel = definition?.team
+    ? TEAM_LABELS[definition.team] || definition.team
+    : null;
 
   const handleStop = async (graceful: boolean) => {
     try {
       await stopAgent.mutateAsync({ agentId, graceful });
-      toast.success(graceful ? "Agent stopping gracefully" : "Agent force stopped");
+      toast.success(
+        graceful ? "Agent stopping gracefully" : "Agent force stopped",
+      );
     } catch {
       toast.error("Failed to stop agent");
     }
@@ -97,7 +123,9 @@ export default function AgentDetailPage() {
     );
   }
 
-  const isActive = agent && ["running", "ready", "starting", "waiting_long"].includes(agent.state);
+  const isActive =
+    agent &&
+    ["running", "ready", "starting", "waiting_long"].includes(agent.state);
   const isWaiting = agent?.state === "waiting_long";
 
   return (
@@ -111,7 +139,9 @@ export default function AgentDetailPage() {
           </Button>
           <div>
             <div className="flex items-center gap-3">
-              <h1 className="text-3xl font-bold tracking-tight">{displayName}</h1>
+              <h1 className="text-3xl font-bold tracking-tight">
+                {displayName}
+              </h1>
               {roleLabel && (
                 <Badge variant="secondary" className="gap-1">
                   <User className="h-3 w-3" />
@@ -199,7 +229,9 @@ export default function AgentDetailPage() {
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <p className="text-lg font-semibold text-red-600">{agent.error_count} error(s)</p>
+                <p className="text-lg font-semibold text-red-600">
+                  {agent.error_count} error(s)
+                </p>
               </CardContent>
             </Card>
           )}
@@ -213,20 +245,23 @@ export default function AgentDetailPage() {
                   Agent Waiting for Input
                 </CardTitle>
                 <CardDescription>
-                  This agent is blocked and waiting for human input or external resolution.
+                  This agent is blocked and waiting for human input or external
+                  resolution.
                 </CardDescription>
               </CardHeader>
               <CardContent>
                 <p className="text-muted-foreground">
-                  Use the &quot;Resolve Wait&quot; button above to provide the information or decision
-                  the agent needs to continue execution.
+                  Use the &quot;Resolve Wait&quot; button above to provide the
+                  information or decision the agent needs to continue execution.
                 </p>
               </CardContent>
             </Card>
           )}
 
           {/* Agent Stream Viewer */}
-          {isActive && <AgentStreamViewer agentId={agentId} agentName={displayName} />}
+          {isActive && (
+            <AgentStreamViewer agentId={agentId} agentName={displayName} />
+          )}
         </>
       ) : null}
     </div>

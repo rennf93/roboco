@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+from roboco.services.base import ConflictError
 from roboco.services.gateway.content_actions import ContentActions, ContentActionsDeps
 from roboco.services.gateway.role_config import get_role_config
 
@@ -48,7 +49,7 @@ def _actions(role: str) -> ContentActions:
     agent = MagicMock()
     agent.role = role
     task.agent_for = AsyncMock(return_value=agent)
-    task.session = MagicMock()
+    task.session = AsyncMock()
     deps = ContentActionsDeps(
         task=task,
         git=MagicMock(),
@@ -107,13 +108,17 @@ async def test_approve_playbook_for_auditor(monkeypatch: pytest.MonkeyPatch) -> 
     approved.status = "approved"
     svc = MagicMock()
     svc.approve = AsyncMock(return_value=approved)
+    svc.index_approved = AsyncMock()
     monkeypatch.setattr("roboco.services.playbook.get_playbook_service", lambda _s: svc)
-    env = await _actions("auditor").approve_playbook(
-        agent_id=uuid4(), playbook_id=uuid4()
-    )
+    actions = _actions("auditor")
+    env = await actions.approve_playbook(agent_id=uuid4(), playbook_id=uuid4())
     assert env.error is None
     assert env.status == "playbook_approved"
     svc.approve.assert_awaited_once()
+    # the status commit gates the index — commit then index, never index
+    # before commit (the index write auto-commits on its own connection).
+    actions.task.session.commit.assert_awaited_once()
+    svc.index_approved.assert_awaited_once_with(approved)
 
 
 @pytest.mark.asyncio
@@ -125,9 +130,56 @@ async def test_reject_playbook_archives_for_auditor(
     archived.status = "archived"
     svc = MagicMock()
     svc.reject = AsyncMock(return_value=archived)
+    svc.unindex_playbook = AsyncMock()
     monkeypatch.setattr("roboco.services.playbook.get_playbook_service", lambda _s: svc)
-    env = await _actions("auditor").reject_playbook(
+    actions = _actions("auditor")
+    env = await actions.reject_playbook(
         agent_id=uuid4(), playbook_id=uuid4(), reason="duplicate"
     )
     assert env.status == "playbook_archived"
     svc.reject.assert_awaited_once()
+    # de-index is the post-commit step (commit gates it).
+    actions.task.session.commit.assert_awaited_once()
+    svc.unindex_playbook.assert_awaited_once_with(archived)
+
+
+@pytest.mark.asyncio
+async def test_archive_playbook_retires_approved_for_auditor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """archive_playbook is the distinct APPROVED->archived retire path:
+    it calls ``svc.archive`` (NOT ``svc.reject``), commits, then de-indexes."""
+    archived = MagicMock()
+    archived.id = uuid4()
+    archived.status = "archived"
+    svc = MagicMock()
+    svc.archive = AsyncMock(return_value=archived)
+    svc.reject = AsyncMock()
+    svc.unindex_playbook = AsyncMock()
+    monkeypatch.setattr("roboco.services.playbook.get_playbook_service", lambda _s: svc)
+    actions = _actions("auditor")
+    env = await actions.archive_playbook(agent_id=uuid4(), playbook_id=uuid4())
+    assert env.status == "playbook_archived"
+    svc.archive.assert_awaited_once()
+    svc.reject.assert_not_awaited()
+    actions.task.session.commit.assert_awaited_once()
+    svc.unindex_playbook.assert_awaited_once_with(archived)
+
+
+@pytest.mark.asyncio
+async def test_approve_playbook_invalid_state_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A status-precondition ConflictError from the service becomes a clean
+    invalid_state envelope (not a 500) — the agent gets a remediate hint to
+    re-fetch the playbook's current status before re-trying."""
+    svc = MagicMock()
+    svc.approve = AsyncMock(
+        side_effect=ConflictError("not draft", resource_type="playbook")
+    )
+    monkeypatch.setattr("roboco.services.playbook.get_playbook_service", lambda _s: svc)
+    env = await _actions("auditor").approve_playbook(
+        agent_id=uuid4(), playbook_id=uuid4()
+    )
+    assert env.error == "invalid_state"
+    assert env.remediate  # the agent is told how to recover

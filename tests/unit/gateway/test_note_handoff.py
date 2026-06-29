@@ -131,6 +131,96 @@ async def test_handoff_validation_error_returns_remediation_not_422() -> None:
 
 
 @pytest.mark.asyncio
+async def test_handoff_pm_resumption_from_top_level_done_next() -> None:
+    """A PM authors the resumption section from TOP-LEVEL ``done``/``next``
+    fields, not the nested ``section`` dict.
+
+    Background (2026-06-27 live meltdown): minimax-m3:cloud running the PM
+    roles emitted ``section={}`` (an empty object) for the handoff note 3
+    times identically, ignoring the prose remediate. ``ResumptionNote`` requires
+    ``done``+``next`` so the gate rejected ``done — Field required``, the
+    do-server circuit breaker tripped after 3-4 rejections, and the tracing
+    gate (which obligates a handoff note before ``delegate``) deadlocked the
+    PM into a respawn loop. Root cause was structural: ``section: dict[str,
+    Any]`` renders a tool schema with NO visible sub-fields, so a weak model
+    emits ``{}`` while the SAME model fills the top-level ``string`` decision
+    fields fine (proven live — those succeeded). The fix follows the
+    precedent already in ``NoteRequest`` (the decision fields typed ``str =
+    ""`` so the schema declares ``string``): promote ``done``/``next`` to
+    top-level typed string params so the tool schema shows them
+    machine-visible. Passing ``done``+``next`` with no ``section`` must write
+    the resumption section successfully.
+    """
+    agent_id, task_id = uuid4(), uuid4()
+    svc = _dev_task_svc(task_id, role="cell_pm")
+    ca = ContentActions(_make_deps(task=svc))
+
+    env = await ca.note(
+        agent_id=agent_id,
+        text="handoff",
+        scope="handoff",
+        done="Planned the decomposition into 3 cell tasks.",
+        next="Cells implement their slices in wave order.",
+        where_to_look=["panel/tasks — wave column", "the decomposition note"],
+    )
+
+    body = env.as_dict()
+    assert body["error"] is None
+    _tid, content_type, payload = svc.record_section_note.call_args.args
+    assert content_type == "resumption"
+    assert payload["done"] == "Planned the decomposition into 3 cell tasks."
+    assert payload["next"] == "Cells implement their slices in wave order."
+    assert payload["where_to_look"] == [
+        "panel/tasks — wave column",
+        "the decomposition note",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_handoff_top_level_done_next_merge_into_explicit_section() -> None:
+    """Top-level ``done``/``next`` fill any keys the explicit ``section`` omits
+    without overwriting keys the agent already supplied — backward compatible
+    with a capable model that passes ``section`` directly."""
+    agent_id, task_id = uuid4(), uuid4()
+    svc = _dev_task_svc(task_id, role="cell_pm")
+    ca = ContentActions(_make_deps(task=svc))
+
+    env = await ca.note(
+        agent_id=agent_id,
+        text="handoff",
+        scope="handoff",
+        section={"done": "Already-specified done."},
+        next="Top-level next fills the omitted next.",
+    )
+
+    assert env.as_dict()["error"] is None
+    _tid, _ctype, payload = svc.record_section_note.call_args.args
+    assert payload["done"] == "Already-specified done."
+    assert payload["next"] == "Top-level next fills the omitted next."
+
+
+@pytest.mark.asyncio
+async def test_handoff_empty_done_next_empty_section_still_remediates() -> None:
+    """The backstop holds: with no top-level ``done``/``next`` AND an empty
+    ``section``, the resumption gate still rejects with the remediation
+    envelope (never a raw 422) — so a model that ignores both paths still
+    gets the actionable message rather than tripping a silent crash."""
+    agent_id, task_id = uuid4(), uuid4()
+    svc = _dev_task_svc(task_id, role="cell_pm")
+    svc.record_section_note.side_effect = ContentValidationError(
+        "done", "field required"
+    )
+    ca = ContentActions(_make_deps(task=svc))
+
+    env = await ca.note(agent_id=agent_id, text="handoff", scope="handoff", section={})
+    body = env.as_dict()
+
+    assert body["error"] == "invalid_state"
+    assert "done" in body["message"]
+    assert "resumption" in body["remediate"]
+
+
+@pytest.mark.asyncio
 async def test_handoff_no_task_to_attach_is_rejected() -> None:
     """With no active/context task and no explicit task_id, handoff refuses."""
     agent_id = uuid4()

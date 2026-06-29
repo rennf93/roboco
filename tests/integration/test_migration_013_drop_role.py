@@ -7,12 +7,17 @@ class. The migration drops the unused one with a safety check.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 from sqlalchemy import text
 
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
 
 @pytest.mark.asyncio
-async def test_no_column_uses_role_type(db_session) -> None:  # type: ignore[no-untyped-def]
+async def test_no_column_uses_role_type(db_session: AsyncSession) -> None:
     """Before dropping, confirm no column actually uses the `role` type.
 
     If this ever fails it means a column was added that references the
@@ -33,7 +38,7 @@ async def test_no_column_uses_role_type(db_session) -> None:  # type: ignore[no-
 
 
 @pytest.mark.asyncio
-async def test_role_enum_dropped_after_upgrade(db_session) -> None:  # type: ignore[no-untyped-def]
+async def test_role_enum_dropped_after_upgrade(db_session: AsyncSession) -> None:
     """After migration 013 runs, only `agentrole` remains; `role` is gone."""
     # This test runs against a db where migrations have been applied to head.
     # The conftest fixture should handle that — verify by reading the

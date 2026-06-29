@@ -12,6 +12,7 @@ reaper's live-skip and the spawn gate see the live agent immediately.
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -20,7 +21,7 @@ from roboco.runtime.orchestrator import AgentOrchestrator, AgentState
 _EXPECTED_READOPTED = 2
 
 
-def _orch() -> AgentOrchestrator:
+def _orch() -> Any:
     orch = AgentOrchestrator.__new__(AgentOrchestrator)  # bypass __init__
     orch._instances = {}
     return orch
@@ -35,7 +36,7 @@ async def test_readopts_running_containers_as_active() -> None:
         slug = name.removeprefix("roboco-agent-")
         return (slug in running, 0)
 
-    orch._inspect_container_state = AsyncMock(side_effect=inspect)  # type: ignore[method-assign]
+    orch._inspect_container_state = AsyncMock(side_effect=inspect)
 
     n = await orch._readopt_running_agents()
 
@@ -51,7 +52,7 @@ async def test_readopt_leaves_already_tracked_instance_untouched() -> None:
     orch = _orch()
     sentinel = MagicMock()
     orch._instances = {"be-dev-1": sentinel}
-    orch._inspect_container_state = AsyncMock(return_value=(True, 0))  # type: ignore[method-assign]
+    orch._inspect_container_state = AsyncMock(return_value=(True, 0))
 
     await orch._readopt_running_agents()
 
@@ -61,7 +62,7 @@ async def test_readopt_leaves_already_tracked_instance_untouched() -> None:
 @pytest.mark.asyncio
 async def test_readopt_inert_when_nothing_running() -> None:
     orch = _orch()
-    orch._inspect_container_state = AsyncMock(return_value=(False, None))  # type: ignore[method-assign]
+    orch._inspect_container_state = AsyncMock(return_value=(False, None))
 
     n = await orch._readopt_running_agents()
 
@@ -72,8 +73,23 @@ async def test_readopt_inert_when_nothing_running() -> None:
 @pytest.mark.asyncio
 async def test_readopt_swallows_probe_errors() -> None:
     orch = _orch()
-    orch._inspect_container_state = AsyncMock(side_effect=RuntimeError("no docker"))  # type: ignore[method-assign]
+    orch._inspect_container_state = AsyncMock(side_effect=RuntimeError("no docker"))
 
     n = await orch._readopt_running_agents()
 
     assert n == 0  # best-effort: a probe failure never raises into startup
+
+
+@pytest.mark.asyncio
+async def test_readopt_records_container_id_so_health_check_can_see_exit() -> None:
+    # Re-adopt must capture the real container id; a None container_id is skipped
+    # by _check_health, stranding the task under a phantom ACTIVE instance.
+    orch = _orch()
+    orch._inspect_container_state = AsyncMock(return_value=(True, 0))
+    orch._resolve_container_id = AsyncMock(return_value="deadbeef1234")
+
+    await orch._readopt_running_agents()
+
+    inst = orch._instances[next(iter(orch._instances))]
+    assert inst.container_id == "deadbeef1234"
+    assert inst.state == AgentState.ACTIVE

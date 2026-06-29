@@ -55,10 +55,12 @@ export const LIVE_EVENT_KINDS: LiveEventKind[] = [
 
 export const secretaryApi = {
   /** Spawn the Secretary agent for a new chat. */
-  startLive: async (initialMessage?: string): Promise<{ session_id: string }> => {
+  startLive: async (
+    initialMessage?: string,
+  ): Promise<{ session_id: string }> => {
     const { data } = await api.post<{ session_id: string }>(
       "/secretary/live/start",
-      { initial_message: initialMessage }
+      { initial_message: initialMessage },
     );
     return data;
   },
@@ -70,7 +72,7 @@ export const secretaryApi = {
   /** Is this session still running? */
   status: async (sessionId: string): Promise<{ alive: boolean }> => {
     const { data } = await api.get<{ alive: boolean }>(
-      `/secretary/live/${sessionId}/status`
+      `/secretary/live/${sessionId}/status`,
     );
     return data;
   },
@@ -87,18 +89,21 @@ export const secretaryApi = {
 
   /** List directives (CEO only); defaults to the pending queue. */
   listDirectives: async (
-    statusFilter = "pending"
+    statusFilter = "pending",
   ): Promise<SecretaryDirective[]> => {
-    const { data } = await api.get<SecretaryDirective[]>("/secretary/directives", {
-      params: { status_filter: statusFilter },
-    });
+    const { data } = await api.get<SecretaryDirective[]>(
+      "/secretary/directives",
+      {
+        params: { status_filter: statusFilter },
+      },
+    );
     return data;
   },
 
   /** Confirm a pending directive — it executes with CEO authority. */
   confirmDirective: async (id: string): Promise<SecretaryDirective> => {
     const { data } = await api.post<SecretaryDirective>(
-      `/secretary/directives/${id}/confirm`
+      `/secretary/directives/${id}/confirm`,
     );
     return data;
   },
@@ -106,11 +111,11 @@ export const secretaryApi = {
   /** Reject a pending directive. */
   rejectDirective: async (
     id: string,
-    reason?: string
+    reason?: string,
   ): Promise<SecretaryDirective> => {
     const { data } = await api.post<SecretaryDirective>(
       `/secretary/directives/${id}/reject`,
-      { reason }
+      { reason },
     );
     return data;
   },

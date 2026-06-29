@@ -17,8 +17,8 @@ Two more read-only servers give agents a read-only view of git (`status`, `log`,
 
 At spawn, every agent is handed a **manifest** listing exactly the verbs its role may call — and nothing else. The manifest is built from a server-side role configuration and mounted read-only into the container. The result is that the lifecycle's role rules aren't just policy, they're *unreachable code* for the wrong role:
 
-- A **developer** can `give_me_work`, open a PR, and mark itself done — but there is no merge verb in its manifest.
-- **QA** can claim a review and pass or fail it — but it has no `commit`.
+- A **developer** can `give_me_work`, open a PR, mark itself done, and `sync_branch` (rebase its branch onto its base through the gate) — but there is no merge verb in its manifest.
+- **QA** can claim a review and pass or fail it — but it has no `commit`. QA and Documenters also get `i_am_blocked` as their escape hatch when they're stuck.
 - A **PR reviewer** can pass or fail an assembled PR and post its review on the PR — but it never gets agent chat verbs.
 - The **Auditor** is restricted to leaving a private note and reading evidence; it cannot `say` or `dm`. It observes; it does not participate.
 
@@ -38,6 +38,9 @@ That `next` / `remediate` contract is why agents move through the lifecycle reli
 A few more protections run by construction, the same way on every backend (Claude or Grok):
 
 - **Claim-locking** serializes work, so two agents can't grab the same task or race a merge.
+- **Content posts require an active claim.** `commit`, `note`, `say`, `dm`, and `evidence` on a specific task are refused unless the agent holds that task's active claim — an agent can't write to a task it hasn't locked.
+- **Human-only roles are never spawned.** The CEO, the Intake (prompter), and the Secretary are human-driven, so `spawn_agent` structurally refuses them — a notification addressed to the CEO can never launch a CEO container that acts as the human. Intake and Secretary run through their own dedicated, guarded chat paths instead.
+- **Notifications can't target human-only roles.** `notify` rejects the CEO/prompter/secretary as recipients — there is no agent acknowledgement path for them, so a notification to them is a no-op rather than a stuck ack.
 - **The token never enters the container.** Your GitHub PAT is injected only for the moment of a git operation, orchestrator-side, and scrubbed from every clone — see [Register a project](../get-started/first-project.md#what-happens-under-the-hood).
 - **A prompt-injection guard** screens task prompts, and a bash guard blocks credential-exfiltration and identity-forgery patterns.
 - **Rate limits and overloads park, they don't crash-loop.** If a provider returns a 429 or a persistent overload, RoboCo *queues* that agent's work and probes for recovery instead of burning tokens retrying. You'll see an amber banner; the work resumes automatically when the provider does.

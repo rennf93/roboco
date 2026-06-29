@@ -9,12 +9,14 @@ Handles delivery of notifications to agents through multiple channels:
 Also implements the ACK system for tracking acknowledgments.
 """
 
+import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import ClassVar, Literal
 from uuid import UUID
 
-from sqlalchemy import and_, select
+import structlog
+from sqlalchemy import and_, event, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.agents_config import (
@@ -28,6 +30,101 @@ from roboco.foundation.policy.communications import ACK_REQUIRED_BY_TYPE
 from roboco.models.base import AgentRole, NotificationPriority, NotificationType
 from roboco.services.base import BaseService, NotFoundError
 from roboco.utils.converters import require_uuid
+
+_log = structlog.get_logger(service="notification_delivery")
+
+
+# =============================================================================
+# Deferred bus publish — transactional outbox (F107)
+# =============================================================================
+# `deliver`/`_persist_and_deliver` run inside the caller's open transaction:
+# the notification row is flushed but not committed. Publishing the
+# NOTIFICATION_SENT event to the Redis bus *before* the commit created
+# phantom notifications — a commit failure (DB hiccup, constraint, asyncpg
+# error) rolled the row back while connected WebSocket clients had already
+# received a push for an id that no longer existed. The fix defers the bus
+# publish to the session's `after_commit` so a rollback drops the pending
+# event: the row is durable by the time the event fires.
+#
+# The pending events and the scheduled drain tasks live on `session.info` so
+# they are scoped to the session's lifetime (no module-global state, no
+# cross-request leak). A sync `after_commit` listener schedules the async
+# drain via `asyncio.create_task` (the listener runs synchronously inside
+# `await AsyncSession.commit()` on the loop thread, so the running loop is
+# available); `after_rollback` clears the pending queue so a rolled-back
+# transaction emits nothing.
+
+_PENDING_PUBLISHES_KEY = "_roboco_pending_bus_publishes"
+_DRAIN_TASKS_KEY = "_roboco_drain_tasks"
+_DRAIN_REGISTERED_KEY = "_roboco_drain_registered"
+
+
+async def _drain_pending_publishes(pending: list[Event]) -> None:
+    """Publish every deferred event best-effort once the txn has committed.
+
+    The bus is read fresh at drain time (it may have reconnected between
+    deferral and commit); a disconnected bus is a silent no-op, matching the
+    prior inline behavior. Each publish is independent — one failure does
+    not drop the rest.
+    """
+    if not pending:
+        return
+    bus = get_event_bus()
+    if not bus.is_connected():
+        return
+    for ev in pending:
+        try:
+            await bus.publish(ev)
+        except Exception as e:  # best-effort: never break the drain
+            _log.warning("Deferred bus publish failed", error=str(e))
+
+
+def _schedule_pending_publishes(session: AsyncSession) -> None:
+    """`after_commit` handler: hand the pending events to the running loop.
+
+    Sync listener — runs inside `await AsyncSession.commit()`, so the event
+    loop is active. The created task is stashed on the session so callers /
+    tests can await it deterministically; in production it is fire-and-forget
+    (best-effort, matching the prior try/except semantics).
+    """
+    pending = session.info.pop(_PENDING_PUBLISHES_KEY, None)
+    if not pending:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:  # no running loop — nothing we can do, drop silently
+        return
+    task = loop.create_task(_drain_pending_publishes(pending))
+    session.info.setdefault(_DRAIN_TASKS_KEY, []).append(task)
+
+
+def _discard_pending_publishes(session: AsyncSession) -> None:
+    """`after_rollback` handler: a rolled-back txn emits nothing (no phantom)."""
+    session.info.pop(_PENDING_PUBLISHES_KEY, None)
+
+
+def defer_bus_publish(session: AsyncSession, ev: Event) -> None:
+    """Enqueue a bus event to fire only after the session's transaction commits.
+
+    Registers one-shot `after_commit` / `after_rollback` listeners on the
+    session the first time it is called for that session; subsequent calls
+    just append. The listeners are bound to the session instance and are
+    collected with it (no global listener accumulation).
+    """
+    session.info.setdefault(_PENDING_PUBLISHES_KEY, []).append(ev)
+    if session.info.get(_DRAIN_REGISTERED_KEY):
+        return
+    session.info[_DRAIN_REGISTERED_KEY] = True
+
+    sync_session = session.sync_session
+
+    @event.listens_for(sync_session, "after_commit")
+    def _on_commit(_sync_session: object) -> None:
+        _schedule_pending_publishes(session)
+
+    @event.listens_for(sync_session, "after_rollback")
+    def _on_rollback(_sync_session: object) -> None:
+        _discard_pending_publishes(session)
 
 
 class EscalationError(ValueError):
@@ -87,6 +184,13 @@ class NotificationDeliveryService(BaseService):
         2. Redis pub/sub - for polling agents
         3. Database - persistent storage (always)
 
+        The Redis/bus publish is deferred until the caller's transaction
+        commits (`defer_bus_publish`) — publishing before the commit produced
+        phantom notifications when the commit failed (F107). The `delivered_at`
+        DB marker is written inside the transaction (it rolls back with the
+        row if the commit fails), and the bus event fires only once the row is
+        durable.
+
         Returns True if at least one delivery channel succeeded.
         """
         notification = await self.get_notification(notification_id)
@@ -96,11 +200,18 @@ class NotificationDeliveryService(BaseService):
             )
             return False
 
-        # Mark delivery attempted
+        # Mark delivery attempted (in-tx — rolls back with the row on
+        # commit failure, so the marker and the row stay consistent).
         notification.delivered_at = datetime.now(UTC)
         await self.session.flush()
 
-        # Publish to Redis for real-time delivery
+        # Build the per-recipient bus events up front (the data is materialized
+        # to strings, so deferring is safe even if the ORM object later
+        # expires) and defer each to the session's after_commit. The event is
+        # dropped on rollback (no phantom) and fired once the row is durable.
+        # Best-effort: a bus-init failure is logged but never propagates — the
+        # notification row + delivered_at marker are already flushed, and the
+        # bus is a secondary delivery channel (the row is the durable store).
         try:
             bus = get_event_bus()
             if bus.is_connected():
@@ -113,7 +224,8 @@ class NotificationDeliveryService(BaseService):
                     return v.value if hasattr(v, "value") else v
 
                 for recipient_id in notification.to_agents:
-                    await bus.publish(
+                    defer_bus_publish(
+                        self.session,
                         Event(
                             type=EventType.NOTIFICATION_SENT,
                             data={
@@ -123,16 +235,16 @@ class NotificationDeliveryService(BaseService):
                                 "priority": _enum_value(notification.priority),
                                 "subject": notification.subject,
                             },
-                        )
+                        ),
                     )
                 self.log.info(
-                    "Notification published to Redis",
+                    "Notification bus publish deferred until commit",
                     notification_id=str(notification_id),
                     recipient_count=len(notification.to_agents),
                 )
         except Exception as e:
             self.log.warning(
-                "Failed to publish notification to Redis",
+                "Failed to defer notification bus publish",
                 notification_id=str(notification_id),
                 error=str(e),
             )

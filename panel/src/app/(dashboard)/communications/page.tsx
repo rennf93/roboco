@@ -37,12 +37,17 @@ interface ChannelListProps {
   isLoading: boolean;
 }
 
-function ChannelList({ channels, selectedId, onSelect, isLoading }: ChannelListProps) {
+function ChannelList({
+  channels,
+  selectedId,
+  onSelect,
+  isLoading,
+}: ChannelListProps) {
   const cellChannels = channels.filter((c) => c.type === "cell");
   const crossCellChannels = channels.filter((c) => c.type === "cross_cell");
   const managementChannels = channels.filter((c) => c.type === "management");
   const otherChannels = channels.filter(
-    (c) => !["cell", "cross_cell", "management"].includes(c.type)
+    (c) => !["cell", "cross_cell", "management"].includes(c.type),
   );
 
   const renderGroup = (title: string, items: Channel[]) => {
@@ -208,9 +213,10 @@ function SessionList({ channelId, groupId }: SessionListProps) {
                 <div className="font-medium text-sm truncate">
                   {session.task_links?.length > 0 ? (
                     <>
-                      {session.task_links.find(l => l.is_primary)?.task_title ||
-                       session.task_links[0]?.task_title ||
-                       `Task ${session.task_links[0]?.task_id.slice(0, 8)}`}
+                      {session.task_links.find((l) => l.is_primary)
+                        ?.task_title ||
+                        session.task_links[0]?.task_title ||
+                        `Task ${session.task_links[0]?.task_id.slice(0, 8)}`}
                     </>
                   ) : (
                     `Session ${session.id.slice(0, 8)}`
@@ -222,7 +228,9 @@ function SessionList({ channelId, groupId }: SessionListProps) {
               </div>
               <div className="flex flex-col items-end gap-1 shrink-0">
                 <Badge
-                  variant={session.status === "active" ? "default" : "secondary"}
+                  variant={
+                    session.status === "active" ? "default" : "secondary"
+                  }
                   className="text-xs"
                 >
                   {session.status}
@@ -243,7 +251,13 @@ function SessionList({ channelId, groupId }: SessionListProps) {
 // Empty State Components
 // =============================================================================
 
-function EmptyPanel({ icon: Icon, message }: { icon: typeof MessageSquare; message: string }) {
+function EmptyPanel({
+  icon: Icon,
+  message,
+}: {
+  icon: typeof MessageSquare;
+  message: string;
+}) {
   return (
     <div className="h-full flex items-center justify-center text-muted-foreground">
       <div className="text-center p-4">
@@ -267,10 +281,10 @@ function CommunicationsPageContent() {
 
   const { data: channels, isLoading, error, refetch } = useChannels();
 
-  const isOffline = error && (
-    error.message?.includes("Network Error") ||
-    (error as { code?: string })?.code === "ERR_NETWORK"
-  );
+  const isOffline =
+    error &&
+    (error.message?.includes("Network Error") ||
+      (error as { code?: string })?.code === "ERR_NETWORK");
 
   const updateParams = useCallback(
     (updates: Record<string, string | null>) => {
@@ -285,18 +299,24 @@ function CommunicationsPageContent() {
       const query = params.toString();
       router.push(query ? `/communications?${query}` : "/communications");
     },
-    [router, searchParams]
+    [router, searchParams],
   );
 
-  const handleSelectChannel = useCallback((id: string) => {
-    updateParams({ channel: id, group: null });
-  }, [updateParams]);
+  const handleSelectChannel = useCallback(
+    (id: string) => {
+      updateParams({ channel: id, group: null });
+    },
+    [updateParams],
+  );
 
-  const handleSelectGroup = useCallback((id: string) => {
-    updateParams({ group: id });
-  }, [updateParams]);
+  const handleSelectGroup = useCallback(
+    (id: string) => {
+      updateParams({ group: id });
+    },
+    [updateParams],
+  );
 
-  const selectedChannel = channels?.find(c => c.id === channelId);
+  const selectedChannel = channels?.find((c) => c.id === channelId);
 
   return (
     <div className="flex flex-col lg:h-[calc(100vh-7rem)]">
@@ -347,7 +367,10 @@ function CommunicationsPageContent() {
                 <Users className="h-4 w-4 text-muted-foreground" />
                 <span className="text-sm font-medium">Groups</span>
                 {selectedChannel && (
-                  <Badge variant="outline" className="ml-auto text-xs font-normal">
+                  <Badge
+                    variant="outline"
+                    className="ml-auto text-xs font-normal"
+                  >
                     {selectedChannel.name}
                   </Badge>
                 )}
@@ -379,7 +402,11 @@ function CommunicationsPageContent() {
                 ) : (
                   <EmptyPanel
                     icon={MessageSquare}
-                    message={channelId ? "Select a group" : "Select a channel and group"}
+                    message={
+                      channelId
+                        ? "Select a group"
+                        : "Select a channel and group"
+                    }
                   />
                 )}
               </div>
@@ -394,33 +421,35 @@ function CommunicationsPageContent() {
 // Wrap in Suspense for useSearchParams
 export default function CommunicationsPage() {
   return (
-    <Suspense fallback={
-      <div className="flex flex-col lg:h-[calc(100vh-7rem)]">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <Skeleton className="h-9 w-48 mb-2" />
-            <Skeleton className="h-5 w-64" />
+    <Suspense
+      fallback={
+        <div className="flex flex-col lg:h-[calc(100vh-7rem)]">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <Skeleton className="h-9 w-48 mb-2" />
+              <Skeleton className="h-5 w-64" />
+            </div>
+          </div>
+          <div className="grid grid-cols-12 gap-4 lg:gap-6">
+            <Card className="col-span-12 lg:col-span-3">
+              <CardContent className="p-3 space-y-2">
+                {Array.from({ length: 6 }).map((_, i) => (
+                  <Skeleton key={i} className="h-8 w-full" />
+                ))}
+              </CardContent>
+            </Card>
+            <Card className="col-span-12 lg:col-span-3">
+              <CardContent className="p-3 space-y-2">
+                {Array.from({ length: 4 }).map((_, i) => (
+                  <Skeleton key={i} className="h-10 w-full" />
+                ))}
+              </CardContent>
+            </Card>
+            <Card className="col-span-12 lg:col-span-6" />
           </div>
         </div>
-        <div className="grid grid-cols-12 gap-4 lg:gap-6">
-          <Card className="col-span-12 lg:col-span-3">
-            <CardContent className="p-3 space-y-2">
-              {Array.from({ length: 6 }).map((_, i) => (
-                <Skeleton key={i} className="h-8 w-full" />
-              ))}
-            </CardContent>
-          </Card>
-          <Card className="col-span-12 lg:col-span-3">
-            <CardContent className="p-3 space-y-2">
-              {Array.from({ length: 4 }).map((_, i) => (
-                <Skeleton key={i} className="h-10 w-full" />
-              ))}
-            </CardContent>
-          </Card>
-          <Card className="col-span-12 lg:col-span-6" />
-        </div>
-      </div>
-    }>
+      }
+    >
       <CommunicationsPageContent />
     </Suspense>
   );

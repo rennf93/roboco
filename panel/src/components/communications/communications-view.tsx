@@ -10,7 +10,9 @@ import { RefreshCw, Hash, Users, ExternalLink } from "lucide-react";
 import Link from "next/link";
 
 export function CommunicationsView() {
-  const [selectedChannelId, setSelectedChannelId] = useState<string | null>(null);
+  const [selectedChannelId, setSelectedChannelId] = useState<string | null>(
+    null,
+  );
   const { data: channels, isLoading: loadingChannels, refetch } = useChannels();
 
   // Get selected channel
@@ -69,13 +71,17 @@ export function CommunicationsView() {
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <Hash className="h-5 w-5 text-muted-foreground" />
-                      <CardTitle className="text-lg">{selectedChannel.name}</CardTitle>
+                      <CardTitle className="text-lg">
+                        {selectedChannel.name}
+                      </CardTitle>
                       <Badge variant="outline" className="text-xs">
                         <Users className="h-3 w-3 mr-1" />
                         {selectedChannel.member_count}
                       </Badge>
                     </div>
-                    <Link href={`/communications?channel=${selectedChannel.id}`}>
+                    <Link
+                      href={`/communications?channel=${selectedChannel.id}`}
+                    >
                       <Button variant="outline" size="sm">
                         <ExternalLink className="h-4 w-4 mr-2" />
                         Open Channel
@@ -94,21 +100,27 @@ export function CommunicationsView() {
                   <div className="text-center space-y-4">
                     <div className="grid grid-cols-2 gap-8">
                       <div>
-                        <p className="text-3xl font-bold">{selectedChannel.message_count}</p>
-                        <p className="text-sm text-muted-foreground">Messages</p>
+                        <p className="text-3xl font-bold">
+                          {selectedChannel.message_count}
+                        </p>
+                        <p className="text-sm text-muted-foreground">
+                          Messages
+                        </p>
                       </div>
                       <div>
-                        <p className="text-3xl font-bold">{selectedChannel.group_count}</p>
+                        <p className="text-3xl font-bold">
+                          {selectedChannel.group_count}
+                        </p>
                         <p className="text-sm text-muted-foreground">Groups</p>
                       </div>
                     </div>
                     <p className="text-sm text-muted-foreground">
                       Open the channel to view sessions and send messages
                     </p>
-                    <Link href={`/communications?channel=${selectedChannel.id}`}>
-                      <Button>
-                        View Sessions
-                      </Button>
+                    <Link
+                      href={`/communications?channel=${selectedChannel.id}`}
+                    >
+                      <Button>View Sessions</Button>
                     </Link>
                   </div>
                 </CardContent>
@@ -118,7 +130,9 @@ export function CommunicationsView() {
                 <div className="text-center">
                   <Hash className="h-12 w-12 mx-auto mb-4 opacity-50" />
                   <p className="text-lg font-medium">Select a Channel</p>
-                  <p className="text-sm">Choose a channel from the sidebar to view details</p>
+                  <p className="text-sm">
+                    Choose a channel from the sidebar to view details
+                  </p>
                 </div>
               </div>
             )}

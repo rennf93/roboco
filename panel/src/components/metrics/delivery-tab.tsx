@@ -50,7 +50,9 @@ function CycleTimeCard() {
   return (
     <Card>
       <CardHeader className="pb-2">
-        <CardTitle className="text-base">Cycle Time by Stage (avg, 30d)</CardTitle>
+        <CardTitle className="text-base">
+          Cycle Time by Stage (avg, 30d)
+        </CardTitle>
       </CardHeader>
       <CardContent>
         {isLoading ? (
@@ -61,7 +63,10 @@ function CycleTimeCard() {
           </p>
         ) : (
           <ResponsiveContainer width="100%" height={208}>
-            <BarChart data={chartData} margin={{ top: 4, right: 8, left: 0, bottom: 24 }}>
+            <BarChart
+              data={chartData}
+              margin={{ top: 4, right: 8, left: 0, bottom: 24 }}
+            >
               <CartesianGrid strokeDasharray="3 3" className="opacity-20" />
               <XAxis
                 dataKey="name"
@@ -82,7 +87,11 @@ function CycleTimeCard() {
                 formatter={(value) => [value + "h", "Avg"]}
                 contentStyle={{ fontSize: 12 }}
               />
-              <Bar dataKey="Hours" fill="var(--chart-1)" radius={[3, 3, 0, 0]} />
+              <Bar
+                dataKey="Hours"
+                fill="var(--chart-1)"
+                radius={[3, 3, 0, 0]}
+              />
             </BarChart>
           </ResponsiveContainer>
         )}
@@ -122,7 +131,8 @@ function BottlenecksCard() {
                   <div className="flex justify-between text-xs">
                     <span>{label(s.status)}</span>
                     <span className="text-muted-foreground">
-                      {fmtDuration(s.cumulative_seconds)} · {s.parked_now} parked
+                      {fmtDuration(s.cumulative_seconds)} · {s.parked_now}{" "}
+                      parked
                     </span>
                   </div>
                   <div className="h-2 w-full rounded bg-muted">
@@ -163,8 +173,8 @@ function ReworkCard() {
             <div className="flex items-baseline gap-3">
               <span className="text-3xl font-bold">{pct(data?.rate ?? 0)}</span>
               <span className="text-sm text-muted-foreground">
-                {data?.total_reworked ?? 0}/{data?.total_completed ?? 0} bounced ·
-                ${(data?.rework_cost_usd ?? 0).toFixed(2)} cost
+                {data?.total_reworked ?? 0}/{data?.total_completed ?? 0} bounced
+                · ${(data?.rework_cost_usd ?? 0).toFixed(2)} cost
               </span>
             </div>
             <div className="flex gap-2 text-xs">
@@ -186,7 +196,10 @@ function ReworkCard() {
                 </thead>
                 <tbody>
                   {(data?.by_agent ?? []).slice(0, 8).map((a) => (
-                    <tr key={a.agent_slug} className="border-t border-border/50">
+                    <tr
+                      key={a.agent_slug}
+                      className="border-t border-border/50"
+                    >
                       <td className="py-1">{a.agent_slug}</td>
                       <td className="py-1 text-right">{pct(a.rate)}</td>
                       <td className="py-1 text-right">{a.qa_fails}</td>
@@ -235,7 +248,9 @@ function ScorecardBody({ card }: { card: Scorecard | undefined }) {
       {stat("Completed", String(card?.tasks_completed ?? 0))}
       {stat(
         "Avg cycle",
-        card?.avg_cycle_hours != null ? card.avg_cycle_hours.toFixed(1) + "h" : "—",
+        card?.avg_cycle_hours != null
+          ? card.avg_cycle_hours.toFixed(1) + "h"
+          : "—",
       )}
       {stat("Rework", pct(card?.rework_rate ?? 0))}
       {stat("Cost", "$" + (card?.cost_usd ?? 0).toFixed(2))}

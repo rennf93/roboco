@@ -3,8 +3,9 @@
 The loop opens a fix task only when ``self_heal_originate_enabled``, dedupes one
 open task per regression fingerprint, honors the per-cycle and rolling open-task
 caps, and creates the task PENDING + assigned to the Main PM agent +
-``confirmed_by_human=True`` so it dispatches autonomously (no CEO Approve-&-Start).
-Crucially the loop NEVER calls start / approve / merge / deploy — asserted here.
+``confirmed_by_human=False`` so it is HELD for the CEO's Approve-&-Start (it
+does not dispatch autonomously). Crucially the loop NEVER calls start / approve
+/ merge / deploy — asserted here.
 """
 
 from __future__ import annotations
@@ -148,9 +149,11 @@ async def test_originate_creates_pending_main_pm_assigned_task(
     task = open_tasks[0]
     assert task.status == TaskStatus.PENDING
     # Assigned to the Main PM agent up front (not just team=main_pm) so that, once
-    # the CEO confirms it, the orchestrator dispatches it straight to that agent.
+    # the CEO approves it, the orchestrator dispatches it straight to that agent.
     assert task.assigned_to == MAIN_PM_UUID
-    assert task.confirmed_by_human is True  # auto-confirmed → dispatches autonomously
+    # held for the CEO's Approve-&-Start — NOT auto-confirmed: the orchestrator
+    # + give_me_work keep it out of dispatch until approve_and_start flips this.
+    assert task.confirmed_by_human is False
     assert task.team == Team.MAIN_PM
     assert task.source == "self_heal"
     assert task.acceptance_criteria  # non-empty (AC-guardrail)
@@ -240,17 +243,20 @@ async def test_loop_never_starts_or_approves(
 
 
 @pytest.mark.asyncio
-async def test_originated_task_is_confirmed_for_autonomous_dispatch(
+async def test_originated_task_is_held_for_ceo_approve_and_start(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The opened task is confirmed up front, so the PM dispatcher picks it up
-    without any CEO Approve-&-Start (that gate is the Intake/board flow)."""
+    """The opened task is HELD (confirmed_by_human=False) for the CEO's
+    Approve-&-Start — the PM dispatcher does NOT pick it up autonomously; the
+    CEO must approve_and_start it first (F059)."""
     await _seed_project(db_session)
     _enable(monkeypatch)
     await SelfHealEngine(
         db_session, source=_FakeSource([_breach("ci:roboco")])
     ).run_cycle()
     task = (await get_task_service(db_session).list_open_self_heal_tasks())[0]
-    assert task.confirmed_by_human is True  # dispatches autonomously
-    assert task.status == TaskStatus.PENDING  # ready for the PM dispatcher
-    assert task.assigned_to == MAIN_PM_UUID  # straight to the Main PM agent
+    assert task.confirmed_by_human is False  # held for the CEO — no autonomous dispatch
+    assert task.status == TaskStatus.PENDING  # not advanced by the loop
+    assert (
+        task.assigned_to == MAIN_PM_UUID
+    )  # straight to the Main PM agent once approved

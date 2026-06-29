@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import os
 import re
@@ -47,6 +48,7 @@ from roboco.exceptions import (
     GitTimeoutError,
     MergeConflictError,
 )
+from roboco.foundation.policy import lifecycle
 from roboco.models.base import AgentRole, TaskStatus
 from roboco.services.base import (
     BaseService,
@@ -124,6 +126,31 @@ _GIT_EXECUTOR = ThreadPoolExecutor(
 _SLOW_GIT_OP_MS = 5000.0
 
 
+def _remove_stale_git_locks(workspace: Path) -> None:
+    """Best-effort removal of orphaned ``.git/**/*.lock`` files.
+
+    F019: a git mutation op (commit / merge --ff-only / rebase / reset --hard /
+    add) killed by ``_run_git``'s timeout (SIGKILL) can orphan lock files —
+    ``index.lock`` especially — that wedge the workspace for every subsequent
+    op (incl. the next fresh-claim ``reset --hard``) with
+    "Another git process seems to be running in this repository". By the time
+    the timeout fires the git process is dead, so its orphaned locks are safe
+    to remove. Best-effort: any error (no .git, race with a real process) is
+    swallowed — this only ever *helps*, never blocks.
+    """
+    git_dir = workspace / ".git"
+    if not git_dir.is_dir():
+        return
+    try:
+        for lock in git_dir.rglob("*.lock"):
+            # A lock a real process just grabbed, or a permission issue —
+            # leave it. The TTL/next-op path is the backstop.
+            with contextlib.suppress(OSError):
+                lock.unlink()
+    except OSError:
+        return
+
+
 # `_get_gh_env` and the gh-CLI code paths were removed in favor of direct
 # GitHub REST API calls — no CLI dependency, and the PAT no longer touches
 # subprocess argv / environ.
@@ -154,6 +181,9 @@ _CI_RUN_WINDOW = 20
 _CI_FETCH_ATTEMPTS = 3
 _CI_FETCH_BACKOFF_SECONDS = 0.5
 _CI_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+# Cap a conventions-validator run so a hung subprocess (tree-sitter deadlock,
+# huge repo) can't hang the i_am_done/pr_pass gate forever.
+_CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS = 120
 
 
 def _select_ci_head_run(runs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -247,6 +277,11 @@ class GitService(BaseService):
         try:
             result = await loop.run_in_executor(_GIT_EXECUTOR, _run)
         except subprocess.TimeoutExpired as e:
+            # Timed-out git process was SIGKILL'd mid-mutation and may orphan
+            # .git/*.lock files; clear them so the workspace isn't wedged.
+            await loop.run_in_executor(
+                _GIT_EXECUTOR, _remove_stale_git_locks, workspace
+            )
             raise GitTimeoutError(" ".join(args), effective_timeout) from e
         except subprocess.CalledProcessError as e:
             raise GitCommandError(
@@ -276,13 +311,29 @@ class GitService(BaseService):
         return result
 
     async def _token_for_project(self, project_slug: str) -> str | None:
-        """Decrypted project token for orchestrator-side remote git ops."""
+        """Decrypted project token for orchestrator-side remote git ops.
+
+        A decryption failure (an encryption-key rotation left the stored PAT
+        encrypted with the old key) is logged loudly with the project slug
+        before returning None — without this every best-effort workspace git
+        op (push, PR, clone-with-token) silently looks like 'this project has
+        no token', indistinguishable from a project that genuinely never set
+        one, and the operator can't tell which project a key rotation wedged.
+        The best-effort skip behavior is preserved (callers still get None and
+        skip the remote op); this only makes the cause diagnosable.
+        """
         from roboco.utils.crypto import EncryptionError
 
         project_service = get_project_service(self.session)
         try:
             return await project_service.get_decrypted_token_by_slug(project_slug)
-        except EncryptionError:
+        except EncryptionError as exc:
+            self.log.error(
+                "git token decryption failed — encryption key may have rotated;"
+                " treating as no-token for this project's remote git ops",
+                project_slug=project_slug,
+                error=str(exc),
+            )
             return None
 
     async def _token_for_workspace(self, workspace: Path) -> str | None:
@@ -2345,6 +2396,61 @@ class GitService(BaseService):
             return ""
         return resp.text
 
+    async def get_pr_head_sha(self, project_slug: str, pr_number: int) -> str | None:
+        """Fetch a PR's current head commit SHA READ-ONLY via the GitHub API.
+
+        Used by the hard ``submit_root`` gate to detect that the assembled root
+        PR is byte-identical to the one a prior ``pr_fail`` already rejected —
+        i.e. no new cell work landed on the root branch since the fail — so the
+        gate can structurally refuse the re-submit instead of looping a weak
+        coordinator back into the same failed review (the 2026-06-27
+        ``pr_fail`` re-submit loop on PR #139). The head SHA equals the branch
+        HEAD at PR-open time, so two PRs opened from an unchanged branch share a
+        head SHA — the comparison holds whether or not a new PR number was cut.
+        Returns ``None`` on a missing token / unparseable remote / GitHub error
+        / a closed-or-missing PR so the gate FAILS OPEN rather than wedging the
+        PM (only the exact-unchanged case is hard-blocked; ambiguous cases pass
+        through and rely on the reviewer to re-fail).
+        """
+        project = await get_project_service(self.session).get_by_slug(project_slug)
+        if project is None or not project.git_url:
+            return None
+        try:
+            owner, repo = self._parse_git_url(project.git_url)
+        except GitError:
+            return None
+        git_token = await self._token_for_project(project_slug)
+        if not git_token:
+            return None
+        api_base = settings.github_api_base_url.rstrip("/")
+        try:
+            async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
+                resp = await client.get(
+                    f"{api_base}/repos/{owner}/{repo}/pulls/{pr_number}",
+                    headers={
+                        "Authorization": f"Bearer {git_token}",
+                        "Accept": "application/vnd.github+json",
+                        "X-GitHub-Api-Version": "2022-11-28",
+                    },
+                )
+            if not resp.is_success:
+                self.log.warning(
+                    "get_pr_head_sha non-2xx",
+                    project=project_slug,
+                    pr=pr_number,
+                    status=resp.status_code,
+                )
+                return None
+            return str(resp.json()["head"]["sha"])
+        except (httpx.HTTPError, ValueError, KeyError, TypeError) as e:
+            self.log.warning(
+                "get_pr_head_sha request/parse failed",
+                project=project_slug,
+                pr=pr_number,
+                error=str(e),
+            )
+            return None
+
     async def update_pr_for_task(
         self,
         task_id: UUID,
@@ -2405,14 +2511,11 @@ class GitService(BaseService):
             "updated_fields": updated,
         }
 
+    # PR-open-eligible states — the lifecycle policy owns the canon
+    # (``PR_OPEN_STATES``); the HTTP path derives its str set from it so the
+    # gateway ``open_pr`` spec gate and this HTTP gate can never drift.
     _PR_OPEN_STATES: ClassVar[frozenset[str]] = frozenset(
-        {
-            TaskStatus.IN_PROGRESS.value,
-            TaskStatus.VERIFYING.value,
-            TaskStatus.AWAITING_QA.value,
-            TaskStatus.AWAITING_DOCUMENTATION.value,
-            TaskStatus.NEEDS_REVISION.value,
-        }
+        s.value for s in lifecycle.PR_OPEN_STATES
     )
 
     @staticmethod
@@ -2792,10 +2895,29 @@ class GitService(BaseService):
                     owner, repo, pr_number, git_token, fallback
                 )
         if not resp.is_success:
-            raise GitError(
-                f"GitHub API refused PR merge ({resp.status_code}): {resp.text[:200]}",
-                {"owner": owner, "repo": repo, "pr": pr_number},
-            )
+            # A merge PUT on an already-merged PR returns the same 405/409 as a
+            # genuine "not mergeable" refusal. Disambiguate: if the PR is in
+            # fact already merged (a CEO double-click, or a first PUT that
+            # landed before a network blip made us retry), treat it as
+            # idempotent success and fall through to the post-merge cleanup —
+            # mirroring the agent-facing _merge_with_retry. Without this a
+            # CEO retry raised GitError on the very master-merge path only the
+            # CEO owns, surfacing a spurious failure for an action that had
+            # already succeeded.
+            if await self._pr_is_merged(owner, repo, pr_number, git_token):
+                self.log.info(
+                    "PR already merged on GitHub; treating as idempotent success",
+                    owner=owner,
+                    repo=repo,
+                    pr=pr_number,
+                    status_code=resp.status_code,
+                )
+            else:
+                raise GitError(
+                    f"GitHub API refused PR merge ({resp.status_code}):"
+                    f" {resp.text[:200]}",
+                    {"owner": owner, "repo": repo, "pr": pr_number},
+                )
 
         await self._delete_pr_branch_best_effort(owner, repo, pr_number, git_token)
 
@@ -2893,6 +3015,32 @@ class GitService(BaseService):
                 raise NotFoundError(resource_type="Task", resource_id=str(data.task_id))
             self._assert_merge_role(self._status_value(task), agent_role)
 
+            # The recorded PR (task.pr_number, set when the PR was opened) is
+            # the source of truth for which PR belongs to this task. The
+            # caller's data.pr_number is unverified client input — a stale panel
+            # form, a cached old number, a buggy client — and merging it blindly
+            # would merge the wrong PR against this task's work-session and
+            # auto-complete. Refuse unless the caller's number matches the
+            # recorded one; a task with no recorded PR has nothing to verify
+            # against and is refused outright (re-opening the wrong-PR gap for
+            # any task that lost its pr_number is worse than a clear error).
+            recorded_pr = getattr(task, "pr_number", None)
+            if recorded_pr is None:
+                raise ValidationError(
+                    "PR_MISMATCH: task has no recorded pr_number; refusing to"
+                    f" merge caller-provided PR #{data.pr_number} for task"
+                    f" {data.task_id} — the merge path requires the task's own"
+                    " recorded PR."
+                )
+            if recorded_pr != data.pr_number:
+                raise ValidationError(
+                    "PR_MISMATCH: caller asked to merge PR"
+                    f" #{data.pr_number} but task {data.task_id}'s recorded PR"
+                    f" is #{recorded_pr}. The recorded PR is the source of"
+                    " truth; merge the task's own PR, not a caller-provided"
+                    " number."
+                )
+
             # A coordination root has no project of its own, so the CEO's merge
             # request can't carry a project_slug. Resolve the root's repo from
             # its product server-side; non-root tasks keep the client slug.
@@ -2965,15 +3113,26 @@ class GitService(BaseService):
         if task.project_id is not None:
             return await project_service.get(UUID(str(task.project_id)))
         product_id = getattr(task, "product_id", None)
-        if product_id is None:
-            return None
-        from roboco.services.product import get_product_service
+        if product_id is not None:
+            from roboco.services.product import get_product_service
 
-        product_service = get_product_service(self.session)
-        project_ids = await product_service.distinct_project_ids(UUID(str(product_id)))
-        if not project_ids:
-            return None
-        return await project_service.get(project_ids[0])
+            product_service = get_product_service(self.session)
+            project_ids = await product_service.distinct_project_ids(
+                UUID(str(product_id))
+            )
+            if not project_ids:
+                return None
+            return await project_service.get(project_ids[0])
+        # Ad-hoc per-cell map root-subtask: mirror the product root's first-project
+        # resolution so root-level git ops resolve a workspace for the mapped repo.
+        cell_map = getattr(task, "cell_projects", None) or []
+        seen: set[UUID] = set()
+        for mapping in sorted(cell_map, key=lambda m: m.team.value):
+            pid = UUID(str(mapping.project_id))
+            if pid not in seen:
+                seen.add(pid)
+                return await project_service.get(pid)
+        return None
 
     @staticmethod
     def _fast_gate_commands(project: Any) -> list[tuple[str, str]]:
@@ -3407,12 +3566,21 @@ class GitService(BaseService):
         pr_number: int,
         *,
         target: str,
+        project_id: UUID,
         actor_agent_id: UUID | None = None,
     ) -> dict[str, Any]:
         """Merge PR `pr_number` into `target`.
 
         Returns: ``{"merge_commit_sha": str | None}``. Looks up the
         task/project that owns the PR to resolve workspace + token.
+
+        ``pr_number`` alone is ambiguous across projects — GitHub numbers
+        PRs per-repo, but ``tasks.pr_number`` stores the bare integer with
+        no repo scoping, so two tasks on different repos can share a number.
+        The caller MUST pass the ``project_id`` the PR belongs to so the
+        task lookup is scoped to it: a same-numbered PR in another
+        project's repo is never resolved (and merged, or its work session
+        marked merged) by accident. Mirrors :meth:`close_pull_request`.
 
         Concurrency: takes a row-level lock on the parent task before
         invoking the GitHub merge API so that two PMs completing
@@ -3425,7 +3593,10 @@ class GitService(BaseService):
         from roboco.db.tables import TaskTable as _TaskTable
 
         result = await self.session.execute(
-            select(_TaskTable).where(_TaskTable.pr_number == pr_number).limit(1)
+            select(_TaskTable)
+            .where(_TaskTable.pr_number == pr_number)
+            .where(_TaskTable.project_id == project_id)
+            .limit(1)
         )
         task = result.scalar_one_or_none()
         if task is None:
@@ -3570,6 +3741,7 @@ class GitService(BaseService):
         self,
         pr_number: int,
         *,
+        project_id: UUID,
         actor_agent_id: UUID | None = None,
     ) -> dict[str, Any]:
         """Resolve workspace/refs for a PR and rebase its branch onto the base.
@@ -3578,13 +3750,20 @@ class GitService(BaseService):
         that owns the PR (mirrors :meth:`pr_merge`) and reads the PR's head/base
         refs from GitHub. Returns the same classification dict, or
         ``{"status": "unknown"}`` when refs can't be resolved.
+
+        ``pr_number`` is ambiguous across projects (GitHub numbers PRs per-repo)
+        so the caller MUST pass ``project_id`` to scope the task lookup — the
+        same cross-repo guard as :meth:`pr_merge` / :meth:`close_pull_request`.
         """
         from sqlalchemy import select
 
         from roboco.db.tables import TaskTable as _TaskTable
 
         result = await self.session.execute(
-            select(_TaskTable).where(_TaskTable.pr_number == pr_number).limit(1)
+            select(_TaskTable)
+            .where(_TaskTable.pr_number == pr_number)
+            .where(_TaskTable.project_id == project_id)
+            .limit(1)
         )
         task = result.scalar_one_or_none()
         if task is None:
@@ -3609,14 +3788,102 @@ class GitService(BaseService):
             git_token=git_token,
         )
 
+    async def sync_task_branch(
+        self,
+        task: Any,
+        *,
+        base_branch: str,
+        actor_agent_id: UUID | None = None,
+    ) -> dict[str, Any]:
+        """Rebase a task's branch onto ``base_branch`` through the gate.
+
+        Task-keyed twin of :meth:`rebase_pr_for_task`: ``head_branch`` is the
+        task's own ``branch_name`` and ``base_branch`` is supplied by the caller
+        (the choreographer resolves it via ``merge_chain.resolve_parent_branch``),
+        so this works BEFORE a PR exists — a developer mid-work whose branch
+        fell behind its base (a sibling's PR merged into the parent branch) can
+        rebase through the dev ``sync_branch`` verb instead of the CEO/PM-only
+        ``/rebase`` HTTP route. Mirrors ``rebase_pr_for_task``'s workspace/token
+        resolution and delegates to :meth:`rebase_onto_base`, returning the same
+        classification dict (``rebased`` / ``superseded`` / ``conflicts``).
+
+        The caller MUST ensure ``base_branch`` is not a protected branch —
+        agents never rebase into master/main; the choreographer guards this.
+        """
+        if not task.branch_name:
+            raise ValueError("sync_task_branch requires a task with a branch_name")
+        project = await self._project_for_task(task)
+        if project is None:
+            raise NotFoundError("Project for task", str(task.id))
+        workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
+        workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
+        git_token = await self._get_project_token_or_raise(project.slug)
+        return await self.rebase_onto_base(
+            workspace,
+            head_branch=task.branch_name,
+            base_branch=base_branch,
+            git_token=git_token,
+        )
+
+    async def is_behind_base(
+        self,
+        task: Any,
+        *,
+        base_branch: str,
+        actor_agent_id: UUID | None = None,
+    ) -> tuple[int, int]:
+        """Return ``(behind, ahead)`` commit counts: head vs base branch.
+
+        ``behind`` = commits on ``origin/{base_branch}`` NOT on
+        ``origin/{head_branch}`` — the work the head has fallen behind by (e.g.
+        a sibling's PR merged into the parent branch while this dev worked).
+        ``ahead`` = commits on the head NOT on the base — the head's own work.
+        Both are read from origin after a fetch, so they reflect the pushed
+        state a merge / PR base would actually see.
+
+        The submit-time behind-base gate (``i_am_done``) uses this: a non-zero
+        ``behind`` means the branch fell behind its base and the dev must
+        ``sync_branch`` before submitting, else the PR can't merge cleanly /
+        a sibling's merged work is missing from this branch. Mirrors
+        :meth:`sync_task_branch`'s workspace/token resolution. Raises on git
+        failure (consistent with :meth:`rebase_onto_base`); the gate handler
+        fail-opens on a raised error so a flaky fetch can't strand a task at
+        the submit gate — the merge layer has its own behind checks.
+        """
+        if not task.branch_name:
+            raise ValueError("is_behind_base requires a task with a branch_name")
+        project = await self._project_for_task(task)
+        if project is None:
+            raise NotFoundError("Project for task", str(task.id))
+        workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
+        workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
+        git_token = await self._get_project_token_or_raise(project.slug)
+        await self._run_git(workspace, ["fetch", "origin"], token=git_token)
+        # --left-right --count A...B → "<left> <right>": left = commits only in
+        # A (base, what the head is BEHIND by); right = commits only in B (head,
+        # the head's own ahead work). Triple-dot = symmetric difference.
+        count = await self._run_git(
+            workspace,
+            [
+                "rev-list",
+                "--left-right",
+                "--count",
+                f"origin/{base_branch}...origin/{task.branch_name}",
+            ],
+        )
+        left, _, right = count.stdout.strip().partition(" ")
+        behind = int(left) if left.strip().isdigit() else 0
+        ahead = int(right) if right.strip().isdigit() else 0
+        return behind, ahead
+
     async def close_pull_request(
         self,
         pr_number: int,
         *,
+        project_id: UUID,
         comment: str | None = None,
         delete_branch: bool = True,
         actor_agent_id: UUID | None = None,
-        project_id: UUID | None = None,
     ) -> None:
         """Close PR ``pr_number`` on GitHub, optionally with an explanatory comment.
 
@@ -3625,20 +3892,24 @@ class GitService(BaseService):
         action agents had no verb for. Best-effort branch cleanup on close.
 
         ``pr_number`` alone is ambiguous across projects (GitHub numbers PRs
-        per-repo), so when the caller knows which project the PR belongs to it
-        MUST pass ``project_id`` — the task lookup is then scoped to it so a
-        same-numbered PR in another project's repo is never resolved by
-        accident. Idempotent: a PR that is already closed is a no-op (no
-        duplicate comment), so a retried close-on-land never re-comments.
+        per-repo, but ``tasks.pr_number`` stores the bare integer with no repo
+        scoping, so two tasks on different repos can share a number). The
+        caller MUST pass the ``project_id`` the PR belongs to — the task
+        lookup is scoped to it so a same-numbered PR in another project's repo
+        is never resolved (and closed) by accident. Mirrors :meth:`pr_merge`.
+        Idempotent: a PR that is already closed is a no-op (no duplicate
+        comment), so a retried close-on-land never re-comments.
         """
         from sqlalchemy import select
 
         from roboco.db.tables import TaskTable as _TaskTable
 
-        stmt = select(_TaskTable).where(_TaskTable.pr_number == pr_number)
-        if project_id is not None:
-            stmt = stmt.where(_TaskTable.project_id == project_id)
-        result = await self.session.execute(stmt.limit(1))
+        result = await self.session.execute(
+            select(_TaskTable)
+            .where(_TaskTable.pr_number == pr_number)
+            .where(_TaskTable.project_id == project_id)
+            .limit(1)
+        )
         task = result.scalar_one_or_none()
         if task is None:
             raise NotFoundError("PR", str(pr_number))
@@ -3690,6 +3961,7 @@ class GitService(BaseService):
         self,
         pr_number: int,
         *,
+        project_id: UUID,
         actor_agent_id: UUID | None = None,
     ) -> str:
         """Return the current target (base) branch of an open PR.
@@ -3697,13 +3969,23 @@ class GitService(BaseService):
         Workspace resolution mirrors pr_merge: actor → assigned_to →
         created_by. Lets the Main PM call pr_target after
         ``submit_qa`` has cleared ``assigned_to`` without ValidationError.
+
+        ``pr_number`` alone is ambiguous across projects (GitHub numbers PRs
+        per-repo, but ``tasks.pr_number`` stores the bare integer with no repo
+        scoping, so two tasks on different repos can share a number). The
+        caller MUST pass the ``project_id`` the PR belongs to — the task lookup
+        is scoped to it so a same-numbered PR in another project's repo is
+        never resolved by accident. Mirrors :meth:`pr_merge`.
         """
         from sqlalchemy import select
 
         from roboco.db.tables import TaskTable as _TaskTable
 
         result = await self.session.execute(
-            select(_TaskTable).where(_TaskTable.pr_number == pr_number).limit(1)
+            select(_TaskTable)
+            .where(_TaskTable.pr_number == pr_number)
+            .where(_TaskTable.project_id == project_id)
+            .limit(1)
         )
         task = result.scalar_one_or_none()
         if task is None:
@@ -4024,10 +4306,13 @@ class GitService(BaseService):
         """Run the conventions validator on a task's changed files.
 
         Resolves the acting agent's workspace + the branch's changed files and
-        runs ``python -m roboco.conventions`` over them. Fail-open on a
-        resolution error (returns no findings, ``could_not_run=False``); the
-        validator's OWN fail-loud (exit 3) sets ``could_not_run=True`` so the
-        gate blocks rather than passing on an unanalyzable diff.
+        runs ``python -m roboco.conventions`` over them. A resolution error
+        (workspace missing, diff failed) fails CLOSED — returns
+        ``could_not_run=True`` so the block gate refuses the submit instead of
+        silently passing on an unanalyzable diff (the validator's OWN fail-loud
+        exit-3 philosophy). The two empty-result paths stay fail-open: a
+        branchless task (no ``branch_name``) and a task with no changed files
+        genuinely have nothing to validate, so the gate correctly passes.
         """
         try:
             branch = task.branch_name
@@ -4039,8 +4324,12 @@ class GitService(BaseService):
             changed = await self.list_changed_files(
                 branch_name=branch, actor_agent_id=actor_agent_id
             )
-        except Exception:
-            return {"findings": [], "could_not_run": False}
+        except Exception as exc:
+            return {
+                "findings": [],
+                "could_not_run": True,
+                "reason": f"resolution failed: {exc}"[:300],
+            }
         if not changed:
             return {"findings": [], "could_not_run": False}
         return await self._run_conventions_validator(workspace, changed)
@@ -4060,7 +4349,25 @@ class GitService(BaseService):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        out, err = await proc.communicate()
+        try:
+            out, err = await asyncio.wait_for(
+                proc.communicate(),
+                timeout=_CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            # Fail closed (could_not_run=True → block gate refuses the submit),
+            # matching the validator's own fail-loud philosophy, and reap the
+            # killed proc so it isn't orphaned on orchestrator restart.
+            proc.kill()
+            await proc.wait()
+            return {
+                "findings": [],
+                "could_not_run": True,
+                "reason": (
+                    f"validator timed out after "
+                    f"{_CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS}s"
+                ),
+            }
         if proc.returncode != 0:
             reason = err.decode(errors="replace").strip() or "validator crashed"
             return {"findings": [], "could_not_run": True, "reason": reason[:300]}
@@ -4112,24 +4419,56 @@ class GitService(BaseService):
             body=body,
         )
         original = await self.get_current_branch(ws)
+        # A dirty tree is an agent's active workspace. Cutting the scaffold
+        # branch here would sweep their uncommitted work into the conventions
+        # commit — ``checkout <base>`` no-ops or is refused, ``checkout -B
+        # <scaffold>`` carries the dirty change, and ``commit`` captures it,
+        # so the agent's in-progress edit rides a project-level PR they never
+        # intended and vanishes from their working tree. Refuse outright before
+        # any checkout touches the tree.
+        if not await self._working_tree_is_clean(ws):
+            return None
         try:
-            await self._commit_conventions_file(ws, base, spec)
+            if not await self._commit_conventions_file(ws, base, spec):
+                return None
             return await self._push_and_open_conventions_pr(
                 project_slug, ws, base, spec
             )
         finally:
             await self._run_git(ws, ["checkout", original], check=False)
 
+    async def _working_tree_is_clean(self, workspace: Path) -> bool:
+        """True iff ``git status --porcelain`` is empty (no staged/unstaged
+        changes, no untracked entries). Used to gate workspace-mutating
+        project-level ops (the conventions scaffold) away from an agent's
+        active dirty tree."""
+        result = await self._run_git(workspace, ["status", "--porcelain"])
+        return not result.stdout.strip()
+
     async def _commit_conventions_file(
         self, workspace: Path, base: str, spec: _ConventionsPr
-    ) -> None:
+    ) -> bool:
+        """Commit the conventions file on the scaffold branch cut from ``base``.
+
+        Returns False when the scaffold cannot be safely cut from ``base`` (the
+        ``checkout <base>`` with ``check=False`` failed — a missing base ref,
+        or a dirty tree that refused the switch). In that case ``checkout -B
+        <scaffold>`` would cut the scaffold from the *current* branch (the
+        agent's task branch), basing a project-level PR on the agent's work;
+        the caller refuses rather than commit on the wrong base.
+        """
         await self._run_git(workspace, ["checkout", base], check=False)
+        # check=False swallows the failed checkout; verify we actually landed
+        # on base before cutting the scaffold from here.
+        if await self.get_current_branch(workspace) != base:
+            return False
         await self._run_git(workspace, ["checkout", "-B", spec.branch])
         target = workspace / ".roboco" / "conventions.yml"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(spec.content)
         await self._run_git(workspace, ["add", ".roboco/conventions.yml"])
         await self._run_git(workspace, ["commit", "-m", spec.title])
+        return True
 
     async def _push_and_open_conventions_pr(
         self, project_slug: str, workspace: Path, base: str, spec: _ConventionsPr

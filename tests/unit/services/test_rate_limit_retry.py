@@ -130,7 +130,7 @@ def _make_journal_plugin() -> JournalsIndexPlugin:
     plugin = JournalsIndexPlugin.__new__(JournalsIndexPlugin)
     plugin._config = MagicMock()
     plugin._config.llm_base_url = "http://ollama-test:11434/v1"
-    plugin._config.llm_model = "glm-5:cloud"
+    plugin._config.llm_model = "glm-5.2:cloud"
     plugin._store = MagicMock()
     plugin._chunker = MagicMock()
     plugin._embedder = MagicMock()

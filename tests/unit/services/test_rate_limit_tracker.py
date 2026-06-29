@@ -9,6 +9,7 @@ visible to a fresh instance.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -22,7 +23,8 @@ from roboco.services.gateway.rate_limit_tracker import RateLimitStateTracker
 def _make_redis_mock(initial_store: dict[str, Any] | None = None) -> AsyncMock:
     """Build an async Redis mock backed by a plain dict.
 
-    The mock supports ``get``, ``set``, and ``delete`` with the same
+    The mock supports ``get``, ``set``, ``delete`` and ``eval`` (server-side
+    Lua for the tracker's atomic probe-failure scripts) with the same
     semantics as the real redis.asyncio.Redis client.
     """
     # Use the dict AS-IS (no copy) so that two mocks sharing the same
@@ -44,10 +46,36 @@ def _make_redis_mock(initial_store: dict[str, Any] | None = None) -> AsyncMock:
     async def _delete(key: str) -> int:
         return 1 if store.pop(key, None) is not None else 0
 
+    async def _eval(script: str, _numkeys: int, *keys_and_args: Any) -> Any:
+        # Mirror the tracker's two atomic Lua scripts (see rate_limit_tracker.py)
+        # so the counter update is observable in-process. Single-threaded tests
+        # get the same result production gets from Redis' single-threaded Lua.
+        key = keys_and_args[0]
+        raw = store.get(key)
+        text = raw.decode() if isinstance(raw, bytes) else (str(raw) if raw else None)
+        if "roboco:increment_probe_failures" in script:
+            if text is None:
+                state: dict[str, Any] = {"probe_failures": 1}
+            else:
+                state = json.loads(text)
+                state["probe_failures"] = state.get("probe_failures", 0) + 1
+            store[key] = json.dumps(state)
+            return state["probe_failures"]
+        if "roboco:reset_probe_failures" in script:
+            if text is None:
+                state = {"probe_failures": 0}
+            else:
+                state = json.loads(text)
+                state["probe_failures"] = 0
+            store[key] = json.dumps(state)
+            return None
+        raise AssertionError(f"unknown eval script: {script[:80]}")
+
     mock = AsyncMock()
     mock.get = AsyncMock(side_effect=_get)
     mock.set = AsyncMock(side_effect=_set)
     mock.delete = AsyncMock(side_effect=_delete)
+    mock.eval = AsyncMock(side_effect=_eval)
     # Stash the backing store so tests can inspect raw state
     mock._store = store
     return mock

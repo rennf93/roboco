@@ -23,7 +23,11 @@ interface SpawnAgentDialogProps {
   trigger?: React.ReactNode;
 }
 
-export function SpawnAgentDialog({ agentId, agentName, trigger }: SpawnAgentDialogProps) {
+export function SpawnAgentDialog({
+  agentId,
+  agentName,
+  trigger,
+}: SpawnAgentDialogProps) {
   const [open, setOpen] = useState(false);
   const [taskId, setTaskId] = useState("");
   const [initialPrompt, setInitialPrompt] = useState("");
@@ -60,9 +64,7 @@ export function SpawnAgentDialog({ agentId, agentName, trigger }: SpawnAgentDial
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        {trigger || defaultTrigger}
-      </DialogTrigger>
+      <DialogTrigger asChild>{trigger || defaultTrigger}</DialogTrigger>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Spawn {agentName}</DialogTitle>

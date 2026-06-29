@@ -3,7 +3,13 @@
 import Link from "next/link";
 import { CheckCircle2, ExternalLink, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import type { Team } from "@/types";
 
@@ -37,13 +43,19 @@ export function SuccessCard({
           <Badge variant="secondary" className="text-xs">
             {team.replace("_", " ")}
           </Badge>
-          <span className="text-xs text-muted-foreground">ID: {taskId.slice(0, 8)}…</span>
+          <span className="text-xs text-muted-foreground">
+            ID: {taskId.slice(0, 8)}…
+          </span>
         </div>
       </CardContent>
 
       <CardFooter className="gap-2 pt-0">
         <Button variant="outline" size="sm" asChild className="flex-1">
-          <Link href={`/tasks/${taskId}`} target="_blank" rel="noopener noreferrer">
+          <Link
+            href={`/tasks/${taskId}`}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
             <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
             View Task
           </Link>

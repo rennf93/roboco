@@ -21,7 +21,8 @@ from sqlalchemy import select
 
 from roboco.db.tables import AgentTable, TaskTable
 from roboco.foundation.identity import CELL_TEAMS
-from roboco.foundation.policy.batch import is_batch_umbrella
+from roboco.foundation.policy.batch import is_batch_umbrella, main_pm_cannot_own_code
+from roboco.foundation.policy.content.validators import coerce_str_list
 from roboco.foundation.policy.sequencing.models import DraftSurface, SequencePlan
 from roboco.models.base import (
     AgentRole,
@@ -31,6 +32,7 @@ from roboco.models.base import (
     TaskType,
     Team,
 )
+from roboco.models.product import ProductCellMapping
 from roboco.models.task import TaskCreateRequest
 from roboco.services.base import NotFoundError, ServiceError, ValidationError
 
@@ -59,6 +61,11 @@ _CELL_CAPACITY: dict[str, int] = {
 # A MegaTask must span at least this many distinct projects — fewer is a
 # single-repo batch, which is just an ordinary (multi-)task, not a MegaTask.
 _MIN_MEGATASK_PROJECTS = 2
+
+# A draft whose per-cell map covers at least this many cells targets the ad-hoc
+# multi-cell shape (a root-subtask with a cell->project map, no single project).
+# Below it, a 1-cell map collapses to the single-project shape.
+_MULTI_CELL_MIN = 2
 
 
 @dataclass
@@ -121,22 +128,32 @@ class PrompterService:
         product_id: UUID | None,
         *,
         is_umbrella: bool,
+        has_cell_projects: bool = False,
     ) -> None:
-        """A draft targets exactly one of project / product — or neither when it
-        is a MegaTask umbrella (branchless; its root-subtasks carry the projects).
+        """A draft targets exactly one of project / product / per-cell map — or
+        none when it is a MegaTask umbrella (branchless; its root-subtasks carry
+        the projects). The per-cell map is the multi-cell ad-hoc shape (a
+        root-subtask mixing per-cell projects from different products / OSS libs).
         """
-        if project_id is None and product_id is None and not is_umbrella:
+        targets = bool(project_id) + bool(product_id) + bool(has_cell_projects)
+        if is_umbrella:
+            if targets != 0:
+                raise ValidationError(
+                    message=(
+                        "A MegaTask umbrella targets neither project nor product "
+                        "(it is branchless); its root-subtasks carry the projects."
+                    ),
+                    field="project_id",
+                )
+            return
+        if targets != 1:
             raise ValidationError(
                 message=(
-                    "The draft must target a project (single-cell) or a product "
-                    "(board-led, multi-cell). Pick one in the confirm step."
+                    "The draft must target exactly one of a project (single-cell), "
+                    "a product (board-led, multi-cell), or a per-cell project map "
+                    "(ad-hoc multi-cell). Pick one in the confirm step."
                 ),
                 field="project_id",
-            )
-        if project_id is not None and product_id is not None:
-            raise ValidationError(
-                message="Set exactly one of project_id or product_id, not both.",
-                field="product_id",
             )
 
     async def _resolve_owning_team(
@@ -152,16 +169,22 @@ class PrompterService:
 
         ``team_override`` pins the team for a MegaTask batch (umbrella + every
         root-subtask share one owner). Otherwise: a project target is a
-        single-cell executable owned by the lead cell; a product target is a
-        board-led coordination root whose team follows the start mode (encoded in
-        the assignee) — the "Board review & Start" path assigns a board reviewer,
-        so it stays team=board until approved (else the CEO's Approve & Start
-        gate, which keys on team=board, never appears and the task strands).
-        "Approve & Start" (assignee main-pm) and the post-approval state are
-        team=main_pm.
+        single-cell executable owned by the lead cell; a product target OR an
+        ad-hoc per-cell map (≥2 cells in ``the_work``) is a multi-cell
+        coordination root owned by the Main PM — the cell map mirrors a product
+        fan-out root, so a cell PM (which can only delegate within its own cell)
+        must NOT own it (that would deadlock on the cross-cell fan-out). A
+        product's team follows the start mode (encoded in the assignee) — the
+        "Board review & Start" path assigns a board reviewer, so it stays
+        team=board until approved (else the CEO's Approve & Start gate, which
+        keys on team=board, never appears and the task strands). "Approve &
+        Start" (assignee main-pm) and the post-approval state are team=main_pm.
         """
         if team_override is not None:
             return team_override
+        if len(_draft_cell_map(draft_data)) >= _MULTI_CELL_MIN:
+            # Ad-hoc multi-cell map → coordination root, like a product root.
+            return Team.MAIN_PM
         if resolved_product_id is None:
             return self._lead_cell_team(draft_data, default=default_lead)
         if resolved_assigned_to is not None and await self._assignee_is_board(
@@ -169,6 +192,55 @@ class PrompterService:
         ):
             return Team.BOARD
         return Team.MAIN_PM
+
+    def _validate_and_coerce_draft(self, draft_data: dict[str, Any]) -> None:
+        """Validate title + acceptance criteria, then flatten the list-shaped
+        fields (acceptance_criteria / what_this_builds / notes / each the_work
+        unit's items) to ``list[str]`` in place.
+
+        Raises ``ValidationError`` (clean 400) for a missing title or empty /
+        missing acceptance criteria — a malformed draft (e.g. an incomplete
+        ``propose_batch`` item) would otherwise hit a bare ``KeyError`` and
+        surface as an opaque 500. Coercion runs here too because a draft can
+        arrive via re-draft / localStorage, not only the intake choke point.
+        """
+        if not draft_data.get("title"):
+            raise ValidationError(
+                message="This task draft is missing a title.", field="title"
+            )
+        if not draft_data.get("acceptance_criteria"):
+            raise ValidationError(
+                message="This task draft is missing acceptance criteria.",
+                field="acceptance_criteria",
+            )
+        draft_data["acceptance_criteria"] = coerce_str_list(
+            draft_data.get("acceptance_criteria")
+        )
+        draft_data["what_this_builds"] = coerce_str_list(
+            draft_data.get("what_this_builds")
+        )
+        draft_data["notes"] = coerce_str_list(draft_data.get("notes"))
+        for unit in draft_data.get("the_work") or []:
+            if isinstance(unit, dict):
+                unit["items"] = coerce_str_list(unit.get("items"))
+        if not draft_data["acceptance_criteria"]:
+            raise ValidationError(
+                message="This task draft is missing acceptance criteria.",
+                field="acceptance_criteria",
+            )
+
+    def _resolve_draft_assignee(
+        self, assigned_to: UUID | None, draft_data: dict[str, Any]
+    ) -> UUID | None:
+        """Explicit confirm-button assignment wins; else fall back to any assignee
+        carried on the draft."""
+        if assigned_to is not None:
+            return assigned_to
+        if not draft_data.get("assigned_to"):
+            return None
+        with contextlib.suppress(ValueError):
+            return UUID(str(draft_data["assigned_to"]))
+        return None
 
     async def create_task_from_draft(
         self,
@@ -200,31 +272,34 @@ class PrompterService:
         draft through to the task so the analyzer's surface is persisted.
         """
         place = placement or BatchPlacement()
-        # A draft must carry a title + acceptance criteria — without this a
-        # malformed draft (e.g. an agent's incomplete propose_batch item) hits a
-        # bare KeyError below and surfaces as an opaque 500 instead of a clean,
-        # actionable 400.
-        if not draft_data.get("title"):
-            raise ValidationError(
-                message="This task draft is missing a title.", field="title"
-            )
-        if not draft_data.get("acceptance_criteria"):
-            raise ValidationError(
-                message="This task draft is missing acceptance criteria.",
-                field="acceptance_criteria",
-            )
+        self._validate_and_coerce_draft(draft_data)
         # Recompose the description from the (possibly edited) structured fields —
         # the task always carries a freshly-composed, consistent description.
         draft_data["description"] = compose_description(draft_data)
 
         resolved_project_id = self._resolve_uuid_field(draft_data, "project_id")
         resolved_product_id = self._resolve_uuid_field(draft_data, "product_id")
+        # The ad-hoc per-cell map: ≥2 cells → multi-cell root-subtask (cell map
+        # shape, no project/product); 1 cell → single-project (use that project);
+        # 0 → fall back to the top-level project_id (single-cell legacy).
+        cell_map = _draft_cell_map(draft_data)
+        cell_projects: list[ProductCellMapping] = []
+        if len(cell_map) >= _MULTI_CELL_MIN:
+            cell_projects = [
+                ProductCellMapping(team=team, project_id=pid) for team, pid in cell_map
+            ]
+            resolved_project_id = None
+            resolved_product_id = None
+        elif len(cell_map) == 1:
+            resolved_project_id = cell_map[0][1]
+            resolved_product_id = None
         self._validate_draft_target(
             resolved_project_id,
             resolved_product_id,
             is_umbrella=is_batch_umbrella(
                 batch_id=place.batch_id, parent_task_id=place.parent_task_id
             ),
+            has_cell_projects=bool(cell_projects),
         )
 
         _lead, task_type, nature, complexity = self._coerce_draft_enums(draft_data)
@@ -232,10 +307,7 @@ class PrompterService:
         # Explicit assignment (from the confirm button) wins; else fall back to
         # any assignee carried on the draft. Resolved before team routing — the
         # owner decides the team for a product.
-        resolved_assigned_to: UUID | None = assigned_to
-        if resolved_assigned_to is None and draft_data.get("assigned_to"):
-            with contextlib.suppress(ValueError):
-                resolved_assigned_to = UUID(str(draft_data["assigned_to"]))
+        resolved_assigned_to = self._resolve_draft_assignee(assigned_to, draft_data)
 
         team = await self._resolve_owning_team(
             draft_data,
@@ -244,6 +316,23 @@ class PrompterService:
             team_override=place.team_override,
             default_lead=_lead,
         )
+
+        # A Main PM coordinates — it never owns a code task. A main_pm + code
+        # draft is the structural mismatch behind the 2026-06-27 MegaTask
+        # meltdown (the git/PR/review layer treated the root as code while the
+        # ownership layer treated it as coordination → pr_fail loop). Intake
+        # coerces code -> planning here so the combo can never persist; a
+        # root-subtask / umbrella / single-task main_pm route is a coordination
+        # root whose code ACs live on the delegated cell/dev leaves. The
+        # TaskService.create backstop rejects main_pm + code for non-intake
+        # create paths (the HTTP route).
+        if main_pm_cannot_own_code(team=team, task_type=task_type):
+            self.log.info(
+                "Main-PM intake task coerced code->planning",
+                team=str(getattr(team, "value", team)),
+                title=_text(draft_data.get("title")) or "",
+            )
+            task_type = TaskType.PLANNING
 
         req = TaskCreateRequest(
             title=draft_data["title"],
@@ -258,6 +347,7 @@ class PrompterService:
             assigned_to=resolved_assigned_to,
             project_id=resolved_project_id,
             product_id=resolved_product_id,
+            cell_projects=cell_projects,
             status=status,
             parent_task_id=place.parent_task_id,
             batch_id=place.batch_id,
@@ -387,20 +477,41 @@ class PrompterService:
         """A MegaTask's drafts must each target one of the scoped repos (the only
         ones the intake agent read), and collectively span at least two distinct
         projects — otherwise it's a single-repo batch, not a MegaTask.
+
+        Each draft targets its repos via its per-cell ``the_work[].project_id``
+        map (a multi-cell draft) or, falling back, its top-level ``project_id``
+        (a single-cell draft). Every targeted project must be in scope, and the
+        union across all drafts' cells must clear ``_MIN_MEGATASK_PROJECTS``
+        (a single 2-cell draft already satisfies it).
         """
         scope = {str(p) for p in project_ids}
         seen: set[str] = set()
         for idx, draft in enumerate(drafts):
-            pid = draft.get("project_id")
-            if not pid or str(pid) not in scope:
+            cell_map = _draft_cell_map(draft)
+            top_pid = draft.get("project_id")
+            if cell_map:
+                draft_pids = [str(pid) for _, pid in cell_map]
+            elif top_pid:
+                draft_pids = [str(top_pid)]
+            else:
                 raise ValidationError(
                     message=(
-                        f"Task {idx + 1} targets a project outside this MegaTask's "
-                        "selected repos. Point it at one of the scoped projects."
+                        f"Task {idx + 1} has no project. Point each of its cells at "
+                        "one of the scoped projects."
                     ),
                     field="drafts",
                 )
-            seen.add(str(pid))
+            for pid in draft_pids:
+                if pid not in scope:
+                    raise ValidationError(
+                        message=(
+                            f"Task {idx + 1} targets a project outside this "
+                            "MegaTask's selected repos. Point it at one of the scoped "
+                            "projects."
+                        ),
+                        field="drafts",
+                    )
+                seen.add(pid)
         if len(seen) < _MIN_MEGATASK_PROJECTS:
             raise ValidationError(
                 message=(
@@ -704,25 +815,82 @@ def parse_readiness(content: str) -> tuple[str, ReadinessTag | None]:
     )
 
 
-def _cell_teams(the_work: list[dict[str, Any]]) -> list[str]:
+def _as_work_entry(entry: Any) -> dict[str, Any]:
+    """Normalize one ``the_work`` entry to a dict.
+
+    The intake agent is an LLM and sometimes emits ``the_work`` as a list of
+    bare team-name strings (``"backend"``) instead of the documented
+    ``{team, summary, items}`` objects. Treat a bare string as
+    ``{"team": <str>}`` so every consumer can keep calling ``.get("team")`` /
+    ``.get("items")`` instead of crashing with ``'str' has no 'get'``
+    (regression: ``preview-batch`` 500'd on this shape).
+    """
+    if isinstance(entry, str):
+        return {"team": entry.strip()}
+    if isinstance(entry, dict):
+        return entry
+    return {}
+
+
+def _cell_teams(the_work: list[Any]) -> list[str]:
     """Distinct cell teams (backend/frontend/ux_ui) present in the_work, in order."""
     cell_values = {t.value for t in CELL_TEAMS}
     seen: list[str] = []
     for entry in the_work:
-        team = str(entry.get("team", ""))
+        team = str(_as_work_entry(entry).get("team", ""))
         if team in cell_values and team not in seen:
             seen.append(team)
     return seen
 
 
-def derive_scale(the_work: list[dict[str, Any]]) -> str:
+def _draft_cell_map(draft: dict[str, Any]) -> list[tuple[Team, UUID]]:
+    """The draft's ad-hoc per-cell project map.
+
+    One ``(team, project_id)`` per ``the_work`` entry whose ``team`` is a valid
+    cell AND that carries a ``project_id``, in ``the_work`` order, de-duped by
+    team (the first mapping for a cell wins — a ``task_cell_projects`` row is
+    unique per ``(task, team)``). Empty when no entry carries a project_id — the
+    draft then falls back to its top-level ``project_id`` (single-cell legacy).
+
+    This is the multi-cell MegaTask root-subtask seam: a draft whose map has
+    ≥2 entries targets the ad-hoc cell-map shape (no project, no product), and
+    ``create_task_from_draft`` persists those rows on the root-subtask.
+    """
+    cell_values = {t.value for t in CELL_TEAMS}
+    out: list[tuple[Team, UUID]] = []
+    seen_teams: set[Team] = set()
+    for entry in draft.get("the_work") or []:
+        e = _as_work_entry(entry)
+        team_raw = str(e.get("team", ""))
+        if team_raw not in cell_values:
+            continue
+        team = Team(team_raw)
+        if team in seen_teams:
+            continue
+        pid_raw = e.get("project_id")
+        if not pid_raw:
+            continue
+        try:
+            pid = UUID(str(pid_raw))
+        except (ValueError, TypeError):
+            continue
+        seen_teams.add(team)
+        out.append((team, pid))
+    return out
+
+
+def derive_scale(the_work: list[Any]) -> str:
     """'multi' when more than one cell participates, else 'single'."""
     return "multi" if len(_cell_teams(the_work)) > 1 else "single"
 
 
 def _clean_list(value: Any) -> list[str]:
-    """Trimmed, non-empty string items from a possibly-missing list field."""
-    return [str(i).strip() for i in (value or []) if str(i).strip()]
+    """Trimmed, non-empty string items from a possibly-missing list field.
+
+    Uses :func:`coerce_str_list` so an LLM's dict-wrapped items (``{"$text": …}``
+    etc.) are extracted to text rather than dumped as ``str(dict)``.
+    """
+    return coerce_str_list(value)
 
 
 def _text(value: Any) -> str:
@@ -740,17 +908,22 @@ def _cell_label(team: str) -> str:
     return _TEAM_LABELS.get(team) or team.replace("_", " ").title() or "Work"
 
 
-def _render_work_entry(entry: dict[str, Any]) -> str:
-    """Render one cell's slice: a bold heading and its deliverables."""
-    head = f"**{_cell_label(_text(entry.get('team')))}**"
-    summary = _text(entry.get("summary"))
+def _render_work_entry(entry: Any) -> str:
+    """Render one cell's slice: a bold heading and its deliverables.
+
+    ``entry`` may be a bare team-name string (see ``_as_work_entry``); a bare
+    string renders as just the cell heading, with no summary/items.
+    """
+    e = _as_work_entry(entry)
+    head = f"**{_cell_label(_text(e.get('team')))}**"
+    summary = _text(e.get("summary"))
     if summary:
         head = f"{head} — {summary}"
-    items = _clean_list(entry.get("items"))
+    items = _clean_list(e.get("items"))
     return f"{head}\n{_bullets(items)}" if items else head
 
 
-def _render_the_work(the_work: list[dict[str, Any]]) -> str:
+def _render_the_work(the_work: list[Any]) -> str:
     """Render The Work section, with a board-led lead line when multi-cell."""
     blocks = [_render_work_entry(e) for e in the_work]
     if len(_cell_teams(the_work)) > 1:
@@ -847,9 +1020,9 @@ def _compose_umbrella_draft(
     The umbrella targets neither project nor product (it is branchless) and
     carries no collision surface of its own — it exists to group the batch, hold
     the wave plan in its description for review, and be the one board-review /
-    CEO-approve / Main-PM-coordinate unit. ``task_type=code`` mirrors the existing
-    product coordination roots created from intake (the branch/PR exemption comes
-    from the batch identity, not the type).
+    CEO-approve / Main-PM-coordinate unit. It is a Main-PM coordination root, so
+    ``task_type=planning`` (a Main PM coordinates, it does not execute code); the
+    branch/PR exemption comes from the batch identity, not the type.
     """
     item_titles = [
         _text(d.get("title")) or f"Task {i + 1}" for i, d in enumerate(drafts)
@@ -871,7 +1044,7 @@ def _compose_umbrella_draft(
         "acceptance_criteria": [
             "Every root-subtask in the MegaTask is completed and merged.",
         ],
-        "task_type": TaskType.CODE.value,
+        "task_type": TaskType.PLANNING.value,
         "nature": TaskNature.TECHNICAL.value,
         "estimated_complexity": Complexity.HIGH.value,
         "priority": 1,

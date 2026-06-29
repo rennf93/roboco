@@ -4,10 +4,12 @@ import { useEffect, useRef } from "react";
 import { Loader2, Sparkles, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { usePrompter } from "@/hooks/use-prompter";
+import { Team } from "@/types";
 import {
   ChatMessages,
   ChatComposer,
   SuccessCard,
+  BoardReviewSentCard,
   IntakeForm,
   BatchReviewCard,
 } from "@/components/prompter";
@@ -42,7 +44,7 @@ export default function PrompterPage() {
     batch,
     batchWaves,
     batchResult,
-    updateBatchDraftProject,
+    setBatchDraftProjects,
     confirmBatch,
   } = usePrompter();
 
@@ -113,22 +115,40 @@ export default function PrompterPage() {
           createdTaskTeam ? (
             <div className="flex flex-1 flex-col items-center justify-center px-8 py-8">
               <div className="w-full max-w-md space-y-3">
-                <SuccessCard
-                  taskId={createdTaskId}
-                  taskTitle={createdTaskTitle}
-                  team={createdTaskTeam}
-                  onStartAnother={startAnother}
-                />
-                {batchResult && (
-                  <p className="text-center text-xs text-muted-foreground">
-                    {batchResult.root_subtask_ids.length} tasks sequenced into{" "}
-                    {batchResult.waves.length} wave
-                    {batchResult.waves.length === 1 ? "" : "s"}.
-                    {batchResult.warnings.length > 0 &&
-                      ` ${batchResult.warnings.length} advisory note${
-                        batchResult.warnings.length === 1 ? "" : "s"
-                      }.`}
-                  </p>
+                {/* Board-routed MegaTask: created HELD for PO+HoM review, not
+                    dispatched — the CEO releases it with Approve & Start on the
+                    umbrella task. Every other path is a real "created/launched"
+                    success. ``createdTaskTeam === BOARD`` is set only by the
+                    batch board route (the single-draft board route parks and
+                    never reaches success). */}
+                {createdTaskTeam === Team.BOARD && batchResult ? (
+                  <BoardReviewSentCard
+                    taskId={createdTaskId}
+                    taskTitle={createdTaskTitle}
+                    rootSubtaskCount={batchResult.root_subtask_ids.length}
+                    waveCount={batchResult.waves.length}
+                    onStartAnother={startAnother}
+                  />
+                ) : (
+                  <>
+                    <SuccessCard
+                      taskId={createdTaskId}
+                      taskTitle={createdTaskTitle}
+                      team={createdTaskTeam}
+                      onStartAnother={startAnother}
+                    />
+                    {batchResult && (
+                      <p className="text-center text-xs text-muted-foreground">
+                        {batchResult.root_subtask_ids.length} tasks sequenced
+                        into {batchResult.waves.length} wave
+                        {batchResult.waves.length === 1 ? "" : "s"}.
+                        {batchResult.warnings.length > 0 &&
+                          ` ${batchResult.warnings.length} advisory note${
+                            batchResult.warnings.length === 1 ? "" : "s"
+                          }.`}
+                      </p>
+                    )}
+                  </>
                 )}
               </div>
             </div>
@@ -149,7 +169,7 @@ export default function PrompterPage() {
                 waves={batchWaves}
                 projectIds={projectIds}
                 onKeepChatting={keepChatting}
-                onProjectChange={updateBatchDraftProject}
+                onSetProjects={setBatchDraftProjects}
                 onConfirm={confirmBatch}
                 isLaunching={isLaunching}
               />

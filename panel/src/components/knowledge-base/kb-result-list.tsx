@@ -11,7 +11,11 @@ interface KBResultListProps {
   query: string;
 }
 
-export function KBResultList({ response, isLoading, query }: KBResultListProps) {
+export function KBResultList({
+  response,
+  isLoading,
+  query,
+}: KBResultListProps) {
   if (isLoading) {
     return (
       <div className="space-y-3">
@@ -35,8 +39,8 @@ export function KBResultList({ response, isLoading, query }: KBResultListProps) 
         <FileSearch className="h-12 w-12 text-muted-foreground/50 mb-4" />
         <h3 className="text-lg font-medium mb-1">Search the Knowledge Base</h3>
         <p className="text-sm text-muted-foreground max-w-md">
-          Enter at least 3 characters to search across indexed code, documentation,
-          conversations, and journals.
+          Enter at least 3 characters to search across indexed code,
+          documentation, conversations, and journals.
         </p>
       </div>
     );
@@ -48,7 +52,8 @@ export function KBResultList({ response, isLoading, query }: KBResultListProps) 
         <SearchX className="h-12 w-12 text-muted-foreground/50 mb-4" />
         <h3 className="text-lg font-medium mb-1">No results found</h3>
         <p className="text-sm text-muted-foreground max-w-md">
-          No matches for &ldquo;{query}&rdquo;. Try different keywords or adjust your filters.
+          No matches for &ldquo;{query}&rdquo;. Try different keywords or adjust
+          your filters.
         </p>
       </div>
     );
@@ -57,7 +62,8 @@ export function KBResultList({ response, isLoading, query }: KBResultListProps) 
   return (
     <div className="space-y-3">
       <div className="text-sm text-muted-foreground mb-4">
-        Found {response.total} result{response.total !== 1 ? "s" : ""} for &ldquo;{response.query}&rdquo;
+        Found {response.total} result{response.total !== 1 ? "s" : ""} for
+        &ldquo;{response.query}&rdquo;
       </div>
       {response.results.map((result, index) => (
         <KBResultCard key={`${result.source}-${index}`} result={result} />

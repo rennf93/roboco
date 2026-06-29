@@ -89,3 +89,71 @@ def test_record_gate_verdict_swallows_invalid_note() -> None:
     # No exception, and the stale slot is left as-is rather than corrupted.
     assert t.notes_structured is not None
     assert t.notes_structured["pr_review"]["verdict"] == "passed"
+
+
+def test_pr_fail_stores_issues_structurally_not_summary_only() -> None:
+    """pr_fail's free-text issues must persist into the structured ``issues``
+    slot (so a reader of notes_structured.pr_review gets the concrete
+    change-requests), not be flattened into the summary string alone."""
+    c = _make_choreographer()
+    t = _TaskWithNoNotes()
+    c._record_gate_verdict(
+        t,
+        "pr_fail",
+        "Issues:\n- seam mismatch\n- docs lag the diff",
+        issues=("seam mismatch", "docs lag the diff"),
+    )
+    assert t.notes_structured is not None
+    slot = t.notes_structured["pr_review"]
+    assert slot["verdict"] == "failed"
+    assert slot["issues"] == ["seam mismatch", "docs lag the diff"]
+    # The derived TEXT mirror surfaces them too, so pr_reviewer_notes carries
+    # the concrete change-requests for any future reader.
+    assert "seam mismatch" in t.pr_reviewer_notes
+    assert "docs lag the diff" in t.pr_reviewer_notes
+
+
+def test_pr_fail_summary_does_not_duplicate_issues() -> None:
+    """pr_fail's issues must render only under ## Issues, not also baked into
+    ## Summary — otherwise the Task Details "PR Reviewer Notes" card shows each
+    issue twice (once under Summary, once under Issues). The summary is a
+    substantive non-issues sentence; the structured ``issues`` slot carries the
+    change-requests. ``notes`` (with the issues) still drives the GitHub PR post
+    and the a2a to the owning PM — those are raw text, not rendered through
+    ``render_markdown``, so no duplication there."""
+    c = _make_choreographer()
+    t = _TaskWithNoNotes()
+    c._record_gate_verdict(
+        t,
+        "pr_fail",
+        "Issues:\n- seam mismatch\n- docs lag the diff",
+        issues=("seam mismatch", "docs lag the diff"),
+    )
+    assert t.notes_structured is not None
+    slot = t.notes_structured["pr_review"]
+    assert slot["verdict"] == "failed"
+    # Issues live in the structured issues slot...
+    assert slot["issues"] == ["seam mismatch", "docs lag the diff"]
+    # ...NOT baked into the summary.
+    assert "seam mismatch" not in slot["summary"]
+    assert "docs lag the diff" not in slot["summary"]
+    # The rendered TEXT mirror surfaces each issue (under ## Issues)...
+    assert "seam mismatch" in t.pr_reviewer_notes
+    assert "docs lag the diff" in t.pr_reviewer_notes
+    # ...with both section headers present, and the summary is the substantive
+    # sentence (not the issues-joined string).
+    assert "## Summary" in t.pr_reviewer_notes
+    assert "## Issues" in t.pr_reviewer_notes
+    assert "requested changes" in t.pr_reviewer_notes
+
+
+def test_pr_pass_leaves_issues_slot_empty() -> None:
+    c = _make_choreographer()
+    t = _TaskWithNoNotes()
+    c._record_gate_verdict(
+        t, "pr_pass", "Assembled root scope is clean; every criterion is covered."
+    )
+    assert t.notes_structured is not None
+    slot = t.notes_structured["pr_review"]
+    assert slot["verdict"] == "passed"
+    assert slot.get("issues", []) == []

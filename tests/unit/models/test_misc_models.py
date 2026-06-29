@@ -7,6 +7,7 @@ properties, factory functions, lookup helpers, and __post_init__ branches.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -65,7 +66,8 @@ def test_agent_instance_post_init_assigns_uuid_when_falsy() -> None:
     # Forcing an empty UUID(int=0) is falsy → the post_init triggers re-assign.
     inst = AgentInstance.__new__(AgentInstance)
     # Fill required dataclass fields explicitly so __post_init__ runs cleanly.
-    inst.id = None  # type: ignore[assignment]
+    cc: Any = inst
+    cc.id = None
     inst.agent_id = "be-dev-1"
     inst.state = OrchestratorAgentState.OFFLINE
     inst.container_id = None
@@ -185,7 +187,7 @@ def test_a2a_state_to_task_status_unknown_returns_pending() -> None:
         pass
 
     fake = _FakeState()
-    assert a2a_state_to_task_status(fake) == "pending"  # type: ignore[arg-type]
+    assert a2a_state_to_task_status(cast("Any", fake)) == "pending"
 
 
 def test_a2a_state_to_task_status_known() -> None:

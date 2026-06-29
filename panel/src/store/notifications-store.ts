@@ -5,7 +5,7 @@ interface NotificationState {
   notifications: Notification[];
   unreadCount: number;
   pendingAckCount: number;
-  
+
   // Actions
   addNotification: (notification: Notification) => void;
   markAsRead: (id: string) => void;
@@ -29,7 +29,7 @@ export const useNotificationStore = create<NotificationState>((set) => ({
       if (state.notifications.some((n) => n.id === notification.id)) {
         return {
           notifications: state.notifications.map((n) =>
-            n.id === notification.id ? notification : n
+            n.id === notification.id ? notification : n,
           ),
         };
       }
@@ -45,7 +45,7 @@ export const useNotificationStore = create<NotificationState>((set) => ({
   markAsRead: (id) =>
     set((state) => ({
       notifications: state.notifications.map((n) =>
-        n.id === id ? { ...n, is_read: true } : n
+        n.id === id ? { ...n, is_read: true } : n,
       ),
       unreadCount: Math.max(0, state.unreadCount - 1),
     })),
@@ -53,7 +53,7 @@ export const useNotificationStore = create<NotificationState>((set) => ({
   markAsAcknowledged: (id) =>
     set((state) => ({
       notifications: state.notifications.map((n) =>
-        n.id === id ? { ...n, is_acknowledged: true } : n
+        n.id === id ? { ...n, is_acknowledged: true } : n,
       ),
       pendingAckCount: Math.max(0, state.pendingAckCount - 1),
     })),
@@ -63,5 +63,6 @@ export const useNotificationStore = create<NotificationState>((set) => ({
   setCounts: (unread, pendingAck) =>
     set({ unreadCount: unread, pendingAckCount: pendingAck }),
 
-  clearAll: () => set({ notifications: [], unreadCount: 0, pendingAckCount: 0 }),
+  clearAll: () =>
+    set({ notifications: [], unreadCount: 0, pendingAckCount: 0 }),
 }));

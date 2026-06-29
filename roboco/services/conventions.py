@@ -393,15 +393,34 @@ class ConventionsService(BaseService):
         mapping: ConventionsStandard,
         status: str,
     ) -> None:
-        self.session.add(
-            ProjectConventionsCacheTable(
-                project_id=project_id,
+        """Persist the effective map for ``(project_id, commit_sha)``.
+
+        Runs the INSERT in a savepoint so a concurrent duplicate (two task
+        creates for the same project/HEAD racing to populate the cache) rolls
+        back ONLY the savepoint on IntegrityError — the loser's insert is
+        dropped, the winner's row satisfies the next ``_cache_get``, and the
+        shared session is not poisoned. A bare ``add`` + ``flush`` here would
+        leave the session in error state and crash the rest of task creation
+        (the task-create transaction rides the same session) — F042.
+        """
+        from sqlalchemy.exc import IntegrityError
+
+        try:
+            async with self.session.begin_nested():
+                self.session.add(
+                    ProjectConventionsCacheTable(
+                        project_id=project_id,
+                        commit_sha=commit_sha,
+                        effective_map=mapping.model_dump(mode="json"),
+                        status=status,
+                    )
+                )
+        except IntegrityError:
+            self.log.debug(
+                "conventions cache row already present (concurrent put)",
+                project_id=str(project_id),
                 commit_sha=commit_sha,
-                effective_map=mapping.model_dump(mode="json"),
-                status=status,
             )
-        )
-        await self.session.flush()
 
     async def _latest_ok_row(
         self, project_id: UUID

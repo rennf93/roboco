@@ -69,10 +69,14 @@ export const useUIStore = create<UIState>()(
 
       setSectionExpanded: (sectionId, expanded) =>
         set((state) => ({
-          expandedSections: { ...state.expandedSections, [sectionId]: expanded },
+          expandedSections: {
+            ...state.expandedSections,
+            [sectionId]: expanded,
+          },
         })),
 
-      isSectionExpanded: (sectionId) => get().expandedSections[sectionId] ?? true,
+      isSectionExpanded: (sectionId) =>
+        get().expandedSections[sectionId] ?? true,
 
       // Selected items management
       setSelectedItems: (key, items) =>
@@ -107,6 +111,6 @@ export const useUIStore = create<UIState>()(
         lastVisited: state.lastVisited,
         // Don't persist selectedItems - they're temporary
       }),
-    }
-  )
+    },
+  ),
 );

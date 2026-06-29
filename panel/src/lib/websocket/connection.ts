@@ -1,6 +1,6 @@
 /**
  * WebSocket Connection Manager
- * 
+ *
  * Handles WebSocket connections with auto-reconnect, heartbeat,
  * and event-based message handling.
  */
@@ -13,7 +13,11 @@ import {
 } from "@/lib/constants";
 
 export type MessageHandler = (data: unknown) => void;
-export type ConnectionState = "connecting" | "connected" | "disconnected" | "reconnecting";
+export type ConnectionState =
+  | "connecting"
+  | "connected"
+  | "disconnected"
+  | "reconnecting";
 
 export interface WebSocketOptions {
   url: string;
@@ -43,7 +47,8 @@ export class WebSocketConnection {
     this.onMessage = options.onMessage;
     this.onStateChange = options.onStateChange;
     this.reconnectInterval = options.reconnectInterval || WS_RECONNECT_INTERVAL;
-    this.maxReconnectAttempts = options.maxReconnectAttempts || WS_MAX_RECONNECT_ATTEMPTS;
+    this.maxReconnectAttempts =
+      options.maxReconnectAttempts || WS_MAX_RECONNECT_ATTEMPTS;
     this.heartbeatInterval = options.heartbeatInterval || WS_HEARTBEAT_INTERVAL;
   }
 
@@ -88,10 +93,11 @@ export class WebSocketConnection {
 
         // Don't reconnect if manually closed or max attempts reached
         // Also stop if we're getting resource errors (code 1006 with no clean close)
-        const shouldReconnect = !this.manualClose &&
+        const shouldReconnect =
+          !this.manualClose &&
           this.reconnectAttempts < this.maxReconnectAttempts &&
           event.code !== 1008 && // Policy violation
-          event.code !== 1011;   // Server error
+          event.code !== 1011; // Server error
 
         if (shouldReconnect) {
           this.setState("reconnecting");
@@ -117,12 +123,12 @@ export class WebSocketConnection {
     this.manualClose = true;
     this.stopHeartbeat();
     this.clearReconnectTimeout();
-    
+
     if (this.ws) {
       this.ws.close();
       this.ws = null;
     }
-    
+
     this.setState("disconnected");
   }
 
@@ -153,8 +159,9 @@ export class WebSocketConnection {
 
   private scheduleReconnect(): void {
     this.clearReconnectTimeout();
-    
-    const delay = this.reconnectInterval * Math.pow(1.5, this.reconnectAttempts);
+
+    const delay =
+      this.reconnectInterval * Math.pow(1.5, this.reconnectAttempts);
     this.reconnectAttempts++;
 
     this.reconnectTimeout = setTimeout(() => {

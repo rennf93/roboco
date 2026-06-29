@@ -54,7 +54,7 @@ class ChoreographerHelpers:
         raise NotImplementedError
 
     async def _toolchain_broken_guard(
-        self, agent_id: UUID, task: Any
+        self, agent_id: UUID, task: Any, *, reviewer: bool = False
     ) -> Envelope | None:
         raise NotImplementedError
 

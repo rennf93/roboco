@@ -7,7 +7,7 @@ No DB required — Choreographer is mocked.
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -274,6 +274,49 @@ async def test_delegate_to_cell_pm_dispatches_inputs_bundle() -> None:
 
 
 @pytest.mark.asyncio
+async def test_delegate_forwards_collision_surfaces_to_inputs() -> None:
+    """Main-PM delegate forwards the dev-task collision surface + depends_on
+    override through DelegateInputs (parity with the cell-PM route — the
+    main PM delegates cell-tasks/dev-tasks the same way)."""
+    mock_chore = MagicMock()
+    mock_chore.delegate = AsyncMock(
+        return_value=_make_envelope(status="created", task_id=_TASK_ID)
+    )
+    client = TestClient(_build_app(mock_chore))
+    dep_id = str(uuid4())
+
+    resp = client.post(
+        "/api/v1/flow/main_pm/delegate",
+        json={
+            "parent_task_id": _TASK_ID,
+            "title": "Backend slice",
+            "description": "Plan + drive backend work for feature X end to end.",
+            "assigned_to": "be-pm",
+            "team": "backend",
+            "task_type": "planning",
+            "nature": "technical",
+            "estimated_complexity": "high",
+            "acceptance_criteria": [
+                "all subtasks created with acceptance criteria",
+                "branch + PR opened against the slice",
+            ],
+            "intends_to_touch": ["roboco/services/foo.py"],
+            "adds_migration": True,
+            "touches_shared": True,
+            "depends_on": [dep_id],
+        },
+        headers=_HEADERS,
+    )
+
+    assert resp.status_code == _HTTP_200, resp.text
+    inputs = mock_chore.delegate.await_args.args[2]
+    assert inputs.intends_to_touch == ["roboco/services/foo.py"]
+    assert inputs.adds_migration is True
+    assert inputs.touches_shared is True
+    assert inputs.depends_on == [UUID(dep_id)]
+
+
+@pytest.mark.asyncio
 async def test_escalate_to_ceo_dispatches() -> None:
     mock_chore = MagicMock()
     mock_chore.escalate_to_ceo = AsyncMock(
@@ -319,3 +362,22 @@ async def test_resume_dispatches() -> None:
     )
     assert resp.status_code == _HTTP_200
     mock_chore.resume.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_triage_route_exists_and_dispatches() -> None:
+    """POST /api/v1/flow/main_pm/triage wires to choreographer.triage (the
+    main_pm manifest advertises `triage` alongside `triage_all`); the
+    team-scoped choreographer.triage impl works for any PM role."""
+    mock_chore = MagicMock()
+    mock_chore.triage = AsyncMock(return_value=_make_envelope(status="idle"))
+    client = TestClient(_build_app(mock_chore))
+    resp = client.post(
+        "/api/v1/flow/main_pm/triage",
+        json={},
+        headers=_HEADERS,
+    )
+    assert resp.status_code == _HTTP_200, resp.text
+    body = resp.json()
+    assert body["status"] == "idle"
+    mock_chore.triage.assert_awaited_once()

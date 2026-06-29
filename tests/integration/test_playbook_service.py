@@ -111,7 +111,11 @@ async def test_approve_indexes_when_org_memory_on(
     )
     svc = PlaybookService(db_session)
     pb = await svc.draft(_create(title="Index me"), created_by=uuid4())
-    await svc.approve(pb.id, approver_id=uuid4())
+    approved = await svc.approve(pb.id, approver_id=uuid4())
+    # approve() only flushes the status; indexing is the separate post-commit
+    # step the route/verb runs after committing (so the index never leads the
+    # status transaction). Mirror that ordering here.
+    await svc.index_approved(approved)
     fake_optimal.index_playbook.assert_awaited_once()
 
 
@@ -143,3 +147,77 @@ async def test_approve_survives_index_failure(
     pb = await svc.draft(_create(title="Resilient"), created_by=uuid4())
     approved = await svc.approve(pb.id, approver_id=uuid4())  # must not raise
     assert approved.status == PlaybookStatus.APPROVED
+
+
+# --- F109: approve/reject/archive status-precondition guards ---------------- #
+# The lifecycle is draft -> approved | archived, both terminal. approve/reject
+# only act on a DRAFT; archive only retires an APPROVED playbook. An archived
+# playbook is terminal — none of the three may touch it again. Without these
+# guards an archived playbook could be re-approved and an approved one rejected,
+# silently undoing a finished curation.
+
+
+@pytest.mark.asyncio
+async def test_approve_rejects_already_approved(db_session: AsyncSession) -> None:
+    svc = PlaybookService(db_session)
+    pb = await svc.draft(_create(title="Once"), created_by=uuid4())
+    await svc.approve(pb.id, approver_id=uuid4())
+    with pytest.raises(ConflictError):
+        await svc.approve(pb.id, approver_id=uuid4())
+
+
+@pytest.mark.asyncio
+async def test_approve_rejects_archived(db_session: AsyncSession) -> None:
+    svc = PlaybookService(db_session)
+    pb = await svc.draft(_create(title="Done"), created_by=uuid4())
+    await svc.reject(pb.id, approver_id=uuid4(), reason="duplicate")
+    with pytest.raises(ConflictError):
+        await svc.approve(pb.id, approver_id=uuid4())
+
+
+@pytest.mark.asyncio
+async def test_reject_rejects_already_approved(db_session: AsyncSession) -> None:
+    svc = PlaybookService(db_session)
+    pb = await svc.draft(_create(title="Published svc"), created_by=uuid4())
+    await svc.approve(pb.id, approver_id=uuid4())
+    with pytest.raises(ConflictError):
+        await svc.reject(pb.id, approver_id=uuid4(), reason="changed my mind")
+
+
+@pytest.mark.asyncio
+async def test_reject_rejects_archived(db_session: AsyncSession) -> None:
+    svc = PlaybookService(db_session)
+    pb = await svc.draft(_create(title="Closed"), created_by=uuid4())
+    await svc.reject(pb.id, approver_id=uuid4(), reason="duplicate")
+    with pytest.raises(ConflictError):
+        await svc.reject(pb.id, approver_id=uuid4(), reason="again")
+
+
+@pytest.mark.asyncio
+async def test_archive_retires_approved(db_session: AsyncSession) -> None:
+    svc = PlaybookService(db_session)
+    auditor = uuid4()
+    pb = await svc.draft(_create(title="Retire svc"), created_by=uuid4())
+    await svc.approve(pb.id, approver_id=auditor)
+    archived = await svc.archive(pb.id, approver_id=auditor)
+    assert archived.status == PlaybookStatus.ARCHIVED
+    assert archived.approved_by == auditor
+    assert archived.approved_at is not None
+
+
+@pytest.mark.asyncio
+async def test_archive_rejects_draft(db_session: AsyncSession) -> None:
+    svc = PlaybookService(db_session)
+    pb = await svc.draft(_create(title="Not yet"), created_by=uuid4())
+    with pytest.raises(ConflictError):
+        await svc.archive(pb.id, approver_id=uuid4())
+
+
+@pytest.mark.asyncio
+async def test_archive_rejects_already_archived(db_session: AsyncSession) -> None:
+    svc = PlaybookService(db_session)
+    pb = await svc.draft(_create(title="Twice"), created_by=uuid4())
+    await svc.approve(pb.id, approver_id=uuid4())
+    await svc.archive(pb.id, approver_id=uuid4())
+    with pytest.raises(ConflictError):
+        await svc.archive(pb.id, approver_id=uuid4())

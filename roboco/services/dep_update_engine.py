@@ -100,7 +100,9 @@ class DepUpdateEngine(BaseService):
                 title=f"Update dependencies on {slug}",
                 description=(
                     "Dependency updates are available for this project.\n\n"
-                    "Upgrade the dependencies to their latest compatible versions, "
+                    "This is a Main-PM coordination root: decompose the upgrade "
+                    "and delegate the code work to a cell dev — the Main PM does "
+                    "not run the upgrade itself. Plan the dependency upgrade, "
                     "refresh the lockfile(s), and make sure the full gate passes "
                     "with no behavioural breakage. This task was opened "
                     "automatically by the dependency-update bot and is READY TO "
@@ -108,14 +110,16 @@ class DepUpdateEngine(BaseService):
                     "normal gates (QA, PR review, and the CEO's merge)."
                 ),
                 acceptance_criteria=[
-                    "Dependencies are upgraded to latest compatible and the "
-                    "lockfile(s) are refreshed",
-                    "The full quality gate passes with no behavioural regression",
+                    "The dependency upgrade is decomposed into a code-fix "
+                    "subtask delegated to a cell developer",
+                    "Dependencies are upgraded to latest compatible, the "
+                    "lockfile(s) are refreshed, and the full quality gate passes "
+                    "with no behavioural regression",
                 ],
                 team=Team.MAIN_PM,
                 assigned_to=_foundation.AGENTS["main-pm"].uuid,
                 created_by=_foundation.AGENTS["system"].uuid,
-                task_type=TaskType.CODE,
+                task_type=TaskType.PLANNING,
                 nature=TaskNature.TECHNICAL,
                 estimated_complexity=Complexity.MEDIUM,
                 project_id=cast("UUID", project.id),

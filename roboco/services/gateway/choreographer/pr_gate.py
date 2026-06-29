@@ -22,6 +22,7 @@ import structlog
 
 from roboco.foundation.policy import lifecycle as spec_module
 from roboco.foundation.policy import tracing as _tr
+from roboco.foundation.policy.content import markers
 from roboco.services.gateway.envelope import Envelope
 
 if TYPE_CHECKING:
@@ -187,9 +188,21 @@ class PRGateMixin(_Base):
         )
         if isinstance(role, Envelope):
             return role
+        # The spec gate's ``self_review_block`` is the only self-review defense
+        # for pr_pass / pr_fail: the service-layer ``_validate_not_self_review``
+        # backstop covers qa/documenter but skips pr_reviewer. For the comparison
+        # to fire, both sides must be populated. ``GatewayAgentView`` carries no
+        # ``slug`` field (so ``getattr(agent, "slug", None)`` is always None in
+        # production), and the ``original_developer`` marker stores the dev's
+        # UUID — so resolve both as UUID strings and let the spec's string
+        # equality do the rest. The marker is never set on assembled coordination
+        # tasks (only on dev-leaf tasks at QA/doc claim), so the block is dormant
+        # by design in production — but the gate is now correctly wired to fire
+        # if the marker were ever set to the reviewer.
         spec_ctx = spec_module.Context(
             actor_id=reviewer_agent_id,
-            actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            actor_slug=str(reviewer_agent_id),
+            original_developer_slug=markers.get_original_developer(t),
             notes=notes,
             issues=issues,
         )
@@ -212,6 +225,69 @@ class PRGateMixin(_Base):
                 verb=verb,
             )
         return (t, agent, role_str, briefing, spec_ctx)
+
+    async def _record_gate_verdict_for(
+        self, verb: str, t: Any, notes: str, *, issues: tuple[str, ...]
+    ) -> None:
+        """Author the canonical pr_review verdict note before the transition.
+
+        On pr_fail also stamp the assembled PR's head SHA so the next submit_root
+        can structurally refuse to re-submit the unchanged root (the 2026-06-27
+        infinite pr_fail re-submit loop). Best-effort: a capture failure leaves
+        head_sha absent and submit_root fails open rather than wedging the PM.
+        """
+        if verb == "pr_fail":
+            head_sha = await self._capture_pr_head_sha(t)
+            self._record_gate_verdict(t, verb, notes, issues=issues, head_sha=head_sha)
+        else:
+            self._record_gate_verdict(t, verb, notes, issues=issues)
+
+    async def _post_gate_review(
+        self, t: Any, agent: Any, role_str: str, verb: str, notes: str
+    ) -> None:
+        """Post the gate verdict to the PR itself (best-effort, after the DB
+        transition — a GitHub failure must not roll back the gate decision)."""
+        reviewer_slug = getattr(agent, "slug", None) or role_str
+        await self._post_gate_review_to_pr(t, verb, reviewer_slug, notes)
+
+    async def _deliver_pr_fail_to_owner(
+        self, t: Any, reviewer_agent_id: UUID, task_id: UUID, notes: str
+    ) -> None:
+        """a2a the pr_fail change-requests to the owning PM (best-effort).
+
+        The verdict is posted on the PR but never reaches a PM-readable channel
+        (no a2a, and _briefing_for / build_task_handoff read neither
+        pr_reviewer_notes nor notes_structured.pr_review), so without this the
+        owning PM respawned into needs_revision re-submits the same PR blind —
+        an infinite pr_fail loop (live on 9980d0a0 / PR #138). Mirrors QA's
+        fail_review a2a. A Main-PM branch-bearing root is assembled cell work the
+        Main PM can't fix directly, so steer it to re-delegate + wait for
+        re-assembly rather than re-submit the unchanged root.
+        """
+        if t.assigned_to is None:
+            return
+        team = getattr(t, "team", None)
+        team_value = str(getattr(team, "value", team))
+        is_main_pm_root = team_value == spec_module.Team.MAIN_PM.value and bool(
+            getattr(t, "branch_name", None)
+        )
+        steer = (
+            " Assembled cell work failed — re-delegate the fixes to the"
+            " owning cell PM(s) and wait for re-assembly; do NOT re-submit"
+            " the root."
+            if is_main_pm_root
+            else ""
+        )
+        try:
+            await self.a2a.send(
+                from_agent=reviewer_agent_id,
+                to_agent=t.assigned_to,
+                skill="code_review",
+                task_id=task_id,
+                body=f"PR review needs changes. {notes}{steer}",
+            )
+        except Exception:
+            logger.exception("pr_fail a2a to owning PM failed", task_id=str(task_id))
 
     async def _gate_decision(
         self,
@@ -240,12 +316,10 @@ class PRGateMixin(_Base):
             )
             if blocked is not None:
                 return blocked
-        # Author the canonical pr_review verdict note BEFORE the transition so
-        # it is persisted by the same commit (mirrors post_pr_review). This is
-        # what keeps notes_structured.pr_review in lock-step with the decision —
-        # a later pr_fail overwrites an earlier pr_pass verdict instead of
-        # leaving a stale "passed" on a task that was just sent back.
-        self._record_gate_verdict(t, verb, notes)
+        # Author the canonical pr_review verdict note BEFORE the transition so it
+        # is persisted by the same commit (mirrors post_pr_review) and stays in
+        # lock-step with the decision (pr_fail overwrites an earlier pr_pass).
+        await self._record_gate_verdict_for(verb, t, notes, issues=issues)
         runner = self._verb_runner()
         try:
             t = await runner.run_intent(verb, t, agent, spec_ctx)
@@ -260,11 +334,35 @@ class PRGateMixin(_Base):
                 task_id=task_id,
                 verb=verb,
             )
-        # Leave the gate verdict on the PR itself so there's a visible trail on
-        # the very PR the PM (or CEO) merges. Best-effort and AFTER the DB
-        # transition — a GitHub failure must not roll back the gate decision.
-        reviewer_slug = getattr(agent, "slug", None) or role_str
-        await self._post_gate_review_to_pr(t, verb, reviewer_slug, notes)
+        # A concurrent transition (cancel, racing reviewer) between the
+        # precondition gate and the runner's final action makes run_intent
+        # return None; guard the dereferences below with a clean rejection so
+        # the reviewer re-fetches and re-issues.
+        if t is None:
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=(
+                        f"{verb}: the task moved out of awaiting_pr_review before"
+                        " the decision committed — a concurrent transition"
+                        " (cancel or a racing reviewer) beat you to it."
+                    ),
+                    remediate=(
+                        "re-fetch with evidence(task_id) and re-issue your gate"
+                        " verb once the task is back in awaiting_pr_review"
+                    ),
+                    context_briefing=briefing,
+                ),
+                agent_id=reviewer_agent_id,
+                task_id=task_id,
+                verb=verb,
+            )
+        # Post the gate verdict on the PR itself (best-effort, after the DB
+        # transition — a GitHub failure must not roll back the gate decision).
+        await self._post_gate_review(t, agent, role_str, verb, notes)
+        # a2a the pr_fail change-requests to the owning PM (best-effort) — see
+        # _deliver_pr_fail_to_owner for the rationale and the Main-PM-root steer.
+        if verb == "pr_fail":
+            await self._deliver_pr_fail_to_owner(t, reviewer_agent_id, task_id, notes)
         return Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
@@ -288,7 +386,7 @@ class PRGateMixin(_Base):
         None to proceed. Both guards are inert when their flag is off.
         """
         guards = (
-            lambda: self._toolchain_broken_guard(reviewer_agent_id, t),
+            lambda: self._toolchain_broken_guard(reviewer_agent_id, t, reviewer=True),
             lambda: self._conventions_guard(reviewer_agent_id, t, briefing),
         )
         for guard in guards:
@@ -302,33 +400,104 @@ class PRGateMixin(_Base):
                 )
         return None
 
-    def _record_gate_verdict(self, t: Any, verb: str, notes: str) -> None:
+    def _record_gate_verdict(
+        self,
+        t: Any,
+        verb: str,
+        notes: str,
+        issues: tuple[str, ...] = (),
+        *,
+        head_sha: str | None = None,
+    ) -> None:
         """Persist the gate verdict as the canonical ``pr_review`` note.
 
         The tracing gate only threads ``notes`` through a throwaway shim, so
         nothing wrote the task's structured PR-reviewer slot — a task passed
         once and later failed kept showing the stale ``verdict: passed``. This
         authors the slot on every decision (``pr_pass`` → passed, ``pr_fail`` →
-        failed) so it can never contradict the transition. Best-effort: content
-        validation (e.g. a too-short summary) must never roll back the gate, so a
-        malformed payload is logged and skipped rather than raised.
+        failed) so it can never contradict the transition. For ``pr_fail`` the
+        free-text ``issues`` land in the structured ``issues`` slot (not the
+        format-enforced ``findings`` list, which needs file/severity/expected/
+        actual) so a reader of ``notes_structured.pr_review`` — or the owning
+        PM's briefing that mirrors it — gets the concrete change-requests.
+        Best-effort: content validation (e.g. a too-short summary) must never
+        roll back the gate, so a malformed payload is logged and skipped.
+
+        On ``pr_fail`` the assembled PR's head SHA is stamped into the slot
+        (``head_sha``) so the next ``submit_root`` can structurally refuse to
+        re-submit the unchanged root — the 2026-06-27 infinite ``pr_fail``
+        re-submit loop. ``None`` (the default) leaves it absent, which the
+        ``submit_root`` gate treats as fail-open.
         """
         from roboco.foundation.policy.content import ContentValidationError
         from roboco.services.content_notes import apply_structured_note
 
         verdict = "passed" if verb == "pr_pass" else "failed"
-        try:
-            apply_structured_note(
-                t,
-                "pr_review",
-                {"summary": notes, "findings": [], "verdict": verdict},
+        if verb == "pr_fail" and issues:
+            # The free-text issues render under their own ``## Issues`` section
+            # (render_markdown). Baking them into ``summary`` too duplicated each
+            # issue on the Task Details "PR Reviewer Notes" card (once under
+            # ## Summary, once under ## Issues). The summary is a substantive
+            # non-issues sentence; ``notes`` (with the issues) still drives the
+            # GitHub PR post and the a2a to the owning PM — those are raw text,
+            # not rendered through render_markdown, so no duplication there.
+            summary = (
+                f"In-path PR-review gate requested changes - "
+                f"{len(issues)} issue(s) listed below."
             )
+        else:
+            summary = notes
+        payload: dict[str, Any] = {
+            "summary": summary,
+            "findings": [],
+            "verdict": verdict,
+        }
+        if issues:
+            payload["issues"] = list(issues)
+        if verb == "pr_fail" and head_sha:
+            payload["head_sha"] = head_sha
+        try:
+            apply_structured_note(t, "pr_review", payload)
         except ContentValidationError:
             logger.warning(
                 "gate verdict note skipped (invalid content)",
                 verb=verb,
                 task_id=str(getattr(t, "id", "")),
             )
+
+    async def _capture_pr_head_sha(self, t: Any) -> str | None:
+        """Best-effort capture of the assembled PR's head SHA at ``pr_fail`` time.
+
+        Resolves the project slug via ``_project_slug_for`` (handles a
+        Main-PM root that carries only a ``product_id``) and asks
+        ``git.get_pr_head_sha``. Returns ``None`` on ANY failure (no PR number,
+        no resolvable project, git error) so the ``submit_root`` unchanged-PR
+        gate fails open rather than wedging the PM — only the exact-unchanged
+        case is hard-blocked.
+        """
+        pr_number = getattr(t, "pr_number", None)
+        if not pr_number:
+            return None
+        try:
+            slug = await self._project_slug_for(t)
+        except Exception:
+            logger.exception(
+                "pr_fail head-sha capture: slug resolve failed",
+                task_id=str(getattr(t, "id", "")),
+            )
+            return None
+        if not slug:
+            return None
+        try:
+            sha = await self.git.get_pr_head_sha(slug, int(pr_number))
+            return sha if isinstance(sha, str) else None
+        except Exception:
+            logger.exception(
+                "pr_fail head-sha capture: git lookup failed",
+                task_id=str(getattr(t, "id", "")),
+                pr=pr_number,
+            )
+            return None
 
     async def _post_gate_review_to_pr(
         self, t: Any, verb: str, reviewer_slug: str, notes: str

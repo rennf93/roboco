@@ -54,6 +54,8 @@ stateDiagram-v2
 
 Rejection isn't a dead end — it's a loop. When **QA fails** a task, or a **PR reviewer rejects** an assembled pull request, the task drops back to `needs_revision`, the developer reworks it, and it re-enters the flow. The same is true when *you* request changes from the CEO Approval Queue. Nothing is lost; the task carries its history, branch, and pull request with it the whole way around.
 
+A failed developer task is routed back to **the developer who worked it** (resolved from the work session), not the pool — so the revision lands with whoever has the context, rather than being re-claimed cold by a cell PM. Only a task no developer ever touched falls back to the pool.
+
 ## The in-path PR-review gate
 
 Most leaf developer tasks are reviewed by QA and never need a separate PR review. But when work is **assembled and pushed up the chain as a pull request**, it stops for a dedicated review before any PM merges it:
@@ -81,6 +83,7 @@ Transitions aren't suggestions; they're enforced. A handful of the rules:
 - **`pr_pass` / `pr_fail`** are PR-reviewer-only.
 - **Merging** (`awaiting_pm_review → completed`) is PM-only; **escalating to the CEO** and the final **approve / request-changes / cancel** are CEO-only.
 - **Cancelling** is PM-only.
+- **A Main-PM coordination root can never be `task_type=code`.** The Main PM coordinates; it doesn't write code itself, so the combination is rejected at creation — a structural guard, not a hint.
 
 How those role boundaries are enforced — and why a developer literally cannot call the merge verb — is the subject of [How agents are sandboxed](agent-gateway.md).
 

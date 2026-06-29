@@ -5,7 +5,11 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { useProjects } from "@/hooks/use-projects";
 import { Team } from "@/types";
 import { OfflineState } from "@/components/ui/offline-state";
-import { CreateProjectDialog, ProjectFilters, ProjectTable } from "@/components/projects";
+import {
+  CreateProjectDialog,
+  ProjectFilters,
+  ProjectTable,
+} from "@/components/projects";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { RefreshCw } from "lucide-react";
@@ -19,7 +23,7 @@ function ProjectsPageContent() {
   const cellFilterParam = searchParams.get("cell");
   const cellFilter = useMemo(
     () => (cellFilterParam?.split(",").filter(Boolean) as Team[]) || [],
-    [cellFilterParam]
+    [cellFilterParam],
   );
   const showInactive = searchParams.get("inactive") === "true";
 
@@ -37,32 +41,37 @@ function ProjectsPageContent() {
       const query = params.toString();
       router.push(query ? `/projects?${query}` : "/projects");
     },
-    [router, searchParams]
+    [router, searchParams],
   );
 
   const handleSearchChange = useCallback(
     (value: string) => {
       updateParams({ q: value || null });
     },
-    [updateParams]
+    [updateParams],
   );
 
   const handleCellChange = useCallback(
     (value: Team[]) => {
       updateParams({ cell: value.length > 0 ? value.join(",") : null });
     },
-    [updateParams]
+    [updateParams],
   );
 
   const handleShowInactiveChange = useCallback(
     (value: boolean) => {
       updateParams({ inactive: value ? "true" : null });
     },
-    [updateParams]
+    [updateParams],
   );
 
   // Fetch projects
-  const { data: projects, isLoading, error, refetch } = useProjects({
+  const {
+    data: projects,
+    isLoading,
+    error,
+    refetch,
+  } = useProjects({
     active_only: !showInactive,
   });
 
@@ -72,12 +81,18 @@ function ProjectsPageContent() {
 
     return projects.filter((project) => {
       // Search filter
-      if (searchQuery && !project.name.toLowerCase().includes(searchQuery.toLowerCase())) {
+      if (
+        searchQuery &&
+        !project.name.toLowerCase().includes(searchQuery.toLowerCase())
+      ) {
         return false;
       }
 
       // Cell filter (if any selected, project must match one of them)
-      if (cellFilter.length > 0 && !cellFilter.includes(project.assigned_cell)) {
+      if (
+        cellFilter.length > 0 &&
+        !cellFilter.includes(project.assigned_cell)
+      ) {
         return false;
       }
 

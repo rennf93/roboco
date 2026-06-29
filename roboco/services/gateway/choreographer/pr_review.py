@@ -160,6 +160,23 @@ class PRReviewerMixin(_Base):
         apply_structured_note(t, "pr_review", structured)
         return structured.render_markdown()
 
+    @staticmethod
+    def _is_hand_formatted_verdict(body: str) -> bool:
+        """True when a free-text ``body`` carries verdict/section markdown headers
+        the system would otherwise generate — i.e. the reviewer hand-formatted a
+        verdict into ``body`` instead of passing structured ``findings``.
+
+        Matches the section headers the canonical renderer emits (``## Findings``)
+        plus the ones a hand-formatter reaches for (``## Summary`` / ``## Issues``
+        / ``## Verdict``). A real one-paragraph summary does not contain ``## ``
+        headers, so the prose word "summary" never trips this.
+        """
+        lowered = (body or "").lower()
+        return any(
+            header in lowered
+            for header in ("## summary", "## issues", "## verdict", "## findings")
+        )
+
     async def _post_review_side_effects(
         self,
         t: Any,
@@ -219,11 +236,15 @@ class PRReviewerMixin(_Base):
         if isinstance(pre, Envelope):
             return pre
         agent, role_str, briefing, spec_ctx = pre
-        # Refuse a verdict that contradicts the findings BEFORE anything is
-        # recorded or posted to the contributor's PR (e.g. a forgotten
-        # event='APPROVE' that defaults to a blocking REQUEST_CHANGES with no
-        # findings cited).
-        conflict = await self._verdict_consistency_gate(
+        # Content gates BEFORE anything is recorded or posted to the
+        # contributor's PR: (1) refuse a verdict that contradicts the findings
+        # (a forgotten event='APPROVE' defaulting to a blocking REQUEST_CHANGES
+        # with no findings); (2) refuse a hand-formatted verdict body with no
+        # findings (the tool contract is "body = a one-paragraph summary; the
+        # system GENERATES the comment from structured findings — do not
+        # hand-format"). Folded into one helper so neither slips through and the
+        # verb body stays under the return-count lint ceiling.
+        rejection = await self._post_pr_review_content_gates(
             t,
             reviewer_agent_id,
             task_id,
@@ -231,9 +252,10 @@ class PRReviewerMixin(_Base):
             briefing,
             event=event,
             findings=findings,
+            body=body,
         )
-        if conflict is not None:
-            return conflict
+        if rejection is not None:
+            return rejection
         slug = await self._project_slug_for(t)
         pr_number = t.pr_number
         post_body = self._resolve_post_body(t, body, findings, event)
@@ -351,6 +373,72 @@ class PRReviewerMixin(_Base):
             verb="post_pr_review",
         )
 
+    async def _post_pr_review_content_gates(
+        self,
+        t: Any,
+        reviewer_agent_id: UUID,
+        task_id: UUID,
+        role_str: str,
+        briefing: dict[str, Any],
+        *,
+        event: str,
+        findings: list[dict[str, Any]] | None,
+        body: str,
+    ) -> Envelope | None:
+        """Pre-side-effect content gates for ``post_pr_review``: verdict
+        consistency, then the no-hand-formatted-body guard. Returns the first
+        rejection ``Envelope`` or ``None`` to proceed.
+
+        The hand-format guard: the tool contract is "``body`` = a one-paragraph
+        summary; the system GENERATES the GitHub comment from structured
+        findings — do not hand-format it in ``body``". Nothing enforced that, so
+        a reviewer could pass ``findings=[]`` and dump a self-formatted
+        ``## Summary`` / ``## Issues`` / ``## Verdict`` blob into ``body``,
+        which ``_resolve_post_body`` posts verbatim (the renderer emits
+        ``## Findings``, never ``## Issues`` — so a ``## Issues`` section on the
+        PR is proof the body was hand-formatted). Observed live: a duplicated,
+        self-redundant hand-formatted verdict posted to a contributor's PR.
+        Refuse it and point the reviewer at the structured path. Scoped to empty
+        findings: with structured findings the system generates the comment, so
+        a header-shaped word in the summary is harmless; a genuine plain-note
+        ``COMMENT`` (no verdict headers) is still allowed.
+        """
+        conflict = await self._verdict_consistency_gate(
+            t,
+            reviewer_agent_id,
+            task_id,
+            role_str,
+            briefing,
+            event=event,
+            findings=findings,
+        )
+        if conflict is not None:
+            return conflict
+        if not findings and self._is_hand_formatted_verdict(body):
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=(
+                        "post_pr_review body is hand-formatted as a verdict — "
+                        "pass structured findings instead"
+                    ),
+                    remediate=(
+                        "do not hand-format the review. Pass a one-paragraph "
+                        "summary in `body` plus structured "
+                        "`findings=[{file, line?, severity "
+                        "(blocker|major|minor|nit), expected, actual}, ...]`; the "
+                        "system generates the GitHub comment (summary + findings "
+                        "table + verdict). event='REQUEST_CHANGES' requires >=1 "
+                        "finding; a bare event='COMMENT' with no findings is for a "
+                        "plain note, not a verdict"
+                    ),
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
+                agent_id=reviewer_agent_id,
+                task_id=task_id,
+                verb="post_pr_review",
+            )
+        return None
+
     async def _resolve_role(
         self,
         t: Any,
@@ -456,33 +544,57 @@ class PRReviewerMixin(_Base):
 
     async def _project_slug_for(self, t: Any) -> str | None:
         """Resolve the project slug for a task (read-only PR API calls + the
-        in-path gate's PR comment).
-
-        A normal task carries ``project_id``. A Main-PM coordination root — the
-        only task a root→master PR ever sits on — often carries just a
-        ``product_id`` (the cell→repo map) and no project of its own; its
-        ``feature/main_pm/{root}`` branch + PR live in the product's repo. Fall
-        through to the product's first distinct project (a monorepo product maps
-        every cell to one repo) so the gate verdict reaches the PR instead of
-        silently no-op'ing. Purely additive: a task WITH ``project_id`` resolves
-        exactly as before.
+        in-path gate's PR comment). Delegates to the module-level resolver so
+        the unchanged-PR gate in ``_impl.py`` reuses the EXACT same path (it
+        can't see this mixin method — ``_LegacyChoreographer`` does not inherit
+        ``ChoreographerHelpers``). See ``resolve_task_project_slug``.
         """
-        from uuid import UUID
+        return await resolve_task_project_slug(self.task.session, t)
 
-        from roboco.services.project import get_project_service
 
-        project_service = get_project_service(self.task.session)
-        if t.project_id is not None:
-            project = await project_service.get(t.project_id)
-            return project.slug if project is not None else None
-        product_id = getattr(t, "product_id", None)
-        if product_id is None:
-            return None
+async def resolve_task_project_slug(session: Any, t: Any) -> str | None:
+    """Resolve the project slug for a task (read-only PR API calls + the
+    in-path gate's PR comment). Module-level so it is shared by
+    ``PRReviewerMixin._project_slug_for`` and the unchanged-PR gate's
+    ``_current_root_pr_head_sha`` (in ``_impl.py``) — DRY, and the only way the
+    legacy choreographer class can reach the resolver without inheriting
+    ``ChoreographerHelpers``.
+
+    A normal task carries ``project_id``. A Main-PM coordination root — the
+    only task a root→master PR ever sits on — often carries just a
+    ``product_id`` (the cell→repo map) and no project of its own; its
+    ``feature/main_pm/{root}`` branch + PR live in the product's repo. Fall
+    through to the product's first distinct project (a monorepo product maps
+    every cell to one repo) so the gate verdict reaches the PR instead of
+    silently no-op'ing. Purely additive: a task WITH ``project_id`` resolves
+    exactly as before.
+    """
+    from uuid import UUID
+
+    from roboco.services.project import get_project_service
+
+    project_service = get_project_service(session)
+    if t.project_id is not None:
+        project = await project_service.get(t.project_id)
+        return project.slug if project is not None else None
+    product_id = getattr(t, "product_id", None)
+    if product_id is not None:
         from roboco.services.product import get_product_service
 
-        product_service = get_product_service(self.task.session)
+        product_service = get_product_service(session)
         project_ids = await product_service.distinct_project_ids(UUID(str(product_id)))
         if not project_ids:
             return None
         project = await project_service.get(project_ids[0])
         return project.slug if project is not None else None
+    # Ad-hoc per-cell map root-subtask: mirror the product root's first-project
+    # resolution so the gate verdict reaches the PR in the mapped repo.
+    cell_map = getattr(t, "cell_projects", None) or []
+    seen: set[UUID] = set()
+    for mapping in sorted(cell_map, key=lambda m: m.team.value):
+        pid = UUID(str(mapping.project_id))
+        if pid not in seen:
+            seen.add(pid)
+            project = await project_service.get(pid)
+            return project.slug if project is not None else None
+    return None

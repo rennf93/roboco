@@ -566,6 +566,147 @@ def test_can_invoke_intent_developer_open_pr_no_commits_tracing_gap() -> None:
     assert "commits>=1" in d.missing
 
 
+# --------------------------------------------------------------------------- #
+# open_pr must enforce the PR-open state gate (parity with the HTTP path)
+# --------------------------------------------------------------------------- #
+
+
+def _owned_task(**overrides: Any) -> SimpleNamespace:
+    """A task owned by ``actor`` with commits and no prior PR — only the state
+    gate can fail, isolating the PR-open-state precondition."""
+    actor = overrides.pop("actor_id", uuid4())
+    return _stub_task(
+        assigned_to=actor,
+        commits=["abc123"],
+        pr_number=None,
+        **overrides,
+    )
+
+
+def test_open_pr_rejected_on_claimed_task() -> None:
+    """``open_pr`` must be rejected from ``claimed`` — only ``in_progress`` may
+    open a PR (mirrors the HTTP path's ``_assert_pr_create_allowed``)."""
+    actor = uuid4()
+    d = spec.can_invoke_intent(
+        spec.Role.DEVELOPER,
+        "open_pr",
+        _owned_task(status="claimed", actor_id=actor),
+        context=spec.Context(actor_id=actor),
+    )
+    assert d.allowed is False
+    assert d.rejection_kind == "invalid_state"
+
+
+def test_open_pr_rejected_on_paused_task() -> None:
+    actor = uuid4()
+    d = spec.can_invoke_intent(
+        spec.Role.DEVELOPER,
+        "open_pr",
+        _owned_task(status="paused", actor_id=actor),
+        context=spec.Context(actor_id=actor),
+    )
+    assert d.allowed is False
+    assert d.rejection_kind == "invalid_state"
+
+
+def test_open_pr_rejected_on_blocked_task() -> None:
+    actor = uuid4()
+    d = spec.can_invoke_intent(
+        spec.Role.DEVELOPER,
+        "open_pr",
+        _owned_task(status="blocked", actor_id=actor),
+        context=spec.Context(actor_id=actor),
+    )
+    assert d.allowed is False
+    assert d.rejection_kind == "invalid_state"
+
+
+def test_open_pr_rejected_on_completed_task() -> None:
+    """A completed task is terminal — opening a PR on it is nonsensical."""
+    actor = uuid4()
+    d = spec.can_invoke_intent(
+        spec.Role.DEVELOPER,
+        "open_pr",
+        _owned_task(status="completed", actor_id=actor),
+        context=spec.Context(actor_id=actor),
+    )
+    assert d.allowed is False
+    assert d.rejection_kind == "invalid_state"
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        "in_progress",
+        "verifying",
+        "awaiting_qa",
+        "awaiting_documentation",
+        "needs_revision",
+    ],
+)
+def test_open_pr_allowed_in_pr_open_states(status: str) -> None:
+    """Regression guard: every PR-open-eligible state still lets the owner open
+    a PR — the new state gate must not over-restrict the legitimate path."""
+    actor = uuid4()
+    d = spec.can_invoke_intent(
+        spec.Role.DEVELOPER,
+        "open_pr",
+        _owned_task(status=status, actor_id=actor),
+        context=spec.Context(actor_id=actor),
+    )
+    assert d.allowed is True, f"open_pr should be allowed from {status}"
+
+
+def test_open_pr_state_gate_takes_priority_over_unowned() -> None:
+    """A non-owner in a wrong state: ownership (not_authorized) is checked
+    before state, mirroring the HTTP path's assignee-first ordering."""
+    d = spec.can_invoke_intent(
+        spec.Role.DEVELOPER,
+        "open_pr",
+        _owned_task(status="claimed", actor_id=uuid4()),
+        context=spec.Context(actor_id=uuid4()),  # different actor -> not owner
+    )
+    assert d.allowed is False
+    assert d.rejection_kind == "not_authorized"
+
+
+def test_escalate_up_rejected_on_completed_task() -> None:
+    """A PM must not resurrect a COMPLETED task via ``escalate_up`` — the spec
+    gate rejects terminal tasks before the journal:decision write fires."""
+    d = spec.can_invoke_intent(
+        spec.Role.CELL_PM,
+        "escalate_up",
+        _stub_task(status="completed"),
+        context=spec.Context(notes="stuck on something"),
+    )
+    assert d.allowed is False
+    assert d.rejection_kind == "invalid_state"
+
+
+def test_escalate_up_rejected_on_cancelled_task() -> None:
+    """Cancelled is terminal — escalate_up must not resurrect it either."""
+    d = spec.can_invoke_intent(
+        spec.Role.MAIN_PM,
+        "escalate_up",
+        _stub_task(status="cancelled"),
+        context=spec.Context(notes="stuck on something"),
+    )
+    assert d.allowed is False
+    assert d.rejection_kind == "invalid_state"
+
+
+def test_escalate_up_allowed_on_blocked_task() -> None:
+    """The terminal guard must not over-restrict — BLOCKED is the natural
+    escalation source and must still be allowed."""
+    d = spec.can_invoke_intent(
+        spec.Role.CELL_PM,
+        "escalate_up",
+        _stub_task(status="blocked"),
+        context=spec.Context(notes="stuck on something"),
+    )
+    assert d.allowed is True
+
+
 def test_valid_next_verbs_developer_in_progress_includes_open_pr_and_i_am_done() -> (
     None
 ):
@@ -709,6 +850,34 @@ def test_run_all_validators_raises_on_unknown_intent_action(
     )
     with pytest.raises(_validate.LifecycleSpecError, match="ZZZ_FAKE_ACTION"):
         _validate.run_all_lifecycle_validators()
+
+
+def test_next_hint_pr_fail_main_pm_root_steers_to_redelegate() -> None:
+    """A ``pr_fail`` on a Main-PM branch-bearing root must steer the Main PM to
+    re-delegate the fixes, NOT re-submit the unchanged root. The root is an
+    assembled cell→root / root→master PR — coordination, not the Main PM's own
+    code — so re-submitting it is the 2026-06-27 infinite ``pr_fail`` loop."""
+    t = SimpleNamespace(team=spec.Team.MAIN_PM, branch_name="feature/main_pm/c80e19ff")
+    hint = _INTENT_VERBS["pr_fail"].next_hint(t)
+    assert "re-delegate" in hint
+    assert "do NOT re-submit" in hint
+
+
+def test_next_hint_pr_fail_cell_dev_keeps_dev_revise() -> None:
+    """A cell / dev task is revised in place by its dev, so ``pr_fail`` keeps the
+    dev-revise hint (the cell→root PR carries that dev's own code)."""
+    t = SimpleNamespace(team=spec.Team.BACKEND, branch_name="feature/backend/abc12345")
+    hint = _INTENT_VERBS["pr_fail"].next_hint(t)
+    assert hint == "idle - dev will revise and re-submit"
+
+
+def test_next_hint_pr_fail_branchless_main_pm_keeps_dev_revise() -> None:
+    """A branchless Main-PM umbrella (no ``branch_name``) assembles no PR of its
+    own, so the gate never lands a ``pr_fail`` on it — but defensively it keeps
+    the dev-revise hint rather than the re-delegate steer."""
+    t = SimpleNamespace(team=spec.Team.MAIN_PM, branch_name=None)
+    hint = _INTENT_VERBS["pr_fail"].next_hint(t)
+    assert hint == "idle - dev will revise and re-submit"
 
 
 def test_unmigrated_is_pinned() -> None:

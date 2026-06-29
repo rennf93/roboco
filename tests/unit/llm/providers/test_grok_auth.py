@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 import json
-from datetime import UTC, datetime
+import pathlib
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from roboco.llm.providers import grok_auth as ga
@@ -16,6 +18,17 @@ if TYPE_CHECKING:
 _PAST = "2020-01-01T00:00:00.000000000Z"
 _FUTURE = "2099-01-01T00:00:00.000000000Z"
 _CLIENT = "b1a00492-client"
+
+
+def _jwt(exp_unix: int) -> str:
+    """Build a minimal JWT (header.payload.signature) carrying an ``exp`` claim."""
+    payload = (
+        base64.urlsafe_b64encode(json.dumps({"exp": exp_unix}).encode())
+        .rstrip(b"=")
+        .decode()
+    )
+    header = base64.urlsafe_b64encode(b'{"alg":"RS256"}').rstrip(b"=").decode()
+    return f"{header}.{payload}.sig"
 
 
 def _bundle(expires_at: str, *, refresh_token: str = "rt") -> dict[str, Any]:
@@ -98,6 +111,47 @@ def test_refresh_mints_new_token_when_stale(tmp_path: Path) -> None:
     assert ga.is_valid(path)  # fresh expires_at ~6h out, valid against real now
 
 
+def test_refresh_omitting_expires_in_still_marks_token_valid(tmp_path: Path) -> None:
+    """If xAI's refresh response omits ``expires_in``, the access token's JWT
+    ``exp`` claim is the authoritative expiry — decode it so a fresh token isn't
+    left with the stale pre-refresh ``expires_at`` (which would re-rotate the
+    single-use refresh token every tick)."""
+    path = tmp_path / "auth.json"
+    _write(path, _bundle(_PAST))
+    exp_unix = int((datetime.now(UTC) + timedelta(hours=6)).timestamp())
+    jwt_token = _jwt(exp_unix)
+
+    def _post(_url: str, _form: dict[str, str]) -> dict[str, Any]:
+        # No expires_in — only the JWT access_token carries the expiry.
+        return {"access_token": jwt_token, "refresh_token": "new-rt"}
+
+    assert ga.refresh_if_stale(path, post=_post) == "refreshed"
+    creds = next(iter(json.loads(path.read_text()).values()))
+    assert creds["key"] == jwt_token
+    assert creds["expires_at"] != _PAST  # updated, not the stale pre-refresh value
+    assert ga.is_valid(path)  # JWT exp ~6h out -> valid against real now
+
+
+def test_refresh_omitting_expires_in_with_unreadable_jwt_defaults_ttl(
+    tmp_path: Path,
+) -> None:
+    """Fallback when ``expires_in`` is missing AND the access token isn't a JWT
+    with a readable ``exp``: default to the documented ~6h TTL so a fresh token
+    is treated as live instead of forever rejected."""
+    path = tmp_path / "auth.json"
+    _write(path, _bundle(_PAST))
+
+    def _post(_url: str, _form: dict[str, str]) -> dict[str, Any]:
+        # No expires_in and a non-JWT access token (no `.`-separated payload).
+        return {"access_token": "opaque-not-a-jwt", "refresh_token": "new-rt"}
+
+    assert ga.refresh_if_stale(path, post=_post) == "refreshed"
+    creds = next(iter(json.loads(path.read_text()).values()))
+    assert creds["key"] == "opaque-not-a-jwt"
+    assert creds["expires_at"] != _PAST  # defaulted forward, not left stale
+    assert ga.is_valid(path)  # ~6h default -> valid against real now
+
+
 def test_refresh_missing_file(tmp_path: Path) -> None:
     assert ga.refresh_if_stale(tmp_path / "nope.json") == "missing"
 
@@ -124,6 +178,36 @@ def test_refresh_failed_when_no_access_token(tmp_path: Path) -> None:
     path = tmp_path / "auth.json"
     _write(path, _bundle(_PAST))
     assert ga.refresh_if_stale(path, post=lambda _u, _f: {"expires_in": 1}) == "failed"
+
+
+def test_refresh_persists_rotated_token_when_atomic_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rotated refresh_token is single-use — xAI invalidates the old one on
+    rotation. If the atomic write (tmp+replace) fails after rotation, the file
+    keeps the now-dead refresh_token and the credential is permanently lost; the
+    write must fall back to a direct write so the rotated token survives."""
+    path = tmp_path / "auth.json"
+    _write(path, _bundle(_PAST))
+
+    def _post(_url: str, _form: dict[str, str]) -> dict[str, Any]:
+        return {
+            "access_token": "new-access",
+            "refresh_token": "rotated-rt",
+            "expires_in": 21600,
+        }
+
+    # Force the atomic tmp.replace to fail; the direct-write fallback must still
+    # land the rotated refresh_token on disk.
+    def _boom_replace(_self: pathlib.Path, _target: pathlib.Path) -> pathlib.Path:
+        raise OSError("replace failed (simulated)")
+
+    monkeypatch.setattr(pathlib.Path, "replace", _boom_replace)
+
+    assert ga.refresh_if_stale(path, post=_post) == "refreshed"
+    creds = next(iter(json.loads(path.read_text()).values()))
+    assert creds["refresh_token"] == "rotated-rt"  # survived the write failure
+    assert creds["key"] == "new-access"
 
 
 def test_main_check_exit_codes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

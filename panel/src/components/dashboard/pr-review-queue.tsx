@@ -21,7 +21,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { GitPullRequest, ExternalLink, Rocket, XCircle, FileText, Loader2 } from "lucide-react";
+import {
+  GitPullRequest,
+  ExternalLink,
+  Rocket,
+  XCircle,
+  FileText,
+  Loader2,
+} from "lucide-react";
 import Link from "next/link";
 import { type Task } from "@/types";
 import { toast } from "sonner";
@@ -142,14 +149,15 @@ export function PrReviewQueue({ className }: PrReviewQueueProps) {
               <GitPullRequest className="mb-3 h-8 w-8 opacity-50" />
               <p className="text-sm">No external PRs under review right now.</p>
               <p className="mt-1 text-xs">
-                Inbound external/fork PRs the reviewer has looked at show up here
-                for your supersede / dismiss call.
+                Inbound external/fork PRs the reviewer has looked at show up
+                here for your supersede / dismiss call.
               </p>
             </div>
           )}
           <div className="space-y-3">
             {items.map((task) => {
-              const awaiting = (task.status || "").toLowerCase() === "completed";
+              const awaiting =
+                (task.status || "").toLowerCase() === "completed";
               return (
                 <div
                   key={task.id}
@@ -232,7 +240,9 @@ export function PrReviewQueue({ className }: PrReviewQueueProps) {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              {action === "supersede" ? "Supersede this PR" : "Dismiss this review"}
+              {action === "supersede"
+                ? "Supersede this PR"
+                : "Dismiss this review"}
             </DialogTitle>
             <DialogDescription>
               {action === "supersede"
@@ -263,7 +273,9 @@ export function PrReviewQueue({ className }: PrReviewQueueProps) {
               onClick={confirm}
               disabled={isPending}
               variant={action === "dismiss" ? "destructive" : "default"}
-              className={action === "supersede" ? "bg-blue-600 hover:bg-blue-700" : ""}
+              className={
+                action === "supersede" ? "bg-blue-600 hover:bg-blue-700" : ""
+              }
             >
               {isPending
                 ? "Processing..."

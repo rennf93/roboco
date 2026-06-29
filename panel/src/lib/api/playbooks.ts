@@ -31,7 +31,9 @@ export const playbooksApi = {
     return data;
   },
   reject: async (id: string, reason: string): Promise<Playbook> => {
-    const { data } = await api.post<Playbook>(`/playbooks/${id}/reject`, { reason });
+    const { data } = await api.post<Playbook>(`/playbooks/${id}/reject`, {
+      reason,
+    });
     return data;
   },
 };

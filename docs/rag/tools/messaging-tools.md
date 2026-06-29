@@ -18,6 +18,8 @@ Don't invent channel slugs. Call `channels()` first if unsure:
 channels()   # -> {"writable": [...], "readable": [...]}
 ```
 
+**Active-claim required (explicit `task_id`):** when you pass an explicit `task_id`, `say` / `dm` / `note` check that you are the task's **active claimant** — not just `assigned_to`, which goes stale across a reap/handoff. A reaped or reassigned agent can no longer post to a former task; if you see `not_authorized` on a content post, re-`claim` the task first (or drop the explicit `task_id` for a general channel post).
+
 Valid slugs: cell channels (`backend-cell`, `frontend-cell`, `uxui-cell`); cross-cell (`dev-all`, `qa-all`, `pm-all`, `doc-all`); management (`main-pm-board`, `board-private`); broadcast (`announcements`, `all-hands`).
 
 ## Direct message (A2A) — `dm`
@@ -39,6 +41,8 @@ notify(target="be-dev-1", text="Task ready for you", priority="normal", task_id=
 ```
 
 `priority` is `normal | high | urgent`. `task_id` auto-injects from the active task when omitted.
+
+`notify` rejects **human-only recipients** (`prompter`, `secretary`) — they have no agent ack path, so an ack-required alert to them would sit unacked forever. The CEO is allowed (acks via the panel).
 
 ## Receiving notifications
 

@@ -112,8 +112,12 @@ interface SpendSectionProps {
 }
 
 function SpendSection({ spend }: SpendSectionProps) {
-  const { monthly_budget_cap_usd, spend_30d_usd, projected_monthly_usd, over_budget } =
-    spend;
+  const {
+    monthly_budget_cap_usd,
+    spend_30d_usd,
+    projected_monthly_usd,
+    over_budget,
+  } = spend;
 
   // Red/destructive only when cap is a non-null number AND over_budget is true
   const isOverBudget = monthly_budget_cap_usd !== null && over_budget;
@@ -139,7 +143,9 @@ function SpendSection({ spend }: SpendSectionProps) {
         <div className="flex items-center justify-between text-sm">
           <span className="text-muted-foreground">Monthly cap</span>
           {monthly_budget_cap_usd === null ? (
-            <span className="text-muted-foreground italic">No budget cap set</span>
+            <span className="text-muted-foreground italic">
+              No budget cap set
+            </span>
           ) : (
             <span
               className={
@@ -180,7 +186,8 @@ function SpeedSection({ medianLeadTimeHours }: SpeedSectionProps) {
           <span className="text-muted-foreground">Median lead time</span>
           {hasData ? (
             <span className="font-medium tabular-nums">
-              {medianLeadTimeHours.toFixed(1)}h median &mdash; target: &lt;&nbsp;24h
+              {medianLeadTimeHours.toFixed(1)}h median &mdash; target:
+              &lt;&nbsp;24h
             </span>
           ) : (
             <span className="text-muted-foreground italic">No data yet</span>

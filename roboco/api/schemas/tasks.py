@@ -15,6 +15,7 @@ from sqlalchemy import select
 
 from roboco.db.tables import ProjectTable, TaskTable, WorkSessionTable
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
+from roboco.models.product import ProductCellMapping
 from roboco.models.session import SessionScope
 from roboco.utils.converters import require_uuid, to_python_uuid, to_python_uuid_list
 
@@ -296,6 +297,9 @@ class TaskResponse(BaseModel):
     project_id: UUID | None = None  # Repo this task targets (None for fan-out)
     project_slug: str | None = None  # Project slug for MCP/git tool calls
     product_id: UUID | None = None
+    # Ad-hoc per-cell project map (a multi-cell MegaTask root-subtask); empty for
+    # a project/product-targeted task.
+    cell_projects: list[ProductCellMapping] = []
 
     # Parallel Execution Tracking (for AWAITING_DOCUMENTATION phase)
     docs_complete: bool = False  # Documenter has finished
@@ -666,6 +670,24 @@ def convert_commits(commits_data: list | None) -> list[CommitRefResponse]:
     ]
 
 
+def convert_cell_projects(task: "TaskTable") -> list[ProductCellMapping]:
+    """The task's ad-hoc per-cell project map, or ``[]``.
+
+    Skips the access when the ``cell_projects`` relationship is unloaded (a
+    freshly-created task not yet re-queried) to avoid a sync lazy-load
+    ``MissingGreenlet`` — mirrors the ``project_slug`` guard. selectin loading
+    means a normally-queried task already carries the map.
+    """
+    if "cell_projects" in sa_inspect(task).unloaded:
+        return []
+    return [
+        ProductCellMapping(
+            team=mapping.team, project_id=require_uuid(mapping.project_id)
+        )
+        for mapping in task.cell_projects
+    ]
+
+
 def task_to_response(task: "TaskTable") -> TaskResponse:
     """Convert TaskTable to TaskResponse with proper UUID conversion."""
     return TaskResponse(
@@ -698,6 +720,7 @@ def task_to_response(task: "TaskTable") -> TaskResponse:
         dependency_ids=to_python_uuid_list(task.dependency_ids),
         blocker_ids=to_python_uuid_list(task.blocker_ids),
         batch_id=to_python_uuid(task.batch_id),
+        cell_projects=convert_cell_projects(task),
         created_at=task.created_at,
         updated_at=task.updated_at,
         claimed_at=task.claimed_at,

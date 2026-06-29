@@ -259,7 +259,10 @@ class VerbRunner:
 
         target = await resolve_parent_branch(task, self.task_service)
         return await self.git_service.pr_merge(
-            task.pr_number, target=target, actor_agent_id=agent.id
+            task.pr_number,
+            target=target,
+            project_id=task.project_id,
+            actor_agent_id=agent.id,
         )
 
     @classmethod

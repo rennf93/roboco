@@ -190,3 +190,23 @@ async def test_resume_dispatches() -> None:
     )
     assert resp.status_code == _HTTP_200
     mock_chore.resume.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_i_am_blocked_dispatches_to_choreographer() -> None:
+    """POST /api/v1/flow/documenter/i_am_blocked returns an envelope (the
+    documenter manifest registers i_am_blocked) rather than a raw 404."""
+    mock_chore = MagicMock()
+    mock_chore.i_am_blocked = AsyncMock(
+        return_value=_make_envelope(status="blocked", task_id=_TASK_ID)
+    )
+    client = TestClient(_build_app(mock_chore))
+    resp = client.post(
+        "/api/v1/flow/documenter/i_am_blocked",
+        json={"task_id": _TASK_ID, "reason": "PR diff unavailable"},
+        headers=_HEADERS,
+    )
+    assert resp.status_code == _HTTP_200
+    body = resp.json()
+    assert body["status"] == "blocked"
+    mock_chore.i_am_blocked.assert_awaited_once()

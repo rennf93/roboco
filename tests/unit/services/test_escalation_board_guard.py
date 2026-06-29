@@ -12,11 +12,11 @@ stranded on a board role.
 
 from __future__ import annotations
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+from roboco.db.tables import AuditLogTable
 from roboco.models.base import AgentRole, TaskStatus, TaskType, Team
 from roboco.services.task import (
     TaskService,
@@ -429,11 +429,112 @@ async def test_is_board_advisory_agent_classifies_roles() -> None:
 
 
 @pytest.mark.asyncio
+async def test_apply_escalation_refuses_completed_task() -> None:
+    # apply_escalation must refuse terminal tasks: the HTTP route bypasses the
+    # spec gate, so the primitive guards itself and returns False for a 409.
+    svc = _service()
+    original_assignee = uuid4()
+    task = MagicMock(
+        id=uuid4(),
+        parent_task_id=uuid4(),
+        task_type=TaskType.CODE,
+        assigned_to=original_assignee,
+        blocker_raised_by=None,
+        status=TaskStatus.COMPLETED,
+    )
+    flush = AsyncMock()
+    object.__setattr__(svc.session, "flush", flush)
+    _bind(svc, "_is_board_advisory_agent", AsyncMock(return_value=False))
+    _bind(svc, "_emit_status_transition_audit", MagicMock())
+
+    applied = await svc.apply_escalation(
+        task=task,
+        target_agent_id=uuid4(),
+        escalator_slug="be-pm",
+        target_slug="main-pm",
+        reason="please review",
+    )
+
+    assert applied is False
+    assert task.status == TaskStatus.COMPLETED  # untouched — not resurrected
+    assert task.assigned_to == original_assignee  # no reassignment happened
+    flush.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_apply_escalation_refuses_cancelled_task() -> None:
+    # cancelled is terminal too — must not be resurrected via escalation.
+    svc = _service()
+    task = MagicMock(
+        id=uuid4(),
+        parent_task_id=uuid4(),
+        task_type=TaskType.CODE,
+        assigned_to=uuid4(),
+        blocker_raised_by=None,
+        status=TaskStatus.CANCELLED,
+    )
+    flush = AsyncMock()
+    object.__setattr__(svc.session, "flush", flush)
+    _bind(svc, "_is_board_advisory_agent", AsyncMock(return_value=False))
+
+    applied = await svc.apply_escalation(
+        task=task,
+        target_agent_id=uuid4(),
+        escalator_slug="be-pm",
+        target_slug="main-pm",
+        reason="please review",
+    )
+
+    assert applied is False
+    assert task.status == TaskStatus.CANCELLED
+    flush.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_apply_escalation_blocks_non_terminal_task() -> None:
+    # the terminal guard must not over-restrict: a normal in_progress task
+    # still escalates (blocked + reassigned) and returns True.
+    svc = _service()
+    target_id = uuid4()
+    task = MagicMock(
+        id=uuid4(),
+        parent_task_id=uuid4(),
+        task_type=TaskType.CODE,
+        assigned_to=uuid4(),
+        blocker_raised_by=None,
+        dev_notes=None,
+        status=TaskStatus.IN_PROGRESS,
+    )
+    _bind(svc, "_is_board_advisory_agent", AsyncMock(return_value=False))
+    _bind(svc, "_emit_status_transition_audit", MagicMock())
+
+    applied = await svc.apply_escalation(
+        task=task,
+        target_agent_id=target_id,
+        escalator_slug="be-pm",
+        target_slug="main-pm",
+        reason="cell blocked",
+    )
+
+    assert applied is True
+    assert task.status == TaskStatus.BLOCKED
+    assert task.assigned_to == target_id
+
+
+@pytest.mark.asyncio
 async def test_apply_escalation_emits_blocked_audit_event() -> None:
     """A non-divert escalation sets BLOCKED and MUST record a task.blocked audit
     row. The escalate path sets status directly (bypassing the validated
-    transition), and used to skip the audit log entirely."""
-    svc = _service()
+    transition), and used to skip the audit log entirely.
+
+    The audit row is written into the caller's session (F061/F073/F075: it
+    commits atomically with the transition, not fire-and-forget on a separate
+    connection), so we assert on the ``AuditLogTable`` added to the session."""
+    session = MagicMock()
+    session.flush = AsyncMock()
+    added: list[object] = []
+    session.add.side_effect = added.append
+    svc = TaskService(session)
     task = MagicMock(
         id=uuid4(),
         parent_task_id=uuid4(),
@@ -446,56 +547,54 @@ async def test_apply_escalation_emits_blocked_audit_event() -> None:
         status=TaskStatus.IN_PROGRESS,
     )
     _bind(svc, "_is_board_advisory_agent", AsyncMock(return_value=False))
-    audit_mock = MagicMock(log_task_event=AsyncMock())
 
-    with patch("roboco.services.audit.get_audit_service", return_value=audit_mock):
-        await svc.apply_escalation(
-            task=task,
-            target_agent_id=uuid4(),
-            escalator_slug="be-pm",
-            target_slug="main-pm",
-            reason="needs a decision",
-        )
-        # Drain the fire-and-forget audit task so the assertion sees the call.
-        pending = list(svc._background_tasks)
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
+    await svc.apply_escalation(
+        task=task,
+        target_agent_id=uuid4(),
+        escalator_slug="be-pm",
+        target_slug="main-pm",
+        reason="needs a decision",
+    )
 
     assert task.status == TaskStatus.BLOCKED
-    audit_mock.log_task_event.assert_awaited_once()
-    kwargs = audit_mock.log_task_event.await_args.kwargs
-    assert kwargs["event_type"] == "task.blocked"
-    assert kwargs["details"]["from_status"] == "in_progress"
-    assert kwargs["details"]["to_status"] == "blocked"
+    rows = [r for r in added if isinstance(r, AuditLogTable)]
+    assert any(r.event_type == "task.blocked" for r in rows)
+    blocked = next(r for r in rows if r.event_type == "task.blocked")
+    assert blocked.details["from_status"] == "in_progress"
+    assert blocked.details["to_status"] == "blocked"
 
 
 @pytest.mark.asyncio
 async def test_unblock_with_restore_emits_audit_event() -> None:
     """The PM restore path sets status directly (bypassing the validated
-    transition) and used to skip the audit log; it must record the transition."""
-    svc = _service()
+    transition) and used to skip the audit log; it must record the transition.
+
+    The audit row is written into the caller's session (F061/F073/F075: atomic
+    with the transition, not fire-and-forget), so we assert on the
+    ``AuditLogTable`` added to the session."""
+    session = MagicMock()
+    session.flush = AsyncMock()
+    added: list[object] = []
+    session.add.side_effect = added.append
+    svc = TaskService(session)
     task = MagicMock(
         id=uuid4(),
         status=TaskStatus.BLOCKED,
         pre_block_state="in_progress",
         pre_block_assignee=None,
         claimed_by=uuid4(),
+        team=Team.BACKEND,
     )
     _bind(svc, "get", AsyncMock(return_value=task))
-    audit_mock = MagicMock(log_task_event=AsyncMock())
 
-    with patch("roboco.services.audit.get_audit_service", return_value=audit_mock):
-        await svc.unblock_with_restore(uuid4(), uuid4(), restore=True)
-        pending = list(svc._background_tasks)
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
+    await svc.unblock_with_restore(uuid4(), uuid4(), restore=True)
 
     assert task.status == TaskStatus.IN_PROGRESS
-    audit_mock.log_task_event.assert_awaited_once()
-    kwargs = audit_mock.log_task_event.await_args.kwargs
-    assert kwargs["event_type"] == "task.in_progress"
-    assert kwargs["details"]["from_status"] == "blocked"
-    assert kwargs["details"]["to_status"] == "in_progress"
+    rows = [r for r in added if isinstance(r, AuditLogTable)]
+    assert any(r.event_type == "task.in_progress" for r in rows)
+    restored = next(r for r in rows if r.event_type == "task.in_progress")
+    assert restored.details["from_status"] == "blocked"
+    assert restored.details["to_status"] == "in_progress"
 
 
 # ---------------------------------------------------------------------------

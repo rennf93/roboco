@@ -1,7 +1,13 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useAgentStream, ConnectionState } from "@/hooks/use-websocket";
@@ -26,16 +32,19 @@ const stateLabels: Record<ConnectionState, string> = {
   disconnected: "Disconnected",
 };
 
-export function AgentStreamViewer({ agentId, agentName }: AgentStreamViewerProps) {
-  const { 
-    state, 
-    streamOutput, 
-    streamChunks, 
-    clearMessages, 
+export function AgentStreamViewer({
+  agentId,
+  agentName,
+}: AgentStreamViewerProps) {
+  const {
+    state,
+    streamOutput,
+    streamChunks,
+    clearMessages,
     isConnected,
-    isConnecting 
+    isConnecting,
   } = useAgentStream(agentId);
-  
+
   const outputRef = useRef<HTMLPreElement>(null);
 
   // Auto-scroll to bottom when new content arrives
@@ -83,10 +92,10 @@ export function AgentStreamViewer({ agentId, agentName }: AgentStreamViewerProps
         >
           {streamOutput || (
             <span className="text-slate-500">
-              {isConnected 
-                ? "Waiting for agent output..." 
-                : isConnecting 
-                  ? "Connecting to agent stream..." 
+              {isConnected
+                ? "Waiting for agent output..."
+                : isConnecting
+                  ? "Connecting to agent stream..."
                   : "Agent stream disconnected"}
             </span>
           )}

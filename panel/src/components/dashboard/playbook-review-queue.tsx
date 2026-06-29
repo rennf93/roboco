@@ -51,7 +51,9 @@ export function PlaybookReviewQueue({ className }: { className?: string }) {
       toast.success("Playbook approved and indexed");
     },
     onError: (e) =>
-      toast.error(`Approve failed: ${e instanceof Error ? e.message : "error"}`),
+      toast.error(
+        `Approve failed: ${e instanceof Error ? e.message : "error"}`,
+      ),
   });
 
   const rejectMutation = useMutation({
@@ -130,7 +132,10 @@ export function PlaybookReviewQueue({ className }: { className?: string }) {
                 <Button
                   size="sm"
                   className="bg-green-600 hover:bg-green-700"
-                  disabled={approveMutation.isPending}
+                  disabled={
+                    approveMutation.isPending &&
+                    approveMutation.variables === pb.id
+                  }
                   onClick={() => approveMutation.mutate(pb.id)}
                 >
                   <CheckCircle2 className="mr-1 h-4 w-4" />

@@ -537,8 +537,8 @@ foundation-check:
 	@$(MAKE) lifecycle
 	@git diff --exit-code -- docs/rag/lifecycle panel/lib/lifecycle.json agents/prompts/_generated/lifecycle-*.md \
 		|| (echo "Lifecycle artifacts are out of date. Run 'make lifecycle' and commit the diff." && exit 1)
-	@echo "==> postgres enum parity (offline-skip if no DB)"
-	uv run python scripts/verify_postgres_enums.py || echo "  (skipped — postgres unreachable)"
+	@echo "==> postgres enum parity (skip if no migrated DB)"
+	uv run python scripts/verify_postgres_enums.py
 	@echo "All foundation drift checks passed."
 
 # Backwards-compatible alias — prior CI / scripts called `ci-lifecycle-check`.

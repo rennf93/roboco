@@ -1,6 +1,14 @@
 import api from "./client";
-import type { OrchestratorStatus, AgentStatusResponse, WaitingAgent } from "@/types";
-import { isMockMode, mockOrchestratorStatus, mockWaitingAgents } from "@/lib/mock-data";
+import type {
+  OrchestratorStatus,
+  AgentStatusResponse,
+  WaitingAgent,
+} from "@/types";
+import {
+  isMockMode,
+  mockOrchestratorStatus,
+  mockWaitingAgents,
+} from "@/lib/mock-data";
 
 export interface SpawnAgentRequest {
   task_id?: string;
@@ -20,11 +28,15 @@ export const orchestratorApi = {
   // Get specific agent status
   getAgentStatus: async (agentId: string): Promise<AgentStatusResponse> => {
     if (isMockMode()) {
-      const found = mockOrchestratorStatus.agents.find(a => a.agent_id === agentId);
+      const found = mockOrchestratorStatus.agents.find(
+        (a) => a.agent_id === agentId,
+      );
       if (found) return found as AgentStatusResponse;
       throw new Error("Agent not found");
     }
-    const { data } = await api.get<AgentStatusResponse>("/orchestrator/agents/" + agentId);
+    const { data } = await api.get<AgentStatusResponse>(
+      "/orchestrator/agents/" + agentId,
+    );
     return data;
   },
 
@@ -38,10 +50,15 @@ export const orchestratorApi = {
   },
 
   // Spawn an agent
-  spawn: async (agentId: string, request?: SpawnAgentRequest): Promise<AgentStatusResponse> => {
+  spawn: async (
+    agentId: string,
+    request?: SpawnAgentRequest,
+  ): Promise<AgentStatusResponse> => {
     if (isMockMode()) {
       // Find or create agent in mock status
-      const existing = mockOrchestratorStatus.agents.find(a => a.agent_id === agentId);
+      const existing = mockOrchestratorStatus.agents.find(
+        (a) => a.agent_id === agentId,
+      );
       if (existing) {
         existing.state = "running";
         // Mock data uses string, so use empty string for no task
@@ -61,7 +78,7 @@ export const orchestratorApi = {
     }
     const { data } = await api.post<AgentStatusResponse>(
       "/orchestrator/agents/" + agentId + "/spawn",
-      { agent_id: agentId, ...request }
+      { agent_id: agentId, ...request },
     );
     return data;
   },
@@ -69,7 +86,9 @@ export const orchestratorApi = {
   // Stop an agent
   stop: async (agentId: string, graceful: boolean = true): Promise<void> => {
     if (isMockMode()) {
-      const agent = mockOrchestratorStatus.agents.find(a => a.agent_id === agentId);
+      const agent = mockOrchestratorStatus.agents.find(
+        (a) => a.agent_id === agentId,
+      );
       if (agent) {
         agent.state = "idle";
         (agent as { task_id: string }).task_id = "";
@@ -82,13 +101,18 @@ export const orchestratorApi = {
   },
 
   // Resolve a waiting agent
-  resolveWait: async (agentId: string, resolution: string): Promise<AgentStatusResponse> => {
+  resolveWait: async (
+    agentId: string,
+    resolution: string,
+  ): Promise<AgentStatusResponse> => {
     if (isMockMode()) {
       // Remove from waiting agents
-      const idx = mockWaitingAgents.findIndex(a => a.agent_id === agentId);
+      const idx = mockWaitingAgents.findIndex((a) => a.agent_id === agentId);
       if (idx !== -1) mockWaitingAgents.splice(idx, 1);
       // Update agent status
-      const agent = mockOrchestratorStatus.agents.find(a => a.agent_id === agentId);
+      const agent = mockOrchestratorStatus.agents.find(
+        (a) => a.agent_id === agentId,
+      );
       if (agent) {
         agent.state = "running";
         return agent as AgentStatusResponse;
@@ -97,7 +121,7 @@ export const orchestratorApi = {
     }
     const { data } = await api.post<AgentStatusResponse>(
       "/orchestrator/agents/" + agentId + "/resolve-wait",
-      { resolution }
+      { resolution },
     );
     return data;
   },

@@ -236,6 +236,55 @@ class VectorStore:
                 source,
             )
 
+    async def replace_chunks(self, source: str, chunks: list[Chunk]) -> None:
+        """Atomically replace every chunk row for *source* with *chunks*.
+
+        Deletes the source's existing rows and inserts the new embedded chunks
+        on a SINGLE connection inside a SINGLE transaction, so the whole
+        replace is atomic. ``delete_by_source`` + ``add_chunks`` were two
+        separate awaits on two separate pool connections; two concurrent
+        re-indexes of the same source interleaved across those connections and
+        produced duplicate chunk rows, and an insert failure after a
+        successful delete lost the source's index rows. Wrapping both in one
+        transaction closes the race (concurrent replacers serialize on the
+        row locks; the last committer wins with no duplicates) and reverts the
+        delete if the insert fails (no data loss).
+
+        Chunks without an ``embedding`` are silently skipped (matches
+        ``add_chunks``); an empty ``chunks`` list still clears the source
+        (matches the prior delete-then-no-op-add behavior).
+        """
+        records = [
+            (
+                chunk.text,
+                chunk.source,
+                _vec_to_str(chunk.embedding),
+                json.dumps(chunk.metadata or {}),
+            )
+            for chunk in chunks
+            if chunk.embedding is not None
+        ]
+        pool = self._require_pool()
+        # One acquire, one transaction: the DELETE and INSERT share a single
+        # connection and commit together (or roll back together on failure).
+        async with pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                self._q("DELETE FROM {table} WHERE source = $1"),
+                source,
+            )
+            if records:
+                await conn.executemany(
+                    self._q(
+                        """
+                        INSERT INTO {table}
+                            (content, source, embedding, metadata)
+                        VALUES
+                            ($1, $2, $3::vector, $4::jsonb)
+                        """
+                    ),
+                    records,
+                )
+
     # ------------------------------------------------------------------
     # Read
     # ------------------------------------------------------------------

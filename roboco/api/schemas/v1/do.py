@@ -72,6 +72,18 @@ class NoteRequest(BaseModel):
     # (auditor). Validated by the content model server-side. Omit it to write a
     # developer summary straight from ``text``.
     section: dict[str, Any] | None = None
+    # handoff scope — the PM/coordinator RESUMPTION fields, promoted to
+    # top-level typed strings so the tool schema declares them machine-visible.
+    # ``section: dict[str, Any]`` renders a schema with no visible sub-fields,
+    # so a weak model (minimax-m3) emits ``section={}`` and the resumption gate
+    # rejects ``done — Field required`` — the 2026-06-27 PM respawn-loop
+    # meltdown. The same model fills top-level ``string`` decision fields fine
+    # (proven live), so ``done``/``next`` follow that precedent (typed
+    # ``str = ""`` → schema declares ``string`` not ``anyOf[string, null]``).
+    # Filled into ``section`` server-side; ignored for non-handoff scopes.
+    done: str = ""
+    next: str = ""
+    where_to_look: list[str] | None = None
 
     # List-typed fields tolerate a lone scalar: a single string (or, for
     # ``options``, a single dict) is wrapped into a one-element list before
@@ -79,7 +91,9 @@ class NoteRequest(BaseModel):
     # 422'd at the route and the agent's retry loop tripped the circuit
     # breaker. ``mode="before"`` runs ahead of type coercion so
     # the wrapped value satisfies the declared ``list[...]`` type.
-    @field_validator("options", "consequences", "next_steps", mode="before")
+    @field_validator(
+        "options", "consequences", "next_steps", "where_to_look", mode="before"
+    )
     @classmethod
     def _wrap_scalar_in_list(cls, value: Any) -> Any:
         return _coerce_to_list(value)

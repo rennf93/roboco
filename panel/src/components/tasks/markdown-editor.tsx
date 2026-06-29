@@ -34,7 +34,10 @@ export function MarkdownEditor({
         <Label>
           {label} {required && <span className="text-destructive">*</span>}
         </Label>
-        <Tabs value={mode} onValueChange={(v) => setMode(v as "write" | "preview")}>
+        <Tabs
+          value={mode}
+          onValueChange={(v) => setMode(v as "write" | "preview")}
+        >
           <TabsList className="h-8">
             <TabsTrigger value="write" className="text-xs px-2 h-6">
               <Edit3 className="h-3 w-3 mr-1" />
@@ -60,7 +63,9 @@ export function MarkdownEditor({
           {value ? (
             <Markdown>{value}</Markdown>
           ) : (
-            <p className="text-muted-foreground text-sm italic">Nothing to preview</p>
+            <p className="text-muted-foreground text-sm italic">
+              Nothing to preview
+            </p>
           )}
         </div>
       )}

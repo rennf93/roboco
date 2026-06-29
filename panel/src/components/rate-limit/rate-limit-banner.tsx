@@ -14,14 +14,14 @@ import type { RateLimitEntry } from "@/types/rate-limits";
 function computeSecondsLeft(resumeAt: string): number {
   return Math.max(
     0,
-    Math.ceil((new Date(resumeAt).getTime() - Date.now()) / 1000)
+    Math.ceil((new Date(resumeAt).getTime() - Date.now()) / 1000),
   );
 }
 
 function RateLimitRow({ entry }: { entry: RateLimitEntry }) {
   const resumeAt = entry.resumeAt;
   const [secondsLeft, setSecondsLeft] = useState(() =>
-    computeSecondsLeft(resumeAt)
+    computeSecondsLeft(resumeAt),
   );
 
   useEffect(() => {
@@ -45,9 +45,7 @@ function RateLimitRow({ entry }: { entry: RateLimitEntry }) {
           {agentCount} agent{agentCount !== 1 ? "s" : ""} affected
         </span>
       )}
-      <span className="text-sm text-amber-700">
-        {secondsLeft}s
-      </span>
+      <span className="text-sm text-amber-700">{secondsLeft}s</span>
       <span className="text-sm text-amber-800 font-medium ml-auto">
         operations paused — resuming automatically
       </span>

@@ -22,7 +22,16 @@ import { BlockedBadge } from "../shared/blocked-badge";
 import { AssigneeAvatar } from "../shared/assignee-avatar";
 import { AgentSelector } from "@/components/agents/agent-selector";
 import { TaskTypeBadge } from "@/components/tasks/task-type-badge";
-import { GripVertical, ArrowRight, CheckCircle, XCircle, UserPlus, MessageSquare, Clock, Hash } from "lucide-react";
+import {
+  GripVertical,
+  ArrowRight,
+  CheckCircle,
+  XCircle,
+  UserPlus,
+  MessageSquare,
+  Clock,
+  Hash,
+} from "lucide-react";
 import { toast } from "sonner";
 import Link from "next/link";
 import { useDraggable } from "@dnd-kit/core";
@@ -35,13 +44,18 @@ interface KanbanCardProps {
   isDragging?: boolean;
 }
 
-export function KanbanCard({ task, onAction, showQaActions, isDragging: isDraggingProp }: KanbanCardProps) {
+export function KanbanCard({
+  task,
+  onAction,
+  showQaActions,
+  isDragging: isDraggingProp,
+}: KanbanCardProps) {
   const isBlocked = task.status === TaskStatus.BLOCKED;
   const isBacklog = task.status === TaskStatus.BACKLOG;
   const [assignOpen, setAssignOpen] = useState(false);
   const updateTask = useUpdateTask();
   const hasSessions = task.sessions && task.sessions.length > 0;
-  const primarySession = task.sessions?.find(s => s.is_primary);
+  const primarySession = task.sessions?.find((s) => s.is_primary);
 
   const {
     attributes,
@@ -83,7 +97,9 @@ export function KanbanCard({ task, onAction, showQaActions, isDragging: isDraggi
       className={`mb-2 hover:shadow-md transition-all ${
         isDragging ? "opacity-50 rotate-2 scale-105 shadow-lg" : ""
       } ${isBlocked ? "border-red-300 bg-red-50/50 dark:bg-red-950/20" : ""} ${
-        isBacklog ? "border-slate-300 bg-slate-50/50 dark:bg-slate-950/20 opacity-80" : ""
+        isBacklog
+          ? "border-slate-300 bg-slate-50/50 dark:bg-slate-950/20 opacity-80"
+          : ""
       }`}
     >
       <CardContent className="p-3">
@@ -91,7 +107,10 @@ export function KanbanCard({ task, onAction, showQaActions, isDragging: isDraggi
           <div className="flex-1 min-w-0 overflow-hidden">
             <Link href={"/tasks/" + task.id} className="block">
               <p className="font-medium text-sm line-clamp-2 hover:underline break-words">
-                <span className="font-mono text-muted-foreground" title={task.id}>
+                <span
+                  className="font-mono text-muted-foreground"
+                  title={task.id}
+                >
                   #{task.id.slice(0, 8)}
                 </span>{" "}
                 {task.title}
@@ -163,7 +182,10 @@ export function KanbanCard({ task, onAction, showQaActions, isDragging: isDraggi
                     </Badge>
                   </TooltipTrigger>
                   <TooltipContent>
-                    <p>{task.sessions.length} linked session{task.sessions.length !== 1 ? "s" : ""}</p>
+                    <p>
+                      {task.sessions.length} linked session
+                      {task.sessions.length !== 1 ? "s" : ""}
+                    </p>
                     {primarySession && (
                       <p className="text-xs text-muted-foreground">
                         Primary: #{primarySession.channel_slug}
@@ -194,7 +216,10 @@ export function KanbanCard({ task, onAction, showQaActions, isDragging: isDraggi
                   Assign
                 </Button>
               </PopoverTrigger>
-              <PopoverContent className="w-64 p-2" onClick={(e) => e.stopPropagation()}>
+              <PopoverContent
+                className="w-64 p-2"
+                onClick={(e) => e.stopPropagation()}
+              >
                 <div className="space-y-2">
                   <p className="text-sm font-medium">Assign to agent</p>
                   <AgentSelector
@@ -247,7 +272,11 @@ export function KanbanCard({ task, onAction, showQaActions, isDragging: isDraggi
                       onAction("move-forward", task.id);
                     }}
                     disabled={isBacklog}
-                    title={isBacklog ? "PM must activate this task first" : "Move forward"}
+                    title={
+                      isBacklog
+                        ? "PM must activate this task first"
+                        : "Move forward"
+                    }
                   >
                     <ArrowRight className="h-3 w-3" />
                   </Button>

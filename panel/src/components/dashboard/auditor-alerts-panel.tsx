@@ -14,9 +14,12 @@ interface AuditorAlertsPanelProps {
 }
 
 const severityColors: Record<FlagSeverity, string> = {
-  [FlagSeverity.INFO]: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200",
-  [FlagSeverity.WARNING]: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200",
-  [FlagSeverity.URGENT]: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
+  [FlagSeverity.INFO]:
+    "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200",
+  [FlagSeverity.WARNING]:
+    "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200",
+  [FlagSeverity.URGENT]:
+    "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
 };
 
 const severityEmoji: Record<FlagSeverity, string> = {
@@ -25,7 +28,10 @@ const severityEmoji: Record<FlagSeverity, string> = {
   [FlagSeverity.URGENT]: "\uD83D\uDD34",
 };
 
-export function AuditorAlertsPanel({ alerts, isLoading }: AuditorAlertsPanelProps) {
+export function AuditorAlertsPanel({
+  alerts,
+  isLoading,
+}: AuditorAlertsPanelProps) {
   // Filter to show only unresolved, sorted by severity
   const unresolvedAlerts = (alerts ?? [])
     .filter((a) => !a.resolved_at)
@@ -74,8 +80,12 @@ export function AuditorAlertsPanel({ alerts, isLoading }: AuditorAlertsPanelProp
                 <span className="text-lg">{severityEmoji[alert.severity]}</span>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-1">
-                    <span className="font-medium text-sm truncate">{alert.title}</span>
-                    <Badge className={severityColors[alert.severity] + " text-xs"}>
+                    <span className="font-medium text-sm truncate">
+                      {alert.title}
+                    </span>
+                    <Badge
+                      className={severityColors[alert.severity] + " text-xs"}
+                    >
                       {alert.severity}
                     </Badge>
                   </div>

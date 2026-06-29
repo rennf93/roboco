@@ -11,20 +11,90 @@ import { KanbanBoard } from "../core/kanban-board";
 // can recover a wedged task straight from the board. (verifying is omitted: a
 // transient dev-internal self-check state, not a destination a human sets.)
 const PM_COLUMNS = [
-  { id: "backlog", status: TaskStatus.BACKLOG, title: "Backlog", color: "bg-slate-50 dark:bg-slate-900" },
-  { id: "incoming", status: TaskStatus.PENDING, title: "Pending", color: "bg-gray-100 dark:bg-gray-800" },
-  { id: "assigned", status: TaskStatus.CLAIMED, title: "Assigned", color: "bg-blue-50 dark:bg-blue-950" },
-  { id: "in-progress", status: TaskStatus.IN_PROGRESS, title: "In Progress", color: "bg-blue-100 dark:bg-blue-900" },
-  { id: "blocked", status: TaskStatus.BLOCKED, title: "Blocked", color: "bg-red-100 dark:bg-red-900" },
-  { id: "paused", status: TaskStatus.PAUSED, title: "Paused", color: "bg-amber-50 dark:bg-amber-950" },
-  { id: "qa", status: TaskStatus.AWAITING_QA, title: "In QA", color: "bg-yellow-50 dark:bg-yellow-950" },
-  { id: "needs-revision", status: TaskStatus.NEEDS_REVISION, title: "Needs Revision", color: "bg-rose-50 dark:bg-rose-950" },
-  { id: "docs", status: TaskStatus.AWAITING_DOCUMENTATION, title: "In Docs", color: "bg-purple-50 dark:bg-purple-950" },
-  { id: "pr-review", status: TaskStatus.AWAITING_PR_REVIEW, title: "PR Review", color: "bg-teal-50 dark:bg-teal-950" },
-  { id: "pm-review", status: TaskStatus.AWAITING_PM_REVIEW, title: "PM Review", color: "bg-orange-50 dark:bg-orange-950" },
-  { id: "ceo-approval", status: TaskStatus.AWAITING_CEO_APPROVAL, title: "CEO Approval", color: "bg-indigo-50 dark:bg-indigo-950" },
-  { id: "done", status: TaskStatus.COMPLETED, title: "Done", color: "bg-green-50 dark:bg-green-950" },
-  { id: "cancelled", status: TaskStatus.CANCELLED, title: "Cancelled", color: "bg-zinc-100 dark:bg-zinc-900" },
+  {
+    id: "backlog",
+    status: TaskStatus.BACKLOG,
+    title: "Backlog",
+    color: "bg-slate-50 dark:bg-slate-900",
+  },
+  {
+    id: "incoming",
+    status: TaskStatus.PENDING,
+    title: "Pending",
+    color: "bg-gray-100 dark:bg-gray-800",
+  },
+  {
+    id: "assigned",
+    status: TaskStatus.CLAIMED,
+    title: "Assigned",
+    color: "bg-blue-50 dark:bg-blue-950",
+  },
+  {
+    id: "in-progress",
+    status: TaskStatus.IN_PROGRESS,
+    title: "In Progress",
+    color: "bg-blue-100 dark:bg-blue-900",
+  },
+  {
+    id: "blocked",
+    status: TaskStatus.BLOCKED,
+    title: "Blocked",
+    color: "bg-red-100 dark:bg-red-900",
+  },
+  {
+    id: "paused",
+    status: TaskStatus.PAUSED,
+    title: "Paused",
+    color: "bg-amber-50 dark:bg-amber-950",
+  },
+  {
+    id: "qa",
+    status: TaskStatus.AWAITING_QA,
+    title: "In QA",
+    color: "bg-yellow-50 dark:bg-yellow-950",
+  },
+  {
+    id: "needs-revision",
+    status: TaskStatus.NEEDS_REVISION,
+    title: "Needs Revision",
+    color: "bg-rose-50 dark:bg-rose-950",
+  },
+  {
+    id: "docs",
+    status: TaskStatus.AWAITING_DOCUMENTATION,
+    title: "In Docs",
+    color: "bg-purple-50 dark:bg-purple-950",
+  },
+  {
+    id: "pr-review",
+    status: TaskStatus.AWAITING_PR_REVIEW,
+    title: "PR Review",
+    color: "bg-teal-50 dark:bg-teal-950",
+  },
+  {
+    id: "pm-review",
+    status: TaskStatus.AWAITING_PM_REVIEW,
+    title: "PM Review",
+    color: "bg-orange-50 dark:bg-orange-950",
+  },
+  {
+    id: "ceo-approval",
+    status: TaskStatus.AWAITING_CEO_APPROVAL,
+    title: "CEO Approval",
+    color: "bg-indigo-50 dark:bg-indigo-950",
+  },
+  {
+    id: "done",
+    status: TaskStatus.COMPLETED,
+    title: "Done",
+    color: "bg-green-50 dark:bg-green-950",
+  },
+  {
+    id: "cancelled",
+    status: TaskStatus.CANCELLED,
+    title: "Cancelled",
+    color: "bg-zinc-100 dark:bg-zinc-900",
+  },
 ];
 
 interface PmKanbanProps {

@@ -54,21 +54,24 @@ import { isMockMode } from "@/lib/mock-data";
 
 const mockSearchResults: KBSearchResult[] = [
   {
-    content: "## Task Lifecycle\n\nTasks follow a strict state machine from PENDING through IN_PROGRESS to COMPLETED. Each transition requires specific conditions...",
+    content:
+      "## Task Lifecycle\n\nTasks follow a strict state machine from PENDING through IN_PROGRESS to COMPLETED. Each transition requires specific conditions...",
     source: "docs/architecture/task-lifecycle.md",
     score: 0.88,
     index_type: KBIndexType.DOCUMENTATION,
     metadata: { section: "Architecture" },
   },
   {
-    content: "BE-DEV-1: I've completed the task validation logic. The acceptance criteria now require at least one item before a task can be created.",
+    content:
+      "BE-DEV-1: I've completed the task validation logic. The acceptance criteria now require at least one item before a task can be created.",
     source: "channel:backend/session:abc123",
     score: 0.75,
     index_type: KBIndexType.CONVERSATIONS,
     metadata: { agent: "be-dev-1", timestamp: "2024-01-15T10:30:00Z" },
   },
   {
-    content: "Learned that proper error boundaries in the task form prevent cascading failures. Applied this pattern to all form components.",
+    content:
+      "Learned that proper error boundaries in the task form prevent cascading failures. Applied this pattern to all form components.",
     source: "journal:be-dev-1/entry:xyz789",
     score: 0.71,
     index_type: KBIndexType.JOURNALS,
@@ -78,14 +81,54 @@ const mockSearchResults: KBSearchResult[] = [
 
 const mockStats: KBStats = {
   indexes: [
-    { index_type: KBIndexType.DOCUMENTATION, document_count: 45, chunk_count: 320, last_updated: "2024-01-15T11:30:00Z" },
-    { index_type: KBIndexType.CONVERSATIONS, document_count: 890, chunk_count: 4200, last_updated: "2024-01-15T12:15:00Z" },
-    { index_type: KBIndexType.JOURNALS, document_count: 156, chunk_count: 780, last_updated: "2024-01-15T10:00:00Z" },
-    { index_type: KBIndexType.ERRORS, document_count: 45, chunk_count: 180, last_updated: "2024-01-15T10:00:00Z" },
-    { index_type: KBIndexType.STANDARDS, document_count: 12, chunk_count: 60, last_updated: "2024-01-15T10:00:00Z" },
-    { index_type: KBIndexType.DECISIONS, document_count: 78, chunk_count: 390, last_updated: "2024-01-15T10:00:00Z" },
-    { index_type: KBIndexType.REVIEWS, document_count: 234, chunk_count: 1170, last_updated: "2024-01-15T10:00:00Z" },
-    { index_type: KBIndexType.LEARNINGS, document_count: 89, chunk_count: 445, last_updated: "2024-01-15T10:00:00Z" },
+    {
+      index_type: KBIndexType.DOCUMENTATION,
+      document_count: 45,
+      chunk_count: 320,
+      last_updated: "2024-01-15T11:30:00Z",
+    },
+    {
+      index_type: KBIndexType.CONVERSATIONS,
+      document_count: 890,
+      chunk_count: 4200,
+      last_updated: "2024-01-15T12:15:00Z",
+    },
+    {
+      index_type: KBIndexType.JOURNALS,
+      document_count: 156,
+      chunk_count: 780,
+      last_updated: "2024-01-15T10:00:00Z",
+    },
+    {
+      index_type: KBIndexType.ERRORS,
+      document_count: 45,
+      chunk_count: 180,
+      last_updated: "2024-01-15T10:00:00Z",
+    },
+    {
+      index_type: KBIndexType.STANDARDS,
+      document_count: 12,
+      chunk_count: 60,
+      last_updated: "2024-01-15T10:00:00Z",
+    },
+    {
+      index_type: KBIndexType.DECISIONS,
+      document_count: 78,
+      chunk_count: 390,
+      last_updated: "2024-01-15T10:00:00Z",
+    },
+    {
+      index_type: KBIndexType.REVIEWS,
+      document_count: 234,
+      chunk_count: 1170,
+      last_updated: "2024-01-15T10:00:00Z",
+    },
+    {
+      index_type: KBIndexType.LEARNINGS,
+      document_count: 89,
+      chunk_count: 445,
+      last_updated: "2024-01-15T10:00:00Z",
+    },
   ],
   total_documents: 1549,
   total_chunks: 6745,
@@ -94,18 +137,26 @@ const mockStats: KBStats = {
 // Backend returns stats as dict, we need to transform to array
 interface BackendIndexStats {
   initialized: boolean;
-  indexes: Record<string, { document_count: number; chunk_count: number; last_updated: string | null }>;
+  indexes: Record<
+    string,
+    { document_count: number; chunk_count: number; last_updated: string | null }
+  >;
 }
 
 function transformStatsResponse(backendStats: BackendIndexStats): KBStats {
-  const indexes: KBIndexStats[] = Object.entries(backendStats.indexes || {}).map(([indexType, stats]) => ({
+  const indexes: KBIndexStats[] = Object.entries(
+    backendStats.indexes || {},
+  ).map(([indexType, stats]) => ({
     index_type: indexType as KBIndexType,
     document_count: stats.document_count ?? 0,
     chunk_count: stats.chunk_count ?? 0,
     last_updated: stats.last_updated ?? null,
   }));
 
-  const total_documents = indexes.reduce((sum, idx) => sum + idx.document_count, 0);
+  const total_documents = indexes.reduce(
+    (sum, idx) => sum + idx.document_count,
+    0,
+  );
   const total_chunks = indexes.reduce((sum, idx) => sum + idx.chunk_count, 0);
 
   return { indexes, total_documents, total_chunks };
@@ -123,7 +174,9 @@ async function search(params: KBSearchRequest): Promise<KBSearchResponse> {
     // Filter by index types if specified
     let results = [...mockSearchResults];
     if (params.index_types && params.index_types.length > 0) {
-      results = results.filter((r) => params.index_types!.includes(r.index_type));
+      results = results.filter((r) =>
+        params.index_types!.includes(r.index_type),
+      );
     }
     // Filter by min score
     if (params.min_score) {
@@ -140,7 +193,10 @@ async function search(params: KBSearchRequest): Promise<KBSearchResponse> {
     };
   }
 
-  const response = await api.post<KBSearchResponse>("/optimal/kb/search", params);
+  const response = await api.post<KBSearchResponse>(
+    "/optimal/kb/search",
+    params,
+  );
   return response.data;
 }
 
@@ -175,7 +231,10 @@ async function ragQuery(params: RAGQueryRequest): Promise<RAGQueryResponse> {
     top_k: params.max_context_chunks ?? 5,
   };
 
-  const response = await api.post<RAGQueryResponse>("/optimal/rag/query", backendParams);
+  const response = await api.post<RAGQueryResponse>(
+    "/optimal/rag/query",
+    backendParams,
+  );
   return response.data;
 }
 
@@ -194,7 +253,10 @@ async function getContext(params: RAGQueryRequest): Promise<KBSearchResult[]> {
     top_k: params.max_context_chunks ?? 5,
   };
 
-  const response = await api.post<KBSearchResponse>("/optimal/rag/context", backendParams);
+  const response = await api.post<KBSearchResponse>(
+    "/optimal/rag/context",
+    backendParams,
+  );
   return response.data.results;
 }
 
@@ -242,8 +304,16 @@ async function getIndexStats(indexType: KBIndexType): Promise<KBIndexStats> {
  */
 async function listDocuments(
   indexType: KBIndexType,
-  params?: { limit?: number; offset?: number }
-): Promise<{ documents: Array<{ id: string; source: string; indexed_at: string; metadata?: Record<string, unknown> }>; total: number }> {
+  params?: { limit?: number; offset?: number },
+): Promise<{
+  documents: Array<{
+    id: string;
+    source: string;
+    indexed_at: string;
+    metadata?: Record<string, unknown>;
+  }>;
+  total: number;
+}> {
   if (isMockMode()) {
     // Generate mock document list
     const docs = mockSearchResults
@@ -256,10 +326,16 @@ async function listDocuments(
     return { documents: docs, total: docs.length };
   }
 
-  const response = await api.get<{ documents: Array<{ id: string; source: string; indexed_at: string; metadata?: Record<string, unknown> }>; total: number; index_type: string }>(
-    `/optimal/kb/${indexType}/documents`,
-    { params }
-  );
+  const response = await api.get<{
+    documents: Array<{
+      id: string;
+      source: string;
+      indexed_at: string;
+      metadata?: Record<string, unknown>;
+    }>;
+    total: number;
+    index_type: string;
+  }>(`/optimal/kb/${indexType}/documents`, { params });
   return { documents: response.data.documents, total: response.data.total };
 }
 
@@ -291,22 +367,35 @@ async function getHealth(): Promise<RAGHealthResponse> {
 /**
  * Delete/clear an index
  */
-async function deleteIndex(indexType: KBIndexType): Promise<ClearIndexResponse> {
+async function deleteIndex(
+  indexType: KBIndexType,
+): Promise<ClearIndexResponse> {
   if (isMockMode()) {
     return { status: "cleared", index_type: indexType };
   }
-  const response = await api.delete<ClearIndexResponse>(`/optimal/kb/${indexType}`);
+  const response = await api.delete<ClearIndexResponse>(
+    `/optimal/kb/${indexType}`,
+  );
   return response.data;
 }
 
 /**
  * Refresh an index with updated sources
  */
-async function refreshIndex(request: RefreshIndexRequest): Promise<RefreshIndexResponse> {
+async function refreshIndex(
+  request: RefreshIndexRequest,
+): Promise<RefreshIndexResponse> {
   if (isMockMode()) {
-    return { status: "refreshed", index_type: request.index_type, sources: request.sources };
+    return {
+      status: "refreshed",
+      index_type: request.index_type,
+      sources: request.sources,
+    };
   }
-  const response = await api.post<RefreshIndexResponse>("/optimal/kb/refresh", request);
+  const response = await api.post<RefreshIndexResponse>(
+    "/optimal/kb/refresh",
+    request,
+  );
   return response.data;
 }
 
@@ -354,12 +443,16 @@ async function reindexAll(request?: ReindexRequest): Promise<ReindexResponse> {
       docs_count: 50,
     };
   }
-  const response = await api.post<ReindexResponse>("/optimal/kb/reindex", null, {
-    params: {
-      force: request?.force ?? false,
-      timeout_seconds: request?.timeout_seconds ?? 300,
+  const response = await api.post<ReindexResponse>(
+    "/optimal/kb/reindex",
+    null,
+    {
+      params: {
+        force: request?.force ?? false,
+        timeout_seconds: request?.timeout_seconds ?? 300,
+      },
     },
-  });
+  );
   return response.data;
 }
 
@@ -393,7 +486,7 @@ async function checkStaleness(): Promise<IndexStalenessResponse> {
     };
   }
   const response = await api.get<IndexStalenessResponse>(
-    "/optimal/stats/staleness"
+    "/optimal/stats/staleness",
   );
   return response.data;
 }
@@ -405,7 +498,9 @@ async function checkStaleness(): Promise<IndexStalenessResponse> {
 /**
  * Ask the mentor for help
  */
-async function askMentor(request: MentorAskRequest): Promise<MentorAskResponse> {
+async function askMentor(
+  request: MentorAskRequest,
+): Promise<MentorAskResponse> {
   if (isMockMode()) {
     return {
       answer: `Here's what I found about "${request.question}":\n\nBased on our organizational knowledge, I recommend following the established patterns and consulting the relevant documentation.`,
@@ -414,7 +509,10 @@ async function askMentor(request: MentorAskRequest): Promise<MentorAskResponse> 
       suggested_followups: ["Can you elaborate?", "What are the alternatives?"],
     };
   }
-  const response = await api.post<MentorAskResponse>("/optimal/mentor/ask", request);
+  const response = await api.post<MentorAskResponse>(
+    "/optimal/mentor/ask",
+    request,
+  );
   return response.data;
 }
 
@@ -425,22 +523,32 @@ async function askMentor(request: MentorAskRequest): Promise<MentorAskResponse> 
 /**
  * Search for known error solutions
  */
-async function searchErrors(request: ErrorSearchRequest): Promise<ErrorSearchResponse> {
+async function searchErrors(
+  request: ErrorSearchRequest,
+): Promise<ErrorSearchResponse> {
   if (isMockMode()) {
     return { results: [], total: 0 };
   }
-  const response = await api.post<ErrorSearchResponse>("/optimal/errors/search", request);
+  const response = await api.post<ErrorSearchResponse>(
+    "/optimal/errors/search",
+    request,
+  );
   return response.data;
 }
 
 /**
  * Record an error solution
  */
-async function recordError(request: ErrorRecordRequest): Promise<ErrorRecordResponse> {
+async function recordError(
+  request: ErrorRecordRequest,
+): Promise<ErrorRecordResponse> {
   if (isMockMode()) {
     return { error_id: "err-" + Date.now(), status: "recorded" };
   }
-  const response = await api.post<ErrorRecordResponse>("/optimal/errors/record", request);
+  const response = await api.post<ErrorRecordResponse>(
+    "/optimal/errors/record",
+    request,
+  );
   return response.data;
 }
 
@@ -451,22 +559,36 @@ async function recordError(request: ErrorRecordRequest): Promise<ErrorRecordResp
 /**
  * Check if a similar decision was made before
  */
-async function checkDecision(request: DecisionCheckRequest): Promise<DecisionCheckResponse> {
+async function checkDecision(
+  request: DecisionCheckRequest,
+): Promise<DecisionCheckResponse> {
   if (isMockMode()) {
-    return { has_precedent: false, decisions: [], recommendation: "No similar decisions found" };
+    return {
+      has_precedent: false,
+      decisions: [],
+      recommendation: "No similar decisions found",
+    };
   }
-  const response = await api.post<DecisionCheckResponse>("/optimal/decisions/check", request);
+  const response = await api.post<DecisionCheckResponse>(
+    "/optimal/decisions/check",
+    request,
+  );
   return response.data;
 }
 
 /**
  * Record a decision for future reference
  */
-async function recordDecision(request: DecisionRecordRequest): Promise<DecisionRecordResponse> {
+async function recordDecision(
+  request: DecisionRecordRequest,
+): Promise<DecisionRecordResponse> {
   if (isMockMode()) {
     return { decision_id: "dec-" + Date.now(), status: "recorded" };
   }
-  const response = await api.post<DecisionRecordResponse>("/optimal/decisions/record", request);
+  const response = await api.post<DecisionRecordResponse>(
+    "/optimal/decisions/record",
+    request,
+  );
   return response.data;
 }
 
@@ -477,22 +599,37 @@ async function recordDecision(request: DecisionRecordRequest): Promise<DecisionR
 /**
  * Get standards for a domain
  */
-async function getStandards(request: StandardsGetRequest): Promise<StandardsGetResponse> {
+async function getStandards(
+  request: StandardsGetRequest,
+): Promise<StandardsGetResponse> {
   if (isMockMode()) {
     return { standards: [], total: 0 };
   }
-  const response = await api.post<StandardsGetResponse>("/optimal/standards/get", request);
+  const response = await api.post<StandardsGetResponse>(
+    "/optimal/standards/get",
+    request,
+  );
   return response.data;
 }
 
 /**
  * Validate an action against standards
  */
-async function validateAction(request: ValidateActionRequest): Promise<ValidateActionResponse> {
+async function validateAction(
+  request: ValidateActionRequest,
+): Promise<ValidateActionResponse> {
   if (isMockMode()) {
-    return { allowed: true, violations: [], warnings: [], relevant_standards: [] };
+    return {
+      allowed: true,
+      violations: [],
+      warnings: [],
+      relevant_standards: [],
+    };
   }
-  const response = await api.post<ValidateActionResponse>("/optimal/standards/validate", request);
+  const response = await api.post<ValidateActionResponse>(
+    "/optimal/standards/validate",
+    request,
+  );
   return response.data;
 }
 
@@ -503,7 +640,9 @@ async function validateAction(request: ValidateActionRequest): Promise<ValidateA
 /**
  * Review code against standards
  */
-async function reviewCode(request: CodeReviewRequest): Promise<CodeReviewResponse> {
+async function reviewCode(
+  request: CodeReviewRequest,
+): Promise<CodeReviewResponse> {
   if (isMockMode()) {
     return {
       file_path: request.file_path,
@@ -514,7 +653,10 @@ async function reviewCode(request: CodeReviewRequest): Promise<CodeReviewRespons
       similar_reviews: [],
     };
   }
-  const response = await api.post<CodeReviewResponse>("/optimal/review/code", request);
+  const response = await api.post<CodeReviewResponse>(
+    "/optimal/review/code",
+    request,
+  );
   return response.data;
 }
 
@@ -525,22 +667,32 @@ async function reviewCode(request: CodeReviewRequest): Promise<CodeReviewRespons
 /**
  * Record a learning for knowledge sharing
  */
-async function recordLearning(request: LearningRecordRequest): Promise<LearningRecordResponse> {
+async function recordLearning(
+  request: LearningRecordRequest,
+): Promise<LearningRecordResponse> {
   if (isMockMode()) {
     return { learning_id: "learn-" + Date.now(), status: "recorded" };
   }
-  const response = await api.post<LearningRecordResponse>("/optimal/learnings/record", request);
+  const response = await api.post<LearningRecordResponse>(
+    "/optimal/learnings/record",
+    request,
+  );
   return response.data;
 }
 
 /**
  * Search for relevant learnings
  */
-async function searchLearnings(request: LearningSearchRequest): Promise<KBSearchResponse> {
+async function searchLearnings(
+  request: LearningSearchRequest,
+): Promise<KBSearchResponse> {
   if (isMockMode()) {
     return { results: [], total: 0, query: request.query };
   }
-  const response = await api.post<KBSearchResponse>("/optimal/learnings/search", request);
+  const response = await api.post<KBSearchResponse>(
+    "/optimal/learnings/search",
+    request,
+  );
   return response.data;
 }
 
@@ -551,7 +703,9 @@ async function searchLearnings(request: LearningSearchRequest): Promise<KBSearch
 /**
  * Get proactive context for a task
  */
-async function getProactiveContext(request: ProactiveContextRequest): Promise<ProactiveContextResponse> {
+async function getProactiveContext(
+  request: ProactiveContextRequest,
+): Promise<ProactiveContextResponse> {
   if (isMockMode()) {
     return {
       task_id: request.task_id,
@@ -564,7 +718,10 @@ async function getProactiveContext(request: ProactiveContextRequest): Promise<Pr
       summary: "No relevant context found for this task.",
     };
   }
-  const response = await api.post<ProactiveContextResponse>("/optimal/context/proactive", request);
+  const response = await api.post<ProactiveContextResponse>(
+    "/optimal/context/proactive",
+    request,
+  );
   return response.data;
 }
 
@@ -575,7 +732,9 @@ async function getProactiveContext(request: ProactiveContextRequest): Promise<Pr
 /**
  * Estimate token count for content
  */
-async function estimateTokens(request: TokenEstimateRequest): Promise<TokenEstimateResponse> {
+async function estimateTokens(
+  request: TokenEstimateRequest,
+): Promise<TokenEstimateResponse> {
   if (isMockMode()) {
     return {
       token_count: Math.ceil(request.content.length / 4),
@@ -583,7 +742,10 @@ async function estimateTokens(request: TokenEstimateRequest): Promise<TokenEstim
       content_length: request.content.length,
     };
   }
-  const response = await api.post<TokenEstimateResponse>("/optimal/tokens/estimate", request);
+  const response = await api.post<TokenEstimateResponse>(
+    "/optimal/tokens/estimate",
+    request,
+  );
   return response.data;
 }
 

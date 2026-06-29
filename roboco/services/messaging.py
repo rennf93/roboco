@@ -16,7 +16,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar, cast
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -73,6 +74,23 @@ def _minutes_to_timedelta(value: int | None) -> timedelta | None:
 # =============================================================================
 # MESSAGING SERVICE
 # =============================================================================
+
+
+@dataclass(frozen=True, slots=True)
+class MessageCursor:
+    """A keyset-pagination cursor over messages: a ``(timestamp, id)`` pair.
+
+    The ``id`` tie-breaks equal timestamps so paging across same-timestamp
+    messages skips nothing: the next page resumes past the cursor's id at
+    the shared timestamp rather than being excluded by a strict
+    ``timestamp < cursor`` / ``timestamp > cursor`` inequality (which drops
+    every row sharing the cursor's timestamp — they are cut by ``limit`` on
+    the prior page and never returned). ``id`` is ``None`` for a legacy
+    timestamp-only cursor (strict inequality, the prior behavior).
+    """
+
+    timestamp: datetime
+    id: UUID | None = None
 
 
 class MessagingService(BaseService):
@@ -308,15 +326,34 @@ class MessagingService(BaseService):
         if not channel_data:
             return None
 
-        # Auto-create from config
+        # Auto-create from config. Two concurrent callers (e.g. two Main-PM
+        # group-create requests) can both miss the lookup and both try to
+        # INSERT the same seed channel; ``channels.slug`` is UNIQUE, so the
+        # loser's flush raises ``IntegrityError``. Isolate the insert in a
+        # savepoint so a lost race rolls back only this insert (not the
+        # caller's pending work), then re-fetch the winner's row. A conflict
+        # that produced no row on re-fetch is a real failure — re-raise it
+        # rather than masking it as a silent None.
         channel = ChannelTable(
             name=channel_data["name"],
             slug=channel_data["slug"],
             type=ChannelType(channel_data["channel_type"]),
             description=channel_data.get("description", ""),
         )
-        self.session.add(channel)
-        await self.session.flush()
+        try:
+            async with self.session.begin_nested():
+                self.session.add(channel)
+                await self.session.flush()
+        except IntegrityError:
+            existing = await self.get_channel_by_slug(normalized)
+            if existing is not None:
+                self.log.info(
+                    "Channel race lost; reusing existing channel",
+                    slug=slug,
+                    type=channel_data["channel_type"],
+                )
+                return existing
+            raise
 
         self.log.info(
             "Channel auto-created from config",
@@ -366,6 +403,27 @@ class MessagingService(BaseService):
         )
         return result.scalar_one_or_none()
 
+    async def _lock_group(self, group_id: UUID) -> GroupTable | None:
+        """Lock the group row for the rest of this transaction and re-read its
+        ``active_session_id`` under the lock.
+
+        ``SELECT ... FOR UPDATE`` serializes concurrent session creation for the
+        same group: a check-then-create on ``active_session_id`` otherwise races
+        (two concurrent posts both miss the active session, both INSERT a new
+        ACTIVE session, and the second ``flush`` overwrites the group's
+        ``active_session_id`` — orphaning the first session as a forever-ACTIVE,
+        unreferenced row). ``populate_existing`` refreshes the identity-map-cached
+        instance's columns under the lock so the re-check sees the winner's link,
+        not the stale pre-lock value.
+        """
+        result = await self.session.execute(
+            select(GroupTable)
+            .where(GroupTable.id == group_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return result.scalar_one_or_none()
+
     async def list_groups_in_channel(self, channel_id: UUID) -> list[GroupTable]:
         """List all groups in a channel."""
         result = await self.session.execute(
@@ -409,6 +467,16 @@ class MessagingService(BaseService):
         # sessions (the smoke run showed ~one session per message, and the CEO
         # could not hold a conversation). Only open a fresh session when none is
         # currently active (the prior one closed via timeout / boundary / merge).
+        #
+        # Serialize the check-then-create per group: lock the row and re-read
+        # ``active_session_id`` under the lock so a concurrent creator that won
+        # the race is visible here (we reuse its session) instead of both
+        # inserting and orphaning the loser's session. ``get_or_create_active_
+        # session`` and the channel-post adapter (L1868) route through here, so
+        # the lock covers every active-session creation entry point.
+        group = await self._lock_group(req.group_id)
+        if group is None:
+            raise ValueError(f"Group {req.group_id} not found")
         if group.active_session_id:
             existing = await self.get_session(cast("UUID", group.active_session_id))
             if existing is not None and existing.status == SessionStatus.ACTIVE:
@@ -468,6 +536,37 @@ class MessagingService(BaseService):
         )
         return result.scalar_one_or_none()
 
+    async def _session_still_timed_out(
+        self,
+        session_id: UUID,
+        *,
+        timeout_seconds: int,
+        max_time_window: timedelta | None,
+    ) -> bool:
+        """Re-check the timeout against a FRESH ``last_activity_at`` from the DB.
+
+        Closes the sweeper TOCTOU: a message may have refreshed
+        ``last_activity_at`` between the candidate SELECT and the close, so the
+        stale in-memory value would close a just-used session. Returns False if
+        the session is no longer timed out / window-exceeded per the fresh row
+        (or was closed concurrently).
+        """
+        now = datetime.now(UTC)
+        result = await self.session.execute(
+            select(
+                SessionTable.last_activity_at,
+                SessionTable.started_at,
+                SessionTable.status,
+            ).where(SessionTable.id == session_id)
+        )
+        row = result.one_or_none()
+        if row is None or row.status != SessionStatus.ACTIVE:
+            return False
+        last = row.last_activity_at or row.started_at
+        if (now - last).total_seconds() >= timeout_seconds:
+            return True
+        return max_time_window is not None and (now - row.started_at) >= max_time_window
+
     async def sweep_timed_out_sessions(self) -> int:
         """Close sessions whose inactivity exceeds `timeout_seconds`.
 
@@ -497,6 +596,16 @@ class MessagingService(BaseService):
                 and (now - session.started_at) >= session.max_time_window
             )
             if not (timeout_exceeded or window_exceeded):
+                continue
+
+            # TOCTOU re-check: a message may have refreshed last_activity_at
+            # between the candidate SELECT above and here. Re-read fresh and
+            # skip if the session is no longer timed out (was just used).
+            if not await self._session_still_timed_out(
+                cast("UUID", session.id),
+                timeout_seconds=session.timeout_seconds,
+                max_time_window=session.max_time_window,
+            ):
                 continue
 
             reason = "Inactivity timeout" if timeout_exceeded else "Max time window"
@@ -1386,6 +1495,10 @@ class MessagingService(BaseService):
                 subject=f"You were mentioned in #{channel_slug}",
                 body=message.content[:500],  # Truncate for notification
                 related_task_id=message.task_id,
+                # MENTION is informational (ACK_REQUIRED_BY_TYPE -> False); the
+                # column default True would inflate unacked sets and soft-block
+                # i_am_idle.
+                requires_ack=False,
             )
             self.session.add(notification)
             await self.session.flush()
@@ -1515,8 +1628,8 @@ class MessagingService(BaseService):
         self,
         *,
         session_id: UUID,
-        before: datetime | None,
-        after: datetime | None,
+        before: MessageCursor | None,
+        after: MessageCursor | None,
         message_type: MessageType | None,
         limit: int,
     ) -> tuple[list[MessageTable], bool]:
@@ -1524,7 +1637,10 @@ class MessagingService(BaseService):
 
         Existing `get_messages` skips the session-existence check — this
         variant raises NotFoundError when the session is missing so routes
-        can return a clean 404 without issuing their own query.
+        can return a clean 404 without issuing their own query. The ``before``
+        / ``after`` cursors carry the keyset ``(timestamp, id)`` pair so
+        callers can paginate without skipping equal-timestamp messages across
+        pages.
         """
         await self.get_session_or_raise(session_id)
         return await self.get_messages(
@@ -1612,8 +1728,8 @@ class MessagingService(BaseService):
     async def get_messages(
         self,
         session_id: UUID,
-        before: datetime | None = None,
-        after: datetime | None = None,
+        before: MessageCursor | None = None,
+        after: MessageCursor | None = None,
         message_type: MessageType | None = None,
         limit: int = 50,
     ) -> tuple[list[MessageTable], bool]:
@@ -1622,8 +1738,12 @@ class MessagingService(BaseService):
 
         Args:
             session_id: Session to get messages from
-            before: Get messages before this timestamp
-            after: Get messages after this timestamp
+            before: Keyset cursor — return messages older than (or, when the
+                cursor carries an id, equal-timestamp-but-smaller-id than) this
+                position. ``None`` for no upper bound.
+            after: Keyset cursor — return messages newer than (or
+                equal-timestamp-but-larger-id than) this position. ``None`` for
+                no lower bound.
             message_type: Filter by message type
             limit: Maximum messages to return
 
@@ -1632,15 +1752,48 @@ class MessagingService(BaseService):
         """
         query = select(MessageTable).where(MessageTable.session_id == session_id)
 
-        if before:
-            query = query.where(MessageTable.timestamp < before)
-        if after:
-            query = query.where(MessageTable.timestamp > after)
+        if before is not None:
+            if before.id is not None:
+                # Compound keyset cursor: resume past (before.timestamp,
+                # before.id) in desc order. Rows where (timestamp, id) <
+                # (before.timestamp, before.id): strictly older, OR same
+                # timestamp with a smaller id. Without this tie-break,
+                # equal-timestamp rows cut by ``limit`` on the prior page are
+                # excluded by the strict ``< before.timestamp`` and vanish.
+                query = query.where(
+                    or_(
+                        MessageTable.timestamp < before.timestamp,
+                        and_(
+                            MessageTable.timestamp == before.timestamp,
+                            MessageTable.id < before.id,
+                        ),
+                    )
+                )
+            else:
+                query = query.where(MessageTable.timestamp < before.timestamp)
+        if after is not None:
+            if after.id is not None:
+                query = query.where(
+                    or_(
+                        MessageTable.timestamp > after.timestamp,
+                        and_(
+                            MessageTable.timestamp == after.timestamp,
+                            MessageTable.id > after.id,
+                        ),
+                    )
+                )
+            else:
+                query = query.where(MessageTable.timestamp > after.timestamp)
         if message_type:
             query = query.where(MessageTable.type == message_type)
 
-        # Get one extra to check if there are more
-        query = query.order_by(MessageTable.timestamp.desc()).limit(limit + 1)
+        # Deterministic total order: timestamp desc, then id desc so the
+        # "last item" cursor is unambiguous for keyset pagination (without the
+        # id tie-break, same-timestamp rows have a non-deterministic order and
+        # the cursor is ambiguous).
+        query = query.order_by(
+            MessageTable.timestamp.desc(), MessageTable.id.desc()
+        ).limit(limit + 1)
 
         result = await self.session.execute(query)
         messages = list(result.scalars().all())

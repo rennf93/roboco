@@ -334,7 +334,7 @@
       "composes": [
         "submit_for_review"
       ],
-      "description": "Main PM opens the root\u2192master PR and moves the root task to awaiting_pr_review for the main reviewer (the root analogue of the cell PM's submit_up). After pr_pass, call complete to escalate to the CEO. Only for code roots; branchless coordination roots skip the gate and complete directly.",
+      "description": "Main PM opens the root\u2192master PR and moves the root task to awaiting_pr_review for the main reviewer (the root analogue of the cell PM's submit_up). After pr_pass, call complete to escalate to the CEO. For branch-bearing roots (a Main-PM root-subtask assembles the cells' merged work); branchless coordination roots skip the gate and complete directly. The gate is branch-keyed, not task_type-keyed \u2014 a Main-PM root is planning-typed, never code.",
       "name": "submit_root",
       "pre_side_effects": [
         "create_root_pr"
@@ -353,6 +353,16 @@
       "pre_side_effects": [
         "create_pr"
       ],
+      "side_effects": []
+    },
+    {
+      "allowed_roles": [
+        "developer"
+      ],
+      "composes": [],
+      "description": "Rebase your task's branch onto its current base THROUGH the gate (raw git is denied). Use when your branch has fallen behind its base \u2014 e.g. a sibling task's PR merged into the parent branch while you worked. Fetches origin, rebases head onto base, and force-pushes (with-lease). No DB state change. On conflicts the rebase is aborted and the conflicted files are returned \u2014 resolve by hand, commit, then sync_branch again.",
+      "name": "sync_branch",
+      "pre_side_effects": [],
       "side_effects": []
     },
     {

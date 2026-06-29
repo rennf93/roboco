@@ -15,11 +15,15 @@ interface TaskTypeBadgeProps {
   className?: string;
 }
 
-const TYPE_CONFIG: Record<TaskType, { label: string; icon: React.ReactNode; color: string }> = {
+const TYPE_CONFIG: Record<
+  TaskType,
+  { label: string; icon: React.ReactNode; color: string }
+> = {
   [TaskType.CODE]: {
     label: "Code",
     icon: <Code className="h-3 w-3" />,
-    color: "bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300",
+    color:
+      "bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-300",
   },
   [TaskType.DOCUMENTATION]: {
     label: "Docs",
@@ -34,7 +38,8 @@ const TYPE_CONFIG: Record<TaskType, { label: string; icon: React.ReactNode; colo
   [TaskType.PLANNING]: {
     label: "Planning",
     icon: <GitBranch className="h-3 w-3" />,
-    color: "bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300",
+    color:
+      "bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300",
   },
   [TaskType.DESIGN]: {
     label: "Design",
@@ -48,7 +53,11 @@ const TYPE_CONFIG: Record<TaskType, { label: string; icon: React.ReactNode; colo
   },
 };
 
-export function TaskTypeBadge({ type, showLabel = true, className = "" }: TaskTypeBadgeProps) {
+export function TaskTypeBadge({
+  type,
+  showLabel = true,
+  className = "",
+}: TaskTypeBadgeProps) {
   if (!type) return null;
 
   const config = TYPE_CONFIG[type];

@@ -206,6 +206,50 @@ def test_findings_single_dict_coerced_to_list() -> None:
     assert len(c.findings) == 1
 
 
+def test_pr_review_issues_carry_free_text_change_requests() -> None:
+    # The in-path gate fails on free-text issues (not structured Finding
+    # objects, which require file/severity/expected/actual). Those issues now
+    # land in the additive `issues` slot instead of being flattened into the
+    # summary string alone — so a reader of notes_structured.pr_review gets the
+    # concrete change-requests, and the rendered TEXT mirror gains an Issues
+    # section.
+    c = validate_content(
+        "pr_review",
+        {
+            "summary": "PR review needs changes before this can merge.",
+            "verdict": "changes_requested",
+            "issues": ["seam mismatch on the rebase path", "docs lag the diff"],
+        },
+    )
+    assert isinstance(c, PrReviewContent)
+    assert c.issues == ["seam mismatch on the rebase path", "docs lag the diff"]
+    rendered = c.render_markdown()
+    assert "## Issues" in rendered
+    assert "seam mismatch on the rebase path" in rendered
+    assert "docs lag the diff" in rendered
+
+
+def test_pr_review_issues_default_empty_and_single_scalar_coerced() -> None:
+    c = validate_content(
+        "pr_review",
+        {"summary": "Clean PR, no free-text issues to raise.", "verdict": "approved"},
+    )
+    assert isinstance(c, PrReviewContent)
+    assert c.issues == []
+    assert "## Issues" not in c.render_markdown()
+
+    coerced = validate_content(
+        "pr_review",
+        {
+            "summary": "One free-text issue passed as a bare string here.",
+            "verdict": "changes_requested",
+            "issues": "lone issue string",
+        },
+    )
+    assert isinstance(coerced, PrReviewContent)
+    assert coerced.issues == ["lone issue string"]
+
+
 def test_where_to_look_single_string_coerced() -> None:
     c = validate_content(
         "resumption",

@@ -10,6 +10,7 @@ from roboco.api.routes.v1._role_dep import envelope_to_response, require_doc
 from roboco.api.schemas.v1.flow import (
     ClaimDocTaskRequest,
     GiveMeWorkRequest,
+    IAmBlockedRequest,
     IAmIdleRequest,
     IDocumentedRequest,
     ResumeRequest,
@@ -93,4 +94,23 @@ async def i_am_idle(
     choreographer: _ChoreographerDep,
 ) -> dict:
     env = await choreographer.i_am_idle(x_agent_id)
+    return envelope_to_response(env, request)
+
+
+@router.post("/i_am_blocked")
+async def i_am_blocked(
+    request: Request,
+    body: IAmBlockedRequest,
+    x_agent_id: _AgentIdHeader,
+    choreographer: _ChoreographerDep,
+) -> dict:
+    """Surface the ``i_am_blocked`` route so a blocked documenter's escape
+    hatch returns an envelope instead of a 404."""
+    env = await choreographer.i_am_blocked(
+        x_agent_id,
+        body.task_id,
+        body.reason,
+        blocker_type=body.blocker_type,
+        what_needed=body.what_needed,
+    )
     return envelope_to_response(env, request)

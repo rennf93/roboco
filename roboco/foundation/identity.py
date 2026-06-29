@@ -298,6 +298,19 @@ def role_for_slug(slug: str) -> Role:
     return agent_for_slug(slug).role
 
 
+def role_for_slug_or_none(slug: str) -> Role | None:
+    """Safe variant of :func:`role_for_slug` for defensive skip-guards.
+
+    Returns ``None`` for an unknown/stale slug instead of raising ``KeyError``,
+    so a stale assignee or notification-target slug can't crash the whole
+    dispatcher tick. Callers that only need to check "is this a human-only
+    role?" treat ``None`` as "not human-only" (``None in (CEO, ...)`` is False)
+    and proceed without raising.
+    """
+    row = AGENTS.get(slug)
+    return row.role if row is not None else None
+
+
 def team_for_slug(slug: str) -> Team:
     """Shorthand for `agent_for_slug(slug).team`."""
     return agent_for_slug(slug).team

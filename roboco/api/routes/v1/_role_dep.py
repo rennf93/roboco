@@ -61,6 +61,41 @@ require_auditor = _require_roles(frozenset({Role.AUDITOR}))
 require_pr_reviewer = _require_roles(frozenset({Role.PR_REVIEWER}))
 
 
+def _require_authenticated_agent() -> params.Depends:
+    """Token-only guard for the content-tool (do) router.
+
+    The do router serves every role — content tools are role-uniform, with
+    per-role removal handled in the spawn manifest — so, unlike the flow
+    routers, there is no single role to assert. But it must still bind the
+    presented ``X-Agent-ID`` to a verified HMAC token when
+    ``ROBOCO_AGENT_AUTH_REQUIRED=true`` and reject a forged token even in
+    dev mode, exactly as the flow role guards do. Without this the
+    ``/api/v1/do/*`` endpoints were the one agent-gateway path that
+    accepted a forged ``X-Agent-ID`` with no token check — a weaker gate
+    than ``/api/v1/flow/*``. The role/team headers are optional (the do
+    MCP server sends role but not team); they only feed the HMAC payload,
+    so a missing team is the empty-string team the token was issued with.
+    """
+
+    def _check(
+        x_agent_id: Annotated[str, Header(alias="X-Agent-ID")],
+        x_agent_role: Annotated[str | None, Header(alias="X-Agent-Role")] = None,
+        x_agent_team: Annotated[str | None, Header(alias="X-Agent-Team")] = None,
+        x_agent_token: Annotated[str | None, Header(alias="X-Agent-Token")] = None,
+    ) -> None:
+        from roboco.api.deps import _check_agent_auth_token
+
+        _check_agent_auth_token(
+            x_agent_id, x_agent_role or "", x_agent_team, x_agent_token
+        )
+
+    return cast("params.Depends", Depends(_check))
+
+
+# The do router serves all roles, so this is token-only (no role assertion).
+require_any_authenticated_agent = _require_authenticated_agent()
+
+
 def envelope_to_response(env: Envelope, request: Request) -> dict[str, Any]:
     """Stamp the request's correlation_id onto the envelope and return wire-dict.
 

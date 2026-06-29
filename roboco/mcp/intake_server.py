@@ -96,9 +96,11 @@ async def propose_draft(draft: dict[str, Any]) -> str:
     """Submit the finished task draft for the human to review and confirm.
 
     Call this once the spec is complete. Pass a JSON object: title, objective,
-    what_this_builds[], the_work[] ({team, summary, items}), notes[],
+    what_this_builds[], the_work[] ({team, summary, items, project_id}), notes[],
     acceptance_criteria[], team, scale, task_type, nature, estimated_complexity,
-    priority.
+    priority. A multi-cell task (be+fe, fe+uxui) puts one entry per cell in
+    the_work, each with its cell's project_id (the per-cell repo); the system
+    builds the cell->project map from them.
 
     Sequenced batch intake (when enabled): if the CEO asks for several tasks at
     once, propose one draft per item and set each item's collision surface so the
@@ -127,12 +129,14 @@ async def propose_batch(drafts: list[dict[str, Any]], title: str = "") -> str:
 
     Use this instead of ``propose_draft`` when the CEO asked for multiple tasks
     across the scoped repos. ``drafts`` is a list where each item has the same
-    fields as a single draft PLUS its own ``project_id`` (which repo it targets)
-    and collision surface — ``intends_to_touch[]`` (files/dirs it will modify),
-    ``adds_migration`` (adds a DB migration?), ``touches_shared`` (edits a widely
-    shared component?). The system sequences them into conflict-free waves;
-    over-declaring a surface is safer than under-declaring. ``title`` names the
-    MegaTask.
+    fields as a single draft PLUS a collision surface — ``intends_to_touch[]``
+    (files/dirs it will modify), ``adds_migration`` (adds a DB migration?),
+    ``touches_shared`` (edits a widely shared component?). The system sequences
+    them into conflict-free waves; over-declaring a surface is safer than
+    under-declaring. ``title`` names the MegaTask. Each draft targets its repos
+    via the per-cell ``project_id`` on its ``the_work[]`` entries (a multi-cell
+    task has one project_id per cell; a single-cell task may use one the_work
+    entry or a top-level ``project_id``).
     """
     session_id = os.environ.get("ROBOCO_PROMPTER_SESSION_ID", "")
     if not session_id:

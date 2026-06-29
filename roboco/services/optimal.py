@@ -564,6 +564,15 @@ class OptimalService:
         """Cleanup resources."""
         import contextlib
 
+        # Cancel the startup indexing task FIRST — it can still be mid-flight
+        # (slow Ollama, large repo) and writes through the plugins cleared
+        # below. Cancelling before clearing prevents writes against closed
+        # plugins. Its tail also starts the periodic task, so cancel it first.
+        if self._indexing_task and not self._indexing_task.done():
+            self._indexing_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._indexing_task
+
         # Cancel periodic update task
         if self._periodic_update_task and not self._periodic_update_task.done():
             self._periodic_update_task.cancel()
@@ -876,6 +885,48 @@ class OptimalService:
                 "tags": params.tags,
             },
         )
+
+    async def unindex_playbook(self, playbook_id: str) -> None:
+        """De-index a playbook from the PLAYBOOKS index (best-effort).
+
+        The mirror of :meth:`index_playbook`: removes the playbook's embedded
+        chunks from the vector store AND drops its tracking row, so a
+        rejected/archived playbook stops surfacing in agent briefings. Both
+        steps are idempotent — a never-indexed draft playbook is a clean no-op.
+        Failures are logged and swallowed so a curation action (reject/archive)
+        never errors on the index side.
+        """
+        from roboco.db import get_db_context
+        from roboco.services.repositories import IndexedDocumentRepository
+
+        try:
+            plugin = self._get_plugin(IndexType.PLAYBOOKS)
+            if isinstance(plugin, PlaybooksIndexPlugin):
+                await plugin.delete_playbook(playbook_id)
+            else:
+                source = f"roboco://playbooks/{playbook_id}"
+                await plugin._require_store.delete_by_source(source)
+        except Exception as exc:
+            logger.warning(
+                "Playbook de-index (vector store) failed; continuing",
+                playbook_id=playbook_id,
+                error=str(exc),
+            )
+            return
+
+        try:
+            async with get_db_context() as db:
+                repo = IndexedDocumentRepository(db)
+                await repo.delete_by_source(
+                    IndexType.PLAYBOOKS.value,
+                    f"roboco://playbooks/{playbook_id}",
+                )
+        except Exception as exc:
+            logger.warning(
+                "Playbook de-index (tracking row) failed; continuing",
+                playbook_id=playbook_id,
+                error=str(exc),
+            )
 
     # =========================================================================
     # INDEXING OPERATIONS (New - Optimal Brain)

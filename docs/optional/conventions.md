@@ -14,7 +14,7 @@ The rules live in a per-project `.roboco/conventions.yml` with four curated part
 |------|-----------|
 | **Module map** | Path prefixes mapped to a human purpose and the definition *kinds* forbidden there (`model`, `route`, `helper`, `business_logic`, `component`). "`routers/` is for HTTP routes — no models, no helpers." |
 | **Rules** | A toggleable rule set. Each rule fires at `warn` (advisory, never blocks) or `block` (refuses the gate). |
-| **Custom rules** | Project-specific regex rules — a pattern, a message, and a level, optionally scoped to languages. |
+| **Custom rules** | Project-specific regex rules — a pattern, a message, and a level, optionally scoped to languages. TypeScript-scoped custom rules apply to both `.ts` and `.tsx` files. |
 | **Waivers** | Accountable per-`(path, rule)` escape hatches with a written reason — the sanctioned way to relieve a false positive, reviewed in the PR. |
 
 ### Placement, hygiene, and modularity checks
@@ -34,7 +34,7 @@ The validator runs four check families over each changed file:
 | `god_class` | A class grows past 15 methods (single-responsibility smell) | `warn` |
 
 !!! info "Precision over recall"
-    Every check fires only on a confident, structural signal, and abstains when it is uncertain — so a `block`-level gate is never tripped by a guess. If the validator genuinely *cannot* run on a diff (a parse or grammar error), it is **fail-loud**: it exits non-zero and the gate blocks rather than passing silently.
+    Every check fires only on a confident, structural signal, and abstains when it is uncertain — so a `block`-level gate is never tripped by a guess. If the validator genuinely *cannot* run on a diff (a parse or grammar error), it is **fail-loud**: it exits non-zero and the gate blocks rather than passing silently. The validator is also **time-bounded** — a hung run (a tree-sitter deadlock, an enormous repo) is killed after 120s and treated as `could_not_run`, so a stuck subprocess can't hang the `i_am_done` / `pr_pass` gate forever or orphan a process on restart. And if the *effective map itself* can't be resolved (a conventions-service error), the gate **fails closed** rather than silently disabling the standard for that task.
 
 ## The effective map: defaults, present, absent, or partial
 

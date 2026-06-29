@@ -42,10 +42,15 @@ function generateSlug(name: string): string {
 }
 
 // Build the cells payload from the per-cell project selections (only mapped cells)
-function buildCells(mapping: Partial<Record<Team, string>>): ProductCellMapping[] {
+function buildCells(
+  mapping: Partial<Record<Team, string>>,
+): ProductCellMapping[] {
   return cells
     .filter((cell) => mapping[cell.value])
-    .map((cell) => ({ team: cell.value, project_id: mapping[cell.value] as string }));
+    .map((cell) => ({
+      team: cell.value,
+      project_id: mapping[cell.value] as string,
+    }));
 }
 
 export function CreateProductDialog() {
@@ -53,7 +58,9 @@ export function CreateProductDialog() {
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
   const [description, setDescription] = useState("");
-  const [cellMapping, setCellMapping] = useState<Partial<Record<Team, string>>>({});
+  const [cellMapping, setCellMapping] = useState<Partial<Record<Team, string>>>(
+    {},
+  );
 
   const createProduct = useCreateProduct();
   const { data: projects } = useProjects();
@@ -90,7 +97,7 @@ export function CreateProductDialog() {
       resetForm();
     } catch (error) {
       toast.error(
-        `Failed to create product: ${error instanceof Error ? error.message : "Unknown error"}`
+        `Failed to create product: ${error instanceof Error ? error.message : "Unknown error"}`,
       );
     }
   };
@@ -154,7 +161,10 @@ export function CreateProductDialog() {
               <Label>Cell Project Mapping</Label>
               {cells.map((cell) => (
                 <div key={cell.value} className="grid gap-2">
-                  <Label htmlFor={`cell-${cell.value}`} className="text-sm text-muted-foreground">
+                  <Label
+                    htmlFor={`cell-${cell.value}`}
+                    className="text-sm text-muted-foreground"
+                  >
                     {cell.label}
                   </Label>
                   <Select
@@ -179,7 +189,11 @@ export function CreateProductDialog() {
             </div>
           </div>
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setOpen(false)}>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setOpen(false)}
+            >
               Cancel
             </Button>
             <Button type="submit" disabled={createProduct.isPending}>

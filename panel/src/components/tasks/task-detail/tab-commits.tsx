@@ -7,7 +7,17 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { GitCommit, GitBranch, ExternalLink, Clock, User, Plus, Trash2, X, Check } from "lucide-react";
+import {
+  GitCommit,
+  GitBranch,
+  ExternalLink,
+  Clock,
+  User,
+  Plus,
+  Trash2,
+  X,
+  Check,
+} from "lucide-react";
 import { toast } from "sonner";
 import { getAgentDisplayName } from "@/lib/agent-utils";
 
@@ -47,7 +57,7 @@ export function TabCommits({ task }: TabCommitsProps) {
 
   // Sort commits by timestamp (newest first)
   const sortedCommits = [...commits].sort(
-    (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+    (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime(),
   );
 
   const handleAdd = async () => {
@@ -112,18 +122,20 @@ export function TabCommits({ task }: TabCommitsProps) {
           </CardTitle>
           <div className="flex items-center justify-center gap-2">
             {task.branch_name && (
-              <Badge variant="outline" className="gap-1.5 py-1 px-2.5 font-mono text-sm">
+              <Badge
+                variant="outline"
+                className="gap-1.5 py-1 px-2.5 font-mono text-sm"
+              >
                 <GitBranch className="h-4 w-4" />
                 {task.branch_name}
               </Badge>
             )}
             {task.pr_url && (
-              <a
-                href={task.pr_url}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                <Badge variant="secondary" className="gap-1.5 py-1 px-2.5 hover:bg-secondary/80">
+              <a href={task.pr_url} target="_blank" rel="noopener noreferrer">
+                <Badge
+                  variant="secondary"
+                  className="gap-1.5 py-1 px-2.5 hover:bg-secondary/80"
+                >
                   PR #{task.pr_number}
                   <ExternalLink className="h-3.5 w-3.5" />
                 </Badge>
@@ -132,21 +144,27 @@ export function TabCommits({ task }: TabCommitsProps) {
           </div>
           <div className="flex justify-end">
             {!isAdding && (
-              <Button size="sm" variant="ghost" onClick={() => setIsAdding(true)}>
-                <Plus className="h-4 w-4 mr-1" />Link
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setIsAdding(true)}
+              >
+                <Plus className="h-4 w-4 mr-1" />
+                Link
               </Button>
             )}
           </div>
         </div>
       </CardHeader>
       <CardContent>
-
         {/* Add new commit form */}
         {isAdding && (
           <div className="border rounded-lg p-4 mb-4 space-y-3">
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="text-sm font-medium mb-1 block">Commit Hash</label>
+                <label className="text-sm font-medium mb-1 block">
+                  Commit Hash
+                </label>
                 <Input
                   ref={hashRef}
                   value={newHash}
@@ -156,7 +174,9 @@ export function TabCommits({ task }: TabCommitsProps) {
                 />
               </div>
               <div>
-                <label className="text-sm font-medium mb-1 block">Commit Message</label>
+                <label className="text-sm font-medium mb-1 block">
+                  Commit Message
+                </label>
                 <Input
                   value={newMessage}
                   onChange={(e) => setNewMessage(e.target.value)}
@@ -167,11 +187,26 @@ export function TabCommits({ task }: TabCommitsProps) {
             </div>
             <div className="flex items-center gap-2">
               <div className="flex-1" />
-              <Button size="sm" variant="ghost" onClick={() => { setNewHash(""); setNewMessage(""); setIsAdding(false); }}>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => {
+                  setNewHash("");
+                  setNewMessage("");
+                  setIsAdding(false);
+                }}
+              >
                 <X className="h-4 w-4" />
               </Button>
-              <Button size="sm" onClick={handleAdd} disabled={(!newHash.trim() || !newMessage.trim()) || updateTask.isPending}>
-                <Check className="h-4 w-4 mr-1" />Link Commit
+              <Button
+                size="sm"
+                onClick={handleAdd}
+                disabled={
+                  !newHash.trim() || !newMessage.trim() || updateTask.isPending
+                }
+              >
+                <Check className="h-4 w-4 mr-1" />
+                Link Commit
               </Button>
             </div>
           </div>
@@ -208,7 +243,10 @@ export function TabCommits({ task }: TabCommitsProps) {
                         {/* Meta info */}
                         <div className="flex items-center gap-3 text-xs text-muted-foreground">
                           {/* Hash */}
-                          <Badge variant="outline" className="font-mono text-xs">
+                          <Badge
+                            variant="outline"
+                            className="font-mono text-xs"
+                          >
                             {commit.hash.slice(0, 7)}
                           </Badge>
 

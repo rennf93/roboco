@@ -65,14 +65,17 @@ export function AgentSelector({
         if (a.team === filterByTeam) return true;
 
         // For Board team, also include board-level roles
-        if (filterByTeam === Team.BOARD && (
-          a.role === AgentRole.PRODUCT_OWNER ||
-          a.role === AgentRole.HEAD_MARKETING ||
-          a.role === AgentRole.AUDITOR
-        )) return true;
+        if (
+          filterByTeam === Team.BOARD &&
+          (a.role === AgentRole.PRODUCT_OWNER ||
+            a.role === AgentRole.HEAD_MARKETING ||
+            a.role === AgentRole.AUDITOR)
+        )
+          return true;
 
         // For Main PM team, also include Main PM role
-        if (filterByTeam === Team.MAIN_PM && a.role === AgentRole.MAIN_PM) return true;
+        if (filterByTeam === Team.MAIN_PM && a.role === AgentRole.MAIN_PM)
+          return true;
 
         return false;
       });
@@ -80,7 +83,9 @@ export function AgentSelector({
 
     // Apply role filter
     if (filterByRoles && filterByRoles.length > 0) {
-      filtered = filtered.filter((a) => a.role && filterByRoles.includes(a.role));
+      filtered = filtered.filter(
+        (a) => a.role && filterByRoles.includes(a.role),
+      );
     }
 
     // Group by team following org hierarchy
@@ -94,12 +99,17 @@ export function AgentSelector({
     };
 
     for (const agent of filtered) {
-      if (agent.team === Team.BOARD ||
-          agent.role === AgentRole.PRODUCT_OWNER ||
-          agent.role === AgentRole.HEAD_MARKETING ||
-          agent.role === AgentRole.AUDITOR) {
+      if (
+        agent.team === Team.BOARD ||
+        agent.role === AgentRole.PRODUCT_OWNER ||
+        agent.role === AgentRole.HEAD_MARKETING ||
+        agent.role === AgentRole.AUDITOR
+      ) {
         groups.board.push(agent);
-      } else if (agent.team === Team.MAIN_PM || agent.role === AgentRole.MAIN_PM) {
+      } else if (
+        agent.team === Team.MAIN_PM ||
+        agent.role === AgentRole.MAIN_PM
+      ) {
         groups.main_pm.push(agent);
       } else if (agent.team === Team.BACKEND) {
         groups.backend.push(agent);

@@ -47,9 +47,12 @@ export const observabilityApi = {
   /** Per-stage cycle time — GET /dashboard/metrics/cycle-time?days&team */
   getCycleTime: async (days = 30, team?: string): Promise<StageTiming[]> => {
     if (isMockMode()) return [];
-    const { data } = await api.get<StageTiming[]>("/dashboard/metrics/cycle-time", {
-      params: { days, ...(team ? { team } : {}) },
-    });
+    const { data } = await api.get<StageTiming[]>(
+      "/dashboard/metrics/cycle-time",
+      {
+        params: { days, ...(team ? { team } : {}) },
+      },
+    );
     return data;
   },
 

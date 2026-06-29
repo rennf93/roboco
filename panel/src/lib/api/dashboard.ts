@@ -88,11 +88,21 @@ export interface CreateReportRequest {
 // Helper to create mock kanban board from tasks
 function createMockKanbanBoard(tasks: Task[], team?: Team): KanbanBoard {
   const filteredTasks = team ? tasks.filter((t) => t.team === team) : tasks;
-  const pendingTasks = filteredTasks.filter((t) => t.status === TaskStatus.PENDING);
-  const inProgressTasks = filteredTasks.filter((t) => t.status === TaskStatus.IN_PROGRESS);
-  const blockedTasks = filteredTasks.filter((t) => t.status === TaskStatus.BLOCKED);
-  const awaitingQaTasks = filteredTasks.filter((t) => t.status === TaskStatus.AWAITING_QA);
-  const completedTasks = filteredTasks.filter((t) => t.status === TaskStatus.COMPLETED);
+  const pendingTasks = filteredTasks.filter(
+    (t) => t.status === TaskStatus.PENDING,
+  );
+  const inProgressTasks = filteredTasks.filter(
+    (t) => t.status === TaskStatus.IN_PROGRESS,
+  );
+  const blockedTasks = filteredTasks.filter(
+    (t) => t.status === TaskStatus.BLOCKED,
+  );
+  const awaitingQaTasks = filteredTasks.filter(
+    (t) => t.status === TaskStatus.AWAITING_QA,
+  );
+  const completedTasks = filteredTasks.filter(
+    (t) => t.status === TaskStatus.COMPLETED,
+  );
 
   return {
     columns: [
@@ -170,25 +180,32 @@ export const dashboardApi = {
         average_completion_time_hours: 4.5,
       };
     }
-    const { data } = await api.get<VelocityMetric>("/dashboard/metrics/velocity");
+    const { data } = await api.get<VelocityMetric>(
+      "/dashboard/metrics/velocity",
+    );
     return data;
   },
 
   getBlockerMetrics: async (): Promise<BlockerMetric> => {
     if (isMockMode()) {
-      const blockedTasks = mockTasks.filter((t) => t.status === TaskStatus.BLOCKED);
+      const blockedTasks = mockTasks.filter(
+        (t) => t.status === TaskStatus.BLOCKED,
+      );
       return {
         total_blocked: blockedTasks.length,
         blocked_by_team: {
           backend: blockedTasks.filter((t) => t.team === Team.BACKEND).length,
           frontend: blockedTasks.filter((t) => t.team === Team.FRONTEND).length,
           ux_ui: blockedTasks.filter((t) => t.team === Team.UX_UI).length,
-          marketing: blockedTasks.filter((t) => t.team === Team.MARKETING).length,
+          marketing: blockedTasks.filter((t) => t.team === Team.MARKETING)
+            .length,
         },
         longest_blocked_hours: 24,
       };
     }
-    const { data } = await api.get<BlockerMetric>("/dashboard/metrics/blockers");
+    const { data } = await api.get<BlockerMetric>(
+      "/dashboard/metrics/blockers",
+    );
     return data;
   },
 
@@ -200,7 +217,9 @@ export const dashboardApi = {
         notifications_pending: 3,
       };
     }
-    const { data } = await api.get<CommunicationMetric>("/dashboard/metrics/communication");
+    const { data } = await api.get<CommunicationMetric>(
+      "/dashboard/metrics/communication",
+    );
     return data;
   },
 
@@ -253,7 +272,10 @@ export const dashboardApi = {
     if (isMockMode()) {
       return getMockRecentActivity().slice(0, limit);
     }
-    const { data } = await api.get<{ period_hours: number; activity: unknown[] }>("/dashboard/activity/recent", {
+    const { data } = await api.get<{
+      period_hours: number;
+      activity: unknown[];
+    }>("/dashboard/activity/recent", {
       params: { hours, limit },
     });
     // Backend returns { period_hours, activity }, extract the activity array
@@ -284,7 +306,9 @@ export const dashboardApi = {
         flags = flags.filter((f) => f.severity === params.severity);
       }
       if (params?.resolved !== undefined) {
-        flags = flags.filter((f) => (params.resolved ? f.resolved_at : !f.resolved_at));
+        flags = flags.filter((f) =>
+          params.resolved ? f.resolved_at : !f.resolved_at,
+        );
       }
       return flags;
     }
@@ -296,7 +320,7 @@ export const dashboardApi = {
 
   // Create an auditor flag
   createAuditorFlag: async (
-    request: CreateFlagRequest
+    request: CreateFlagRequest,
   ): Promise<AuditorFlag> => {
     if (isMockMode()) {
       const newFlag: AuditorFlag = {
@@ -316,7 +340,7 @@ export const dashboardApi = {
     }
     const { data } = await api.post<AuditorFlag>(
       "/dashboard/auditor/flags",
-      request
+      request,
     );
     return data;
   },
@@ -324,7 +348,7 @@ export const dashboardApi = {
   // Resolve an auditor flag
   resolveAuditorFlag: async (
     flagId: string,
-    notes?: string
+    notes?: string,
   ): Promise<{ status: string; flag_id: string }> => {
     if (isMockMode()) {
       const flags = mockAuditorFlags as AuditorFlag[];
@@ -339,9 +363,13 @@ export const dashboardApi = {
       }
       throw new Error("Flag not found");
     }
-    const { data } = await api.put(`/dashboard/auditor/flags/${flagId}/resolve`, null, {
-      params: { notes },
-    });
+    const { data } = await api.put(
+      `/dashboard/auditor/flags/${flagId}/resolve`,
+      null,
+      {
+        params: { notes },
+      },
+    );
     return data;
   },
 
@@ -362,14 +390,14 @@ export const dashboardApi = {
     }
     const { data } = await api.get<AuditorReport[]>(
       "/dashboard/auditor/reports",
-      { params }
+      { params },
     );
     return data;
   },
 
   // Create an auditor report
   createAuditorReport: async (
-    request: CreateReportRequest
+    request: CreateReportRequest,
   ): Promise<AuditorReport> => {
     if (isMockMode()) {
       const newReport: AuditorReport = {
@@ -386,14 +414,14 @@ export const dashboardApi = {
     }
     const { data } = await api.post<AuditorReport>(
       "/dashboard/auditor/reports",
-      request
+      request,
     );
     return data;
   },
 
   // Send a report to CEO
   sendAuditorReport: async (
-    reportId: string
+    reportId: string,
   ): Promise<{ status: string; report_id: string }> => {
     if (isMockMode()) {
       const reports = mockAuditorReports as AuditorReport[];
@@ -408,7 +436,7 @@ export const dashboardApi = {
       throw new Error("Report not found");
     }
     const { data } = await api.post(
-      `/dashboard/auditor/reports/${reportId}/send`
+      `/dashboard/auditor/reports/${reportId}/send`,
     );
     return data;
   },
@@ -434,7 +462,9 @@ export const dashboardApi = {
   // Get blocker details for CEO
   getCeoBlockerDetails: async () => {
     if (isMockMode()) {
-      const blockedTasks = mockTasks.filter((t) => t.status === TaskStatus.BLOCKED);
+      const blockedTasks = mockTasks.filter(
+        (t) => t.status === TaskStatus.BLOCKED,
+      );
       return {
         total_blocked: blockedTasks.length,
         blockers: blockedTasks.map((t) => ({
@@ -463,7 +493,9 @@ export const dashboardApi = {
           marketing: 0,
         },
         daily_breakdown: Array.from({ length: days }, (_, i) => ({
-          date: new Date(Date.now() - i * 24 * 60 * 60 * 1000).toISOString().split("T")[0],
+          date: new Date(Date.now() - i * 24 * 60 * 60 * 1000)
+            .toISOString()
+            .split("T")[0],
           completed: Math.floor(Math.random() * 5) + 1,
         })),
       };
@@ -513,10 +545,13 @@ export const dashboardApi = {
         total: tasks.length,
         by_status: {
           pending: tasks.filter((t) => t.status === TaskStatus.PENDING).length,
-          in_progress: tasks.filter((t) => t.status === TaskStatus.IN_PROGRESS).length,
+          in_progress: tasks.filter((t) => t.status === TaskStatus.IN_PROGRESS)
+            .length,
           blocked: tasks.filter((t) => t.status === TaskStatus.BLOCKED).length,
-          awaiting_qa: tasks.filter((t) => t.status === TaskStatus.AWAITING_QA).length,
-          completed: tasks.filter((t) => t.status === TaskStatus.COMPLETED).length,
+          awaiting_qa: tasks.filter((t) => t.status === TaskStatus.AWAITING_QA)
+            .length,
+          completed: tasks.filter((t) => t.status === TaskStatus.COMPLETED)
+            .length,
         },
       };
     }

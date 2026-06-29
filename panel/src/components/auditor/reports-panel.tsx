@@ -1,7 +1,10 @@
 "use client";
 
 import { AuditorReport } from "@/types";
-import { useSendAuditorReport, useCreateAuditorReport } from "@/hooks/use-dashboard";
+import {
+  useSendAuditorReport,
+  useCreateAuditorReport,
+} from "@/hooks/use-dashboard";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -24,7 +27,11 @@ function formatDate(timestamp: string): string {
   });
 }
 
-export function ReportsPanel({ reports, isLoading, onCreateReport }: ReportsPanelProps) {
+export function ReportsPanel({
+  reports,
+  isLoading,
+  onCreateReport,
+}: ReportsPanelProps) {
   const sendReport = useSendAuditorReport();
   const createReport = useCreateAuditorReport();
 
@@ -44,7 +51,7 @@ export function ReportsPanel({ reports, isLoading, onCreateReport }: ReportsPane
       {
         onSuccess: () => toast.success("Draft report created"),
         onError: () => toast.error("Failed to create report"),
-      }
+      },
     );
   };
 
@@ -65,7 +72,11 @@ export function ReportsPanel({ reports, isLoading, onCreateReport }: ReportsPane
             <FileText className="h-5 w-5" />
             Reports
           </CardTitle>
-          <Button size="sm" onClick={handleNewReport} disabled={createReport.isPending}>
+          <Button
+            size="sm"
+            onClick={handleNewReport}
+            disabled={createReport.isPending}
+          >
             <Plus className="h-4 w-4 mr-1" />
             New Report
           </Button>

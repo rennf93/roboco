@@ -15,6 +15,7 @@ from roboco.api.schemas.v1.flow import (
     IWillWorkOnRequest,
     OpenPrRequest,
     ResumeRequest,
+    SyncBranchRequest,
     UnclaimRequest,
 )
 from roboco.services.gateway.choreographer import Choreographer
@@ -118,6 +119,17 @@ async def resume(
     choreographer: _ChoreographerDep,
 ) -> dict:
     env = await choreographer.resume(x_agent_id, body.task_id)
+    return envelope_to_response(env, request)
+
+
+@router.post("/sync_branch")
+async def sync_branch(
+    request: Request,
+    body: SyncBranchRequest,
+    x_agent_id: _AgentIdHeader,
+    choreographer: _ChoreographerDep,
+) -> dict:
+    env = await choreographer.sync_branch(x_agent_id, body.task_id)
     return envelope_to_response(env, request)
 
 

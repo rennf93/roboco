@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
-import { 
-  WebSocketConnection, 
-  getWebSocketUrl 
+import {
+  WebSocketConnection,
+  getWebSocketUrl,
 } from "@/lib/websocket/connection";
 import { CEO_AGENT_ID, STREAM_MAX_MESSAGES } from "@/lib/constants";
 
@@ -51,7 +51,7 @@ export interface NotificationMessage {
 export function useWebSocket<T>(
   endpoint: string,
   queryParams?: Record<string, string>,
-  enabled: boolean = true
+  enabled: boolean = true,
 ) {
   const [state, setState] = useState<ConnectionState>("disconnected");
   const [lastMessage, setLastMessage] = useState<T | null>(null);
@@ -59,7 +59,9 @@ export function useWebSocket<T>(
   const connectionRef = useRef<WebSocketConnection | null>(null);
 
   // Memoize queryParams string to prevent unnecessary reconnects
-  const queryString = queryParams ? new URLSearchParams(queryParams).toString() : "";
+  const queryString = queryParams
+    ? new URLSearchParams(queryParams).toString()
+    : "";
 
   useEffect(() => {
     // Don't connect if disabled or no endpoint
@@ -77,7 +79,10 @@ export function useWebSocket<T>(
       onMessage: (data) => {
         const message = data as T;
         setLastMessage(message);
-        setMessages((prev) => [...prev.slice(-(STREAM_MAX_MESSAGES - 1)), message]);
+        setMessages((prev) => [
+          ...prev.slice(-(STREAM_MAX_MESSAGES - 1)),
+          message,
+        ]);
       },
       onStateChange: setState,
     });
@@ -122,12 +127,18 @@ export function useWebSocket<T>(
  * Subscribe to an agent's output stream
  */
 export function useAgentStream(agentId: string | null) {
-  const { state, lastMessage, messages, clearMessages, isConnected, isConnecting } = 
-    useWebSocket<AgentStreamMessage>(
-      agentId ? "/agents/" + agentId : "",
-      { viewer_id: CEO_AGENT_ID },
-      !!agentId
-    );
+  const {
+    state,
+    lastMessage,
+    messages,
+    clearMessages,
+    isConnected,
+    isConnecting,
+  } = useWebSocket<AgentStreamMessage>(
+    agentId ? "/agents/" + agentId : "",
+    { viewer_id: CEO_AGENT_ID },
+    !!agentId,
+  );
 
   // Extract stream chunks
   const streamChunks = messages
@@ -153,12 +164,18 @@ export function useAgentStream(agentId: string | null) {
  * Subscribe to a channel's message stream
  */
 export function useChannelStream(channelId: string | null) {
-  const { state, lastMessage, messages, clearMessages, isConnected, isConnecting } = 
-    useWebSocket<ChannelMessage>(
-      channelId ? "/channels/" + channelId : "",
-      { agent_id: CEO_AGENT_ID },
-      !!channelId
-    );
+  const {
+    state,
+    lastMessage,
+    messages,
+    clearMessages,
+    isConnected,
+    isConnecting,
+  } = useWebSocket<ChannelMessage>(
+    channelId ? "/channels/" + channelId : "",
+    { agent_id: CEO_AGENT_ID },
+    !!channelId,
+  );
 
   // Filter to only actual messages
   const channelMessages = messages.filter((m) => m.type === "message.new");
@@ -178,12 +195,18 @@ export function useChannelStream(channelId: string | null) {
  * Subscribe to notifications for the CEO
  */
 export function useNotificationStream() {
-  const { state, lastMessage, messages, clearMessages, isConnected, isConnecting } = 
-    useWebSocket<NotificationMessage>(
-      "/notifications/" + CEO_AGENT_ID,
-      undefined,
-      true
-    );
+  const {
+    state,
+    lastMessage,
+    messages,
+    clearMessages,
+    isConnected,
+    isConnecting,
+  } = useWebSocket<NotificationMessage>(
+    "/notifications/" + CEO_AGENT_ID,
+    undefined,
+    true,
+  );
 
   // Filter to notification events, de-duplicated by notification_id so a
   // stream replay (e.g. after a websocket reconnect) does not surface — or
@@ -223,7 +246,9 @@ export function useNotificationStream() {
 // =============================================================================
 
 export function useConnectionStatus() {
-  const [connections, setConnections] = useState<Record<string, ConnectionState>>({});
+  const [connections, setConnections] = useState<
+    Record<string, ConnectionState>
+  >({});
 
   const updateConnection = useCallback((id: string, state: ConnectionState) => {
     setConnections((prev) => ({ ...prev, [id]: state }));
@@ -238,10 +263,12 @@ export function useConnectionStatus() {
   }, []);
 
   const hasActiveConnections = Object.values(connections).some(
-    (s) => s === "connected" || s === "connecting" || s === "reconnecting"
+    (s) => s === "connected" || s === "connecting" || s === "reconnecting",
   );
 
-  const allConnected = Object.values(connections).every((s) => s === "connected");
+  const allConnected = Object.values(connections).every(
+    (s) => s === "connected",
+  );
 
   return {
     connections,

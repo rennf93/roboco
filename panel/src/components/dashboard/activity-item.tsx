@@ -1,6 +1,13 @@
 "use client";
 
-import { CheckCircle, Play, Pause, AlertTriangle, User, Clock } from "lucide-react";
+import {
+  CheckCircle,
+  Play,
+  Pause,
+  AlertTriangle,
+  User,
+  Clock,
+} from "lucide-react";
 import { getAgentDisplayName } from "@/lib/agent-utils";
 
 export interface Activity {
@@ -59,8 +66,9 @@ export function ActivityItem({ activity }: ActivityItemProps) {
       <div className="mt-0.5">{icon}</div>
       <div className="flex-1 min-w-0">
         <p className="text-sm">
-          <span className="font-medium">{getAgentDisplayName(activity.agent_id)}</span>
-          {" "}
+          <span className="font-medium">
+            {getAgentDisplayName(activity.agent_id)}
+          </span>{" "}
           <span className="text-muted-foreground">{label}</span>
           {activity.task_title && (
             <>

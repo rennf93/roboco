@@ -23,10 +23,17 @@ export function WaitingAgentsAlert({ waitingAgents }: WaitingAgentsAlertProps) {
       <CardContent>
         <div className="space-y-2">
           {waitingAgents.map((agent) => (
-            <div key={agent.agent_id} className="flex items-center justify-between p-2 bg-muted rounded">
+            <div
+              key={agent.agent_id}
+              className="flex items-center justify-between p-2 bg-muted rounded"
+            >
               <div>
-                <span className="font-medium">{getAgentDisplayName(agent.agent_id)}</span>
-                <span className="text-muted-foreground ml-2">waiting for: {agent.waiting_for}</span>
+                <span className="font-medium">
+                  {getAgentDisplayName(agent.agent_id)}
+                </span>
+                <span className="text-muted-foreground ml-2">
+                  waiting for: {agent.waiting_for}
+                </span>
               </div>
               <Button variant="outline" size="sm" asChild>
                 <Link href={"/agents/" + agent.agent_id}>Resolve</Link>

@@ -20,7 +20,11 @@ from httpx import ASGITransport, AsyncClient
 from roboco.api.app import create_app
 from roboco.models.events import EventType
 from roboco.models.runtime import WaitingRecord
-from roboco.runtime.orchestrator import AgentOrchestrator
+from roboco.runtime.orchestrator import (
+    _CEO_NOTIFY_THRESHOLD,
+    _PROBE_GIVE_UP_THRESHOLD,
+    AgentOrchestrator,
+)
 from roboco.services.gateway.rate_limit_tracker import RateLimitStateTracker
 
 _HTTP_OK = 200
@@ -308,6 +312,152 @@ class TestProbeFailurePath:
 
 
 # ---------------------------------------------------------------------------
+# Tests: persistent-probe-failure escape hatch (F094)
+# ---------------------------------------------------------------------------
+
+
+class TestProbeGiveUpEscapeHatch:
+    """When the probe has failed persistently past the give-up threshold, the
+    provider is no longer held parked forever (the probe endpoint may be
+    misconfigured / unreachable while the provider is actually fine for real
+    workloads). Fall back to the same time-expiry optimism the unprobeable
+    provider path uses (``_do_probe`` returns True when there is no probe URL):
+    clear the park and resume parked agents. If the provider is genuinely still
+    down the real workload attempts re-park via the 429/5xx path — strictly
+    better than a silent forever-strand with only a one-shot CEO notification.
+    """
+
+    async def test_persistent_failure_clears_park_and_resumes_at_threshold(
+        self,
+    ) -> None:
+        """At the give-up threshold the park is cleared and parked agents
+        resumed (the escape hatch), not held forever."""
+        orch = _make_orchestrator()
+        provider = "anthropic"
+        state = _make_active_state(provider, retry_after=None)
+        orch._waiting_records = {
+            "be-dev-1": _waiting_record("be-dev-1", provider),
+        }
+
+        tracker_mock = _make_tracker_mock(failure_return=_PROBE_GIVE_UP_THRESHOLD)
+        resolve_mock = AsyncMock(return_value=None)
+
+        with (
+            patch.object(orch, "_make_tracker", return_value=tracker_mock),
+            patch.object(orch, "resolve_wait", new=resolve_mock),
+            patch.object(orch, "_do_probe", new=AsyncMock(return_value=False)),
+            patch.object(orch, "_notify_rate_limit_ceo", new=AsyncMock()),
+            patch("roboco.events.get_event_bus") as mock_bus_fn,
+        ):
+            bus_mock = AsyncMock()
+            bus_mock.publish = AsyncMock()
+            mock_bus_fn.return_value = bus_mock
+            await orch._probe_one_provider(provider, state)
+
+        tracker_mock.clear.assert_awaited_once()  # the park was cleared
+        # the parked agent was resumed
+        assert resolve_mock.await_count == 1
+        assert resolve_mock.call_args_list[0].args[0] == "be-dev-1"
+
+    async def test_give_up_does_not_fire_below_threshold(self) -> None:
+        """One failure below the give-up threshold: hold the park (no clear)."""
+        orch = _make_orchestrator()
+        provider = "anthropic"
+        state = _make_active_state(provider, retry_after=None)
+
+        tracker_mock = _make_tracker_mock(failure_return=_PROBE_GIVE_UP_THRESHOLD - 1)
+
+        with (
+            patch.object(orch, "_make_tracker", return_value=tracker_mock),
+            patch.object(orch, "resolve_wait", new=AsyncMock(return_value=None)),
+            patch.object(orch, "_do_probe", new=AsyncMock(return_value=False)),
+            patch.object(orch, "_notify_rate_limit_ceo", new=AsyncMock()),
+            patch("roboco.events.get_event_bus") as mock_bus_fn,
+        ):
+            bus_mock = AsyncMock()
+            bus_mock.publish = AsyncMock()
+            mock_bus_fn.return_value = bus_mock
+            await orch._probe_one_provider(provider, state)
+
+        tracker_mock.clear.assert_not_awaited()  # still parked
+
+    async def test_give_up_publishes_rate_limit_lifted(self) -> None:
+        """Resuming via the escape hatch publishes RATE_LIMIT_LIFTED (the panel
+        + parked agents see the lift, not a silent resume)."""
+        orch = _make_orchestrator()
+        provider = "anthropic"
+        state = _make_active_state(provider, retry_after=None)
+        orch._waiting_records = {"be-dev-1": _waiting_record("be-dev-1", provider)}
+
+        tracker_mock = _make_tracker_mock(failure_return=_PROBE_GIVE_UP_THRESHOLD)
+        published: list[Any] = []
+
+        with (
+            patch.object(orch, "_make_tracker", return_value=tracker_mock),
+            patch.object(orch, "resolve_wait", new=AsyncMock(return_value=None)),
+            patch.object(orch, "_do_probe", new=AsyncMock(return_value=False)),
+            patch.object(orch, "_notify_rate_limit_ceo", new=AsyncMock()),
+            patch("roboco.events.get_event_bus") as mock_bus_fn,
+        ):
+            bus_mock = AsyncMock()
+            bus_mock.publish = AsyncMock(side_effect=published.append)
+            mock_bus_fn.return_value = bus_mock
+            await orch._probe_one_provider(provider, state)
+
+        assert any(e.type == EventType.RATE_LIMIT_LIFTED for e in published)
+
+    async def test_give_up_clears_ceo_notified_flag_for_next_episode(self) -> None:
+        """The give-up ends the episode (park cleared), so the CEO-notified flag
+        is cleared — a fresh rate-limit episode later gets a fresh notification."""
+        orch = _make_orchestrator()
+        provider = "anthropic"
+        state = _make_active_state(provider, retry_after=None)
+        orch._rate_limit_ceo_notified.add(provider)  # prior episode notified
+
+        tracker_mock = _make_tracker_mock(failure_return=_PROBE_GIVE_UP_THRESHOLD)
+
+        with (
+            patch.object(orch, "_make_tracker", return_value=tracker_mock),
+            patch.object(orch, "resolve_wait", new=AsyncMock(return_value=None)),
+            patch.object(orch, "_do_probe", new=AsyncMock(return_value=False)),
+            patch.object(orch, "_notify_rate_limit_ceo", new=AsyncMock()),
+            patch("roboco.events.get_event_bus") as mock_bus_fn,
+        ):
+            bus_mock = AsyncMock()
+            bus_mock.publish = AsyncMock()
+            mock_bus_fn.return_value = bus_mock
+            await orch._probe_one_provider(provider, state)
+
+        assert provider not in orch._rate_limit_ceo_notified
+
+    async def test_ceo_notification_still_fires_on_the_give_up_sweep(self) -> None:
+        """The CEO is still notified on the give-up sweep (failure_count >= the
+        CEO threshold AND >= the give-up threshold on the same sweep) — the
+        escape hatch does not silence the operator signal."""
+        assert _PROBE_GIVE_UP_THRESHOLD >= _CEO_NOTIFY_THRESHOLD  # invariant
+        orch = _make_orchestrator()
+        provider = "anthropic"
+        state = _make_active_state(provider, retry_after=None)
+
+        tracker_mock = _make_tracker_mock(failure_return=_PROBE_GIVE_UP_THRESHOLD)
+        notify_mock = AsyncMock()
+
+        with (
+            patch.object(orch, "_make_tracker", return_value=tracker_mock),
+            patch.object(orch, "resolve_wait", new=AsyncMock(return_value=None)),
+            patch.object(orch, "_do_probe", new=AsyncMock(return_value=False)),
+            patch.object(orch, "_notify_rate_limit_ceo", new=notify_mock),
+            patch("roboco.events.get_event_bus") as mock_bus_fn,
+        ):
+            bus_mock = AsyncMock()
+            bus_mock.publish = AsyncMock()
+            mock_bus_fn.return_value = bus_mock
+            await orch._probe_one_provider(provider, state)
+
+        notify_mock.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
 # Tests: CEO notification threshold
 # ---------------------------------------------------------------------------
 
@@ -412,6 +562,91 @@ class TestCEONotificationThreshold:
 
         # Notification SHOULD fire for the new episode
         notify_mock.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Tests: orphan-provider fallback (F045)
+# ---------------------------------------------------------------------------
+
+
+class TestOrphanProviderFallback:
+    """An activate() failure in the ``i_am_blocked(rate_limited)`` path parks
+    agents in ``_waiting_records`` without entering the tracker, so the
+    tracker-driven loop never probes them. The sweep must scan the in-memory
+    records for any ``rate_limit_lifted`` provider the tracker missed and probe
+    it via the time-expiry fallback so ``_on_probe_success`` can resume them.
+    """
+
+    async def test_orphan_parked_agent_resumed_when_tracker_lacks_provider(
+        self,
+    ) -> None:
+        orch = _make_orchestrator()
+        provider = "anthropic"
+        agent = "be-dev-1"
+        orch._waiting_records = {agent: _waiting_record(agent, provider)}
+
+        tracker_mock = _make_tracker_mock()
+        resolve_mock = AsyncMock(return_value=None)
+
+        with (
+            patch.object(orch, "resolve_wait", new=resolve_mock),
+            patch.object(orch, "_make_tracker", return_value=tracker_mock),
+            patch.object(orch, "_do_probe", new=AsyncMock(return_value=True)),
+            patch.object(
+                RateLimitStateTracker,
+                "list_rate_limited_providers",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch("roboco.events.get_event_bus") as mock_bus_fn,
+        ):
+            bus_mock = AsyncMock()
+            bus_mock.publish = AsyncMock()
+            mock_bus_fn.return_value = bus_mock
+
+            await orch._sweep_rate_limit_probes()
+
+        # The orphan provider was probed and the parked agent resumed.
+        assert resolve_mock.await_count == 1
+        assert resolve_mock.call_args.args[0] == agent
+
+    async def test_orphan_skipped_when_tracker_already_covers_provider(
+        self,
+    ) -> None:
+        """A provider the tracker lists must NOT be double-probed via the fallback."""
+        orch = _make_orchestrator()
+        provider = "anthropic"
+        agent = "be-dev-1"
+        orch._waiting_records = {agent: _waiting_record(agent, provider)}
+
+        tracker_mock = _make_tracker_mock()
+        resolve_mock = AsyncMock(return_value=None)
+        state = _make_active_state(provider, retry_after=None)
+
+        probe_calls: list[str] = []
+
+        async def fake_do_probe(p: str) -> bool:
+            probe_calls.append(p)
+            return True
+
+        with (
+            patch.object(orch, "resolve_wait", new=resolve_mock),
+            patch.object(orch, "_make_tracker", return_value=tracker_mock),
+            patch.object(orch, "_do_probe", new=fake_do_probe),
+            patch.object(
+                RateLimitStateTracker,
+                "list_rate_limited_providers",
+                new=AsyncMock(return_value=[(provider, state)]),
+            ),
+            patch("roboco.events.get_event_bus") as mock_bus_fn,
+        ):
+            bus_mock = AsyncMock()
+            bus_mock.publish = AsyncMock()
+            mock_bus_fn.return_value = bus_mock
+
+            await orch._sweep_rate_limit_probes()
+
+        # Probed exactly once (via the tracker-listed path), not twice.
+        assert probe_calls == [provider]
 
 
 # ---------------------------------------------------------------------------

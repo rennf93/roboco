@@ -412,14 +412,36 @@ def _tracked_files_with_version(root: Path, version: str) -> list[str]:
     return sorted(line.strip() for line in raw.splitlines() if line.strip())
 
 
-def _canonical_bump_files(root: Path) -> list[str]:
-    sha = _run_git(
-        root, ["log", "--grep", "^chore(release):", "-n1", "--format=%H"]
-    ).strip()
-    if not sha:
-        return []
-    raw = _run_git(root, ["show", "--name-only", "--format=", sha])
-    return sorted(line.strip() for line in raw.splitlines() if line.strip())
+def _canonical_bump_files(root: Path, version: str) -> list[str]:
+    # Subsequent releases derive the canonical bump set from the previous
+    # ``chore(release):`` commit's touched files — the historical record of
+    # what a release bumps.
+    #
+    # ``git log --grep "^chore(release):"`` matches ANY message line, including
+    # a body line of a non-release commit that merely REFERENCES the
+    # ``chore(release):`` type (e.g. a fix commit explaining the derivation). A
+    # newer such commit would shadow the real release commit and the bump plan
+    # would list the fix's files instead of the release's. Filter to the
+    # candidate whose SUBJECT (``%s``) starts with ``chore(release):`` — the
+    # real release-commit shape ``chore(release): X.Y.Z``. ``%x01`` separates
+    # sha from subject so a subject may contain spaces unambiguously.
+    raw = _run_git(
+        root,
+        ["log", "--grep", "^chore(release):", "--format=%H%x01%s"],
+    )
+    for line in raw.splitlines():
+        if "\x01" not in line:
+            continue
+        sha, subject = line.split("\x01", 1)
+        if subject.startswith("chore(release):"):
+            files_raw = _run_git(root, ["show", "--name-only", "--format=", sha])
+            return sorted(
+                line.strip() for line in files_raw.splitlines() if line.strip()
+            )
+    # First release has no prior ``chore(release):`` commit, so derivation
+    # returns [] — fall back to the version-reference scan: files embedding the
+    # version are exactly the set a first release must bump. Read-only.
+    return _tracked_files_with_version(root, version)
 
 
 def _new_migrations(root: Path, tag: str | None) -> list[str]:
@@ -498,7 +520,7 @@ def gather_snapshot(
         last_tag=tag,
         commits=_commits_since(root, tag),
         tracked_files_with_version=_tracked_files_with_version(root, version),
-        canonical_bump_files=_canonical_bump_files(root),
+        canonical_bump_files=_canonical_bump_files(root, version),
         changelog_text=_read_changelog(root),
         new_migrations=_new_migrations(root, tag),
         migration_head_count=_migration_head_count(root),

@@ -1,12 +1,25 @@
 "use client";
 
 import { KBIndexType, KBStats } from "@/types";
-import { FileText, MessageSquare, BookOpen, ChevronRight, AlertTriangle, Scale, GitBranch, ClipboardCheck, Lightbulb } from "lucide-react";
+import {
+  FileText,
+  MessageSquare,
+  BookOpen,
+  ChevronRight,
+  AlertTriangle,
+  Scale,
+  GitBranch,
+  ClipboardCheck,
+  Lightbulb,
+} from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
-const categoryConfig: Record<KBIndexType, { label: string; description: string; icon: React.ReactNode }> = {
+const categoryConfig: Record<
+  KBIndexType,
+  { label: string; description: string; icon: React.ReactNode }
+> = {
   [KBIndexType.DOCUMENTATION]: {
     label: "Documentation",
     description: "READMEs, guides, and API docs",
@@ -66,7 +79,10 @@ export function KBCategoryNav({
     return (
       <div className="space-y-2">
         {[1, 2, 3, 4].map((i) => (
-          <div key={i} className="flex items-center gap-3 p-3 rounded-lg border">
+          <div
+            key={i}
+            className="flex items-center gap-3 p-3 rounded-lg border"
+          >
             <Skeleton className="h-10 w-10 rounded" />
             <div className="flex-1 space-y-1">
               <Skeleton className="h-4 w-24" />
@@ -100,7 +116,7 @@ export function KBCategoryNav({
               "w-full h-auto justify-start gap-3 p-3 font-normal whitespace-normal",
               isSelected
                 ? "bg-primary/10 border-primary"
-                : "hover:bg-muted/50 border-transparent hover:border-border"
+                : "hover:bg-muted/50 border-transparent hover:border-border",
             )}
           >
             <div className="shrink-0">{config.icon}</div>
@@ -111,9 +127,16 @@ export function KBCategoryNav({
                   {count.toLocaleString()} docs
                 </span>
               </div>
-              <p className="text-xs text-muted-foreground truncate">{config.description}</p>
+              <p className="text-xs text-muted-foreground truncate">
+                {config.description}
+              </p>
             </div>
-            <ChevronRight className={cn("h-4 w-4 text-muted-foreground shrink-0 transition-transform", isSelected && "rotate-90")} />
+            <ChevronRight
+              className={cn(
+                "h-4 w-4 text-muted-foreground shrink-0 transition-transform",
+                isSelected && "rotate-90",
+              )}
+            />
           </Button>
         );
       })}

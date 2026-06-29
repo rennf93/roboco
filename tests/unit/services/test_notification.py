@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
 import pytest
+from roboco.foundation.policy.communications import ACK_REQUIRED_BY_TYPE
 from roboco.models import NotificationPriority, NotificationType
 from roboco.models.notification import CreateNotificationParams
 from roboco.services.notification import (
@@ -321,3 +322,91 @@ async def test_create_notification_skips_when_no_resolvable_recipients(
             )
         )
     assert db.added == []
+
+
+# ---------------------------------------------------------------------------
+# requires_ack must follow ACK_REQUIRED_BY_TYPE, not the True default
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_informational_notification_does_not_require_ack(
+    svc: NotificationService,
+) -> None:
+    """REVIEW_REQUEST / DOCUMENTATION_REQUEST / A2A_REQUEST are informational
+    (pickup proves receipt) — requires_ack must be False, not the
+    NotificationTable True default. A False type forced to True inflates the
+    recipient's unacked set and soft-blocks i_am_idle → respawn churn."""
+    aid = uuid4()
+    db = _FakeDb(agent_uuid=aid)
+    with _patch_db_context(db):
+        await svc.send_qa_ready_notification(
+            task_id="t1", from_agent="be-dev-1", to_qa="be-qa"
+        )
+        await svc.send_a2a_notification(
+            task_id="t2",
+            a2a_context={
+                "from_agent": "be-dev-1",
+                "to_agent": "fe-dev-1",
+                "skill": "react",
+                "message": "hi",
+                "priority": NotificationPriority.NORMAL,
+            },
+        )
+    qa_rows = [r for r in db.added if r.type == NotificationType.REVIEW_REQUEST]
+    a2a_rows = [r for r in db.added if r.type == NotificationType.A2A_REQUEST]
+    assert qa_rows, "REVIEW_REQUEST row should have been inserted"
+    assert a2a_rows, "A2A_REQUEST row should have been inserted"
+    # Identity checks (``is False``) — the mocked flush doesn't apply SQLA's
+    # insert-time default, so pre-fix the attribute is None, not False. The fix
+    # must set it explicitly on the NotificationTable constructor.
+    assert all(r.requires_ack is False for r in qa_rows)
+    assert all(r.requires_ack is False for r in a2a_rows)
+
+
+@pytest.mark.asyncio
+async def test_action_required_notification_still_requires_ack(
+    svc: NotificationService,
+) -> None:
+    """BLOCKER_ESCALATION / APPROVAL / ALERT are action-required —
+    requires_ack stays True (ACK_REQUIRED_BY_TYPE maps them True)."""
+    aid = uuid4()
+    db = _FakeDb(agent_uuid=aid)
+    with _patch_db_context(db):
+        await svc.send_blocker_notification(
+            task_id="t1", blocker_reason="r", from_agent="system", to_pm="cell-pm"
+        )
+        await svc.send_board_review_complete_notification(task_id="t2")
+    blocker_rows = [
+        r for r in db.added if r.type == NotificationType.BLOCKER_ESCALATION
+    ]
+    approval_rows = [r for r in db.added if r.type == NotificationType.APPROVAL]
+    assert blocker_rows and all(r.requires_ack is True for r in blocker_rows)
+    assert approval_rows and all(r.requires_ack is True for r in approval_rows)
+
+
+@pytest.mark.asyncio
+async def test_create_notification_requires_ack_derives_from_type(
+    svc: NotificationService,
+) -> None:
+    """A raw _create_notification call derives requires_ack from the type via
+    ACK_REQUIRED_BY_TYPE (KNOWLEDGE_SHARE → False)."""
+    aid = uuid4()
+    db = _FakeDb(agent_uuid=aid)
+    with _patch_db_context(db):
+        await svc._create_notification(
+            CreateNotificationParams(
+                notification_type=NotificationType.KNOWLEDGE_SHARE,
+                priority=NotificationPriority.NORMAL,
+                from_agent="be-dev-1",
+                to_agents=["fe-dev-1"],
+                subject="tip",
+                body="reuse the helper",
+            )
+        )
+    rows = [r for r in db.added if r.type == NotificationType.KNOWLEDGE_SHARE]
+    assert rows
+    assert (
+        rows[0].requires_ack is ACK_REQUIRED_BY_TYPE[NotificationType.KNOWLEDGE_SHARE]
+    )
+    assert rows[0].requires_ack is False

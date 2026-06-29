@@ -9,7 +9,7 @@ When something goes wrong, the failure is almost always one of a handful of thin
 | Agents spawn but do nothing useful (tool-discovery churn) | The role's tool-manifest didn't mount; the agent falls back to discovering verbs | Check the manifest mount (below) |
 | Agent containers respawn in a loop, MCP servers stuck "pending" | MCP server launched without `--no-sync` against a workspace clone | Already fixed in the orchestrator; verify your image is current (below) |
 | A provider's agents go quiet all at once | The provider is **parked-and-probing** after a 429 / overload / session-limit — not hung | Wait; it self-resumes. See [Resilience](../models/resilience.md) |
-| A task sits **blocked: "branch behind base / needs rebase"** | The agent's branch fell behind its base while it worked; there is no agent-layer rebase verb, so the agent escalates instead of improvising | Rebase it yourself from the panel **Git** tab (below) |
+| A task sits **blocked: "branch behind base / needs rebase"** | The agent's branch fell behind its base while it worked; devs now self-rebase via the `sync_branch` gate verb, so a leaf branch rarely blocks here. A **cell/root integration branch** behind its base still escalates (PMs have no rebase verb) | Rebase the integration branch from the panel **Git** tab (below) |
 | KB / `ask_mentor` returns nothing | Ollama unhealthy or models not pulled | Check `ollama-init` logs (below) |
 | Agent containers exit immediately | `~/.claude` not mounted, or a Grok token expired | Check the mount / refresh the token (below) |
 | Clone fails, agent can't reach the repo | Missing or invalid project PAT, or HTTPS URL with no token | Set the project token (below) |
@@ -76,7 +76,7 @@ When the orchestrator won't come up at all on a fresh deploy:
 
 ## A task is stuck on a branch behind its base
 
-Agents have no rebase, pull, or merge verb — a task branch is brought current with its base only at claim. If the base (a cell branch, or master) moves forward while the agent works, the branch falls behind, and the agent escalates rather than improvising git surgery: the task surfaces **blocked** with a reason like *"branch behind base — needs rebase."* That escalation is by design — bringing the branch current is your call, not a unit of work the company decomposes. Rebase it from the panel **Git** tab — select the branch and **Rebase** it onto its base (or master) — and the task resumes on the next dispatch. (Automatic rebase-at-spawn, so a stale branch never reaches you at all, is on the roadmap.)
+A task branch is brought current with its base only at claim. If the base moves forward while the agent works, the branch falls behind. **Developer leaf branches** now self-rebase through the `sync_branch` gate verb — the dev calls `sync_branch(task_id)` (or `i_am_done` refuses a behind branch and points them at it), so a leaf rarely escalates to you. What still escalates is a **cell or root integration branch** behind its base: PMs have no rebase verb, so a PM `escalate_up`s and the task surfaces **blocked** with a reason like *"branch behind base — needs rebase."* That escalation is by design for an integration branch — bringing it current is your call, not a unit of work the company decomposes. Rebase it from the panel **Git** tab — select the branch and **Rebase** it onto its base (or master) — and the task resumes on the next dispatch. (Automatic rebase-at-spawn, so a stale branch never reaches you at all, is on the roadmap.)
 
 ## Next
 

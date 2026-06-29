@@ -116,6 +116,15 @@ def test_note_request_coerces_string_next_steps_to_list() -> None:
     assert req.next_steps == ["wait for QA"]
 
 
+def test_note_request_coerces_string_where_to_look_to_list() -> None:
+    """A single string for where_to_look is wrapped into a one-element list,
+    mirroring consequences/next_steps, so a lone scalar does not 422 the route."""
+    req = NoteRequest.model_validate(
+        {"text": "x", "scope": "handoff", "where_to_look": "src/api/auth.py"}
+    )
+    assert req.where_to_look == ["src/api/auth.py"]
+
+
 def test_note_request_coerces_single_option_dict_to_list() -> None:
     """A single option dict (not wrapped in a list) is wrapped into a list."""
     req = NoteRequest.model_validate(

@@ -187,3 +187,50 @@ class TestTaskHandoff:
         assert digest["journal_highlights"] == []
         assert digest["pr_url"] is None
         assert digest["branch_name"] is None
+
+
+class TestPrReviewSurface:
+    """The persisted pr_fail verdict + issues must surface in the PM
+    briefing's task_handoff, not just the fire-and-forget a2a."""
+
+    def test_surfaces_pr_fail_verdict_and_issues(self) -> None:
+        t = _task(pr_number=138, commits=[{"sha": "abc", "message": "feat: x"}])
+        t.notes_structured = {
+            "pr_review": {
+                "verdict": "failed",
+                "summary": "In-path PR-review gate requested changes.",
+                "issues": ["missing null guard", "no test for the edge case"],
+                "head_sha": "aaaa1111bbbb2222",
+            }
+        }
+        digest = build_task_handoff(t, [])
+        assert digest is not None
+        pr_review = digest["pr_review"]
+        assert pr_review["verdict"] == "failed"
+        assert pr_review["issues"] == [
+            "missing null guard",
+            "no test for the edge case",
+        ]
+        assert pr_review["head_sha"] == "aaaa1111bbbb2222"
+
+    def test_no_pr_review_field_when_none_present(self) -> None:
+        t = _task(pr_number=8, commits=[{"sha": "abc", "message": "feat: x"}])
+        t.notes_structured = None
+        digest = build_task_handoff(t, [])
+        assert digest is not None
+        # Absent pr_review ⇒ no key (not a None-valued key) so a PM without a
+        # prior gate verdict doesn't see a misleading empty slot.
+        assert "pr_review" not in digest
+
+    def test_pr_review_alone_is_prior_work_worth_resuming(self) -> None:
+        """A task with no commits/dev-notes but a prior pr_fail verdict still
+        surfaces the handoff so the owning PM reads the change-requests."""
+        t = _task(pr_number=None, pr_url=None, dev_notes="")
+        t.commits = []
+        t.acceptance_criteria_status = []
+        t.notes_structured = {
+            "pr_review": {"verdict": "failed", "issues": ["fix the off-by-one"]}
+        }
+        digest = build_task_handoff(t, [])
+        assert digest is not None
+        assert digest["pr_review"]["issues"] == ["fix the off-by-one"]

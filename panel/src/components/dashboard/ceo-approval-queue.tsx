@@ -3,7 +3,13 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { tasksApi } from "@/lib/api";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -17,7 +23,14 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import { CheckCircle2, XCircle, Clock, FileText, ExternalLink, Rocket } from "lucide-react";
+import {
+  CheckCircle2,
+  XCircle,
+  Clock,
+  FileText,
+  ExternalLink,
+  Rocket,
+} from "lucide-react";
 import Link from "next/link";
 import { TaskStatus, Team, type Task } from "@/types";
 import { toast } from "sonner";
@@ -29,7 +42,9 @@ interface CeoApprovalQueueProps {
 export function CeoApprovalQueue({ className }: CeoApprovalQueueProps) {
   const queryClient = useQueryClient();
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
-  const [actionType, setActionType] = useState<"approve" | "reject" | "start" | null>(null);
+  const [actionType, setActionType] = useState<
+    "approve" | "reject" | "start" | null
+  >(null);
   const [notes, setNotes] = useState("");
 
   // Fetch tasks awaiting CEO approval (the end-of-work, pre-merge gate)
@@ -68,7 +83,9 @@ export function CeoApprovalQueue({ className }: CeoApprovalQueueProps) {
       closeDialog();
     },
     onError: (error) => {
-      toast.error(`Failed to approve: ${error instanceof Error ? error.message : "Unknown error"}`);
+      toast.error(
+        `Failed to approve: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
     },
   });
 
@@ -82,7 +99,9 @@ export function CeoApprovalQueue({ className }: CeoApprovalQueueProps) {
       closeDialog();
     },
     onError: (error) => {
-      toast.error(`Failed to reject: ${error instanceof Error ? error.message : "Unknown error"}`);
+      toast.error(
+        `Failed to reject: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
     },
   });
 
@@ -96,7 +115,9 @@ export function CeoApprovalQueue({ className }: CeoApprovalQueueProps) {
       closeDialog();
     },
     onError: (error) => {
-      toast.error(`Failed to approve & start: ${error instanceof Error ? error.message : "Unknown error"}`);
+      toast.error(
+        `Failed to approve & start: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
     },
   });
 
@@ -129,7 +150,10 @@ export function CeoApprovalQueue({ className }: CeoApprovalQueueProps) {
         toast.error("Approval notes are required (>= 20 characters)");
         return;
       }
-      approveStartMutation.mutate({ taskId: selectedTask.id, notes: notes.trim() });
+      approveStartMutation.mutate({
+        taskId: selectedTask.id,
+        notes: notes.trim(),
+      });
     } else if (actionType === "reject") {
       if (!notes.trim()) {
         toast.error("Rejection reason is required");
@@ -140,13 +164,22 @@ export function CeoApprovalQueue({ className }: CeoApprovalQueueProps) {
   };
 
   const getPriorityBadge = (priority: number) => {
-    const variants: Record<number, { label: string; variant: "default" | "secondary" | "destructive" | "outline" }> = {
+    const variants: Record<
+      number,
+      {
+        label: string;
+        variant: "default" | "secondary" | "destructive" | "outline";
+      }
+    > = {
       0: { label: "P0", variant: "destructive" },
       1: { label: "P1", variant: "destructive" },
       2: { label: "P2", variant: "secondary" },
       3: { label: "P3", variant: "outline" },
     };
-    const { label, variant } = variants[priority] || { label: `P${priority}`, variant: "outline" as const };
+    const { label, variant } = variants[priority] || {
+      label: `P${priority}`,
+      variant: "outline" as const,
+    };
     return <Badge variant={variant}>{label}</Badge>;
   };
 
@@ -280,7 +313,10 @@ export function CeoApprovalQueue({ className }: CeoApprovalQueueProps) {
       </Card>
 
       {/* Confirmation Dialog */}
-      <Dialog open={!!selectedTask && !!actionType} onOpenChange={() => closeDialog()}>
+      <Dialog
+        open={!!selectedTask && !!actionType}
+        onOpenChange={() => closeDialog()}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
@@ -325,9 +361,7 @@ export function CeoApprovalQueue({ className }: CeoApprovalQueueProps) {
             <Label htmlFor="notes">
               {actionType === "reject"
                 ? "Reason for rejection (required)"
-                : actionType === "start"
-                  ? "Approval notes (required, ≥ 20 characters)"
-                  : "Notes (optional)"}
+                : "Approval notes (required, ≥ 20 characters)"}
             </Label>
             <Textarea
               id="notes"
@@ -336,7 +370,7 @@ export function CeoApprovalQueue({ className }: CeoApprovalQueueProps) {
                   ? "Explain what needs to be fixed..."
                   : actionType === "start"
                     ? "Why this is ready to build, scope to hold to, anything the Main PM should know..."
-                    : "Add any notes about this approval..."
+                    : "Why this is ready to ship, scope to hold to, anything to note..."
               }
               value={notes}
               onChange={(e) => setNotes(e.target.value)}

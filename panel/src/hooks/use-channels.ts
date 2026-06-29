@@ -22,9 +22,11 @@ function retryUnlessNotFound(failureCount: number, error: unknown): boolean {
 
 export const channelKeys = {
   all: ["channels"] as const,
-  list: (filters?: ChannelFilters) => [...channelKeys.all, "list", filters] as const,
+  list: (filters?: ChannelFilters) =>
+    [...channelKeys.all, "list", filters] as const,
   detail: (id: string) => [...channelKeys.all, "detail", id] as const,
-  groups: (channelId: string) => [...channelKeys.all, "groups", channelId] as const,
+  groups: (channelId: string) =>
+    [...channelKeys.all, "groups", channelId] as const,
 };
 
 export const sessionKeys = {
@@ -105,7 +107,7 @@ export function useSession(sessionId: string | null) {
                 relationship_type: link.relationship_type,
               };
             }
-          })
+          }),
         );
 
         return {

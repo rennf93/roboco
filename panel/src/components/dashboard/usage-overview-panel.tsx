@@ -152,10 +152,16 @@ export function UsageOverviewPanel() {
                 )
               }
               label="Trend vs prior period"
-              value={summary ? (trendUp ? "+" : "") + trendPct.toFixed(1) + "%" : "—"}
+              value={
+                summary ? (trendUp ? "+" : "") + trendPct.toFixed(1) + "%" : "—"
+              }
               sub={
                 summary ? (
-                  <span className={"text-xs " + (trendUp ? "text-red-500" : "text-green-500")}>
+                  <span
+                    className={
+                      "text-xs " + (trendUp ? "text-red-500" : "text-green-500")
+                    }
+                  >
                     {trendUp ? "▲" : "▼"}
                   </span>
                 ) : undefined

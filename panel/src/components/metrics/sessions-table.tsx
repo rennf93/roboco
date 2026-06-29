@@ -48,7 +48,10 @@ const COLUMNS: Column[] = [
 ];
 
 function formatTime(ts: string): string {
-  return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return new Date(ts).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function fmtK(n: number): string {
@@ -94,7 +97,8 @@ export function SessionsTable({ data, isLoading }: SessionsTableProps) {
   }
 
   function SortIcon({ col }: { col: SortKey }) {
-    if (sortKey !== col) return <ChevronUp className="h-3 w-3 opacity-30 ml-1 inline" />;
+    if (sortKey !== col)
+      return <ChevronUp className="h-3 w-3 opacity-30 ml-1 inline" />;
     return sortDir === "asc" ? (
       <ChevronUp className="h-3 w-3 ml-1 inline" />
     ) : (
@@ -135,21 +139,38 @@ export function SessionsTable({ data, isLoading }: SessionsTableProps) {
                 <TableBody>
                   {visible.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={COLUMNS.length} className="text-center text-muted-foreground text-sm py-8">
+                      <TableCell
+                        colSpan={COLUMNS.length}
+                        className="text-center text-muted-foreground text-sm py-8"
+                      >
                         No sessions recorded yet
                       </TableCell>
                     </TableRow>
                   ) : (
                     visible.map((s) => (
                       <TableRow key={s.id}>
-                        <TableCell className="text-xs font-medium">{s.agent_slug}</TableCell>
+                        <TableCell className="text-xs font-medium">
+                          {s.agent_slug}
+                        </TableCell>
                         <TableCell className="text-xs">{s.model}</TableCell>
-                        <TableCell className="text-xs">{formatTime(s.started_at)}</TableCell>
-                        <TableCell className="text-xs">{fmtK(s.total_tokens)}</TableCell>
-                        <TableCell className="text-xs">{fmtK(s.tokens_input)}</TableCell>
-                        <TableCell className="text-xs">{fmtK(s.tokens_output)}</TableCell>
-                        <TableCell className="text-xs">{fmtK(s.tokens_cache)}</TableCell>
-                        <TableCell className="text-xs">${s.cost.toFixed(4)}</TableCell>
+                        <TableCell className="text-xs">
+                          {formatTime(s.started_at)}
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          {fmtK(s.total_tokens)}
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          {fmtK(s.tokens_input)}
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          {fmtK(s.tokens_output)}
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          {fmtK(s.tokens_cache)}
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          ${s.cost.toFixed(4)}
+                        </TableCell>
                       </TableRow>
                     ))
                   )}
@@ -176,7 +197,9 @@ export function SessionsTable({ data, isLoading }: SessionsTableProps) {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+                  onClick={() =>
+                    setPage((p) => Math.min(totalPages - 1, p + 1))
+                  }
                   disabled={page >= totalPages - 1}
                 >
                   Next

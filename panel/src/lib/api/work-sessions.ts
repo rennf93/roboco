@@ -71,13 +71,15 @@ export const workSessionsApi = {
   getForTask: async (taskId: string): Promise<WorkSession | null> => {
     if (isMockMode()) {
       const session = mockWorkSessions.find(
-        (s) => s.task_id === taskId && s.status === "active"
+        (s) => s.task_id === taskId && s.status === "active",
       );
       return session ?? null;
     }
 
     try {
-      const { data } = await api.get<WorkSession | null>("/work-sessions/task/" + taskId);
+      const { data } = await api.get<WorkSession | null>(
+        "/work-sessions/task/" + taskId,
+      );
       return data;
     } catch {
       return null;
@@ -118,7 +120,10 @@ export const workSessionsApi = {
   },
 
   // Add a commit to the work session
-  addCommit: async (sessionId: string, commitSha: string): Promise<WorkSession> => {
+  addCommit: async (
+    sessionId: string,
+    commitSha: string,
+  ): Promise<WorkSession> => {
     if (isMockMode()) {
       const idx = mockWorkSessions.findIndex((s) => s.id === sessionId);
       if (idx === -1) throw new Error("Work session not found");
@@ -130,14 +135,20 @@ export const workSessionsApi = {
       };
       return mockWorkSessions[idx];
     }
-    const { data } = await api.post<WorkSession>("/work-sessions/" + sessionId + "/commits", {
-      commit_sha: commitSha,
-    });
+    const { data } = await api.post<WorkSession>(
+      "/work-sessions/" + sessionId + "/commits",
+      {
+        commit_sha: commitSha,
+      },
+    );
     return data;
   },
 
   // Add modified files to the work session
-  addFiles: async (sessionId: string, filePaths: string[]): Promise<WorkSession> => {
+  addFiles: async (
+    sessionId: string,
+    filePaths: string[],
+  ): Promise<WorkSession> => {
     if (isMockMode()) {
       const idx = mockWorkSessions.findIndex((s) => s.id === sessionId);
       if (idx === -1) throw new Error("Work session not found");
@@ -151,14 +162,21 @@ export const workSessionsApi = {
       };
       return mockWorkSessions[idx];
     }
-    const { data } = await api.post<WorkSession>("/work-sessions/" + sessionId + "/files", {
-      file_paths: filePaths,
-    });
+    const { data } = await api.post<WorkSession>(
+      "/work-sessions/" + sessionId + "/files",
+      {
+        file_paths: filePaths,
+      },
+    );
     return data;
   },
 
   // Record PR creation
-  createPR: async (sessionId: string, prNumber: number, prUrl: string): Promise<WorkSession> => {
+  createPR: async (
+    sessionId: string,
+    prNumber: number,
+    prUrl: string,
+  ): Promise<WorkSession> => {
     if (isMockMode()) {
       const idx = mockWorkSessions.findIndex((s) => s.id === sessionId);
       if (idx === -1) throw new Error("Work session not found");
@@ -173,15 +191,21 @@ export const workSessionsApi = {
       };
       return mockWorkSessions[idx];
     }
-    const { data } = await api.post<WorkSession>("/work-sessions/" + sessionId + "/pr", {
-      pr_number: prNumber,
-      pr_url: prUrl,
-    });
+    const { data } = await api.post<WorkSession>(
+      "/work-sessions/" + sessionId + "/pr",
+      {
+        pr_number: prNumber,
+        pr_url: prUrl,
+      },
+    );
     return data;
   },
 
   // Update PR status
-  updatePRStatus: async (sessionId: string, prStatus: string): Promise<WorkSession> => {
+  updatePRStatus: async (
+    sessionId: string,
+    prStatus: string,
+  ): Promise<WorkSession> => {
     if (isMockMode()) {
       const idx = mockWorkSessions.findIndex((s) => s.id === sessionId);
       if (idx === -1) throw new Error("Work session not found");
@@ -193,14 +217,20 @@ export const workSessionsApi = {
       };
       return mockWorkSessions[idx];
     }
-    const { data } = await api.patch<WorkSession>("/work-sessions/" + sessionId + "/pr", {
-      pr_status: prStatus,
-    });
+    const { data } = await api.patch<WorkSession>(
+      "/work-sessions/" + sessionId + "/pr",
+      {
+        pr_status: prStatus,
+      },
+    );
     return data;
   },
 
   // Record PR merge (PM only)
-  mergePR: async (sessionId: string, mergedBy: string): Promise<WorkSession> => {
+  mergePR: async (
+    sessionId: string,
+    mergedBy: string,
+  ): Promise<WorkSession> => {
     if (isMockMode()) {
       const idx = mockWorkSessions.findIndex((s) => s.id === sessionId);
       if (idx === -1) throw new Error("Work session not found");
@@ -216,9 +246,12 @@ export const workSessionsApi = {
       };
       return mockWorkSessions[idx];
     }
-    const { data } = await api.post<WorkSession>("/work-sessions/" + sessionId + "/pr/merge", {
-      merged_by: mergedBy,
-    });
+    const { data } = await api.post<WorkSession>(
+      "/work-sessions/" + sessionId + "/pr/merge",
+      {
+        merged_by: mergedBy,
+      },
+    );
     return data;
   },
 
@@ -236,7 +269,9 @@ export const workSessionsApi = {
       };
       return mockWorkSessions[idx];
     }
-    const { data } = await api.post<WorkSession>("/work-sessions/" + sessionId + "/complete");
+    const { data } = await api.post<WorkSession>(
+      "/work-sessions/" + sessionId + "/complete",
+    );
     return data;
   },
 
@@ -255,7 +290,9 @@ export const workSessionsApi = {
       return mockWorkSessions[idx];
     }
     const params = reason ? `?reason=${encodeURIComponent(reason)}` : "";
-    const { data } = await api.post<WorkSession>("/work-sessions/" + sessionId + "/abandon" + params);
+    const { data } = await api.post<WorkSession>(
+      "/work-sessions/" + sessionId + "/abandon" + params,
+    );
     return data;
   },
 };

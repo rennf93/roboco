@@ -7,7 +7,13 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { KBIndexTypeBadge } from "./kb-index-type-badge";
-import { FileCode, FolderOpen, Clock, ChevronLeft, ChevronRight } from "lucide-react";
+import {
+  FileCode,
+  FolderOpen,
+  Clock,
+  ChevronLeft,
+  ChevronRight,
+} from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 
 const PAGE_SIZE = 25;
@@ -24,14 +30,17 @@ function KBCategoryViewInner({ category }: { category: KBIndexType }) {
   const { data, isLoading } = useKBDocuments(
     category,
     { limit: PAGE_SIZE, offset },
-    true
+    true,
   );
 
   if (isLoading) {
     return (
       <div className="space-y-2">
         {[1, 2, 3, 4, 5].map((i) => (
-          <div key={i} className="flex items-center gap-3 p-3 border rounded-lg">
+          <div
+            key={i}
+            className="flex items-center gap-3 p-3 border rounded-lg"
+          >
             <Skeleton className="h-10 w-10 rounded" />
             <div className="flex-1 space-y-1">
               <Skeleton className="h-4 w-3/4" />
@@ -75,7 +84,9 @@ function KBCategoryViewInner({ category }: { category: KBIndexType }) {
                     <div className="flex items-center gap-2 mt-1 text-xs text-muted-foreground">
                       <Clock className="h-3 w-3" />
                       <span>
-                        {formatDistanceToNow(new Date(doc.indexed_at), { addSuffix: true })}
+                        {formatDistanceToNow(new Date(doc.indexed_at), {
+                          addSuffix: true,
+                        })}
                       </span>
                     </div>
                   </div>

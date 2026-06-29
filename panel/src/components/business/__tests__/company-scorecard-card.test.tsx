@@ -97,7 +97,7 @@ describe("CompanyScorecardCard", () => {
 
     // Should NOT show error or data content
     expect(
-      screen.queryByText("Could not load scorecard data")
+      screen.queryByText("Could not load scorecard data"),
     ).not.toBeInTheDocument();
     expect(screen.queryByText("Company Scorecard")).not.toBeInTheDocument();
   });
@@ -111,7 +111,7 @@ describe("CompanyScorecardCard", () => {
     render(<CompanyScorecardCard />);
 
     expect(
-      screen.getByText("Could not load scorecard data")
+      screen.getByText("Could not load scorecard data"),
     ).toBeInTheDocument();
 
     // Skeleton and scorecard body should not appear
@@ -125,7 +125,7 @@ describe("CompanyScorecardCard", () => {
 
     // When data is falsy the component falls through to the OfflineState branch
     expect(
-      screen.getByText("Could not load scorecard data")
+      screen.getByText("Could not load scorecard data"),
     ).toBeInTheDocument();
   });
 

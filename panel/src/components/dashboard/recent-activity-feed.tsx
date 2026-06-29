@@ -13,7 +13,10 @@ interface RecentActivityFeedProps {
   isLoading: boolean;
 }
 
-export function RecentActivityFeed({ activities, isLoading }: RecentActivityFeedProps) {
+export function RecentActivityFeed({
+  activities,
+  isLoading,
+}: RecentActivityFeedProps) {
   return (
     <Card>
       <CardHeader className="pb-3">

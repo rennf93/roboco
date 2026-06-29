@@ -12,9 +12,10 @@ interface KBResultCardProps {
 
 export function KBResultCard({ result, onClick }: KBResultCardProps) {
   // Truncate content for display (snippet)
-  const snippet = result.content.length > 300
-    ? result.content.substring(0, 300) + "..."
-    : result.content;
+  const snippet =
+    result.content.length > 300
+      ? result.content.substring(0, 300) + "..."
+      : result.content;
 
   // Format source for display
   const formatSource = (source: string) => {
@@ -58,7 +59,9 @@ export function KBResultCard({ result, onClick }: KBResultCardProps) {
             {/* Source */}
             <div className="flex items-center gap-1 text-sm text-muted-foreground mb-2">
               <FileCode className="h-3 w-3 shrink-0" />
-              <span className="truncate font-mono text-xs">{formatSource(result.source)}</span>
+              <span className="truncate font-mono text-xs">
+                {formatSource(result.source)}
+              </span>
             </div>
 
             {/* Content snippet */}

@@ -82,7 +82,8 @@ def test_intake_grok_mounts_subscription_auth_when_present(
     cmd = AgentOrchestrator._build_intake_run_cmd(
         _intake_spec("grok", base_url="https://api.x.ai/v1", token="xai-key")
     )
-    assert f"{grok_dir / 'auth.json'}:/home/agent/.grok/auth.json:ro" in cmd
+    # directory mount (ro), not the single-file inode-pinning mount.
+    assert f"{grok_dir}:/home/agent/.grok-auth-ro:ro" in cmd
 
 
 def test_intake_anthropic_keeps_anthropic_env() -> None:

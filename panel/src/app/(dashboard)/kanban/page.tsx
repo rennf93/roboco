@@ -2,7 +2,12 @@
 
 import { Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { DevKanban, QaKanban, PrReviewKanban, PmKanban } from "@/components/kanban";
+import {
+  DevKanban,
+  QaKanban,
+  PrReviewKanban,
+  PmKanban,
+} from "@/components/kanban";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Code, TestTube, GitPullRequest, ClipboardList } from "lucide-react";
@@ -66,16 +71,18 @@ function KanbanPageContent() {
 // Wrap in Suspense for useSearchParams
 export default function KanbanPage() {
   return (
-    <Suspense fallback={
-      <div className="space-y-6">
-        <Skeleton className="h-10 w-72" />
-        <div className="grid grid-cols-4 gap-4">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <Skeleton key={i} className="h-96 w-full" />
-          ))}
+    <Suspense
+      fallback={
+        <div className="space-y-6">
+          <Skeleton className="h-10 w-72" />
+          <div className="grid grid-cols-4 gap-4">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <Skeleton key={i} className="h-96 w-full" />
+            ))}
+          </div>
         </div>
-      </div>
-    }>
+      }
+    >
       <KanbanPageContent />
     </Suspense>
   );

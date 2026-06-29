@@ -40,6 +40,15 @@ graph BT
 
 Each of those assembled pull requests passes through the [in-path PR-review gate](task-lifecycle.md#the-in-path-pr-review-gate) before its PM merges it.
 
+## Submit gates that keep the chain clean
+
+Two gate-level checks stop a stale branch from sneaking through:
+
+- **Behind-base gate on `i_am_done`.** If a sibling's PR merged into the parent branch while the developer worked, the dev's branch is now behind its base and the assembled PR won't merge cleanly. The gate refuses `i_am_done` in that state and steers the developer to `sync_branch` — the gate-level rebase verb that rebases the branch onto its base (raw shell git is denied to agents, so the rebase goes through the gate, traced and evidenced). Conflicts abort with no force-push and point the dev at resolve-by-hand. The gate fails open on a flaky fetch so a transient git error can't strand a task at the submit gate.
+- **Unchanged-PR gate on `submit_root`.** When a Main-PM root PR is `pr_fail`'d and re-submitted byte-identical, the loop would repeat forever. The gate refuses the re-submit when the assembled root PR's head SHA is unchanged since the last `pr_fail` (no new cell work → identical diff); a different SHA means the branch advanced and the submit proceeds. Every ambiguous case fails open.
+
+PR operations are also **scoped per project** — `open_pr`, `pr_target`, `close_pull_request`, and `merge_pr` all require the project and resolve the PR number within it, so two tasks in different repos that happen to share a PR number can never collide and merge the wrong repository's PR.
+
 ## Only the CEO merges to master
 
 The final pull request — root → master — is the one place the company stops and hands the decision back to you. It lands in your **CEO Approval Queue** and waits.

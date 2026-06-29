@@ -146,17 +146,18 @@ def _branch_service(*, found: bool) -> TaskService:
 @pytest.mark.asyncio
 async def test_active_task_owns_branch_true_when_live_task_holds_it() -> None:
     assert (
-        await _branch_service(found=True).active_task_owns_branch("feature/x") is True
+        await _branch_service(found=True).active_task_owns_branch("feature/x", uuid4())
+        is True
     )
 
 
 @pytest.mark.asyncio
 async def test_active_task_owns_branch_false_when_no_live_task() -> None:
     svc = _branch_service(found=False)
-    assert await svc.active_task_owns_branch("feature/x") is False
+    assert await svc.active_task_owns_branch("feature/x", uuid4()) is False
 
 
 @pytest.mark.asyncio
 async def test_active_task_owns_branch_false_for_empty_branch() -> None:
     # No branch → cannot be owned; never hits the DB.
-    assert await TaskService(MagicMock()).active_task_owns_branch("") is False
+    assert await TaskService(MagicMock()).active_task_owns_branch("", uuid4()) is False

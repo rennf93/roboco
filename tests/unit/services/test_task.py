@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from roboco.db.tables import AuditLogTable
 from roboco.models.base import (
     AgentRole,
     AgentStatus,
@@ -993,12 +994,165 @@ async def test_ensure_branch_coordination_root_no_cell_map_stays_branchless() ->
 
 
 @pytest.mark.asyncio
-async def test_ensure_branch_raises_when_neither_project_nor_product() -> None:
-    """A task with neither a project nor a product is genuinely misconfigured."""
+async def test_ensure_branch_cell_map_root_cuts_integration_branch_per_project() -> (
+    None
+):
+    """An ad-hoc cell_projects root cuts feature/main_pm/{root} in each distinct
+    project the map spans — the product-root path with the map sourced from the
+    task instead of a Product."""
     svc = TaskService(MagicMock())
-    task = MagicMock(branch_name=None, project_id=None, product_id=None)
+    be_proj, fe_proj = uuid4(), uuid4()
+    cell_map = [
+        SimpleNamespace(team=Team.BACKEND, project_id=be_proj),
+        SimpleNamespace(team=Team.FRONTEND, project_id=fe_proj),
+    ]
+    task = MagicMock(
+        branch_name=None,
+        project_id=None,
+        product_id=None,
+        batch_id=uuid4(),
+        parent_task_id=uuid4(),
+        cell_projects=cell_map,
+    )
+    create_in_project = AsyncMock(return_value="feature/main_pm/root1234")
+    _bind(svc, "_create_branch_in_project", create_in_project)
+    project_svc = MagicMock(get=AsyncMock(return_value=MagicMock()))
+    with patch("roboco.services.project.get_project_service", return_value=project_svc):
+        result = await svc._ensure_branch_for_task(task, uuid4())
+    assert result == "feature/main_pm/root1234"
+    # one integration branch per distinct project in the map (here 2 cells, 2 projects)
+    assert create_in_project.await_count == len(cell_map)
+
+
+@pytest.mark.asyncio
+async def test_distinct_projects_for_task_dedupes_cell_map_by_project_id() -> None:
+    """Two cells mapping at the same project (the monorepo case) yield ONE
+    integration branch, not two — mirroring product distinct_project_ids."""
+    svc = TaskService(MagicMock())
+    shared = uuid4()
+    task = MagicMock(
+        project_id=None,
+        product_id=None,
+        cell_projects=[
+            SimpleNamespace(team=Team.FRONTEND, project_id=shared),
+            SimpleNamespace(team=Team.BACKEND, project_id=shared),
+        ],
+    )
+    ids = await svc._distinct_projects_for_task(task)
+    assert ids == [shared]
+
+
+@pytest.mark.asyncio
+async def test_ensure_branch_raises_when_neither_project_nor_product() -> None:
+    """A task with neither a project, a product, nor a cell map is misconfigured."""
+    svc = TaskService(MagicMock())
+    task = MagicMock(
+        branch_name=None,
+        project_id=None,
+        product_id=None,
+        cell_projects=[],
+        batch_id=None,
+        parent_task_id=None,
+    )
     with pytest.raises(ValueError, match="project_id"):
         await svc._ensure_branch_for_task(task, uuid4())
+
+
+# ---------------------------------------------------------------------------
+# _finalize_claim — branch-creation failure rollback (F060)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_finalize_claim_rollback_emits_reversal_audit() -> None:
+    """When branch creation fails mid-claim, the rollback must emit a REVERSAL
+    audit row (CLAIMED -> original) so the audit journey matches the real
+    (rolled-back) task state. The audit service writes on its own connection, so
+    the forward `task.claimed` row is NOT undone by the rollback's flush.
+    """
+    session = MagicMock()
+    session.flush = AsyncMock()
+    svc = TaskService(session)
+
+    task = _build_task(
+        status=TaskStatus.PENDING,
+        branch_name=None,  # forces the branch-creation path
+        project_id=uuid4(),
+        product_id=None,
+        batch_id=None,
+        parent_task_id=None,
+        cell_projects=[],  # a plain code task, not a branchless coordination root
+        pr_created=False,
+        pr_number=None,
+    )
+    agent = MagicMock(id=uuid4(), role=AgentRole.DEVELOPER)
+
+    audit_calls: list[dict[str, Any]] = []
+
+    def _capture(
+        _task: object, *, from_status: str, to_status: str, **_kw: object
+    ) -> None:
+        audit_calls.append({"from": from_status, "to": to_status})
+
+    _bind(svc, "_emit_status_transition_audit", _capture)
+    _bind(
+        svc,
+        "_ensure_branch_for_task",
+        AsyncMock(side_effect=RuntimeError("branch boom")),
+    )
+
+    with pytest.raises(RuntimeError, match="branch boom"):
+        await svc._finalize_claim(task, agent, agent.id)
+
+    # The task reverted to its pre-claim status (the existing behavior).
+    assert task.status == TaskStatus.PENDING
+    # The forward claim row was emitted...
+    assert {"from": "pending", "to": "claimed"} in audit_calls
+    # ...AND the reversal row is emitted so the journey's last event matches
+    # the rolled-back state (the F060 fix). Before the fix this was missing.
+    assert {"from": "claimed", "to": "pending"} in audit_calls
+
+
+@pytest.mark.asyncio
+async def test_emit_status_transition_audit_writes_in_session_atomically() -> None:
+    """The status-transition audit row is written into the CALLER's session (same
+    transaction as the transition), not fire-and-forget on a separate connection,
+    so it commits/rolls back atomically with the transition and cannot diverge
+    from real state. Asserted at the unit level: the row is ``session.add``-ed
+    (same txn) and NO fire-and-forget background task is spawned.
+    """
+    session = MagicMock()
+    added: list[object] = []
+    session.add.side_effect = added.append
+    svc = TaskService(session)
+    prior_bg = set(svc._background_tasks)
+
+    task = MagicMock(id=uuid4(), claimed_by=uuid4(), team=Team.BACKEND)
+
+    svc._emit_status_transition_audit(
+        task,
+        from_status="pending",
+        to_status="claimed",
+        agent_role="developer",
+        audit_agent_id=None,
+    )
+
+    # The audit row is added to the CALLER's session (same transaction) — not
+    # dispatched to a separate fire-and-forget connection.
+    rows = [r for r in added if isinstance(r, AuditLogTable)]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.event_type == "task.claimed"
+    assert row.target_type == "task"
+    assert row.target_id == task.id
+    assert row.details["from_status"] == "pending"
+    assert row.details["to_status"] == "claimed"
+    assert row.details["agent_role"] == "developer"
+    assert row.details["team"] == "backend"
+    # The claiming agent is attributed (resolved from claimed_by).
+    assert row.agent_id == task.claimed_by
+    # No fire-and-forget audit task was spawned (the old decoupled path).
+    assert svc._background_tasks == prior_bg
 
 
 # ---------------------------------------------------------------------------

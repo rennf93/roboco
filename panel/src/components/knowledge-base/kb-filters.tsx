@@ -3,17 +3,53 @@
 import { KBIndexType } from "@/types";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
-import { FileText, MessageSquare, BookOpen, AlertTriangle, Scale, GitBranch, ClipboardCheck, Lightbulb } from "lucide-react";
+import {
+  FileText,
+  MessageSquare,
+  BookOpen,
+  AlertTriangle,
+  Scale,
+  GitBranch,
+  ClipboardCheck,
+  Lightbulb,
+} from "lucide-react";
 
-const indexTypeConfig: Record<KBIndexType, { label: string; icon: React.ReactNode }> = {
-  [KBIndexType.DOCUMENTATION]: { label: "Documentation", icon: <FileText className="h-4 w-4 text-blue-500" /> },
-  [KBIndexType.CONVERSATIONS]: { label: "Conversations", icon: <MessageSquare className="h-4 w-4 text-green-500" /> },
-  [KBIndexType.JOURNALS]: { label: "Journals", icon: <BookOpen className="h-4 w-4 text-orange-500" /> },
-  [KBIndexType.ERRORS]: { label: "Errors", icon: <AlertTriangle className="h-4 w-4 text-red-500" /> },
-  [KBIndexType.STANDARDS]: { label: "Standards", icon: <Scale className="h-4 w-4 text-cyan-500" /> },
-  [KBIndexType.DECISIONS]: { label: "Decisions", icon: <GitBranch className="h-4 w-4 text-indigo-500" /> },
-  [KBIndexType.REVIEWS]: { label: "Reviews", icon: <ClipboardCheck className="h-4 w-4 text-pink-500" /> },
-  [KBIndexType.LEARNINGS]: { label: "Learnings", icon: <Lightbulb className="h-4 w-4 text-yellow-500" /> },
+const indexTypeConfig: Record<
+  KBIndexType,
+  { label: string; icon: React.ReactNode }
+> = {
+  [KBIndexType.DOCUMENTATION]: {
+    label: "Documentation",
+    icon: <FileText className="h-4 w-4 text-blue-500" />,
+  },
+  [KBIndexType.CONVERSATIONS]: {
+    label: "Conversations",
+    icon: <MessageSquare className="h-4 w-4 text-green-500" />,
+  },
+  [KBIndexType.JOURNALS]: {
+    label: "Journals",
+    icon: <BookOpen className="h-4 w-4 text-orange-500" />,
+  },
+  [KBIndexType.ERRORS]: {
+    label: "Errors",
+    icon: <AlertTriangle className="h-4 w-4 text-red-500" />,
+  },
+  [KBIndexType.STANDARDS]: {
+    label: "Standards",
+    icon: <Scale className="h-4 w-4 text-cyan-500" />,
+  },
+  [KBIndexType.DECISIONS]: {
+    label: "Decisions",
+    icon: <GitBranch className="h-4 w-4 text-indigo-500" />,
+  },
+  [KBIndexType.REVIEWS]: {
+    label: "Reviews",
+    icon: <ClipboardCheck className="h-4 w-4 text-pink-500" />,
+  },
+  [KBIndexType.LEARNINGS]: {
+    label: "Learnings",
+    icon: <Lightbulb className="h-4 w-4 text-yellow-500" />,
+  },
 };
 
 interface KBFiltersProps {
@@ -69,7 +105,8 @@ export function KBFilters({ selectedTypes, onTypesChange }: KBFiltersProps) {
       </div>
       {!allSelected && (
         <p className="text-xs text-muted-foreground">
-          Showing {selectedTypes.length} of {Object.values(KBIndexType).length} types
+          Showing {selectedTypes.length} of {Object.values(KBIndexType).length}{" "}
+          types
         </p>
       )}
     </div>

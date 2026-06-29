@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     # ==========================================================================
     # Application
     # ==========================================================================
-    app_version: str = "0.13.0"
+    app_version: str = "0.14.0"
     debug: bool = False
     environment: str = Field(
         default="development", pattern="^(development|staging|production)$"
@@ -162,7 +162,7 @@ class Settings(BaseSettings):
 
     # Local LLM for RAG answer synthesis
     local_llm_model: str = Field(
-        default="glm-5:cloud",
+        default="glm-5.2:cloud",
         description="Local LLM for RAG answer synthesis "
         "(non-thinking models are faster)",
     )
@@ -668,7 +668,7 @@ class Settings(BaseSettings):
     agent_image_tag: str = Field(
         default="",
         description=(
-            "Tag for pre-built agent images (e.g. 'latest' or '0.13.0'). Empty "
+            "Tag for pre-built agent images (e.g. 'latest' or '0.14.0'). Empty "
             "leaves the tag implicit (':latest'); only meaningful with "
             "agent_image_registry set."
         ),

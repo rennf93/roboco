@@ -24,9 +24,7 @@ export function NotificationBell() {
         <Button variant="ghost" size="icon" className="relative">
           <Bell className="h-5 w-5" />
           {unreadCount > 0 && (
-            <Badge 
-              className="absolute -top-1 -right-1 h-5 w-5 flex items-center justify-center p-0 text-xs bg-red-500"
-            >
+            <Badge className="absolute -top-1 -right-1 h-5 w-5 flex items-center justify-center p-0 text-xs bg-red-500">
               {unreadCount > 9 ? "9+" : unreadCount}
             </Badge>
           )}
@@ -49,34 +47,37 @@ export function NotificationBell() {
               )}
             </div>
           </div>
-          
+
           {notifications.length === 0 ? (
             <p className="text-sm text-muted-foreground text-center py-4">
               No new notifications
             </p>
           ) : (
             <div className="space-y-2 max-h-64 overflow-y-auto">
-              {notifications.slice(-10).reverse().map((notification, i) => (
-                <div
-                  key={notification.notification_id ?? `anon-${i}`}
-                  className="p-2 rounded bg-muted hover:bg-muted/80 cursor-pointer"
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="font-medium text-sm">
-                      {notification.subject}
-                    </span>
-                    <Badge variant="outline" className="text-xs">
-                      {notification.priority}
-                    </Badge>
+              {notifications
+                .slice(-10)
+                .reverse()
+                .map((notification, i) => (
+                  <div
+                    key={notification.notification_id ?? `anon-${i}`}
+                    className="p-2 rounded bg-muted hover:bg-muted/80 cursor-pointer"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium text-sm">
+                        {notification.subject}
+                      </span>
+                      <Badge variant="outline" className="text-xs">
+                        {notification.priority}
+                      </Badge>
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {notification.notification_type}
+                    </p>
                   </div>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    {notification.notification_type}
-                  </p>
-                </div>
-              ))}
+                ))}
             </div>
           )}
-          
+
           <div className="pt-2 border-t">
             <Link href="/notifications" onClick={() => setOpen(false)}>
               <Button variant="outline" size="sm" className="w-full">

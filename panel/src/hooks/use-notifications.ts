@@ -1,11 +1,15 @@
 "use client";
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { notificationsApi, type NotificationFilters } from "@/lib/api/notifications";
+import {
+  notificationsApi,
+  type NotificationFilters,
+} from "@/lib/api/notifications";
 
 export const notificationKeys = {
   all: ["notifications"] as const,
-  list: (filters?: NotificationFilters) => [...notificationKeys.all, "list", filters] as const,
+  list: (filters?: NotificationFilters) =>
+    [...notificationKeys.all, "list", filters] as const,
   detail: (id: string) => [...notificationKeys.all, "detail", id] as const,
 };
 
@@ -29,7 +33,8 @@ export function useMarkNotificationRead() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (notificationId: string) => notificationsApi.markRead(notificationId),
+    mutationFn: (notificationId: string) =>
+      notificationsApi.markRead(notificationId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: notificationKeys.all });
     },
@@ -40,7 +45,8 @@ export function useAcknowledgeNotification() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (notificationId: string) => notificationsApi.acknowledge(notificationId),
+    mutationFn: (notificationId: string) =>
+      notificationsApi.acknowledge(notificationId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: notificationKeys.all });
     },

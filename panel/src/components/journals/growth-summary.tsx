@@ -18,7 +18,11 @@ interface GrowthSummaryProps {
   isLoading: boolean;
 }
 
-export function GrowthSummary({ journal, growth, isLoading }: GrowthSummaryProps) {
+export function GrowthSummary({
+  journal,
+  growth,
+  isLoading,
+}: GrowthSummaryProps) {
   if (isLoading) {
     return (
       <Card>
@@ -107,7 +111,10 @@ export function GrowthSummary({ journal, growth, isLoading }: GrowthSummaryProps
                 {Math.round(growth.struggle_resolution_rate * 100)}%
               </span>
             </div>
-            <Progress value={growth.struggle_resolution_rate * 100} className="h-2" />
+            <Progress
+              value={growth.struggle_resolution_rate * 100}
+              className="h-2"
+            />
           </div>
         )}
 
@@ -116,7 +123,9 @@ export function GrowthSummary({ journal, growth, isLoading }: GrowthSummaryProps
           <div className="pt-3 border-t">
             <div className="flex items-center justify-between text-sm">
               <span className="text-muted-foreground">Sentiment Trend</span>
-              <span className="font-medium capitalize">{growth.sentiment_trend}</span>
+              <span className="font-medium capitalize">
+                {growth.sentiment_trend}
+              </span>
             </div>
           </div>
         )}

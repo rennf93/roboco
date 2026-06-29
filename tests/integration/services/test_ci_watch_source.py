@@ -86,7 +86,7 @@ async def _make_ci_watch_task(
             team=Team.MAIN_PM,
             assigned_to=MAIN_PM_UUID,
             created_by=SYSTEM_UUID,
-            task_type=TaskType.CODE,
+            task_type=TaskType.PLANNING,
             nature=TaskNature.TECHNICAL,
             estimated_complexity=Complexity.MEDIUM,
             project_id=cast("UUID", project.id),

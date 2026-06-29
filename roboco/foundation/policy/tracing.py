@@ -391,6 +391,9 @@ VERBS_WITHOUT_TRACING: frozenset[str] = frozenset(
         "claim_doc_task",
         # open_pr is a mechanical push+open; preconditions are inline.
         "open_pr",
+        # sync_branch is a git-only rebase+force-push through the gate; no DB
+        # state change, no journal/plan rationale (mirrors open_pr).
+        "sync_branch",
     }
 )
 

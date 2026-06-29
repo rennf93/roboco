@@ -24,7 +24,12 @@ import {
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
-import { Team, type Product, type ProductCellMapping, type ProductUpdate } from "@/types";
+import {
+  Team,
+  type Product,
+  type ProductCellMapping,
+  type ProductUpdate,
+} from "@/types";
 
 const cells: { value: Team; label: string }[] = [
   { value: Team.BACKEND, label: "Backend" },
@@ -33,7 +38,9 @@ const cells: { value: Team; label: string }[] = [
 ];
 
 // Build a team -> project_id lookup from the product's cell mappings
-function mappingFromCells(productCells: ProductCellMapping[]): Partial<Record<Team, string>> {
+function mappingFromCells(
+  productCells: ProductCellMapping[],
+): Partial<Record<Team, string>> {
   return productCells.reduce<Partial<Record<Team, string>>>((acc, cell) => {
     acc[cell.team] = cell.project_id;
     return acc;
@@ -41,10 +48,15 @@ function mappingFromCells(productCells: ProductCellMapping[]): Partial<Record<Te
 }
 
 // Build the cells payload from the per-cell project selections (only mapped cells)
-function buildCells(mapping: Partial<Record<Team, string>>): ProductCellMapping[] {
+function buildCells(
+  mapping: Partial<Record<Team, string>>,
+): ProductCellMapping[] {
   return cells
     .filter((cell) => mapping[cell.value])
-    .map((cell) => ({ team: cell.value, project_id: mapping[cell.value] as string }));
+    .map((cell) => ({
+      team: cell.value,
+      project_id: mapping[cell.value] as string,
+    }));
 }
 
 interface EditProductDialogProps {
@@ -69,7 +81,7 @@ function EditProductForm({
   const [name, setName] = useState(product.name);
   const [description, setDescription] = useState(product.description ?? "");
   const [cellMapping, setCellMapping] = useState<Partial<Record<Team, string>>>(
-    mappingFromCells(product.cells)
+    mappingFromCells(product.cells),
   );
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -92,7 +104,7 @@ function EditProductForm({
       onSuccess();
     } catch (error) {
       toast.error(
-        `Failed to update product: ${error instanceof Error ? error.message : "Unknown error"}`
+        `Failed to update product: ${error instanceof Error ? error.message : "Unknown error"}`,
       );
     }
   };
@@ -101,7 +113,9 @@ function EditProductForm({
     <form onSubmit={handleSubmit}>
       <DialogHeader>
         <DialogTitle>Edit Product</DialogTitle>
-        <DialogDescription>Update product settings. Slug cannot be changed.</DialogDescription>
+        <DialogDescription>
+          Update product settings. Slug cannot be changed.
+        </DialogDescription>
       </DialogHeader>
       <div className="grid gap-4 py-4">
         {/* Slug (read-only) */}
@@ -142,7 +156,10 @@ function EditProductForm({
           <Label>Cell Project Mapping</Label>
           {cells.map((cell) => (
             <div key={cell.value} className="grid gap-2">
-              <Label htmlFor={`cell-${cell.value}`} className="text-sm text-muted-foreground">
+              <Label
+                htmlFor={`cell-${cell.value}`}
+                className="text-sm text-muted-foreground"
+              >
                 {cell.label}
               </Label>
               <Select
@@ -179,7 +196,11 @@ function EditProductForm({
 }
 
 // Main dialog component - handles data fetching and dialog state
-export function EditProductDialog({ productId, open, onOpenChange }: EditProductDialogProps) {
+export function EditProductDialog({
+  productId,
+  open,
+  onOpenChange,
+}: EditProductDialogProps) {
   const { data: product, isLoading } = useProduct(productId);
 
   return (
@@ -201,7 +222,9 @@ export function EditProductDialog({ productId, open, onOpenChange }: EditProduct
             onCancel={() => onOpenChange(false)}
           />
         ) : (
-          <div className="py-8 text-center text-muted-foreground">Product not found</div>
+          <div className="py-8 text-center text-muted-foreground">
+            Product not found
+          </div>
         )}
       </DialogContent>
     </Dialog>

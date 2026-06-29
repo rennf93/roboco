@@ -70,6 +70,19 @@ class PlaybooksIndexPlugin(BaseIndexPlugin):
             tags=params.tags,
         )
 
+    async def delete_playbook(self, playbook_id: str) -> None:
+        """Remove a playbook's embedded chunks from the vector store.
+
+        Used when a playbook is rejected/archived after it was approved+indexed,
+        so it stops surfacing in agent briefings as a stale, no-longer-canonical
+        procedure. Idempotent: the store's ``delete_by_source`` no-ops when no
+        chunks match the source URI.
+        """
+        source = self.build_source_uri(doc_id=playbook_id)
+        if not source:
+            return
+        await self._require_store.delete_by_source(source)
+
     async def search_playbooks(
         self,
         query: str,

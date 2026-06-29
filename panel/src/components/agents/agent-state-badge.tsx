@@ -59,7 +59,11 @@ interface AgentStateBadgeProps {
   size?: "sm" | "md" | "lg";
 }
 
-export function AgentStateBadge({ state, showIcon = true, size = "md" }: AgentStateBadgeProps) {
+export function AgentStateBadge({
+  state,
+  showIcon = true,
+  size = "md",
+}: AgentStateBadgeProps) {
   const sizeClasses = {
     sm: "text-xs px-2 py-0.5",
     md: "text-sm px-2.5 py-0.5",

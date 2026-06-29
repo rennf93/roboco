@@ -11,7 +11,7 @@ other verb will be rejected with a Decision telling you the right one.
 - **i_am_idle**: Signal you have no active work. PMs auto-pause owned in_progress tasks.
 - **i_will_plan**: PM mirror of i_will_work_on for parent tasks. Claim, plan, transition to in_progress; from there delegate subtasks.
 - **resume**: Resume a paused task you own. paused -> in_progress.
-- **submit_root**: Main PM opens the root→master PR and moves the root task to awaiting_pr_review for the main reviewer (the root analogue of the cell PM's submit_up). After pr_pass, call complete to escalate to the CEO. Only for code roots; branchless coordination roots skip the gate and complete directly.
+- **submit_root**: Main PM opens the root→master PR and moves the root task to awaiting_pr_review for the main reviewer (the root analogue of the cell PM's submit_up). After pr_pass, call complete to escalate to the CEO. For branch-bearing roots (a Main-PM root-subtask assembles the cells' merged work); branchless coordination roots skip the gate and complete directly. The gate is branch-keyed, not task_type-keyed — a Main-PM root is planning-typed, never code.
 - **triage**: List actionable tasks in your scope.
 - **triage_all**: List actionable tasks across all teams (Main PM only).
 - **unblock**: PM unblocks a blocked task; restores pre-block state.

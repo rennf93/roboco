@@ -23,11 +23,12 @@ function formatBucket(bucket: string): string {
   const d = new Date(bucket);
   // If the bucket has a non-zero time component it is an hourly bucket → show HH:00.
   // Otherwise it is a daily bucket → show MM/DD.
-  const isHourly = d.getMinutes() === 0 && (d.getHours() !== 0 || bucket.includes("T"));
+  const isHourly =
+    d.getMinutes() === 0 && (d.getHours() !== 0 || bucket.includes("T"));
   if (isHourly && d.getSeconds() === 0 && !bucket.endsWith("T00:00:00.000Z")) {
     return d.getHours().toString().padStart(2, "0") + ":00";
   }
-  return (d.getMonth() + 1) + "/" + d.getDate();
+  return d.getMonth() + 1 + "/" + d.getDate();
 }
 
 function fmtK(n: number): string {
@@ -35,7 +36,10 @@ function fmtK(n: number): string {
   return String(n);
 }
 
-export function UsageTimeSeriesChart({ data, isLoading }: UsageTimeSeriesChartProps) {
+export function UsageTimeSeriesChart({
+  data,
+  isLoading,
+}: UsageTimeSeriesChartProps) {
   const chartData = (data ?? []).map((p) => ({
     hour: formatBucket(p.bucket),
     Input: p.tokens_input,
@@ -58,12 +62,28 @@ export function UsageTimeSeriesChart({ data, isLoading }: UsageTimeSeriesChartPr
             >
               <defs>
                 <linearGradient id="fillInput" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="var(--chart-1)" stopOpacity={0.8} />
-                  <stop offset="95%" stopColor="var(--chart-1)" stopOpacity={0.1} />
+                  <stop
+                    offset="5%"
+                    stopColor="var(--chart-1)"
+                    stopOpacity={0.8}
+                  />
+                  <stop
+                    offset="95%"
+                    stopColor="var(--chart-1)"
+                    stopOpacity={0.1}
+                  />
                 </linearGradient>
                 <linearGradient id="fillOutput" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="var(--chart-2)" stopOpacity={0.8} />
-                  <stop offset="95%" stopColor="var(--chart-2)" stopOpacity={0.1} />
+                  <stop
+                    offset="5%"
+                    stopColor="var(--chart-2)"
+                    stopOpacity={0.8}
+                  />
+                  <stop
+                    offset="95%"
+                    stopColor="var(--chart-2)"
+                    stopOpacity={0.1}
+                  />
                 </linearGradient>
               </defs>
               <CartesianGrid strokeDasharray="3 3" className="opacity-20" />

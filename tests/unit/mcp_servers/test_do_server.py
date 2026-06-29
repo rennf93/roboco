@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import tempfile
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -29,7 +30,7 @@ _DO_TEST_MANIFEST = {
 
 
 @pytest.fixture
-def do_module(monkeypatch):  # type: ignore[no-untyped-def]
+def do_module(monkeypatch: pytest.MonkeyPatch) -> Any:
     monkeypatch.setenv("ROBOCO_AGENT_ID", "00000000-0000-0000-0000-000000000001")
     monkeypatch.setenv("ROBOCO_AGENT_ROLE", "developer")
     monkeypatch.setenv("ROBOCO_ORCHESTRATOR_URL", "http://test-orchestrator:8000")
@@ -44,7 +45,7 @@ def do_module(monkeypatch):  # type: ignore[no-untyped-def]
     return srv
 
 
-def test_commit_posts_message_and_files(do_module):  # type: ignore[no-untyped-def]
+def test_commit_posts_message_and_files(do_module: Any) -> None:
     fake_client = MagicMock()
     fake_client.__enter__.return_value = fake_client
     fake_response = MagicMock()
@@ -60,7 +61,7 @@ def test_commit_posts_message_and_files(do_module):  # type: ignore[no-untyped-d
     assert kwargs["json"] == {"message": "feat(api): add /healthz", "files": ["foo.py"]}
 
 
-def test_note_default_scope_note(do_module):  # type: ignore[no-untyped-def]
+def test_note_default_scope_note(do_module: Any) -> None:
     fake_client = MagicMock()
     fake_client.__enter__.return_value = fake_client
     fake_response = MagicMock()
@@ -74,7 +75,7 @@ def test_note_default_scope_note(do_module):  # type: ignore[no-untyped-def]
     assert kwargs["json"]["scope"] == "note"
 
 
-def test_note_with_scope_reflect(do_module):  # type: ignore[no-untyped-def]
+def test_note_with_scope_reflect(do_module: Any) -> None:
     fake_client = MagicMock()
     fake_client.__enter__.return_value = fake_client
     fake_response = MagicMock()
@@ -88,7 +89,7 @@ def test_note_with_scope_reflect(do_module):  # type: ignore[no-untyped-def]
     assert kwargs["json"]["scope"] == "reflect"
 
 
-def test_say_posts_channel_and_text(do_module):  # type: ignore[no-untyped-def]
+def test_say_posts_channel_and_text(do_module: Any) -> None:
     fake_client = MagicMock()
     fake_client.__enter__.return_value = fake_client
     fake_response = MagicMock()
@@ -106,7 +107,7 @@ def test_say_posts_channel_and_text(do_module):  # type: ignore[no-untyped-def]
     }
 
 
-def test_dm_posts_all_fields(do_module):  # type: ignore[no-untyped-def]
+def test_dm_posts_all_fields(do_module: Any) -> None:
     fake_client = MagicMock()
     fake_client.__enter__.return_value = fake_client
     fake_response = MagicMock()
@@ -125,7 +126,7 @@ def test_dm_posts_all_fields(do_module):  # type: ignore[no-untyped-def]
     }
 
 
-def test_evidence_posts_task_id(do_module):  # type: ignore[no-untyped-def]
+def test_evidence_posts_task_id(do_module: Any) -> None:
     fake_client = MagicMock()
     fake_client.__enter__.return_value = fake_client
     fake_response = MagicMock()

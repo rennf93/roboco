@@ -44,7 +44,9 @@ export function AcceptanceCriteria({ task }: AcceptanceCriteriaProps) {
   }, [editingIndex]);
 
   // Parse criterion to get text and completion status
-  const parseCriterion = (criterion: string): { text: string; completed: boolean } => {
+  const parseCriterion = (
+    criterion: string,
+  ): { text: string; completed: boolean } => {
     if (criterion.startsWith("[x]") || criterion.startsWith("[X]")) {
       return { text: criterion.slice(3).trim(), completed: true };
     }
@@ -62,7 +64,7 @@ export function AcceptanceCriteria({ task }: AcceptanceCriteriaProps) {
 
   // Count completed criteria
   const completedCount = criteria.filter(
-    (c) => c.startsWith("[x]") || c.startsWith("[X]")
+    (c) => c.startsWith("[x]") || c.startsWith("[X]"),
   ).length;
 
   // Toggle criterion completion
@@ -89,7 +91,10 @@ export function AcceptanceCriteria({ task }: AcceptanceCriteriaProps) {
       return;
     }
 
-    const newCriteria = [...criteria, formatCriterion(newCriterion.trim(), false)];
+    const newCriteria = [
+      ...criteria,
+      formatCriterion(newCriterion.trim(), false),
+    ];
 
     try {
       await updateTask.mutateAsync({

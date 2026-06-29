@@ -10,12 +10,17 @@ discipline); these assertions guard the resulting schema shape.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 from sqlalchemy import text
 
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
 
 @pytest.mark.asyncio
-async def test_revision_count_defaults_to_zero(db_session) -> None:  # type: ignore[no-untyped-def]
+async def test_revision_count_defaults_to_zero(db_session: AsyncSession) -> None:
     result = await db_session.execute(
         text(
             "SELECT column_default, is_nullable "
@@ -30,7 +35,7 @@ async def test_revision_count_defaults_to_zero(db_session) -> None:  # type: ign
 
 
 @pytest.mark.asyncio
-async def test_audit_log_query_index_exists(db_session) -> None:  # type: ignore[no-untyped-def]
+async def test_audit_log_query_index_exists(db_session: AsyncSession) -> None:
     result = await db_session.execute(
         text(
             "SELECT indexname FROM pg_indexes "

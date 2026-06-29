@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 
 import pytest
 from roboco.services.git import GitService
@@ -184,7 +185,9 @@ async def test_close_pull_request_patches_state_closed(
             return _Resp()
 
     with patch("roboco.services.git.httpx.AsyncClient", return_value=_Client()):
-        await svc.close_pull_request(159, comment="superseded by #158")
+        await svc.close_pull_request(
+            159, project_id=uuid4(), comment="superseded by #158"
+        )
 
     assert (
         "POST",
@@ -259,7 +262,10 @@ async def test_close_pull_request_idempotent_when_already_closed(
 
     with patch("roboco.services.git.httpx.AsyncClient", return_value=_Client()):
         await svc.close_pull_request(
-            159, comment="superseded by #158", delete_branch=False
+            159,
+            project_id=uuid4(),
+            comment="superseded by #158",
+            delete_branch=False,
         )
 
     assert [c[0] for c in calls] == ["GET"]  # no POST comment, no PATCH

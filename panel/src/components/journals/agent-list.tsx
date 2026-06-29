@@ -44,7 +44,10 @@ function groupByTeam(agents: Agent[]): Record<string, Agent[]> {
       groups.marketing.push(agent);
     } else if (agent.team === Team.BOARD) {
       groups.board.push(agent);
-    } else if (agent.team === Team.MAIN_PM || agent.role === AgentRole.MAIN_PM) {
+    } else if (
+      agent.team === Team.MAIN_PM ||
+      agent.role === AgentRole.MAIN_PM
+    ) {
       groups.management.push(agent);
     } else if (
       agent.role === AgentRole.PRODUCT_OWNER ||

@@ -7,7 +7,7 @@ No DB required — Choreographer is mocked.
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -294,6 +294,50 @@ async def test_delegate_dispatches_inputs_bundle() -> None:
     mock_chore.delegate.assert_awaited_once()
     inputs = mock_chore.delegate.await_args.args[2]
     assert inputs.task_type == "code"
+
+
+@pytest.mark.asyncio
+async def test_delegate_forwards_collision_surfaces_to_inputs() -> None:
+    """The dev-task collision surface (intends_to_touch / adds_migration /
+    touches_shared) and an explicit depends_on override must round-trip from
+    the HTTP body through DelegateInputs so the cell PM can express the
+    dev-task collision DAG (the missing edge kind 3 — see the multi-level
+    sequencing design). Today these fields do not exist on DelegateRequest /
+    DelegateInputs, so the test would 422 / AttributeError — the red signal.
+    """
+    mock_chore = MagicMock()
+    mock_chore.delegate = AsyncMock(
+        return_value=_make_envelope(status="created", task_id=_TASK_ID)
+    )
+    client = TestClient(_build_app(mock_chore))
+    dep_id = str(uuid4())
+
+    resp = client.post(
+        "/api/v1/flow/cell_pm/delegate",
+        json={
+            "parent_task_id": _TASK_ID,
+            "title": "Implement /v1/foo",
+            "description": "Add the foo endpoint with passing tests.",
+            "assigned_to": "be-dev-1",
+            "team": "backend",
+            "task_type": "code",
+            "nature": "technical",
+            "estimated_complexity": "medium",
+            "acceptance_criteria": ["GET /v1/foo returns 200 with body"],
+            "intends_to_touch": ["roboco/api/routes/v1/foo.py"],
+            "adds_migration": True,
+            "touches_shared": False,
+            "depends_on": [dep_id],
+        },
+        headers=_HEADERS,
+    )
+
+    assert resp.status_code == _HTTP_200, resp.text
+    inputs = mock_chore.delegate.await_args.args[2]
+    assert inputs.intends_to_touch == ["roboco/api/routes/v1/foo.py"]
+    assert inputs.adds_migration is True
+    assert inputs.touches_shared is False
+    assert inputs.depends_on == [UUID(dep_id)]
 
 
 @pytest.mark.asyncio

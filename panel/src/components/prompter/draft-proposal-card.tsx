@@ -2,7 +2,13 @@
 
 import { MessageCircle, Users, Rocket, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { CopyButton } from "@/components/ui/copy-button";
 import type { DraftProposal } from "@/lib/api/prompter";
@@ -36,10 +42,10 @@ function draftToText(draft: DraftProposal): string {
     lines.push(
       "## What This Builds",
       ...draft.what_this_builds.map((b) => `- ${b}`),
-      ""
+      "",
     );
   }
-  if (draft.the_work?.length) {
+  if (Array.isArray(draft.the_work) && draft.the_work.length) {
     lines.push("## The Work");
     for (const cell of draft.the_work) {
       lines.push(`### ${cellLabel(cell.team)}`, cell.summary);
@@ -54,7 +60,7 @@ function draftToText(draft: DraftProposal): string {
     lines.push(
       "## Success Criteria",
       ...draft.acceptance_criteria.map((c) => `- ${c}`),
-      ""
+      "",
     );
   }
   return lines.join("\n").trim();
@@ -67,7 +73,7 @@ export function DraftProposalCard({
   isLaunching = false,
 }: DraftProposalCardProps) {
   const priorityLabel = PRIORITY_LABELS[draft.priority ?? 2] ?? "Medium";
-  const cells = draft.the_work ?? [];
+  const cells = Array.isArray(draft.the_work) ? draft.the_work : [];
   // Distinct cells only: the_work has one entry per work item, so a cell with
   // several items would otherwise show its badge repeated (Backend Backend …).
   const distinctTeams = Array.from(new Set(cells.map((c) => c.team)));
@@ -132,7 +138,9 @@ export function DraftProposalCard({
                   <span className="mt-0.5 h-3 w-3 shrink-0 rounded-full border border-primary/50 flex items-center justify-center">
                     <span className="h-1.5 w-1.5 rounded-full bg-primary/50" />
                   </span>
-                  <span className="text-foreground line-clamp-2">{criterion}</span>
+                  <span className="text-foreground line-clamp-2">
+                    {criterion}
+                  </span>
                 </li>
               ))}
               {draft.acceptance_criteria.length > 4 && (
@@ -170,7 +178,11 @@ export function DraftProposalCard({
           Board review &amp; Start
         </Button>
         {/* Approve & Start → PENDING, straight to Main PM (skip the board) */}
-        <Button size="sm" onClick={() => onStart("main_pm")} disabled={isLaunching}>
+        <Button
+          size="sm"
+          onClick={() => onStart("main_pm")}
+          disabled={isLaunching}
+        >
           {isLaunching ? (
             <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
           ) : (

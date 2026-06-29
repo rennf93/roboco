@@ -72,7 +72,9 @@ export function TranscriptRetentionCard() {
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="space-y-2">
-          <Label htmlFor="transcript-retention-days">Retention window (days)</Label>
+          <Label htmlFor="transcript-retention-days">
+            Retention window (days)
+          </Label>
           <Input
             id="transcript-retention-days"
             type="number"
@@ -83,7 +85,10 @@ export function TranscriptRetentionCard() {
             className="max-w-[160px]"
           />
         </div>
-        <Button onClick={handleSave} disabled={saveMutation.isPending || isLoading}>
+        <Button
+          onClick={handleSave}
+          disabled={saveMutation.isPending || isLoading}
+        >
           <Save className="h-4 w-4 mr-2" />
           {saveMutation.isPending ? "Saving..." : "Save"}
         </Button>

@@ -9,7 +9,9 @@ export const rateLimitsApi = {
    */
   getRateLimits: async (): Promise<RateLimitApiResponse> => {
     if (isMockMode()) {
-      console.warn("[rate-limits] isMockMode: skipping GET /api/system/rate-limits");
+      console.warn(
+        "[rate-limits] isMockMode: skipping GET /api/system/rate-limits",
+      );
       return { entries: [] };
     }
     const { data } = await api.get<RateLimitApiResponse>("/system/rate-limits");

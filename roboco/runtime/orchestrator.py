@@ -46,7 +46,7 @@ from roboco.agents_config import (
 )
 from roboco.config import settings
 from roboco.foundation import identity as _foundation
-from roboco.foundation.identity import CELL_TEAMS
+from roboco.foundation.identity import CELL_TEAMS, Role, role_for_slug_or_none
 from roboco.foundation.policy.agent_loop import DEFAULT_BUDGET as _AGENT_LOOP_BUDGET
 from roboco.foundation.policy.batch import is_branchless_coordination
 from roboco.models import AgentRole, Team
@@ -60,7 +60,11 @@ from roboco.models.runtime import (
     WaitingRecord,
 )
 from roboco.seeds.initial_data import AGENT_UUIDS
-from roboco.services.task import PR_REVIEW_SOURCES, RELEASE_MANAGER_SOURCE
+from roboco.services.task import (
+    PR_REVIEW_SOURCES,
+    RELEASE_MANAGER_SOURCE,
+    SELF_HEAL_SOURCE,
+)
 
 logger = structlog.get_logger()
 
@@ -86,6 +90,22 @@ SDK_PORT: int = 9000
 # (a 429 rate limit OR a 5xx overload both keep the provider parked).
 _ANTHROPIC_PROBE_BASE = "https://api.anthropic.com"
 _PROBE_TIMEOUT_SECONDS = 10.0
+# Docker subprocess deadlines for the reaper path. A hung Docker daemon or a
+# stuck container FS would otherwise freeze the single asyncio event loop: the
+# reaper runs inline before every dispatch tick and shares that loop with every
+# background sweeper. Generous enough that a legitimate slow docker call (a
+# loaded daemon, a cold-venv ``import httpx, mcp``) is never wrongly aborted;
+# short enough that a hang degrades one tick, not the whole fleet.
+_DOCKER_INSPECT_TIMEOUT_SECONDS = 10.0
+_DOCKER_EXEC_TIMEOUT_SECONDS = 30.0
+# Deadline for draining fire-and-forget ``_bg_tasks`` on shutdown. Short DB
+# writes (a respawn_tracker upsert, an audit-log row) finish before the
+# process exits — preserving the durable PM-respawn counter and the
+# metrics-bearing audit trail — while a stuck task can't hang shutdown: past
+# this deadline the still-pending tasks are cancelled. Generous enough that a
+# legitimate slow write under load commits rather than being dropped (the
+# exact data-loss tail the durable tracker exists to prevent).
+_SHUTDOWN_DRAIN_TIMEOUT_SECONDS = 5.0
 _HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_OK = 200
 _HTTP_MULTIPLE_CHOICES = 300  # first non-2xx status; 2xx == [_HTTP_OK, this)
@@ -102,16 +122,59 @@ _SYSTEM_API_HEADERS = {
     "X-Agent-ID": "00000000-0000-0000-0000-000000000000",
     "X-Agent-Role": "system",
 }
+
+
+def _system_api_headers() -> dict[str, str]:
+    """System identity headers for the orchestrator's internal self-API calls.
+
+    Wraps ``_SYSTEM_API_HEADERS`` and adds a signed ``X-Agent-Token`` for the
+    system identity (F038/F039). Without it, arming
+    ``ROBOCO_AGENT_AUTH_REQUIRED=true`` 401s every silent recovery op
+    (auto-block / auto-resume / auto-recover / SLA annotation) and wedges
+    paused/blocked parents — the prior self-PATCH 401 fix only carried
+    ``X-Agent-ID`` / ``X-Agent-Role``, so it was incomplete under auth-required.
+    When the HMAC secret is unset (dev), ``issue_agent_token`` returns the
+    ``UNSIGNED`` sentinel and auth isn't required, so the self-call still
+    succeeds; the header is present either way so a future arm-when-secret-set
+    doesn't silently break.
+    """
+    from roboco.agents_config import issue_agent_token
+
+    return {
+        **_SYSTEM_API_HEADERS,
+        "X-Agent-Token": issue_agent_token(
+            _SYSTEM_API_HEADERS["X-Agent-ID"], "system", ""
+        ),
+    }
+
+
 # Consecutive failed recovery probes before the CEO is notified once per episode.
 _CEO_NOTIFY_THRESHOLD = 10
+# Persistent-probe-failure escape hatch (F094): if the recovery probe keeps
+# failing past this threshold, the probe endpoint itself is the problem (a
+# misconfigured URL, a removed API key, a network partition to the probe host)
+# while the provider may well be fine for real workloads. Hold the park any
+# longer and every agent on the provider strands forever with only a one-shot
+# CEO notification. Past this threshold, fall back to the same time-expiry
+# optimism the unprobeable-provider path uses (``_do_probe`` returns True when
+# there is no probe URL): clear the park and resume. If the provider is
+# genuinely still down the real workload attempts re-park via the 429/5xx path,
+# so this is bounded burn — strictly better than a silent forever-strand. Kept
+# above the CEO-notify threshold so the operator gets the notification first.
+_PROBE_GIVE_UP_THRESHOLD = 30
 
 # Persistent server-overload parking (HTTP 529 / 500 / 503). The model API's
 # SDK already retries transient overloads in-process; only a persistent one
 # survives to kill the run. When it does, park the provider like a 429 instead
 # of crash-retrying into the overload. These markers are matched (lowercased,
 # substring) against the tail of the dead container's own output, so they are
-# kept specific to how the API surfaces an overload — bare "500"/"529" would
-# false-match an agent that merely writes about HTTP status codes.
+# kept specific to how the API surfaces an overload. Bare "error 529"/"error
+# 500"/"error 503" were dropped (F037): an agent that merely writes about an
+# HTTP status code in its own notes ("the endpoint returned error 500,
+# retrying") would false-match and park the whole Anthropic fleet. The SDK
+# error formatter emits "API Error: NNN" + a JSON error type, so the
+# ``api error: NNN`` and type-string markers below cover every real overload
+# without that false-match surface.
 _OVERLOAD_RETRY_AFTER_S = 45.0
 _ANTHROPIC_OVERLOAD_MARKERS: tuple[str, ...] = (
     "overloaded_error",
@@ -119,9 +182,6 @@ _ANTHROPIC_OVERLOAD_MARKERS: tuple[str, ...] = (
     "api error: 529",
     "api error: 500",
     "api error: 503",
-    "error 529",
-    "error 500",
-    "error 503",
 )
 
 # Session / usage-limit parking (HTTP 429). The Claude session ("5-hour") limit
@@ -244,6 +304,26 @@ _GROK_INTERACTIVE_DOCKERFILES = {
 # the retry window (unknown-provider time-expiry fallback in _probe_target).
 _GROK_RATE_LIMIT_EXIT_CODE = 75
 _GROK_RATE_LIMIT_RETRY_AFTER_S = 60.0
+# Grok has no real recovery probe (the SuperGrok OIDC token is not a valid
+# bearer for the metered api.x.ai, so a probe would no-op or strand grok
+# parked). The probe loop clears a grok park on a timer; the fresh agent hits
+# the still-active xAI 429, exits 75, and re-parks. Back the re-park retry_after
+# off exponentially within one episode so the churn dampens (60 -> 120 -> 240
+# -> ... capped) instead of spinning flat. The episode gap resets the count
+# once the rate limit has actually lifted.
+_GROK_REPARK_BACKOFF_CAP = 4  # max 2**4 = 16x base (~16min cycle)
+_GROK_REPARK_EPISODE_GAP_S = 1500.0  # 25min — > the capped ~16min cycle
+# A one-shot Grok container exits with this code (EX_CONFIG) when the
+# entrypoint's `grok_auth --check` backstop found the access token missing or
+# expired (it can't be refreshed headlessly, so the CLI would hang at an
+# interactive login prompt). Park the provider instead of crash-retrying 3x —
+# the agent cannot start without a valid token, so respawning burns tokens for
+# zero progress. The probe-resume loop revives the task once
+# grok_auth.refresh_if_stale (run once per dispatch tick) mints a fresh token
+# from the offline-access refresh token; if still expired, the next exit 78
+# re-parks (no token burn). Same shape as the 429 exit-75 path (F041).
+_GROK_AUTH_EXIT_CODE = 78
+_GROK_AUTH_RETRY_AFTER_S = 60.0
 
 
 # =============================================================================
@@ -315,19 +395,23 @@ def _read_project_slug(task: dict[str, Any]) -> str | None:
 def _is_coordination_task(task: dict[str, Any]) -> bool:
     """True for a task that does no git of its own.
 
-    Two shapes qualify: a board/fan-out coordination root (carries a product, no
-    repo — its cell subtasks resolve a real project from the product's
-    cell->project map), and a MegaTask umbrella (carries a batch_id, top-level —
-    its root-subtasks each carry their own branch/PR). Such a task has no
+    Three shapes qualify: a board/fan-out coordination root (carries a product,
+    no repo — its cell subtasks resolve a real project from the product's
+    cell->project map), an ad-hoc per-cell map coordination root (carries a
+    ``cell_projects`` map but no project/product — a multi-cell MegaTask
+    root-subtask), and a MegaTask umbrella (carries a batch_id, top-level — its
+    root-subtasks each carry their own branch/PR). Such a task has no
     project_slug, branch_name, or git token, and must NOT be git-gated at the
     spawn-readiness or stuck-detection checks the way a code task is. A task with
-    none of project / product / batch is genuinely unroutable and stays gated.
+    none of project / product / cell-map / batch is genuinely unroutable and
+    stays gated.
     """
     return is_branchless_coordination(
         project_id=task.get("project_id"),
         product_id=task.get("product_id"),
         batch_id=task.get("batch_id"),
         parent_task_id=task.get("parent_task_id"),
+        has_cell_projects=bool(task.get("cell_projects")),
     )
 
 
@@ -681,6 +765,20 @@ class AgentReadinessError(Exception):
     """
 
 
+class _SpawnAbortedDuringShutdown(Exception):
+    """Raised when a non-blocking intake/secretary spawn completes ``docker run``
+    after the orchestrator began shutting down.
+
+    The raiser has already removed the just-started container (so it isn't
+    orphaned); the guarded wrapper catches this BEFORE its generic
+    ``except Exception`` and closes the live relay silently — shutdown is not a
+    user-facing failure, so no error is pushed to the SSE stream. The F070
+    ``stop()`` drain awaits the bg spawn coroutine, so this surfaces cleanly
+    instead of the registration landing a live container into a registry that
+    ``stop()`` has already finished iterating.
+    """
+
+
 class AgentOrchestrator:
     """
     Manages Claude Code containers for all agents.
@@ -743,12 +841,29 @@ class AgentOrchestrator:
         # instead of waiting for the next 30-second tick.
         self._dispatch_wake: asyncio.Event = asyncio.Event()
         self._running = False
+        # Set True once stop() completes — makes the (lifespan + bootstrap
+        # safety-net) double-call a clean no-op instead of re-stopping already
+        # stopped agents / re-draining an empty bg-task set.
+        self._stopped = False
         self._lock = asyncio.Lock()
         # Serializes CEO supersede calls so a double-click can't pass the
         # find_supersede_umbrella dedup check twice and cut two branches /
         # spawn two umbrellas for the same PR (the check is read-then-write
         # with no DB-level uniqueness).
         self._supersede_lock = asyncio.Lock()
+        # Serialize concurrent live-chat starts for the single-id interactive
+        # agents (intake / secretary). Each has a fixed agent id, so two
+        # concurrent starts race on the container name (``docker run --name
+        # roboco-agent-<id>``) and the ``_instances[<id>]`` write — orphaning a
+        # container + relay. The lock makes the second start wait for the first
+        # to fully register (so the second's reap-prior step sees it) instead of
+        # both clobbering the registry. Distinct from ``self._lock`` (which
+        # ``stop_agent`` takes) to avoid a reentrancy deadlock: the spawn body
+        # holds this lock then calls ``stop_agent`` (acquires ``self._lock``) —
+        # lock order is always ``_intake_spawn_lock`` -> ``self._lock``, never
+        # the reverse, so there's no cycle.
+        self._intake_spawn_lock = asyncio.Lock()
+        self._secretary_spawn_lock = asyncio.Lock()
         # Per-tick set of task_ids already handled by an earlier
         # dispatcher. Reset at the start of every _dispatch_all_work.
         # Consumed via `self._mark_task_handled` / `_is_task_handled`.
@@ -759,6 +874,19 @@ class AgentOrchestrator:
         # is in a loop — without this gate the orchestrator re-spawns every
         # tick forever (seen in production on 2026-04-22).
         self._pm_respawn_tracker: dict[tuple[str, str], dict[str, Any]] = {}
+        # Serializes the fire-and-forget respawn-tracker upserts so same-key
+        # persists COMMIT in schedule (logical) order — not whatever order their
+        # DB transactions resolve in. A respawn loop fires count 1->2->3->4 in
+        # quick succession, one fire-and-forget persist per increment; without
+        # serialization a slow stale persist (count=2) can commit AFTER a fast
+        # fresh one (count=4), leaving the durable row at the stale low count
+        # and re-burning the strike threshold on restart. The lock is acquired
+        # as the FIRST await in _persist_respawn_record, so acquisition order
+        # matches task creation order (FIFO ready queue), which is the logical
+        # schedule order. Persists are best-effort background writes, so
+        # serializing them never blocks the dispatcher hot path (the lock lives
+        # in the bg task, not the caller).
+        self._respawn_persist_lock = asyncio.Lock()
         # Board agents (Product Owner / Head of Marketing) get exactly ONE
         # review pass per assigned task: they have no verb to claim, plan,
         # delegate, or complete, so a respawn cannot advance the task and would
@@ -794,6 +922,12 @@ class AgentOrchestrator:
         # kill-switch parity (the grok CLI exposes no live usage hook). 0 disables.
         # See _enforce_grok_cost_budget.
         self._grok_max_cost_usd: float = settings.grok_max_cost_usd
+        # Grok re-park backoff state. Track the re-park count within one episode
+        # so retry_after can back off exponentially (dampening the ~90s
+        # crash-retry churn), and the last park time so a gap (the rate limit
+        # actually lifted) resets the count for the next episode.
+        self._grok_last_park_at: datetime | None = None
+        self._grok_repark_count: int = 0
 
     # =========================================================================
     # LIFECYCLE
@@ -858,8 +992,42 @@ class AgentOrchestrator:
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
+    async def _drain_bg_tasks(self) -> None:
+        """Let fire-and-forget ``_bg_tasks`` finish before the process exits.
+
+        Short DB writes (a respawn_tracker upsert, an audit-log row) get a
+        bounded window to commit — preserving the durable PM-respawn counter
+        and the metrics-bearing audit trail — while a stuck task can't hang
+        shutdown: past ``_SHUTDOWN_DRAIN_TIMEOUT_SECONDS`` the still-pending
+        tasks are cancelled. ``return_exceptions=True`` so one failing bg task
+        doesn't crash the drain (a failed write already degraded to in-memory;
+        logging it here would just be noise). No-op when nothing is pending.
+        """
+        pending = [t for t in self._bg_tasks if not t.done()]
+        if not pending:
+            return
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*pending, return_exceptions=True),
+                timeout=_SHUTDOWN_DRAIN_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
+            for task in pending:
+                if not task.done():
+                    task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.gather(*pending, return_exceptions=True)
+
     async def stop(self) -> None:
         """Stop the orchestrator and all agents."""
+        if getattr(self, "_stopped", False):
+            # Idempotent: the lifespan shutdown path stops the orchestrator
+            # before closing the DB, and bootstrap's finally block re-calls
+            # stop() as a safety net. The second call must be a no-op, not a
+            # re-stop of already-stopped agents. ``getattr`` so a ``__new__``-
+            # constructed instance (unit-test pattern) without ``__init__`` is
+            # still stoppable.
+            return
         self._running = False
 
         # Cancel every background loop, then stop the agents.
@@ -877,10 +1045,30 @@ class AgentOrchestrator:
         ):
             await self._cancel_background_task(task)
 
-        # Stop all agents
+        # Stop all agents. One agent's stop error must not skip the drain
+        # below — that would re-introduce the data-loss tail for every in-flight
+        # bg write, so log-and-continue rather than propagate.
         for agent_id in list(self._instances.keys()):
-            await self.stop_agent(agent_id)
+            try:
+                # release_claim=True: on shutdown the orchestrator is going
+                # down and no agent will resume its task, so hand claimed
+                # tasks back to the pool now — they re-dispatch immediately on
+                # the next start instead of waiting for the reaper's TTL. A
+                # provider-parked agent is skipped inside stop_agent so its
+                # claim survives for the probe-resume loop across the restart.
+                await self.stop_agent(agent_id, release_claim=True)
+            except Exception:
+                logger.exception(
+                    "stop_agent raised during shutdown; continuing to drain",
+                    agent_id=agent_id,
+                )
 
+        # Drain fire-and-forget bg writes so short DB commits finish before the
+        # process exits (respawn_tracker upserts, audit-log rows). Bounded so a
+        # stuck task can't hang shutdown — it is cancelled past the deadline.
+        await self._drain_bg_tasks()
+
+        self._stopped = True
         logger.info("Orchestrator stopped")
 
     async def _ensure_agent_image(self, agent_id: str | None = None) -> None:
@@ -1849,6 +2037,38 @@ class AgentOrchestrator:
                 is auto-blocked before we raise so the dispatcher doesn't
                 keep retrying.
         """
+        # agent_id flows into path building (log dirs, settings, container
+        # names) — reject a traversal-shaped id at the chokepoint, before any
+        # filesystem op. The orchestrator only ever assigns plain slug/uuid
+        # ids, so this never fires on a real agent.
+        AgentOrchestrator._safe_agent_path_segment(agent_id)
+        # Human-only roles (ceo / prompter / secretary) are NEVER spawned by a
+        # dispatcher. The CEO is the human operator; intake (prompter) and
+        # secretary are human-driven interactive chats launched through their
+        # own deliberately-separate guarded paths (_spawn_intake_container /
+        # _spawn_secretary_container), NOT through this method. A dispatcher
+        # that spawns "any A2A/notification target" (e.g. _dispatch_a2a_work)
+        # could otherwise resolve a CEO-addressed notification to slug "ceo" and
+        # launch a CEO container — a trust violation (the system acting as the
+        # human CEO). This chokepoint guard is the single structural fix: no
+        # matter which dispatcher calls in, a human role never gets a container
+        # here. Safe because the dedicated human-spawn paths do not route
+        # through spawn_agent (see the _spawn_intake_container note at the top
+        # of this file).
+        _role = role_for_slug_or_none(agent_id)
+        if _role in (Role.CEO, Role.PROMPTER, Role.SECRETARY):
+            logger.error(
+                "spawn_agent refused for human-only role — dispatchers must never"
+                " spawn the CEO / prompter / secretary; these are human-driven",
+                agent_id=agent_id,
+                role=str(_role),
+                task_id=str(task_id) if task_id else None,
+            )
+            raise AgentReadinessError(
+                f"refused to spawn human-only role {_role!r} ({agent_id}) — the"
+                f" CEO is the human operator, not a container; intake and secretary"
+                f" launch through their dedicated paths, not spawn_agent"
+            )
         # Pre-flight: refuse to spawn if the task isn't ready. Auto-block
         # on refusal so the dispatcher doesn't keep spinning a container
         # that will immediately fail (wasted image pull + startup tokens).
@@ -1872,16 +2092,58 @@ class AgentOrchestrator:
             existing = self._existing_running_instance(agent_id)
             if existing is not None:
                 return existing
+
+        # Provider-parking loop-breaker (cheap pre-check): while this agent's
+        # provider is parked (rate-limited or overloaded), do NOT run the full
+        # ``_prepare_agent_spawn`` — which writes the blueprint / settings /
+        # briefing / MCP-config files, ensures the agent image, and registers a
+        # STARTING instance — only to bail. The dispatcher re-ticks a parked
+        # agent every cycle, so running the full prepare each tick wasted all
+        # that file I/O and left a STARTING instance registered then downgraded
+        # to OFFLINE. The parked check only needs ``provider_type``, cheaply
+        # resolvable via ``_resolve_agent_route``. Bailing here returns a
+        # minimal UNREGISTERED OFFLINE instance (no stale ``_instances`` entry),
+        # so the next tick re-checks cheaply until the provider recovers. The
+        # existing-running check above stays first, so a live agent is never
+        # replaced by this bail. Fail-open: a tracker read error never blocks.
+        route = await self._resolve_agent_route(agent_id)
+        if await self._provider_spawn_parked(route.provider_type.value):
+            self._mark_task_handled(task_id)
+            logger.info(
+                "Spawn skipped: provider rate-limited (parked)",
+                agent_id=agent_id,
+                task_id=task_id,
+                provider=route.provider_type.value,
+            )
+            return AgentInstance(
+                agent_id=agent_id,
+                state=AgentState.OFFLINE,
+                config=AgentConfig(
+                    agent_id=agent_id,
+                    blueprint_path=Path(),  # not launching — no blueprint written
+                    model=route.model_name,
+                    provider_type=route.provider_type.value,
+                    provider_base_url=route.base_url,
+                    provider_auth_token=route.auth_token,
+                    git_context=git_context,
+                ),
+                current_task_id=task_id,
+            )
+
+        async with self._lock:
+            # TOCTOU re-check: another tick may have started this agent during
+            # the unlocked route resolve + parked check above. Re-check before
+            # the expensive prepare so two concurrent ticks don't double-spawn.
+            existing = self._existing_running_instance(agent_id)
+            if existing is not None:
+                return existing
             config, instance, agent_settings_path = await self._prepare_agent_spawn(
                 agent_id, task_id, model, git_context
             )
-        # Provider-parking loop-breaker: while this agent's provider is parked
-        # (rate-limited or overloaded), do NOT launch another container — the
-        # dispatcher would otherwise re-spawn the same task every tick, hit the
-        # limit again, and burn cost. The probe-resume loop clears the park when
-        # the provider recovers and the next tick spawns normally. Covers both
-        # the GROK 429 path and the Claude session/overload paths.
-        # Fail-open: a tracker read error must never block spawning.
+        # Rare-race defense: a park could land during prepare. The every-tick
+        # parked case is already handled above; this guards the window between
+        # the pre-check and the launch. Fail-open: a tracker read error never
+        # blocks spawning.
         if await self._provider_spawn_parked(config.provider_type):
             self._mark_task_handled(task_id)
             instance.state = AgentState.OFFLINE
@@ -2340,8 +2602,13 @@ class AgentOrchestrator:
 
         if exists:
             slug = container_name.removeprefix("roboco-agent-")
-            log_dir = Path("/data/logs/agents") / slug
             try:
+                # slug builds a path under /data/logs/agents — reject a
+                # traversal-shaped slug before the join (defense-in-depth;
+                # spawn_agent already validates the agent_id this container
+                # name is derived from). A bad slug skips the log dump.
+                AgentOrchestrator._safe_agent_path_segment(slug)
+                log_dir = Path("/data/logs/agents") / slug
                 log_dir.mkdir(parents=True, exist_ok=True)
                 timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
                 log_path = log_dir / f"{timestamp}.log"
@@ -2640,11 +2907,14 @@ class AgentOrchestrator:
         task_id: str | None,
         product_id: str | None,
     ) -> list[Any]:
-        """The in-scope projects for the ambient block (single repo or product)."""
-        if product_id is None and task_id is not None:
-            product_id = await self._ambient_product_for_task(db, task_id)
+        """The in-scope projects for the ambient block (single repo, product, or
+        ad-hoc cell map)."""
         if product_id is not None:
             return await self._ambient_product_projects(db, product_id)
+        if task_id is not None:
+            projects = await self._ambient_projects_for_task(db, task_id)
+            if projects:
+                return projects
         if project_slug:
             from roboco.services.project import get_project_service
 
@@ -2653,15 +2923,35 @@ class AgentOrchestrator:
         return []
 
     @staticmethod
-    async def _ambient_product_for_task(db: Any, task_id: str) -> str | None:
+    async def _ambient_projects_for_task(db: Any, task_id: str) -> list[Any]:
+        """The in-scope projects for a task's ambient block, from its product OR
+        its ad-hoc ``cell_projects`` map. Empty for a plain project task (the
+        project_slug branch handles those) or a not-yet-mapped coordination root.
+        """
         from uuid import UUID
 
+        from roboco.services.project import get_project_service
         from roboco.services.task import get_task_service
 
         task = await get_task_service(db).get(UUID(task_id))
-        if task is not None and task.product_id is not None:
-            return str(task.product_id)
-        return None
+        if task is None:
+            return []
+        project_service = get_project_service(db)
+        if task.product_id is not None:
+            from roboco.services.product import get_product_service
+
+            ids = await get_product_service(db).distinct_project_ids(
+                UUID(str(task.product_id))
+            )
+            resolved = [await project_service.get(pid) for pid in ids]
+            return [p for p in resolved if p is not None]
+        # Ad-hoc per-cell map: resolve the distinct projects the map spans (de-dupe
+        # by project_id — a monorepo mapped across cells yields one project).
+        distinct_ids: dict[Any, None] = {}
+        for mapping in sorted(task.cell_projects, key=lambda m: m.team.value):
+            distinct_ids.setdefault(UUID(str(mapping.project_id)), None)
+        resolved = [await project_service.get(pid) for pid in distinct_ids]
+        return [p for p in resolved if p is not None]
 
     @staticmethod
     async def _ambient_product_projects(db: Any, product_id: str) -> list[Any]:
@@ -2688,7 +2978,7 @@ class AgentOrchestrator:
 
         try:
             async with httpx.AsyncClient(
-                timeout=5.0, headers=_SYSTEM_API_HEADERS
+                timeout=5.0, headers=_system_api_headers()
             ) as client:
                 task_or_reason = await self._readiness_fetch_task(client, task_id)
                 if isinstance(task_or_reason, str):
@@ -2987,7 +3277,7 @@ class AgentOrchestrator:
         """Best-effort GET /tasks/{id}; returns task dict or None on failure."""
         try:
             async with httpx.AsyncClient(
-                timeout=5.0, headers=_SYSTEM_API_HEADERS
+                timeout=5.0, headers=_system_api_headers()
             ) as client:
                 resp = await client.get(f"{self._api_url}/tasks/{task_id}")
             if resp.status_code == http_status.HTTP_200_OK:
@@ -3269,6 +3559,12 @@ class AgentOrchestrator:
                 project_ids=project_ids,
                 initial_message=initial_message,
             )
+        except _SpawnAbortedDuringShutdown:
+            # Shutdown began mid-spawn; the just-started container was already
+            # removed by the raiser. Close the relay silently — shutdown is not a
+            # user-facing failure, so no error is pushed to the SSE stream.
+            get_live_registry().close(session_id)
+            return
         except Exception as exc:
             logger.error(
                 "Intake container spawn failed", session_id=session_id, error=str(exc)
@@ -3294,108 +3590,129 @@ class AgentOrchestrator:
         The relay must already be open (``_open_intake_relay``). Heavy + slow
         (clone + first-time image build + docker run) — keep it off the request
         path via ``start_intake_session``.
+
+        Serialized by ``_intake_spawn_lock``: the intake agent id is a single
+        fixed id, so two concurrent starts would race on the container name and
+        the ``_instances`` write, orphaning a container + relay. The lock makes a
+        concurrent start wait for the in-flight one to finish (reap + register)
+        before it begins its own reap-prior check.
         """
-        # Single live session: reap any prior intake container before spawning.
-        if INTAKE_AGENT_ID in self._instances:
-            await self.stop_agent(INTAKE_AGENT_ID, graceful=False)
+        async with self._intake_spawn_lock:
+            # Single live session: reap any prior intake container before spawning.
+            if INTAKE_AGENT_ID in self._instances:
+                await self.stop_agent(INTAKE_AGENT_ID, graceful=False)
 
-        from roboco.models.base import ModelProvider
+            from roboco.models.base import ModelProvider
 
-        cwd, cloned = await self._clone_intake_scope(
-            project_slug, product_id, project_ids
-        )
-
-        ambient = await self._resolve_conventions_ambient(
-            project_slug, product_id=product_id
-        )
-        prompt_path = self._generate_composed_prompt(INTAKE_AGENT_ID, ambient=ambient)
-        route = await self._resolve_agent_route(INTAKE_AGENT_ID)
-        cli_model = _resolve_agent_cli_model(
-            route.provider_type.value, route.model_name
-        )
-        api_url = (
-            "http://roboco-orchestrator:8000"
-            if PROJECT_HOST_PATH
-            else f"http://127.0.0.1:{settings.port}"
-        )
-
-        # GROK runs the interactive driver on its own grok-CLI prompter image;
-        # every other provider uses the Claude SDK-driver prompter image.
-        is_grok = route.provider_type == ModelProvider.GROK
-        image = GROK_PROMPTER_IMAGE if is_grok else get_agent_image(INTAKE_AGENT_ID)
-        if is_grok:
-            await self._ensure_grok_interactive_image(image)
-            self._ensure_grok_usage_dir(INTAKE_AGENT_ID)
-        else:
-            await self._ensure_agent_image(INTAKE_AGENT_ID)
-        container_name = f"roboco-agent-{INTAKE_AGENT_ID}"
-        await self._remove_container(container_name)
-
-        cmd = self._build_intake_run_cmd(
-            _IntakeRunSpec(
-                container_name=container_name,
-                image=image,
-                hosts=self._resolve_intake_host_paths(),
-                session_id=session_id,
-                cwd=cwd,
-                cli_model=cli_model,
-                api_url=api_url,
-                provider_base_url=route.base_url,
-                provider_auth_token=route.auth_token,
-                provider_type=route.provider_type.value,
-                model=route.model_name,
+            cwd, cloned = await self._clone_intake_scope(
+                project_slug, product_id, project_ids
             )
-        )
-        container_id = await self._run_container_cmd(cmd)
 
-        config = AgentConfig(
-            agent_id=INTAKE_AGENT_ID,
-            blueprint_path=prompt_path,
-            model=route.model_name,
-            git_context=None,
-            provider_type=route.provider_type.value,
-        )
-        instance = AgentInstance(
-            agent_id=INTAKE_AGENT_ID,
-            state=AgentState.ACTIVE,
-            config=config,
-            current_task_id=None,
-        )
-        instance.container_id = container_id
-        instance.started_at = datetime.now(UTC)
-        instance.last_activity = datetime.now(UTC)
-        self._instances[INTAKE_AGENT_ID] = instance
+            ambient = await self._resolve_conventions_ambient(
+                project_slug, product_id=product_id
+            )
+            prompt_path = self._generate_composed_prompt(
+                INTAKE_AGENT_ID, ambient=ambient
+            )
+            route = await self._resolve_agent_route(INTAKE_AGENT_ID)
+            cli_model = _resolve_agent_cli_model(
+                route.provider_type.value, route.model_name
+            )
+            api_url = (
+                "http://roboco-orchestrator:8000"
+                if PROJECT_HOST_PATH
+                else f"http://127.0.0.1:{settings.port}"
+            )
 
-        # Record a usage session (task_id=None) and pin its id on the instance so
-        # the reap finalizer can look up token usage — without this an interactive
-        # session finalizes at 0 tokens / $0 (the GROK path reads the captured
-        # usage.json; the Claude path reads the transcript). Mirrors _launch_spawn.
-        usage_session_id = await self._record_spawn_session(config, None)
-        if usage_session_id is not None:
-            instance.usage_session_id = usage_session_id
+            # GROK runs the interactive driver on its own grok-CLI prompter image;
+            # every other provider uses the Claude SDK-driver prompter image.
+            is_grok = route.provider_type == ModelProvider.GROK
+            image = GROK_PROMPTER_IMAGE if is_grok else get_agent_image(INTAKE_AGENT_ID)
+            if is_grok:
+                await self._ensure_grok_interactive_image(image)
+                self._ensure_grok_usage_dir(INTAKE_AGENT_ID)
+            else:
+                await self._ensure_agent_image(INTAKE_AGENT_ID)
+            container_name = f"roboco-agent-{INTAKE_AGENT_ID}"
+            await self._remove_container(container_name)
 
-        # The relay was already opened on the request path (start_intake_session /
-        # spawn_intake_session) BEFORE the panel connected its SSE stream. Do NOT
-        # re-open here: a second open would swap in a fresh queue and orphan that
-        # already-connected stream (the agent's replies would push to the new queue
-        # while the browser keeps reading the old one). open() is idempotent now as
-        # a guard, but the redundant call is gone regardless.
-        logger.info(
-            "Intake session spawned",
-            session_id=session_id,
-            container_id=container_id[:12],
-            cwd=cwd,
-            repos=len(cloned),
-        )
-        self._fire_audit(
-            event_type="agent.spawned",
-            agent_slug=INTAKE_AGENT_ID,
-            details={"session_id": session_id, "cwd": cwd, "repos": cloned},
-        )
+            cmd = self._build_intake_run_cmd(
+                _IntakeRunSpec(
+                    container_name=container_name,
+                    image=image,
+                    hosts=self._resolve_intake_host_paths(),
+                    session_id=session_id,
+                    cwd=cwd,
+                    cli_model=cli_model,
+                    api_url=api_url,
+                    provider_base_url=route.base_url,
+                    provider_auth_token=route.auth_token,
+                    provider_type=route.provider_type.value,
+                    model=route.model_name,
+                )
+            )
+            container_id = await self._run_container_cmd(cmd)
 
-        if initial_message:
-            self._schedule_intake_first_message(session_id, initial_message)
-        return instance
+            # Shutdown may have begun while this (non-blocking) spawn was in flight
+            # — the bg coroutine runs concurrently with stop(). If so, remove the
+            # just-started container and abort WITHOUT registering: stop()'s
+            # _instances iteration has already run (or is running), so a registration
+            # now would land a live container nothing tears down (the orphan). The
+            # stop() drain awaits this coroutine, so the abort surfaces cleanly.
+            if not self._running:
+                await self._remove_container(container_name)
+                raise _SpawnAbortedDuringShutdown(INTAKE_AGENT_ID)
+
+            config = AgentConfig(
+                agent_id=INTAKE_AGENT_ID,
+                blueprint_path=prompt_path,
+                model=route.model_name,
+                git_context=None,
+                provider_type=route.provider_type.value,
+            )
+            instance = AgentInstance(
+                agent_id=INTAKE_AGENT_ID,
+                state=AgentState.ACTIVE,
+                config=config,
+                current_task_id=None,
+            )
+            instance.container_id = container_id
+            instance.started_at = datetime.now(UTC)
+            instance.last_activity = datetime.now(UTC)
+            self._instances[INTAKE_AGENT_ID] = instance
+
+            # Record a usage session (task_id=None) and pin its id on the instance
+            # so the reap finalizer can look up token usage — without this an
+            # interactive session finalizes at 0 tokens / $0 (the GROK path reads the
+            # captured usage.json; the Claude path reads the transcript). Mirrors
+            # _launch_spawn.
+            usage_session_id = await self._record_spawn_session(config, None)
+            if usage_session_id is not None:
+                instance.usage_session_id = usage_session_id
+
+            # The relay was already opened on the request path
+            # (start_intake_session / spawn_intake_session) BEFORE the panel
+            # connected its SSE stream. Do NOT re-open here: a second open would
+            # swap in a fresh queue and orphan that already-connected stream (the
+            # agent's replies would push to the new queue while the browser keeps
+            # reading the old one). open() is idempotent now as a guard, but the
+            # redundant call is gone regardless.
+            logger.info(
+                "Intake session spawned",
+                session_id=session_id,
+                container_id=container_id[:12],
+                cwd=cwd,
+                repos=len(cloned),
+            )
+            self._fire_audit(
+                event_type="agent.spawned",
+                agent_slug=INTAKE_AGENT_ID,
+                details={"session_id": session_id, "cwd": cwd, "repos": cloned},
+            )
+
+            if initial_message:
+                self._schedule_intake_first_message(session_id, initial_message)
+            return instance
 
     async def reap_intake_session(self, session_id: str) -> None:
         """End a live chat: close the relay stream and stop the container."""
@@ -3443,6 +3760,12 @@ class AgentOrchestrator:
             await self._spawn_secretary_container(
                 session_id, initial_message=initial_message
             )
+        except _SpawnAbortedDuringShutdown:
+            # Shutdown began mid-spawn; the just-started container was already
+            # removed by the raiser. Close the relay silently — shutdown is not
+            # a user-facing failure, so no error is pushed to the SSE stream.
+            get_live_registry().close(session_id)
+            return
         except Exception as exc:
             logger.error(
                 "Secretary container spawn failed",
@@ -3465,92 +3788,108 @@ class AgentOrchestrator:
         company state through the API, so its cwd is the baked ``/app`` tree. It
         gets an HMAC agent token so its directive tools authenticate as the
         Secretary role.
+
+        Serialized by ``_secretary_spawn_lock`` for the same reason intake is
+        serialized by ``_intake_spawn_lock``: a single fixed agent id, so two
+        concurrent starts would race on the container name and the ``_instances``
+        write. See ``_spawn_intake_container`` for the deadlock-ordering note.
         """
-        from roboco.agents_config import issue_agent_token
-        from roboco.foundation.identity import AGENTS
-        from roboco.models.base import ModelProvider
+        async with self._secretary_spawn_lock:
+            from roboco.agents_config import issue_agent_token
+            from roboco.foundation.identity import AGENTS
+            from roboco.models.base import ModelProvider
 
-        if SECRETARY_AGENT_ID in self._instances:
-            await self.stop_agent(SECRETARY_AGENT_ID, graceful=False)
+            if SECRETARY_AGENT_ID in self._instances:
+                await self.stop_agent(SECRETARY_AGENT_ID, graceful=False)
 
-        prompt_path = self._generate_composed_prompt(SECRETARY_AGENT_ID)
-        route = await self._resolve_agent_route(SECRETARY_AGENT_ID)
-        cli_model = _resolve_agent_cli_model(
-            route.provider_type.value, route.model_name
-        )
-        api_url = (
-            "http://roboco-orchestrator:8000"
-            if PROJECT_HOST_PATH
-            else f"http://127.0.0.1:{settings.port}"
-        )
-
-        is_grok = route.provider_type == ModelProvider.GROK
-        image = GROK_SECRETARY_IMAGE if is_grok else get_agent_image(SECRETARY_AGENT_ID)
-        if is_grok:
-            await self._ensure_grok_interactive_image(image)
-            self._ensure_grok_usage_dir(SECRETARY_AGENT_ID)
-        else:
-            await self._ensure_agent_image(SECRETARY_AGENT_ID)
-        container_name = f"roboco-agent-{SECRETARY_AGENT_ID}"
-        await self._remove_container(container_name)
-
-        agent_uuid = str(AGENTS[SECRETARY_AGENT_ID].uuid)
-        cmd = self._build_secretary_run_cmd(
-            _SecretaryRunSpec(
-                container_name=container_name,
-                image=image,
-                hosts=self._resolve_secretary_host_paths(),
-                session_id=session_id,
-                cwd="/app",
-                cli_model=cli_model,
-                api_url=api_url,
-                agent_uuid=agent_uuid,
-                agent_token=issue_agent_token(agent_uuid, "secretary", ""),
-                provider_base_url=route.base_url,
-                provider_auth_token=route.auth_token,
-                provider_type=route.provider_type.value,
-                model=route.model_name,
+            prompt_path = self._generate_composed_prompt(SECRETARY_AGENT_ID)
+            route = await self._resolve_agent_route(SECRETARY_AGENT_ID)
+            cli_model = _resolve_agent_cli_model(
+                route.provider_type.value, route.model_name
             )
-        )
-        container_id = await self._run_container_cmd(cmd)
+            api_url = (
+                "http://roboco-orchestrator:8000"
+                if PROJECT_HOST_PATH
+                else f"http://127.0.0.1:{settings.port}"
+            )
 
-        config = AgentConfig(
-            agent_id=SECRETARY_AGENT_ID,
-            blueprint_path=prompt_path,
-            model=route.model_name,
-            git_context=None,
-            provider_type=route.provider_type.value,
-        )
-        instance = AgentInstance(
-            agent_id=SECRETARY_AGENT_ID,
-            state=AgentState.ACTIVE,
-            config=config,
-            current_task_id=None,
-        )
-        instance.container_id = container_id
-        instance.started_at = datetime.now(UTC)
-        instance.last_activity = datetime.now(UTC)
-        self._instances[SECRETARY_AGENT_ID] = instance
+            is_grok = route.provider_type == ModelProvider.GROK
+            image = (
+                GROK_SECRETARY_IMAGE if is_grok else get_agent_image(SECRETARY_AGENT_ID)
+            )
+            if is_grok:
+                await self._ensure_grok_interactive_image(image)
+                self._ensure_grok_usage_dir(SECRETARY_AGENT_ID)
+            else:
+                await self._ensure_agent_image(SECRETARY_AGENT_ID)
+            container_name = f"roboco-agent-{SECRETARY_AGENT_ID}"
+            await self._remove_container(container_name)
 
-        # Pin a usage session id so the reap finalizer can attribute token usage
-        # (else $0); see the matching note in _spawn_intake_container.
-        usage_session_id = await self._record_spawn_session(config, None)
-        if usage_session_id is not None:
-            instance.usage_session_id = usage_session_id
+            agent_uuid = str(AGENTS[SECRETARY_AGENT_ID].uuid)
+            cmd = self._build_secretary_run_cmd(
+                _SecretaryRunSpec(
+                    container_name=container_name,
+                    image=image,
+                    hosts=self._resolve_secretary_host_paths(),
+                    session_id=session_id,
+                    cwd="/app",
+                    cli_model=cli_model,
+                    api_url=api_url,
+                    agent_uuid=agent_uuid,
+                    agent_token=issue_agent_token(agent_uuid, "secretary", ""),
+                    provider_base_url=route.base_url,
+                    provider_auth_token=route.auth_token,
+                    provider_type=route.provider_type.value,
+                    model=route.model_name,
+                )
+            )
+            container_id = await self._run_container_cmd(cmd)
 
-        logger.info(
-            "Secretary session spawned",
-            session_id=session_id,
-            container_id=container_id[:12],
-        )
-        self._fire_audit(
-            event_type="agent.spawned",
-            agent_slug=SECRETARY_AGENT_ID,
-            details={"session_id": session_id},
-        )
-        if initial_message:
-            self._schedule_intake_first_message(session_id, initial_message)
-        return instance
+            # Shutdown may have begun while this (non-blocking) spawn was in flight
+            # — see the matching guard in _spawn_intake_container. Remove the
+            # just-started container and abort WITHOUT registering, so it isn't
+            # orphaned by a stop() that has already iterated _instances.
+            if not self._running:
+                await self._remove_container(container_name)
+                raise _SpawnAbortedDuringShutdown(SECRETARY_AGENT_ID)
+
+            config = AgentConfig(
+                agent_id=SECRETARY_AGENT_ID,
+                blueprint_path=prompt_path,
+                model=route.model_name,
+                git_context=None,
+                provider_type=route.provider_type.value,
+            )
+            instance = AgentInstance(
+                agent_id=SECRETARY_AGENT_ID,
+                state=AgentState.ACTIVE,
+                config=config,
+                current_task_id=None,
+            )
+            instance.container_id = container_id
+            instance.started_at = datetime.now(UTC)
+            instance.last_activity = datetime.now(UTC)
+            self._instances[SECRETARY_AGENT_ID] = instance
+
+            # Pin a usage session id so the reap finalizer can attribute token
+            # usage (else $0); see the matching note in _spawn_intake_container.
+            usage_session_id = await self._record_spawn_session(config, None)
+            if usage_session_id is not None:
+                instance.usage_session_id = usage_session_id
+
+            logger.info(
+                "Secretary session spawned",
+                session_id=session_id,
+                container_id=container_id[:12],
+            )
+            self._fire_audit(
+                event_type="agent.spawned",
+                agent_slug=SECRETARY_AGENT_ID,
+                details={"session_id": session_id},
+            )
+            if initial_message:
+                self._schedule_intake_first_message(session_id, initial_message)
+            return instance
 
     async def reap_secretary_session(self, session_id: str) -> None:
         """End a live Secretary chat: close the relay and stop the container."""
@@ -3939,12 +4278,26 @@ class AgentOrchestrator:
         agent_id: str,
         graceful: bool = True,
         exit_reason: str = "stopped",
+        release_claim: bool = False,
     ) -> None:
         """Stop an agent container.
 
         Finalization (the HTTP call to the agent SDK's /usage/status endpoint)
         is performed BEFORE acquiring self._lock so that the network I/O does
         not block other operations that need the lock.
+
+        When ``release_claim`` is True the caller declares the stopped agent
+        will not continue its task (budget kill, orchestrator shutdown) and the
+        agent's claimed/in_progress task is handed back to the pool immediately
+        instead of waiting up to ``stale_claim_reap_seconds`` for the
+        stale-claim reaper to notice the dead heartbeat — closing the
+        SIGTERM-mid-verb gap where a task sat CLAIMED/IN_PROGRESS with no
+        running agent. Default False: the provider-park / waiting path
+        (``mark_waiting_long``) and interactive stops manage their own claim
+        lifecycle, so they opt out and the claim survives for the probe-resume
+        loop. A provider-parked agent (``rate_limit_lifted`` WaitingRecord) is
+        always skipped even when a caller opts in — its claim must survive so
+        probe-success revives the same agent on the same task.
         """
         # Finalize the spawn-session row before the container is removed so we
         # can still query the SDK's /usage/status endpoint.  This must happen
@@ -3955,6 +4308,11 @@ class AgentOrchestrator:
             return
         if instance.container_id:
             await self._finalize_spawn_session(agent_id, exit_reason=exit_reason)
+
+        # Capture the task the agent was working on before the instance state
+        # is mutated, so a release_claim stop can hand it back to the pool once
+        # the container is gone. Only relevant when the caller opted in.
+        stopped_task_id = instance.current_task_id if release_claim else None
 
         async with self._lock:
             if agent_id not in self._instances:
@@ -3996,6 +4354,68 @@ class AgentOrchestrator:
             instance.container_id = None
 
             logger.info("Agent stopped", agent_id=agent_id)
+
+        # Hand the stopped agent's claimed task back to the pool now, instead
+        # of leaving it CLAIMED/IN_PROGRESS with no running agent for the
+        # reaper's full heartbeat TTL. Done outside self._lock (DB I/O) and
+        # best-effort: a failure logs a warning and the stale-claim reaper
+        # remains the backstop. Skipped for a provider-parked agent — the
+        # probe-resume loop owns its recovery and the claim must survive.
+        if stopped_task_id and not self._is_rate_limit_parked(agent_id):
+            await self._release_stopped_agent_claim(agent_id, stopped_task_id)
+
+    def _is_rate_limit_parked(self, agent_id: str) -> bool:
+        """True if the agent is provider-parked on a rate limit.
+
+        Mirrors the reaper's ``_assignee_is_provider_parked`` guard but keyed
+        by slug directly (no task row needed): a ``rate_limit_lifted``
+        WaitingRecord means the probe-resume loop owns this agent's recovery
+        and its claim must survive a stop. Defensive on a missing registry.
+        """
+        records = getattr(self, "_waiting_records", None)
+        if not records:
+            return False
+        record = records.get(agent_id)
+        return record is not None and record.waiting_for == "rate_limit_lifted"
+
+    async def _release_stopped_agent_claim(
+        self, agent_id: str, task_id_str: str
+    ) -> None:
+        """Force a stopped agent's claimed/in_progress task back to pending.
+
+        Reuses the hardened, idempotent, status-checked
+        ``TaskService.unclaim_for_reaper`` (the same path the stale-claim
+        reaper uses) so a task that already moved on (e.g. submitted to QA
+        before the stop) is a clean no-op. Opens its own short-lived session
+        outside ``self._lock``. Best-effort: a DB failure logs and the reaper
+        backstops on the next tick.
+        """
+        from roboco.db.base import get_session_factory
+        from roboco.services.task import TaskService
+        from roboco.utils.converters import require_uuid
+
+        try:
+            task_id = require_uuid(task_id_str)
+        except Exception:
+            return
+        try:
+            factory = get_session_factory()
+            async with factory() as db:
+                svc = TaskService(db)
+                await svc.unclaim_for_reaper(task_id)
+                await db.commit()
+            logger.info(
+                "stopped agent claim released to pool",
+                agent_id=agent_id,
+                task_id=task_id_str,
+            )
+        except Exception as exc:
+            logger.warning(
+                "stop_agent claim release failed; reaper will backstop",
+                agent_id=agent_id,
+                task_id=task_id_str,
+                error=str(exc),
+            )
 
     # =========================================================================
     # WAITING STATE MANAGEMENT
@@ -4102,48 +4522,75 @@ class AgentOrchestrator:
     async def _persist_respawn_record(
         self, agent_slug: str, task_id: str, record: dict[str, Any]
     ) -> None:
-        """Write-through one PM-respawn counter row (delete-then-insert upsert).
+        """Write-through one PM-respawn counter row (atomic upsert).
 
         Best-effort, mirroring ``_persist_waiting_record``: a persistence failure
         must never gate or un-gate a spawn, so any error is logged and swallowed.
         The counter stays authoritative in memory regardless.
+
+        Unlike ``_persist_waiting_record`` (inline-awaited, one row per agent),
+        this is scheduled fire-and-forget per gate mutation, and a respawn loop
+        fires several persists for the same ``(agent_slug, task_id)`` in quick
+        succession. A delete-then-insert raced under that concurrency: two
+        transactions for the same key overlapped, the loser's INSERT hit
+        ``pk_respawn_tracker`` UniqueViolation, the durable count stuck at the
+        first INSERT's value, and a restart re-burned the strike threshold — the
+        exact re-burn this feature was built to stop (2026-06-27 live meltdown).
+        The single ``ON CONFLICT DO UPDATE`` upsert is race-free at row level, BUT
+        fire-and-forget tasks can still COMMIT out of order: a slow stale persist
+        (count=2) scheduled first can resolve AFTER a fast fresh one (count=4)
+        scheduled second, leaving the durable row at the stale low count (same
+        re-burn on restart). The ``_respawn_persist_lock`` is acquired as the
+        FIRST await below, so acquisition order = task creation order = logical
+        schedule order, and commits land in that order — the durable row always
+        ends at the latest logical value.
         """
-        try:
-            from uuid import UUID as _UUID
+        async with self._respawn_persist_lock:
+            try:
+                from uuid import UUID as _UUID
 
-            from sqlalchemy import delete
+                from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-            from roboco.db.base import get_session_factory
-            from roboco.db.tables import RespawnTrackerTable
+                from roboco.db.base import get_session_factory
+                from roboco.db.tables import RespawnTrackerTable
 
-            tid = _UUID(task_id)
-            session_factory = get_session_factory()
-            async with session_factory() as db:
-                await db.execute(
-                    delete(RespawnTrackerTable).where(
-                        RespawnTrackerTable.agent_slug == agent_slug,
-                        RespawnTrackerTable.task_id == tid,
-                    )
+                tid = _UUID(task_id)
+                now = datetime.now(UTC)
+                stmt = pg_insert(RespawnTrackerTable).values(
+                    agent_slug=agent_slug,
+                    task_id=tid,
+                    count=int(record["count"]),
+                    last_status=record.get("last_status"),
+                    last_check=record["last_check"],
+                    tracing_resets=int(record.get("tracing_resets", 0)),
+                    notified=bool(record.get("notified", False)),
+                    updated_at=now,
                 )
-                db.add(
-                    RespawnTrackerTable(
-                        agent_slug=agent_slug,
-                        task_id=tid,
-                        count=int(record["count"]),
-                        last_status=record.get("last_status"),
-                        last_check=record["last_check"],
-                        tracing_resets=int(record.get("tracing_resets", 0)),
-                        notified=bool(record.get("notified", False)),
-                    )
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=[
+                        RespawnTrackerTable.agent_slug,
+                        RespawnTrackerTable.task_id,
+                    ],
+                    set_={
+                        "count": stmt.excluded.count,
+                        "last_status": stmt.excluded.last_status,
+                        "last_check": stmt.excluded.last_check,
+                        "tracing_resets": stmt.excluded.tracing_resets,
+                        "notified": stmt.excluded.notified,
+                        "updated_at": stmt.excluded.updated_at,
+                    },
                 )
-                await db.commit()
-        except Exception as e:
-            logger.error(
-                "Failed to persist respawn record",
-                agent_id=agent_slug,
-                task_id=task_id,
-                error=str(e),
-            )
+                session_factory = get_session_factory()
+                async with session_factory() as db:
+                    await db.execute(stmt)
+                    await db.commit()
+            except Exception as e:
+                logger.error(
+                    "Failed to persist respawn record",
+                    agent_id=agent_slug,
+                    task_id=task_id,
+                    error=str(e),
+                )
 
     async def _clear_respawn_record(self, agent_slug: str, task_id: str) -> None:
         """Delete one PM-respawn counter row (best-effort).
@@ -4404,6 +4851,11 @@ class AgentOrchestrator:
                     error=str(exc),
                 )
                 continue
+            # Finalize the spawn session BEFORE popping the instance so the
+            # captured usage/cost is recorded; popping first would lose the
+            # model + usage_session_id and leave the session row open.
+            with contextlib.suppress(Exception):
+                await self._finalize_spawn_session(agent_id, exit_reason="cost_cap")
             self._instances.pop(agent_id, None)
             # Interactive roles (intake/secretary) have an open panel relay; a
             # raw kill would leave the SSE hanging (frozen chat). Close it with a
@@ -4442,7 +4894,7 @@ class AgentOrchestrator:
         sdk_url = f"http://roboco-agent-{agent_id}:{SDK_PORT}/usage/status"
         try:
             async with httpx.AsyncClient(
-                timeout=3.0, headers=_SYSTEM_API_HEADERS
+                timeout=3.0, headers=_system_api_headers()
             ) as client:
                 resp = await client.get(sdk_url)
                 if resp.status_code == http_status.HTTP_200_OK:
@@ -4699,7 +5151,7 @@ class AgentOrchestrator:
         _usage_total_cost = 0.0
 
         async with httpx.AsyncClient(
-            timeout=3.0, headers=_SYSTEM_API_HEADERS
+            timeout=3.0, headers=_system_api_headers()
         ) as client:
             for agent_id, instance in list(self._instances.items()):
                 if instance.state not in (
@@ -4925,7 +5377,9 @@ class AgentOrchestrator:
 
     @staticmethod
     def _partition_respawn_rows(
-        rows: "Iterable[Any]", status_by_id: dict[Any, Any]
+        rows: "Iterable[Any]",
+        status_by_id: dict[Any, Any],
+        now: datetime | None = None,
     ) -> tuple[dict[tuple[str, str], dict[str, Any]], list[tuple[str, Any]]]:
         """Split persisted respawn rows into (restorable entries, stale keys).
 
@@ -4934,9 +5388,17 @@ class AgentOrchestrator:
         against a fixed/deleted task. Restorable entries are keyed
         ``(agent_slug, str(task_id))`` to match the in-memory dict; stale keys
         carry the raw ``task_id`` for deletion.
+
+        F034: ``last_check`` is re-stamped to ``now`` (the restore time) on
+        every restorable entry. ``_pm_made_rule_following_retry`` reads
+        ``since = record.get("last_check")`` to bound its tracing_gap audit
+        lookup; a stale pre-restart ``last_check`` would match a pre-restart
+        tracing_gap row and falsely reset the breaker on the first post-restart
+        spawn. Re-stamping bounds the lookup to post-restart gaps only.
         """
         from roboco.models.base import TaskStatus
 
+        restore_now = now or datetime.now(UTC)
         terminal = {TaskStatus.COMPLETED.value, TaskStatus.CANCELLED.value}
         restored: dict[tuple[str, str], dict[str, Any]] = {}
         stale: list[tuple[str, Any]] = []
@@ -4949,7 +5411,7 @@ class AgentOrchestrator:
             restored[(r.agent_slug, str(r.task_id))] = {
                 "count": r.count,
                 "last_status": r.last_status,
-                "last_check": r.last_check,
+                "last_check": restore_now,
                 "tracing_resets": r.tracing_resets,
                 "notified": r.notified,
             }
@@ -5019,8 +5481,6 @@ class AgentOrchestrator:
             return None
 
         record = self._waiting_records[agent_id]
-        del self._waiting_records[agent_id]
-        await self._delete_waiting_record(agent_id)
 
         # Generate resume prompt
         resume_prompt = self._generate_resume_prompt(record, resolution)
@@ -5030,13 +5490,38 @@ class AgentOrchestrator:
         prior = self._instances.get(agent_id)
         prior_git_context = prior.config.git_context if prior and prior.config else None
 
-        # Respawn
-        return await self.spawn_agent(
-            agent_id=agent_id,
-            initial_prompt=resume_prompt,
-            task_id=record.task_id,
-            git_context=prior_git_context,
-        )
+        # Respawn FIRST, then tear down the record only once a container actually
+        # launched. The old order deleted the record (in-memory + durable) before
+        # the spawn: a re-park during the resume window — the provider's rate limit
+        # lifts then immediately re-limits, or a second provider limit lands —
+        # bails spawn with an OFFLINE instance (the parked-provider short-circuit),
+        # and deleting the record first orphaned the agent. With no record the
+        # probe-resume loop can never revive it and the spawn gate bails every
+        # tick, so the agent is lost until the operator intervenes. Keeping the
+        # record through a bail lets the next probe-success re-attempt the resume.
+        try:
+            instance = await self.spawn_agent(
+                agent_id=agent_id,
+                initial_prompt=resume_prompt,
+                task_id=record.task_id,
+                git_context=prior_git_context,
+            )
+        except Exception:
+            # Spawn failed (e.g. readiness refused → task auto-blocked). Tear
+            # down the record so the probe loop doesn't keep re-resuming a task
+            # that has moved to a different state; the blocked-task path takes
+            # over. This matches the pre-fix behavior where the record was
+            # deleted before the spawn attempt.
+            del self._waiting_records[agent_id]
+            await self._delete_waiting_record(agent_id)
+            raise
+        if instance is None or instance.state == AgentState.OFFLINE:
+            # Spawn bailed without launching (provider re-parked). Keep the record
+            # so the probe-resume loop re-attempts on the next clear.
+            return instance
+        del self._waiting_records[agent_id]
+        await self._delete_waiting_record(agent_id)
+        return instance
 
     def _generate_resume_prompt(
         self,
@@ -5353,7 +5838,7 @@ Start by:
         if not self._instances:
             return
         async with httpx.AsyncClient(
-            timeout=3.0, headers=_SYSTEM_API_HEADERS
+            timeout=3.0, headers=_system_api_headers()
         ) as client:
             for agent_id, instance in list(self._instances.items()):
                 if instance.state not in (
@@ -5372,7 +5857,11 @@ Start by:
                     halt_threshold=data.get("halt_threshold"),
                 )
                 try:
-                    await self.stop_agent(agent_id, graceful=True)
+                    # release_claim=True: a budget-exceeded agent is terminated
+                    # for cost overruns and will not continue its task, so hand
+                    # the claim back to the pool now instead of waiting for the
+                    # reaper's TTL.
+                    await self.stop_agent(agent_id, graceful=True, release_claim=True)
                 except Exception as e:
                     logger.warning(
                         "Failed to stop budget-exceeded agent",
@@ -5398,7 +5887,13 @@ Start by:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        stdout, _ = await proc.communicate()
+        try:
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=_DOCKER_INSPECT_TIMEOUT_SECONDS
+            )
+        except TimeoutError:
+            proc.kill()
+            raise
         parts = stdout.decode().strip().split()
         is_running = bool(parts) and parts[0] == "true"
         try:
@@ -5406,6 +5901,36 @@ Start by:
         except ValueError:
             exit_code = None
         return is_running, exit_code
+
+    @staticmethod
+    async def _resolve_container_id(container_name: str) -> str | None:
+        """Return the Docker container id for ``container_name`` via `docker inspect`.
+
+        Used at startup re-adoption (F033) so a re-adopted ACTIVE instance
+        carries the real container id — ``_check_health`` skips
+        ``container_id is None`` instances, so without it a later container exit
+        is invisible to the health loop and the task strands. Returns ``None``
+        when the id can't be resolved (caller treats that as best-effort
+        degraded re-adoption, still covered by the reaper's liveness fallback).
+        """
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "inspect",
+            "-f",
+            "{{.Id}}",
+            container_name,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=_DOCKER_INSPECT_TIMEOUT_SECONDS
+            )
+        except TimeoutError:
+            proc.kill()
+            raise
+        cid = stdout.decode().strip()
+        return cid or None
 
     @staticmethod
     async def _probe_gateway_health(slug: str) -> bool | None:
@@ -5433,10 +5958,66 @@ Start by:
         except Exception:
             return None
         try:
-            rc = await proc.wait()
+            rc = await asyncio.wait_for(
+                proc.wait(), timeout=_DOCKER_EXEC_TIMEOUT_SECONDS
+            )
+        except TimeoutError:
+            # A hung docker exec is inconclusive (the probe could not run to
+            # completion): kill the child and decline to act, matching the
+            # existing probe-failure contract. The next grace tick retries.
+            proc.kill()
+            return None
         except Exception:
             return None
         return rc == 0
+
+    async def _maybe_park_for_exit_error(
+        self, agent_id: str, instance: Any, graceful: bool
+    ) -> bool:
+        """Park the provider on a session/usage limit or a server overload detected
+        in the dead container's output, instead of crash-retrying into it. Returns
+        True when parked (caller returns); False to proceed with normal handling.
+        The probe-resume loop revives the task when the limit lifts / overload clears.
+        """
+        if graceful:
+            return False
+        rate_limited_provider = await self._provider_rate_limit_park_target(
+            agent_id, instance
+        )
+        if rate_limited_provider is not None:
+            logger.warning(
+                "Session/usage limit detected in agent output; parking provider",
+                agent_id=agent_id,
+                provider=rate_limited_provider,
+                task_id=instance.current_task_id,
+            )
+            await self._park_provider_unavailable(
+                agent_id,
+                instance,
+                provider=rate_limited_provider,
+                retry_after=_RATE_LIMIT_RETRY_AFTER_S,
+                kind="rate_limited",
+            )
+            return True
+        overloaded_provider = await self._provider_overload_park_target(
+            agent_id, instance
+        )
+        if overloaded_provider is not None:
+            logger.warning(
+                "Provider overload detected in agent output; parking provider",
+                agent_id=agent_id,
+                provider=overloaded_provider,
+                task_id=instance.current_task_id,
+            )
+            await self._park_provider_unavailable(
+                agent_id,
+                instance,
+                provider=overloaded_provider,
+                retry_after=_OVERLOAD_RETRY_AFTER_S,
+                kind="overloaded",
+            )
+            return True
+        return False
 
     async def _handle_stopped_container(
         self, agent_id: str, instance: Any, exit_code: int | None
@@ -5458,54 +6039,20 @@ Start by:
         if self._is_grok_rate_limit_exit(instance, exit_code):
             await self._park_grok_rate_limited(agent_id, instance)
             return
+        # Grok auth-missing parking (F041): a one-shot grok run whose entrypoint
+        # found the token missing/expired exits 78 (EX_CONFIG). Park the provider
+        # instead of crash-retrying — the agent can't start without a valid token,
+        # so respawning burns tokens for zero progress. The probe-resume loop
+        # revives the task once grok_auth.refresh_if_stale mints a fresh token.
+        if self._is_grok_auth_exit(instance, exit_code):
+            await self._park_grok_auth_unavailable(agent_id, instance)
+            return
         graceful = exit_code == 0
-        # Session/usage-limit parking: the Claude session ("5-hour") limit is a
-        # 429 the SDK does not retry — the container exits non-zero with a
-        # 0-token rejection. Detect it in the dead container's output and park
-        # the provider (instead of crash-respawning straight back into the
-        # limit); the probe-resume loop revives the task when the quota resets.
-        if not graceful:
-            rate_limited_provider = await self._provider_rate_limit_park_target(
-                agent_id, instance
-            )
-            if rate_limited_provider is not None:
-                logger.warning(
-                    "Session/usage limit detected in agent output; parking provider",
-                    agent_id=agent_id,
-                    provider=rate_limited_provider,
-                    task_id=instance.current_task_id,
-                )
-                await self._park_provider_unavailable(
-                    agent_id,
-                    instance,
-                    provider=rate_limited_provider,
-                    retry_after=_RATE_LIMIT_RETRY_AFTER_S,
-                    kind="rate_limited",
-                )
-                return
-        # Server-overload parking: a persistent 529/500/503 from the model API
-        # kills the run (the SDK already retries transient ones). Detect the
-        # overload marker in the dead container's output and park the provider —
-        # the same break as a 429 — instead of crash-retrying into the overload.
-        if not graceful:
-            overloaded_provider = await self._provider_overload_park_target(
-                agent_id, instance
-            )
-            if overloaded_provider is not None:
-                logger.warning(
-                    "Provider overload detected in agent output; parking provider",
-                    agent_id=agent_id,
-                    provider=overloaded_provider,
-                    task_id=instance.current_task_id,
-                )
-                await self._park_provider_unavailable(
-                    agent_id,
-                    instance,
-                    provider=overloaded_provider,
-                    retry_after=_OVERLOAD_RETRY_AFTER_S,
-                    kind="overloaded",
-                )
-                return
+        # Park the provider on a session/usage limit or a server overload detected
+        # in the dead container's output instead of crash-retrying into it. The
+        # probe-resume loop revives the task when the limit lifts / overload clears.
+        if await self._maybe_park_for_exit_error(agent_id, instance, graceful):
+            return
         if graceful:
             logger.info(
                 "Agent container exited gracefully",
@@ -5572,9 +6119,22 @@ Start by:
                 continue
             if instance.container_id is None:
                 continue
-            is_running, exit_code = await self._inspect_container_state(
-                f"roboco-agent-{agent_id}"
-            )
+            # A per-agent docker-inspect timeout (or any docker error) must skip
+            # THIS agent, not abort the whole sweep — otherwise one hung daemon
+            # call means no agent gets health-checked this tick. The reaper's
+            # own liveness fallback still covers a genuinely-stopped container
+            # next tick; skipping is the safe fail-direction.
+            try:
+                is_running, exit_code = await self._inspect_container_state(
+                    f"roboco-agent-{agent_id}"
+                )
+            except Exception as exc:
+                logger.debug(
+                    "container inspect failed; skipping agent this tick",
+                    agent_id=agent_id,
+                    error=str(exc),
+                )
+                continue
             if not is_running:
                 await self._handle_stopped_container(agent_id, instance, exit_code)
 
@@ -5786,10 +6346,18 @@ Start by:
             await db.commit()
 
     async def _load_ci_watch_set(self, db: Any) -> list[Any]:
-        """Opted-in projects (``ci_watch_enabled`` + a git_url), one per repo.
+        """Opted-in projects (``ci_watch_enabled`` + a git_url), one per
+        (repo, workflow).
 
-        Collapsing to one canonical project per repo means a monorepo's several
-        cell-projects are watched as a single repo, not N times.
+        A monorepo's several cell-projects can each carry their OWN
+        ``ci_watch_workflow`` (e.g. a backend CI workflow distinct from the
+        frontend's). Collapsing to one canonical project per REPO would watch
+        only the canonical cell's workflow and miss a red on the others (the
+        under-count). Collapse to one canonical project per (repo, effective
+        workflow) instead — every distinct workflow is sampled once, and the
+        engine's per-``git_url`` fix-task dedup still prevents a duplicate fix
+        task for the same repo. The effective workflow is the project override
+        or ``ci_watch_default_workflow`` (matching ``MultiProjectCITelemetrySource``).
         """
         from roboco.services.project import get_project_service
 
@@ -5799,7 +6367,28 @@ Start by:
             for p in projects
             if getattr(p, "ci_watch_enabled", False) and getattr(p, "git_url", None)
         ]
-        return self._projects_one_per_repo(watched)
+        return self._projects_one_per_key(
+            watched,
+            key_fn=lambda p: (
+                self._repo_key(str(getattr(p, "git_url", "") or "")),
+                self._effective_ci_watch_workflow(p),
+            ),
+        )
+
+    @staticmethod
+    def _effective_ci_watch_workflow(project: Any) -> str | None:
+        """The workflow that will actually be polled for ``project``.
+
+        Mirrors ``MultiProjectCITelemetrySource._sample_for``: the project's
+        ``ci_watch_workflow`` override, falling back to the global
+        ``ci_watch_default_workflow``. Used as the per-(repo, workflow) collapse
+        key so two cells sharing a workflow still collapse to one sample.
+        """
+        workflow = str(
+            getattr(project, "ci_watch_workflow", None)
+            or settings.ci_watch_default_workflow
+        ).strip()
+        return workflow or None
 
     async def _dep_update_loop(self) -> None:
         """Dependency-update bot: probe opted-in projects, open update tasks.
@@ -5874,7 +6463,18 @@ Start by:
             await db.commit()
 
     async def _load_dep_update_set(self, db: Any) -> list[Any]:
-        """Projects with a ``dep_update_command`` + a git_url, one per repo."""
+        """Projects with a ``dep_update_command`` + a git_url, one per
+        (repo, command).
+
+        A monorepo's several cell-projects can each carry their OWN
+        ``dep_update_command`` (different ecosystems → different lockfiles,
+        e.g. ``uv lock --upgrade`` vs ``pnpm update -L``). Collapsing to one
+        canonical project per REPO would probe only the canonical cell's
+        lockfile and miss the others' drift (the under-count). Collapse to one
+        canonical project per (repo, command) instead — every distinct command
+        is probed once, and the engine's per-``git_url`` open-task dedup still
+        prevents a duplicate update task for the same repo.
+        """
         from roboco.services.project import get_project_service
 
         projects = await get_project_service(db).list_all(active_only=True)
@@ -5884,7 +6484,13 @@ Start by:
             if str(getattr(p, "dep_update_command", None) or "").strip()
             and getattr(p, "git_url", None)
         ]
-        return self._projects_one_per_repo(eligible)
+        return self._projects_one_per_key(
+            eligible,
+            key_fn=lambda p: (
+                self._repo_key(str(getattr(p, "git_url", "") or "")),
+                str(getattr(p, "dep_update_command", None) or "").strip(),
+            ),
+        )
 
     @staticmethod
     def _repo_key(git_url: str) -> str:
@@ -5902,14 +6508,41 @@ Start by:
         projects). Collapse to one canonical project per repo (deterministic by
         slug so the pick is stable across polls); genuinely separate repos
         (multi-repo) each keep their own. Projects without a git_url are skipped.
+
+        Used by the external-PR discovery path (one review per PR per repo). The
+        CI-watch and dep-update loaders use :meth:`_projects_one_per_key` with a
+        finer (repo, workflow) / (repo, command) key so a monorepo's per-cell
+        workflow / lockfile-command overrides are each sampled once instead of
+        collapsing to the canonical cell's value.
         """
-        seen: set[str] = set()
+        return cls._projects_one_per_key(
+            projects,
+            key_fn=lambda p: (cls._repo_key(str(getattr(p, "git_url", "") or "")),),
+        )
+
+    @classmethod
+    def _projects_one_per_key(
+        cls, projects: list[Any], *, key_fn: "Callable[[Any], tuple[Any, ...]]"
+    ) -> list[Any]:
+        """One canonical project per distinct key (deterministic by slug).
+
+        ``key_fn`` defines what distinguishes a duplicate: repo identity for
+        external-PR discovery (one review per PR per repo); ``(repo, workflow)``
+        for CI-watch and ``(repo, command)`` for dep-update so a monorepo's
+        several cell-projects — each potentially carrying its OWN workflow /
+        lockfile command — are each sampled once instead of collapsing to the
+        canonical cell's value (the under-count fixed by F115). The first
+        project (by slug) per key is the canonical pick; the engine's
+        per-``git_url`` fix-task dedup still prevents duplicate fix tasks for the
+        same repo. Projects without a git_url are skipped.
+        """
+        seen: set[tuple[Any, ...]] = set()
         canonical: list[Any] = []
-        for project in sorted(projects, key=lambda p: str(p.slug)):
+        for project in sorted(projects, key=lambda p: str(getattr(p, "slug", ""))):
             git_url = getattr(project, "git_url", None)
             if not git_url:
                 continue
-            key = cls._repo_key(git_url)
+            key = key_fn(project)
             if key in seen:
                 continue
             seen.add(key)
@@ -5978,7 +6611,8 @@ Start by:
             if not settings.internal_pr_enabled:
                 return False
             if await task_service.active_task_owns_branch(
-                str(pr.get("head_ref") or "")
+                str(pr.get("head_ref") or ""),
+                cast("UUID", project.id),
             ):
                 return False
             source = "internal_pr"
@@ -6175,6 +6809,17 @@ Start by:
         - **Failure**: increment probe_failures; if the count reaches 10 and
           we haven't already sent a CEO notification for this episode, send
           one now.
+
+        F045: the loop is tracker-driven, but an ``activate()`` failure in the
+        in-verb ``i_am_blocked(rate_limited)`` path (or a Redis hiccup) can
+        leave agents parked in ``_waiting_records`` for a provider the tracker
+        never learned about — so the tracker-listed loop above never probes it
+        and the parked agents strand in WAITING_LONG forever. After probing the
+        tracker-listed set, scan the in-memory records for any
+        ``rate_limit_lifted`` provider the loop did NOT cover and probe it via
+        the time-expiry fallback (empty state → ``_too_early_to_probe`` returns
+        False → probe now) so ``_on_probe_success`` can resume them. The
+        fallback reads only local memory, so it works even when Redis is down.
         """
         from roboco.services.gateway.rate_limit_tracker import RateLimitStateTracker
 
@@ -6182,14 +6827,37 @@ Start by:
             providers = await RateLimitStateTracker.list_rate_limited_providers()
         except Exception as e:
             logger.warning("Failed to list rate-limited providers", error=str(e))
-            return
+            providers = []
 
+        probed_providers: set[str] = set()
         for provider, state in providers:
+            probed_providers.add(provider)
             try:
                 await self._probe_one_provider(provider, state)
             except Exception as e:
                 logger.error(
                     "Unhandled error probing provider",
+                    provider=provider,
+                    error=str(e),
+                )
+
+        # Orphan fallback: resume agents parked for a provider the
+        # tracker-listed loop above did not cover (activate failed silently or
+        # Redis was down at park time). On probe success ``_on_probe_success``
+        # clears the tracker (self-healing) and resumes the parked agents.
+        orphan_providers: set[str] = set()
+        for record in self._waiting_records.values():
+            if record.waiting_for != "rate_limit_lifted":
+                continue
+            prov = record.context.get("provider")
+            if prov and prov not in probed_providers:
+                orphan_providers.add(prov)
+        for provider in orphan_providers:
+            try:
+                await self._probe_one_provider(provider, {})
+            except Exception as e:
+                logger.error(
+                    "Unhandled error probing orphaned rate-limited provider",
                     provider=provider,
                     error=str(e),
                 )
@@ -6231,6 +6899,23 @@ Start by:
 
         return (
             exit_code == _GROK_RATE_LIMIT_EXIT_CODE
+            and instance.config is not None
+            and instance.config.provider_type == ModelProvider.GROK.value
+        )
+
+    @staticmethod
+    def _is_grok_auth_exit(instance: Any, exit_code: int | None) -> bool:
+        """True for a one-shot grok container that exited 78 (auth missing/expired).
+
+        The entrypoint runs ``grok_auth --check`` as a backstop and exits 78
+        (EX_CONFIG) when the access token is missing or expired — the CLI cannot
+        refresh it headlessly and would otherwise hang at an interactive login
+        prompt. See ``_GROK_AUTH_EXIT_CODE`` for the full rationale (F041).
+        """
+        from roboco.models.base import ModelProvider
+
+        return (
+            exit_code == _GROK_AUTH_EXIT_CODE
             and instance.config is not None
             and instance.config.provider_type == ModelProvider.GROK.value
         )
@@ -6305,7 +6990,12 @@ Start by:
         if provider_type not in (None, ModelProvider.ANTHROPIC.value):
             return None
         tail = await self._tail_container_logs(f"roboco-agent-{agent_id}")
-        lowered = tail.lower()
+        # The SDK server writes model-API errors to /tmp/sdk-server.log, not
+        # stdout, so the overload marker may appear only in the durable Claude
+        # transcript; without it an overload is missed and the agent
+        # crash-respawns straight back into it.
+        transcript_tail = self._transcript_tail_text(agent_id)
+        lowered = (tail + "\n" + transcript_tail).lower()
         if any(marker in lowered for marker in _ANTHROPIC_OVERLOAD_MARKERS):
             return ModelProvider.ANTHROPIC.value
         return None
@@ -6373,6 +7063,24 @@ Start by:
                 kind=kind,
                 error=str(exc),
             )
+        # Register a WaitingRecord so the probe-resume loop can revive this
+        # agent when the provider recovers; without it recovery falls to the
+        # 600s stale-claim reaper instead of the probe-success path the parking
+        # design relies on. Persisted so a restart still resolves the wait.
+        # We do NOT call ``mark_waiting_long`` — the container is already dead,
+        # and parking keeps OFFLINE so the reaper's live-skip / health loop
+        # ignore it.
+        task_id = str(instance.current_task_id) if instance.current_task_id else None
+        record = WaitingRecord(
+            agent_id=agent_id,
+            task_id=task_id,
+            waiting_for="rate_limit_lifted",
+            waiting_since=datetime.now(UTC),
+            context={"provider": provider, "kind": kind},
+        )
+        self._waiting_records[agent_id] = record
+        with contextlib.suppress(Exception):
+            await self._persist_waiting_record(record)
         logger.warning(
             "Provider unavailable; parked (task retried when it recovers)",
             provider=provider,
@@ -6382,15 +7090,58 @@ Start by:
         )
 
     async def _park_grok_rate_limited(self, agent_id: str, instance: Any) -> None:
-        """Park a grok agent whose run hit an xAI 429 (entrypoint exit 75)."""
+        """Park a grok agent whose run hit an xAI 429 (entrypoint exit 75).
+
+        F097: grok has no real recovery probe, so the probe loop clears a grok
+        park optimistically on a timer — a cleared park dispatches a fresh
+        grok agent that hits the still-active xAI 429, exits 75, and re-parks.
+        Without a backoff this is a flat ~90s crash-retry cycle for the whole
+        xAI rate-limit window. Back the re-park retry_after off exponentially
+        within one episode (60 -> 120 -> 240 -> ... capped) so the churn
+        dampens. A gap past ``_GROK_REPARK_EPISODE_GAP_S`` (no re-park for that
+        long => the rate limit actually lifted) starts a fresh episode at the
+        base retry_after, so recovery latency isn't penalized across episodes.
+        """
+        from roboco.models.base import ModelProvider
+
+        now = datetime.now(UTC)
+        last = self._grok_last_park_at
+        if (
+            last is not None
+            and (now - last).total_seconds() < _GROK_REPARK_EPISODE_GAP_S
+        ):
+            self._grok_repark_count += 1
+        else:
+            self._grok_repark_count = 0
+        self._grok_last_park_at = now
+        backoff = 2 ** min(self._grok_repark_count, _GROK_REPARK_BACKOFF_CAP)
+        retry_after = _GROK_RATE_LIMIT_RETRY_AFTER_S * backoff
+        await self._park_provider_unavailable(
+            agent_id,
+            instance,
+            provider=ModelProvider.GROK.value,
+            retry_after=retry_after,
+            kind="rate_limited",
+        )
+
+    async def _park_grok_auth_unavailable(self, agent_id: str, instance: Any) -> None:
+        """Park a grok agent whose token was missing/expired (entrypoint exit 78).
+
+        Same park-and-probe shape as the 429 exit-75 path, but with
+        ``kind="auth_missing"``: the agent cannot start without a valid token, so
+        crash-retrying burns tokens for zero progress. The probe-resume loop
+        revives the task once ``grok_auth.refresh_if_stale`` mints a fresh token
+        (run once per dispatch tick); if still expired, the next exit 78 re-parks
+        (no token burn). See ``_GROK_AUTH_EXIT_CODE`` (F041).
+        """
         from roboco.models.base import ModelProvider
 
         await self._park_provider_unavailable(
             agent_id,
             instance,
             provider=ModelProvider.GROK.value,
-            retry_after=_GROK_RATE_LIMIT_RETRY_AFTER_S,
-            kind="rate_limited",
+            retry_after=_GROK_AUTH_RETRY_AFTER_S,
+            kind="auth_missing",
         )
 
     @staticmethod
@@ -6458,7 +7209,21 @@ Start by:
     async def _on_probe_failure(
         self, provider: str, tracker: Any, activated_at_raw: str | None
     ) -> None:
-        """Count a failed probe; notify the CEO once at the failure threshold."""
+        """Count a failed probe; notify the CEO once at the failure threshold.
+
+        F094 escape hatch: past ``_PROBE_GIVE_UP_THRESHOLD`` persistent failures
+        the probe endpoint itself is the problem (misconfigured URL / removed API
+        key / network partition to the probe host) while the provider may be fine
+        for real workloads. Holding the park any longer strands every agent on
+        the provider forever with only a one-shot CEO notification. Fall back to
+        the same time-expiry optimism the unprobeable-provider path uses: clear
+        the park and resume. If the provider is genuinely still down the real
+        workload attempts re-park via the 429/5xx path, so this is bounded burn —
+        strictly better than a silent forever-strand. ``_on_probe_success``
+        clears the tracker (so the loop won't probe this provider again until a
+        real 429 re-parks) and discards the CEO-notified flag (a fresh episode
+        later gets a fresh notification).
+        """
         failure_count = await tracker.increment_probe_failures()
         logger.debug(
             "Rate-limit probe failed", provider=provider, probe_failures=failure_count
@@ -6473,6 +7238,16 @@ Start by:
                 activated_at_str=activated_at_raw or "unknown",
                 paused_agent_count=len(self._parked_agents_for(provider)),
             )
+        if failure_count >= _PROBE_GIVE_UP_THRESHOLD:
+            logger.warning(
+                "Rate-limit probe persistently failing; giving up on the probe "
+                "and falling back to time-expiry optimism (clearing the park + "
+                "resuming parked agents). If the provider is genuinely still down "
+                "they will re-park via the real 429/5xx path.",
+                provider=provider,
+                probe_failures=failure_count,
+            )
+            await self._on_probe_success(provider, tracker)
 
     async def _probe_one_provider(self, provider: str, state: dict[str, Any]) -> None:
         """Probe a single rate-limited provider and handle the outcome."""
@@ -6808,13 +7583,13 @@ Start by:
             return (
                 f"Task {task_id} has inadequate description ({len(description)} chars)"
             )
-        # A coordination task carries a product instead of a repo; only a task
-        # with neither is genuinely unroutable.
+        # A coordination task carries a product or an ad-hoc cell map instead of a
+        # repo; only a task with neither is genuinely unroutable.
         if not task.get("project_id") and not _is_coordination_task(task):
             await self._auto_block_task(
-                client, task_id, "Task needs a project_id or product_id"
+                client, task_id, "Task needs a project_id, product_id, or cell map"
             )
-            return f"Task {task_id} needs a project or product"
+            return f"Task {task_id} needs a project, product, or cell map"
         return None
 
     async def _check_dependencies_terminal(
@@ -7608,6 +8383,26 @@ Start now: evidence(task_id="{task_id}")
         instance = instances.get(self._resolve_agent_slug(str(owner)))
         return instance is not None and instance.state == AgentState.ACTIVE
 
+    def _assignee_is_provider_parked(self, task: Any) -> bool:
+        """True if the task's assignee is parked waiting for a provider to recover.
+
+        A provider-parked agent (session-limit / overload / grok-429) is OFFLINE
+        with a dead container and a ``rate_limit_lifted`` WaitingRecord; the
+        probe-resume loop owns its recovery. The stale-claim reaper must skip it
+        so the claim survives until the probe revives the agent — reaping would
+        release the claim to pending and probe-success would then respawn the
+        agent on a task it no longer owns. Defensive on a missing registry.
+        """
+        owner = getattr(task, "assigned_to", None) or getattr(task, "claimed_by", None)
+        if not owner:
+            return False
+        records = getattr(self, "_waiting_records", None)
+        if not records:
+            return False
+        slug = self._resolve_agent_slug(str(owner))
+        record = records.get(slug)
+        return record is not None and record.waiting_for == "rate_limit_lifted"
+
     async def _readopt_running_agents(self) -> int:
         """Re-adopt still-running agent containers into ``_instances`` at startup.
 
@@ -7636,8 +8431,20 @@ Start now: evidence(task_id="{task_id}")
                 continue
             if not is_running:
                 continue
+            # Capture the real container id: ``_check_health`` skips instances
+            # with ``container_id is None``, so a re-adopted instance without
+            # the id would be invisible to the health loop and strand the task
+            # under a phantom ACTIVE instance. Best-effort — a probe failure
+            # degrades to None (reaper's Docker-liveness fallback covers it).
+            container_id: str | None = None
+            try:
+                container_id = await self._resolve_container_id(f"roboco-agent-{slug}")
+            except Exception:
+                container_id = None
             self._instances[slug] = AgentInstance(
-                agent_id=slug, state=AgentState.ACTIVE
+                agent_id=slug,
+                state=AgentState.ACTIVE,
+                container_id=container_id,
             )
             readopted += 1
         if readopted:
@@ -7799,6 +8606,26 @@ Start now: evidence(task_id="{task_id}")
             grace = settings.gateway_health_grace_seconds
         return (now - first_seen).total_seconds() >= grace
 
+    async def _should_skip_live_reap(self, t: Any, ts: Any) -> bool:
+        """True when a live container should be spared from reaping.
+
+        A live container normally protects its task; on a registry MISS (e.g. the
+        orchestrator restarted and forgot a still-running container) fall back to
+        asking Docker. A live container is spared UNLESS it is wedged (grok) or
+        its gateway is broken-but-alive past the grace window — both checks kill +
+        evict it (returning False here) so the caller falls through to release +
+        respawn. Short-circuits like the original ``and``: when not live, neither
+        kill nor recovery check is awaited.
+        """
+        live = self._assignee_has_active_instance(
+            t
+        ) or await self._assignee_container_running(t)
+        return (
+            live
+            and not await self._maybe_kill_wedged_grok(t, ts)
+            and not await self._maybe_recover_broken_gateway(t)
+        )
+
     async def _reap_with_service(self, svc: "TaskService") -> None:
         """Inner reap loop, parameterized by the TaskService to use.
 
@@ -7815,26 +8642,18 @@ Start now: evidence(task_id="{task_id}")
         for t in candidates:
             ts = t.last_heartbeat_at
             if ts is None or ts < cutoff:
-                # A live container normally protects its task. Prefer the
-                # in-memory registry; on a registry MISS (e.g. the orchestrator
-                # restarted and forgot a still-running container) fall back to
-                # asking Docker, so we don't reap a task out from under a live
-                # agent. The sole exception is a wedged GROK container — ACTIVE
-                # yet firing no verb — which the live skip would shield forever:
-                # kill + evict it past the grok-idle TTL (then fall through to
-                # release); a live non-grok agent, or a grok within the TTL, is
-                # skipped.
-                live = self._assignee_has_active_instance(
-                    t
-                ) or await self._assignee_container_running(t)
-                # A live container is spared UNLESS it is wedged (grok) or its
-                # gateway is broken-but-alive past the grace window — both get
-                # killed + evicted here so we fall through to release + respawn.
-                if (
-                    live
-                    and not await self._maybe_kill_wedged_grok(t, ts)
-                    and not await self._maybe_recover_broken_gateway(t)
-                ):
+                # A live container is spared unless it is wedged (grok) or its
+                # gateway is broken-but-alive past the grace window — see
+                # _should_skip_live_reap, which kills + evicts those so we fall
+                # through to release + respawn.
+                if await self._should_skip_live_reap(t, ts):
+                    continue
+                # A provider-parked agent (session-limit / overload / grok-429)
+                # is OFFLINE with a dead container and a ``rate_limit_lifted``
+                # WaitingRecord. The probe-resume loop owns its recovery — do
+                # NOT reap the claim, or probe-success would respawn the agent
+                # on a task it no longer owns.
+                if self._assignee_is_provider_parked(t):
                     continue
                 task_id = require_uuid(t.id)
                 try:
@@ -7889,7 +8708,7 @@ Start now: evidence(task_id="{task_id}")
 
         dispatchers: list[tuple[str, Any]] = []
         async with httpx.AsyncClient(
-            timeout=30.0, headers=_SYSTEM_API_HEADERS
+            timeout=30.0, headers=_system_api_headers()
         ) as client:
             dispatchers = [
                 ("pm_work", self._dispatch_pm_work(client)),
@@ -8411,11 +9230,15 @@ Start now: evidence(task_id="{task_id}")
             # are acted on by the release routes + executor, never dispatched.
             if task.get("source") == RELEASE_MANAGER_SOURCE:
                 continue
-            # Self-heal fix tasks dispatch autonomously — the loop opens them
-            # confirmed + assigned to the Main PM, so they flow through the
-            # assigned-PM path below like any other PM task (no CEO Approve-&-
-            # Start; that gate is the Intake/board flow). The fix still ships
-            # through dev -> QA -> PR review -> the CEO's merge.
+            # A self-heal fix task is HELD for the CEO's Approve-&-Start
+            # (confirmed_by_human=False at origination). It must NOT dispatch
+            # autonomously — the CEO's approve_and_start flips
+            # confirmed_by_human True, after which it flows through the
+            # assigned-PM path below like any other PM task.
+            if task.get("source") == SELF_HEAL_SOURCE and not task.get(
+                "confirmed_by_human"
+            ):
+                continue
             assigned_to = task.get("assigned_to")
             if assigned_to:
                 if self._resolve_agent_slug(assigned_to) in self._BOARD_AGENTS:
@@ -8796,6 +9619,13 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 continue
             # Release proposals are CEO-gated artifacts, never dev work.
             if task.get("source") == RELEASE_MANAGER_SOURCE:
+                continue
+            # A self-heal fix task held for the CEO's Approve-&-Start is not dev
+            # work yet — it must not route to its assigned_to as a dev before
+            # the CEO approves it.
+            if task.get("source") == SELF_HEAL_SOURCE and not task.get(
+                "confirmed_by_human"
+            ):
                 continue
             await self._dev_dispatch_one(client, task)
 
@@ -9347,6 +10177,18 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             # If already assigned, check if that agent is running
             if assigned_to:
                 assigned_slug = self._resolve_agent_slug(assigned_to)
+                # Human-only roles (CEO / prompter / secretary) are never
+                # containers — there is no reviewer agent to respawn. Leave
+                # the task for the human (the CEO approves via the panel).
+                # Mirrors the spawn_agent human-role guard; a skip here keeps
+                # a mis-assigned human task from aborting this dispatcher's
+                # whole tick (the chokepoint would otherwise raise).
+                if role_for_slug_or_none(assigned_slug) in (
+                    Role.CEO,
+                    Role.PROMPTER,
+                    Role.SECRETARY,
+                ):
+                    continue
                 if self._is_agent_active(assigned_slug):
                     continue
                 # Loop guard: a review task that keeps re-surfacing without
@@ -9513,6 +10355,17 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         if not owner_uuid:
             return None
         agent_slug = self._resolve_agent_slug(str(owner_uuid))
+        # Human-only roles (CEO / prompter / secretary) are never containers —
+        # there is no agent to respawn. Leave the task as-is for the human to
+        # act on through the panel; do NOT release it to pending (that would
+        # re-route a human-owned task to a PM). See spawn_agent's human-role
+        # guard for the structural backstop.
+        if role_for_slug_or_none(agent_slug) in (
+            Role.CEO,
+            Role.PROMPTER,
+            Role.SECRETARY,
+        ):
+            return None
         # The assignee is running, and on THIS task — healthy.
         instance = self._instances.get(agent_slug)
         if instance is not None and instance.state == AgentState.ACTIVE:
@@ -9925,6 +10778,21 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             for agent_id in targets:
                 # Resolve UUID to slug - to_agents contains UUIDs from database
                 agent_slug = self._resolve_agent_slug(str(agent_id))
+
+                # Human-only roles (CEO / prompter / secretary) are never
+                # dispatched — the CEO is the human operator and intake/
+                # secretary are human-driven chats with their own launch
+                # paths. Spawning a container for one is a trust violation
+                # (the system acting as the human CEO). The CEO being a
+                # notification target (board-review handoff, escalation, etc.)
+                # is expected; it is NOT a spawn signal. Skip — the
+                # notification stays for the human to read in the panel.
+                if role_for_slug_or_none(agent_slug) in (
+                    Role.CEO,
+                    Role.PROMPTER,
+                    Role.SECRETARY,
+                ):
+                    continue
 
                 if self._is_agent_active(agent_slug):
                     # Agent is online - SDK handles A2A delivery directly

@@ -252,7 +252,10 @@ async def test_note_reflect_scope_succeeds() -> None:
     task_svc.get_active_task_for_agent.return_value = None
     # When task_id is explicit, ownership is verified — agent must be assignee.
     task_svc.get.return_value = MagicMock(
-        id=task_id, assigned_to=agent_id, status="in_progress"
+        id=task_id,
+        assigned_to=agent_id,
+        active_claimant_id=agent_id,
+        status="in_progress",
     )
     journal_svc = AsyncMock()
 
@@ -292,7 +295,10 @@ async def test_note_reflect_missing_fields_records_with_placeholder() -> None:
     task_svc = AsyncMock()
     task_svc.get_active_task_for_agent.return_value = None
     task_svc.get.return_value = MagicMock(
-        id=task_id, assigned_to=agent_id, status="in_progress"
+        id=task_id,
+        assigned_to=agent_id,
+        active_claimant_id=agent_id,
+        status="in_progress",
     )
     journal_svc = AsyncMock()
 
@@ -327,7 +333,10 @@ async def test_note_decision_thin_payload_records_not_rejected() -> None:
     task_svc = AsyncMock()
     task_svc.get_active_task_for_agent.return_value = None
     task_svc.get.return_value = MagicMock(
-        id=task_id, assigned_to=agent_id, status="in_progress"
+        id=task_id,
+        assigned_to=agent_id,
+        active_claimant_id=agent_id,
+        status="in_progress",
     )
     journal_svc = AsyncMock()
 
@@ -396,7 +405,10 @@ async def test_note_decision_scalar_list_fields_are_coerced() -> None:
     task_svc = AsyncMock()
     task_svc.get_active_task_for_agent.return_value = None
     task_svc.get.return_value = MagicMock(
-        id=task_id, assigned_to=agent_id, status="in_progress"
+        id=task_id,
+        assigned_to=agent_id,
+        active_claimant_id=agent_id,
+        status="in_progress",
     )
     journal_svc = AsyncMock()
 

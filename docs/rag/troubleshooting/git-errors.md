@@ -52,11 +52,13 @@ Don't checkout by hand — there is no `roboco_git_checkout` tool.
 
 ## Branch Behind Its Base / master
 
-**Symptom:** `roboco_git_status` shows `behind > 0` against the base branch when you go to submit.
+**Symptom:** `roboco_git_status` shows `behind > 0` against the base branch when you go to submit, OR `i_am_done` refuses with "your branch is N commit(s) behind its base".
 
-**Cause:** The base (cell branch or master) advanced after your branch was cut, so your branch is stale.
+**Cause:** The base (cell branch or master) advanced after your branch was cut, so your branch is stale — a sibling's PR merged into the parent branch while you worked.
 
-**Fix:** You have no rebase verb — do **not** create a rebase task or improvise with shell git. Bringing the branch current is a platform/PM action. Escalate: devs `i_am_blocked(reason="branch behind base — needs rebase")`; PMs `escalate_up(...)`.
+**Fix (devs):** Call `sync_branch(task_id)` — that is your gate-level rebase verb (raw `Bash git rebase` is denied). It fetches, rebases your branch onto its base, and force-pushes with-lease. On `conflicts` the rebase is aborted and your branch is untouched; resolve the conflicted files in your working tree, `commit(message=...)`, then `sync_branch(task_id)` again. Do **not** create a rebase task or improvise shell git. After it returns `rebased`, continue editing + `commit`, then `open_pr` / `i_am_done` as normal.
+
+**Fix (PMs, for a cell/root integration branch — NOT a dev leaf):** `escalate_up(task_id, reason='branch behind base — needs rebase')` — bringing an integration branch current is a platform action. A dev's own leaf branch is the dev's to `sync_branch`.
 
 ## src refspec does not match any (during open_pr)
 
@@ -70,7 +72,7 @@ Don't checkout by hand — there is no `roboco_git_checkout` tool.
 
 **Cause:** Your branch is behind its remote, so the push can't fast-forward.
 
-**Fix:** Escalate rather than improvise — devs `i_am_blocked(...)`, PMs `escalate_up(...)`. There is no agent-layer pull/rebase to reconcile it.
+**Fix (devs):** Call `sync_branch(task_id)` to rebase onto your base through the gate, then retry the push-bearing verb (`open_pr` / `i_am_done`). **PMs** escalate: `escalate_up(...)`. There is no agent-layer pull — `sync_branch` is the dev's rebase path.
 
 ## NO_PR on pass / fail
 

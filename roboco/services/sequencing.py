@@ -205,3 +205,130 @@ class SequencingService:
                 seen.add(edge)
                 out.append(edge)
         return out
+
+
+# ---------------------------------------------------------------------------
+# dev_task_collision_edges — the dev-task collision DAG (edge kind 3).
+# ---------------------------------------------------------------------------
+
+# A collision needs at least two surfaced siblings to produce an edge.
+_MIN_COLLISION_PAIR = 2
+
+
+def _surfaced_siblings(siblings: list) -> list:
+    """Siblings carrying a collision surface: a project to collide within and at
+    least one of intends_to_touch / adds_migration / touches_shared."""
+    return [
+        s
+        for s in siblings
+        if getattr(s, "project_id", None)
+        and (
+            getattr(s, "intends_to_touch", None)
+            or getattr(s, "adds_migration", False)
+            or getattr(s, "touches_shared", False)
+        )
+    ]
+
+
+def dev_task_collision_edges(siblings: list) -> list[tuple[object, object]]:
+    """Wire the dev-task collision DAG for a parent's surfaced siblings.
+
+    Pure glue over :class:`SequencingService`: turns each surfaced sibling
+    (a task row with ``id`` / ``priority`` / ``sequence`` / ``intends_to_touch``
+    / ``adds_migration`` / ``touches_shared`` / ``project_id``) into a
+    :class:`DraftSurface`, runs the analyzer, and returns
+    ``(depends_on_id, task_id)`` pairs — *task depends-on depends_on* — ready
+    for ``TaskService.add_dependency``.
+
+    Incremental + idempotent by construction: a sibling with no collision
+    surface (empty ``intends_to_touch`` and not ``adds_migration`` /
+    ``touches_shared``) is parallel to everything and contributes no edges; a
+    sibling without a ``project_id`` cannot collide (collisions are scoped to
+    a repo) and is skipped. Siblings are ordered by ``(priority, sequence)``
+    before indexing so the analyzer's edge order is stable across re-runs
+    (a newly-delegated sibling takes a fresh ``sequence``; existing siblings
+    keep theirs), so re-running after each delegate only ADDS edges for the
+    new sibling's collisions — never flips an existing pair's order into a
+    reverse edge (which would cycle). ``add_dependency`` dedupes, so repeated
+    wiring is a no-op on already-wired pairs.
+    """
+    surfaced = _surfaced_siblings(siblings)
+    if len(surfaced) < _MIN_COLLISION_PAIR:
+        return []
+    # Stable order across incremental re-runs: priority is set at creation,
+    # sequence is append-only (existing siblings keep theirs).
+    surfaced.sort(
+        key=lambda s: (int(getattr(s, "priority", 2)), int(getattr(s, "sequence", 0)))
+    )
+    surfaces = [
+        DraftSurface(
+            idx=i,
+            priority=int(getattr(s, "priority", 2)),
+            intends_to_touch=list(getattr(s, "intends_to_touch", None) or []),
+            adds_migration=bool(getattr(s, "adds_migration", False)),
+            touches_shared=bool(getattr(s, "touches_shared", False)),
+            project_id=str(s.project_id) if s.project_id is not None else None,
+        )
+        for i, s in enumerate(surfaced)
+    ]
+    # cell_of / cell_capacity are advisory (contention warnings only); dev
+    # tasks under one cell-task share the parent's cell, so a constant keeps
+    # any warning attributable. Empty capacity -> no warnings emitted.
+    plan = SequencingService().analyze(surfaces, lambda _idx: "", {})
+    return [(surfaced[a].id, surfaced[b].id) for a, b in plan.edges]
+
+
+# ---------------------------------------------------------------------------
+# Multi-level sequencing — edge kinds 2 + 4 (cell-task wave chain + by-osmosis).
+# Pure glue (no DB): the choreographer's TaskService wrappers walk the tree and
+# hand the gathered objects to these helpers, which return the IDs to
+# add_dependency. Pure so the edge logic is unit-testable without a database.
+# ---------------------------------------------------------------------------
+
+
+def cell_task_wave_chain_depends_on(
+    predecessor_root_ids: list,
+    cell_tasks_by_root: dict,
+) -> list:
+    """Kind 2: the cell-task IDs a new cell-task should depend on.
+
+    For each predecessor root-subtask (the kind-1 wave-chain edges on the new
+    cell-task's root-subtask — i.e. ``root.dependency_ids``), EVERY cell-task
+    under it. The new cell-task waits for the whole previous wave's cell work so
+    its branch carries the merged tail; a root-subtask may fan to several
+    cell-tasks (different cells), so the previous wave's "cell-task" is a SET,
+    not a single task. Idempotent by construction (``add_dependency`` dedupes);
+    over-serializes safely (a predecessor cell-task already terminal is a no-op
+    gate). A predecessor root with no cell tasks contributes nothing.
+    """
+    deps: list = []
+    for rid in predecessor_root_ids:
+        for ct in cell_tasks_by_root.get(rid, []):
+            deps.append(getattr(ct, "id", ct))
+    return deps
+
+
+def by_osmosis_tail_dev_tasks(
+    is_first_dev_task: bool,
+    predecessor_dev_task_groups: list,
+) -> list:
+    """Kind 4: the tail dev-task IDs a new dev task should depend on.
+
+    Only the FIRST dev task (``sequence == 0``) under a cell-task carries the
+    by-osmosis edge — its branch is cut first and must carry the previous wave's
+    fully-merged tail. Subsequent dev tasks inherit the tail via the kind-3
+    collision DAG (they depend on earlier siblings) or share the cell branch's
+    already-merged base, so they need no explicit edge. "Tail" = the
+    highest-``sequence`` dev task under each predecessor cell-task; a
+    predecessor with no dev tasks contributes no edge. Idempotent + best-effort
+    (a tail already terminal is a no-op gate).
+    """
+    if not is_first_dev_task:
+        return []
+    tails: list = []
+    for group in predecessor_dev_task_groups:
+        if not group:
+            continue
+        tail = max(group, key=lambda t: int(getattr(t, "sequence", 0)))
+        tails.append(getattr(tail, "id", tail))
+    return tails

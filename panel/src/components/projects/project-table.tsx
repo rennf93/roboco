@@ -74,7 +74,9 @@ export function ProjectTable({ projects, isLoading }: ProjectTableProps) {
       <div className="text-center py-12 text-muted-foreground">
         <GitBranch className="h-12 w-12 mx-auto mb-4 opacity-50" />
         <p className="text-lg font-medium">No projects found</p>
-        <p className="text-sm">Create a project to get started with git integration</p>
+        <p className="text-sm">
+          Create a project to get started with git integration
+        </p>
       </div>
     );
   }
@@ -131,7 +133,9 @@ export function ProjectTable({ projects, isLoading }: ProjectTableProps) {
                 <TableCell>{getTokenBadge(project.has_git_token)}</TableCell>
                 <TableCell>
                   {project.is_active ? (
-                    <Badge className="bg-green-500/10 text-green-500">Active</Badge>
+                    <Badge className="bg-green-500/10 text-green-500">
+                      Active
+                    </Badge>
                   ) : (
                     <Badge variant="outline" className="text-muted-foreground">
                       Inactive
@@ -148,7 +152,12 @@ export function ProjectTable({ projects, isLoading }: ProjectTableProps) {
                     >
                       <Pencil className="h-4 w-4" />
                     </Button>
-                    <Button variant="ghost" size="icon" asChild title="View repository">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      asChild
+                      title="View repository"
+                    >
                       <a
                         href={getExternalUrl(project)}
                         target="_blank"

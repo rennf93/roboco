@@ -70,7 +70,9 @@ export const a2aApi = {
   /**
    * Send a message to another agent
    */
-  sendMessage: async (request: A2AMessageSendRequest): Promise<A2AMessageResponse> => {
+  sendMessage: async (
+    request: A2AMessageSendRequest,
+  ): Promise<A2AMessageResponse> => {
     if (isMockMode()) {
       return {
         message_id: `msg-${Date.now()}`,
@@ -78,21 +80,29 @@ export const a2aApi = {
         delivered_at: new Date().toISOString(),
       };
     }
-    const { data } = await api.post<A2AMessageResponse>("/a2a/message/send", request);
+    const { data } = await api.post<A2AMessageResponse>(
+      "/a2a/message/send",
+      request,
+    );
     return data;
   },
 
   /**
    * Stream a message to another agent (for long content)
    */
-  streamMessage: async (request: A2AMessageSendRequest): Promise<A2AMessageResponse> => {
+  streamMessage: async (
+    request: A2AMessageSendRequest,
+  ): Promise<A2AMessageResponse> => {
     if (isMockMode()) {
       return {
         message_id: `msg-${Date.now()}`,
         status: "streaming",
       };
     }
-    const { data } = await api.post<A2AMessageResponse>("/a2a/message/stream", request);
+    const { data } = await api.post<A2AMessageResponse>(
+      "/a2a/message/stream",
+      request,
+    );
     return data;
   },
 
@@ -140,14 +150,18 @@ export const a2aApi = {
   /**
    * Cancel a task via A2A protocol
    */
-  cancelTask: async (taskId: string): Promise<{ status: string; task_id: string }> => {
+  cancelTask: async (
+    taskId: string,
+  ): Promise<{ status: string; task_id: string }> => {
     if (isMockMode()) {
       return {
         status: "cancelled",
         task_id: taskId,
       };
     }
-    const { data } = await api.post<{ status: string; task_id: string }>(`/a2a/tasks/${taskId}/cancel`);
+    const { data } = await api.post<{ status: string; task_id: string }>(
+      `/a2a/tasks/${taskId}/cancel`,
+    );
     return data;
   },
 

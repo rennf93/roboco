@@ -110,3 +110,52 @@ async def test_non_curator_is_forbidden(db_session: AsyncSession) -> None:
     assert get_resp.status_code == HTTPStatus.FORBIDDEN
     assert approve_resp.status_code == HTTPStatus.FORBIDDEN
     app.dependency_overrides.clear()
+
+
+# --- F109: curation status-precondition guards at the route layer ------------- #
+# approve/reject only act on a draft; archive only retires an approved playbook.
+# A violation is a 409 Conflict (the curation is already finished), not a 200
+# that silently no-ops or a 500 from an uncaught ConflictError.
+
+
+@pytest.mark.asyncio
+async def test_approve_already_approved_is_409(
+    db_session: AsyncSession, auditor_client: AsyncClient
+) -> None:
+    pid = await _seed_draft(db_session, title="Once only")
+    first = await auditor_client.post(f"/api/playbooks/{pid}/approve")
+    assert first.status_code == HTTPStatus.OK
+    second = await auditor_client.post(f"/api/playbooks/{pid}/approve")
+    assert second.status_code == HTTPStatus.CONFLICT
+
+
+@pytest.mark.asyncio
+async def test_reject_approved_is_409(
+    db_session: AsyncSession, auditor_client: AsyncClient
+) -> None:
+    pid = await _seed_draft(db_session, title="Published route")
+    await auditor_client.post(f"/api/playbooks/{pid}/approve")
+    resp = await auditor_client.post(
+        f"/api/playbooks/{pid}/reject", json={"reason": "changed my mind"}
+    )
+    assert resp.status_code == HTTPStatus.CONFLICT
+
+
+@pytest.mark.asyncio
+async def test_archive_approved_succeeds(
+    db_session: AsyncSession, auditor_client: AsyncClient
+) -> None:
+    pid = await _seed_draft(db_session, title="Retire route")
+    await auditor_client.post(f"/api/playbooks/{pid}/approve")
+    resp = await auditor_client.post(f"/api/playbooks/{pid}/archive")
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.json()["status"] == "archived"
+
+
+@pytest.mark.asyncio
+async def test_archive_draft_is_409(
+    db_session: AsyncSession, auditor_client: AsyncClient
+) -> None:
+    pid = await _seed_draft(db_session, title="Not yet approved")
+    resp = await auditor_client.post(f"/api/playbooks/{pid}/archive")
+    assert resp.status_code == HTTPStatus.CONFLICT
