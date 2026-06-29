@@ -7,6 +7,7 @@ guard says every recipient was just notified; pass through otherwise.
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -31,13 +32,21 @@ def _notification(
     return n
 
 
+def _svc(session: MagicMock) -> Any:
+    """Build the service with ``deliver`` stubbed via an Any-typed alias so the
+    reassignment stays type-clean (no method-assign suppression)."""
+    svc = NotificationDeliveryService(session)
+    cc: Any = svc
+    cc.deliver = AsyncMock()
+    return svc
+
+
 @pytest.mark.asyncio
 async def test_persist_and_deliver_suppresses_when_guard_true() -> None:
     session = MagicMock()
     session.add = MagicMock()
     session.flush = AsyncMock()
-    svc = NotificationDeliveryService(session)
-    svc.deliver = AsyncMock()  # type: ignore[method-assign]
+    svc = _svc(session)
 
     with patch(
         "roboco.services.notification_delivery.all_recipients_recently_notified",
@@ -55,8 +64,7 @@ async def test_persist_and_deliver_passes_through_when_guard_false() -> None:
     session = MagicMock()
     session.add = MagicMock()
     session.flush = AsyncMock()
-    svc = NotificationDeliveryService(session)
-    svc.deliver = AsyncMock()  # type: ignore[method-assign]
+    svc = _svc(session)
 
     notif = _notification()
     with patch(

@@ -828,7 +828,7 @@ async def test_wire_sibling_collision_dag_chains_undeclared_same_assignee_lane(
     a = await _dev(0, task_setup["agent_id"])
     b = await _dev(1, task_setup["agent_id"])
     # Different assignee, no declared surface -> parallel (no fallback edge).
-    c = await _dev(2, other_dev.id)
+    c = await _dev(2, cast("UUID", other_dev.id))
 
     await svc.wire_sibling_collision_dag(parent.id)
 

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
@@ -31,7 +31,7 @@ def _make_deps(task: AsyncMock) -> ChoreographerDeps:
     )
 
 
-def _dev_agent_task_svc() -> tuple[AsyncMock, uuid4]:
+def _dev_agent_task_svc() -> tuple[AsyncMock, UUID]:
     task_svc = AsyncMock()
     task_svc.agent_for.return_value = MagicMock(role="developer")
     task_svc.list_pending_for_agent.return_value = []
