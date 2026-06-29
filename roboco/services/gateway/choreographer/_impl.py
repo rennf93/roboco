@@ -773,7 +773,9 @@ class Choreographer:
         # list_assigned_for_agent (ordered by priority/updated_at — pending
         # could rank behind in_progress rows) and the PM path checked
         # awaiting_* queues but not the pre-assigned pending case.
-        pre_assigned = await self._deps.task.list_pending_for_agent(agent_id)
+        pre_assigned = await self._pending_not_lane_held(
+            await self._deps.task.list_pending_for_agent(agent_id)
+        )
         if pre_assigned:
             t = pre_assigned[0]
             return Envelope.ok(
@@ -970,7 +972,35 @@ class Choreographer:
                 # unless the task is currently claimed/in_progress.
                 await self.task.release_dependency_blocked_claim(task.id)
                 return guard
-        return None
+        return await self._lane_claim_guard(task)
+
+    async def _lane_claim_guard(self, task: Any) -> Envelope | None:
+        """Refuse a code leaf behind an earlier open same-assignee sibling.
+
+        The out-of-order start wedge: a later PR cut from a base that predates
+        the earlier sibling's unmerged changes. CODE-only predicate ->
+        coordinator PMs are inert. Fail-closed on lookup error so a DB hiccup
+        never lets an out-of-order claim through.
+        """
+        try:
+            lane_held = await self.task.has_earlier_incomplete_code_sibling(task)
+        except Exception:
+            return Envelope.invalid_state(
+                message=(
+                    f"lane order check failed for task {task.id}; retry give_me_work."
+                ),
+                remediate="call give_me_work() to re-fetch available work",
+            )
+        if lane_held is not True:
+            return None
+        await self.task.release_dependency_blocked_claim(task.id)
+        return Envelope.invalid_state(
+            message=(
+                f"task {task.id} waits behind an earlier open task in your "
+                "code lane; start that one first."
+            ),
+            remediate="call give_me_work() to pick up the earlier task",
+        )
 
     async def _non_terminal_subtask_ids(self, parent_task_id: UUID) -> str:
         """Return a human-readable comma-separated list of non-terminal subtasks.
