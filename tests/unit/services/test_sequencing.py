@@ -211,6 +211,7 @@ class _Sib:
     adds_migration: bool = False
     touches_shared: bool = False
     project_id: str | None = "proj-backend"
+    assigned_to: object | None = None
 
 
 def _edge_set(pairs: list[tuple[object, object]]) -> set[tuple[object, object]]:
@@ -288,6 +289,69 @@ def test_dev_collision_returns_depends_on_first_pairs() -> None:
     [(dep, task)] = dev_task_collision_edges([first, second])
     assert dep == first.id
     assert task == second.id
+
+
+# ---------------------------------------------------------------------------
+# dev_task_collision_edges — undeclared-surface fallback: same-assignee
+# same-repo siblings chain by (priority, sequence); cross-dev stays parallel.
+# ---------------------------------------------------------------------------
+
+
+def test_dev_collision_fallback_chains_same_assignee_no_surface() -> None:
+    # Same dev, same repo, no declared surface -> chain by sequence.
+    a = _Sib(uuid4(), sequence=0, assigned_to="be-dev-1")
+    b = _Sib(uuid4(), sequence=1, assigned_to="be-dev-1")
+    assert dev_task_collision_edges([a, b]) == [(a.id, b.id)]
+
+
+def test_dev_collision_fallback_skips_cross_assignee() -> None:
+    # Two different devs on the same repo, no surface -> parallel.
+    a = _Sib(uuid4(), sequence=0, assigned_to="be-dev-1")
+    b = _Sib(uuid4(), sequence=1, assigned_to="be-dev-2")
+    assert dev_task_collision_edges([a, b]) == []
+
+
+def test_dev_collision_fallback_skips_unassigned() -> None:
+    # No assignee -> can't determine a per-dev lane -> skip.
+    a = _Sib(uuid4(), sequence=0)
+    b = _Sib(uuid4(), sequence=1)
+    assert dev_task_collision_edges([a, b]) == []
+
+
+def test_dev_collision_fallback_skips_different_project() -> None:
+    # Same dev, different repos -> no shared working tree -> no chain.
+    a = _Sib(uuid4(), sequence=0, assigned_to="be-dev-1", project_id="proj-be")
+    b = _Sib(uuid4(), sequence=1, assigned_to="be-dev-1", project_id="proj-fe")
+    assert dev_task_collision_edges([a, b]) == []
+
+
+def test_dev_collision_fallback_does_not_override_collision_edges() -> None:
+    # Declared overlapping surface -> collision edge wins; no fallback chain.
+    a = _Sib(uuid4(), sequence=0, assigned_to="be-dev-1", intends_to_touch=["a.py"])
+    b = _Sib(uuid4(), sequence=1, assigned_to="be-dev-1", intends_to_touch=["a.py"])
+    assert dev_task_collision_edges([a, b]) == [(a.id, b.id)]
+
+
+def test_dev_collision_fallback_orders_by_priority_then_sequence() -> None:
+    # Mixed priority/sequence -> chain in (priority, sequence) ascending order.
+    p2s2 = _Sib(uuid4(), priority=2, sequence=2, assigned_to="be-dev-1")
+    p1s5 = _Sib(uuid4(), priority=1, sequence=5, assigned_to="be-dev-1")
+    p1s1 = _Sib(uuid4(), priority=1, sequence=1, assigned_to="be-dev-1")
+    edges = dev_task_collision_edges([p2s2, p1s5, p1s1])  # passed out of order
+    assert edges == [(p1s1.id, p1s5.id), (p1s5.id, p2s2.id)]
+
+
+def test_dev_collision_fallback_single_sibling_no_edge() -> None:
+    # A chain needs >= 2 same-assignee same-project siblings.
+    solo = _Sib(uuid4(), sequence=0, assigned_to="be-dev-1")
+    assert dev_task_collision_edges([solo]) == []
+
+
+def test_dev_collision_fallback_idempotent_on_rerun() -> None:
+    # Deterministic sort -> two calls return the same edge list.
+    a = _Sib(uuid4(), sequence=0, assigned_to="be-dev-1")
+    b = _Sib(uuid4(), sequence=1, assigned_to="be-dev-1")
+    assert dev_task_collision_edges([a, b]) == dev_task_collision_edges([a, b])
 
 
 # ---------------------------------------------------------------------------

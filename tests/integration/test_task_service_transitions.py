@@ -777,6 +777,75 @@ async def test_wire_sibling_collision_dag_serializes_overlapping_dev_tasks(
 
 
 @pytest.mark.asyncio
+async def test_wire_sibling_collision_dag_chains_undeclared_same_assignee_lane(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """Undeclared-surface fallback: two dev siblings with NO collision surface
+    on the same assignee + same repo are chained by sequence so the later one
+    waits for the earlier — the live out-of-order start (a dev with an unmerged
+    earlier task starting the next one) is prevented at wiring time. Cross-dev
+    siblings stay parallel (the lane is same-assignee scoped)."""
+    svc = task_setup["svc"]
+    parent = await svc.create(_req(task_setup))
+    await db_session.flush()
+    other_dev = AgentTable(
+        id=uuid4(),
+        name="Dev2",
+        slug=f"be-dev-{uuid4().hex[:8]}",
+        role=AgentRole.DEVELOPER,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="dev",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(other_dev)
+    await db_session.flush()
+
+    async def _dev(seq: int, assignee: UUID) -> Any:
+        t = await svc.create_subtask(
+            TaskCreateRequest(
+                title=f"dev-{seq}",
+                description=f"dev task {seq} description long enough",
+                acceptance_criteria=["ac"],
+                team=Team.BACKEND,
+                created_by=task_setup["agent_id"],
+                project_id=task_setup["project_id"],
+                parent_task_id=parent.id,
+                task_type=TaskType.CODE,
+                nature=TaskNature.TECHNICAL,
+                estimated_complexity=Complexity.MEDIUM,
+                sequence=seq,
+                assigned_to=assignee,
+            )
+        )
+        await svc.set_sequence(t.id, seq)
+        return t
+
+    # Same assignee, no declared surface -> fallback chains seq-1 behind seq-0.
+    a = await _dev(0, task_setup["agent_id"])
+    b = await _dev(1, task_setup["agent_id"])
+    # Different assignee, no declared surface -> parallel (no fallback edge).
+    c = await _dev(2, other_dev.id)
+
+    await svc.wire_sibling_collision_dag(parent.id)
+
+    ra = await svc.get(a.id)
+    rb = await svc.get(b.id)
+    rc = await svc.get(c.id)
+    assert ra is not None and rb is not None and rc is not None
+    # Earlier sibling leads the lane (no incoming edge).
+    assert ra.dependency_ids == []
+    # Later same-assignee sibling waits on the earlier one.
+    assert a.id in rb.dependency_ids
+    # Cross-dev sibling is not chained onto the first dev's lane.
+    assert a.id not in rc.dependency_ids
+    assert b.id not in rc.dependency_ids
+
+
+@pytest.mark.asyncio
 async def test_wire_cell_task_wave_chain_chains_to_predecessor_cell_tasks(
     task_setup: dict, db_session: AsyncSession
 ) -> None:

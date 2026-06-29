@@ -124,7 +124,7 @@ async def test_informational_knowledge_share_not_deduped() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Bounded re-fire guard (loop-prone types) — sweep #4
+# Bounded re-fire guard (loop-prone types)
 # ---------------------------------------------------------------------------
 
 

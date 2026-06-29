@@ -484,11 +484,9 @@ class NotificationService:
                     subject=params.subject[:80],
                 )
                 return
-            # Bounded re-fire guard (loop-prone types only): a PM re-notifying
-            # the same recipients about the same task every tick while it sits
-            # in a state. The DB dedup below never fires for these (action-
-            # required-biased off), so a 60s Redis SET-NX window coalesces the
-            # storm. Fail-open: Redis down → never suppress.
+            # Re-fire guard for loop-prone types: a 60s Redis SET-NX window
+            # coalesces the per-tick re-notify storm the DB dedup below skips
+            # (these types are requires_ack=False). Fail-open on Redis down.
             if await all_recipients_recently_notified(
                 ntype=params.notification_type,
                 from_agent=from_agent_uuid,

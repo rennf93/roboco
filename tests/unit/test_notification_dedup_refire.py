@@ -1,4 +1,4 @@
-"""Bounded re-fire guard for loop-prone notification types (sweep #4).
+"""Bounded re-fire guard for loop-prone notification types.
 
 TASK_ASSIGNMENT / REVIEW_REQUEST / DOCUMENTATION_REQUEST / BROADCAST can be
 re-fired in a loop (a PM re-notifying the same recipient about the same task

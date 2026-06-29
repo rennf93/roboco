@@ -1,4 +1,4 @@
-"""NotificationDeliveryService._persist_and_deliver re-fire guard (sweep #4).
+"""NotificationDeliveryService._persist_and_deliver re-fire guard.
 
 Path 2 bypasses the DB dedup in NotificationService._create_notification, so
 the same 60s Redis SET-NX guard gates it. Suppress (skip add/deliver) when the

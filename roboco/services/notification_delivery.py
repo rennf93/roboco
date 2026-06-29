@@ -874,10 +874,9 @@ class NotificationDeliveryService(BaseService):
 
     async def _persist_and_deliver(self, notification: NotificationTable) -> None:
         """Add to session, flush (to get an id), deliver. Caller commits."""
-        # Bounded re-fire guard (loop-prone types): this path bypasses the DB
-        # dedup in NotificationService._create_notification, so apply the same
-        # 60s Redis SET-NX window here. Fail-open: Redis down → deliver. Casts
-        # peel the SA UUID column type-leak (mypy sees sqltypes.UUID, not uuid).
+        # Re-fire guard (loop-prone types): this path skips the DB dedup, so
+        # apply the same 60s Redis SET-NX window. Fail-open on Redis down.
+        # Casts peel the SA UUID column type-leak for the type checker.
         if await all_recipients_recently_notified(
             ntype=notification.type,
             from_agent=cast("UUID | None", notification.from_agent),
