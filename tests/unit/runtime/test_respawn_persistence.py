@@ -64,7 +64,26 @@ def test_partition_keeps_live_nonterminal_rows() -> None:
     )
     assert stale == []
     assert restored[("be-pm", str(tid))]["count"] == _SEEDED_COUNT
-    assert restored[("be-pm", str(tid))]["last_status"] == "blocked"
+    # last_status is re-stamped to the LIVE status (a pre-restart status is as
+    # stale w.r.t. post-restart reality as last_check, which F034 already
+    # re-stamps). Otherwise a status mismatch across the restart gap disarms
+    # the breaker on the first post-restart spawn and re-burns the budget.
+    assert restored[("be-pm", str(tid))]["last_status"] == "in_progress"
+
+
+def test_partition_restamps_last_status_to_live_not_stale() -> None:
+    # A restored row whose persisted last_status differs from the live status
+    # must take the LIVE status — the mismatch is a restart artifact, not
+    # evidence the wedge cleared. count is preserved either way.
+    tid = uuid4()
+    rows = [_row(tid, count=3, last_status="blocked")]
+    restored, stale = AgentOrchestrator._partition_respawn_rows(
+        rows, {tid: "in_progress"}
+    )
+    assert stale == []
+    entry = restored[("be-pm", str(tid))]
+    assert entry["count"] == _SEEDED_COUNT
+    assert entry["last_status"] == "in_progress"
 
 
 def test_partition_drops_terminal_and_missing_rows() -> None:
@@ -331,6 +350,47 @@ async def test_restored_counter_trips_at_persisted_threshold_not_from_one() -> N
         gated = await orch._pm_respawn_should_gate("be-pm", task)
     assert gated is True  # fires on the next spawn, not re-counted from 1
     assert orch._pm_respawn_tracker[("be-pm", task_id)]["count"] == _TRIP_COUNT
+
+
+@pytest.mark.asyncio
+async def test_restore_status_mismatch_does_not_reburn_threshold() -> None:
+    """A status mismatch across a restart gap must NOT disarm the breaker.
+
+    The persisted row's last_status (pre-restart) can differ from the live
+    status without the wedge having cleared (a reaper/external transition in
+    the gap). If restore left the stale last_status, the first post-restart
+    spawn would see the mismatch, reset count to 1, and re-burn the whole
+    strike threshold against the still-wedged task — exactly the re-burn the
+    respawn_tracker table was built to prevent. Restore re-stamps last_status
+    to the live status, so the breaker fires at the persisted threshold.
+    """
+    orch = _new_orchestrator()
+    cast("Any", orch)._schedule_respawn_persist = MagicMock()
+    task_id = uuid4()
+    factory, _db = _mock_session_factory(
+        [_row(task_id, count=3, last_status="blocked")],
+        [SimpleNamespace(id=task_id, status="in_progress")],
+    )
+    with patch("roboco.db.base.get_session_factory", return_value=factory):
+        await orch.restore_respawn_tracker()
+    # Restore re-stamped last_status to the live "in_progress".
+    assert (
+        orch._pm_respawn_tracker[("be-pm", str(task_id))]["last_status"]
+        == "in_progress"
+    )
+    task = {"id": str(task_id), "status": "in_progress"}
+    fake_audit = AsyncMock()
+    fake_audit.has_recent_tracing_gap = AsyncMock(return_value=False)
+    with (
+        patch("roboco.services.audit.get_audit_service", return_value=fake_audit),
+        patch(
+            "roboco.services.notification.NotificationService",
+            return_value=AsyncMock(),
+        ),
+    ):
+        gated = await orch._pm_respawn_should_gate("be-pm", task)
+    assert gated is True  # count 3 -> 4 trips; NOT reset to 1 by the mismatch
+    assert orch._pm_respawn_tracker[("be-pm", str(task_id))]["count"] == _TRIP_COUNT
 
 
 @pytest.mark.asyncio

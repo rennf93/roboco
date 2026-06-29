@@ -5512,7 +5512,12 @@ class AgentOrchestrator:
                 continue
             restored[(r.agent_slug, str(r.task_id))] = {
                 "count": r.count,
-                "last_status": r.last_status,
+                # Re-stamp to the LIVE status (mirrors the last_check re-stamp
+                # above): a pre-restart last_status is as stale w.r.t. post-restart
+                # reality, and a status mismatch across the restart gap would
+                # otherwise disarm the breaker on the first post-restart spawn and
+                # re-burn the whole strike threshold against a still-wedged task.
+                "last_status": norm,
                 "last_check": restore_now,
                 "tracing_resets": r.tracing_resets,
                 "notified": r.notified,
