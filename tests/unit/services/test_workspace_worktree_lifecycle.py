@@ -350,9 +350,9 @@ async def test_self_heal_recovers_branch_from_origin(tmp_path: Path) -> None:
     remote = _bare_remote_with_branch(tmp_path, branch, push_branch=True)
     clone = _recloned_clone(tmp_path, remote, fetch_branch=branch)
     assert not _ref_exists(clone, f"refs/heads/{branch}"), "precondition: no local ref"
-    assert _ref_exists(
-        clone, f"refs/remotes/origin/{branch}"
-    ), "precondition: pushed branch reachable on origin"
+    assert _ref_exists(clone, f"refs/remotes/origin/{branch}"), (
+        "precondition: pushed branch reachable on origin"
+    )
 
     svc = _service()
     wt = clone / ".worktrees" / "8e460893"
@@ -381,9 +381,9 @@ async def test_self_heal_falls_back_to_origin_head_when_branch_not_pushed(
     branch = "feature/8e460893"
     remote = _bare_remote_with_branch(tmp_path, branch, push_branch=False)
     clone = _recloned_clone(tmp_path, remote)
-    assert not _ref_exists(
-        clone, f"refs/remotes/origin/{branch}"
-    ), "precondition: not on origin"
+    assert not _ref_exists(clone, f"refs/remotes/origin/{branch}"), (
+        "precondition: not on origin"
+    )
 
     svc = _service()
     wt = clone / ".worktrees" / "8e460893"
