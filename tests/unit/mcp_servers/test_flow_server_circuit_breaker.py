@@ -268,9 +268,54 @@ def test_breaker_open_substitutes_envelope(flow_module: types.ModuleType) -> Non
     with patch("httpx.Client", side_effect=factory):
         result = flow_module.i_am_done("task-A")
 
-    # The original tracing_gap is GONE — replaced by circuit_open.
+    # The top-level envelope is the circuit_open substitution; the original
+    # fixable rejection is preserved nested as ``inner`` (#60).
     assert result["error"] == "circuit_open"
     assert "i_am_blocked" in result["remediate"]
+    assert result["inner"]["error"] == "tracing_gap"
+    assert result["inner"]["remediate"] == "x"
+
+
+def test_breaker_open_preserves_original_as_inner(
+    flow_module: types.ModuleType,
+) -> None:
+    """#60: the breaker substitution must not erase the fixable rejection.
+
+    The agent still needs the original kind/message/remediate to understand
+    WHY the verb failed — the circuit_open envelope only says the breaker
+    tripped. The original rejection is nested under ``inner``.
+    """
+    circuit_env: dict[str, Any] = {
+        "error": "circuit_open",
+        "message": "verb 'i_am_done' rejected 3 times in 60s — breaker open",
+        "remediate": "call i_am_blocked or i_am_idle",
+    }
+    original = {
+        "error": "not_authorized",
+        "message": "you may not merge that PR",
+        "remediate": "PMs delegate; use delegate(...)",
+        "missing": [],
+    }
+    factory, _ = _make_client(
+        orchestrator_response=original,
+        sdk_response={
+            "verb": "i_am_done",
+            "task_id": "task-A",
+            "attempts": 3,
+            "limit": 3,
+            "open": True,
+            "circuit_envelope": circuit_env,
+        },
+    )
+    with patch("httpx.Client", side_effect=factory):
+        result = flow_module.i_am_done("task-A")
+
+    assert result["error"] == "circuit_open"
+    # The original fixable rejection survives nested, not erased.
+    assert result["inner"] == original
+    # The SDK's envelope dict is not mutated in place (a fresh copy carries
+    # ``inner``) — important when the SDK reuses the envelope across calls.
+    assert "inner" not in circuit_env
 
 
 def test_fourth_rejection_returns_circuit_open(flow_module: types.ModuleType) -> None:

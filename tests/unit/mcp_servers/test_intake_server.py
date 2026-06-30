@@ -147,6 +147,99 @@ async def test_propose_batch_refuses_empty_without_posting(
     assert posted is False
 
 
+# ---------------------------------------------------------------------------
+# #163: propose_batch must accept ``name`` as well as ``title`` (intake drafts
+# in the wild have used both) and report the drop reason instead of silently
+# vanishing drafts.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_propose_batch_accepts_name_as_title(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A draft using ``name`` instead of ``title`` is well-formed (#163)."""
+    monkeypatch.setenv("ROBOCO_PROMPTER_SESSION_ID", "sess-1")
+    captured: dict[str, Any] = {}
+
+    async def _spy(_sid: str, batch: dict[str, Any]) -> dict[str, Any]:
+        captured["batch"] = batch
+        return {"ok": True}
+
+    monkeypatch.setattr(intake_server, "post_batch", _spy)
+    msg = await intake_server.propose_batch([{"name": "Build X"}], "MegaTask")
+
+    assert "MegaTask submitted" in msg
+    assert "dropped" not in msg  # none dropped → no drop note
+    data = captured["batch"]
+    assert data["dropped"] == 0
+    assert len(data["drafts"]) == 1
+    # ``name`` normalized to ``title`` for the relay.
+    assert data["drafts"][0]["title"] == "Build X"
+    assert data["drafts"][0]["name"] == "Build X"
+
+
+@pytest.mark.asyncio
+async def test_propose_batch_reports_dropped_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A mixed batch posts the well-formed drafts and reports how many dropped."""
+    monkeypatch.setenv("ROBOCO_PROMPTER_SESSION_ID", "sess-1")
+    captured: dict[str, Any] = {}
+
+    async def _spy(_sid: str, batch: dict[str, Any]) -> dict[str, Any]:
+        captured["batch"] = batch
+        return {"ok": True}
+
+    monkeypatch.setattr(intake_server, "post_batch", _spy)
+    msg = await intake_server.propose_batch(
+        [{"title": "A"}, {"no_title": True}, {"name": "B"}], "MegaTask"
+    )
+
+    assert "MegaTask submitted" in msg
+    assert "1 draft" in msg  # exactly the one malformed entry dropped
+    data = captured["batch"]
+    assert data["dropped"] == 1
+    assert [d["title"] for d in data["drafts"]] == ["A", "B"]
+
+
+@pytest.mark.asyncio
+async def test_propose_batch_malformed_message_mentions_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When every draft is malformed, the hint names ``name`` as an alternative."""
+    monkeypatch.setenv("ROBOCO_PROMPTER_SESSION_ID", "sess-1")
+    posted = False
+
+    async def _spy(_sid: str, _batch: dict[str, Any]) -> dict[str, Any]:
+        nonlocal posted
+        posted = True
+        return {"ok": True}
+
+    monkeypatch.setattr(intake_server, "post_batch", _spy)
+    msg = await intake_server.propose_batch([{"no_title": True}], "MegaTask")
+    assert "no well-formed task drafts" in msg
+    assert "name" in msg
+    assert posted is False
+
+
+@pytest.mark.asyncio
+async def test_propose_batch_does_not_mutate_caller_drafts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``name``-only draft is normalized onto a copy, not the caller's dict."""
+    monkeypatch.setenv("ROBOCO_PROMPTER_SESSION_ID", "sess-1")
+
+    async def _spy(_sid: str, _batch: dict[str, Any]) -> dict[str, Any]:
+        return {"ok": True}
+
+    monkeypatch.setattr(intake_server, "post_batch", _spy)
+    draft = {"name": "Build X"}
+    await intake_server.propose_batch([draft], "MegaTask")
+    # Caller's dict is unchanged — no synthesized ``title`` key added in place.
+    assert "title" not in draft
+
+
 @pytest.mark.asyncio
 async def test_propose_draft_requires_a_live_session(
     monkeypatch: pytest.MonkeyPatch,
