@@ -114,6 +114,7 @@ The Auditor is a silent observer: read-only `triage`, no `say`/`dm`/ `notify`, n
 give_me_work()                  # returns an inbound-PR review task
 claim_pr_review(task_id)        # claim it (planless, branchless — read-only)
 post_pr_review(task_id, ...)    # posts one change-request on the PR; task -> completed
+unclaim(task_id)                # release a claimed inbound or gate review back to the pool
 i_am_idle()
 ```
 
@@ -133,7 +134,7 @@ A cell reviewer (be/fe/ux-pr-reviewer) reviews its cell's assembled cell→root 
 
 ## Cancel
 
-Cancelling a task (any non-terminal status -> `cancelled`) is restricted to **PM roles and the CEO**. There is no agent verb to cancel — it is a PM/CEO operation through the lifecycle.
+Cancelling a task (any non-terminal status -> `cancelled`) is restricted to **PM roles and the CEO** — except `awaiting_ceo_approval -> cancelled`, which is **CEO-only** (a PM cancelling a task already in the CEO's queue would bypass the human approval gate). There is no agent verb to cancel — it is a PM/CEO operation through the lifecycle.
 
 ## Progress
 
