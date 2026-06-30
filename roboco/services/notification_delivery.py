@@ -923,23 +923,31 @@ class NotificationDeliveryService(BaseService):
         """List every notification (system role only).
 
         `pending_ack_only` filters post-fetch because "not fully acked" isn't
-        a SQL-friendly predicate against PostgreSQL array columns.
+        a SQL-friendly predicate against PostgreSQL array columns. The SQL
+        ``limit`` is therefore NOT applied for that branch — applying it before
+        the Python filter would let a window of newer fully-acked rows mask
+        older unacked ones the operator still needs to act on. We fetch the
+        ack-required set ordered newest-first, drop the fully-acked rows in
+        Python, then slice to ``limit``.
         """
         query = select(NotificationTable)
         if pending_ack_only:
             query = query.where(NotificationTable.requires_ack.is_(True))
         if type_filter:
             query = query.where(NotificationTable.type == type_filter)
-        query = query.order_by(NotificationTable.timestamp.desc()).limit(limit)
+        query = query.order_by(NotificationTable.timestamp.desc())
+        if not pending_ack_only:
+            query = query.limit(limit)
 
         result = await self.session.execute(query)
         notifications = list(result.scalars().all())
         if pending_ack_only:
-            return [
+            unacked = [
                 n
                 for n in notifications
                 if not all(t in n.acked_by for t in n.to_agents)
             ]
+            return unacked[:limit]
         return notifications
 
     async def list_for_agent(
