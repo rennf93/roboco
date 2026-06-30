@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
@@ -107,12 +107,12 @@ def test_status_coverage_rejects_stray_string_target() -> None:
         ),
     )
     original = spec._STATUS_TRANSITIONS
-    spec._STATUS_TRANSITIONS = fake  # type: ignore[attr-defined]
+    spec._STATUS_TRANSITIONS = cast("Any", fake)
     try:
         with pytest.raises(_validate.LifecycleSpecError, match="non-Status"):
             _validate._check_status_enum_coverage()
     finally:
-        spec._STATUS_TRANSITIONS = original  # type: ignore[attr-defined]
+        spec._STATUS_TRANSITIONS = original
 
 
 def test_status_coverage_rejects_orphan_non_terminal_source() -> None:
@@ -120,7 +120,7 @@ def test_status_coverage_rejects_orphan_non_terminal_source() -> None:
     state) must fail the coverage validator — the cancel fan-out made the old
     'is a key in STATUS_GRAPH' check structurally always-true."""
     original = spec._STATUS_TRANSITIONS
-    spec._STATUS_TRANSITIONS = tuple(  # type: ignore[attr-defined]
+    spec._STATUS_TRANSITIONS = tuple(
         t for t in original if t.source is not spec.Status.PAUSED
     )
     try:
@@ -129,7 +129,7 @@ def test_status_coverage_rejects_orphan_non_terminal_source() -> None:
         ):
             _validate._check_status_enum_coverage()
     finally:
-        spec._STATUS_TRANSITIONS = original  # type: ignore[attr-defined]
+        spec._STATUS_TRANSITIONS = original
 
 
 def test_terminal_exit_requires_a_completed_path() -> None:
@@ -139,12 +139,12 @@ def test_terminal_exit_requires_a_completed_path() -> None:
     original = spec.STATUS_GRAPH
     fake = dict(original)
     fake[spec.Status.PAUSED] = frozenset({spec.Status.CANCELLED})
-    spec.STATUS_GRAPH = fake  # type: ignore[attr-defined]
+    spec.STATUS_GRAPH = fake
     try:
         with pytest.raises(_validate.LifecycleSpecError, match="no path to COMPLETED"):
             _validate._check_terminal_exits()
     finally:
-        spec.STATUS_GRAPH = original  # type: ignore[attr-defined]
+        spec.STATUS_GRAPH = original
 
 
 def test_decision_allow_has_no_rejection_kind() -> None:

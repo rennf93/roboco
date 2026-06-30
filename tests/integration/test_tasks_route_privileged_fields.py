@@ -5,7 +5,7 @@ fields (assigned_to/team/parent_task_id/...) are PM-gated; a bare task owner
 from __future__ import annotations
 
 from http import HTTPStatus
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID, uuid4
 
 import pytest
@@ -74,7 +74,7 @@ async def dev_client(db_session: AsyncSession) -> AsyncIterator[dict]:
     app.dependency_overrides.clear()
 
 
-def _seed_owned(setup: dict, **kw) -> TaskTable:
+def _seed_owned(setup: dict, **kw: Any) -> TaskTable:
     task = TaskTable(
         id=uuid4(),
         title=kw.pop("title", "t"),

@@ -5,9 +5,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from http import HTTPStatus
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -97,7 +97,10 @@ async def a2a_route_client(
         # that need a different role (e.g. the PM-gated cancel route) swap this
         # override on the yielded app before posting.
         return AgentContext(
-            agent_id=dev.id, role=AgentRole.DEVELOPER, team=Team.BACKEND, slug=dev.slug
+            agent_id=cast("UUID", dev.id),
+            role=AgentRole.DEVELOPER,
+            team=Team.BACKEND,
+            slug=dev.slug,
         )
 
     app.dependency_overrides[get_db] = _override_db
@@ -119,7 +122,10 @@ def _set_pm_context(app: FastAPI, dev: AgentTable) -> None:
 
     async def _pm() -> AgentContext:
         return AgentContext(
-            agent_id=dev.id, role=AgentRole.CELL_PM, team=Team.BACKEND, slug=dev.slug
+            agent_id=cast("UUID", dev.id),
+            role=AgentRole.CELL_PM,
+            team=Team.BACKEND,
+            slug=dev.slug,
         )
 
     app.dependency_overrides[get_agent_context] = _pm

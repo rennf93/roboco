@@ -6,7 +6,7 @@ sees the lock held and refuses instead of racing on the writable clone.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -468,7 +468,7 @@ async def test_heartbeat_lock_loss_cancels_execute_fail_closed(
     svc = ReleaseProposalService(_session())
     # The heartbeat's compare-and-expire reports the lock lost (token mismatch —
     # a usurper re-acquired after TTL expiry).
-    svc._heartbeat_release_lock = AsyncMock(return_value=False)
+    cast("Any", svc)._heartbeat_release_lock = AsyncMock(return_value=False)
 
     with (
         w["patches"][0],

@@ -1172,7 +1172,7 @@ async def test_merge_pr_stamps_authenticated_identity_not_body(
         )
     app.dependency_overrides.clear()
     assert response.status_code == HTTPStatus.OK
-    merged = await get_work_session_service(db_session).get(ws.id)
+    merged = await get_work_session_service(db_session).get(cast("UUID", ws.id))
     assert merged is not None
     # The recorded merger is the authenticated PM, NOT the spoofed decoy.
     assert merged.merged_by == pm.id
