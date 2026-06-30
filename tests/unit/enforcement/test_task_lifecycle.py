@@ -275,3 +275,30 @@ def test_status_classification_is_mutually_disjoint() -> None:
     assert active & waiting == set()
     assert active & terminal == set()
     assert waiting & terminal == set()
+
+
+def test_status_classification_covers_every_enum_member() -> None:
+    """Every Status enum member must be classified by EXACTLY one of
+    is_terminal_state / is_active_state / is_waiting_state — the coverage
+    invariant that catches a future enum addition silently falling through
+    into no category (backlog/pending leaked into none before the fix)."""
+    all_statuses = {s.value for s in Status}
+    classified = {
+        s.value
+        for s in Status
+        if is_terminal_state(s.value)
+        or is_active_state(s.value)
+        or is_waiting_state(s.value)
+    }
+    missing = all_statuses - classified
+    assert not missing, f"statuses classified by NO predicate: {sorted(missing)}"
+    for s in Status:
+        v = s.value
+        n = sum(
+            [
+                is_terminal_state(v),
+                is_active_state(v),
+                is_waiting_state(v),
+            ]
+        )
+        assert n == 1, f"{v} classified by {n} predicates, expected exactly 1"

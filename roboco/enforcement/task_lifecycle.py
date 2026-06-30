@@ -247,8 +247,18 @@ def is_terminal_state(status: str) -> bool:
 
 
 def is_waiting_state(status: str) -> bool:
-    """True if ``status`` parks an agent waiting on someone else."""
+    """True if ``status`` parks a task waiting on someone else.
+
+    Covers the gate/hold states (blocked, paused, the QA/doc/PR/PM/CEO review
+    queues) plus the pre-work queue states: ``pending`` (waiting for an agent
+    to claim) and ``backlog`` (waiting on PM setup/activation). Together with
+    :func:`is_active_state` and :func:`is_terminal_state` this partitions the
+    whole Status enum — see the coverage-invariant test in
+    tests/unit/enforcement/test_task_lifecycle.py.
+    """
     return status in (
+        "backlog",
+        "pending",
         "blocked",
         "paused",
         "awaiting_qa",
