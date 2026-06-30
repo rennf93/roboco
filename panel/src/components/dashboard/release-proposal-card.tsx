@@ -65,6 +65,14 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
           `Published v${result.version}` +
             (result.release_url ? "" : " (no release URL returned)"),
         );
+      } else if (result.status === "accepted") {
+        // The execute runs in the background (a synchronous request would 504
+        // at nginx before the ~40min fail-closed gate/CI/publish finished).
+        // This card polls GET /proposal every 30s and reflects the final
+        // outcome (COMPLETED on a publish, else the proposal stays open).
+        toast.info(
+          "Release execute dispatched — running in the background. This card updates as it progresses.",
+        );
       } else {
         toast.warning(`Release halted (${result.status}): ${result.detail}`);
       }

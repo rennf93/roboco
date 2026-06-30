@@ -12,18 +12,22 @@ import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from roboco.api.deps import get_agent_context, get_db
+from roboco.api.routes import release as release_route
 from roboco.api.routes.release import router as release_router
 from roboco.db.tables import AgentTable, ProjectTable, TaskTable
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import TaskNature, TaskStatus, TaskType
 from roboco.models.permissions import AgentContext
 from roboco.services.release_executor import ReleaseResult
+from roboco.services.release_proposal import ReleaseProposalService
 from roboco.services.release_readiness import ReleaseReadinessReport, report_to_dict
 from roboco.services.task import RELEASE_MANAGER_SOURCE
 from sqlalchemy import delete
 
 if TYPE_CHECKING:
+    import asyncio
     from collections.abc import AsyncIterator
+    from typing import Any
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -148,9 +152,15 @@ async def test_get_proposal_404_when_none(ceo_client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_approve_runs_executor_and_completes(
+async def test_approve_dispatches_async_and_completes(
     db_session: AsyncSession, ceo_client: AsyncClient
 ) -> None:
+    """#324: the approve route dispatches the ~40min execute in a background
+    task and returns 202 immediately (a synchronous request would 504 at nginx
+    before the fail-closed gate/CI/publish finished). The panel polls
+    GET /proposal for the final status; here we await the dispatched task and
+    assert the proposal transitions to COMPLETED once the (faked) publish
+    succeeds."""
     task = await _seed_proposal(db_session)
     published = ReleaseResult(
         status="published",
@@ -162,23 +172,55 @@ async def test_approve_runs_executor_and_completes(
     )
     fake_executor = AsyncMock()
     fake_executor.execute = AsyncMock(return_value=published)
-    with patch(
-        "roboco.services.release_proposal.get_release_executor",
-        AsyncMock(return_value=fake_executor),
+    captured: dict[str, asyncio.Task[None]] = {}
+    real_dispatch = release_route.dispatch_approve
+
+    def _capturing_dispatch(task_id: UUID, factory: Any) -> asyncio.Task[None]:
+        bg = real_dispatch(task_id, factory)
+        captured["task"] = bg
+        return bg
+
+    with (
+        patch(
+            "roboco.services.release_proposal.get_release_executor",
+            AsyncMock(return_value=fake_executor),
+        ),
+        patch(
+            "roboco.api.routes.release.dispatch_approve",
+            side_effect=_capturing_dispatch,
+        ),
+        patch.object(
+            ReleaseProposalService, "_acquire_release_lock", AsyncMock(return_value="t")
+        ),
+        patch.object(
+            ReleaseProposalService,
+            "_release_release_lock",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            ReleaseProposalService,
+            "_heartbeat_release_lock",
+            AsyncMock(return_value=True),
+        ),
     ):
         resp = await ceo_client.post("/api/release/proposal/approve")
-    assert resp.status_code == HTTPStatus.OK
-    assert resp.json()["status"] == "published"
+        assert resp.status_code == HTTPStatus.ACCEPTED
+        assert resp.json()["status"] == "accepted"
+        # Await the background execute WHILE the executor patch is still active
+        # (the dispatched task runs the faked publish).
+        bg = captured["task"]
+        await bg
     fake_executor.execute.assert_awaited_once()
-    refreshed = await db_session.get(TaskTable, task.id)
-    assert refreshed is not None
-    assert refreshed.status == TaskStatus.COMPLETED
+    await db_session.refresh(task)
+    assert task.status == TaskStatus.COMPLETED
 
 
 @pytest.mark.asyncio
-async def test_approve_gate_failure_keeps_proposal_open(
+async def test_approve_gate_failure_keeps_proposal_open_async(
     db_session: AsyncSession, ceo_client: AsyncClient
 ) -> None:
+    """A gate failure in the background execute leaves the proposal open (the
+    CEO retries after the cause is fixed); the route still returned 202."""
     task = await _seed_proposal(db_session)
     failed = ReleaseResult(
         status="gate_failed",
@@ -190,16 +232,43 @@ async def test_approve_gate_failure_keeps_proposal_open(
     )
     fake_executor = AsyncMock()
     fake_executor.execute = AsyncMock(return_value=failed)
-    with patch(
-        "roboco.services.release_proposal.get_release_executor",
-        AsyncMock(return_value=fake_executor),
+    captured: dict[str, asyncio.Task[None]] = {}
+    real_dispatch = release_route.dispatch_approve
+
+    def _capturing_dispatch(task_id: UUID, factory: Any) -> asyncio.Task[None]:
+        bg = real_dispatch(task_id, factory)
+        captured["task"] = bg
+        return bg
+
+    with (
+        patch(
+            "roboco.services.release_proposal.get_release_executor",
+            AsyncMock(return_value=fake_executor),
+        ),
+        patch(
+            "roboco.api.routes.release.dispatch_approve",
+            side_effect=_capturing_dispatch,
+        ),
+        patch.object(
+            ReleaseProposalService, "_acquire_release_lock", AsyncMock(return_value="t")
+        ),
+        patch.object(
+            ReleaseProposalService,
+            "_release_release_lock",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            ReleaseProposalService,
+            "_heartbeat_release_lock",
+            AsyncMock(return_value=True),
+        ),
     ):
         resp = await ceo_client.post("/api/release/proposal/approve")
-    assert resp.status_code == HTTPStatus.OK
-    assert resp.json()["status"] == "gate_failed"
-    refreshed = await db_session.get(TaskTable, task.id)
-    assert refreshed is not None
-    assert refreshed.status == TaskStatus.PENDING  # still held
+        assert resp.status_code == HTTPStatus.ACCEPTED
+        assert resp.json()["status"] == "accepted"
+        await captured["task"]
+    await db_session.refresh(task)
+    assert task.status == TaskStatus.PENDING  # still held for retry
 
 
 @pytest.mark.asyncio

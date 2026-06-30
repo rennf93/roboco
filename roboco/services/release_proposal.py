@@ -29,7 +29,7 @@ from roboco.services.task import RELEASE_MANAGER_SOURCE, get_task_service
 if TYPE_CHECKING:
     from uuid import UUID
 
-    from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from roboco.db.tables import TaskTable
 
@@ -290,3 +290,47 @@ class ReleaseProposalService(BaseService):
 def get_release_proposal_service(session: AsyncSession) -> ReleaseProposalService:
     """Construct a ReleaseProposalService bound to ``session``."""
     return ReleaseProposalService(session)
+
+
+# In-flight background approves keyed by proposal task id. The HTTP approve
+# route dispatches the ~40min execute asynchronously (a synchronous request
+# would 504 at any proxy before the fail-closed gate/CI/publish finished) and
+# returns 202 immediately; the panel polls GET /proposal for the final status.
+# This registry lets a status endpoint / tests await the dispatched execute;
+# it self-cleans via a done-callback and the Redis mutex still prevents a
+# double-execute on a second click.
+_INFLIGHT_APPROVES: dict[UUID, asyncio.Task[None]] = {}
+
+
+async def _run_approve_background(
+    task_id: UUID, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """Run ``approve`` in a background task with a fresh session (the request
+    session closes when the 202 returns). Commits the outcome; a failure logs
+    and rolls back — the proposal stays open for the CEO to retry."""
+    async with session_factory() as bg_db:
+        try:
+            result = await get_release_proposal_service(bg_db).approve(task_id)
+            logger.info(
+                "release approve completed task_id=%s status=%s",
+                task_id,
+                result.status if result is not None else "no_report",
+            )
+            await bg_db.commit()
+        except Exception:
+            logger.exception(
+                "release approve background task failed task_id=%s", task_id
+            )
+            await bg_db.rollback()
+
+
+def dispatch_approve(
+    task_id: UUID, session_factory: async_sessionmaker[AsyncSession]
+) -> asyncio.Task[None]:
+    """Spawn the long release execute in a background task so the HTTP approve
+    route can return 202 immediately. Registered in ``_INFLIGHT_APPROVES`` for
+    observability (done-callback removes the entry)."""
+    bg_task = asyncio.create_task(_run_approve_background(task_id, session_factory))
+    _INFLIGHT_APPROVES[task_id] = bg_task
+    bg_task.add_done_callback(lambda _t: _INFLIGHT_APPROVES.pop(task_id, None))
+    return bg_task

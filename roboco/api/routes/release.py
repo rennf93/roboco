@@ -8,6 +8,7 @@ keeps the proposal held. Nothing here publishes without the CEO's explicit POST.
 from typing import TYPE_CHECKING, cast
 
 from fastapi import APIRouter, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from roboco.api.deps import CurrentAgentContext, DbSession, require_ceo_role
 from roboco.api.schemas.release import (
@@ -18,7 +19,10 @@ from roboco.api.schemas.release import (
     ReleaseReportModel,
 )
 from roboco.foundation.policy.content import markers
-from roboco.services.release_proposal import get_release_proposal_service
+from roboco.services.release_proposal import (
+    dispatch_approve,
+    get_release_proposal_service,
+)
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -71,11 +75,25 @@ async def get_release_proposal(
     return _to_response(task)
 
 
-@router.post("/proposal/approve", response_model=ReleaseExecuteResponse)
+@router.post(
+    "/proposal/approve",
+    response_model=ReleaseExecuteResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 async def approve_release_proposal(
     db: DbSession, agent: CurrentAgentContext
 ) -> ReleaseExecuteResponse:
-    """Approve the held proposal → run the fail-closed executor."""
+    """Approve the held proposal → dispatch the fail-closed executor async.
+
+    The execute is a ~40min clone→gate→CI→publish pipeline; running it inline
+    would 504 at nginx (the single :3000 entry point, ~60s read timeout) before
+    it finished, so the CEO's approve always appeared to fail even when the
+    release succeeded server-side. The route dispatches the execute in a
+    background task with a fresh session and returns 202 immediately; the panel
+    polls ``GET /proposal`` to observe the final status (COMPLETED on
+    published/already_published, else the proposal stays open for retry). A
+    second click is refused by the Redis mutex (``already_in_progress``).
+    """
     _require_ceo(agent)
     svc = get_release_proposal_service(db)
     task = await svc.open_proposal()
@@ -83,20 +101,24 @@ async def approve_release_proposal(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="No open release proposal"
         )
-    result = await svc.approve(cast("UUID", task.id))
-    if result is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Proposal has no stored readiness report",
-        )
+    # Materialize the proposal for the background session (a no-op in prod,
+    # where the release-manager engine already committed it; tests seed it only
+    # flushed into the request session).
     await db.commit()
+    factory = async_sessionmaker(
+        bind=db.bind, class_=AsyncSession, expire_on_commit=False, autoflush=False
+    )
+    dispatch_approve(cast("UUID", task.id), factory)
     return ReleaseExecuteResponse(
-        status=result.status,
-        version=result.version,
-        files_changed=result.files_changed,
-        commit_sha=result.commit_sha,
-        release_url=result.release_url,
-        detail=result.detail,
+        status="accepted",
+        version="",
+        files_changed=[],
+        commit_sha=None,
+        release_url=None,
+        detail=(
+            "Release execute dispatched in the background; poll"
+            " /api/release/proposal for the final status."
+        ),
     )
 
 
