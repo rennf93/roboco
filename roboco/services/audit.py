@@ -122,8 +122,23 @@ class AuditService(SingletonService):
         ``agents.role`` at write time, not the caller-supplied param.
         Pre-fix the supplied param could disagree with the DB (verb's
         expected role vs caller's actual role); the DB is authoritative.
+
+        A non-UUID ``task_id`` sentinel (e.g. ``"N/A"``) is preserved in
+        ``details["target_id_raw"]`` rather than dropped silently to a NULL
+        target_id indistinguishable from any other NULL-target denial. For a
+        ``create`` denied before any task row exists, prefer
+        :meth:`log_task_creation_denial`, which records the attempted payload
+        under a distinct ``task_creation`` target_type.
         """
         actual_role = await self._resolve_actor_role_from_db(agent_id) or agent_role
+        details: dict[str, Any] = {
+            "agent_role": actual_role,
+            "action": action,
+            "reason": reason,
+        }
+        coerced = _coerce_uuid(task_id)
+        if coerced is None and task_id is not None:
+            details["target_id_raw"] = str(task_id)
         self.log.warning(
             "Task action denied",
             event_type=AuditEventType.TASK_ACTION_DENIED.value,
@@ -139,13 +154,50 @@ class AuditService(SingletonService):
                 event_type=AuditEventType.TASK_ACTION_DENIED.value,
                 agent_id=agent_id,
                 target_type="task",
-                target_id=task_id,
+                target_id=coerced,
                 severity="warning",
-                details={
-                    "agent_role": actual_role,
-                    "action": action,
-                    "reason": reason,
-                },
+                details=details,
+            )
+        )
+
+    async def log_task_creation_denial(
+        self,
+        agent_id: str | UUID,
+        agent_role: str,
+        action: str,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        """Log a denial of task creation (no task row exists yet).
+
+        A ``create`` denial has no ``task_id``; a ``"N/A"`` placeholder would
+        coerce to a NULL ``target_id`` indistinguishable from any other
+        NULL-target denial, leaving the role-escalation attempt unattributable.
+        The attempted payload is recorded in ``details`` under a distinct
+        ``task_creation`` target_type so the Auditor can see what was tried.
+        """
+        actual_role = await self._resolve_actor_role_from_db(agent_id) or agent_role
+        merged: dict[str, Any] = {
+            "agent_role": actual_role,
+            "action": action,
+        }
+        if details:
+            merged.update(details)
+        self.log.warning(
+            "Task creation denied",
+            event_type=AuditEventType.TASK_ACTION_DENIED.value,
+            agent_id=str(agent_id),
+            agent_role=actual_role,
+            action=action,
+            timestamp=datetime.now(UTC).isoformat(),
+        )
+        await self._persist(
+            _AuditEvent(
+                event_type=AuditEventType.TASK_ACTION_DENIED.value,
+                agent_id=agent_id,
+                target_type="task_creation",
+                target_id=None,
+                severity="warning",
+                details=merged,
             )
         )
 

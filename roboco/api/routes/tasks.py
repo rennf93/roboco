@@ -81,13 +81,29 @@ _logger = get_logger(__name__)
 
 # #13: lifecycle-bypass hatch states — a privileged PATCH into one of these is a
 # forced override that must carry the explicit ``force`` acknowledgement flag.
+# The set covers every gate / terminal state a panel drag could paste a task
+# into, bypassing the human gate that state represents: COMPLETED (the merge
+# decision), AWAITING_QA / AWAITING_DOCUMENTATION / AWAITING_PR_REVIEW /
+# AWAITING_PM_REVIEW / AWAITING_CEO_APPROVAL (the review/merge/CEO gates),
+# and CANCELLED (the terminal cancel). Without force these are refused so the
+# bypass is always an explicit, audited, acknowledged override — never a quiet
+# panel click that drops a task into (or out of) a gate.
 _HATCH_OVERRIDE_STATES = frozenset(
     {
         TaskStatus.COMPLETED,
+        TaskStatus.CANCELLED,
         TaskStatus.AWAITING_QA,
+        TaskStatus.AWAITING_DOCUMENTATION,
+        TaskStatus.AWAITING_PR_REVIEW,
         TaskStatus.AWAITING_PM_REVIEW,
+        TaskStatus.AWAITING_CEO_APPROVAL,
     }
 )
+
+# Terminal statuses — a privileged PATCH OUT of one of these resurrects
+# finished/cancelled work, which must also carry the explicit ``force``
+# acknowledgement (mirrors the escalate route's refusal to resurrect).
+_RESURRECT_SOURCE_STATES = frozenset({TaskStatus.COMPLETED, TaskStatus.CANCELLED})
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +143,19 @@ async def _apply_forced_status_override(req: _StatusOverride) -> TaskTable:
                 '"force": true to acknowledge the forced override.'
             ),
         )
+    # Resurrecting a terminal task (completed / cancelled -> anything) is a
+    # bypass of the merge / cancel decision; it too requires the explicit force
+    # acknowledgement. The target-only hatch gate above misses this because the
+    # target (e.g. in_progress) is not itself a hatch state.
+    if req.task.status in _RESURRECT_SOURCE_STATES and not req.force:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Task is in the terminal state {req.task.status.value};"
+                " resurrecting it past the lifecycle gate requires"
+                ' "force": true to acknowledge the override.'
+            ),
+        )
     task = await req.service.admin_set_status(
         req.task_id,
         req.new_status,
@@ -152,6 +181,25 @@ _MIN_NOTES_CHARS = 20
 # fields are handled at the route layer by direct setattr on the ORM object.
 _NULLABLE_TASK_FIELDS: frozenset[str] = frozenset(
     {"assigned_to", "parent_task_id", "project_id"}
+)
+
+# Structural / ownership fields a bare task owner (UPDATE_OWN) must NOT
+# self-edit — they reassign the task, move it between teams, re-parent the task
+# tree, rewire the sequencing DAG, re-route it to another repo, or rewrite the
+# delegation plan. These are PM/ASSIGN-gated operations; the verb layer gates
+# them to PM roles (reassign/delegate/triage), so the REST PATCH surface must
+# not let an owner bypass that by setattr-ing them directly. Only a caller with
+# the higher ASSIGN permission may set them.
+_PRIVILEGED_UPDATE_FIELDS: frozenset[str] = frozenset(
+    {
+        "assigned_to",
+        "team",
+        "parent_task_id",
+        "dependency_ids",
+        "blocker_ids",
+        "plan",
+        "project_id",
+    }
 )
 
 
@@ -404,14 +452,24 @@ async def create_task(
     """Create a new task."""
     # Check create permission
     if not permissions.can_perform_task_action(agent, TaskAction.CREATE, data.team):
-        # Log the denial
+        # Log the denial. No task row exists yet, so record the attempted
+        # payload (title/team/type/project) under details with a distinct
+        # target_type — a "N/A" task_id would coerce to NULL and leave the
+        # denial unattributable, exactly where role-escalation attempts surface.
         audit = get_audit_service()
-        await audit.log_task_action_denial(
+        await audit.log_task_creation_denial(
             agent_id=agent.agent_id,
             agent_role=agent.role.value,
-            task_id="N/A",
             action="create",
-            reason="Role not permitted to create tasks",
+            details={
+                "reason": "Role not permitted to create tasks",
+                "attempted_title": getattr(data, "title", None),
+                "attempted_team": getattr(getattr(data, "team", None), "value", None),
+                "attempted_task_type": getattr(
+                    getattr(data, "task_type", None), "value", None
+                ),
+                "attempted_project_id": str(getattr(data, "project_id", None) or ""),
+            },
         )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -966,6 +1024,24 @@ async def update_task(
     # None values (not-None guard), so null-clear intent is re-applied directly
     # on the ORM object after the update returns.
     null_clears = _pop_null_clears(updates)
+
+    # A bare task owner (UPDATE_OWN) may edit dev-facing fields only. The
+    # structural / ownership fields are gated to ASSIGN/PM; an owner PATCHing
+    # any of them (set or explicitly nulled) without higher perms is refused —
+    # otherwise a dev self-reassigns / re-parents / re-routes their task past
+    # the verb layer's PM gate with no audited override.
+    touched_privileged = (
+        updates.keys() | null_clears.keys()
+    ) & _PRIVILEGED_UPDATE_FIELDS
+    if touched_privileged and not has_higher_perms:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Not authorized to set structural/ownership fields"
+                f" ({sorted(touched_privileged)}); reassign / re-parent /"
+                " re-route requires a PM role."
+            ),
+        )
 
     task = await service.update(task_id, **updates)
     if not task:

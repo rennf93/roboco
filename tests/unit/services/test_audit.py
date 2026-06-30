@@ -144,3 +144,67 @@ async def test_resolve_actor_role_returns_none_when_db_unavailable(
     # still proceed with the caller-supplied role as fallback.
     result = await svc._resolve_actor_role_from_db(uuid4())
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_log_task_creation_denial_preserves_pre_task_attribution(
+    svc: AuditService,
+) -> None:
+    """A create denial has no task row yet; the attempted payload must land in
+    details with a distinct ``task_creation`` target_type, not as an anonymous
+    NULL-target row (a "N/A" task_id would coerce to NULL and leave the denial
+    unattributable — the exact hole where role-escalation attempts surface)."""
+    captured: list[_AuditEvent] = []
+    svc._resolve_actor_role_from_db = _AsyncNone()  # type: ignore[method-assign]
+    svc._persist = _Capture(captured)  # type: ignore[method-assign]
+
+    await svc.log_task_creation_denial(
+        agent_id=uuid4(),
+        agent_role="developer",
+        action="create",
+        details={
+            "attempted_title": "Steal the keys",
+            "attempted_team": "backend",
+        },
+    )
+    assert len(captured) == 1
+    event = captured[0]
+    assert event.target_type == "task_creation"
+    assert event.target_id is None
+    assert event.details["attempted_title"] == "Steal the keys"
+    assert event.details["attempted_team"] == "backend"
+    assert event.details["action"] == "create"
+
+
+@pytest.mark.asyncio
+async def test_log_task_action_denial_preserves_non_uuid_target_sentinel(
+    svc: AuditService,
+) -> None:
+    """A non-UUID task_id sentinel is preserved in details rather than dropped
+    silently to a NULL target_id (the dropped-identifier pattern)."""
+    captured: list[_AuditEvent] = []
+    svc._resolve_actor_role_from_db = _AsyncNone()  # type: ignore[method-assign]
+    svc._persist = _Capture(captured)  # type: ignore[method-assign]
+
+    await svc.log_task_action_denial(
+        agent_id=uuid4(),
+        agent_role="developer",
+        task_id="N/A",
+        action="claim",
+        reason="x",
+    )
+    assert captured[0].target_id is None
+    assert captured[0].details["target_id_raw"] == "N/A"
+
+
+class _AsyncNone:
+    async def __call__(self, *_a: object, **_k: object) -> None:
+        return None
+
+
+class _Capture:
+    def __init__(self, sink: list[_AuditEvent]) -> None:
+        self.sink = sink
+
+    async def __call__(self, event: _AuditEvent) -> None:
+        self.sink.append(event)
