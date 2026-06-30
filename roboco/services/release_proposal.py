@@ -184,13 +184,25 @@ class ReleaseProposalService(BaseService):
                 await self.session.flush()
             return result
         finally:
-            if heartbeat_task is not None:
-                heartbeat_task.cancel()
-                await asyncio.gather(heartbeat_task, return_exceptions=True)
-            if execute_task is not None and not execute_task.done():
-                execute_task.cancel()
-                await asyncio.gather(execute_task, return_exceptions=True)
-            await self._release_release_lock(lock_key, lock_token)
+            await self._finalize_release_lock(
+                heartbeat_task, execute_task, lock_key, lock_token
+            )
+
+    async def _finalize_release_lock(
+        self,
+        heartbeat_task: asyncio.Task[None] | None,
+        execute_task: asyncio.Task[ReleaseResult] | None,
+        lock_key: str,
+        lock_token: str,
+    ) -> None:
+        """Cancel the heartbeat/execute tasks and release the mutex (best-effort)."""
+        if heartbeat_task is not None:
+            heartbeat_task.cancel()
+            await asyncio.gather(heartbeat_task, return_exceptions=True)
+        if execute_task is not None and not execute_task.done():
+            execute_task.cancel()
+            await asyncio.gather(execute_task, return_exceptions=True)
+        await self._release_release_lock(lock_key, lock_token)
 
     async def _acquire_release_lock(self, lock_key: str) -> str | None:
         """``SET NX EX`` the release mutex with a fencing-token value.

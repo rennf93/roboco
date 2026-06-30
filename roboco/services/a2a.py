@@ -379,6 +379,32 @@ class A2AService:
 
         return [self.task_to_a2a(t) for t in tasks], has_more
 
+    @staticmethod
+    def _status_value_of(task: Any) -> str:
+        """Status as a comparable string (enum value or raw str)."""
+        return task.status.value if hasattr(task.status, "value") else str(task.status)
+
+    async def _apply_cancel_note(
+        self, task: Any, actor_slug: str | None, reason: str | None
+    ) -> None:
+        """Append an actor-attributed cancellation note to dev_notes.
+
+        Kept out of route handlers so the audit trail records who cancelled and
+        why (the route passes the authenticated slug).
+        """
+        note_parts: list[str] = []
+        if actor_slug:
+            note_parts.append(f"Cancelled via A2A by {actor_slug}")
+        if reason:
+            note_parts.append(f"reason: {reason}")
+        cancellation_note = "; ".join(note_parts) if note_parts else None
+        if cancellation_note:
+            if task.dev_notes:
+                task.dev_notes = f"{task.dev_notes}\n\n{cancellation_note}"
+            else:
+                task.dev_notes = cancellation_note
+            await self.session.flush()
+
     async def cancel_task(
         self,
         task_id: str,
@@ -424,29 +450,13 @@ class A2AService:
             raise ValueError(f"Task not found: {task_id}")
 
         # Check if cancellable
-        if hasattr(task.status, "value"):
-            status_value = task.status.value
-        else:
-            status_value = str(task.status)
-
-        if status_value in ["completed", "cancelled"]:
+        status_value = self._status_value_of(task)
+        if status_value in ("completed", "cancelled"):
             raise ValueError(f"Task already in terminal state: {status_value}")
 
-        # Build a cancellation note that attributes the real actor (the route
-        # now passes the authenticated slug) so the audit trail records who
-        # cancelled and why — keeps this out of route handlers.
-        note_parts: list[str] = []
-        if actor_slug:
-            note_parts.append(f"Cancelled via A2A by {actor_slug}")
-        if reason:
-            note_parts.append(f"reason: {reason}")
-        cancellation_note = "; ".join(note_parts) if note_parts else None
-        if cancellation_note:
-            if task.dev_notes:
-                task.dev_notes = f"{task.dev_notes}\n\n{cancellation_note}"
-            else:
-                task.dev_notes = cancellation_note
-            await self.session.flush()
+        # Attribute the cancel to the real actor (the route passes the
+        # authenticated slug) in the audit note — kept out of route handlers.
+        await self._apply_cancel_note(task, actor_slug, reason)
 
         # Use TaskService for consistent cancel behavior (cascades to descendants).
         # Thread the caller's role into the cascade role gate so a non-PM

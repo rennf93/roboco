@@ -1708,30 +1708,49 @@ def can_invoke_action(
     rejection = _check_self_review_and_preconditions(action, spec_action, task, ctx)
     if rejection is not None:
         return rejection
-    # Team-match rule. needs_team_match was historically a dead spec field —
-    # enforced only at the service layer, so a consumer trusting the spec gate
-    # alone let a backend dev claim a frontend task. When the caller supplies
-    # the agent's team via Context, enforce it here; absent, defer to the
-    # service layer (backward compatible).
-    if spec_action.needs_team_match and getattr(ctx, "agent_team", None) is not None:
-        task_team = getattr(task, "team", None)
-        if task_team is not None and ctx.agent_team != task_team:
-            return Decision.reject(
-                kind="not_authorized",
-                message=(
-                    f"team '{ctx.agent_team}' may not act on a"
-                    f" '{task_team}' task (team-based restriction)"
-                ),
-                remediate=(
-                    "this task belongs to another team; call give_me_work()"
-                    " to find a task in your own team"
-                ),
-            )
+    # Team-match rule (historically a dead spec field — enforced only at the
+    # service layer, so a consumer trusting the spec gate alone let a backend
+    # dev claim a frontend task). When the caller supplies the agent's team via
+    # Context, enforce it here; absent, defer to the service layer.
+    rejection = _check_team_match(spec_action, task, ctx)
+    if rejection is not None:
+        return rejection
     if action == "claim":
         rejection = _check_claim_rules_narrow(role, task)
         if rejection is not None:
             return rejection
     return Decision.allow()
+
+
+def _check_team_match(
+    spec_action: ActionSpec, task: Any, ctx: Context
+) -> Decision | None:
+    """Reject a cross-team action when the caller's team is known.
+
+    ``needs_team_match`` was enforced only at the service layer, so a consumer
+    trusting the spec gate alone let a backend dev claim a frontend task. When
+    the caller supplies the agent's team via Context, enforce it here; absent,
+    defer to the service layer (backward compatible).
+    """
+    if not spec_action.needs_team_match:
+        return None
+    agent_team = getattr(ctx, "agent_team", None)
+    if agent_team is None:
+        return None
+    task_team = getattr(task, "team", None)
+    if task_team is None or agent_team == task_team:
+        return None
+    return Decision.reject(
+        kind="not_authorized",
+        message=(
+            f"team '{agent_team}' may not act on a"
+            f" '{task_team}' task (team-based restriction)"
+        ),
+        remediate=(
+            "this task belongs to another team; call give_me_work()"
+            " to find a task in your own team"
+        ),
+    )
 
 
 def _check_intent_preconditions(

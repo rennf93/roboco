@@ -488,31 +488,31 @@ class KanbanService(BaseService):
         ]
 
         # Sort tasks into columns: status-keyed columns (incoming/distributed/
-        # done) first, then the in-flight statuses route by team.
+        # done) first, then the in-flight statuses route by team. Dict-dispatch
+        # the routing instead of an if/elif ladder so the column rule is one
+        # lookup (status wins over team; an in-flight status with no cell team
+        # — Main PM, Board, fullstack, system — falls through to Coordination,
+        # the cards the legacy chain discarded after counting them, #196).
         col_map = {col.id: col for col in columns}
+        status_col = {
+            TaskStatus.PENDING: "incoming",
+            TaskStatus.CLAIMED: "distributed",
+            TaskStatus.COMPLETED: "done",
+        }
+        team_col = {
+            Team.BACKEND: "backend",
+            Team.FRONTEND: "frontend",
+            Team.UX_UI: "ux_ui",
+        }
         blocked_count = 0
         subtask_counts = await self._load_subtask_counts(tasks)
 
         for task in tasks:
             card = await self._task_to_card(task, subtask_counts=subtask_counts)
-            if task.status == TaskStatus.PENDING:
-                col_map["incoming"].cards.append(card)
-            elif task.status == TaskStatus.CLAIMED:
-                col_map["distributed"].cards.append(card)
-            elif task.status == TaskStatus.COMPLETED:
-                col_map["done"].cards.append(card)
-            elif task.team == Team.BACKEND:
-                col_map["backend"].cards.append(card)
-            elif task.team == Team.FRONTEND:
-                col_map["frontend"].cards.append(card)
-            elif task.team == Team.UX_UI:
-                col_map["ux_ui"].cards.append(card)
-            else:
-                # Non-cell teams (Main PM, Board, fullstack, system, ...) used
-                # to be counted in total_cards but never columned — the card was
-                # built and discarded (#196). Column them under Coordination.
-                col_map["coordination"].cards.append(card)
-
+            col_id = status_col.get(task.status)
+            if col_id is None:
+                col_id = team_col.get(task.team, "coordination")
+            col_map[col_id].cards.append(card)
             if task.status == TaskStatus.BLOCKED:
                 blocked_count += 1
 
