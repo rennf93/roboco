@@ -46,6 +46,9 @@ class StreamEventBus:
     STREAM_PREFIX = "roboco:stream:"
     DEFAULT_GROUP = "roboco-handlers"
     MAX_STREAM_LENGTH = 10000  # Trim streams to this length
+    # Undecodable messages are parked here before ACK so an operator can
+    # inspect a poison pill instead of losing it to a silent ACK.
+    DEAD_LETTER_STREAM = "roboco:stream:dead-letter"
 
     def __init__(
         self,
@@ -66,6 +69,12 @@ class StreamEventBus:
         self._handlers: dict[EventType, list[EventHandler]] = {}
         self._running = False
         self._listen_task: asyncio.Task | None = None
+        # Periodic reclaim: XREADGROUP '>' delivers only NEW messages, so a
+        # runtime handler failure leaves its message pending and unretried
+        # until a restart. This loop re-runs recover_pending so the
+        # idempotency-guarded replay actually fires.
+        self._reclaim_task: asyncio.Task | None = None
+        self._reclaim_interval = 60
 
     async def connect(self) -> None:
         """Connect to Redis."""
@@ -84,6 +93,11 @@ class StreamEventBus:
             self._listen_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._listen_task
+
+        if self._reclaim_task:
+            self._reclaim_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._reclaim_task
 
         if self._redis:
             await self._redis.close()
@@ -205,6 +219,7 @@ class StreamEventBus:
 
         self._running = True
         self._listen_task = asyncio.create_task(self._listen_loop())
+        self._reclaim_task = asyncio.create_task(self._reclaim_loop())
         logger.info("StreamEventBus listening", streams=streams)
 
     async def _listen_loop(self) -> None:
@@ -234,6 +249,27 @@ class StreamEventBus:
             except Exception as e:
                 logger.error("Error in stream event loop", error=str(e))
                 await asyncio.sleep(1)
+
+    async def _reclaim_loop(self) -> None:
+        """Periodically reclaim pending messages so a runtime handler failure
+        is retried without waiting for an orchestrator restart.
+
+        ``_listen_loop``'s XREADGROUP uses ``>`` (new messages only), so a
+        message left pending by a transient handler failure is never
+        re-delivered at runtime. This loop re-runs :meth:`recover_pending`
+        every ``_reclaim_interval`` seconds; the (event.id, handler)
+        idempotency guard makes the replay safe (already-succeeded handlers
+        are skipped, failed ones re-run).
+        """
+        while self._running:
+            try:
+                await asyncio.sleep(self._reclaim_interval)
+                await self.recover_pending(idle_time_ms=self._reclaim_interval * 1000)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.warning("Reclaim loop error; will retry", error=str(e))
+                await asyncio.sleep(self._reclaim_interval)
 
     @staticmethod
     def _to_str(value: object) -> str:
@@ -353,11 +389,47 @@ class StreamEventBus:
             return
         try:
             await handler(event)
-        except Exception:
-            # Clear the marker so a replay re-runs this handler — not a phantom success.
+        except BaseException:
+            # Clear the marker so a replay re-runs this handler — not a phantom
+            # success. BaseException catches asyncio.CancelledError (3.8+ is
+            # BaseException-derived) so a handler cancelled mid-flight (shutdown
+            # or sibling gather cancellation) still clears its marker and is
+            # re-run on reclaim; otherwise the guard would suppress the very
+            # redelivery that completes the work.
             with contextlib.suppress(Exception):
                 await self._redis.delete(key)
             raise
+
+    async def _dead_letter(
+        self, stream: str, message_id: str, data: dict, reason: str
+    ) -> None:
+        """Park an undecodable message on the dead-letter stream for inspection.
+
+        Best-effort: a dead-letter publish failure is logged but never blocks
+        the ACK — we will not strand a poison pill in the pending set because
+        the salvage stream was unwritable.
+        """
+        if self._redis is None:
+            return
+        try:
+            await self._redis.xadd(
+                self.DEAD_LETTER_STREAM,
+                {
+                    "source_stream": stream,
+                    "message_id": message_id,
+                    "data": self._decode_event_data(data) or "",
+                    "reason": reason,
+                },
+                maxlen=self.MAX_STREAM_LENGTH,
+                approximate=True,
+            )
+        except Exception as e:
+            logger.warning(
+                "Dead-letter publish failed",
+                error=str(e),
+                stream=stream,
+                message_id=message_id,
+            )
 
     async def _handle_message(
         self,
@@ -369,14 +441,32 @@ class StreamEventBus:
         if not self._redis:
             return
 
-        try:
-            event_data = self._decode_event_data(data)
-            if event_data is None:
-                logger.error("Invalid event data", message_id=message_id)
-                await self._redis.xack(stream, self.group_name, message_id)
-                return
+        event_data = self._decode_event_data(data)
+        if event_data is None:
+            logger.error("Invalid event data", message_id=message_id)
+            await self._redis.xack(stream, self.group_name, message_id)
+            return
 
+        try:
             event = Event.from_json(event_data)
+        except Exception as decode_err:
+            # A message whose payload fails to decode (malformed JSON, an
+            # EventType removed in a version bump, bad UUID/timestamp) is a
+            # poison pill: no handler could ever process it, so retrying is
+            # pointless. Dead-letter it for inspection, then ACK so the stream
+            # doesn't wedge on an unkillable pending message re-failing on
+            # every reclaim cycle.
+            logger.error(
+                "Undecodable stream message; dead-lettering and ACKing",
+                message_id=message_id,
+                stream=stream,
+                error=str(decode_err),
+            )
+            await self._dead_letter(stream, message_id, data, str(decode_err))
+            await self._redis.xack(stream, self.group_name, message_id)
+            return
+
+        try:
             all_succeeded = await self._dispatch_event(event)
 
             # ACK the message if all handlers succeeded

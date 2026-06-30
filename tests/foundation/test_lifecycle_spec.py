@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
@@ -11,6 +11,7 @@ from roboco.foundation import _validate_lifecycle as _validate
 from roboco.foundation._validate_lifecycle import reachable_from
 from roboco.foundation.policy import lifecycle as spec
 from roboco.foundation.policy.lifecycle import _INTENT_VERBS, IntentSpec
+from roboco.models.base import TaskStatus as ModelTaskStatus
 from roboco.models.base import TaskType as ModelTaskType
 
 
@@ -77,6 +78,73 @@ def test_task_type_enum_matches_models() -> None:
         f"TaskType drift between lifecycle.spec and models.base: "
         f"{spec_values ^ model_values}"
     )
+
+
+def test_status_enum_matches_models() -> None:
+    """The spec's Status must match models.base.TaskStatus — the ORM column
+    type and the lifecycle map must not drift. TaskType has this guard; Status
+    did not, so adding/renaming a status in one enum only wedged silently."""
+    spec_values = {s.value for s in spec.Status}
+    model_values = {s.value for s in ModelTaskStatus}
+    assert spec_values == model_values, (
+        f"Status drift between lifecycle.spec and models.base: "
+        f"{spec_values ^ model_values}"
+    )
+
+
+def test_status_enum_parity_validator_passes_on_real_spec() -> None:
+    """The import-time parity validator must agree with the real enums."""
+    _validate._check_status_enum_parity()  # no raise
+
+
+def test_status_coverage_rejects_stray_string_target() -> None:
+    """A transition referencing a non-Status target string must fail the
+    coverage validator — the old check was a tautology (STATUS_GRAPH keys every
+    Status by construction) and let stray-string targets through."""
+    fake = (
+        SimpleNamespace(
+            source=spec.Status.PENDING, target="bogus_state", triggered_by_action="x"
+        ),
+    )
+    original = spec._STATUS_TRANSITIONS
+    spec._STATUS_TRANSITIONS = cast("Any", fake)
+    try:
+        with pytest.raises(_validate.LifecycleSpecError, match="non-Status"):
+            _validate._check_status_enum_coverage()
+    finally:
+        spec._STATUS_TRANSITIONS = original
+
+
+def test_status_coverage_rejects_orphan_non_terminal_source() -> None:
+    """A non-terminal status that is the source of no transition (an orphan
+    state) must fail the coverage validator — the cancel fan-out made the old
+    'is a key in STATUS_GRAPH' check structurally always-true."""
+    original = spec._STATUS_TRANSITIONS
+    spec._STATUS_TRANSITIONS = tuple(
+        t for t in original if t.source is not spec.Status.PAUSED
+    )
+    try:
+        with pytest.raises(
+            _validate.LifecycleSpecError, match="no outgoing transition"
+        ):
+            _validate._check_status_enum_coverage()
+    finally:
+        spec._STATUS_TRANSITIONS = original
+
+
+def test_terminal_exit_requires_a_completed_path() -> None:
+    """Every non-terminal status must reach COMPLETED specifically — the cancel
+    fan-out made the old {COMPLETED, CANCELLED} check trivial, so a status whose
+    sole exit was cancel passed the guard with no real forward completion path."""
+    original = spec.STATUS_GRAPH
+    fake = dict(original)
+    fake[spec.Status.PAUSED] = frozenset({spec.Status.CANCELLED})
+    spec.STATUS_GRAPH = fake
+    try:
+        with pytest.raises(_validate.LifecycleSpecError, match="no path to COMPLETED"):
+            _validate._check_terminal_exits()
+    finally:
+        spec.STATUS_GRAPH = original
 
 
 def test_decision_allow_has_no_rejection_kind() -> None:
@@ -354,12 +422,20 @@ def test_status_transitions_role_constraints_match_canon() -> None:
     assert by_pair[
         (spec.Status.AWAITING_CEO_APPROVAL, spec.Status.NEEDS_REVISION, "ceo_reject")
     ] == frozenset({spec.Role.CEO})
-    # Cancel: PM + CEO from any non-terminal status
+    # Cancel: PM + CEO from any non-terminal status EXCEPT the CEO approval
+    # queue — cancelling a task the CEO is reviewing is the CEO's call, so
+    # awaiting_ceo_approval -> cancelled is gated to CEO only (a PM cancelling
+    # it would bypass the human CEO gate).
     cancel_constraint = frozenset({spec.Role.CELL_PM, spec.Role.MAIN_PM, spec.Role.CEO})
     for src in spec.Status:
         if src in (spec.Status.COMPLETED, spec.Status.CANCELLED):
             continue
-        assert by_pair[(src, spec.Status.CANCELLED, "cancel")] == cancel_constraint, (
+        expected = (
+            frozenset({spec.Role.CEO})
+            if src is spec.Status.AWAITING_CEO_APPROVAL
+            else cancel_constraint
+        )
+        assert by_pair[(src, spec.Status.CANCELLED, "cancel")] == expected, (
             f"cancel from {src.value} has wrong role_constraint"
         )
 
@@ -962,3 +1038,105 @@ def test_claim_allows_developer_claiming_code_from_pending() -> None:
     enforced at create/delegate + i_will_work_on, not the claim gate)."""
     t = _claim_task(status="pending", task_type="code")
     assert spec.can_invoke_action(spec.Role.DEVELOPER, "claim", t).allowed
+
+
+# ---------------------------------------------------------------------------
+# Edge cases — logical-gap element sweep (2026-06-30)
+# ---------------------------------------------------------------------------
+
+
+def test_claim_pr_review_rejected_on_gate_task_points_to_claim_gate_review() -> None:
+    """claim_pr_review is for an inbound external-PR task in PENDING only. An
+    awaiting_pr_review gate task must be rejected (and remediation must point
+    the reviewer at claim_gate_review), not silently accepted by the spec gate."""
+    d = spec.can_invoke_intent(
+        spec.Role.PR_REVIEWER,
+        "claim_pr_review",
+        _stub_task(status="awaiting_pr_review"),
+    )
+    assert d.allowed is False
+    assert d.rejection_kind == "invalid_state"
+    assert "claim_gate_review" in (d.remediate or "")
+
+
+def test_claim_pr_review_allowed_on_pending_external_review() -> None:
+    """Green path: a pending external-PR review task is claimable."""
+    d = spec.can_invoke_intent(
+        spec.Role.PR_REVIEWER,
+        "claim_pr_review",
+        _stub_task(status="pending"),
+    )
+    assert d.allowed is True
+
+
+def test_needs_team_match_rejects_cross_team_claim_when_agent_team_supplied() -> None:
+    """needs_team_match was a dead spec field; when the caller supplies the
+    agent's team via Context, the spec gate must enforce it (a backend dev
+    cannot claim a frontend task)."""
+    d = spec.can_invoke_action(
+        spec.Role.DEVELOPER,
+        "claim",
+        _stub_task(status="pending", team="frontend"),
+        context=spec.Context(agent_team="backend"),
+    )
+    assert d.allowed is False
+    assert d.rejection_kind == "not_authorized"
+
+
+def test_needs_team_match_allows_same_team_claim() -> None:
+    d = spec.can_invoke_action(
+        spec.Role.DEVELOPER,
+        "claim",
+        _stub_task(status="pending", team="backend"),
+        context=spec.Context(agent_team="backend"),
+    )
+    assert d.allowed is True
+
+
+def test_needs_team_match_defers_when_agent_team_absent() -> None:
+    """Backward compat: without agent_team in Context, the spec gate stays
+    permissive (the service layer still enforces team-match)."""
+    d = spec.can_invoke_action(
+        spec.Role.DEVELOPER,
+        "claim",
+        _stub_task(status="pending", team="frontend"),
+    )
+    assert d.allowed is True
+
+
+def test_valid_next_verbs_omits_claim_review_when_qa_not_in_awaiting_qa() -> None:
+    """valid_next_verbs must apply claim-rule narrowing for empty-compose
+    claim verbs; a QA reviewer on a COMPLETED task must not be told
+    claim_review is callable."""
+    verbs = spec.valid_next_verbs(spec.Role.QA, _stub_task(status="completed"))
+    assert "claim_review" not in verbs
+
+
+def test_valid_next_verbs_includes_claim_review_for_qa_in_awaiting_qa() -> None:
+    verbs = spec.valid_next_verbs(spec.Role.QA, _stub_task(status="awaiting_qa"))
+    assert "claim_review" in verbs
+
+
+def test_pr_reviewer_has_unclaim_release_verb() -> None:
+    """A PR reviewer who cannot finish a review must have a self-release
+    verb (unclaim), not wedge the lane until the stale-claim reaper."""
+    assert "unclaim" in spec.intents_for_role(spec.Role.PR_REVIEWER)
+
+
+def test_unclaim_allowed_for_pr_reviewer() -> None:
+    d = spec.can_invoke_intent(
+        spec.Role.PR_REVIEWER,
+        "unclaim",
+        _stub_task(status="awaiting_pr_review"),
+    )
+    assert d.allowed is True
+
+
+def test_complete_intent_declares_no_inverted_pr_merge_side_effect() -> None:
+    """complete's IntentSpec must not declare a trailing pr_merge side_effect:
+    TaskService.complete asserts the PR is already merged, so the merge runs
+    FIRST (choreographer verb body owns the ordering). The spec must match
+    reality, not lie about a complete-then-merge composition."""
+    iv = spec._INTENT_VERBS["complete"]
+    assert iv.composes == ("complete",)
+    assert iv.side_effects == ()

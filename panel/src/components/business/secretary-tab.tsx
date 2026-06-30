@@ -264,15 +264,16 @@ export function SecretaryTab() {
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
-                  if (sessionId) void handleSend();
-                  else void handleStart();
+                  if (sessionId) {
+                    if (!streaming) void handleSend();
+                  } else void handleStart();
                 }
               }}
             />
             {sessionId ? (
               <Button
                 onClick={() => void handleSend()}
-                disabled={!input.trim()}
+                disabled={!input.trim() || streaming}
                 size="icon"
                 className="h-11 w-11 shrink-0"
                 aria-label="Send message"

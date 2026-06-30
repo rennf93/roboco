@@ -130,3 +130,19 @@ async def test_git_url_scoping(db_session: AsyncSession) -> None:
     scoped = await svc.list_open_dep_update_tasks(git_url="https://github.com/x/a.git")
     assert len(scoped) == 1
     assert scoped[0].project_id == proj_a.id
+
+
+@pytest.mark.asyncio
+async def test_git_url_accidentals_scoping(db_session: AsyncSession) -> None:
+    """#1267: a dep_update task open on ``.../a.git`` is found when scoping by a
+    git_url that differs only by a ``.git`` suffix / trailing slash — the dedupe
+    key is the normalized repo, not the exact string."""
+    proj_a = await _seed_project(db_session, "https://github.com/x/a.git")
+    await _make_task(db_session, proj_a)
+
+    svc = get_task_service(db_session)
+    # Same repo, accidental variants — each scope finds the one open task.
+    for variant in ("https://github.com/x/a", "https://github.com/x/a.git/"):
+        scoped = await svc.list_open_dep_update_tasks(git_url=variant)
+        assert len(scoped) == 1
+        assert scoped[0].project_id == proj_a.id

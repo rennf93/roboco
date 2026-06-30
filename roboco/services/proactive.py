@@ -7,7 +7,6 @@ Automatically injects relevant context when:
 
 Searches for:
 - Similar past tasks and their learnings
-- Relevant code patterns
 - Applicable standards
 - Recent team decisions
 - Known issues related to the work
@@ -37,6 +36,9 @@ class ContextPackage:
     agent_id: UUID | None = None
     similar_tasks: list[SearchResult] = field(default_factory=list)
     relevant_learnings: list[SearchResult] = field(default_factory=list)
+    # Deprecated: code indexing was removed. Retained as an always-empty field
+    # for API/schema back-compat (serialized in to_dict and the optimal route
+    # response); never populated by build_context_package (#382).
     code_patterns: list[SearchResult] = field(default_factory=list)
     applicable_standards: list[SearchResult] = field(default_factory=list)
     recent_decisions: list[SearchResult] = field(default_factory=list)
@@ -79,7 +81,6 @@ class ContextPackage:
             [
                 self.similar_tasks,
                 self.relevant_learnings,
-                self.code_patterns,
                 self.applicable_standards,
                 self.recent_decisions,
                 self.known_issues,
@@ -127,9 +128,9 @@ class ProactiveKnowledgeService:
         Searches for:
         1. Similar past tasks
         2. Learnings from those tasks
-        3. Relevant code patterns
-        4. Applicable standards
-        5. Recent decisions
+        3. Applicable standards
+        4. Recent decisions
+        5. Known issues related to the work
 
         Args:
             task_id: ID of the claimed task
@@ -161,26 +162,20 @@ class ProactiveKnowledgeService:
         except Exception as e:
             logger.warning("Failed to get learnings", error=str(e))
 
-        # 3. Find relevant code patterns
-        try:
-            package.code_patterns = await self._find_code_patterns(query)
-        except Exception as e:
-            logger.warning("Failed to find code patterns", error=str(e))
-
-        # 4. Get applicable standards
+        # 3. Get applicable standards
         try:
             domain = self._infer_domain(task_type, task_description)
             package.applicable_standards = await self._get_applicable_standards(domain)
         except Exception as e:
             logger.warning("Failed to get standards", error=str(e))
 
-        # 5. Find recent relevant decisions
+        # 4. Find recent relevant decisions
         try:
             package.recent_decisions = await self._find_relevant_decisions(query)
         except Exception as e:
             logger.warning("Failed to find decisions", error=str(e))
 
-        # 6. Check for known issues
+        # 5. Check for known issues
         try:
             package.known_issues = await self._check_known_issues(query)
         except Exception as e:
@@ -379,13 +374,6 @@ class ProactiveKnowledgeService:
             ),
         )
 
-    async def _find_code_patterns(
-        self, query: str, top_k: int = 3
-    ) -> list[SearchResult]:
-        """DEPRECATED: Code indexing has been removed."""
-        _ = query, top_k  # Unused
-        return []  # Code index deprecated
-
     async def _get_applicable_standards(
         self, domain: str, top_k: int = 5
     ) -> list[SearchResult]:
@@ -494,9 +482,6 @@ class ProactiveKnowledgeService:
         if package.relevant_learnings:
             parts.append(f"Found {len(package.relevant_learnings)} relevant learnings")
 
-        if package.code_patterns:
-            parts.append(f"Found {len(package.code_patterns)} code patterns")
-
         if package.applicable_standards:
             parts.append(f"{len(package.applicable_standards)} standards apply")
 
@@ -517,7 +502,6 @@ class ProactiveKnowledgeService:
             [
                 len(package.similar_tasks),
                 len(package.relevant_learnings),
-                len(package.code_patterns),
                 len(package.applicable_standards),
                 len(package.recent_decisions),
                 len(package.known_issues),

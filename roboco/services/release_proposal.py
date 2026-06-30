@@ -29,7 +29,7 @@ from roboco.services.task import RELEASE_MANAGER_SOURCE, get_task_service
 if TYPE_CHECKING:
     from uuid import UUID
 
-    from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from roboco.db.tables import TaskTable
 
@@ -140,21 +140,69 @@ class ReleaseProposalService(BaseService):
             )
 
         heartbeat_task: asyncio.Task[None] | None = None
+        execute_task: asyncio.Task[ReleaseResult] | None = None
+        # Set by the heartbeat when IT cancels execute on lock-loss, so the
+        # CancelledError handler below can distinguish a lock-loss abort (→
+        # structured ``lock_lost`` result) from an external cancellation of the
+        # approve coroutine itself (→ must propagate).
+        lock_lost = asyncio.Event()
         try:
             executor = await get_release_executor(self.session)
+            execute_task = asyncio.create_task(executor.execute(report))
             heartbeat_task = asyncio.create_task(
-                self._heartbeat_loop(lock_key, lock_token)
+                self._heartbeat_loop(lock_key, lock_token, execute_task, lock_lost)
             )
-            result = await executor.execute(report)
-            if result.status == "published":
+            try:
+                result = await execute_task
+            except asyncio.CancelledError:
+                if not lock_lost.is_set():
+                    # External cancellation of approve itself — propagate, do not
+                    # mask it as a lock-loss.
+                    raise
+                logger.critical(
+                    "release execute aborted: lock lost mid-execute (fail-closed)"
+                )
+                return ReleaseResult(
+                    status="lock_lost",
+                    version=report.proposed_version,
+                    files_changed=[],
+                    commit_sha=None,
+                    release_url=None,
+                    detail=(
+                        "The release lock was lost mid-execute (an extended Redis"
+                        " outage let the mutex TTL expire); the execute was"
+                        " aborted fail-closed so a concurrent approve could not"
+                        " rm -rf the in-flight release clone. Retry the approve."
+                    ),
+                )
+            # Close the proposal when the release actually shipped — including a
+            # retry that finds the tag already published (a prior publish whose
+            # route commit/HTTP 504'd left the proposal non-terminal). The old
+            # `== "published"`-only check wedged already_published open forever.
+            if result.status in ("published", "already_published"):
                 task.status = TaskStatus.COMPLETED
                 await self.session.flush()
             return result
         finally:
-            if heartbeat_task is not None:
-                heartbeat_task.cancel()
-                await asyncio.gather(heartbeat_task, return_exceptions=True)
-            await self._release_release_lock(lock_key, lock_token)
+            await self._finalize_release_lock(
+                heartbeat_task, execute_task, lock_key, lock_token
+            )
+
+    async def _finalize_release_lock(
+        self,
+        heartbeat_task: asyncio.Task[None] | None,
+        execute_task: asyncio.Task[ReleaseResult] | None,
+        lock_key: str,
+        lock_token: str,
+    ) -> None:
+        """Cancel the heartbeat/execute tasks and release the mutex (best-effort)."""
+        if heartbeat_task is not None:
+            heartbeat_task.cancel()
+            await asyncio.gather(heartbeat_task, return_exceptions=True)
+        if execute_task is not None and not execute_task.done():
+            execute_task.cancel()
+            await asyncio.gather(execute_task, return_exceptions=True)
+        await self._release_release_lock(lock_key, lock_token)
 
     async def _acquire_release_lock(self, lock_key: str) -> str | None:
         """``SET NX EX`` the release mutex with a fencing-token value.
@@ -205,22 +253,37 @@ class ReleaseProposalService(BaseService):
         finally:
             await conn.aclose()
 
-    async def _heartbeat_loop(self, lock_key: str, token: str) -> None:
+    async def _heartbeat_loop(
+        self,
+        lock_key: str,
+        token: str,
+        execute_task: asyncio.Task[ReleaseResult],
+        lock_lost: asyncio.Event,
+    ) -> None:
         """Refresh the lock TTL while the execute owns it.
 
         Refreshes before the first sleep so a fast execute still extends the
         TTL. A refresh error logs and continues (never crashes the execute); if
-        the lock is no longer ours (returned 0) we stop — the TTL backstop and
-        the fencing token still hold the line.
+        the lock is no longer ours (returned 0 — only reachable after a >TTL
+        Redis outage lets the mutex expire mid-execute) we CANCEL the in-flight
+        execute fail-closed rather than ``return`` silently and leave it running
+        unguarded — otherwise a concurrent approve (once Redis returns) can
+        acquire the lock and ``_prepare_release_clone`` ``rm -rf``'s the shared
+        release clone while the first execute is still mid-``run_gate``. The
+        fencing token still prevents the first finally from deleting the
+        usurper's lock; this prevents the usurper's rm -rf from corrupting the
+        first execute.
         """
         while True:
             try:
                 if not await self._heartbeat_release_lock(lock_key, token):
                     logger.critical(
                         "release lock no longer owned during execute — "
-                        "TTL backstop active; a concurrent approve was refused "
-                        "by the fencing token"
+                        "aborting execute fail-closed so a concurrent approve"
+                        " cannot rm -rf the in-flight release clone"
                     )
+                    lock_lost.set()
+                    execute_task.cancel()
                     return
             except Exception as exc:
                 logger.warning("release lock heartbeat failed (redis): %s", exc)
@@ -239,3 +302,47 @@ class ReleaseProposalService(BaseService):
 def get_release_proposal_service(session: AsyncSession) -> ReleaseProposalService:
     """Construct a ReleaseProposalService bound to ``session``."""
     return ReleaseProposalService(session)
+
+
+# In-flight background approves keyed by proposal task id. The HTTP approve
+# route dispatches the ~40min execute asynchronously (a synchronous request
+# would 504 at any proxy before the fail-closed gate/CI/publish finished) and
+# returns 202 immediately; the panel polls GET /proposal for the final status.
+# This registry lets a status endpoint / tests await the dispatched execute;
+# it self-cleans via a done-callback and the Redis mutex still prevents a
+# double-execute on a second click.
+_INFLIGHT_APPROVES: dict[UUID, asyncio.Task[None]] = {}
+
+
+async def _run_approve_background(
+    task_id: UUID, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """Run ``approve`` in a background task with a fresh session (the request
+    session closes when the 202 returns). Commits the outcome; a failure logs
+    and rolls back — the proposal stays open for the CEO to retry."""
+    async with session_factory() as bg_db:
+        try:
+            result = await get_release_proposal_service(bg_db).approve(task_id)
+            logger.info(
+                "release approve completed task_id=%s status=%s",
+                task_id,
+                result.status if result is not None else "no_report",
+            )
+            await bg_db.commit()
+        except Exception:
+            logger.exception(
+                "release approve background task failed task_id=%s", task_id
+            )
+            await bg_db.rollback()
+
+
+def dispatch_approve(
+    task_id: UUID, session_factory: async_sessionmaker[AsyncSession]
+) -> asyncio.Task[None]:
+    """Spawn the long release execute in a background task so the HTTP approve
+    route can return 202 immediately. Registered in ``_INFLIGHT_APPROVES`` for
+    observability (done-callback removes the entry)."""
+    bg_task = asyncio.create_task(_run_approve_background(task_id, session_factory))
+    _INFLIGHT_APPROVES[task_id] = bg_task
+    bg_task.add_done_callback(lambda _t: _INFLIGHT_APPROVES.pop(task_id, None))
+    return bg_task

@@ -84,7 +84,7 @@ The canonical source of role → verb mapping is `roboco/services/gateway/role_c
 
 ## PR Reviewer
 
-**Flow verbs:** `give_me_work`, `claim_pr_review`, `post_pr_review` (inbound external/fork + internal PRs), `claim_gate_review`, `pr_pass`, `pr_fail` (in-path assembled-PR gate), `i_am_idle`  (read-only)
+**Flow verbs:** `give_me_work`, `claim_pr_review`, `post_pr_review` (inbound external/fork + internal PRs), `claim_gate_review`, `pr_pass`, `pr_fail` (in-path assembled-PR gate), `unclaim`, `i_am_idle`  (read-only)
 
 **Content verbs:** `note`, `evidence`, plus notification reads (`notify_list`, `notify_get`) and channel discovery — no `say` / `dm`: the change-request is posted server-side on the PR itself.
 

@@ -653,6 +653,54 @@ async def test_admin_set_status_no_force_emits_no_override_audit_row() -> None:
 
 
 @pytest.mark.asyncio
+async def test_admin_set_status_blocked_restore_attributes_admin_actor() -> None:
+    """#2176: an admin restore out of BLOCKED (with a pre-block snapshot) must
+    stamp the ADMIN actor on the audit rows — not the restored owner — and emit
+    a task.admin_override row so the re-owning is traceable. Previously this
+    branch returned early via _apply_pre_block_restore with agent_role=None and
+    audit_agent_id=restored_owner, and (force=false here) wrote no override row,
+    so the privilege use was untraceable."""
+    dev = uuid4()
+    pm = uuid4()
+    admin = uuid4()
+    task = _build_task(
+        status=TaskStatus.BLOCKED,
+        assigned_to=pm,
+        claimed_by=pm,
+        branch_name="feature/backend/abc--def",
+        pre_block_state="in_progress",
+        pre_block_assignee=dev,
+    )
+    added: list[object] = []
+    session = MagicMock()
+    session.flush = AsyncMock()
+    session.add.side_effect = added.append
+    svc = TaskService(session)
+    _bind(svc, "get", AsyncMock(return_value=task))
+
+    # force defaults to False — pending is not a hatch destination, so the only
+    # way this override is recorded is the restore branch's own override row.
+    out = await svc.admin_set_status(
+        task.id, TaskStatus.PENDING, actor_id=admin, actor_role="ceo"
+    )
+    assert out is task
+    assert task.status == TaskStatus.PENDING
+    assert task.assigned_to == dev  # ownership restored to the pre-block dev
+
+    rows = [r for r in added if isinstance(r, AuditLogTable)]
+    override_rows = [r for r in rows if r.event_type == "task.admin_override"]
+    assert len(override_rows) == 1
+    override = override_rows[0]
+    assert override.agent_id == admin  # the admin, not the restored dev
+    assert override.details["restore"] is True
+    assert override.details["forced"] is False
+    # Every audit row (the transition row AND the override row) is attributed to
+    # the admin actor — the restored owner is NOT recorded as the actor.
+    assert all(r.agent_id == admin for r in rows)
+    assert not any(r.agent_id == dev for r in rows)
+
+
+@pytest.mark.asyncio
 async def test_pre_block_restore_skips_revision_count_bump() -> None:
     """#101 Gap B: restoring a blocked task to its snapshotted needs_revision
     state is a RESTORE, not a rework bounce — ``revision_count`` must not

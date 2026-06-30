@@ -417,6 +417,30 @@ async def test_send_a2a_returns_handler_result(a2a_setup: dict) -> None:
         pass
 
 
+@pytest.mark.asyncio
+async def test_send_records_skill_on_message_for_receiver(a2a_setup: dict) -> None:
+    """#1416: a2a.send(skill=...) must record the requested capability on the
+    persisted message so the receiver learns it — not silently drop it. The
+    gateway adapter's docstring promised exactly this, but send_chat_message
+    never read the ``skill`` opt and the table had no skill column, so every
+    gateway A2A send lost the capability signal the caller passed."""
+    svc = a2a_setup["svc"]
+    dev = a2a_setup["dev"]
+    task_id = a2a_setup["task_id"]
+    sent = await svc.send(
+        from_agent=dev.id,
+        to_agent="be-qa",
+        task_id=task_id,
+        body="please review my PR",
+        skill="code_review",
+    )
+    assert sent.skill == "code_review"
+    # The receiver reads the capability back via get_messages.
+    inbox = await svc.get_messages(UUID(sent.conversation_id), "be-qa")
+    assert inbox
+    assert inbox[-1].skill == "code_review"
+
+
 # ---------------------------------------------------------------------------
 # Conversation creation happy path with allowed pair
 # ---------------------------------------------------------------------------
@@ -992,7 +1016,10 @@ async def test_create_a2a_notification_with_target_calls_notification_service(
 async def test_create_a2a_notification_permission_denied(
     a2a_setup: dict,
 ) -> None:
-    """can_a2a_direct returns False → ValueError with hint."""
+    """Hierarchy denial → the typed A2AAccessDeniedError (with route_hint), routed
+    through validate_a2a_access so the legacy notification path matches the
+    conversation path — not a bare ValueError a caller can't distinguish from a
+    malformed request."""
     svc = a2a_setup["svc"]
     task_id = str(a2a_setup["task_id"])
     msg = A2AMessage(role="user", parts=[TextPart(text="hi")], task_id=task_id)
@@ -1002,16 +1029,64 @@ async def test_create_a2a_notification_permission_denied(
     )
     with (
         patch(
-            "roboco.agents_config.can_a2a_direct",
+            "roboco.enforcement.a2a_access.can_a2a_direct",
             return_value=(False, "denied"),
         ),
         patch(
-            "roboco.agents_config.get_a2a_route_hint",
+            "roboco.enforcement.a2a_access.get_a2a_route_hint",
             return_value="use channel",
         ),
-        pytest.raises(ValueError, match="Hint:"),
+        pytest.raises(A2AAccessDeniedError) as exc,
     ):
         await svc.create_a2a_notification(req)
+    assert exc.value.route_hint == "use channel"
+
+
+@pytest.mark.asyncio
+async def test_create_a2a_notification_self_a2a_raises_typed_error(
+    a2a_setup: dict,
+) -> None:
+    """#612: a self-directed A2A notification (from_agent == target) must raise
+    the typed A2AAccessDeniedError — the self-check the conversation path
+    (validate_a2a_access) enforces — not a bare ValueError and not a silently
+    sent notification."""
+    svc = a2a_setup["svc"]
+    task_id = str(a2a_setup["task_id"])
+    msg = A2AMessage(role="user", parts=[TextPart(text="self note")], task_id=task_id)
+    req = SendMessageRequest(
+        message=msg,
+        metadata={"from_agent": "be-dev-1", "target_agent": "be-dev-1"},
+    )
+    mock_ns = AsyncMock()
+    mock_ns.send_a2a_notification = AsyncMock(return_value=None)
+    with (
+        patch("roboco.services.notification.NotificationService", return_value=mock_ns),
+        pytest.raises(A2AAccessDeniedError),
+    ):
+        await svc.create_a2a_notification(req)
+    mock_ns.send_a2a_notification.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_a2a_notification_missing_from_agent_raises_not_silent(
+    a2a_setup: dict,
+) -> None:
+    """#609: an unattributed A2A request (no from_agent, unresolvable target)
+    must NOT slip past the hierarchy gate and dispatch with
+    from_agent='unknown'. The gate is unconditional — both ends must be present
+    and resolvable before any notification is created."""
+    svc = a2a_setup["svc"]
+    task_id = str(a2a_setup["task_id"])
+    msg = A2AMessage(role="user", parts=[TextPart(text="anon")], task_id=task_id)
+    req = SendMessageRequest(message=msg, metadata={})
+    mock_ns = AsyncMock()
+    mock_ns.send_a2a_notification = AsyncMock(return_value=None)
+    with (
+        patch("roboco.services.notification.NotificationService", return_value=mock_ns),
+        pytest.raises(ValueError, match="from_agent"),
+    ):
+        await svc.create_a2a_notification(req)
+    mock_ns.send_a2a_notification.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

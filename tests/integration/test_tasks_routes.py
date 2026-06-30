@@ -329,6 +329,67 @@ async def test_update_task_status_override_non_hatch_needs_no_force(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("hatch", ["awaiting_ceo_approval", "cancelled"])
+async def test_update_task_override_gate_states_require_force(
+    task_client: dict, hatch: str
+) -> None:
+    """The hatch set covers the CEO gate and the terminal cancel too (not just
+    completed/awaiting_qa/awaiting_pm_review): a privileged PATCH into either
+    without ``force`` is refused 400."""
+    client = task_client["client"]
+    task = _seed_task(task_client, status=TaskStatus.IN_PROGRESS)
+    await task_client["db"].flush()
+    response = await client.patch(
+        f"/api/tasks/{task.id}",
+        json={"status": hatch},
+        headers=_HDR,
+    )
+    assert response.status_code == HTTPStatus.BAD_REQUEST, hatch
+    assert "force" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hatch", ["awaiting_ceo_approval", "cancelled"])
+async def test_update_task_override_gate_states_with_force_succeeds(
+    task_client: dict, hatch: str
+) -> None:
+    client = task_client["client"]
+    task = _seed_task(task_client, status=TaskStatus.IN_PROGRESS)
+    await task_client["db"].flush()
+    response = await client.patch(
+        f"/api/tasks/{task.id}",
+        json={"status": hatch, "force": True},
+        headers=_HDR,
+    )
+    assert response.status_code == HTTPStatus.OK, hatch
+    assert response.json()["status"] == hatch
+
+
+@pytest.mark.asyncio
+async def test_update_task_resurrect_terminal_requires_force(task_client: dict) -> None:
+    """Resurrecting a COMPLETED task back to in_progress is a bypass of the merge
+    decision; the target (in_progress) is not itself a hatch state, so the
+    target-only gate would miss it — the source-terminal check requires force."""
+    client = task_client["client"]
+    task = _seed_task(task_client, status=TaskStatus.COMPLETED)
+    await task_client["db"].flush()
+    no_force = await client.patch(
+        f"/api/tasks/{task.id}",
+        json={"status": "in_progress"},
+        headers=_HDR,
+    )
+    assert no_force.status_code == HTTPStatus.BAD_REQUEST
+    assert "force" in no_force.json()["detail"]
+    with_force = await client.patch(
+        f"/api/tasks/{task.id}",
+        json={"status": "in_progress", "force": True},
+        headers=_HDR,
+    )
+    assert with_force.status_code == HTTPStatus.OK
+    assert with_force.json()["status"] == "in_progress"
+
+
+@pytest.mark.asyncio
 async def test_delete_task(task_client: dict) -> None:
     client = task_client["client"]
     task = _seed_task(task_client)

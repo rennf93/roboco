@@ -67,7 +67,7 @@ def _seed(setup: dict, *, status: TaskStatus, **kw: Any) -> TaskTable:
         acceptance_criteria=["ac"],
         status=status,
         priority=kw.pop("priority", 2),
-        task_type=TaskType.CODE,
+        task_type=kw.pop("task_type", TaskType.CODE),
         nature=TaskNature.TECHNICAL,
         project_id=setup["project_id"],
         created_by=setup["agent_id"],
@@ -425,3 +425,173 @@ async def test_priority_swimlane_board_reports_real_subtask_count(
     card = _find_card(board, parent.id)
     assert card.subtask_count == 1
     assert card.has_subtasks is True
+
+
+# ---------------------------------------------------------------------------
+# Column coverage: no task status may vanish from a board (total_cards == sum)
+# ---------------------------------------------------------------------------
+
+# The 8 statuses the legacy DEV_COLUMNS dropped: BACKLOG, PAUSED, VERIFYING,
+# NEEDS_REVISION, AWAITING_PR_REVIEW, AWAITING_PM_REVIEW, AWAITING_CEO_APPROVAL,
+# CANCELLED. A dev whose task bounced to needs_revision (or sits in a gate) used
+# to see their own task disappear from the board.
+_DROPPED_DEV_STATUSES = [
+    TaskStatus.BACKLOG,
+    TaskStatus.PAUSED,
+    TaskStatus.VERIFYING,
+    TaskStatus.NEEDS_REVISION,
+    TaskStatus.AWAITING_PR_REVIEW,
+    TaskStatus.AWAITING_PM_REVIEW,
+    TaskStatus.AWAITING_CEO_APPROVAL,
+    TaskStatus.CANCELLED,
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", _DROPPED_DEV_STATUSES)
+async def test_dev_board_shows_every_status(
+    kanban_setup: dict, status: TaskStatus
+) -> None:
+    """A dev task in any lifecycle status must appear in exactly one column —
+    it must not be silently dropped (the card-counted-but-hidden leak)."""
+    db = kanban_setup["db"]
+    svc = kanban_setup["svc"]
+    db.add(_seed(kanban_setup, status=status))
+    await db.flush()
+    board = await svc.get_dev_board(Team.BACKEND)
+    placed = sum(len(c.cards) for c in board.columns)
+    assert placed == board.total_cards
+    assert any(c.cards for c in board.columns)
+
+
+@pytest.mark.asyncio
+async def test_dev_board_total_cards_equals_column_sum(kanban_setup: dict) -> None:
+    """The board must never report N total cards while only M are visible."""
+    db = kanban_setup["db"]
+    svc = kanban_setup["svc"]
+    for status in (
+        TaskStatus.IN_PROGRESS,
+        TaskStatus.NEEDS_REVISION,
+        TaskStatus.AWAITING_PR_REVIEW,
+        TaskStatus.PAUSED,
+        TaskStatus.COMPLETED,
+        TaskStatus.CANCELLED,
+    ):
+        db.add(_seed(kanban_setup, status=status))
+    await db.flush()
+    board = await svc.get_dev_board(Team.BACKEND)
+    assert sum(c.card_count for c in board.columns) == board.total_cards
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status",
+    [
+        TaskStatus.AWAITING_QA,
+        TaskStatus.AWAITING_DOCUMENTATION,
+        TaskStatus.AWAITING_PR_REVIEW,
+        TaskStatus.AWAITING_PM_REVIEW,
+        TaskStatus.AWAITING_CEO_APPROVAL,
+        TaskStatus.NEEDS_REVISION,
+        TaskStatus.PAUSED,
+        TaskStatus.CANCELLED,
+    ],
+)
+async def test_pm_board_shows_gate_and_revision_states(
+    kanban_setup: dict, status: TaskStatus
+) -> None:
+    """The cell PM coordinates the QA->docs->PR-review->PM-review->CEO chain, so
+    every in-flight gate/revision/paused/cancelled status must be visible — not
+    dropped by a column mapping that only knows pending/claimed/in_progress/
+    blocked/done."""
+    db = kanban_setup["db"]
+    svc = kanban_setup["svc"]
+    db.add(_seed(kanban_setup, status=status))
+    await db.flush()
+    board = await svc.get_pm_board(Team.BACKEND)
+    assert sum(c.card_count for c in board.columns) == board.total_cards
+    assert any(c.cards for c in board.columns)
+
+
+@pytest.mark.asyncio
+async def test_qa_board_excludes_dev_verifying(kanban_setup: dict) -> None:
+    """VERIFYING is the developer's self-verification state — the task is still
+    with the dev, not with QA. The QA board's 'In Review' column used to show
+    these dev-mid-verification tasks as if QA work were underway."""
+    db = kanban_setup["db"]
+    svc = kanban_setup["svc"]
+    verifying = _seed(kanban_setup, status=TaskStatus.VERIFYING, title="dev-self-check")
+    queued = _seed(kanban_setup, status=TaskStatus.AWAITING_QA, title="qa-queue")
+    db.add_all([verifying, queued])
+    await db.flush()
+    board = await svc.get_qa_board(Team.BACKEND)
+    cards = [c for col in board.columns for c in col.cards]
+    ids = {c.id for c in cards}
+    assert queued.id in ids
+    assert verifying.id not in ids
+
+
+@pytest.mark.asyncio
+async def test_documenter_board_excludes_dev_code_tasks(kanban_setup: dict) -> None:
+    """The documenter shares a cell team with devs, so a dev IN_PROGRESS code
+    task used to appear under 'Gathering' as if it were documentation. The
+    documenter board must be scoped to task_type=documentation."""
+    db = kanban_setup["db"]
+    svc = kanban_setup["svc"]
+    dev_task = _seed(
+        kanban_setup,
+        status=TaskStatus.IN_PROGRESS,
+        title="dev-code",
+        task_type=TaskType.CODE,
+    )
+    doc_task = _seed(
+        kanban_setup,
+        status=TaskStatus.IN_PROGRESS,
+        title="doc-task",
+        task_type=TaskType.DOCUMENTATION,
+    )
+    db.add_all([dev_task, doc_task])
+    await db.flush()
+    board = await svc.get_documenter_board(Team.BACKEND)
+    cards = [c for col in board.columns for c in col.cards]
+    ids = {c.id for c in cards}
+    assert doc_task.id in ids
+    assert dev_task.id not in ids
+
+
+@pytest.mark.asyncio
+async def test_main_pm_board_flat_incoming_distributed_done_populated(
+    kanban_setup: dict,
+) -> None:
+    """The flat Main PM board filtered to in-flight-only, so its own
+    incoming(PENDING)/distributed(CLAIMED)/done(COMPLETED) columns were
+    structurally always empty. Those columns must now show matching tasks."""
+    db = kanban_setup["db"]
+    svc = kanban_setup["svc"]
+    db.add(_seed(kanban_setup, status=TaskStatus.PENDING, team=Team.BACKEND))
+    db.add(_seed(kanban_setup, status=TaskStatus.CLAIMED, team=Team.FRONTEND))
+    db.add(_seed(kanban_setup, status=TaskStatus.COMPLETED, team=Team.BACKEND))
+    db.add(_seed(kanban_setup, status=TaskStatus.IN_PROGRESS, team=Team.BACKEND))
+    await db.flush()
+    board = await svc.get_main_pm_board_flat()
+    cols = {c.id: c for c in board.columns}
+    assert len(cols["incoming"].cards) >= 1
+    assert len(cols["distributed"].cards) >= 1
+    assert len(cols["done"].cards) >= 1
+    # No loaded task vanishes: the columned cards cover every loaded task.
+    assert sum(len(c.cards) for c in board.columns) == board.total_cards
+
+
+@pytest.mark.asyncio
+async def test_build_flat_board_has_other_fallback(kanban_setup: dict) -> None:
+    """A status with no configured column lands in an 'Other' fallback column so
+    no card is ever silently dropped (the total_cards > sum(card_count) leak)."""
+    db = kanban_setup["db"]
+    svc = kanban_setup["svc"]
+    # The Board roadmap (BOARD_COLUMNS) maps only pending/claimed/in_progress/
+    # completed; an awaiting_qa task at P0 loads but matches no column.
+    db.add(_seed(kanban_setup, status=TaskStatus.AWAITING_QA, priority=0))
+    await db.flush()
+    board = await svc.get_board_kanban()
+    assert any(c.id == "other" and c.card_count == 1 for c in board.columns)
+    assert sum(c.card_count for c in board.columns) == board.total_cards

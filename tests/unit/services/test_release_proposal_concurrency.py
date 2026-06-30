@@ -6,7 +6,7 @@ sees the lock held and refuses instead of racing on the writable clone.
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -393,3 +393,94 @@ async def test_heartbeat_refreshes_lock_and_is_cancelled_in_finally(
     assert all(k == name for k, _ttl in fake_redis.expire_calls)
     # And the lock was released at the end.
     assert await fake_redis.get(name) is None
+
+
+@pytest.mark.asyncio
+async def test_already_published_closes_proposal_not_wedges_open() -> None:
+    """#149: when a prior publish landed (tag exists) but the route commit
+    failed / 504'd, a retry sees the tag and execute returns ``already_published``.
+    approve() must STILL mark the proposal COMPLETED — the release shipped —
+    else the old ``if status == 'published'`` check wedged it open forever (every
+    retry returns already_published and never closes it; only a manual cancel
+    unsticks it)."""
+    task = _task()
+    fake_redis = _FakeRedis()
+    already = ReleaseResult(
+        status="already_published",
+        version="0.13.0",
+        files_changed=[],
+        commit_sha=None,
+        release_url=None,
+        detail="v0.13.0 is already published; nothing to do.",
+    )
+    w = _wire(task, _REPORT, already, fake_redis)
+    svc = ReleaseProposalService(_session())
+
+    with (
+        w["patches"][0],
+        w["patches"][1],
+        w["patches"][2],
+        w["patches"][3],
+        w["patches"][4],
+    ):
+        result = await svc.approve(task.id)
+
+    assert result is not None
+    assert result.status == "already_published"
+    # The proposal is CLOSED — the release shipped — not wedged open.
+    assert task.status == TaskStatus.COMPLETED.value
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_lock_loss_cancels_execute_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#218: when the heartbeat finds the lock no longer owned (a >TTL Redis
+    outage let the mutex expire and a usurper re-acquired), it must CANCEL the
+    in-flight execute fail-closed — not ``return`` silently and leave execute
+    running unguarded, which lets the usurper's approve ``rm -rf`` the in-flight
+    release clone (re-opening the race the mutex+heartbeat exist to prevent).
+    approve() surfaces a structured ``lock_lost`` result."""
+    monkeypatch.setattr(rp, "_RELEASE_LOCK_HEARTBEAT_SECONDS", 0.001)
+
+    task = _task()
+    fake_redis = _FakeRedis()
+    published = ReleaseResult(
+        status="published",
+        version="0.13.0",
+        files_changed=[],
+        commit_sha=None,
+        release_url=None,
+        detail="ok",
+    )
+
+    execute_started = asyncio.Event()
+
+    async def _blocking_execute(_report: Any) -> ReleaseResult:
+        # Block until the heartbeat cancels us — proves execute was running and
+        # got cancelled, not never-started.
+        execute_started.set()
+        await asyncio.sleep(60)
+        return published
+
+    w = _wire(task, _REPORT, published, fake_redis)
+    w["executor"].execute = AsyncMock(side_effect=_blocking_execute)
+    svc = ReleaseProposalService(_session())
+    # The heartbeat's compare-and-expire reports the lock lost (token mismatch —
+    # a usurper re-acquired after TTL expiry).
+    cast("Any", svc)._heartbeat_release_lock = AsyncMock(return_value=False)
+
+    with (
+        w["patches"][0],
+        w["patches"][1],
+        w["patches"][2],
+        w["patches"][3],
+        w["patches"][4],
+    ):
+        result = await svc.approve(task.id)
+
+    assert result is not None
+    assert result.status == "lock_lost"
+    assert execute_started.is_set()  # execute did start, then was cancelled
+    # Fail-closed: the proposal is NOT marked COMPLETED.
+    assert task.status != TaskStatus.COMPLETED.value

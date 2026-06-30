@@ -379,13 +379,52 @@ class A2AService:
 
         return [self.task_to_a2a(t) for t in tasks], has_more
 
-    async def cancel_task(self, task_id: str, reason: str | None = None) -> A2ATask:
+    @staticmethod
+    def _status_value_of(task: Any) -> str:
+        """Status as a comparable string (enum value or raw str)."""
+        return task.status.value if hasattr(task.status, "value") else str(task.status)
+
+    async def _apply_cancel_note(
+        self, task: Any, actor_slug: str | None, reason: str | None
+    ) -> None:
+        """Append an actor-attributed cancellation note to dev_notes.
+
+        Kept out of route handlers so the audit trail records who cancelled and
+        why (the route passes the authenticated slug).
+        """
+        note_parts: list[str] = []
+        if actor_slug:
+            note_parts.append(f"Cancelled via A2A by {actor_slug}")
+        if reason:
+            note_parts.append(f"reason: {reason}")
+        cancellation_note = "; ".join(note_parts) if note_parts else None
+        if cancellation_note:
+            if task.dev_notes:
+                task.dev_notes = f"{task.dev_notes}\n\n{cancellation_note}"
+            else:
+                task.dev_notes = cancellation_note
+            await self.session.flush()
+
+    async def cancel_task(
+        self,
+        task_id: str,
+        reason: str | None = None,
+        agent_role: str | None = None,
+        actor_slug: str | None = None,
+    ) -> A2ATask:
         """
         Cancel a task and all non-terminal descendants.
 
         Args:
             task_id: Task UUID string
             reason: Optional cancellation reason
+            agent_role: The authenticated caller's role, threaded into the
+                cascade role gate (TaskService.cancel). Defaults to cell_pm
+                when unset for back-compat with non-route callers.
+            actor_slug: The authenticated caller's slug, recorded in the
+                cancellation note so the audit trail attributes the cancel to
+                the real actor (the route enforces PM/management; non-route
+                callers may omit it).
 
         Returns:
             Updated A2ATask
@@ -411,31 +450,30 @@ class A2AService:
             raise ValueError(f"Task not found: {task_id}")
 
         # Check if cancellable
-        if hasattr(task.status, "value"):
-            status_value = task.status.value
-        else:
-            status_value = str(task.status)
-
-        if status_value in ["completed", "cancelled"]:
+        status_value = self._status_value_of(task)
+        if status_value in ("completed", "cancelled"):
             raise ValueError(f"Task already in terminal state: {status_value}")
 
-        # Add reason to notes before cancel
-        if reason:
-            reason_text = f"Cancellation reason: {reason}"
-            if task.dev_notes:
-                task.dev_notes = f"{task.dev_notes}\n\n{reason_text}"
-            else:
-                task.dev_notes = reason_text
-            await self.session.flush()
+        # Attribute the cancel to the real actor (the route passes the
+        # authenticated slug) in the audit note — kept out of route handlers.
+        await self._apply_cancel_note(task, actor_slug, reason)
 
-        # Use TaskService for consistent cancel behavior (cascades to descendants)
+        # Use TaskService for consistent cancel behavior (cascades to descendants).
+        # Thread the caller's role into the cascade role gate so a non-PM
+        # caller can't cascade-cancel descendants the role can't cancel.
         task_service = TaskService(self.session)
-        task = await task_service.cancel(task_uuid)
+        task = await task_service.cancel(task_uuid, agent_role=agent_role or "cell_pm")
 
         if task is None:
             raise ValueError(f"Failed to cancel task: {task_id}")
 
-        logger.info("Cancelled task via A2A", task_id=task_id, reason=reason)
+        logger.info(
+            "Cancelled task via A2A",
+            task_id=task_id,
+            reason=reason,
+            actor=actor_slug,
+            role=agent_role,
+        )
 
         return self.task_to_a2a(task)
 
@@ -605,14 +643,29 @@ class A2AService:
         target_agent = self.resolve_target_agent(metadata)
         skill = metadata.get("skill", "general")
 
-        # Enforce A2A hierarchy permissions
-        if from_agent and target_agent:
-            from roboco.agents_config import can_a2a_direct, get_a2a_route_hint
-
-            allowed, error_msg = can_a2a_direct(from_agent, target_agent)
-            if not allowed:
-                hint = get_a2a_route_hint(from_agent, target_agent)
-                raise ValueError(f"{error_msg} Hint: {hint}")
+        # Enforce A2A hierarchy permissions — UNCONDITIONALLY. The conversation
+        # path (validate_a2a_access, below) requires both ends present and
+        # rejects self-A2A with a typed A2AAccessDeniedError + route_hint. This
+        # legacy notification path used to gate on `if from_agent and
+        # target_agent:`, so an unattributed (from_agent falsy) or untargeted
+        # (target unresolvable) request slipped past the hierarchy matrix and
+        # dispatched with from_agent='unknown' / to_agent='' — and a hierarchy
+        # denial came back as a bare ValueError indistinguishable from the
+        # missing-task_id ValueError above. Require both resolved, then validate
+        # via the shared typed path so both A2A surfaces enforce the same
+        # who-may-talk-to-whom invariant.
+        if not from_agent:
+            raise ValueError(
+                "A2A notification requires a 'from_agent' in metadata — an "
+                "unattributed request would bypass the hierarchy gate"
+            )
+        if not target_agent:
+            raise ValueError(
+                "A2A notification could not resolve a target agent — provide an "
+                "explicit 'target_agent' (a known agent slug) or a 'skill' that "
+                "matches an agent's capability"
+            )
+        validate_a2a_access(from_agent, target_agent)
         # Priority parsing: full tristate (NORMAL/HIGH/URGENT) survives
         # end-to-end. Resolution rules live in
         # foundation.policy.communications.parse_priority.
@@ -1024,6 +1077,7 @@ class A2AService:
         message_kind = opts.get("message_kind", A2AMessageKind.MESSAGE)
         response_to_id = opts.get("response_to_id")
         requires_response = opts.get("requires_response", False)
+        skill = opts.get("skill")
 
         result = await self.session.execute(
             select(A2AConversationTable).where(
@@ -1072,6 +1126,7 @@ class A2AService:
             message_kind=message_kind,
             response_to_id=response_to_id,
             requires_response=requires_response,
+            skill=skill,
         )
         self.session.add(msg)
 
@@ -1354,6 +1409,7 @@ class A2AService:
             from_agent=msg.from_agent,
             content=msg.content,
             message_kind=msg.message_kind,
+            skill=msg.skill,
             response_to_id=str(msg.response_to_id) if msg.response_to_id else None,
             requires_response=msg.requires_response,
             read_at=msg.read_at,
@@ -1396,8 +1452,8 @@ class A2AService:
         1. `get_or_create_conversation(sender_slug, recipient_slug, task_id=...)`
         2. `send_chat_message(conversation.id, sender_slug, content=body, ...)`
 
-        `skill` is recorded in message metadata so the receiver knows which
-        capability is being requested.
+        `skill` is persisted on the message row so the receiver (and the
+        inbox) learns which capability is being requested.
         """
         from_slug = await self._resolve_slug_from_id(from_agent)
         to_slug = (

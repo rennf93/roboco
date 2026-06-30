@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import json
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -153,3 +156,213 @@ async def test_dispatch_runs_handler_when_redis_guard_unavailable() -> None:
     ok = await bus._dispatch_event(event)
     assert ok is True
     assert calls == ["ran"]
+
+
+# --- poison-pill: an undecodable message must be ACKed, not retried forever ---
+
+
+class _FakeRedisStream:
+    """In-memory redis surface for the xack/xadd/group path.
+
+    Tracks ACKs and dead-letter xadds so the poison-pill test can assert a
+    malformed message is acknowledged (not left pending) and parked on the
+    dead-letter stream. ``xreadgroup`` yields nothing so a listen loop never
+    spins.
+    """
+
+    def __init__(self) -> None:
+        self.xack_calls: list[tuple[str, str, tuple[str, ...]]] = []
+        self.xadd_calls: list[tuple[str, dict]] = []
+
+    async def xack(self, stream: str, group: str, *ids: str) -> int:
+        self.xack_calls.append((stream, group, ids))
+        return len(ids)
+
+    async def xadd(
+        self,
+        stream: str,
+        fields: dict,
+        maxlen: int | None = None,
+        approximate: bool = True,
+    ) -> bytes:
+        del maxlen, approximate
+        self.xadd_calls.append((stream, dict(fields)))
+        return b"1-0"
+
+    async def xreadgroup(self, *args: object, **kwargs: object) -> list:
+        del args, kwargs
+        return []
+
+    async def xgroup_create(self, *args: object, **kwargs: object) -> bool:
+        del args, kwargs
+        return True
+
+    async def xpending(self, *args: object, **kwargs: object) -> dict:
+        del args, kwargs
+        return {"pending": 0}
+
+    async def xpending_range(self, *args: object, **kwargs: object) -> list:
+        del args, kwargs
+        return []
+
+    async def xclaim(self, *args: object, **kwargs: object) -> list:
+        del args, kwargs
+        return []
+
+    async def set(
+        self, key: str, value: str, *, nx: bool = False, ex: int | None = None
+    ) -> bool:
+        del key, value, nx, ex
+        return True
+
+    async def delete(self, key: str) -> int:
+        del key
+        return 1
+
+    async def get(self, key: str) -> None:
+        del key
+
+    async def close(self) -> None:
+        """No-op close for the fake client."""
+
+
+@pytest.mark.asyncio
+async def test_undecodable_message_is_acked_and_dead_lettered() -> None:
+    """A message whose payload fails Event.from_json (unknown EventType value,
+    bad UUID, malformed JSON) is a poison pill: no handler could ever process
+    it, so retrying is pointless. The bus must ACK it (and dead-letter it) so
+    the stream doesn't wedge on an unkillable pending message re-failing on
+    every reclaim."""
+
+    bus = StreamEventBus()
+    fake = _FakeRedisStream()
+    bus._redis = cast("Redis", fake)
+
+    invoked: list[str] = []
+
+    async def _handler(_event: Event) -> None:
+        invoked.append("ran")
+
+    bus.subscribe(EventType.NOTIFICATION_SENT, _handler)
+
+    # type="task.bogus" is not a real EventType → EventType(...) raises ValueError
+    # inside Event.from_json.
+    malformed = json.dumps(
+        {
+            "id": "not-a-uuid",
+            "type": "task.bogus_unknown",
+            "data": {},
+            "timestamp": "2026-06-30T00:00:00+00:00",
+        }
+    )
+    await bus._handle_message("roboco:stream:task", "1234-0", {b"data": malformed})
+
+    # ACKed exactly once — not left pending for reclaim to re-fail forever.
+    assert len(fake.xack_calls) == 1
+    assert fake.xack_calls[0][2] == ("1234-0",)
+    # Dead-lettered for inspection before the ACK.
+    assert len(fake.xadd_calls) == 1
+    assert fake.xadd_calls[0][0] == StreamEventBus.DEAD_LETTER_STREAM
+    # No handler could run — the event never decoded.
+    assert invoked == []
+
+
+# --- periodic reclaim: a runtime handler failure is retried without a restart ---
+
+
+@pytest.mark.asyncio
+async def test_reclaim_loop_periodically_calls_recover_pending() -> None:
+    """XREADGROUP '>' delivers only NEW messages, so a handler that fails at
+    runtime leaves its message pending and unretried until the orchestrator
+    restarts. A periodic reclaim loop must call recover_pending so the
+    idempotency-guarded replay actually fires."""
+
+    bus = StreamEventBus()
+    bus._running = True
+    bus._reclaim_interval = 60
+
+    calls: list[int] = []
+
+    async def _fake_recover(idle_time_ms: int = 60000) -> int:
+        calls.append(idle_time_ms)
+        bus._running = False  # break the loop after the first reclaim
+        return 0
+
+    bus.recover_pending = _fake_recover  # type: ignore[method-assign]
+
+    async def _no_sleep(_seconds: float) -> None:
+        return
+
+    with patch("roboco.events.stream_bus.asyncio.sleep", new=_no_sleep):
+        await bus._reclaim_loop()
+
+    # Reclaim ran once with the interval-aligned idle window, then the loop exited.
+    assert calls == [60000]
+
+
+@pytest.mark.asyncio
+async def test_start_listening_spawns_reclaim_task_alongside_listen() -> None:
+    """start_listening must spawn the reclaim task, not just the listen task —
+    otherwise pending messages are never re-delivered at runtime."""
+
+    bus = StreamEventBus()
+    bus._redis = cast("Redis", _FakeRedisStream())
+
+    async def _noop(self: StreamEventBus) -> None:
+        del self
+
+    async def _handler(_event: Event) -> None: ...
+
+    bus.subscribe(EventType.NOTIFICATION_SENT, _handler)
+
+    with (
+        patch.object(StreamEventBus, "_listen_loop", _noop),
+        patch.object(StreamEventBus, "_reclaim_loop", _noop),
+    ):
+        await bus.start_listening()
+
+    try:
+        assert bus._listen_task is not None
+        assert bus._reclaim_task is not None
+    finally:
+        await bus.disconnect()
+
+
+# --- cancellation mid-handler must clear the idempotency marker ---
+
+
+@pytest.mark.asyncio
+async def test_cancelled_handler_clears_idempotency_marker() -> None:
+    """A handler cancelled mid-flight (shutdown / sibling gather cancellation)
+    is BaseException-cancelled, not Exception-raised, so the old ``except
+    Exception`` left the SET-NX marker set: the message stayed pending but the
+    guard then suppressed the very redelivery that would complete the work.
+    The cleanup must catch BaseException so the marker is cleared and reclaim
+    re-runs the handler."""
+
+    bus = StreamEventBus()
+    fake = _FakeRedis()
+    bus._redis = cast("Redis", fake)
+
+    started = asyncio.Event()
+    proceed = asyncio.Event()
+
+    async def _blocking(_event: Event) -> None:
+        started.set()
+        await proceed.wait()  # block until the dispatch task is cancelled
+
+    bus.subscribe(EventType.NOTIFICATION_SENT, _blocking)
+    event = Event(type=EventType.NOTIFICATION_SENT, data={"task_id": "tc"})
+
+    task = asyncio.create_task(bus._dispatch_event(event))
+    await started.wait()  # handler is now blocked → marker is set
+
+    key = f"bus:processed:{event.id}:_blocking"
+    assert key in fake.keys  # marker acquired before the handler blocked
+
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    # Marker cleared despite cancellation → a replay re-runs the handler.
+    assert key not in fake.keys

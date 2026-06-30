@@ -71,7 +71,7 @@ from roboco.services.base import (
 )
 from roboco.services.content_notes import apply_structured_note
 from roboco.services.work_session import WorkSessionService
-from roboco.utils.converters import require_uuid, to_python_uuid
+from roboco.utils.converters import repo_key, require_uuid, to_python_uuid
 
 if TYPE_CHECKING:
     from roboco.services.permissions import PermissionService
@@ -79,6 +79,14 @@ if TYPE_CHECKING:
 # UUID format constants for validation
 _UUID_LENGTH = 36  # Standard UUID string length
 _UUID_HYPHEN_COUNT = 4  # Number of hyphens in a UUID
+
+
+def _repo_key_expr(column: Any) -> Any:
+    """SQL mirror of :func:`roboco.utils.converters.repo_key`: lower, strip a
+    trailing ``/``, drop a ``.git`` suffix — so two projects whose git_url
+    differs only by case / ``.git`` / trailing-slash collapse to one repo for
+    ci_watch / dep_update dedupe (#1267)."""
+    return func.regexp_replace(func.rtrim(func.lower(column), "/"), r"\.git$", "")
 
 
 _ROLE_CLAIM_STATUSES: dict[str, set[TaskStatus]] = {
@@ -1254,8 +1262,14 @@ class TaskService(BaseService):
         dedupe key is ``(git_url, effective workflow)`` so a multi-workflow
         monorepo with two RED workflows gets a fix task per workflow, not one
         collapsed task that silently leaves the second workflow un-remediated
-        (#44). The effective workflow is ``COALESCE(ci_watch_workflow, default)``
-        so a NULL-workflow project row matches the default workflow.
+        (#44). The effective workflow is
+        ``COALESCE(NULLIF(ci_watch_workflow, ''), default)`` so a NULL OR
+        empty-string workflow row matches the default workflow — the engine and
+        orchestrator collapse an empty string to the default via Python
+        truthiness, and the DB dedupe must match that semantics or a
+        ''-workflow repo opens a duplicate fix task every red cycle (#148). The
+        git_url scope is matched on the normalized repo key (case / ``.git`` /
+        trailing ``/``), mirroring the orchestrator's poll-set collapse (#1267).
         """
         stmt = select(TaskTable).where(
             TaskTable.source == CI_WATCH_SOURCE,
@@ -1264,12 +1278,15 @@ class TaskService(BaseService):
         if git_url is not None or workflow is not None:
             stmt = stmt.join(ProjectTable, TaskTable.project_id == ProjectTable.id)
             if git_url is not None:
-                stmt = stmt.where(ProjectTable.git_url == git_url)
+                stmt = stmt.where(
+                    _repo_key_expr(ProjectTable.git_url) == repo_key(git_url)
+                )
             if workflow is not None:
                 from roboco.config import settings
 
                 effective = func.coalesce(
-                    ProjectTable.ci_watch_workflow, settings.ci_watch_default_workflow
+                    func.nullif(ProjectTable.ci_watch_workflow, ""),
+                    settings.ci_watch_default_workflow,
                 )
                 stmt = stmt.where(effective == workflow)
         result = await self.session.execute(stmt)
@@ -1284,6 +1301,8 @@ class TaskService(BaseService):
         cell-projects, one git_url) gets at most one open dependency-update task,
         not one per cell-project. While an open task exists for a repo the bot
         must not originate a second; the rolling open-task cap counts these.
+        The git_url scope is matched on the normalized repo key (case / ``.git``
+        / trailing ``/``), mirroring the orchestrator's poll-set collapse (#1267).
         """
         stmt = select(TaskTable).where(
             TaskTable.source == DEP_UPDATE_SOURCE,
@@ -1292,7 +1311,7 @@ class TaskService(BaseService):
         if git_url is not None:
             stmt = stmt.join(
                 ProjectTable, TaskTable.project_id == ProjectTable.id
-            ).where(ProjectTable.git_url == git_url)
+            ).where(_repo_key_expr(ProjectTable.git_url) == repo_key(git_url))
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
@@ -2178,7 +2197,16 @@ class TaskService(BaseService):
             and new_status in (TaskStatus.PENDING, TaskStatus.IN_PROGRESS)
             and task.pre_block_assignee is not None
         ):
-            return await self._apply_pre_block_restore(task, new_status)
+            # Thread the admin actor into the restore so the audit attributes
+            # the re-owning to the admin (not the restored owner) and an
+            # admin_override row is emitted (#2176).
+            return await self._apply_pre_block_restore(
+                task,
+                new_status,
+                actor_id=actor_id,
+                actor_role=actor_role,
+                admin_override=True,
+            )
         task.status = new_status
         await self.session.flush()
         self._emit_status_transition_audit(
@@ -5196,6 +5224,7 @@ class TaskService(BaseService):
         task_id: UUID,
         agent_role: str = "cell_pm",
         notes: str | None = None,
+        actor_agent_id: UUID | None = None,
     ) -> TaskTable | None:
         """
         Escalate a task to CEO for final approval (PM only).
@@ -5209,6 +5238,11 @@ class TaskService(BaseService):
             task_id: The task to escalate
             agent_role: Role of the agent escalating (must be PM)
             notes: Optional notes for the CEO
+            actor_agent_id: The escalating agent's UUID, stamped on the
+                audit row so the awaiting_ceo_approval transition attributes
+                to the specific PM/Board agent (every sibling transition
+                forwards the actor; without it the record is role-only and
+                ambiguous across same-role PMs).
 
         Returns:
             The escalated task or None if escalation not allowed
@@ -5255,7 +5289,10 @@ class TaskService(BaseService):
 
         # Validate transition with PM role requirement
         self._validate_and_set_status(
-            task, TaskStatus.AWAITING_CEO_APPROVAL, agent_role
+            task,
+            TaskStatus.AWAITING_CEO_APPROVAL,
+            agent_role,
+            audit_agent_id=actor_agent_id,
         )
         await self.session.flush()
 
@@ -5263,13 +5300,20 @@ class TaskService(BaseService):
         await self._emit_task_event(
             EventType.TASK_AWAITING_CEO_APPROVAL,
             task_id,
-            {"escalated_by_role": agent_role, "notes": notes},
+            {
+                "escalated_by_role": agent_role,
+                "escalated_by_agent_id": str(actor_agent_id)
+                if actor_agent_id
+                else None,
+                "notes": notes,
+            },
         )
 
         self.log.info(
             "Task escalated to CEO for approval",
             task_id=str(task_id),
             escalated_by_role=agent_role,
+            escalated_by_agent_id=str(actor_agent_id) if actor_agent_id else None,
         )
         return task
 
@@ -7151,7 +7195,9 @@ class TaskService(BaseService):
             task, task_id, agent, permissions, notes
         )
 
-        escalated = await self.escalate_to_ceo(task_id, agent.role.value, notes)
+        escalated = await self.escalate_to_ceo(
+            task_id, agent.role.value, notes, actor_agent_id=agent.agent_id
+        )
         if not escalated:
             raise ValidationError(
                 "Cannot escalate to CEO - task must be in awaiting_pm_review status"
@@ -8423,7 +8469,13 @@ class TaskService(BaseService):
         return await self._apply_pre_block_restore(task, restored_status)
 
     async def _apply_pre_block_restore(
-        self, task: TaskTable, restored_status: TaskStatus
+        self,
+        task: TaskTable,
+        restored_status: TaskStatus,
+        *,
+        actor_id: str | UUID | None = None,
+        actor_role: str | None = None,
+        admin_override: bool = False,
     ) -> TaskTable:
         """Restore a blocked task to its snapshotted status + owner.
 
@@ -8431,13 +8483,58 @@ class TaskService(BaseService):
         emits the audit explicitly, applies the branchless guard legacy
         unblock() relies on, restores ownership from the snapshot, and clears
         the pre-block snapshot fields.
+
+        When reached from ``admin_set_status`` (``admin_override=True``) the
+        admin caller's ``actor_id``/``actor_role`` stamp the audit row — the
+        re-owning of the task must record WHO triggered it, not the restored
+        owner — and a ``task.admin_override`` row is emitted so the override is
+        distinguishable from an in-band ``unblock(restore=True)`` (#2176). The
+        in-band unblock path passes no actor and keeps the legacy attribution
+        (the restored owner) with no override row.
         """
-        # A task with no branch cannot resume in_progress — the dispatcher
-        # refuses a branchless in_progress task and loops — so divert it to
-        # pending, exactly as legacy unblock() does.
+        # Apply the snapshotted status/owner restore (a branchless in_progress
+        # diverts to pending — the dispatcher refuses a branchless in_progress
+        # task and loops) and capture the pre-restore status + restored owner
+        # for the audit. Factored out to keep this method under the complexity
+        # gate.
+        pre_status, restored_status, restored_owner = self._restore_block_ownership(
+            task, restored_status
+        )
+        await self.session.flush()
+        # This restore path sets the status directly (bypassing the strict
+        # transition validator), so emit the audit explicitly — no status
+        # change may skip the audit log. Attribute to the admin actor when
+        # present (admin_set_status); else the restored owner (in-band unblock).
+        self._emit_status_transition_audit(
+            task,
+            from_status=pre_status,
+            to_status=restored_status.value,
+            agent_role=actor_role,
+            audit_agent_id=actor_id if actor_id is not None else restored_owner,
+        )
+        if admin_override:
+            self._emit_admin_override_audit(
+                task, pre_status, restored_status, actor_id, actor_role
+            )
+        if (
+            restored_status == TaskStatus.NEEDS_REVISION
+            and pre_status != TaskStatus.NEEDS_REVISION.value
+        ):
+            task.revision_count = max((task.revision_count or 1) - 1, 0)
+        return task
+
+    def _restore_block_ownership(
+        self, task: TaskTable, restored_status: TaskStatus
+    ) -> tuple[str, TaskStatus, Any]:
+        """Apply the snapshotted status/owner restore; return (pre_status,
+        diverted_restored_status, restored_owner).
+
+        A branchless in_progress diverts to pending (the dispatcher refuses a
+        branchless in_progress task and loops). Re-owns from the snapshot and
+        clears the pre-block snapshot fields.
+        """
         if restored_status == TaskStatus.IN_PROGRESS and not task.branch_name:
             restored_status = TaskStatus.PENDING
-
         pre_status = (
             task.status.value
             if isinstance(task.status, TaskStatus)
@@ -8453,25 +8550,45 @@ class TaskService(BaseService):
         task.pre_block_metadata = None
         task.blocker_resolver_type = None
         task.blocker_raised_by = None
-        await self.session.flush()
-        # This restore path sets the status directly (bypassing the strict
-        # transition validator), so emit the audit explicitly — no status
-        # change may skip the audit log. A restore to a snapshotted
-        # needs_revision is the same rework cycle resuming, not a fresh
-        # rejection, so undo the bump the chokepoint applied above.
-        self._emit_status_transition_audit(
-            task,
-            from_status=pre_status,
-            to_status=restored_status.value,
-            agent_role=None,
-            audit_agent_id=restored_owner,
+        return pre_status, restored_status, restored_owner
+
+    def _emit_admin_override_audit(
+        self,
+        task: TaskTable,
+        pre_status: str,
+        restored_status: TaskStatus,
+        actor_id: str | UUID | None,
+        actor_role: str | None,
+    ) -> None:
+        """#2176: an admin-triggered restore is an explicit override past the
+        lifecycle gate — stamp it as such so the re-owning is traceable to the
+        admin, independent of the force flag (runs with force=false because
+        pending/in_progress aren't hatch destinations).
+        """
+        from roboco.db.tables import AuditLogTable
+
+        agent_uuid: UUID | None = None
+        if actor_id is not None:
+            try:
+                agent_uuid = UUID(str(actor_id))
+            except (ValueError, AttributeError):
+                agent_uuid = None
+        self.session.add(
+            AuditLogTable(
+                event_type="task.admin_override",
+                agent_id=agent_uuid,
+                target_type="task",
+                target_id=task.id,
+                severity="warning",
+                details={
+                    "from_status": pre_status,
+                    "to_status": restored_status.value,
+                    "agent_role": actor_role,
+                    "forced": False,
+                    "restore": True,
+                },
+            )
         )
-        if (
-            restored_status == TaskStatus.NEEDS_REVISION
-            and pre_status != TaskStatus.NEEDS_REVISION.value
-        ):
-            task.revision_count = max((task.revision_count or 1) - 1, 0)
-        return task
 
     async def cell_pm_complete(
         self,

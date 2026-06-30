@@ -6,12 +6,16 @@ token-only, DB-free, no role assertion — the a2a router serves every role).
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from roboco.agents_config import issue_agent_token
+from roboco.api.deps import get_agent_context
 from roboco.api.routes.a2a import router as a2a_router
+from roboco.models import AgentRole, Team
+from roboco.models.permissions import AgentContext
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -38,6 +42,21 @@ def _message_body() -> dict:
 async def a2a_client() -> AsyncIterator[AsyncClient]:
     app = FastAPI()
     app.include_router(a2a_router, prefix="/api/a2a")
+
+    # /message/send resolves the authenticated caller's slug via
+    # get_agent_context (a DB lookup) to use as the responder (#116). This is a
+    # DB-free unit test of the token GATE + the route body, so stub the agent
+    # context — the gate (require_any_authenticated_agent) still runs real and
+    # 401s on a missing/forged token before this dependency resolves.
+    async def _stub_agent_context() -> AgentContext:
+        return AgentContext(
+            agent_id=UUID(_AGENT_ID),
+            role=AgentRole.DEVELOPER,
+            team=Team.BACKEND,
+            slug="dev",
+        )
+
+    app.dependency_overrides[get_agent_context] = _stub_agent_context
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:

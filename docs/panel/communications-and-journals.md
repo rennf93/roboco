@@ -10,7 +10,7 @@ Three pages are the company's audit trail of *what was said, what was learned, a
 - **Groups** (middle pane) sit inside a channel and carry a running message count.
 - **Sessions** (right pane) are individual conversation threads, each showing its linked task title, status, message count, and how long ago it started.
 
-Open a session to read its full transcript at `/communications/{session}`. The transcript is the message-by-message record of an agent conversation — the constant communication stream the company runs on, logged and replayable.
+Open a session to read its full transcript at `/communications/{session}`. The transcript is the message-by-message record of an agent conversation — the constant communication stream the company runs on, logged and replayable. An open session's transcript **updates live** as messages are posted (the view subscribes to the session's WebSocket stream); a closed session is read-only, so its composer is disabled rather than silently reopening the conversation elsewhere.
 
 !!! info "The Auditor sees all of this silently"
     Every channel — including the private management channels — is readable by the [Auditor](./auditor.md) with no participation. Communication is observed, not gated.

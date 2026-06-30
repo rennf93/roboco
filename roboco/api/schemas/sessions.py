@@ -149,6 +149,34 @@ def session_to_response(session: Any) -> SessionResponse:
     )
 
 
+def session_to_response_with_links(session: Any) -> SessionResponse:
+    """SessionTable → SessionResponse including task_links.
+
+    Used by the single-session read (GET /sessions/{id}); requires the
+    session's ``task_links`` (and each link's ``task``) to be eager-loaded.
+    """
+    return SessionResponse(
+        id=require_uuid(session.id),
+        group_id=require_uuid(session.group_id),
+        status=session.status,
+        scope=session.scope,
+        message_count=session.message_count,
+        total_content_length=session.total_content_length,
+        started_at=session.started_at,
+        last_activity_at=session.last_activity_at,
+        closed_at=session.closed_at,
+        task_links=[
+            SessionTaskInfo(
+                task_id=require_uuid(link.task_id),
+                task_title=link.task.title if link.task else None,
+                is_primary=link.is_primary,
+                relationship_type=link.relationship_type,
+            )
+            for link in session.task_links
+        ],
+    )
+
+
 def link_to_response(link: Any) -> SessionTaskLinkResponse:
     """SessionTaskTable → SessionTaskLinkResponse."""
     return SessionTaskLinkResponse(

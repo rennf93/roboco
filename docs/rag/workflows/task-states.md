@@ -76,7 +76,8 @@ backlog → pending (a PM activates the task during `triage`)
 | `awaiting_pm_review → awaiting_ceo_approval` | cell_pm, main_pm (parent tasks only) |
 | `awaiting_ceo_approval → completed` | ceo only |
 | `awaiting_ceo_approval → needs_revision` | ceo only |
-| `any → cancelled` | cell_pm, main_pm, ceo |
+| `awaiting_ceo_approval → cancelled` | ceo only |
+| `any other non-terminal → cancelled` | cell_pm, main_pm, ceo |
 
 ## CEO Approval Notes
 

@@ -4626,11 +4626,20 @@ class AgentOrchestrator:
         """
         from roboco.db.base import get_session_factory
         from roboco.services.task import TaskService
-        from roboco.utils.converters import require_uuid
+        from roboco.utils.converters import InvalidIdentifierError, require_uuid
 
         try:
             task_id = require_uuid(task_id_str)
-        except Exception:
+        except InvalidIdentifierError as exc:
+            # A malformed task_id_str is a bad identifier, not a transient
+            # failure — log it so the drop is visible instead of swallowed,
+            # then no-op (nothing to release). Other exceptions still fall
+            # through to the broad catch below (#25).
+            logger.warning(
+                "stopped agent claim had malformed task id",
+                task_id_str=task_id_str,
+                error=str(exc),
+            )
             return
         try:
             factory = get_session_factory()
@@ -6828,8 +6837,14 @@ Start by:
 
     @staticmethod
     def _repo_key(git_url: str) -> str:
-        """Normalized repo identity (case/.git/trailing-slash insensitive)."""
-        return git_url.lower().rstrip("/").removesuffix(".git")
+        """Normalized repo identity (case/.git/trailing-slash insensitive).
+
+        Delegates to :func:`roboco.utils.converters.repo_key` so the dedupe
+        queries and the poll-set collapse share one source of truth (#1267).
+        """
+        from roboco.utils.converters import repo_key
+
+        return repo_key(git_url)
 
     @classmethod
     def _projects_one_per_repo(cls, projects: list[Any]) -> list[Any]:

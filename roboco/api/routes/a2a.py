@@ -23,7 +23,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 from sse_starlette import EventSourceResponse
 
-from roboco.api.deps import CurrentAgentSlug, DbSession
+from roboco.api.deps import (
+    CurrentAgentContext,
+    CurrentAgentSlug,
+    DbSession,
+    require_pm_or_above,
+)
 from roboco.api.routes.v1._role_dep import require_any_authenticated_agent
 from roboco.api.schemas.a2a_chat import (
     ConversationCloseRequest,
@@ -116,6 +121,7 @@ async def get_agent_card(
 async def send_message(
     request: SendMessageRequest,
     db: DbSession,
+    agent: CurrentAgentContext,
 ) -> dict[str, Any]:
     """
     Send an A2A message (fallback endpoint).
@@ -149,10 +155,15 @@ async def send_message(
     is_response = metadata.get("is_response", False)
 
     if is_response:
-        # Update existing task with response message
-        responder = metadata.get("from_agent")
+        # The responder is the AUTHENTICATED caller — never a client-supplied
+        # metadata.from_agent, which any caller could spoof to impersonate
+        # anyone (e.g. from_agent='ceo') in the task's notes and in the
+        # spawn/notification routed back to the original requester (#116).
+        responder = agent.slug
         try:
-            await service.update_task_from_message(task_id_str, message, responder)
+            await service.update_task_from_message(
+                task_id_str, message, responder_agent=responder
+            )
         except ValueError as e:
             error_msg = str(e)
             if "Invalid task ID" in error_msg:
@@ -420,23 +431,32 @@ async def list_tasks(
     )
 
 
-@router.post("/tasks/{task_id}/cancel")
+@router.post(
+    "/tasks/{task_id}/cancel",
+    dependencies=[require_any_authenticated_agent],
+)
 async def cancel_task(
     task_id: str,
     db: DbSession,
+    agent: CurrentAgentContext,
     request: CancelTaskRequest | None = None,
 ) -> A2ATask:
     """
     Cancel an A2A task.
 
-    Transitions the task to cancelled state.
+    Transitions the task to cancelled state. PM/management-only — the service
+    cascades the cancel to all non-terminal descendants, and the lifecycle rule
+    (Any -> cancelled: PM roles only) must hold on this path too (#423).
     """
+    require_pm_or_above(agent.role, action="cancel a task via A2A")
     service = A2AService(db)
 
     try:
         task = await service.cancel_task(
             task_id=task_id,
             reason=request.reason if request else None,
+            agent_role=agent.role.value,
+            actor_slug=agent.slug,
         )
     except ValueError as e:
         error_msg = str(e)

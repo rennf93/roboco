@@ -346,7 +346,7 @@ Each agent gets a **spawn manifest** at `/app/tool-manifest.json` listing the ve
 | documenter    | `give_me_work`, `claim_doc_task`, `i_documented`, `i_am_blocked`, `resume`, `unclaim`             |
 | cell_pm       | `give_me_work`, `i_will_plan`, `delegate`, `complete`, `submit_up`, `triage`, `unblock`, `escalate_up`, `reassign`, `resume`, `unclaim` |
 | main_pm       | `give_me_work`, `i_will_plan`, `delegate`, `complete`, `submit_root`, `triage`, `triage_all`, `unblock`, `escalate_up`, `escalate_to_ceo`, `resume`, `unclaim` |
-| pr_reviewer   | `give_me_work`, `claim_pr_review`, `post_pr_review` (inbound external/fork PRs), `claim_gate_review`, `pr_pass`, `pr_fail` (in-path assembled-PR gate) |
+| pr_reviewer   | `give_me_work`, `claim_pr_review`, `post_pr_review` (inbound external/fork PRs), `claim_gate_review`, `pr_pass`, `pr_fail` (in-path assembled-PR gate), `unclaim` |
 | product_owner | `triage`, `escalate_to_ceo`                                                                      |
 | head_marketing| `triage`, `escalate_to_ceo`                                                                      |
 | auditor       | `triage` (read-only — no `say`/`dm`)                                                             |
@@ -501,10 +501,10 @@ The orchestrator exposes WebSocket endpoints under `/ws` (router in `roboco/api/
 
 | Endpoint | Purpose |
 |----------|---------|
-| `/ws/channels/{id}`, `/ws/agents/{id}`, `/ws/sessions/{id}`, `/ws/notifications/{id}` | Per-resource live streams |
+| `/ws/channels/{id}`, `/ws/agents/{id}`, `/ws/sessions/{id}`, `/ws/notifications/{id}` | Per-resource live streams — `/ws/channels` + `/ws/sessions` carry live `message.new` frames (from `EventType.MESSAGE_SENT`), so a session transcript updates without a manual refresh |
 | `/ws/system` | Operator/system-wide stream (no per-agent keying) — the rate-limit lifecycle (`RATE_LIMIT_HIT` / `RATE_LIMIT_LIFTED`) and live usage (`USAGE_SNAPSHOT`, pushed to the usage dashboard) |
 
-Server-side events reach these sockets through `roboco/api/websocket_bridge.py`, which subscribes to the `StreamEventBus` and forwards each event to the matching connections. To add a new live event: define an `EventType` (dotted value), publish it to the bus, add a `_handle_*` forwarder in `websocket_bridge`, and consume it on the panel via the `useWebSocket("/<endpoint>", …)` hook — do not stand up a parallel endpoint or client stack.
+Server-side events reach these sockets through `roboco/api/websocket_bridge.py`, which subscribes to the `StreamEventBus` and forwards each event to the matching connections. To add a new live event: define an `EventType` (dotted value), publish it to the bus, add a `_handle_*` forwarder in `websocket_bridge`, and consume it on the panel via the `useWebSocket("/<endpoint>", …)` hook — do not stand up a parallel endpoint or client stack. `MESSAGE_SENT` is the worked example: `send_message` publishes it, `_handle_message_event` fans it out to `/ws/sessions/{id}` + `/ws/channels/{id}` as a `message.new` frame, and the panel's `useSessionStream` consumes it.
 
 ### Rate limiting & usage
 

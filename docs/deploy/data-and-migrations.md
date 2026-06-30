@@ -65,7 +65,7 @@ This is the one gotcha that bites operators who try to reset state by hand. Seve
 
 If you write or review custom migrations:
 
-- **Revision-id length is capped at 32 characters.** PostgreSQL stores `alembic_version.version_num` as `VARCHAR(32)`. A longer id breaks a live `upgrade` even though the test suite (which renders offline / uses `create_all`) never catches it. The chain currently has **44 revisions** (45 files — revision `026` is split into two consecutive steps); the head is `044_convention_findings`, and the longest id in the tree is `015_drop_task_execution_outputs` at 31 characters, deliberately just under the limit.
+- **Revision-id length is capped at 32 characters.** PostgreSQL stores `alembic_version.version_num` as `VARCHAR(32)`. A longer id breaks a live `upgrade` even though the test suite (which renders offline / uses `create_all`) never catches it. The chain currently has **54 revisions** (55 files — revision `026` is split into two consecutive steps); the head is `054_a2a_message_skill`, and the longest id in the tree is `015_drop_task_execution_outputs` at 31 characters, deliberately just under the limit.
 - **The chain is linear.** Every revision has a single `down_revision`; there are no branches or merges to reconcile.
 - **Models, tables, and migrations must stay in sync.** A Pydantic model in `roboco/models/`, its ORM table in `roboco/db/tables.py`, and the migration that creates the column are three layers that move together.
 

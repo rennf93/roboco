@@ -825,19 +825,22 @@ async def test_cancel_with_branch_and_work_session(
 async def test_cancel_descendants_cascades_for_authorized_pm(
     task_setup: dict, db_session: AsyncSession
 ) -> None:
-    """A `cell_pm` cancel cascades through descendants in any non-terminal state.
+    """A `cell_pm` cancel cascades through descendants in any PM-cancelable
+    non-terminal state.
 
-    Predecessor test asserted CEO-only authority over
-    `awaiting_ceo_approval` cancels (legacy table behavior). The
-    canonical spec (`roboco.foundation.policy.lifecycle`) authorizes
+    The canonical spec (`roboco.foundation.policy.lifecycle`) authorizes
     cancel from every non-terminal source for {CELL_PM, MAIN_PM, CEO}
-    uniformly, so a PM cancel now sweeps the whole subtree — including
-    descendants parked in `awaiting_ceo_approval`.
+    EXCEPT `awaiting_ceo_approval`, which is CEO-only (a PM cancelling a
+    task the CEO is reviewing would bypass the human CEO gate). So a PM
+    cancel sweeps the whole subtree of PM-cancelable descendants — here a
+    child parked in `in_progress`. A descendant in `awaiting_ceo_approval`
+    is the refuse case, covered by
+    `test_cancel_refuses_when_descendant_role_forbidden`.
     """
     svc = task_setup["svc"]
     parent = await svc.create(_req(task_setup))
     child = await svc.create(_req(task_setup, parent_task_id=parent.id))
-    child.status = TaskStatus.AWAITING_CEO_APPROVAL
+    child.status = TaskStatus.IN_PROGRESS
     await db_session.flush()
     out = await svc.cancel(parent.id, agent_role="cell_pm")
     assert out is not None

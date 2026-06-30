@@ -23,6 +23,7 @@ from roboco.api.schemas.sessions import (
     SessionTaskLinksResponse,
     link_to_response,
     session_to_response,
+    session_to_response_with_links,
 )
 from roboco.models.session import (
     SessionForTasksCreate,
@@ -103,15 +104,19 @@ async def list_sessions(
 )
 async def get_session(
     db: DbSession,
-    _agent_id: CurrentAgentId,
+    agent_id: CurrentAgentId,
     session_id: UUID,
 ) -> SessionResponse:
     messaging = get_messaging_service(db)
     try:
-        session_row = await messaging.get_session_or_raise(session_id)
+        session_row = await messaging.get_session_with_links_for_agent(
+            session_id, agent_id
+        )
     except NotFoundError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
-    return session_to_response(session_row)
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e
+    return session_to_response_with_links(session_row)
 
 
 @router.post(
@@ -329,13 +334,15 @@ async def unlink_task_from_session(
 )
 async def get_tasks_for_session(
     db: DbSession,
-    _agent_id: CurrentAgentId,
+    agent_id: CurrentAgentId,
     session_id: UUID,
 ) -> list[SessionTaskLinkResponse]:
     messaging = get_messaging_service(db)
     try:
-        await messaging.get_session_or_raise(session_id)
+        await messaging.require_session_read_access(session_id, agent_id)
     except NotFoundError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e
     links = await messaging.get_tasks_for_session(session_id)
     return [link_to_response(link) for link in links]

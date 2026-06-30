@@ -40,11 +40,17 @@ router = APIRouter()
 )
 async def list_messages(
     db: DbSession,
-    _agent_id: CurrentAgentId,
+    agent_id: CurrentAgentId,
     params: Annotated[ListMessagesParams, Depends()],
 ) -> MessageListResponse:
-    """List messages in a session (session existence is checked in the service)."""
+    """List messages in a session (read access is checked in the service)."""
     messaging = get_messaging_service(db)
+    try:
+        await messaging.require_session_read_access(params.session_id, agent_id)
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e
     try:
         before_cursor = (
             MessageCursor(params.before, params.before_id)

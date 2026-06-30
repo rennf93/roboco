@@ -50,6 +50,8 @@ class ReleaseOps(Protocol):
 
     async def is_already_published(self, version: str) -> bool: ...
 
+    async def release_commit_sha(self, version: str) -> str | None: ...
+
     async def apply_version_bumps(
         self, plan: list[str], new_version: str
     ) -> list[str]: ...
@@ -72,7 +74,14 @@ class ReleaseExecutor:
         self._ops = ops
 
     async def execute(self, report: ReleaseReadinessReport) -> ReleaseResult:
-        """Bump → gate → commit/push → CI → publish, aborting on any red step."""
+        """Bump → gate → commit/push → CI → publish, aborting on any red step.
+
+        A half-landed (publish_failed) retry — a prior ``chore(release): {ver}``
+        commit already on the branch but no tag — skips the bump/changelog/gate/
+        commit pipeline (which would duplicate the changelog entry and land a
+        second release commit) and rejoins the shared CI → publish tail on the
+        existing commit.
+        """
         version = report.proposed_version
         if await self._ops.is_already_published(version):
             return ReleaseResult(
@@ -84,38 +93,52 @@ class ReleaseExecutor:
                 detail=f"v{version} is already published; nothing to do.",
             )
 
-        files = await self._ops.apply_version_bumps(report.version_bump_plan, version)
-        await self._ops.write_changelog_entry(report.drafted_changelog)
-
-        if not await self._ops.run_gate():
-            return ReleaseResult(
-                status="gate_failed",
-                version=version,
-                files_changed=files,
-                commit_sha=None,
-                release_url=None,
-                detail="make quality failed — aborted before commit (fail-closed).",
+        # Half-landed detection (publish_failed retry): a prior release commit
+        # on the branch means the pipeline already ran — only the publish step
+        # failed. Re-running it would re-insert the changelog entry (duplicate,
+        # above the already-present heading) and land a SECOND release commit.
+        # Reuse the existing commit and rejoin the shared CI → publish tail.
+        # None when no prior release commit exists (fresh release).
+        existing_sha = await self._ops.release_commit_sha(version)
+        if existing_sha is not None:
+            commit_sha = existing_sha
+            files: list[str] = []
+        else:
+            files = await self._ops.apply_version_bumps(
+                report.version_bump_plan, version
             )
+            await self._ops.write_changelog_entry(report.drafted_changelog)
 
-        try:
-            commit_sha = await self._ops.commit_and_push(version)
-        except RuntimeError as exc:
-            # The ops layer raises RuntimeError on a failed add/commit/push
-            # (gpgsign/pre-commit reject/no-op bump/non-fast-forward push). That
-            # is the correct fail-closed abort at the ops layer; the EXECUTOR
-            # turns it into a structured outcome so the CEO sees the cause
-            # instead of a 500 bubbling out of ``approve``.
-            logger.error("release commit/push failed", error=str(exc)[:300])
-            return ReleaseResult(
-                status="commit_failed",
-                version=version,
-                files_changed=files,
-                commit_sha=None,
-                release_url=None,
-                detail=(
+            if not await self._ops.run_gate():
+                return ReleaseResult(
+                    status="gate_failed",
+                    version=version,
+                    files_changed=files,
+                    commit_sha=None,
+                    release_url=None,
+                    detail="make quality failed — aborted before commit (fail-closed).",
+                )
+
+            try:
+                commit_sha = await self._ops.commit_and_push(version)
+            except RuntimeError as exc:
+                # The ops layer raises RuntimeError on a failed add/commit/push
+                # (gpgsign/pre-commit reject/no-op bump/non-fast-forward push).
+                # That is the correct fail-closed abort at the ops layer; the
+                # EXECUTOR turns it into a structured outcome so the CEO sees
+                # the cause instead of a 500 bubbling out of ``approve``.
+                logger.error("release commit/push failed", error=str(exc)[:300])
+                detail = (
                     f"release commit/push failed — not published (fail-closed): {exc}"
-                )[:280],
-            )
+                )[:280]
+                return ReleaseResult(
+                    status="commit_failed",
+                    version=version,
+                    files_changed=files,
+                    commit_sha=None,
+                    release_url=None,
+                    detail=detail,
+                )
 
         if not await self._ops.wait_for_ci(commit_sha):
             return ReleaseResult(
@@ -238,6 +261,29 @@ class _GitReleaseOps:
         rc, out = await self._git("ls-remote", "--tags", "origin", f"v{version}")
         return rc == 0 and bool(out.strip())
 
+    async def release_commit_sha(self, version: str) -> str | None:
+        """Detect a half-landed release: a ``chore(release): {version}`` commit
+        already on the branch (a publish_failed retry — commit pushed, no tag
+        yet). Returns that commit's sha, or None when the clone is not yet at
+        ``version`` (no bump happened) or no such commit exists.
+
+        The clone is fresh per execute(), so if the working version already
+        equals ``version`` AND the release commit is in history, the pipeline
+        ran in a prior attempt and must not re-run (it would duplicate the
+        changelog entry and land a second release commit).
+        """
+        if self._current_version() != version:
+            return None
+        rc, out = await self._git("log", "-n", "50", "--format=%H%x00%s")
+        if rc != 0:
+            return None
+        wanted = f"chore(release): {version}"
+        for line in out.splitlines():
+            sha, _, subject = line.partition("\x00")
+            if sha and subject.strip() == wanted:
+                return sha.strip()
+        return None
+
     def _current_version(self) -> str:
         text = (self._root / "pyproject.toml").read_text(encoding="utf-8")
         match = re.search(r'^version\s*=\s*"([^"]+)"', text, re.MULTILINE)
@@ -316,7 +362,7 @@ class _GitReleaseOps:
         git = get_git_service(self._session)
         for _ in range(_CI_MAX_POLLS):
             ci = await git.get_latest_ci_conclusion(
-                self._slug, workflow=self._ci_workflow
+                self._slug, workflow=self._ci_workflow, head_sha=commit_sha
             )
             if ci and ci.get("head_sha") == commit_sha:
                 conclusion = (ci.get("conclusion") or "").lower()
@@ -378,6 +424,20 @@ def _insert_changelog_entry(existing: str, entry: str) -> str:
     return existing.rstrip() + "\n\n" + block
 
 
+def _resolve_release_ci_workflow() -> str:
+    """The release CI gate's workflow, decoupled from self_heal_ci_workflow.
+
+    ``self_heal_ci_workflow`` documents an empty-string mode for single-workflow
+    repos; inheriting that here would degrade the release fail-closed gate to
+    the all-workflows mode ``_fetch_latest_ci_run`` itself flags as unreliable
+    (a green secondary workflow masking a red primary CI). The release gate
+    always uses a NAMED workflow — empty falls back to ``ci.yml``, never None.
+    """
+    from roboco.config import settings
+
+    return settings.release_ci_workflow or "ci.yml"
+
+
 async def get_release_executor(session: AsyncSession) -> ReleaseExecutor:
     """Build a ReleaseExecutor with a production ops over a fresh writable clone."""
     from roboco.config import settings
@@ -399,7 +459,7 @@ async def get_release_executor(session: AsyncSession) -> ReleaseExecutor:
         default_branch=default_branch,
         root=root,
         auth_url=auth_url,
-        ci_workflow=(settings.self_heal_ci_workflow or None),
+        ci_workflow=_resolve_release_ci_workflow(),
     )
     return ReleaseExecutor(_GitReleaseOps(session, ctx))
 

@@ -527,6 +527,13 @@ class A2AChatMessage(RobocoBase):
     message_kind: A2AMessageKind = Field(
         default=A2AMessageKind.MESSAGE, description="Type of message"
     )
+    # The capability the sender is exercising/requests of the receiver (e.g.
+    # ``code_review``). Recorded on the row so the receiver (and the inbox)
+    # learns which skill a directed A2A is about — callers pass ``skill=`` on
+    # ``send()`` expecting it to reach the receiver, not be dropped.
+    skill: str | None = Field(
+        default=None, description="Capability this A2A concerns, if any"
+    )
 
     # Threading
     response_to_id: str | None = Field(

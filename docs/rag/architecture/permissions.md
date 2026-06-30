@@ -34,7 +34,7 @@ What each role can do in the system.
 
 Notes (verified against `roboco/foundation/policy/lifecycle.py`):
 - **Create / Assign** (`create_subtask`, `delegate`) are PM-only: `cell_pm` and `main_pm`. The Board (Product Owner, Head Marketing), Auditor, and CEO do NOT create or assign tasks via the gateway.
-- **Cancel** is allowed to PM roles + CEO (`cell_pm`, `main_pm`, `ceo`). The Board and Auditor CANNOT cancel.
+- **Cancel** is allowed to PM roles + CEO (`cell_pm`, `main_pm`, `ceo`) for all non-terminal states **except** `awaiting_ceo_approval → cancelled`, which is **CEO-only** (a PM cannot cancel a task already in the CEO's approval queue — that would bypass the human gate). The Board and Auditor CANNOT cancel.
 - **Complete** (final approve/merge) is PM-only (`cell_pm`, `main_pm`). The CEO acts only on tasks escalated to `awaiting_ceo_approval`.
 - **Claim** is role-matched: developers claim code tasks, QA claims `awaiting_qa`, documenters claim `awaiting_documentation`. PMs can claim the planning/coordination work assigned to them.
 
@@ -79,10 +79,12 @@ The Board (`product_owner`, `head_marketing`), the Auditor, and the CEO do NOT c
 
 ## Cancellation Roles
 
-These roles can cancel tasks (the `cancel` action's `allowed_roles` in `lifecycle.py` = PM roles + CEO):
+These roles can cancel tasks from most non-terminal states (`cancel` action in `lifecycle.py`):
 - `cell_pm`
 - `main_pm`
 - `ceo`
+
+Exception: `awaiting_ceo_approval → cancelled` is **CEO-only** (`cell_pm` and `main_pm` are excluded from that source state).
 
 Note: the Board and Auditor CANNOT cancel (observe/approve only).
 

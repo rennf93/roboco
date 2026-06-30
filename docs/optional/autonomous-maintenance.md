@@ -14,7 +14,7 @@ On each pass (`ROBOCO_CI_WATCH_INTERVAL_SECONDS`, default 1800s) the engine chec
 
 - A **missing CI signal** is treated as "unknown", never a false green — an absent run never masks a real failure.
 - One repo's **GitHub error never aborts the sweep** — the engine moves on to the next project.
-- Origination is **bounded and deduped per repo**: a monorepo's cell-projects share one fix task, and the caps below stop a flapping CI from flooding the backlog.
+- Origination is **bounded and deduped per `(repo, workflow)`**: a same-workflow monorepo's cell-projects share one fix task, while two red workflows on one repo each get their own; the caps below stop a flapping CI from flooding the backlog.
 
 ```mermaid
 flowchart TD

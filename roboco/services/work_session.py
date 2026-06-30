@@ -13,6 +13,7 @@ from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.db.tables import ProjectTable, TaskTable, WorkSessionTable
+from roboco.models import Team
 from roboco.models.work_session import (
     WorkSessionCreate,
     WorkSessionStatus,
@@ -142,6 +143,20 @@ class WorkSessionService(BaseService):
         if not work_session:
             raise NotFoundError("WorkSession", str(session_id))
         return work_session
+
+    async def task_team_for_session(self, session_id: UUID) -> Team | None:
+        """Return the team (cell) of the task a session belongs to.
+
+        Used by the route layer's PM cell-ownership check: a cell PM may only
+        merge the PR of a session whose task lives in their own cell. None when
+        the session or its task is missing.
+        """
+        result = await self.session.execute(
+            select(TaskTable.team)
+            .join(WorkSessionTable, WorkSessionTable.task_id == TaskTable.id)
+            .where(WorkSessionTable.id == session_id)
+        )
+        return result.scalar_one_or_none()
 
     async def update(
         self,

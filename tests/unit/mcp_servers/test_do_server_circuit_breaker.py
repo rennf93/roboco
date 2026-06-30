@@ -273,13 +273,15 @@ def test_verb_extracted_from_path(do_module: types.ModuleType) -> None:
     assert sdk_body["verb"] == "commit"
 
 
-def test_dict_shaped_error_does_not_crash(do_module: types.ModuleType) -> None:
+def test_dict_shaped_error_normalized_to_envelope(do_module: types.ModuleType) -> None:
     """A RobocoError.to_dict()-shaped response must not TypeError the breaker.
 
     A dict-shaped `error` is a retry-storm-worthy rejection (the orchestrator's
     exception handlers surface this shape on 4xx/5xx), so the breaker must count
-    it via the classifier rather than passing it through silently. The original
-    dict payload still reaches the agent (the breaker only substitutes when open).
+    it via the classifier. The dict body is normalized to an Envelope wire format
+    (#232): the agent receives a string `error` kind (not the dict, which violates
+    the Envelope contract) with the message lifted and a remediate. The breaker
+    still counts it (the synthesized string kind is in the counted set).
     """
     factory, captured = _make_client(
         orchestrator_response={
@@ -299,13 +301,16 @@ def test_dict_shaped_error_does_not_crash(do_module: types.ModuleType) -> None:
             "circuit_envelope": None,
         },
     )
-    # No TypeError; the dict-shaped rejection is forwarded to the SDK.
+    # No TypeError; the dict-shaped rejection is normalized + forwarded to the SDK.
     with patch("httpx.Client", side_effect=factory):
         result = do_module.dm(recipient="qa-all", text="x")
-    # Original dict payload still reaches the agent (breaker not open).
-    assert isinstance(result["error"], dict)
-    assert result["error"]["code"] == "A2A_ACCESS_DENIED"
-    # SDK breaker MUST now be called so a storm of these counts.
+    # Normalized to a string-kind Envelope — the dict `error` never reaches the
+    # agent (#232). A2A_ACCESS_DENIED maps to not_authorized (exact-code, #161).
+    assert result["error"] == "not_authorized"
+    assert result["message"] == "be-qa cannot A2A with qa-all"
+    assert isinstance(result["remediate"], str) and result["remediate"]
+    assert result["missing"] == []
+    # SDK breaker MUST still be called so a storm of these counts.
     sdk_calls = [(url, body) for url, body in captured if "test-sdk" in url]
     assert len(sdk_calls) == 1
     # ACCESS_DENIED maps to the not_authorized counted kind.
@@ -460,3 +465,123 @@ def test_missing_route_404_returns_envelope_and_counts(
     _, sdk_body = sdk_calls[0]
     assert sdk_body is not None
     assert sdk_body["rejection_kind"] == "invalid_state"
+
+
+# ---------------------------------------------------------------------------
+# #232: a non-404 JSON exception-handler body (dict `error` / 422 `detail`)
+# must be normalized to an Envelope wire format before reaching the agent.
+# Mirrors flow_server.
+# ---------------------------------------------------------------------------
+
+
+def test_422_detail_normalized_to_incomplete_input_envelope(
+    do_module: types.ModuleType,
+) -> None:
+    """A 422 body (`{"detail": [...]}`, no `error`) is normalized to an Envelope
+    with `error='incomplete_input'`, a non-empty `remediate`, `missing=[]`, and
+    the raw validation `detail` preserved. The breaker still counts it. Mirrors
+    flow_server (#232)."""
+    detail_body = [
+        {"loc": ["body", "text"], "msg": "field required", "type": "missing"}
+    ]
+    factory, captured = _make_client(
+        orchestrator_response={"detail": detail_body, "body": None},
+        sdk_response={
+            "verb": "note",
+            "task_id": None,
+            "attempts": 1,
+            "limit": 3,
+            "window_seconds": 60,
+            "open": False,
+            "circuit_envelope": None,
+        },
+    )
+    with patch("httpx.Client", side_effect=factory):
+        result = do_module.note(text="")
+    assert result["error"] == "incomplete_input"
+    assert isinstance(result["remediate"], str) and result["remediate"]
+    assert result["missing"] == []
+    assert result["detail"] == detail_body
+    sdk_calls = [(url, body) for url, body in captured if "test-sdk" in url]
+    assert len(sdk_calls) == 1
+    assert sdk_calls[0][1]["rejection_kind"] == "incomplete_input"
+
+
+def test_dict_internal_error_normalized_to_invalid_state_envelope(
+    do_module: types.ModuleType,
+) -> None:
+    """A dict-shaped INTERNAL_ERROR (generic_exception_handler) is normalized to
+    `error='invalid_state'` with the message lifted + a remediate. Mirrors
+    flow_server (#232)."""
+    factory, captured = _make_client(
+        orchestrator_response={
+            "error": {
+                "code": "INTERNAL_ERROR",
+                "message": "An internal error occurred",
+                "details": {"correlation_id": "abc"},
+            }
+        },
+        sdk_response={
+            "verb": "commit",
+            "task_id": None,
+            "attempts": 1,
+            "limit": 3,
+            "window_seconds": 60,
+            "open": False,
+            "circuit_envelope": None,
+        },
+    )
+    with patch("httpx.Client", side_effect=factory):
+        result = do_module.commit(message="[abc12345] a valid commit message here")
+    assert result["error"] == "invalid_state"
+    assert result["message"] == "An internal error occurred"
+    assert isinstance(result["remediate"], str) and result["remediate"]
+    assert result["missing"] == []
+    sdk_calls = [(url, body) for url, body in captured if "test-sdk" in url]
+    assert len(sdk_calls) == 1
+    assert sdk_calls[0][1]["rejection_kind"] == "invalid_state"
+
+
+# ---------------------------------------------------------------------------
+# #359: the circuit_open substitution lifts task_id/correlation_id from the
+# original rejection to the top-level envelope. Mirrors flow_server.
+# ---------------------------------------------------------------------------
+
+
+def test_circuit_open_lifts_task_id_and_correlation_id(
+    do_module: types.ModuleType,
+) -> None:
+    """The SDK's circuit_envelope omits task_id/correlation_id; the substitution
+    lifts them from the original rejection to the top level so the agent's
+    envelope contract and ops audit-join still work. Mirrors flow_server (#359)."""
+    circuit_env = {
+        "error": "circuit_open",
+        "message": "verb 'note' rejected too often (3 in 60s)",
+        "remediate": "fix the missing fields once, then retry",
+        "missing": [],
+    }
+    factory, _ = _make_client(
+        orchestrator_response={
+            "error": "incomplete_input",
+            "missing": ["context"],
+            "remediate": "fill context",
+            "task_id": "T7",
+            "correlation_id": "C7",
+        },
+        sdk_response={
+            "verb": "note",
+            "task_id": "T7",
+            "attempts": 3,
+            "limit": 3,
+            "window_seconds": 60,
+            "open": True,
+            "circuit_envelope": circuit_env,
+        },
+    )
+    with patch("httpx.Client", side_effect=factory):
+        result = do_module.note(text="x", scope="decision")
+    assert result["error"] == "circuit_open"
+    assert result["task_id"] == "T7"
+    assert result["correlation_id"] == "C7"
+    assert result["inner"]["error"] == "incomplete_input"
+    assert result["inner"]["task_id"] == "T7"

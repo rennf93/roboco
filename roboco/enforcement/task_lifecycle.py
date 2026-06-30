@@ -84,8 +84,10 @@ _LEGACY_OPERATIONAL_EDGES: dict[Status, frozenset[Status]] = {
         }
     ),
     # Self-fail out of verifying (QA / PM only — role gate enforced
-    # in ROLE_RESTRICTED_TRANSITIONS below).
-    Status.VERIFYING: frozenset({Status.NEEDS_REVISION, Status.AWAITING_DOCUMENTATION}),
+    # in ROLE_RESTRICTED_TRANSITIONS below). The canonical exit is submit_qa
+    # -> awaiting_qa -> (qa_pass) -> awaiting_documentation; a direct
+    # verifying->awaiting_documentation edge would bypass the QA review hop.
+    Status.VERIFYING: frozenset({Status.NEEDS_REVISION}),
     # QA can park a task as blocked while waiting on dev clarification.
     Status.AWAITING_QA: frozenset({Status.BLOCKED}),
     # PM claim + PM reject path on review queue.
@@ -245,12 +247,23 @@ def is_terminal_state(status: str) -> bool:
 
 
 def is_waiting_state(status: str) -> bool:
-    """True if ``status`` parks an agent waiting on someone else."""
+    """True if ``status`` parks a task waiting on someone else.
+
+    Covers the gate/hold states (blocked, paused, the QA/doc/PR/PM/CEO review
+    queues) plus the pre-work queue states: ``pending`` (waiting for an agent
+    to claim) and ``backlog`` (waiting on PM setup/activation). Together with
+    :func:`is_active_state` and :func:`is_terminal_state` this partitions the
+    whole Status enum — see the coverage-invariant test in
+    tests/unit/enforcement/test_task_lifecycle.py.
+    """
     return status in (
+        "backlog",
+        "pending",
         "blocked",
         "paused",
         "awaiting_qa",
         "awaiting_documentation",
+        "awaiting_pr_review",
         "awaiting_pm_review",
         "awaiting_ceo_approval",
     )

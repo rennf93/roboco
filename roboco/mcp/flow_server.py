@@ -127,6 +127,92 @@ def _classify_dict_error_code(code: str) -> str | None:
     return "invalid_state"
 
 
+def _remediate_for_kind(kind: str, verb: str) -> str:
+    """A directed recovery hint for a synthesized Envelope kind.
+
+    The orchestrator's exception handlers return a dict `error` with no
+    `remediate`; without a hint the agent has no directed next action and
+    flails/respawn-loops until the breaker trips. This gives each counted kind
+    (and not_found) a one-line remedy that mirrors the string-kind envelopes.
+    """
+    if kind == "not_found":
+        return (
+            "the call targeted a resource that does not exist; re-fetch the"
+            " task state (give_me_work / resume) and retry on a current id;"
+            " do not retry the same id."
+        )
+    if kind == "incomplete_input":
+        return (
+            f"the {verb} call was rejected as incomplete input — re-issue it"
+            f" with the missing/invalid fields (see `detail` for the exact"
+            f" validation errors); do not retry blindly."
+        )
+    if kind == "not_authorized":
+        return (
+            f"you are not authorized for this {verb} action; use delegate /"
+            f" escalate_up, or call i_am_blocked(reason=...) if the gate is"
+            f" genuinely wrong; do not retry the same action."
+        )
+    # invalid_state + any fallback (service/INTERNAL_ERROR).
+    return (
+        f"service error on {verb} — the task may be in the wrong state for"
+        f" this verb. Re-fetch state (resume / give_me_work) and re-issue;"
+        f" call i_am_blocked or i_am_idle if it persists; do not retry blindly."
+    )
+
+
+def _normalize_exception_envelope(
+    payload: dict[str, Any], path: str
+) -> dict[str, Any] | None:
+    """Synthesize an Envelope-wire-format dict from an exception-handler body.
+
+    FastAPI's exception handlers return ``error`` as a DICT
+    (``{code, message, details?}`` from ``roboco_exception_handler`` /
+    ``http_exception_handler`` / ``generic_exception_handler``) or a bare
+    ``detail`` list (``request_validation_handler``, 422) — neither is the
+    Envelope wire format the agent is prompted to trust (string ``error`` kind
+    + ``message`` + ``remediate`` + ``missing``). Returning either raw violates
+    the contract: the agent has no ``remediate``/``next`` and flails until the
+    breaker trips (#232). This lifts the dict/422 body into a real Envelope:
+
+    - dict ``error`` → map ``code`` via :func:`_classify_dict_error_code` to a
+      counted string kind (NOT_FOUND → ``not_found``), lift ``message``, synthesize
+      a ``remediate``, ``missing=[]``, and tuck the original body under
+      ``details`` for correlation traceability.
+    - 422 ``detail`` (no ``error``) → ``error='incomplete_input'`` with the
+      validation ``detail`` preserved so the agent sees WHICH fields failed.
+
+    Returns None when ``payload`` is already a real Envelope (string ``error``
+    or success) so successful/string-kind rejections pass through unchanged.
+    """
+    error = payload.get("error")
+    if isinstance(error, dict):
+        code = str(error.get("code") or "")
+        kind = _classify_dict_error_code(code)
+        if kind is None:
+            kind = "not_found"
+        verb = _verb_from_path(path)
+        message = str(error.get("message") or "") or f"orchestrator error ({code})"
+        return {
+            "error": kind,
+            "message": message,
+            "remediate": _remediate_for_kind(kind, verb),
+            "missing": [],
+            "details": error,
+        }
+    if "detail" in payload and "error" not in payload:
+        # 422 request-validation body ({"detail": [...], "body": ...}).
+        verb = _verb_from_path(path)
+        return {
+            "error": "incomplete_input",
+            "message": f"the {verb} call was rejected as incomplete input",
+            "remediate": _remediate_for_kind("incomplete_input", verb),
+            "missing": [],
+            "detail": payload.get("detail"),
+        }
+    return None
+
+
 def _classify_rejection(payload: dict[str, Any]) -> str | None:
     """Return the breaker kind to forward for this payload, or None.
 
@@ -284,6 +370,14 @@ def _post(path: str, body: dict[str, Any]) -> dict[str, Any]:
             }
     # Outside the orchestrator client context so the SDK call is its own
     # connection — keeps semantics independent and timeouts separated.
+    # A non-404 JSON body that is NOT a real Envelope (dict `error` from an
+    # exception handler, or a 422 `detail` list) is normalized to the Envelope
+    # wire format so the agent gets a string `error` kind + remediate (#232).
+    # The synthesized Envelope still flows through the breaker below — its
+    # string kind is in the counted set, so a 500/422 storm trips it.
+    normalized = _normalize_exception_envelope(payload, path)
+    if normalized is not None:
+        payload = normalized
     return _record_and_check_circuit(path, body, payload)
 
 
@@ -358,6 +452,12 @@ def _record_and_check_circuit(
         # verb failed, and the agent still needs the underlying hint (#60).
         circuit_env: dict[str, Any] = dict(status["circuit_envelope"])
         circuit_env["inner"] = payload
+        # The SDK's circuit_envelope omits task_id/correlation_id; lift them
+        # from the original rejection to the top level so the agent's envelope
+        # contract (read top-level task_id/correlation_id) and ops audit-join of
+        # the trip event still work — not just nested in `inner` (#359).
+        circuit_env["task_id"] = payload.get("task_id")
+        circuit_env["correlation_id"] = payload.get("correlation_id")
         log.info(
             "flow_server: circuit_open substituted for rejection",
             verb=verb,

@@ -594,6 +594,19 @@ class Settings(BaseSettings):
         ge=60,
         description="Seconds between release-readiness assessment passes.",
     )
+    release_ci_workflow: str = Field(
+        default="ci.yml",
+        description=(
+            "GitHub Actions workflow file name the release fail-closed CI gate "
+            "scopes to. Decoupled from self_heal_ci_workflow — that setting "
+            "documents an empty-string mode for single-workflow repos which, "
+            "inherited here, would degrade the release gate to the "
+            "all-workflows mode git.py itself flags as unreliable (a green "
+            "secondary workflow masking a red primary CI). The release gate "
+            "always resolves a NAMED workflow; empty falls back to 'ci.yml', "
+            "never None."
+        ),
+    )
 
     # Organizational-memory loop — distill a high-signal lesson at task
     # completion, index journal reflections, and auto-inject similar past

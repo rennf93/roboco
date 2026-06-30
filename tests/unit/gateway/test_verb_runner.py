@@ -8,6 +8,7 @@ commits.
 
 from __future__ import annotations
 
+import dataclasses
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
@@ -260,3 +261,148 @@ async def test_runner_does_not_run_side_effects_if_compose_fails() -> None:
         await runner.run_intent("i_will_work_on", task, agent, ctx)
     git_svc.push_branch.assert_not_called()
     git_svc.create_pr.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_runner_skips_side_effects_when_trailing_compose_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A TRAILING composed action returning None (its source-status check
+    failed under a concurrent transition) must flow cleanly to the caller's
+    ``if task is None`` handler. The side_effects loop must NOT run on the
+    None task — ``_do_push_branch(None)`` dereferences ``task.branch_name``
+    and crashes, turning a clean INVALID_STATE into a 500/respawn loop.
+
+    Latent today (no shipped intent has both a None-capable compose and a
+    trailing side_effect), but the runner is generic and any future intent
+    inherits the crash-to-500 instead of the clean INVALID_STATE the
+    entry/intermediate None guards give.
+    """
+    task_svc = AsyncMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(__aenter__=AsyncMock(), __aexit__=AsyncMock())
+    )
+    # start() returns None — its source status was invalid (concurrent change).
+    task_svc.start = AsyncMock(return_value=None)
+    git_svc = AsyncMock()
+    git_svc.push_branch = AsyncMock()
+    runner = VerbRunner(task_service=task_svc, git_service=git_svc)
+
+    # Synthetic intent: a None-capable compose + a trailing side_effect.
+    synthetic = dataclasses.replace(
+        spec._INTENT_VERBS["open_pr"],
+        name="synthetic_push_after_start",
+        composes=("start",),
+        side_effects=("push_branch",),
+        pre_side_effects=(),
+        extra_preconditions=(),
+    )
+    monkeypatch.setitem(spec._INTENT_VERBS, "synthetic_push_after_start", synthetic)
+
+    task = MagicMock(id=uuid4(), status="claimed", plan=None, commits=[])
+    agent = MagicMock(id=uuid4(), role="developer")
+    ctx = spec.Context()
+
+    result = await runner.run_intent("synthetic_push_after_start", task, agent, ctx)
+    # The trailing None flows out as the verb result, not a side_effect crash.
+    assert result is None
+    git_svc.push_branch.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_runner_forwards_actor_agent_id_to_push_branch_and_create_pr() -> None:
+    """push_branch / create_pr side effects must forward the actor's
+    agent.id as ``actor_agent_id`` — the actor is the authoritative workspace
+    resolver (``actor_agent_id or assigned_to or created_by``). Without it, a
+    side_effect-bearing verb on a task whose ``assigned_to`` was cleared (e.g.
+    after pr_pass) falls through to created_by and pushes from / opens a PR
+    against the wrong workspace. Mirrors _do_pr_merge, which already forwards."""
+    task_svc = AsyncMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(__aenter__=AsyncMock(), __aexit__=AsyncMock())
+    )
+    git_svc = AsyncMock()
+    git_svc.push_branch = AsyncMock()
+    git_svc.create_pr = AsyncMock(return_value={"pr_number": 42})
+    runner = VerbRunner(task_service=task_svc, git_service=git_svc)
+
+    agent = MagicMock(id=uuid4(), role="developer")
+    task = MagicMock(
+        id=uuid4(),
+        status="in_progress",
+        commits=["abc"],
+        pr_number=None,
+        parent_task_id=None,
+        branch_name="feature/backend/ABC12345",
+        project_id=uuid4(),
+    )
+    ctx = spec.Context()
+
+    await runner.run_intent("open_pr", task, agent, ctx)
+
+    _, push_kwargs = git_svc.push_branch.call_args
+    assert push_kwargs.get("actor_agent_id") == agent.id, (
+        "push_branch must resolve the workspace from the actor, not the fallback"
+    )
+    _, pr_kwargs = git_svc.create_pr.call_args
+    assert pr_kwargs.get("actor_agent_id") == agent.id, (
+        "create_pr must resolve the workspace from the actor, not the fallback"
+    )
+
+
+@pytest.mark.asyncio
+async def test_runner_forwards_actor_agent_id_to_create_root_pr() -> None:
+    """The root→master PR side effect (submit_root's pre_side_effect) must
+    forward the actor's agent.id too — a PM opening the master PR is exactly
+    the ``assigned_to may be None at completion time`` case create_pr's
+    actor_agent_id exists for."""
+    task_svc = AsyncMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(__aenter__=AsyncMock(), __aexit__=AsyncMock())
+    )
+    task_svc.submit_for_review = AsyncMock(
+        return_value=MagicMock(status="awaiting_pr_review")
+    )
+    git_svc = AsyncMock()
+    git_svc.create_pr = AsyncMock(return_value={"pr_number": 7})
+    runner = VerbRunner(task_service=task_svc, git_service=git_svc)
+
+    agent = MagicMock(id=uuid4(), role="main_pm")
+    task = MagicMock(
+        id=uuid4(),
+        status="in_progress",
+        parent_task_id=None,
+        branch_name="feature/main_pm/ROOT0001",
+        project_id=uuid4(),
+    )
+    ctx = spec.Context(notes="root scope complete; bubbling to master")
+
+    await runner.run_intent("submit_root", task, agent, ctx)
+
+    assert git_svc.create_pr.call_args.kwargs.get("is_root_pr") is True
+    assert git_svc.create_pr.call_args.kwargs.get("actor_agent_id") == agent.id
+
+
+@pytest.mark.asyncio
+async def test_runner_forwards_actor_agent_id_to_escalate_to_ceo() -> None:
+    """escalate_to_ceo must thread the actor's agent.id so the awaiting_ceo
+    approval audit row attributes the escalation to the specific PM/Board
+    agent, not just a role. Every sibling transition (claim/start/qa_pass/
+    pr_pass) forwards the actor UUID; the escalate_to_ceo branch was the only
+    one that lost it."""
+    task_svc = AsyncMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(__aenter__=AsyncMock(), __aexit__=AsyncMock())
+    )
+    task_svc.escalate_to_ceo = AsyncMock(
+        return_value=MagicMock(status="awaiting_ceo_approval")
+    )
+    runner = VerbRunner(task_service=task_svc, git_service=AsyncMock())
+
+    agent = MagicMock(id=uuid4(), role="main_pm")
+    task = MagicMock(id=uuid4(), status="awaiting_pm_review", pr_number=99)
+    ctx = spec.Context(notes="escalating for CEO sign-off")
+
+    await runner.run_intent("escalate_to_ceo", task, agent, ctx)
+
+    assert task_svc.escalate_to_ceo.call_args.kwargs.get("actor_agent_id") == agent.id

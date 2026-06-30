@@ -25,7 +25,7 @@ A feature flag set in `.env` takes effect on the next backend restart. The env-g
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `ROBOCO_APP_VERSION` | `0.9.0` | Reported app version. |
+| `ROBOCO_APP_VERSION` | `0.14.0` | Reported app version. |
 | `ROBOCO_DEBUG` | `false` | Debug mode. |
 | `ROBOCO_ENVIRONMENT` | `development` | One of `development` / `staging` / `production`. Selects the JSON log renderer (prod) vs console renderer. The compose stack sets `production`. |
 | `ROBOCO_HOST` | `127.0.0.1` | Bind address. Use `0.0.0.0` in containers. |
@@ -274,6 +274,7 @@ The global switch arms the engine; each project opts in via `dep_update_command`
 | `ROBOCO_RELEASE_MANAGER_ENABLED` | `false` | Master switch for the gated release manager. When off the loop never runs and no release is proposed. Even on it only PROPOSES — the CEO approves before any publish. |
 | `ROBOCO_RELEASE_MIN_COMMITS` | `8` | Minimum unreleased commits since the last tag before a release is proposed (a feat/security change also qualifies). |
 | `ROBOCO_RELEASE_MANAGER_INTERVAL_SECONDS` | `3600` | Seconds between release-readiness assessment passes. |
+| `ROBOCO_RELEASE_CI_WORKFLOW` | `ci.yml` | GitHub Actions workflow file the release fail-closed CI gate scopes to. Decoupled from `ROBOCO_SELF_HEAL_CI_WORKFLOW` — the release gate always resolves a named workflow and never uses all-workflows mode. |
 
 ### Organizational memory loop (default-off)
 

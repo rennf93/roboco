@@ -12,6 +12,7 @@ from uuid import uuid4 as _u
 
 import pytest
 import pytest_asyncio
+from roboco.api.schemas.sessions import session_to_response_with_links
 from roboco.config import settings
 from roboco.db.tables import AgentTable, MessageTable, ProjectTable, TaskTable
 from roboco.db.tables import AgentTable as _AgentTable
@@ -24,6 +25,7 @@ from roboco.models.base import (
     TaskStatus,
     TaskType,
 )
+from roboco.models.events import EventType
 from roboco.models.messaging import (
     ChannelCreateRequest,
     GroupCreateRequest,
@@ -108,6 +110,26 @@ def _channel_req(slug_suffix: str) -> ChannelCreateRequest:
         channel_type=ChannelType.CELL,
         description="desc",
     )
+
+
+async def _make_agent(svc: MessagingService, role: AgentRole) -> AgentTable:
+    """Insert a fresh agent with `role` (no channel membership) for access tests."""
+    agent = AgentTable(
+        id=uuid4(),
+        name="X",
+        slug=f"x-{uuid4().hex[:8]}",
+        role=role,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="x",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    svc.session.add(agent)
+    await svc.session.flush()
+    return agent
 
 
 # ---------------------------------------------------------------------------
@@ -383,8 +405,12 @@ async def test_link_session_to_task_missing_session(msg_setup: dict) -> None:
     svc = msg_setup["svc"]
     aid = msg_setup["agent_id"]
     tid = msg_setup["task_id"]
-    with pytest.raises(NotFoundError):
+    with pytest.raises(NotFoundError) as exc:
         await svc.link_session_to_task(uuid4(), tid, aid)
+    # Message must not read "... not found not found" — the raise passed a full
+    # sentence as resource_type, which NotFoundError appends " not found" to.
+    assert "not found not found" not in str(exc.value)
+    assert exc.value.resource_type == "Session"
 
 
 @pytest.mark.asyncio
@@ -406,6 +432,112 @@ async def test_unlink_session_from_task_returns_false_when_missing(
 ) -> None:
     svc = msg_setup["svc"]
     assert await svc.unlink_session_from_task(uuid4(), uuid4()) is False
+
+
+@pytest.mark.asyncio
+async def test_get_session_with_links_eager_loads_task_links(
+    msg_setup: dict,
+) -> None:
+    """GET /sessions/{id} must return the session's task_links populated in one
+    shot (the panel was forced into a triple-fetch because the single-session
+    read returned them empty). The service read eager-loads task_links → task so
+    the response builder can render titles without a lazy-load greenlet error."""
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    tid = msg_setup["task_id"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    await svc.link_session_to_task(sess.id, tid, aid, is_primary=True)
+
+    loaded = await svc.get_session_with_links_or_raise(sess.id)
+    resp = session_to_response_with_links(loaded)
+
+    assert len(resp.task_links) == 1
+    link = resp.task_links[0]
+    assert link.task_id == tid
+    assert link.task_title == "t"  # fixture task title
+    assert link.is_primary is True
+
+
+@pytest.mark.asyncio
+async def test_get_session_with_links_missing_raises(msg_setup: dict) -> None:
+    svc = msg_setup["svc"]
+    with pytest.raises(NotFoundError):
+        await svc.get_session_with_links_or_raise(uuid4())
+
+
+@pytest.mark.asyncio
+async def test_require_group_read_access_denies_non_member(msg_setup: dict) -> None:
+    """An authenticated agent that is neither a channel member/observer nor
+    privileged must be denied — closes the IDOR where any agent could read any
+    private channel's group/session transcripts."""
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    outsider = await _make_agent(svc, AgentRole.DEVELOPER)
+    with pytest.raises(PermissionError):
+        await svc.require_group_read_access(grp.id, outsider.id)
+
+
+@pytest.mark.asyncio
+async def test_require_group_read_access_allows_member(msg_setup: dict) -> None:
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    member = await _make_agent(svc, AgentRole.DEVELOPER)
+    await svc.add_channel_member_or_raise(
+        channel_id=ch.id, member_id=member.id, can_write=True
+    )
+    allowed = await svc.require_group_read_access(grp.id, member.id)
+    assert allowed.id == grp.id
+
+
+@pytest.mark.asyncio
+async def test_require_group_read_access_allows_privileged(msg_setup: dict) -> None:
+    """A privileged role (CEO) reads any group without channel membership."""
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    ceo = await _make_agent(svc, AgentRole.CEO)
+    allowed = await svc.require_group_read_access(grp.id, ceo.id)
+    assert allowed.id == grp.id
+
+
+@pytest.mark.asyncio
+async def test_require_group_read_access_missing_group_raises(
+    msg_setup: dict,
+) -> None:
+    svc = msg_setup["svc"]
+    outsider = await _make_agent(svc, AgentRole.DEVELOPER)
+    with pytest.raises(NotFoundError):
+        await svc.require_group_read_access(uuid4(), outsider.id)
+
+
+@pytest.mark.asyncio
+async def test_get_session_with_links_for_agent_denies_non_member(
+    msg_setup: dict,
+) -> None:
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    outsider = await _make_agent(svc, AgentRole.DEVELOPER)
+    with pytest.raises(PermissionError):
+        await svc.get_session_with_links_for_agent(sess.id, outsider.id)
+
+
+@pytest.mark.asyncio
+async def test_require_session_read_access_denies_non_member(
+    msg_setup: dict,
+) -> None:
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    outsider = await _make_agent(svc, AgentRole.DEVELOPER)
+    with pytest.raises(PermissionError):
+        await svc.require_session_read_access(sess.id, outsider.id)
 
 
 @pytest.mark.asyncio
@@ -642,6 +774,59 @@ async def test_send_message_to_session(msg_setup: dict) -> None:
     )
     assert msg.id is not None
     assert msg.content == "hello world"
+
+
+@pytest.mark.asyncio
+async def test_send_message_publishes_message_sent_when_bus_connected(
+    msg_setup: dict,
+) -> None:
+    """Bus connected → a MESSAGE_SENT event is published carrying the message
+    payload so the websocket bridge can fan the new message out to
+    /ws/channels/{id} and /ws/sessions/{id} subscribers. Without this publish
+    the live chat path is dead — the panel never sees incoming messages."""
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    mock_bus = AsyncMock()
+    mock_bus.is_connected = lambda: True
+    mock_bus.publish = AsyncMock(return_value=None)
+    with patch("roboco.services.messaging.get_event_bus", return_value=mock_bus):
+        msg = await svc.send_message(
+            MessageCreateRequest(agent_id=aid, session_id=sess.id, content="hi")
+        )
+    mock_bus.publish.assert_awaited()
+    published = mock_bus.publish.await_args.args[0]
+    assert published.type is EventType.MESSAGE_SENT
+    data = published.data
+    assert data["message_id"] == str(msg.id)
+    assert data["session_id"] == str(sess.id)
+    assert data["channel_id"] == str(ch.id)
+    assert data["agent_id"] == str(aid)
+    assert data["content"] == "hi"
+
+
+@pytest.mark.asyncio
+async def test_send_message_bus_failure_does_not_break_send(
+    msg_setup: dict,
+) -> None:
+    """A bus outage during the MESSAGE_SENT publish is logged but never rolls
+    back the persisted message — live delivery is best-effort."""
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    with patch(
+        "roboco.services.messaging.get_event_bus",
+        side_effect=RuntimeError("bus down"),
+    ):
+        msg = await svc.send_message(
+            MessageCreateRequest(agent_id=aid, session_id=sess.id, content="hi")
+        )
+    assert msg.id is not None
+    assert msg.content == "hi"
 
 
 @pytest.mark.asyncio
@@ -1121,6 +1306,56 @@ async def test_send_message_reply_target_unknown_raises(
                 session_id=sess.id,
                 content="reply",
                 reply_to=uuid4(),  # Bogus reply target.
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_reply_to_same_active_session_succeeds(msg_setup: dict) -> None:
+    """A reply to a message in the same active session is accepted."""
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    m1 = await svc.send_message(
+        MessageCreateRequest(agent_id=aid, session_id=sess.id, content="first")
+    )
+    m2 = await svc.send_message(
+        MessageCreateRequest(
+            agent_id=aid, session_id=sess.id, content="reply", reply_to=m1.id
+        )
+    )
+    assert m2.reply_to == m1.id
+    assert m2.session_id == sess.id
+
+
+@pytest.mark.asyncio
+async def test_reply_to_rejected_after_closed_session_redirect(
+    msg_setup: dict,
+) -> None:
+    """reply_to must be validated against the EFFECTIVE session the message
+    lands in, not the requested one. After a closed session redirects the send
+    to a fresh active session, a reply_to a message from the OLD session must be
+    rejected — otherwise the new message carries a dangling cross-session reply.
+    """
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    s1 = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    m1 = await svc.send_message(
+        MessageCreateRequest(agent_id=aid, session_id=s1.id, content="first")
+    )
+    # Close S1 → the next send to S1 redirects to a freshly-created session.
+    await svc.close_session_or_raise(s1.id)
+    with pytest.raises(ValueError, match="Reply target not found"):
+        await svc.send_message(
+            MessageCreateRequest(
+                agent_id=aid,
+                session_id=s1.id,
+                content="reply",
+                reply_to=m1.id,  # belongs to the now-closed S1, not the redirect
             )
         )
 

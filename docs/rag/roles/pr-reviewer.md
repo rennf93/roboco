@@ -54,7 +54,7 @@ i_am_idle()                   → out of work
 
 | MCP server            | Verbs you can call |
 |-----------------------|--------------------|
-| `roboco-flow`         | `give_me_work`, `claim_pr_review`, `post_pr_review`, `i_am_idle` |
+| `roboco-flow`         | `give_me_work`, `claim_pr_review`, `post_pr_review`, `claim_gate_review`, `pr_pass`, `pr_fail`, `unclaim`, `i_am_idle` |
 | `roboco-do`           | `note`, `evidence`, `notify_list`, `notify_get`, channel discovery (no `say` / `dm` / `commit` / `notify`) |
 | `roboco-git-readonly` | `roboco_git_status`, `roboco_git_log`, `roboco_git_diff`, `roboco_git_branch_list` |
 | `roboco-optimal`      | `roboco_ask_mentor`, `roboco_kb_search` |
