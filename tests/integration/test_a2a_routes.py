@@ -13,7 +13,7 @@ import pytest
 import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from roboco.api.deps import get_current_agent_slug, get_db
+from roboco.api.deps import get_agent_context, get_current_agent_slug, get_db
 from roboco.api.routes.a2a import router as a2a_router
 from roboco.api.routes.a2a import wellknown_router
 from roboco.db.tables import AgentTable, ProjectTable, TaskTable
@@ -25,6 +25,7 @@ from roboco.models.base import (
     TaskStatus,
     TaskType,
 )
+from roboco.models.permissions import AgentContext
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, AsyncIterator
@@ -91,16 +92,37 @@ async def a2a_route_client(
     async def _override_agent_slug() -> str:
         return dev.slug
 
+    async def _override_agent_context() -> AgentContext:
+        # The authenticated caller is the seeded developer by default. Tests
+        # that need a different role (e.g. the PM-gated cancel route) swap this
+        # override on the yielded app before posting.
+        return AgentContext(
+            agent_id=dev.id, role=AgentRole.DEVELOPER, team=Team.BACKEND, slug=dev.slug
+        )
+
     app.dependency_overrides[get_db] = _override_db
     app.dependency_overrides[get_current_agent_slug] = _override_agent_slug
+    app.dependency_overrides[get_agent_context] = _override_agent_context
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        yield {"client": client, "dev": dev, "task": task}
+        yield {"client": client, "dev": dev, "task": task, "app": app}
     app.dependency_overrides.clear()
 
 
 _HDR = {"X-Agent-ID": "be-dev-1", "X-Agent-Role": "developer"}
+
+
+def _set_pm_context(app: FastAPI, dev: AgentTable) -> None:
+    """Override the agent context to a cell PM so the PM-gated cancel route
+    admits the call (the default fixture context is a developer)."""
+
+    async def _pm() -> AgentContext:
+        return AgentContext(
+            agent_id=dev.id, role=AgentRole.CELL_PM, team=Team.BACKEND, slug=dev.slug
+        )
+
+    app.dependency_overrides[get_agent_context] = _pm
 
 
 # ---------------------------------------------------------------------------
@@ -435,13 +457,17 @@ async def test_cancel_task_success(a2a_route_client: dict) -> None:
         }
     )
     client = a2a_route_client["client"]
+    _set_pm_context(a2a_route_client["app"], a2a_route_client["dev"])
     with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
         instance = AsyncMock()
         instance.cancel_task = AsyncMock(return_value=a2a_task)
         mock_service_cls.return_value = instance
         response = await client.post(
             f"/api/a2a/tasks/{a2a_route_client['task'].id}/cancel",
-            json={"reason": "no longer needed"},
+            json={
+                "name": f"tasks/{a2a_route_client['task'].id}",
+                "reason": "no longer needed",
+            },
             headers=_HDR,
         )
     # 200 expected; pydantic may serialize as 422 if response_model coercion
@@ -452,6 +478,7 @@ async def test_cancel_task_success(a2a_route_client: dict) -> None:
 async def test_cancel_task_already_terminal(a2a_route_client: dict) -> None:
 
     client = a2a_route_client["client"]
+    _set_pm_context(a2a_route_client["app"], a2a_route_client["dev"])
     with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
         instance = AsyncMock()
         instance.cancel_task = AsyncMock(
@@ -469,6 +496,7 @@ async def test_cancel_task_already_terminal(a2a_route_client: dict) -> None:
 async def test_cancel_task_not_found(a2a_route_client: dict) -> None:
 
     client = a2a_route_client["client"]
+    _set_pm_context(a2a_route_client["app"], a2a_route_client["dev"])
     with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
         instance = AsyncMock()
         instance.cancel_task = AsyncMock(side_effect=ValueError("Task missing"))
@@ -481,8 +509,121 @@ async def test_cancel_task_not_found(a2a_route_client: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Chat conversations
+# #423: the cancel route must be authenticated + PM/management-gated, and pass
+# the authenticated actor + role into the service (it cascades cancel to all
+# non-terminal descendants — lifecycle rule: Any -> cancelled: PM roles only).
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cancel_task_developer_role_forbidden(a2a_route_client: dict) -> None:
+    """A developer (default fixture context) must NOT be able to cancel a task
+    via A2A — the route was previously unauthenticated with no role gate, so any
+    caller could cancel any task tree (#423). Now PM/management-only."""
+    client = a2a_route_client["client"]
+    # default fixture context = developer
+    with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
+        instance = AsyncMock()
+        instance.cancel_task = AsyncMock()
+        mock_service_cls.return_value = instance
+        response = await client.post(
+            f"/api/a2a/tasks/{a2a_route_client['task'].id}/cancel",
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.FORBIDDEN
+    instance.cancel_task.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cancel_task_no_auth_header_rejected(a2a_route_client: dict) -> None:
+    """A request with no agent headers at all is rejected — the route must not
+    be reachable unauthenticated (#423)."""
+    client = a2a_route_client["client"]
+    response = await client.post(
+        f"/api/a2a/tasks/{a2a_route_client['task'].id}/cancel",
+    )
+    assert response.status_code in (
+        HTTPStatus.UNAUTHORIZED,
+        HTTPStatus.FORBIDDEN,
+        HTTPStatus.UNPROCESSABLE_ENTITY,
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancel_task_pm_passes_actor_and_role_to_service(
+    a2a_route_client: dict,
+) -> None:
+    """A PM cancel threads the authenticated role (for the cascade role gate)
+    and the actor slug (for the cancellation-note attribution) into the service
+    — previously the service was called with no actor and a hardcoded
+    cell_pm role, so the audit trail recorded no real caller (#423)."""
+    client = a2a_route_client["client"]
+    _set_pm_context(a2a_route_client["app"], a2a_route_client["dev"])
+    with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
+        instance = AsyncMock()
+        instance.cancel_task = AsyncMock(
+            return_value=A2ATask.model_validate(
+                {
+                    "id": str(a2a_route_client["task"].id),
+                    "contextId": str(uuid4()),
+                    "status": A2ATaskStatus(state=A2ATaskState.CANCELLED).model_dump(
+                        mode="json"
+                    ),
+                }
+            )
+        )
+        mock_service_cls.return_value = instance
+        # No body → request=None → the handler runs (a body without the A2A
+        # ``name`` field 422s at request validation before the handler). The
+        # invariant under test is the role/slug threading, not the reason.
+        response = await client.post(
+            f"/api/a2a/tasks/{a2a_route_client['task'].id}/cancel",
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.OK
+    # The authenticated PM role + slug reach the service.
+    _kwargs = instance.cancel_task.await_args.kwargs
+    assert _kwargs.get("agent_role") == "cell_pm"
+    assert _kwargs.get("actor_slug") == a2a_route_client["dev"].slug
+
+
+# ---------------------------------------------------------------------------
+# #116: send_message must record the AUTHENTICATED identity as the responder,
+# not a client-supplied metadata.from_agent (spoof).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_send_message_uses_authenticated_identity_not_client_from_agent(
+    a2a_route_client: dict,
+) -> None:
+    """is_response=True must stamp the authenticated caller's slug as the
+    responder, ignoring a spoofed metadata.from_agent — previously the route
+    took from_agent verbatim from the request body, so any agent could
+    impersonate anyone (e.g. from_agent='ceo') in the task's notes and in the
+    spawn/notification routed back to the original requester (#116)."""
+    client = a2a_route_client["client"]
+    with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
+        instance = AsyncMock()
+        instance.update_task_from_message = AsyncMock(return_value=None)
+        mock_service_cls.return_value = instance
+        response = await client.post(
+            "/api/a2a/message/send",
+            json={
+                "message": {
+                    "role": "user",
+                    "parts": [{"type": "text", "text": "hi"}],
+                    "taskId": str(a2a_route_client["task"].id),
+                },
+                "metadata": {"is_response": True, "from_agent": "ceo"},
+            },
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.OK
+    # The authenticated dev slug is the responder — NOT the spoofed 'ceo'.
+    _kwargs = instance.update_task_from_message.await_args.kwargs
+    assert _kwargs.get("responder_agent") == a2a_route_client["dev"].slug
+    assert _kwargs.get("responder_agent") != "ceo"
 
 
 @pytest.mark.asyncio
@@ -1239,6 +1380,7 @@ async def test_cancel_task_success_no_body(a2a_route_client: dict) -> None:
         }
     )
     client = a2a_route_client["client"]
+    _set_pm_context(a2a_route_client["app"], a2a_route_client["dev"])
     with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
         instance = AsyncMock()
         instance.cancel_task = AsyncMock(return_value=a2a_task)

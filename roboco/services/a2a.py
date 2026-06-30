@@ -379,13 +379,26 @@ class A2AService:
 
         return [self.task_to_a2a(t) for t in tasks], has_more
 
-    async def cancel_task(self, task_id: str, reason: str | None = None) -> A2ATask:
+    async def cancel_task(
+        self,
+        task_id: str,
+        reason: str | None = None,
+        agent_role: str | None = None,
+        actor_slug: str | None = None,
+    ) -> A2ATask:
         """
         Cancel a task and all non-terminal descendants.
 
         Args:
             task_id: Task UUID string
             reason: Optional cancellation reason
+            agent_role: The authenticated caller's role, threaded into the
+                cascade role gate (TaskService.cancel). Defaults to cell_pm
+                when unset for back-compat with non-route callers.
+            actor_slug: The authenticated caller's slug, recorded in the
+                cancellation note so the audit trail attributes the cancel to
+                the real actor (the route enforces PM/management; non-route
+                callers may omit it).
 
         Returns:
             Updated A2ATask
@@ -419,23 +432,38 @@ class A2AService:
         if status_value in ["completed", "cancelled"]:
             raise ValueError(f"Task already in terminal state: {status_value}")
 
-        # Add reason to notes before cancel
+        # Build a cancellation note that attributes the real actor (the route
+        # now passes the authenticated slug) so the audit trail records who
+        # cancelled and why — keeps this out of route handlers.
+        note_parts: list[str] = []
+        if actor_slug:
+            note_parts.append(f"Cancelled via A2A by {actor_slug}")
         if reason:
-            reason_text = f"Cancellation reason: {reason}"
+            note_parts.append(f"reason: {reason}")
+        cancellation_note = "; ".join(note_parts) if note_parts else None
+        if cancellation_note:
             if task.dev_notes:
-                task.dev_notes = f"{task.dev_notes}\n\n{reason_text}"
+                task.dev_notes = f"{task.dev_notes}\n\n{cancellation_note}"
             else:
-                task.dev_notes = reason_text
+                task.dev_notes = cancellation_note
             await self.session.flush()
 
-        # Use TaskService for consistent cancel behavior (cascades to descendants)
+        # Use TaskService for consistent cancel behavior (cascades to descendants).
+        # Thread the caller's role into the cascade role gate so a non-PM
+        # caller can't cascade-cancel descendants the role can't cancel.
         task_service = TaskService(self.session)
-        task = await task_service.cancel(task_uuid)
+        task = await task_service.cancel(task_uuid, agent_role=agent_role or "cell_pm")
 
         if task is None:
             raise ValueError(f"Failed to cancel task: {task_id}")
 
-        logger.info("Cancelled task via A2A", task_id=task_id, reason=reason)
+        logger.info(
+            "Cancelled task via A2A",
+            task_id=task_id,
+            reason=reason,
+            actor=actor_slug,
+            role=agent_role,
+        )
 
         return self.task_to_a2a(task)
 
