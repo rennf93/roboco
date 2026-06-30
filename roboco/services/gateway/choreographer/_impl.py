@@ -4721,19 +4721,12 @@ class Choreographer:
           to review PRs of code changes).
         - Delegating to a Documenter requires ``task_type='documentation'``.
         """
+        pm_err = Choreographer._pm_task_type_error(assigned_to, task_type)
+        if pm_err is not None:
+            return pm_err
         from roboco.foundation.identity import AGENTS, Role, Team
 
         agent = AGENTS.get(assigned_to)
-        if (
-            agent is not None
-            and agent.role in (Role.CELL_PM, Role.MAIN_PM)
-            and task_type != "planning"
-        ):
-            return (
-                f"task_type={task_type!r} is invalid for assignee"
-                f" {assigned_to!r}: PMs own planning tasks, not"
-                f" code/documentation/etc."
-            )
         if agent is None:
             return None
         if agent.role is Role.DEVELOPER:
@@ -4754,6 +4747,28 @@ class Choreographer:
                 f"'documentation'."
             )
         return None
+
+    @staticmethod
+    def _pm_task_type_error(assigned_to: str, task_type: str) -> str | None:
+        """Reject a code/non-planning task_type delegated to a PM (cell or main).
+
+        Extracted from ``_validate_assignee_task_type`` so the compound PM guard
+        doesn't inflate the dispatcher's complexity. A freshly delegated subtask
+        is never in ``needs_revision``, so the issue-resolution carve-out does
+        not apply here (it lives at the claim gate).
+        """
+        from roboco.foundation.identity import AGENTS, Role
+
+        agent = AGENTS.get(assigned_to)
+        if agent is None or agent.role not in (Role.CELL_PM, Role.MAIN_PM):
+            return None
+        if task_type == "planning":
+            return None
+        return (
+            f"task_type={task_type!r} is invalid for assignee"
+            f" {assigned_to!r}: PMs own planning tasks, not"
+            f" code/documentation/etc."
+        )
 
     @staticmethod
     def _developer_task_type_error(

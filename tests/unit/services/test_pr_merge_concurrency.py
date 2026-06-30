@@ -365,8 +365,10 @@ async def test_merge_with_retry_falls_back_on_405_method_not_allowed() -> None:
         side_effect=[_fake_response(_HTTP_METHOD_NOT_ALLOWED), _fake_response(200)]
     )
     _bind(svc, "_call_merge_api", call_seq)
-    _bind(svc, "_first_allowed_merge_method", AsyncMock(return_value="merge"))
-    _bind(svc, "_pr_is_merged", AsyncMock(return_value=False))
+    first_method = AsyncMock(return_value="merge")
+    _bind(svc, "_first_allowed_merge_method", first_method)
+    pr_is_merged = AsyncMock(return_value=False)
+    _bind(svc, "_pr_is_merged", pr_is_merged)
     _bind(svc, "_sync_target_branch", AsyncMock())
 
     resp = await svc._merge_with_retry(_merge_ctx())
@@ -375,11 +377,13 @@ async def test_merge_with_retry_falls_back_on_405_method_not_allowed() -> None:
     # Two merge attempts: squash (405) then the permitted fallback (200).
     assert call_seq.await_count == _EXPECTED_MERGE_ATTEMPTS
     # The fallback method was looked up (excluding the refused squash).
-    svc._first_allowed_merge_method.assert_awaited_once()
-    assert svc._first_allowed_merge_method.await_args.kwargs["exclude"] == "squash"
+    first_method.assert_awaited_once()
+    first_call = first_method.await_args
+    assert first_call is not None
+    assert first_call.kwargs["exclude"] == "squash"
     # An already-merged disambiguation must NOT be consulted — the 405 was
     # method-not-allowed, resolved by retry, not an already-merged PR.
-    svc._pr_is_merged.assert_not_awaited()
+    pr_is_merged.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -390,19 +394,17 @@ async def test_merge_with_retry_raises_when_no_permitted_fallback_on_405() -> No
     PR stays idempotent success."""
     svc = GitService(_make_session(MagicMock(), MagicMock))
     _bind(svc, "log", MagicMock())
-    _bind(
-        svc,
-        "_call_merge_api",
-        AsyncMock(side_effect=[_fake_response(_HTTP_METHOD_NOT_ALLOWED)]),
-    )
+    call_seq = AsyncMock(side_effect=[_fake_response(_HTTP_METHOD_NOT_ALLOWED)])
+    _bind(svc, "_call_merge_api", call_seq)
     _bind(svc, "_first_allowed_merge_method", AsyncMock(return_value=None))
-    _bind(svc, "_pr_is_merged", AsyncMock(return_value=False))
+    pr_is_merged = AsyncMock(return_value=False)
+    _bind(svc, "_pr_is_merged", pr_is_merged)
     _bind(svc, "_sync_target_branch", AsyncMock())
 
     with pytest.raises(MergeConflictError):
         await svc._merge_with_retry(_merge_ctx())
 
     # Only the initial squash attempt — no fallback retry when none permitted.
-    assert svc._call_merge_api.await_count == 1
+    assert call_seq.await_count == 1
     # Already-merged disambiguation ran (the 405 could also mean already-merged).
-    svc._pr_is_merged.assert_awaited_once()
+    pr_is_merged.assert_awaited_once()

@@ -898,6 +898,39 @@ class TaskService(BaseService):
                 "(same batch_id, top-level)."
             )
 
+    def _enforce_no_pm_code_on_create(self, req: TaskCreateRequest) -> None:
+        """Refuse a create that would hand a code task to a PM (coordination role).
+
+        Two layers: the team-based Main-PM impossibility backstop (a Main PM
+        coordinates, never owns code — the 2026-06-27 MegaTask meltdown shape),
+        and the assignee-based PM/code guard that closes the create-with-cell-
+        PM-assignee hole the team check misses. A brand-new task is never in
+        ``needs_revision``, so the issue-resolution carve-out does not apply.
+        """
+        if main_pm_cannot_own_code(team=req.team, task_type=req.task_type):
+            raise ValidationError(
+                "MAIN_PM_NO_CODE: A Main PM task coordinates — it does not"
+                " execute code. Re-draft as `planning` with coordination-level"
+                " acceptance criteria, or target a cell so a developer owns the"
+                " code.",
+                field="task_type",
+            )
+        if not req.assigned_to:
+            return
+        from roboco.foundation.identity import role_for_uuid_or_none
+
+        assignee_role = role_for_uuid_or_none(req.assigned_to)
+        if assignee_role is not None and pm_cannot_own_code(
+            role=assignee_role, task_type=req.task_type, is_issue_resolution=False
+        ):
+            raise ValidationError(
+                "PM_NO_CODE: the assignee is a PM — PMs coordinate, they"
+                " do not execute code. Re-draft as `planning` and delegate"
+                " the code to a developer, or assign the code task to a"
+                " developer.",
+                field="task_type",
+            )
+
     async def create(self, req: TaskCreateRequest) -> TaskTable:
         """
         Create a new task.
@@ -911,43 +944,9 @@ class TaskService(BaseService):
         if req.parent_task_id:
             await self._validate_parent_depth(req.parent_task_id)
 
-        # Impossibility backstop: a Main PM coordinates — it never owns a code
-        # task. ``main_pm`` + ``code`` on the same task is the structural
-        # mismatch behind the 2026-06-27 MegaTask meltdown (a root-subtask the
-        # git/PR/review layer treated as code while ownership treated it as
-        # coordination — never reconciled, pr_fail looped). Intake
-        # (create_task_from_draft) coerces code→planning, so this fires only on
-        # a non-intake create (the HTTP route / a direct internal create) that
-        # tries to persist the forbidden combo.
-        if main_pm_cannot_own_code(team=req.team, task_type=req.task_type):
-            raise ValidationError(
-                "MAIN_PM_NO_CODE: A Main PM task coordinates — it does not"
-                " execute code. Re-draft as `planning` with coordination-level"
-                " acceptance criteria, or target a cell so a developer owns the"
-                " code.",
-                field="task_type",
-            )
-
-        # Role-based PM/code guard: even when the team is a cell (so the
-        # team-based check above passes), a freshly created task assigned TO a
-        # PM (cell or main) must not be `code` — a PM coordinates, it does not
-        # execute, and a brand-new task is never in needs_revision so the
-        # issue-resolution carve-out does not apply. Closes the create-with-
-        # cell-PM-assignee hole the team-based check misses.
-        if req.assigned_to:
-            from roboco.foundation.identity import role_for_uuid_or_none
-
-            assignee_role = role_for_uuid_or_none(req.assigned_to)
-            if assignee_role is not None and pm_cannot_own_code(
-                role=assignee_role, task_type=req.task_type, is_issue_resolution=False
-            ):
-                raise ValidationError(
-                    "PM_NO_CODE: the assignee is a PM — PMs coordinate, they"
-                    " do not execute code. Re-draft as `planning` and delegate"
-                    " the code to a developer, or assign the code task to a"
-                    " developer.",
-                    field="task_type",
-                )
+        # PM/code guards: a coordination role never owns a freshly created code
+        # task (the Main-PM impossibility + the cell-PM-assignee hole).
+        self._enforce_no_pm_code_on_create(req)
 
         # Stable per-criterion ids (1:1 with acceptance_criteria) so children can
         # reference specific parent criteria; generated here when not supplied.
@@ -1244,24 +1243,35 @@ class TaskService(BaseService):
         return list(result.scalars().all())
 
     async def list_open_ci_watch_tasks(
-        self, git_url: str | None = None
+        self, git_url: str | None = None, workflow: str | None = None
     ) -> list[TaskTable]:
         """Non-terminal ci_watch fix tasks — the dedupe + open-cap basis.
 
         Optionally scoped to one repo by ``git_url``: a monorepo registers
         several cell-projects on ONE git_url, so CI-watch dedupe must key on the
         repo, not the project slug — otherwise a red monorepo would open one fix
-        task per cell-project. While an open task exists for a repo the loop must
-        not originate a second; the rolling open-task cap counts these.
+        task per cell-project. Optionally further scoped by ``workflow``: the
+        dedupe key is ``(git_url, effective workflow)`` so a multi-workflow
+        monorepo with two RED workflows gets a fix task per workflow, not one
+        collapsed task that silently leaves the second workflow un-remediated
+        (#44). The effective workflow is ``COALESCE(ci_watch_workflow, default)``
+        so a NULL-workflow project row matches the default workflow.
         """
         stmt = select(TaskTable).where(
             TaskTable.source == CI_WATCH_SOURCE,
             TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
         )
-        if git_url is not None:
-            stmt = stmt.join(
-                ProjectTable, TaskTable.project_id == ProjectTable.id
-            ).where(ProjectTable.git_url == git_url)
+        if git_url is not None or workflow is not None:
+            stmt = stmt.join(ProjectTable, TaskTable.project_id == ProjectTable.id)
+            if git_url is not None:
+                stmt = stmt.where(ProjectTable.git_url == git_url)
+            if workflow is not None:
+                from roboco.config import settings
+
+                effective = func.coalesce(
+                    ProjectTable.ci_watch_workflow, settings.ci_watch_default_workflow
+                )
+                stmt = stmt.where(effective == workflow)
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
@@ -5031,6 +5041,24 @@ class TaskService(BaseService):
         await self._unblock_dependents(task_id)
         return task
 
+    async def _escalation_diverts_to_pool(
+        self, task: TaskTable, target_agent_id: UUID
+    ) -> bool:
+        """True when an escalation target cannot own the task — divert to the pool.
+
+        Two shapes: a board/advisory role assigned work it has no verb for
+        (``_board_cannot_own``), and a Main-PM target handed a main_pm+code task
+        (the 2026-06-27 meltdown shape — a coordinator with no code verb cannot
+        fix the code). Either diverts to a pool release for a role-matched reclaim.
+        """
+        if _board_cannot_own(task) and await self._is_board_advisory_agent(
+            target_agent_id
+        ):
+            return True
+        return main_pm_cannot_own_code(
+            team=task.team, task_type=task.task_type
+        ) and await self._is_main_pm_agent(target_agent_id)
+
     async def apply_escalation(
         self,
         *,
@@ -5096,27 +5124,10 @@ class TaskService(BaseService):
                 target=target_slug,
             )
             return False
-        if _board_cannot_own(task) and await self._is_board_advisory_agent(
-            target_agent_id
-        ):
-            await self._release_code_task_to_pool(
-                task=task,
-                escalator_slug=escalator_slug,
-                blocked_target_slug=target_slug,
-                reason=reason,
-            )
-            return True
-        # Impossibility backstop: a Main-PM target must never receive (back) a
-        # main_pm + code task — a coordinator with no code verb cannot fix the
-        # code, so escalating it to Main PM perpetuates the mismatch (the
-        # 2026-06-27 meltdown shape). Scoped to the team+type combo (NOT a broad
-        # code+main-pm-target rule) so a legacy main_pm+code task can still be
-        # escalated to a cell dev — the correct remediation. The combo is
-        # uncreatable going forward (create backstop + intake coercion), so this
-        # is a backstop for legacy / direct-ORM-write tasks.
-        if main_pm_cannot_own_code(
-            team=task.team, task_type=task.task_type
-        ) and await self._is_main_pm_agent(target_agent_id):
+        if await self._escalation_diverts_to_pool(task, target_agent_id):
+            # A board/advisory or Main-PM-coordination target cannot own this
+            # task — divert to a pool release so a role-matched agent reclaims
+            # it (see ``_escalation_diverts_to_pool`` for the two shapes).
             await self._release_code_task_to_pool(
                 task=task,
                 escalator_slug=escalator_slug,

@@ -551,6 +551,36 @@ class PRGateMixin(_Base):
             )
             return None
 
+    @staticmethod
+    def _gate_review_event_verdict(verb: str, is_root: bool) -> tuple[str, str]:
+        """Map the gate verb to a (review event, verdict label) pair.
+
+        ``pr_pass`` → APPROVE, ``pr_fail`` → REQUEST_CHANGES — except on the
+        root→master PR (``is_root``), which always gets a plain COMMENT so the
+        gate never leaves an approval that could satisfy branch protection (only
+        the CEO merges master) nor a blocking review that could impede that merge.
+        """
+        if verb == "pr_pass":
+            return "COMMENT" if is_root else "APPROVE", "PASSED ✅"
+        return "COMMENT" if is_root else "REQUEST_CHANGES", "CHANGES REQUESTED 🔴"
+
+    @staticmethod
+    def _gate_review_body(
+        verdict: str, reviewer_slug: str, notes: str, is_root: bool
+    ) -> str:
+        """Render the gate-review comment body posted to the assembled PR."""
+        body_lines = [
+            f"## In-path PR-review gate — {verdict}",
+            "",
+            f"Reviewed by **{reviewer_slug}** (RoboCo PR reviewer). Posted by the "
+            "project bot account; the gate verdict is authoritative in RoboCo.",
+            "",
+            (notes or "").strip() or "_(no additional notes)_",
+        ]
+        if is_root:
+            body_lines += ["", "_Only the CEO merges this PR into `master`._"]
+        return "\n".join(body_lines)
+
     async def _post_gate_review_to_pr(
         self, t: Any, verb: str, reviewer_slug: str, notes: str
     ) -> None:
@@ -576,26 +606,10 @@ class PRGateMixin(_Base):
         if not slug or not pr_number:
             return
         is_root = getattr(t, "parent_task_id", None) is None
-        if verb == "pr_pass":
-            event = "COMMENT" if is_root else "APPROVE"
-            verdict = "PASSED ✅"
-        else:
-            event = "COMMENT" if is_root else "REQUEST_CHANGES"
-            verdict = "CHANGES REQUESTED 🔴"
-        body_lines = [
-            f"## In-path PR-review gate — {verdict}",
-            "",
-            f"Reviewed by **{reviewer_slug}** (RoboCo PR reviewer). Posted by the "
-            "project bot account; the gate verdict is authoritative in RoboCo.",
-            "",
-            (notes or "").strip() or "_(no additional notes)_",
-        ]
-        if is_root:
-            body_lines += ["", "_Only the CEO merges this PR into `master`._"]
+        event, verdict = self._gate_review_event_verdict(verb, is_root)
+        body = self._gate_review_body(verdict, reviewer_slug, notes, is_root)
         try:
-            await self.git.post_pr_review(
-                slug, int(pr_number), "\n".join(body_lines), event=event
-            )
+            await self.git.post_pr_review(slug, int(pr_number), body, event=event)
         except Exception:
             logger.exception(
                 "gate review PR post failed", task_id=str(getattr(t, "id", ""))

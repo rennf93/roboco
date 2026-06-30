@@ -459,6 +459,51 @@ class NotificationService:
             )
         return to_agents_uuids
 
+    async def _duplicate_unacked_exists(
+        self,
+        db: AsyncSession,
+        *,
+        from_agent_uuid: UUID,
+        params: CreateNotificationParams,
+        to_agents_uuids: list[UUID],
+    ) -> bool:
+        """True when an unacked same-purpose notification already exists.
+
+        Purpose-based dedup (CEO directive, 2026-06-10): same sender, type,
+        task, overlapping recipients, while a prior one is still unacked —
+        agents re-send the same signal (often reworded) and each copy inflates
+        the recipient's unacked set, soft-blocking i_am_idle and driving respawn
+        churn. Body text is NOT compared. Dedup applies only to ACTION-REQUIRED
+        types; informational carries distinct content per send and acking is
+        voluntary, so deduping them would silently drop broadcasts.
+        """
+        related = params.related_task_id
+        if not ACK_REQUIRED_BY_TYPE.get(params.notification_type, True):
+            return False
+        dup_q = (
+            select(NotificationTable.id)
+            .where(NotificationTable.from_agent == from_agent_uuid)
+            .where(NotificationTable.type == params.notification_type)
+            .where(NotificationTable.to_agents.overlap(to_agents_uuids))
+            .where(~NotificationTable.acked_by.contains(to_agents_uuids))
+            .where(
+                NotificationTable.related_task_id == related
+                if related is not None
+                else NotificationTable.related_task_id.is_(None)
+            )
+            .limit(1)
+        )
+        if await db.scalar(dup_q) is not None:
+            logger.info(
+                "Suppressed duplicate notification (same purpose, unacked)",
+                from_agent=str(from_agent_uuid),
+                type=params.notification_type.value,
+                related_task_id=str(related) if related is not None else None,
+                to_agents=[str(a) for a in to_agents_uuids],
+            )
+            return True
+        return False
+
     async def _create_notification(self, params: CreateNotificationParams) -> None:
         """Create a notification via the database and deliver it."""
         async with get_db_context() as db:
@@ -503,44 +548,17 @@ class NotificationService:
                     to_agents=[str(a) for a in to_agents_uuids],
                 )
                 return
-            # Purpose-based dedup (CEO directive, 2026-06-10): do NOT create a
-            # second notification for the SAME purpose — same sender, same type,
-            # same task, overlapping recipients — while a prior one is still
-            # unacknowledged. Agents loop and re-send the same signal (often
-            # reworded); each copy inflates the recipient's unacked set, which
-            # soft-blocks their i_am_idle and drives respawn churn. A different
-            # type, a different task, a different sender, or a recipient who has
-            # already acked all go through. Body text is NOT compared, so
-            # rewording cannot defeat the guard.
-            #
-            # Dedup only applies to ACTION-REQUIRED types; informational types
-            # carry distinct content per send and acking is voluntary, so
-            # deduping them would silently drop broadcasts.
-            related = params.related_task_id
-            is_ack_required = ACK_REQUIRED_BY_TYPE.get(params.notification_type, True)
-            if is_ack_required:
-                dup_q = (
-                    select(NotificationTable.id)
-                    .where(NotificationTable.from_agent == from_agent_uuid)
-                    .where(NotificationTable.type == params.notification_type)
-                    .where(NotificationTable.to_agents.overlap(to_agents_uuids))
-                    .where(~NotificationTable.acked_by.contains(to_agents_uuids))
-                    .where(
-                        NotificationTable.related_task_id == related
-                        if related is not None
-                        else NotificationTable.related_task_id.is_(None)
-                    )
-                    .limit(1)
-                )
-                if await db.scalar(dup_q) is not None:
-                    logger.info(
-                        "Suppressed duplicate notification (same purpose, unacked)",
-                        from_agent=str(from_agent_uuid),
-                        type=params.notification_type.value,
-                        related_task_id=str(related) if related is not None else None,
-                        to_agents=[str(a) for a in to_agents_uuids],
-                    )
-                    return
+            # Purpose-based dedup (CEO directive, 2026-06-10): suppress a second
+            # notification for the SAME purpose while a prior one is unacked. See
+            # ``_duplicate_unacked_exists`` for the rationale + the action-only
+            # scope (informational types carry distinct content per send).
+            if await self._duplicate_unacked_exists(
+                db,
+                from_agent_uuid=from_agent_uuid,
+                params=params,
+                to_agents_uuids=to_agents_uuids,
+            ):
+                return
             notification = NotificationTable(
                 type=params.notification_type,
                 priority=params.priority,

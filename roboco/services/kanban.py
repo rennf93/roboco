@@ -44,9 +44,7 @@ class KanbanService(BaseService):
     # CARD CREATION
     # =========================================================================
 
-    async def _load_subtask_counts(
-        self, tasks: Sequence[TaskTable]
-    ) -> dict[UUID, int]:
+    async def _load_subtask_counts(self, tasks: Sequence[TaskTable]) -> dict[UUID, int]:
         """#198: batch-count direct children per parent in ONE grouped query, so a
         board of N cards doesn't fire N child-count queries (and so the count is
         real, not a hardcoded 0)."""

@@ -246,6 +246,43 @@ class PrompterService:
             return UUID(str(draft_data["assigned_to"]))
         return None
 
+    def _coerce_pm_code_to_planning(
+        self,
+        *,
+        team: Team,
+        task_type: TaskType,
+        resolved_assigned_to: UUID | None,
+        title: str,
+    ) -> TaskType:
+        """Coerce code->planning when the owner is a coordination role (PM).
+
+        Two layers: team-based (main_pm) and assignee-based (a PM assignee on a
+        cell team). A brand-new intake task is never in needs_revision so the
+        issue-resolution carve-out does not apply.
+        """
+        if main_pm_cannot_own_code(team=team, task_type=task_type):
+            self.log.info(
+                "Main-PM intake task coerced code->planning",
+                team=str(getattr(team, "value", team)),
+                title=title,
+            )
+            return TaskType.PLANNING
+        if resolved_assigned_to is None:
+            return task_type
+        from roboco.foundation.identity import role_for_uuid_or_none
+
+        assignee_role = role_for_uuid_or_none(resolved_assigned_to)
+        if assignee_role is not None and pm_cannot_own_code(
+            role=assignee_role, task_type=task_type, is_issue_resolution=False
+        ):
+            self.log.info(
+                "PM-assignee intake task coerced code->planning",
+                role=str(getattr(assignee_role, "value", assignee_role)),
+                title=title,
+            )
+            return TaskType.PLANNING
+        return task_type
+
     async def create_task_from_draft(
         self,
         draft_data: dict[str, Any],
@@ -321,42 +358,15 @@ class PrompterService:
             default_lead=_lead,
         )
 
-        # A Main PM coordinates — it never owns a code task. A main_pm + code
-        # draft is the structural mismatch behind the 2026-06-27 MegaTask
-        # meltdown (the git/PR/review layer treated the root as code while the
-        # ownership layer treated it as coordination → pr_fail loop). Intake
-        # coerces code -> planning here so the combo can never persist; a
-        # root-subtask / umbrella / single-task main_pm route is a coordination
-        # root whose code ACs live on the delegated cell/dev leaves. The
-        # TaskService.create backstop rejects main_pm + code for non-intake
-        # create paths (the HTTP route).
-        if main_pm_cannot_own_code(team=team, task_type=task_type):
-            self.log.info(
-                "Main-PM intake task coerced code->planning",
-                team=str(getattr(team, "value", team)),
-                title=_text(draft_data.get("title")) or "",
-            )
-            task_type = TaskType.PLANNING
-        elif resolved_assigned_to is not None:
-            # A PM assignee (cell or main) coordinates — it never owns a code
-            # task. The team-based coercion above only catches team=main_pm; a
-            # route="main_pm" / cell-PM-assignee draft can carry a cell team
-            # (e.g. team=backend) so the combo would otherwise persist. Coerce
-            # code->planning whenever the resolved assignee is a PM, mirroring
-            # the team path. A brand-new intake task is never in needs_revision,
-            # so the issue-resolution carve-out does not apply here.
-            from roboco.foundation.identity import role_for_uuid_or_none
-
-            assignee_role = role_for_uuid_or_none(resolved_assigned_to)
-            if assignee_role is not None and pm_cannot_own_code(
-                role=assignee_role, task_type=task_type, is_issue_resolution=False
-            ):
-                self.log.info(
-                    "PM-assignee intake task coerced code->planning",
-                    role=str(getattr(assignee_role, "value", assignee_role)),
-                    title=_text(draft_data.get("title")) or "",
-                )
-                task_type = TaskType.PLANNING
+        # A coordination role (PM) never owns a code task — coerce code->planning
+        # (team-based main_pm path + assignee-based PM path). See
+        # ``_coerce_pm_code_to_planning`` for the 2026-06-27 meltdown rationale.
+        task_type = self._coerce_pm_code_to_planning(
+            team=team,
+            task_type=task_type,
+            resolved_assigned_to=resolved_assigned_to,
+            title=_text(draft_data.get("title")) or "",
+        )
 
         req = TaskCreateRequest(
             title=draft_data["title"],

@@ -197,7 +197,7 @@ async def test_acknowledge_does_not_publish_before_commit(
     )
 
     notif_id, notif = await _seed_agents_and_notification(db_session, recipients=1)
-    recipient_id = notif.to_agents[0]
+    recipient_id = cast("UUID", notif.to_agents[0])
     service = get_notification_delivery_service(db_session)
     await service.acknowledge(notif_id, recipient_id, ack_type="received")
 
@@ -216,7 +216,7 @@ async def test_acknowledge_publishes_after_commit(
     )
 
     notif_id, notif = await _seed_agents_and_notification(db_session, recipients=1)
-    recipient_id = notif.to_agents[0]
+    recipient_id = cast("UUID", notif.to_agents[0])
     service = get_notification_delivery_service(db_session)
     await service.acknowledge(notif_id, recipient_id, ack_type="received")
     assert bus.published == []  # still nothing before commit
@@ -243,7 +243,7 @@ async def test_acknowledge_rollback_drops_phantom(
     )
 
     notif_id, notif = await _seed_agents_and_notification(db_session, recipients=1)
-    recipient_id = notif.to_agents[0]
+    recipient_id = cast("UUID", notif.to_agents[0])
     service = get_notification_delivery_service(db_session)
     await service.acknowledge(notif_id, recipient_id, ack_type="received")
 

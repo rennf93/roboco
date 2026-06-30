@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from roboco.events.bus import EventBus, get_event_bus, init_event_bus
 from roboco.events.stream_bus import StreamEventBus
 from roboco.models.events import Event, EventType
+
+if TYPE_CHECKING:
+    from redis.asyncio import Redis
 
 
 def test_get_event_bus_delegates() -> None:
@@ -84,7 +88,7 @@ async def test_dispatch_skips_handler_that_already_succeeded_on_replay() -> None
     (event.id, handler) processed via a SET-NX guard."""
 
     bus = StreamEventBus()
-    bus._redis = _FakeRedis()
+    bus._redis = cast("Redis", _FakeRedis())
 
     calls: list[str] = []
 
@@ -108,7 +112,7 @@ async def test_dispatch_reruns_handler_that_failed_on_first_attempt() -> None:
     processed — a replay re-runs it (the SET-NX key is cleared on failure)."""
 
     bus = StreamEventBus()
-    bus._redis = _FakeRedis()
+    bus._redis = cast("Redis", _FakeRedis())
 
     attempts: list[str] = []
 

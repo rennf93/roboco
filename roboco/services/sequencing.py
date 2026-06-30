@@ -230,6 +230,32 @@ def _surfaced_siblings(siblings: list) -> list:
     ]
 
 
+def _same_assignee_lane_edges(siblings: list) -> list[tuple[object, object]]:
+    """Undeclared-surface fallback: chain each (project, assignee) lane by
+    ``(priority, sequence)`` so same-assignee same-repo siblings share a working
+    tree without an out-of-order merge conflict. Same-assignee scoped so
+    cross-dev parallel work is untouched; the edge survives reassignment. Same
+    stable sort → re-runs only add edges, never flip a pair into a reverse.
+    """
+    lanes: dict[tuple[str, object], list] = defaultdict(list)
+    for s in siblings:
+        proj = getattr(s, "project_id", None)
+        owner = getattr(s, "assigned_to", None)
+        if proj is not None and owner is not None:
+            lanes[(str(proj), owner)].append(s)
+    fallback: list[tuple[object, object]] = []
+    for members in lanes.values():
+        members.sort(
+            key=lambda s: (
+                int(getattr(s, "priority", 2)),
+                int(getattr(s, "sequence", 0)),
+            )
+        )
+        for prev, cur in pairwise(members):
+            fallback.append((prev.id, cur.id))
+    return fallback
+
+
 def dev_task_collision_edges(siblings: list) -> list[tuple[object, object]]:
     """Wire the dev-task collision DAG for a parent's surfaced siblings.
 
@@ -285,28 +311,10 @@ def dev_task_collision_edges(siblings: list) -> list[tuple[object, object]]:
     if edges:
         return edges
 
-    # Undeclared-surface fallback: same-assignee same-repo siblings share a
-    # working tree, so chain each (project, assignee) lane by (priority,
-    # sequence) to avoid an out-of-order merge conflict. Same-assignee scoped so
-    # cross-dev parallel work is untouched; the edge survives reassignment.
-    # Only fires with zero collision edges; same stable sort -> re-runs only add.
-    lanes: dict[tuple[str, object], list] = defaultdict(list)
-    for s in siblings:
-        proj = getattr(s, "project_id", None)
-        owner = getattr(s, "assigned_to", None)
-        if proj is not None and owner is not None:
-            lanes[(str(proj), owner)].append(s)
-    fallback: list[tuple[object, object]] = []
-    for members in lanes.values():
-        members.sort(
-            key=lambda s: (
-                int(getattr(s, "priority", 2)),
-                int(getattr(s, "sequence", 0)),
-            )
-        )
-        for prev, cur in pairwise(members):
-            fallback.append((prev.id, cur.id))
-    return fallback
+    # Undeclared-surface fallback (zero collision edges): chain same-assignee
+    # same-repo lanes so they don't merge out-of-order. See
+    # ``_same_assignee_lane_edges`` for the rationale + re-run idempotency.
+    return _same_assignee_lane_edges(siblings)
 
 
 # ---------------------------------------------------------------------------
