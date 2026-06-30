@@ -323,6 +323,24 @@ async def test_main_pm_board_flat_sorts_into_team_columns(kanban_setup: dict) ->
     assert board.blocked_count >= 1
 
 
+@pytest.mark.asyncio
+async def test_main_pm_board_flat_columns_non_cell_teams(kanban_setup: dict) -> None:
+    """#196: a Main-PM (or other non-cell-team) task used to be counted in
+    total_cards but never columned — the card was built and discarded. It now
+    lands in a Coordination column so the board's columns sum to total_cards."""
+    db = kanban_setup["db"]
+    svc = kanban_setup["svc"]
+    db.add(_seed(kanban_setup, status=TaskStatus.IN_PROGRESS, team=Team.MAIN_PM))
+    await db.flush()
+
+    board = await svc.get_main_pm_board_flat()
+    cols = {c.id: c for c in board.columns}
+    assert "coordination" in cols
+    assert len(cols["coordination"].cards) == 1
+    # No card is silently dropped: the columned cards cover every loaded task.
+    assert sum(len(c.cards) for c in board.columns) == board.total_cards
+
+
 # ---------------------------------------------------------------------------
 # #198: subtask_count must reflect the real task tree, not a hardcoded 0
 # ---------------------------------------------------------------------------

@@ -89,3 +89,54 @@ async def test_network_error_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     svc = GitHubProvisioningService(token="tok", org="acme", client=_client(handler))
     with pytest.raises(ProvisioningError):
         await svc.create_repo("x")
+
+
+@pytest.mark.asyncio
+async def test_create_repo_reuses_already_existing_repo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#83/#84: a 422 'name already exists' (a repo orphaned by a rolled-back
+    prior approval) is fetched and returned, not errored — so re-approval reuses
+    the GitHub repo instead of colliding."""
+    monkeypatch.setattr(settings, "provisioning_enabled", True)
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path == "/orgs/acme/repos":
+            return httpx.Response(
+                422, text='{"message": "name already exists on this account"}'
+            )
+        if request.url.path == "/repos/acme/orphan":
+            return httpx.Response(
+                200,
+                json={
+                    "full_name": "acme/orphan",
+                    "clone_url": "https://github.com/acme/orphan.git",
+                    "html_url": "https://github.com/acme/orphan",
+                },
+            )
+        return httpx.Response(404)
+
+    svc = GitHubProvisioningService(token="tok", org="acme", client=_client(handler))
+    repo = await svc.create_repo("orphan", "desc")
+    assert repo.full_name == "acme/orphan"
+    assert repo.clone_url.endswith("orphan.git")
+    # POST create -> 422, then GET the existing repo.
+    assert calls == ["/orgs/acme/repos", "/repos/acme/orphan"]
+
+
+@pytest.mark.asyncio
+async def test_create_repo_other_422_still_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 422 that is NOT the 'already exists' shape (e.g. a validation error) is
+    still a hard failure — only the orphaned-repo case is treated idempotently."""
+    monkeypatch.setattr(settings, "provisioning_enabled", True)
+    svc = GitHubProvisioningService(
+        token="tok",
+        org="acme",
+        client=_client(lambda _r: httpx.Response(422, text="name reserved")),
+    )
+    with pytest.raises(ProvisioningError):
+        await svc.create_repo("dup")

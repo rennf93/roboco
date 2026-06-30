@@ -9,8 +9,12 @@ lifecycle unchanged.
 Partial-failure note: GitHub repo creation is an external side effect that
 cannot be rolled back with the DB transaction. If provisioning fails partway,
 the DB writes roll back (the route does not commit) but any repos already
-created on GitHub remain; re-approval will collide on the repo name. The CEO
-resolves such a rare case manually.
+created on GitHub remain. Re-approval is idempotent end-to-end: a committed
+Project/Product is reused by slug (no re-create), and a GitHub repo left
+orphaned by a rolled-back prior attempt is reused by name —
+``GitHubProvisioningService.create_repo`` treats GitHub's 422 "name already
+exists" as "fetch and return the existing repo" instead of erroring (#83/#84).
+A re-approval therefore never collides; the CEO need only re-approve.
 """
 
 from __future__ import annotations

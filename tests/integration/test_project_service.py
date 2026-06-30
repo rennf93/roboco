@@ -182,6 +182,28 @@ async def test_update_returns_none_for_missing(project_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_update_explicit_none_clears_field(project_setup: dict) -> None:
+    """#197: a field explicitly set to None clears the stored value; a field not
+    set at all is left unchanged (unset vs explicit-None)."""
+    svc = project_setup["svc"]
+    payload = _project_payload(uuid4().hex[:6])
+    pd = payload.model_dump()
+    pd["test_command"] = "uv run pytest"
+    project = await svc.create(ProjectCreate(**pd), project_setup["creator_id"])
+    assert project.test_command == "uv run pytest"
+
+    # Unset (not passed) -> leave unchanged.
+    renamed = await svc.update(project.id, ProjectUpdate(name="new name"))
+    assert renamed is not None
+    assert renamed.test_command == "uv run pytest"
+
+    # Explicit None -> clears the stored value.
+    cleared = await svc.update(project.id, ProjectUpdate(test_command=None))
+    assert cleared is not None
+    assert cleared.test_command is None
+
+
+@pytest.mark.asyncio
 async def test_delete_project(project_setup: dict) -> None:
     svc = project_setup["svc"]
     project = await svc.create(

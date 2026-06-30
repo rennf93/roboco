@@ -447,6 +447,12 @@ class KanbanService(BaseService):
                 id="ux_ui", title="UX/UI", status=TaskStatus.IN_PROGRESS, cards=[]
             ),
             KanbanColumn(
+                id="coordination",
+                title="Coordination",
+                status=TaskStatus.IN_PROGRESS,
+                cards=[],
+            ),
+            KanbanColumn(
                 id="done", title="Done", status=TaskStatus.COMPLETED, cards=[]
             ),
         ]
@@ -464,6 +470,11 @@ class KanbanService(BaseService):
                 col_map["frontend"].cards.append(card)
             elif task.team == Team.UX_UI:
                 col_map["ux_ui"].cards.append(card)
+            else:
+                # Non-cell teams (Main PM, Board, fullstack, system, ...) used
+                # to be counted in total_cards but never columned — the card was
+                # built and discarded (#196). Column them under Coordination.
+                col_map["coordination"].cards.append(card)
 
             if task.status == TaskStatus.BLOCKED:
                 blocked_count += 1
