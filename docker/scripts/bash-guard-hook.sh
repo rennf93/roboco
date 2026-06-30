@@ -338,15 +338,14 @@ if echo "$low" | grep -qE '(^|[[:space:];&|])(uv[[:space:]]+(sync|lock|add|remov
     exit 2
 fi
 
-# `uv run` retargeting onto /app/.venv — same brick as the package-mutation
-# block above, via a verb that block doesn't list. In the agent container
-# VIRTUAL_ENV=/app/.venv is baked globally, so `uv run --active` ALWAYS
-# resolves onto /app/.venv and uv rebuilds it (be-dev-1 root cause,
-# 2026-06-29). Also catch `uv run`/`uvx` with an explicit /app target.
+# `uv run --active` is denied as a footgun: the contract is bare `uv run`
+# (workspace .venv, cwd-relative). VIRTUAL_ENV is no longer image-baked (it
+# leaked into every workspace `uv run` as a warning), so --active has no active
+# env and errors; an explicit /app target still bricks the gateway (next block).
 # Bare `uv run` (workspace .venv, cwd-relative) is untouched.
 if echo "$low" | grep -qE '(^|[[:space:];&|])uv[[:space:]]+run([[:space:]]|$)' && \
    echo "$low" | grep -qE '(^|[[:space:]=])--active([[:space:]]|$)'; then
-    echo "Denied: \`uv run --active\` retargets onto VIRTUAL_ENV=/app/.venv (the image-baked MCP-gateway venv) and rebuilds it, bricking your own gateway tools. Use bare \`uv run\` (it uses your workspace .venv under /data/workspaces, never /app). If /app's environment looks broken, report it via your blocked / escalation verb." >&2
+    echo "Denied: \`uv run --active\` is not the contract — use bare \`uv run\` (it uses your workspace .venv under /data/workspaces, never /app). If /app's environment looks broken, report it via your blocked / escalation verb." >&2
     exit 2
 fi
 if echo "$low" | grep -qE '(^|[[:space:];&|])(uv[[:space:]]+run|uvx)([[:space:]]|$)' && \

@@ -100,8 +100,9 @@ run_case "deny rm -rf /etc"         2 "rm -rf /etc"
 run_case "deny uv sync --project /app"        2 "uv sync --project /app"
 run_case "deny uv pip install /app venv"      2 "uv pip install --python /app/.venv/bin/python foo"
 run_case "deny cd /app && uv sync"            2 "cd /app && uv sync"
-# uv run --active: in the agent VIRTUAL_ENV=/app/.venv is baked globally, so
-# --active ALWAYS retargets onto /app/.venv → uv rebuilds it → bricked gateway.
+# uv run --active: not the contract (bare `uv run` uses the workspace .venv).
+# VIRTUAL_ENV is no longer image-baked, so --active has no active env and
+# errors; the guard still denies it with a clear remediation message.
 run_case "deny uv run --active"               2 "uv run --active pytest"
 run_case "deny uv run --active ruff"          2 "uv run --active ruff check ."
 run_case "deny env venv /app uv run active"   2 "VIRTUAL_ENV=/app/.venv uv run --active pytest"

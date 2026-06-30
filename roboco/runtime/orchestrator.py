@@ -2920,9 +2920,8 @@ class AgentOrchestrator:
             # Every MCP server is launched as `uv run python -m
             # roboco.mcp.<server>` by Claude Code, with cwd = the agent's
             # WORKSPACE (not /app). Without this, `uv run` resolves a
-            # cwd-relative `.venv` (≠ the baked /app/.venv), ignores the
-            # image's VIRTUAL_ENV with a warning, and RE-SYNCS the full
-            # dependency set (torch/lancedb/pyarrow/scipy, ~350MB) into a
+            # cwd-relative `.venv` (≠ the pre-baked /app/.venv) and RE-SYNCS
+            # the full dependency set (torch/lancedb/pyarrow/scipy, ~350MB) into a
             # fresh venv on every spawn — masked by a warm uv wheel cache,
             # but on a cold cache (first spawn after an image rebuild) the
             # download takes minutes and the MCP servers never come up

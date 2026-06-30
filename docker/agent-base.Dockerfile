@@ -95,8 +95,11 @@ RUN echo '{}' > /home/agent/.claude.json
 # PYTHONUNBUFFERED: flush stdout/stderr immediately so the SDK driver's logs
 # (e.g. the intake agent's turn-received / streamed lines) reach `docker logs` in
 # real time instead of block-buffering until the container is reaped.
+# VIRTUAL_ENV is intentionally NOT baked: it made bare `uv run` in a workspace
+# clone warn ("VIRTUAL_ENV=/app/.venv does not match project .venv") on every
+# gate run. MCP/SDK pin to /app/.venv via UV_PROJECT_ENVIRONMENT (set in the
+# orchestrator + sdk-startup-hook), not VIRTUAL_ENV. PATH keeps gateway tools.
 ENV PATH="/app/.venv/bin:$PATH" \
-    VIRTUAL_ENV=/app/.venv \
     PYTHONUNBUFFERED=1
 
 # Claude Code uses mounted ~/.claude for auth.
