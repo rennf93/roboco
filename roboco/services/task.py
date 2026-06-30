@@ -2197,7 +2197,16 @@ class TaskService(BaseService):
             and new_status in (TaskStatus.PENDING, TaskStatus.IN_PROGRESS)
             and task.pre_block_assignee is not None
         ):
-            return await self._apply_pre_block_restore(task, new_status)
+            # Thread the admin actor into the restore so the audit attributes
+            # the re-owning to the admin (not the restored owner) and an
+            # admin_override row is emitted (#2176).
+            return await self._apply_pre_block_restore(
+                task,
+                new_status,
+                actor_id=actor_id,
+                actor_role=actor_role,
+                admin_override=True,
+            )
         task.status = new_status
         await self.session.flush()
         self._emit_status_transition_audit(
@@ -8460,7 +8469,13 @@ class TaskService(BaseService):
         return await self._apply_pre_block_restore(task, restored_status)
 
     async def _apply_pre_block_restore(
-        self, task: TaskTable, restored_status: TaskStatus
+        self,
+        task: TaskTable,
+        restored_status: TaskStatus,
+        *,
+        actor_id: str | UUID | None = None,
+        actor_role: str | None = None,
+        admin_override: bool = False,
     ) -> TaskTable:
         """Restore a blocked task to its snapshotted status + owner.
 
@@ -8468,6 +8483,14 @@ class TaskService(BaseService):
         emits the audit explicitly, applies the branchless guard legacy
         unblock() relies on, restores ownership from the snapshot, and clears
         the pre-block snapshot fields.
+
+        When reached from ``admin_set_status`` (``admin_override=True``) the
+        admin caller's ``actor_id``/``actor_role`` stamp the audit row — the
+        re-owning of the task must record WHO triggered it, not the restored
+        owner — and a ``task.admin_override`` row is emitted so the override is
+        distinguishable from an in-band ``unblock(restore=True)`` (#2176). The
+        in-band unblock path passes no actor and keeps the legacy attribution
+        (the restored owner) with no override row.
         """
         # A task with no branch cannot resume in_progress — the dispatcher
         # refuses a branchless in_progress task and loops — so divert it to
@@ -8493,16 +8516,47 @@ class TaskService(BaseService):
         await self.session.flush()
         # This restore path sets the status directly (bypassing the strict
         # transition validator), so emit the audit explicitly — no status
-        # change may skip the audit log. A restore to a snapshotted
-        # needs_revision is the same rework cycle resuming, not a fresh
-        # rejection, so undo the bump the chokepoint applied above.
+        # change may skip the audit log. Attribute to the admin actor when
+        # present (admin_set_status); else the restored owner (in-band unblock).
+        # A restore to a snapshotted needs_revision is the same rework cycle
+        # resuming, not a fresh rejection, so undo the bump the chokepoint
+        # applied above.
         self._emit_status_transition_audit(
             task,
             from_status=pre_status,
             to_status=restored_status.value,
-            agent_role=None,
-            audit_agent_id=restored_owner,
+            agent_role=actor_role,
+            audit_agent_id=actor_id if actor_id is not None else restored_owner,
         )
+        if admin_override:
+            # #2176: an admin-triggered restore is an explicit override past the
+            # lifecycle gate — stamp it as such so the re-owning is traceable to
+            # the admin, independent of the force flag (this branch runs with
+            # force=false because pending/in_progress aren't hatch destinations).
+            from roboco.db.tables import AuditLogTable
+
+            agent_uuid: UUID | None = None
+            if actor_id is not None:
+                try:
+                    agent_uuid = UUID(str(actor_id))
+                except (ValueError, AttributeError):
+                    agent_uuid = None
+            self.session.add(
+                AuditLogTable(
+                    event_type="task.admin_override",
+                    agent_id=agent_uuid,
+                    target_type="task",
+                    target_id=task.id,
+                    severity="warning",
+                    details={
+                        "from_status": pre_status,
+                        "to_status": restored_status.value,
+                        "agent_role": actor_role,
+                        "forced": False,
+                        "restore": True,
+                    },
+                )
+            )
         if (
             restored_status == TaskStatus.NEEDS_REVISION
             and pre_status != TaskStatus.NEEDS_REVISION.value
