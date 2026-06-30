@@ -483,6 +483,54 @@ class WorkspaceService:
         )
 
     @staticmethod
+    def _clone_root_default_branch(clone_root: Path) -> str:
+        # origin/HEAD points at the repo's default branch (set on clone).
+        # Returns the bare branch name ("main"), or "" when unresolvable (no
+        # remote, e.g. a test/local clone).
+        res = WorkspaceService._worktree_git(
+            clone_root,
+            ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+            check=False,
+        )
+        if res.returncode != 0:
+            return ""
+        val = res.stdout.strip()
+        return val.split("/", 1)[1] if val.startswith("origin/") else val
+
+    @staticmethod
+    def _park_clone_root_off_branch(clone_root: Path, branch: str) -> None:
+        """Restore the F123 invariant before ``git worktree add <branch>``.
+
+        The clone root parks on the default branch (or detached); the task
+        branch lives in the worktree. A re-dispatch after the clone root drifted
+        onto the task branch (a pre-F123 leftover / a missed checkout path) makes
+        ``worktree add <branch>`` fatal ("already checked out at '<clone_root>'"),
+        releasing the claim and re-dispatching into the same collision every
+        tick. If the clone root's HEAD is the task branch, move it back to the
+        default branch (via origin/HEAD); if that is unresolvable or the checkout
+        is blocked, detach HEAD at the same commit — either frees the branch ref
+        for the worktree. The clone root never carries task work under F123, so
+        nothing is lost.
+        """
+        cur = WorkspaceService._worktree_git(
+            clone_root, ["branch", "--show-current"], check=False
+        )
+        if cur.returncode != 0 or cur.stdout.strip() != branch:
+            return
+        default = WorkspaceService._clone_root_default_branch(clone_root)
+        if default:
+            moved = WorkspaceService._worktree_git(
+                clone_root, ["checkout", default], check=False
+            )
+            if moved.returncode == 0:
+                return
+        # No resolvable default, or checkout blocked by a dirty tree: detach
+        # at the same commit (no working-tree change) so the branch ref is free.
+        WorkspaceService._worktree_git(
+            clone_root, ["checkout", "--detach"], check=False
+        )
+
+    @staticmethod
     def _link_shared_venv(worktree: Path, clone_root: Path) -> None:
         """Symlink ``worktree/.venv -> ../../.venv`` (the clone-root venv).
 
@@ -518,6 +566,7 @@ class WorkspaceService:
         ``reset --hard`` + ``checkout -b`` that clobbered a still-active root.
         """
         if not (worktree.exists() and (worktree / ".git").is_file()):
+            self._park_clone_root_off_branch(clone_root, branch)
             branch_exists = (
                 self._worktree_git(
                     clone_root,
@@ -549,6 +598,7 @@ class WorkspaceService:
         worktree is a no-op.
         """
         if not (worktree.exists() and (worktree / ".git").is_file()):
+            self._park_clone_root_off_branch(clone_root, branch)
             res = self._worktree_git(
                 clone_root, ["worktree", "add", str(worktree), branch], check=False
             )

@@ -399,3 +399,89 @@ async def test_self_heal_falls_back_to_origin_head_when_branch_not_pushed(
     assert fetch.await_count == 1, "missing local ref still attempts a fetch"
     assert wt.exists(), "fallback -b from origin/HEAD must break the loop"
     assert _git(wt, "rev-parse", "--abbrev-ref", "HEAD").strip() == branch
+
+
+# ---------------------------------------------------------------------------
+# Clone-root-left-on-task-branch recovery (live be-pm needs_revision wedge,
+# 2026-06-30). F123 invariant: the clone root parks on the default branch (or
+# detached); the task branch lives in the worktree. A re-dispatch after the clone
+# root drifted onto the task branch (a pre-F123 leftover / missed checkout)
+# made `git worktree add <branch>` fatal ("already checked out at '<clone>'"),
+# releasing the claim and re-dispatching into the same collision every tick.
+# ensure_worktree must restore the invariant before the add: move the clone root
+# back to the default branch (via origin/HEAD), detaching as a fallback so the
+# branch ref is free for the worktree either way.
+# ---------------------------------------------------------------------------
+
+
+def _clone_on_branch(clone: Path, branch: str) -> None:
+    _git(clone, "branch", branch)
+    _git(clone, "checkout", branch)
+
+
+async def test_ensure_worktree_restores_clone_root_left_on_task_branch(
+    clone: Path,
+) -> None:
+    svc = _service()
+    branch = "feature/d3dab0fc"
+    # Set up a resolvable origin/HEAD (a real clone has this) so the default
+    # branch is "main", then drift the clone root onto the task branch.
+    main_sha = _git(clone, "rev-parse", "main").strip()
+    _git(clone, "remote", "add", "origin", str(clone))
+    _git(clone, "update-ref", "refs/remotes/origin/main", main_sha)
+    _git(clone, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+    _clone_on_branch(clone, branch)
+    assert _git(clone, "branch", "--show-current").strip() == branch
+
+    wt = clone / ".worktrees" / "d3dab0fc"
+    with patch("roboco.services.workspace._ensure_agent_owned"):
+        await svc.ensure_worktree(clone, wt, branch, "origin/HEAD")
+
+    assert (wt / ".git").is_file(), "worktree must be created despite the collision"
+    assert _git(wt, "rev-parse", "--abbrev-ref", "HEAD").strip() == branch
+    # Clone root restored to the default branch (F123 invariant), not still on
+    # the task branch, and not left dangling mid-recovery.
+    assert _git(clone, "rev-parse", "--abbrev-ref", "HEAD").strip() == "main"
+
+
+async def test_ensure_worktree_detaches_when_default_branch_unresolvable(
+    clone: Path,
+) -> None:
+    # No origin remote (e.g. a test/local clone): origin/HEAD can't resolve, so
+    # the recovery detaches the clone root to free the branch for the worktree.
+    svc = _service()
+    branch = "feature/d3dab0fc"
+    _clone_on_branch(clone, branch)
+    assert _git(clone, "branch", "--show-current").strip() == branch
+
+    wt = clone / ".worktrees" / "d3dab0fc"
+    with patch("roboco.services.workspace._ensure_agent_owned"):
+        await svc.ensure_worktree(clone, wt, branch, "origin/HEAD")
+
+    assert (wt / ".git").is_file(), "worktree must be created (branch freed via detach)"
+    assert _git(wt, "rev-parse", "--abbrev-ref", "HEAD").strip() == branch
+    # Detached HEAD (abbrev-ref is HEAD), the task branch ref no longer checked
+    # out at the clone root.
+    assert _git(clone, "rev-parse", "--abbrev-ref", "HEAD").strip() == "HEAD"
+    assert _ref_exists(clone, f"refs/heads/{branch}"), "branch ref preserved"
+
+
+async def test_self_heal_recovers_clone_root_left_on_task_branch(clone: Path) -> None:
+    # The live failure path: spawn -> ensure_worktree_self_heal -> worktree add.
+    # With the clone root parked on the task branch, the self-heal re-add must
+    # restore the invariant and re-attach the worktree instead of fatal-looping.
+    svc = _service()
+    branch = "feature/d3dab0fc"
+    main_sha = _git(clone, "rev-parse", "main").strip()
+    _git(clone, "remote", "add", "origin", str(clone))
+    _git(clone, "update-ref", "refs/remotes/origin/main", main_sha)
+    _git(clone, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+    _clone_on_branch(clone, branch)
+
+    wt = clone / ".worktrees" / "d3dab0fc"
+    with patch("roboco.services.workspace._ensure_agent_owned"):
+        await svc.ensure_worktree_self_heal(clone, wt, branch, "proj")
+
+    assert (wt / ".git").is_file()
+    assert _git(wt, "rev-parse", "--abbrev-ref", "HEAD").strip() == branch
+    assert _git(clone, "rev-parse", "--abbrev-ref", "HEAD").strip() == "main"
