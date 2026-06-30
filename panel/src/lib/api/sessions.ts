@@ -89,7 +89,7 @@ export const sessionsApi = {
     relationshipType: string = "discussion",
   ): Promise<SessionTaskLinkResponse> => {
     const { data } = await api.post<SessionTaskLinkResponse>(
-      "/sessions/" + sessionId + "/add-task",
+      "/sessions/" + sessionId + "/tasks",
       {
         task_id: taskId,
         is_primary: isPrimary,
@@ -101,9 +101,7 @@ export const sessionsApi = {
 
   // Unlink a task from a session (PM only)
   unlinkTask: async (sessionId: string, taskId: string): Promise<void> => {
-    await api.delete("/sessions/" + sessionId + "/remove-task", {
-      data: { task_id: taskId },
-    });
+    await api.delete("/sessions/" + sessionId + "/tasks/" + taskId);
   },
 
   // Create a session for tasks (PM only)
@@ -143,30 +141,6 @@ export const sessionsApi = {
       return newSession;
     }
     const { data } = await api.post<Session>("/sessions", session);
-    return data;
-  },
-
-  // Update a task link in a session
-  updateTaskLink: async (
-    sessionId: string,
-    taskId: string,
-    updates: { is_primary?: boolean; relationship_type?: string },
-  ): Promise<SessionTaskLinkResponse> => {
-    if (isMockMode()) {
-      return {
-        id: `link-${Date.now()}`,
-        session_id: sessionId,
-        task_id: taskId,
-        is_primary: updates.is_primary ?? false,
-        relationship_type: updates.relationship_type ?? "discussion",
-        added_at: new Date().toISOString(),
-        added_by: null,
-      };
-    }
-    const { data } = await api.post<SessionTaskLinkResponse>(
-      "/sessions/" + sessionId + "/update-task",
-      { task_id: taskId, ...updates },
-    );
     return data;
   },
 };
