@@ -919,6 +919,7 @@ class Choreographer:
         agent_id: UUID,
         task: Any,
         role_str: str | None = None,
+        skip_dev_guards: bool = False,
     ) -> Envelope | None:
         """Run concurrency-invariant claim guards. Returns rejection or None.
 
@@ -934,9 +935,16 @@ class Choreographer:
         guard ``unmet_dependency`` still applies to everyone. A ``None`` role
         keeps the full guards (safe default for non-PM callers).
 
+        ``skip_dev_guards`` skips the dev-only guards (``already_active`` /
+        ``paused`` / ``_lane_claim_guard``) for a non-transitioning inspection
+        claim — a pr_reviewer claiming an awaiting_pr_review gate task does not
+        start work, so the single-active-task / code-lane invariants that gate a
+        developer starting a code task do not apply (the dependency guard still
+        runs). See ``claim_gate_review`` (#192).
+
         Pre-gateway location: _helpers.py:124-204.
         """
-        if role_str not in self._COORDINATOR_ROLES:
+        if not skip_dev_guards and role_str not in self._COORDINATOR_ROLES:
             in_progress = await self.task.list_in_progress_for_agent(agent_id)
             if guard := already_active_guard(in_progress, task.id):
                 return guard
@@ -972,6 +980,8 @@ class Choreographer:
                 # unless the task is currently claimed/in_progress.
                 await self.task.release_dependency_blocked_claim(task.id)
                 return guard
+        if skip_dev_guards:
+            return None
         return await self._lane_claim_guard(task)
 
     async def _lane_claim_guard(self, task: Any) -> Envelope | None:
@@ -4680,15 +4690,19 @@ class Choreographer:
             )
         return None
 
-    _CELL_PM_SLUGS: ClassVar[frozenset[str]] = frozenset({"be-pm", "fe-pm", "ux-pm"})
-
     @staticmethod
     def _validate_assignee_task_type(assigned_to: str, task_type: str) -> str | None:
         """Reject role-vs-type misclassifications.
 
         Rules:
-        - delegating to a Cell PM requires
-          ``task_type='planning'``. Cell PMs decompose; they don't execute.
+        - delegating to a PM (Cell PM OR Main PM) requires
+          ``task_type='planning'``. PMs decompose/coordinate; they don't
+          execute. A freshly delegated subtask is never in ``needs_revision``,
+          so the issue-resolution carve-out (a PM taking a code task to resolve
+          review issues) does not apply here — that lives at the claim gate
+          (``lifecycle._check_claim_rules_narrow`` via ``pm_cannot_own_code``).
+          Main PM was previously omitted (only the cell-PM slug set was
+          checked), leaving a delegate-to-main-pm-as-code hole.
         - (2026-05-11 smoke): delegating to a Developer requires
           ``task_type in {'code', 'documentation', 'research'}``. Devs
           implement. Planning/design/administrative belong to PMs/board.
@@ -4707,13 +4721,11 @@ class Choreographer:
           to review PRs of code changes).
         - Delegating to a Documenter requires ``task_type='documentation'``.
         """
+        pm_err = Choreographer._pm_task_type_error(assigned_to, task_type)
+        if pm_err is not None:
+            return pm_err
         from roboco.foundation.identity import AGENTS, Role, Team
 
-        if assigned_to in Choreographer._CELL_PM_SLUGS and task_type != "planning":
-            return (
-                f"task_type={task_type!r} is invalid for assignee {assigned_to!r}: "
-                f"Cell PMs own planning tasks, not code/documentation/etc."
-            )
         agent = AGENTS.get(assigned_to)
         if agent is None:
             return None
@@ -4735,6 +4747,28 @@ class Choreographer:
                 f"'documentation'."
             )
         return None
+
+    @staticmethod
+    def _pm_task_type_error(assigned_to: str, task_type: str) -> str | None:
+        """Reject a code/non-planning task_type delegated to a PM (cell or main).
+
+        Extracted from ``_validate_assignee_task_type`` so the compound PM guard
+        doesn't inflate the dispatcher's complexity. A freshly delegated subtask
+        is never in ``needs_revision``, so the issue-resolution carve-out does
+        not apply here (it lives at the claim gate).
+        """
+        from roboco.foundation.identity import AGENTS, Role
+
+        agent = AGENTS.get(assigned_to)
+        if agent is None or agent.role not in (Role.CELL_PM, Role.MAIN_PM):
+            return None
+        if task_type == "planning":
+            return None
+        return (
+            f"task_type={task_type!r} is invalid for assignee"
+            f" {assigned_to!r}: PMs own planning tasks, not"
+            f" code/documentation/etc."
+        )
 
     @staticmethod
     def _developer_task_type_error(
@@ -4767,13 +4801,19 @@ class Choreographer:
         """
         from roboco.foundation.identity import AGENTS, Role, Team
 
-        if assigned_to in Choreographer._CELL_PM_SLUGS:
+        agent = AGENTS.get(assigned_to)
+        if agent is not None and agent.role is Role.MAIN_PM:
+            return (
+                "Main PMs own PLANNING tasks — they coordinate across cells and "
+                "delegate execution. Pass task_type='planning' when delegating to "
+                "the Main PM; route code work to a developer via the cell PM."
+            )
+        if agent is not None and agent.role is Role.CELL_PM:
             return (
                 "Cell PMs (be-pm/fe-pm/ux-pm) own PLANNING tasks — they "
                 "decompose the slice and delegate code work to devs. Pass "
                 "task_type='planning' when delegating to a Cell PM."
             )
-        agent = AGENTS.get(assigned_to)
         if agent is not None and agent.role is Role.DEVELOPER:
             if agent.team is Team.UX_UI:
                 return (
@@ -6013,6 +6053,10 @@ class Choreographer:
                     "already present in the base via a sibling PR that merged "
                     "first. Completing the task without a redundant merge."
                 ),
+                # Preserve the superseded branch (audit / reference), matching
+                # the orchestrator supersede path. close_pull_request defaults
+                # to non-destructive now; explicit here so the two paths agree.
+                delete_branch=False,
                 actor_agent_id=pm_agent_id,
                 project_id=cast("UUID", t.project_id),
             )
@@ -6218,7 +6262,15 @@ class Choreographer:
                 return None
             sha = await self.git.get_pr_head_sha(slug, int(pr_number))
             return sha if isinstance(sha, str) else None
-        except Exception:
+        except Exception as exc:
+            # Fail-open (never wedge the PM on a lookup error), but log so a
+            # regression in the slug resolver / git helper doesn't silently
+            # turn the pr_fail re-submit loop-stopper into a no-op (#5).
+            logger.warning(
+                "unchanged_pr_guard head_sha lookup failed (fail-open)",
+                pr_number=pr_number,
+                error=str(exc),
+            )
             return None
 
     async def _submit_up_unchanged_pr_guard(

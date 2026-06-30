@@ -129,8 +129,8 @@ class PlaybookService(BaseService):
                 resource_type="playbook",
             )
         playbook.status = PlaybookStatus.ARCHIVED.value
-        playbook.approved_by = approver_id
-        playbook.approved_at = datetime.now(UTC)
+        playbook.archived_by = approver_id
+        playbook.archived_at = datetime.now(UTC)
         await self.session.flush()
         self.log.info("Playbook archived", playbook_id=str(playbook_id))
         return playbook
@@ -186,8 +186,8 @@ class PlaybookService(BaseService):
                 resource_type="playbook",
             )
         playbook.status = PlaybookStatus.ARCHIVED.value
-        playbook.approved_by = approver_id
-        playbook.approved_at = datetime.now(UTC)
+        playbook.archived_by = approver_id
+        playbook.archived_at = datetime.now(UTC)
         await self.session.flush()
         self.log.info("Playbook rejected", playbook_id=str(playbook_id), reason=reason)
         return playbook

@@ -92,6 +92,31 @@ def test_thin_routes_allows_explicit_commit_in_route() -> None:
     assert "thin_routes" not in rules
 
 
+def test_thin_routes_flags_stream_and_stream_scalars() -> None:
+    # SQLAlchemy 2.0 streaming constructs are data access too (#133): a route
+    # that calls `db.stream(...)` / `db.stream_scalars(...)` is doing a
+    # repository's job, same as `execute`/`scalars`. The statement is passed in
+    # (no `select(...)` in the body) so only the streaming call is the signal.
+    rules = _py(
+        "from fastapi import APIRouter\n"
+        "router = APIRouter()\n"
+        "@router.get('/a')\n"
+        "async def a(db, stmt):\n"
+        "    async for row in (await db.stream(stmt)):\n"
+        "        yield row\n"
+    )
+    assert "thin_routes" in rules
+    rules = _py(
+        "from fastapi import APIRouter\n"
+        "router = APIRouter()\n"
+        "@router.get('/b')\n"
+        "async def b(db, stmt):\n"
+        "    async for s in (await db.stream_scalars(stmt)):\n"
+        "        yield s\n"
+    )
+    assert "thin_routes" in rules
+
+
 # --- Thin components: data fetching belongs in a hook ----------------------- #
 
 

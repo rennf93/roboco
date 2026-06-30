@@ -141,6 +141,32 @@ async def test_update_project(project_client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_update_project_explicit_null_clears_field(
+    project_client: AsyncClient,
+) -> None:
+    """#197: an explicit null in the PATCH body clears the stored field, while an
+    absent field is left unchanged (unset vs explicit-None, end-to-end)."""
+    payload = _payload() | {"test_command": "uv run pytest"}
+    create = await project_client.post("/api/projects", json=payload, headers=_HDR)
+    pid = create.json()["id"]
+    assert create.json()["test_command"] == "uv run pytest"
+
+    # Absent field -> leave unchanged.
+    rename = await project_client.patch(
+        f"/api/projects/{pid}", json={"name": "Renamed"}, headers=_HDR
+    )
+    assert rename.status_code == HTTPStatus.OK
+    assert rename.json()["test_command"] == "uv run pytest"
+
+    # Explicit null -> clears.
+    cleared = await project_client.patch(
+        f"/api/projects/{pid}", json={"test_command": None}, headers=_HDR
+    )
+    assert cleared.status_code == HTTPStatus.OK
+    assert cleared.json()["test_command"] is None
+
+
+@pytest.mark.asyncio
 async def test_update_project_not_found(project_client: AsyncClient) -> None:
     response = await project_client.patch(
         f"/api/projects/{uuid4()}",

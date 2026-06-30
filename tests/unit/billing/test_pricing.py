@@ -12,7 +12,12 @@ Covers:
 from __future__ import annotations
 
 import pytest
-from roboco.billing.pricing import _is_anthropic_model, calculate_cost
+from roboco.billing.pricing import (
+    CostResult,
+    _is_anthropic_model,
+    calculate_cost,
+    calculate_cost_result,
+)
 
 # ---------------------------------------------------------------------------
 # Named constants (ruff PLR2004: magic values in comparisons must be named).
@@ -375,3 +380,59 @@ class TestProviderAwareness:
     def test_is_anthropic_model_false_for_non_claude_names(self) -> None:
         for name in ("ollama/llama3", "glm-5.2:cloud", "qwen3-embedding", "gpt-4o"):
             assert _is_anthropic_model(name) is False, name
+
+
+# ---------------------------------------------------------------------------
+# Structured cost result — distinguish unpriced Anthropic from genuinely-free
+# (#65). ``calculate_cost`` keeps returning a plain float for existing callers;
+# ``calculate_cost_result`` returns a ``CostResult`` so a caller can tell real
+# spend we failed to price ($0, unpriced=True) apart from local inference
+# ($0, unpriced=False).
+# ---------------------------------------------------------------------------
+
+
+class TestCostResult:
+    def test_unpriced_anthropic_model_is_flagged(self) -> None:
+        result = calculate_cost_result(
+            "claude-brand-new-unpriced", tokens_input=_M, tokens_output=0
+        )
+        assert isinstance(result, CostResult)
+        assert result.cost_usd == 0.0
+        assert result.unpriced is True
+        assert result.is_anthropic is True
+
+    def test_free_non_anthropic_model_is_not_unpriced(self) -> None:
+        result = calculate_cost_result(
+            "ollama/qwen3-embedding", tokens_input=_M, tokens_output=0
+        )
+        assert result.cost_usd == 0.0
+        assert result.unpriced is False
+        assert result.is_anthropic is False
+
+    def test_priced_anthropic_model_is_not_unpriced(self) -> None:
+        result = calculate_cost_result(
+            "claude-sonnet-4-6", tokens_input=_M, tokens_output=0
+        )
+        assert result.cost_usd > 0.0
+        assert result.unpriced is False
+
+    def test_priced_non_anthropic_grok_is_not_unpriced(self) -> None:
+        result = calculate_cost_result(
+            "grok-build-0.1", tokens_input=_M, tokens_output=0
+        )
+        assert result.cost_usd > 0.0
+        assert result.unpriced is False
+        assert result.is_anthropic is False
+
+    def test_calculate_cost_matches_structured_cost_usd(self) -> None:
+        model = "claude-opus-4-6"
+        assert (
+            calculate_cost(model, tokens_input=_M, tokens_output=_M)
+            == calculate_cost_result(model, tokens_input=_M, tokens_output=_M).cost_usd
+        )
+
+    def test_empty_model_is_not_unpriced(self) -> None:
+        # An empty model name is a caller bug, not an unpriced-Anthropic miss.
+        result = calculate_cost_result("", tokens_input=_M, tokens_output=0)
+        assert result.cost_usd == 0.0
+        assert result.unpriced is False

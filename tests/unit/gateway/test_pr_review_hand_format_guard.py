@@ -185,3 +185,54 @@ async def test_envelope_invalid_state_has_introspection_role() -> None:
     # with_introspection(role="pr_reviewer") populated the introspection fields.
     assert env.current_state is not None
     assert env.valid_next_verbs is not None
+
+
+@pytest.mark.asyncio
+async def test_quoted_pr_header_in_summary_body_is_not_hand_formatted() -> None:
+    """#188: the matcher is a bare substring check on ``## summary`` /
+    ``## issues`` / ``## verdict`` / ``## findings``. A reviewer summarizing a
+    PR that ITSELF adds a ``## Summary`` section — quoting that section in the
+    body (a markdown block-quote, ``> ## Summary``) with ``findings=[]`` — was
+    falsely refused: the quoted header is a substring of the body, but it is
+    NOT the reviewer hand-formatting their own verdict, it is them citing the
+    PR. The matcher must require the header at the START of a line (a real
+    markdown header the reviewer authored), not a substring of a quoted /
+    inline section. This plain summary with a quoted PR header + no findings
+    is allowed (the system posts the one-paragraph body verbatim)."""
+    reviewer_id = uuid4()
+    task_id = uuid4()
+    t = _task()
+    c = _make_choreographer()
+    _stub_post_path(c, reviewer_id=reviewer_id, t=t)
+
+    body = (
+        "The contributor duplicated the description:\n"
+        "> ## Summary\n"
+        "> This PR adds the TimeseriesChart export.\n"
+        "\n"
+        "That duplication is the smell — no verdict hand-formatted here."
+    )
+    env = await c.post_pr_review(reviewer_id, task_id, body, "COMMENT")
+    body_dict = env.as_dict()
+    assert body_dict.get("error") is None, body_dict
+    assert body_dict["status"] == "in_progress"
+
+
+@pytest.mark.asyncio
+async def test_inline_header_mention_in_prose_is_not_hand_formatted() -> None:
+    """#188 companion: an inline mid-prose mention of a header-shaped word
+    (``the ## Summary section``) is not a verdict header either — the matcher
+    must anchor to line start, so prose that merely names a header is allowed."""
+    reviewer_id = uuid4()
+    task_id = uuid4()
+    t = _task()
+    c = _make_choreographer()
+    _stub_post_path(c, reviewer_id=reviewer_id, t=t)
+
+    body = (
+        "The PR's own ## Summary section duplicates the description — that is "
+        "the issue, not a verdict I am hand-formatting."
+    )
+    env = await c.post_pr_review(reviewer_id, task_id, body, "COMMENT")
+    body_dict = env.as_dict()
+    assert body_dict.get("error") is None, body_dict

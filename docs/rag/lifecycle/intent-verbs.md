@@ -231,6 +231,8 @@ Main PM opens the root→master PR and moves the root task to awaiting_pr_review
 
 **Pre side effects:** create_root_pr
 
+**Preconditions:** root_not_code
+
 
 ## submit_up
 
@@ -251,7 +253,7 @@ Rebase your task's branch onto its current base THROUGH the gate (raw git is den
 
 **Composes:** (no atomic actions)
 
-**Preconditions:** owns_task
+**Preconditions:** owns_task, sync_branch_state
 
 
 ## triage

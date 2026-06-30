@@ -147,3 +147,53 @@ def test_do_post_returns_envelope_on_400(do_module: types.ModuleType) -> None:
     with patch("httpx.Client", return_value=client):
         result = do_module.commit("any message")
     assert result["error"] == "not_authorized"
+
+
+# ---------------------------------------------------------------------------
+# #61: a 404 with a descriptive ``detail`` (a real resource not_found, not a
+# missing route) surfaces as ``not_found`` — not a misleading "server-side
+# wiring gap" invalid_state. FastAPI's bare default ``{"detail": "Not Found"}``
+# still means a missing route → invalid_state wiring gap.
+# ---------------------------------------------------------------------------
+
+
+def test_flow_404_with_descriptive_detail_is_not_found(
+    flow_module: types.ModuleType,
+) -> None:
+    """A 404 carrying a real ``detail`` (not the default) is a resource not_found."""
+    client = _fake_client_with(404, {"detail": "task abc-123 not found"})
+    with patch("httpx.Client", return_value=client):
+        result = flow_module.i_am_done("abc-123", notes="done")
+    assert result["error"] == "not_found"
+    assert "abc-123 not found" in result["message"]
+    assert "remediate" in result
+
+
+def test_flow_404_default_detail_is_still_wiring_gap(
+    flow_module: types.ModuleType,
+) -> None:
+    """FastAPI's bare default 404 body = a missing route, not a resource not_found."""
+    client = _fake_client_with(404, {"detail": "Not Found"})
+    with patch("httpx.Client", return_value=client):
+        result = flow_module.give_me_work()
+    assert result["error"] == "invalid_state"
+    assert "no route" in result["message"]
+
+
+def test_flow_404_no_body_is_wiring_gap(flow_module: types.ModuleType) -> None:
+    """A 404 with no parseable body = a missing route."""
+    client = _fake_client_with(404, body=None)
+    with patch("httpx.Client", return_value=client):
+        result = flow_module.give_me_work()
+    assert result["error"] == "invalid_state"
+
+
+def test_do_404_with_descriptive_detail_is_not_found(
+    do_module: types.ModuleType,
+) -> None:
+    """do_server mirrors flow: a real 404 detail is not_found, not a wiring gap."""
+    client = _fake_client_with(404, {"detail": "journal entry xyz not found"})
+    with patch("httpx.Client", return_value=client):
+        result = do_module.note(text="x", scope="note")
+    assert result["error"] == "not_found"
+    assert "journal entry xyz not found" in result["message"]

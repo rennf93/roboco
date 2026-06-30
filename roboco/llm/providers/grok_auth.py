@@ -26,6 +26,7 @@ import os
 import re
 import shutil
 import sys
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -37,6 +38,14 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 logger = structlog.get_logger(__name__)
+
+# Process-wide serialisation for the single-use refresh-token grant (#94). The
+# grok refresh token is invalidated the instant xAI issues the new one, so two
+# concurrent ``refresh_if_stale`` calls that both POST the grant would have the
+# second use the now-dead old token and burn the credential. The lock +
+# re-load-and-recheck inside it makes the loser find the winner's refreshed
+# token and return ``fresh`` instead of re-rotating.
+_refresh_lock = threading.Lock()
 
 # xAI OIDC issuer; the token endpoint is ``<issuer>/oauth2/token`` (verified via
 # the issuer's ``.well-known/openid-configuration``). A per-entry ``oidc_issuer``
@@ -271,6 +280,30 @@ def _do_refresh(
     return "refreshed"
 
 
+def _recheck_or_refresh(
+    auth_path: Path,
+    now: datetime,
+    skew_seconds: int,
+    post: Callable[[str, dict[str, str]], dict[str, Any]] | None,
+) -> str:
+    """Re-load + re-check staleness, then refresh — the locked body of refresh_if_stale.
+
+    Run inside ``_refresh_lock`` so a concurrent caller that waited on the lock
+    re-reads the bundle a single-writer just refreshed and returns ``fresh``
+    instead of re-POSTing the single-use refresh grant (#94).
+    """
+    bundle = _load(auth_path)
+    if bundle is None:
+        return "missing"
+    entry = _credential_entry(bundle)
+    if entry is None:
+        return "no_refresh_token"
+    entry_key, creds = entry
+    if not _is_stale(creds, now, skew_seconds):
+        return "fresh"
+    return _do_refresh(auth_path, bundle, entry_key, now, post or _post_token)
+
+
 def refresh_if_stale(
     auth_path: Path,
     *,
@@ -291,11 +324,16 @@ def refresh_if_stale(
     entry = _credential_entry(bundle)
     if entry is None:
         return "no_refresh_token"
-    entry_key, creds = entry
+    _, creds = entry
     now = now or datetime.now(UTC)
     if not _is_stale(creds, now, skew_seconds):
         return "fresh"
-    return _do_refresh(auth_path, bundle, entry_key, now, post or _post_token)
+    # Single-use refresh token: hold the lock and re-load + re-check inside it
+    # so a concurrent caller that waited on the lock finds the refreshed token
+    # and returns ``fresh`` instead of re-POSTing the grant (which would use the
+    # already-invalidated old token and burn the credential — #94).
+    with _refresh_lock:
+        return _recheck_or_refresh(auth_path, now, skew_seconds, post)
 
 
 def main(argv: list[str] | None = None) -> int:

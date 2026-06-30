@@ -129,3 +129,9 @@ async def test_probe_ollama_tags_generic_exception_logs_and_returns_generic() ->
     assert secret_detail not in error
     # The logger must have been called to record the exception server-side.
     mock_log.error.assert_called_once()
+    # #211: the structured log must NOT leak the raw exception text either —
+    # only the exception class name is recorded (str(exc) can carry connection
+    # internals / stack traces).
+    logged = mock_log.error.call_args
+    assert secret_detail not in str(logged)
+    assert logged.kwargs.get("error") == "RuntimeError"

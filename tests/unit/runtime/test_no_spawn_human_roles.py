@@ -20,10 +20,12 @@ or future is covered, because they all go through `spawn_agent`.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import roboco.runtime.orchestrator as orch_mod
 from roboco.foundation.identity import Role, role_for_slug
 from roboco.runtime.orchestrator import AgentOrchestrator, AgentReadinessError
 from roboco.seeds.initial_data import AGENT_UUIDS
@@ -133,6 +135,36 @@ async def test_dispatch_a2a_skips_intake_and_secretary_targets() -> None:
 
 
 @pytest.mark.asyncio
+async def test_dispatch_a2a_surfaces_human_only_target_skip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#75: an a2a targeting a human-only role is skipped (not spawned) BUT
+    surfaced in the dispatch log — not silently dropped — so an a2a expecting a
+    human-side action (a CEO sign-off relay) is visible to the operator. We
+    record on the module logger directly (structlog output stream is set up
+    globally and not reliably capsys-captured when the full suite reconfigures
+    it)."""
+    info_calls: list[str] = []
+
+    class _Logger:
+        def info(self, msg: str, *_args: object, **_kw: object) -> None:
+            info_calls.append(msg)
+
+        # structlog bound loggers expose the full level surface; stub the rest
+        # no-op so any incidental log call inside the dispatch path is safe.
+        def __getattr__(self, _name: str) -> object:
+            return lambda *_a, **_k: None
+
+    monkeypatch.setattr(orch_mod, "logger", _Logger())
+    orch = _a2a_orch(AGENT_UUIDS["ceo"])
+    await orch._dispatch_a2a_work(MagicMock())
+    orch.spawn_agent.assert_not_awaited()
+    assert any("human-only role" in m for m in info_calls), (
+        "a2a human-only-target skip must be surfaced, not silent"
+    )
+
+
+@pytest.mark.asyncio
 async def test_dispatch_a2a_still_spawns_real_agent_target() -> None:
     """A real (container-eligible) A2A target is still dispatched — the
     skip is scoped to human roles only and does not suppress real A2A."""
@@ -196,3 +228,87 @@ async def test_dispatch_pm_review_skips_ceo_assignee() -> None:
     await orch._dispatch_pm_review_work(MagicMock())
 
     orch.spawn_agent.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# #49: a stale/ex-human slug must not slip past the layered skip guard
+# ---------------------------------------------------------------------------
+
+
+def _stale_a2a_orch(stale_uuid: str) -> Any:
+    """A bare orchestrator whose A2A target resolves to a stale slug.
+
+    ``_resolve_agent_slug`` is pure (module UUID_TO_SLUG); a UUID not in that
+    map falls through to ``str(uuid)`` — a slug no longer in AGENTS, i.e. the
+    #49 stale-slug case. We pass an arbitrary UUID so the resolved slug is
+    not a known agent.
+    """
+    orch: Any = object.__new__(AgentOrchestrator)
+    orch.spawn_agent = AsyncMock()
+    orch._is_agent_active = MagicMock(return_value=False)
+    orch._fetch_notifications = AsyncMock(
+        return_value=[{"id": "n1", "to_agents": [stale_uuid]}]
+    )
+    return orch
+
+
+@pytest.mark.asyncio
+async def test_dispatch_a2a_skips_stale_ex_human_slug() -> None:
+    """#49: a target UUID that resolves to a stale (no longer seeded) slug
+    must NOT be spawned. A bare ``role in (CEO, ...)`` test misses this (None
+    is not in the tuple), so the dispatcher used to proceed to a doomed spawn
+    of a renamed/ex-human slug. is_spawnable_agent_slug closes the hole."""
+    # A UUID absent from UUID_TO_SLUG resolves to its own string — not a known
+    # agent slug — exercising the stale-slug path.
+    orch = _stale_a2a_orch("12345678-1234-1234-1234-123456789abc")
+
+    await orch._dispatch_a2a_work(MagicMock())
+
+    orch.spawn_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_pm_review_skips_stale_assignee() -> None:
+    """#49: an awaiting_pm_review task whose assignee resolves to a stale
+    slug must skip the respawn (not spawn a doomed/ex-human container) and
+    must not abort the tick."""
+    orch: Any = object.__new__(AgentOrchestrator)
+    orch.spawn_agent = AsyncMock()
+    orch._is_agent_active = MagicMock(return_value=False)
+    orch._pm_respawn_should_gate = AsyncMock(return_value=False)
+    orch._fetch_tasks = AsyncMock(
+        return_value=[
+            {
+                "id": "t1",
+                "status": "awaiting_pm_review",
+                "team": "backend",
+                "assigned_to": "12345678-1234-1234-1234-123456789abc",
+            }
+        ]
+    )
+
+    await orch._dispatch_pm_review_work(MagicMock())
+
+    orch.spawn_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_claimed_task_needs_agent_releases_stale_slug_claim() -> None:
+    """#49: the reaper path is the *opposite* of the spawn path — a stale-slug
+    claim SHOULD be released to pending so a real agent can reclaim it. The
+    is_human_only_role check (None -> False) keeps this recovery behaviour."""
+    orch: Any = object.__new__(AgentOrchestrator)
+    # No instance for the stale slug, and aged past the grace window.
+    orch._instances = {}
+    orch._is_hitl_blocked = MagicMock(return_value=False)
+    orch._time_in_state = MagicMock(return_value=timedelta(seconds=9999))
+
+    needs = orch._claimed_task_needs_agent(
+        {
+            "assigned_to": "12345678-1234-1234-1234-123456789abc",
+            "status": "claimed",
+        }
+    )
+    # The stale slug is returned so the reaper can release the claim — it is
+    # NOT suppressed by the human-only skip (which only catches live humans).
+    assert needs is not None

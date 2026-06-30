@@ -15,6 +15,7 @@ between sites. Inputs are typed ``object | None`` because callers pass either OR
 
 from __future__ import annotations
 
+from roboco.foundation.identity import Role
 from roboco.models.base import TaskType, Team
 
 
@@ -120,6 +121,32 @@ def main_pm_cannot_own_code(*, team: object | None, task_type: object | None) ->
     the reassign/escalation diversion, and the claim guard. Accepts either ORM
     enum members or their ``.value`` strings (callers pass both shapes).
     """
-    team_value = str(getattr(team, "value", team))
-    type_value = str(getattr(task_type, "value", task_type))
+    team_value = str(getattr(team, "value", team)).lower()
+    type_value = str(getattr(task_type, "value", task_type)).lower()
     return team_value == Team.MAIN_PM.value and type_value == TaskType.CODE.value
+
+
+def pm_cannot_own_code(
+    *, role: object | None, task_type: object | None, is_issue_resolution: bool = False
+) -> bool:
+    """True when a PM role is being handed a ``code`` task it may not own.
+
+    Both PM roles (``cell_pm`` and ``main_pm``) *coordinate* — planning,
+    delegation, unblocking — they have no verb to write code, so a ``code`` task
+    assigned/claimed by a PM is the same structural mismatch
+    ``main_pm_cannot_own_code`` guards at creation time. The one deliberate
+    exception is **issue resolution**: a PM may take a ``code`` task that is in
+    ``needs_revision`` to act on the review/QA issues directly. ``is_issue_resolution``
+    is the caller's assertion of that state (a claim/reassign of a needs_revision
+    code task); a freshly created or delegated subtask is never in that state, so
+    its caller passes ``False``. Non-PM roles and non-code task types always pass.
+
+    Accepts ORM enum members or their ``.value`` strings (callers pass both).
+    """
+    role_value = str(getattr(role, "value", role)).lower()
+    if role_value not in (Role.CELL_PM.value, Role.MAIN_PM.value):
+        return False
+    type_value = str(getattr(task_type, "value", task_type)).lower()
+    if type_value != TaskType.CODE.value:
+        return False
+    return not is_issue_resolution

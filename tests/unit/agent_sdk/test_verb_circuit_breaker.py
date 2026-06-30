@@ -20,7 +20,7 @@ from unittest.mock import patch
 import pytest
 import roboco.agent_sdk.server as srv
 from fastapi.testclient import TestClient
-from roboco.foundation.policy.agent_loop import retry_limit_for
+from roboco.foundation.policy.agent_loop import VERB_RETRY_LIMITS, retry_limit_for
 from roboco.services.gateway.envelope import Envelope
 
 if TYPE_CHECKING:
@@ -414,3 +414,17 @@ def test_i_am_done_cap_matches_foundation() -> None:
     are updated alongside.
     """
     assert retry_limit_for("i_am_done") == _I_AM_DONE_CAP
+
+
+def test_qa_handoff_retry_keys_match_mcp_verb_names() -> None:
+    """#150: the per-verb retry caps are keyed by the MCP-exposed verb names
+    (``pass`` / ``fail`` — what the SDK receives via /verb/attempted, derived
+    from the flow URL path), NOT the IntentSpec-internal ``pass_review`` /
+    ``fail_review``. A rename on one side without the other would silently drop
+    the explicit cap for QA handoffs. Pin that the MCP names are explicit keys
+    so the mapping can't drift uncaught.
+    """
+    assert "pass" in VERB_RETRY_LIMITS
+    assert "fail" in VERB_RETRY_LIMITS
+    assert retry_limit_for("pass") == VERB_RETRY_LIMITS["pass"]
+    assert retry_limit_for("fail") == VERB_RETRY_LIMITS["fail"]

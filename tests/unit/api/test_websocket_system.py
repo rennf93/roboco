@@ -69,8 +69,11 @@ async def test_system_stream_connect_ping_disconnect() -> None:
     """Endpoint sends 'connected', answers ping with pong, cleans up on close."""
     ws = MagicMock()
     ws.accept = AsyncMock()
+    ws.close = AsyncMock()
     ws.send_json = AsyncMock()
     ws.send_text = AsyncMock()
+    # No X-Agent-Token in dev mode -> the panel-token gate proceeds.
+    ws.headers = {}
     # One ping, then the client disconnects.
     ws.receive_text = AsyncMock(side_effect=["ping", WebSocketDisconnect()])
 

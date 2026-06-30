@@ -206,6 +206,50 @@ async def test_archive_retires_approved(db_session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
+async def test_archive_preserves_approver_and_stamps_archiver(
+    db_session: AsyncSession,
+) -> None:
+    """#76: archive is a DISTINCT curation act from approve — retiring an
+    approved playbook must NOT overwrite who approved it. The archiver is
+    recorded in ``archived_by``/``archived_at``; ``approved_by``/``approved_at``
+    are preserved so the approval provenance survives retirement."""
+    svc = PlaybookService(db_session)
+    approver = uuid4()
+    archiver = uuid4()  # a different auditor retires it
+    assert approver != archiver
+    pb = await svc.draft(_create(title="Provenance pb"), created_by=uuid4())
+    await svc.approve(pb.id, approver_id=approver)
+    archived = await svc.archive(pb.id, approver_id=archiver)
+    assert archived.status == PlaybookStatus.ARCHIVED
+    # Approval provenance preserved (NOT overwritten with the archiver).
+    assert archived.approved_by == approver
+    # The archiver is recorded distinctly.
+    assert archived.archived_by == archiver
+    assert archived.archived_at is not None
+
+
+@pytest.mark.asyncio
+async def test_reject_stamps_archiver_and_leaves_approval_unset(
+    db_session: AsyncSession,
+) -> None:
+    """#76: reject declines a DRAFT (never approved) — it must not fabricate
+    approval attribution. ``approved_by``/``approved_at`` stay None; the
+    rejecter is recorded in ``archived_by``/``archived_at`` (reject ends in
+    ARCHIVED, the same terminal state as archive)."""
+    svc = PlaybookService(db_session)
+    rejecter = uuid4()
+    pb = await svc.draft(_create(title="Rejected draft"), created_by=uuid4())
+    out = await svc.reject(pb.id, approver_id=rejecter, reason="dup")
+    assert out.status == PlaybookStatus.ARCHIVED
+    # A rejected draft was never approved — no fabricated approval attribution.
+    assert out.approved_by is None
+    assert out.approved_at is None
+    # The rejecter is recorded as the one who archived it.
+    assert out.archived_by == rejecter
+    assert out.archived_at is not None
+
+
+@pytest.mark.asyncio
 async def test_archive_rejects_draft(db_session: AsyncSession) -> None:
     svc = PlaybookService(db_session)
     pb = await svc.draft(_create(title="Not yet"), created_by=uuid4())

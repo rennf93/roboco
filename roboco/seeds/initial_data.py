@@ -173,18 +173,10 @@ DEFAULT_AGENTS: list[dict[str, Any]] = _build_default_agents()
 CEO_AGENT_ID = AGENT_UUIDS["ceo"]
 
 # Cell-member roles subject to a channel's team_scope. Cross-cell roles
-# (MAIN_PM, AUDITOR, CEO, board) are NOT filtered by team_scope. Mirrors the
-# rule in agents_config._TEAM_SCOPED_ROLES; duplicated here to avoid a
-# circular import (agents_config already imports AGENT_UUIDS from this
-# module).
-_TEAM_SCOPED_ROLES: frozenset[_foundation.Role] = frozenset(
-    {
-        _foundation.Role.DEVELOPER,
-        _foundation.Role.QA,
-        _foundation.Role.DOCUMENTER,
-        _foundation.Role.CELL_PM,
-    }
-)
+# (MAIN_PM, AUDITOR, CEO, board) are NOT filtered by team_scope. Single-sourced
+# in ``foundation.policy.communications.TEAM_SCOPED_ROLES``; aliased here for
+# the seed helpers below.
+_TEAM_SCOPED_ROLES: frozenset[_foundation.Role] = _comms.TEAM_SCOPED_ROLES
 
 
 def _slugs_for_role_set(

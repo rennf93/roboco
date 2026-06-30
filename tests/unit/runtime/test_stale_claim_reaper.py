@@ -253,14 +253,13 @@ async def test_reaper_spares_grok_container_within_kill_ttl(
 
 
 @pytest.mark.asyncio
-async def test_reaper_never_kills_non_grok_container(
+async def test_reaper_spares_claude_container_within_stuck_ttl(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A non-GROK (Claude) container idle past the kill TTL is still spared.
-
-    The watchdog only kills GROK runtimes; a quiet Claude agent keeps the
-    heartbeat-skip protection regardless of how long it has been silent.
-    """
+    """A non-GROK (Claude) container silent 1200s is still spared — it is within
+    the much longer claude-stuck TTL, so a slow-but-working agent keeps the
+    heartbeat-skip protection. Only a truly-stuck run (silent past the stuck
+    TTL) is killed (see test_reaper_kills_stuck_claude_past_stuck_ttl)."""
     now = datetime.now(UTC)
     claude_task = type(
         "T",
@@ -280,6 +279,7 @@ async def test_reaper_never_kills_non_grok_container(
     )
     orch._claim_heartbeat_ttl = 300
     orch._grok_idle_kill_ttl = 900
+    orch._claude_stuck_kill_ttl = 3600
     orch._instances = {
         "be-dev-1": AgentInstance(
             agent_id="be-dev-1", state=AgentState.ACTIVE, config=claude_cfg
@@ -296,6 +296,106 @@ async def test_reaper_never_kills_non_grok_container(
     remove_mock.assert_not_awaited()
     assert "be-dev-1" in orch._instances
     svc.unclaim_for_reaper.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reaper_kills_stuck_claude_past_stuck_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#73: a non-GROK container stuck in a non-verb loop (alive, no heartbeat
+    advance past the claude-stuck TTL) is killed, evicted, and released — not
+    shielded by the live-container skip forever."""
+    now = datetime.now(UTC)
+    stuck = type(
+        "T",
+        (),
+        {
+            "id": uuid4(),
+            "last_heartbeat_at": now - timedelta(seconds=4000),
+            "assigned_to": AGENT_UUIDS["be-dev-1"],
+            "claimed_by": None,
+        },
+    )()
+    claude_cfg = type("C", (), {"provider_type": "anthropic"})()
+
+    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    monkeypatch.setattr(
+        orch, "_maybe_recover_broken_gateway", AsyncMock(return_value=False)
+    )
+    orch._claim_heartbeat_ttl = 300
+    orch._grok_idle_kill_ttl = 900
+    orch._claude_stuck_kill_ttl = 3600
+    orch._instances = {
+        "be-dev-1": AgentInstance(
+            agent_id="be-dev-1", state=AgentState.ACTIVE, config=claude_cfg
+        )
+    }
+    remove_mock = AsyncMock()
+    monkeypatch.setattr(orch, "_remove_container", remove_mock)
+    svc = AsyncMock()
+    svc.list_in_progress_or_claimed.return_value = [stuck]
+    svc.unclaim_for_reaper = AsyncMock()
+
+    await orch._reap_with_service(svc)
+
+    remove_mock.assert_awaited_once_with("roboco-agent-be-dev-1")
+    assert "be-dev-1" not in orch._instances  # evicted
+    svc.unclaim_for_reaper.assert_awaited_once_with(stuck.id)  # released
+
+
+def test_stuck_claude_slug_excludes_grok_and_non_active() -> None:
+    """#73: the stuck-slug predicate fires only for a non-GROK ACTIVE instance
+    past the TTL — a GROK provider (its own kill path), a non-ACTIVE instance, a
+    recent heartbeat, and no owner all yield None."""
+    now = datetime.now(UTC)
+    past = now - timedelta(seconds=4000)
+    task = type(
+        "T",
+        (),
+        {
+            "id": uuid4(),
+            "last_heartbeat_at": past,
+            "assigned_to": AGENT_UUIDS["be-dev-1"],
+            "claimed_by": None,
+        },
+    )()
+    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    orch._claude_stuck_kill_ttl = 3600
+
+    claude_cfg = type("C", (), {"provider_type": "anthropic"})()
+    grok_cfg = type("C", (), {"provider_type": "grok"})()
+
+    # Non-GROK ACTIVE past TTL → slug returned.
+    orch._instances = {
+        "be-dev-1": AgentInstance(
+            agent_id="be-dev-1", state=AgentState.ACTIVE, config=claude_cfg
+        )
+    }
+    assert orch._stuck_claude_slug(task, past) == "be-dev-1"
+
+    # GROK provider → None (the wedged-grok path owns it).
+    orch._instances = {
+        "be-dev-1": AgentInstance(
+            agent_id="be-dev-1", state=AgentState.ACTIVE, config=grok_cfg
+        )
+    }
+    assert orch._stuck_claude_slug(task, past) is None
+
+    # Non-ACTIVE → None.
+    orch._instances = {
+        "be-dev-1": AgentInstance(
+            agent_id="be-dev-1", state=AgentState.OFFLINE, config=claude_cfg
+        )
+    }
+    assert orch._stuck_claude_slug(task, past) is None
+
+    # Recent heartbeat → None.
+    orch._instances = {
+        "be-dev-1": AgentInstance(
+            agent_id="be-dev-1", state=AgentState.ACTIVE, config=claude_cfg
+        )
+    }
+    assert orch._stuck_claude_slug(task, now) is None
 
 
 @pytest.mark.asyncio

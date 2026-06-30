@@ -151,7 +151,7 @@ describe("KanbanBoard — admin-override bypass confirmation (F020)", () => {
     await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
     expect(mutateAsync).toHaveBeenCalledWith({
       taskId: "t1",
-      updates: { status: TaskStatus.COMPLETED },
+      updates: { status: TaskStatus.COMPLETED, force: true },
     });
   });
 
@@ -184,7 +184,7 @@ describe("KanbanBoard — admin-override bypass confirmation (F020)", () => {
     await waitFor(() => expect(mutateAsync).toHaveBeenCalledTimes(1));
     expect(mutateAsync).toHaveBeenCalledWith({
       taskId: "t1",
-      updates: { status: TaskStatus.CLAIMED },
+      updates: { status: TaskStatus.CLAIMED, force: false },
     });
     // No bypass confirmation should ever have been surfaced.
     expect(screen.queryByText(/override & move/i)).not.toBeInTheDocument();

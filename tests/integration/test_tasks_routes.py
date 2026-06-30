@@ -274,19 +274,58 @@ async def test_update_task(task_client: dict) -> None:
 
 @pytest.mark.asyncio
 async def test_update_task_status_override_recovers_blocked(task_client: dict) -> None:
-    """A privileged PATCH with ``status`` is applied as an audited override, so an
-    operator can recover a task wedged in ``blocked`` (which ``/complete`` refuses)
-    instead of the status being silently dropped."""
+    """A privileged PATCH with ``status`` + ``force`` is applied as an audited
+    override, so an operator can recover a task wedged in ``blocked`` (which
+    ``/complete`` refuses) instead of the status being silently dropped. The
+    ``force`` flag acknowledges the bypass past the lifecycle gate (#13)."""
     client = task_client["client"]
     task = _seed_task(task_client, status=TaskStatus.BLOCKED)
     await task_client["db"].flush()
     response = await client.patch(
         f"/api/tasks/{task.id}",
-        json={"status": "completed"},
+        json={"status": "completed", "force": True},
         headers=_HDR,
     )
     assert response.status_code == HTTPStatus.OK
     assert response.json()["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_update_task_status_override_refused_without_force(
+    task_client: dict,
+) -> None:
+    """#13: pasting over the lifecycle gate into a terminal/final hatch state
+    (completed / awaiting_qa / awaiting_pm_review) without ``force`` is refused
+    with 400 — the bypass must be an explicit, acknowledged forced override."""
+    client = task_client["client"]
+    task = _seed_task(task_client, status=TaskStatus.IN_PROGRESS)
+    await task_client["db"].flush()
+    for hatch in ("completed", "awaiting_qa", "awaiting_pm_review"):
+        response = await client.patch(
+            f"/api/tasks/{task.id}",
+            json={"status": hatch},
+            headers=_HDR,
+        )
+        assert response.status_code == HTTPStatus.BAD_REQUEST, hatch
+        assert "force" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_update_task_status_override_non_hatch_needs_no_force(
+    task_client: dict,
+) -> None:
+    """#13: a non-terminal recovery override (blocked -> pending) does NOT require
+    ``force`` — only the terminal/final hatch states do."""
+    client = task_client["client"]
+    task = _seed_task(task_client, status=TaskStatus.BLOCKED)
+    await task_client["db"].flush()
+    response = await client.patch(
+        f"/api/tasks/{task.id}",
+        json={"status": "pending"},
+        headers=_HDR,
+    )
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()["status"] == "pending"
 
 
 @pytest.mark.asyncio

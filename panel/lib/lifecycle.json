@@ -445,6 +445,14 @@
       "target": "needs_revision"
     },
     {
+      "action": "ceo_reject_to_pool",
+      "roles": [
+        "ceo"
+      ],
+      "source": "awaiting_ceo_approval",
+      "target": "pending"
+    },
+    {
       "action": "docs_complete",
       "roles": [
         "documenter"

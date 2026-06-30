@@ -491,6 +491,43 @@ async def test_apply_escalation_refuses_cancelled_task() -> None:
 
 
 @pytest.mark.asyncio
+async def test_apply_escalation_refuses_backlog_task() -> None:
+    """#99: escalation sets BLOCKED directly, bypassing the transition
+    validator. A BACKLOG task was never activated — escalating it to BLOCKED is
+    a nonsense transition with no spec edge. The primitive guards itself
+    (HTTP route bypasses the spec gate) and returns False, leaving the task
+    untouched. Active work statuses still escalate (next test)."""
+    svc = _service()
+    original_assignee = uuid4()
+    task = MagicMock(
+        id=uuid4(),
+        parent_task_id=uuid4(),
+        task_type=TaskType.CODE,
+        assigned_to=original_assignee,
+        blocker_raised_by=None,
+        status=TaskStatus.BACKLOG,
+    )
+    flush = AsyncMock()
+    object.__setattr__(svc.session, "flush", flush)
+    _bind(svc, "_is_board_advisory_agent", AsyncMock(return_value=False))
+    _bind(svc, "_is_main_pm_agent", AsyncMock(return_value=False))
+    _bind(svc, "_emit_status_transition_audit", MagicMock())
+
+    applied = await svc.apply_escalation(
+        task=task,
+        target_agent_id=uuid4(),
+        escalator_slug="be-pm",
+        target_slug="main-pm",
+        reason="please review",
+    )
+
+    assert applied is False
+    assert task.status == TaskStatus.BACKLOG  # untouched
+    assert task.assigned_to == original_assignee
+    flush.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_apply_escalation_blocks_non_terminal_task() -> None:
     # the terminal guard must not over-restrict: a normal in_progress task
     # still escalates (blocked + reassigned) and returns True.

@@ -86,8 +86,12 @@ export const prompterLiveApi = {
     return data;
   },
 
-  /** SSE URL the panel opens to watch the agent. EventSource sends no headers
-   *  (the route is keyed by the opaque session id on the trusted network). */
+  /** SSE URL the panel opens to watch the agent. EventSource cannot send custom
+   *  headers, so the live-intake stream carries no `X-Agent-*` auth — the route
+   *  is authenticated solely by the opaque, unguessable session id on the
+   *  trusted internal network. By design: any session-id leakage grants stream
+   *  access, so session ids must be treated as bearer credentials (never logged
+   *  client-side, never put in a shareable URL). */
   streamUrl: (sessionId: string): string =>
     `${API_URL}/prompter/live/${sessionId}/stream`,
 

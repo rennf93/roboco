@@ -39,11 +39,13 @@ _MIN_PUBLISH_TIMEOUT = 120  # gh release create
 class _HangingProc:
     """Subprocess whose ``communicate()`` never resolves — a hung git/make/gh.
 
-    Records ``kill()`` so a test can assert the child was reaped, not leaked.
+    Records ``kill()`` and ``wait()`` so a test can assert the child was reaped
+    (kill + wait), not leaked as a zombie.
     """
 
     def __init__(self) -> None:
         self.killed = False
+        self.waited = False
         self._never: asyncio.Future[None] = asyncio.Future()
 
     async def communicate(self) -> tuple[bytes, bytes]:
@@ -53,6 +55,12 @@ class _HangingProc:
     def kill(self) -> None:
         self.killed = True
 
+    async def wait(self) -> int:
+        # A real killed child's wait() resolves once the OS reaps it; the fake
+        # records the reap and returns the timeout rc.
+        self.waited = True
+        return _TIMEOUT_RC
+
 
 class _DoneProc:
     """Subprocess that completes immediately with a fixed rc + stdout."""
@@ -61,12 +69,17 @@ class _DoneProc:
         self.returncode = returncode
         self._out = out
         self.killed = False
+        self.waited = False
 
     async def communicate(self) -> tuple[bytes, bytes]:
         return (self._out, b"")
 
     def kill(self) -> None:
         self.killed = True
+
+    async def wait(self) -> int:
+        self.waited = True
+        return self.returncode
 
 
 def _exec_returning(proc: object) -> object:
@@ -145,6 +158,24 @@ async def test_git_op_times_out_and_kills_proc(monkeypatch: pytest.MonkeyPatch) 
     assert rc == _TIMEOUT_RC
     assert "timed out" in out
     assert proc.killed
+
+
+@pytest.mark.asyncio
+async def test_git_op_timeout_reaps_the_zombie(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A timed-out child is ``kill()`` + ``wait()`` — reaped, not left as a
+    zombie that leaks the PID/PGID and pipe FDs over a long release session."""
+    monkeypatch.setattr(
+        "roboco.services.release_executor._GIT_OP_TIMEOUT_SECONDS", 0.05
+    )
+    proc = _HangingProc()
+    monkeypatch.setattr(
+        "roboco.services.release_executor.asyncio.create_subprocess_exec",
+        _exec_returning(proc),
+    )
+    ops = _ops()
+    await asyncio.wait_for(ops._git("rev-parse", "HEAD"), timeout=2.0)
+    assert proc.killed
+    assert proc.waited  # kill without wait leaves a zombie
 
 
 @pytest.mark.asyncio

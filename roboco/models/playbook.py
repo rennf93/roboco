@@ -33,6 +33,8 @@ class Playbook(RobocoBase):
     approved_by: UUID | None = None
     created_at: datetime | None = None
     approved_at: datetime | None = None
+    archived_by: UUID | None = None
+    archived_at: datetime | None = None
 
 
 class PlaybookCreate(RobocoBase):

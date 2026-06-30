@@ -37,6 +37,11 @@ class ProvisionedRepo:
     html_url: str
 
 
+# GitHub's "name already exists on this account" reply on a duplicate repo
+# create — the orphaned-repo signal treated idempotently (#83/#84).
+_GITHUB_REPO_EXISTS_STATUS = 422
+
+
 class GitHubProvisioningService:
     """Create private repos in the configured org via the GitHub REST API."""
 
@@ -76,7 +81,15 @@ class GitHubProvisioningService:
     async def create_repo(
         self, name: str, description: str = "", *, private: bool = True
     ) -> ProvisionedRepo:
-        """Create ``org/name`` (auto-initialised so it is immediately cloneable)."""
+        """Create ``org/name`` (auto-initialised so it is immediately cloneable).
+
+        Idempotent by GitHub name: if a prior partially-rolled-back approval left
+        ``org/name`` on GitHub (the DB transaction rolled back but the repo did
+        not), GitHub replies 422 ``name already exists on this account``. Instead
+        of erroring and orphaning the re-approval, fetch and return the existing
+        repo so the caller reuses its ``clone_url`` to (re)register the Project
+        (#83/#84).
+        """
         if not self.enabled:
             msg = (
                 "GitHub provisioning is not configured. Set "
@@ -103,11 +116,47 @@ class GitHubProvisioningService:
         except httpx.HTTPError as exc:
             msg = f"GitHub repo creation failed for '{name}': {exc}"
             raise ProvisioningError(msg) from exc
+        if (
+            resp.status_code == _GITHUB_REPO_EXISTS_STATUS
+            and "already exists" in (resp.text or "").lower()
+        ):
+            # The repo is already on GitHub from a rolled-back prior attempt —
+            # reuse it instead of orphaning the re-approval.
+            return await self._fetch_existing_repo(name)
         if not resp.is_success:
             detail = resp.text[:200] if resp.text else "no body"
             msg = (
                 f"GitHub repo creation failed for '{name}' "
                 f"({resp.status_code}): {detail}"
+            )
+            raise ProvisioningError(msg)
+        body = resp.json()
+        return ProvisionedRepo(
+            full_name=str(body.get("full_name", f"{self._org}/{name}")),
+            clone_url=str(body.get("clone_url", "")),
+            html_url=str(body.get("html_url", "")),
+        )
+
+    async def _fetch_existing_repo(self, name: str) -> ProvisionedRepo:
+        """GET ``org/name`` and rebuild a ProvisionedRepo (idempotent re-create)."""
+        client = await self._http()
+        try:
+            resp = await client.get(
+                f"{self._base_url}/repos/{self._org}/{name}",
+                headers={
+                    "Authorization": f"Bearer {self._token}",
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+                timeout=self._timeout,
+            )
+        except httpx.HTTPError as exc:
+            msg = f"GitHub repo fetch failed for '{name}': {exc}"
+            raise ProvisioningError(msg) from exc
+        if not resp.is_success:
+            detail = resp.text[:200] if resp.text else "no body"
+            msg = (
+                f"GitHub repo fetch failed for '{name}' ({resp.status_code}): {detail}"
             )
             raise ProvisioningError(msg)
         body = resp.json()

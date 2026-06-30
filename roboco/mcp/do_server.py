@@ -61,23 +61,52 @@ _CIRCUIT_REJECTION_KINDS: frozenset[str] = frozenset(
 # actually records the attempt. Kinds not in `_CIRCUIT_REJECTION_KINDS` are
 # never forwarded (the SDK ignores unknown kinds anyway).
 #
-# Classification is substring-based so the many custom RobocoError codes
-# (A2A_ACCESS_DENIED, NO_WRITE_ACCESS, TASK_NOT_OWNED, …) land on the right
-# counted kind without an exhaustive literal map. The NOT_FOUND family returns
-# None — parity with the string-error contract that a `not_found` rejection
-# does NOT count (retrying a missing resource won't help until state changes).
+# The exact map is authoritative for the codes the handlers actually emit, so
+# a known code is never misclassified by an accidental substring — e.g.
+# AUTHENTICATION_REQUIRED carries no AUTHORIZED/DENIED/PERMISSION substring and
+# under a substring-only rule dropped to ``invalid_state`` instead of
+# ``not_authorized`` (#161). The NOT_FOUND family maps to None — parity with
+# the string-error contract that a `not_found` rejection does NOT count
+# (retrying a missing resource won't help until state changes). Unknown codes
+# fall through to a substring branch so a new RobocoError code still lands on a
+# counted kind without a map update. Mirrors flow_server.
+_DICT_ERROR_CODE_MAP: dict[str, str | None] = {
+    "AUTHENTICATION_REQUIRED": "not_authorized",
+    "CHANNEL_ACCESS_DENIED": "not_authorized",
+    "JOURNAL_ACCESS_DENIED": "not_authorized",
+    "PERMISSION_DENIED": "not_authorized",
+    "INVALID_INPUT": "incomplete_input",
+    "VALIDATION_ERROR": "incomplete_input",
+    "NOT_FOUND": None,
+    "INVALID_STATE": "invalid_state",
+    "TASK_LIFECYCLE_ERROR": "invalid_state",
+    "TASK_OWNERSHIP_ERROR": "invalid_state",
+    "SERVICE_ERROR": "invalid_state",
+    "SESSION_CLOSED": "invalid_state",
+    "FETCH_FAILED": "invalid_state",
+    "LIST_FAILED": "invalid_state",
+    "READ_FAILED": "invalid_state",
+    "SEARCH_FAILED": "invalid_state",
+    "WRITE_FAILED": "invalid_state",
+}
+
+
 def _classify_dict_error_code(code: str) -> str | None:
     upper = code.upper()
+    if upper in _DICT_ERROR_CODE_MAP:
+        return _DICT_ERROR_CODE_MAP[upper]
+    # Unknown code — substring fallback for forward-compat with new codes.
     if "NOT_FOUND" in upper:
         return None
     if (
         "DENIED" in upper
         or "AUTHORIZED" in upper
+        or "AUTH" in upper
         or "FORBIDDEN" in upper
         or "PERMISSION" in upper
     ):
         return "not_authorized"
-    if upper == "INVALID_INPUT" or "VALIDATION" in upper:
+    if "VALIDATION" in upper:
         return "incomplete_input"
     return "invalid_state"
 
@@ -156,15 +185,15 @@ def _post(path: str, body: dict[str, Any]) -> dict[str, Any]:
             headers=_build_headers(),
             json=body,
         )
-        # A 404 here means a manifest-registered content tool has no matching
-        # route on the orchestrator: every /api/v1/do/* route returns 200 with
-        # an Envelope (including not_found rejections), so FastAPI's default
-        # 404 body (no ``error`` field) is always a missing route, never a legit
-        # Envelope. Synthesize an ``invalid_state`` Envelope so the breaker
-        # counts it (via ``_classify_rejection``) and the agent gets a
-        # remediation hint instead of a raw ``detail`` body. A 404 carrying a
-        # real Envelope (``error`` field) is surfaced as-is. Mirrors
-        # flow_server._post.
+        # A 404 here usually means a manifest-registered content tool has no
+        # matching route on the orchestrator: every /api/v1/do/* route returns
+        # 200 with an Envelope (including not_found rejections), so FastAPI's
+        # default 404 body (``{"detail": "Not Found"}``) is a missing route —
+        # synthesize an ``invalid_state`` Envelope so the breaker counts it and
+        # the agent gets a wiring-gap remediation hint. A 404 carrying a real
+        # Envelope (``error`` field) is surfaced as-is; a 404 with a
+        # *descriptive* ``detail`` (not the bare default) is a real resource
+        # not_found, surfaced as ``not_found`` (#61). Mirrors flow_server._post.
         if response.status_code == _MISSING_ROUTE_STATUS:
             try:
                 body_404 = response.json()
@@ -172,6 +201,25 @@ def _post(path: str, body: dict[str, Any]) -> dict[str, Any]:
                 body_404 = None
             if isinstance(body_404, dict) and "error" in body_404:
                 payload_404: dict[str, Any] = body_404
+            elif (
+                isinstance(body_404, dict)
+                and isinstance(body_404.get("detail"), str)
+                and body_404["detail"] != "Not Found"
+            ):
+                # A real HTTP 404 with a descriptive detail — a resource
+                # not_found, not a missing route (#61).
+                verb = _verb_from_path(path)
+                payload_404 = {
+                    "error": "not_found",
+                    "message": body_404["detail"],
+                    "remediate": (
+                        f"the {verb} call targeted a resource that does not"
+                        f" exist (HTTP 404: {body_404['detail']}). Re-fetch"
+                        f" state and retry on a current id; do not retry the"
+                        f" same id."
+                    ),
+                    "missing": [],
+                }
             else:
                 verb = _verb_from_path(path)
                 payload_404 = {
@@ -272,7 +320,12 @@ def _record_and_check_circuit(
         return payload
 
     if status.get("open") and isinstance(status.get("circuit_envelope"), dict):
-        circuit_env: dict[str, Any] = status["circuit_envelope"]
+        # Copy so the SDK's envelope dict is not mutated in place. Nest the
+        # original fixable rejection as ``inner`` so its kind/message/remediate
+        # survive the substitution — the circuit_open envelope only says the
+        # breaker tripped, not WHY the verb failed (#60). Mirrors flow_server.
+        circuit_env: dict[str, Any] = dict(status["circuit_envelope"])
+        circuit_env["inner"] = payload
         log.info(
             "do_server: circuit_open substituted for rejection",
             verb=verb,
@@ -764,6 +817,8 @@ def _register_tools() -> list[str]:
     missing rather than silently exposing the full do-tool set (which
     includes ``commit`` — the role-gate would reject it server-side, but
     the agent shouldn't see it on its tool palette in the first place).
+    ``ROBOCO_ALLOW_FULL_TOOLSET`` is a dev/test escape hatch that registers
+    the full tool set instead of raising (#162); default-off.
 
     Returns the list of tool names actually registered.
     """
@@ -772,13 +827,24 @@ def _register_tools() -> list[str]:
         manifest_path = os.environ.get(
             "ROBOCO_TOOL_MANIFEST_PATH", "/app/tool-manifest.json"
         )
-        msg = (
-            f"do_server: manifest unavailable at {manifest_path};"
-            f" refusing to register all-tools fallback for role"
-            f" {AGENT_ROLE!r}. Check the orchestrator manifest mount."
-        )
-        log.error("do_server: manifest missing", role=AGENT_ROLE, path=manifest_path)
-        raise RuntimeError(msg)
+        if os.environ.get("ROBOCO_ALLOW_FULL_TOOLSET"):
+            log.warning(
+                "do_server: manifest missing — ROBOCO_ALLOW_FULL_TOOLSET set,"
+                " registering the full tool set (dev/test only)",
+                role=AGENT_ROLE,
+                path=manifest_path,
+            )
+            allowed = list(_TOOLS.keys())
+        else:
+            msg = (
+                f"do_server: manifest unavailable at {manifest_path};"
+                f" refusing to register all-tools fallback for role"
+                f" {AGENT_ROLE!r}. Check the orchestrator manifest mount."
+            )
+            log.error(
+                "do_server: manifest missing", role=AGENT_ROLE, path=manifest_path
+            )
+            raise RuntimeError(msg)
     unknown = [verb for verb in allowed if verb not in _TOOLS]
     if unknown:
         log.warning(

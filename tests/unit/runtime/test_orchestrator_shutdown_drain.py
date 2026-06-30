@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from roboco.models.runtime import AgentInstance
@@ -37,6 +37,7 @@ def _make_orchestrator() -> AgentOrchestrator:
         orch = AgentOrchestrator.__new__(AgentOrchestrator)
     orch._instances = {}
     orch._bg_tasks = set()
+    orch._pm_respawn_tracker = {}  # #74: stop() flushes this after the drain
     # Every named background loop ``stop()`` cancels — None makes each a no-op
     # so the test exercises ONLY the _bg_tasks drain.
     for attr in (
@@ -164,3 +165,83 @@ async def test_stop_is_idempotent_double_call_is_noop() -> None:
     await orch.stop()  # safety-net double-call (lifespan already stopped it)
     assert drain_calls == 1, "second stop() must not re-drain (idempotent no-op)"
     assert orch._stopped is True
+
+
+# ---------------------------------------------------------------------------
+# #74: stop() flushes the authoritative in-memory respawn snapshot AFTER the
+# bounded drain so a deadline-cancelled fire-and-forget persist can't leave the
+# durable count lagging the in-memory counter (which would re-burn the strike
+# threshold on the next restart).
+# ---------------------------------------------------------------------------
+
+_BE_PM_TID = "11111111-1111-1111-1111-111111111111"
+_FE_PM_TID = "22222222-2222-2222-2222-222222222222"
+_EXPECTED_FLUSHES = 2  # two seeded respawn rows → two shutdown persists
+
+
+def _respawn_record(count: int) -> dict[str, Any]:
+    return {
+        "count": count,
+        "last_status": "blocked",
+        "last_check": None,
+        "tracing_resets": 0,
+        "notified": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_stop_flushes_respawn_tracker_after_drain() -> None:
+    """#74: stop() writes every in-memory respawn row after the drain, carrying
+    the latest count so the durable counter matches memory on the next restart."""
+    orch = _make_orchestrator()
+    orch_any: Any = orch
+    orch_any._pm_respawn_tracker = {
+        ("be-pm", _BE_PM_TID): _respawn_record(4),
+        ("fe-pm", _FE_PM_TID): _respawn_record(2),
+    }
+    persist = AsyncMock()
+    orch_any._persist_respawn_record = persist
+
+    await asyncio.wait_for(orch.stop(), timeout=5.0)
+
+    assert persist.await_count == _EXPECTED_FLUSHES
+    keys = {(c.args[0], c.args[1]) for c in persist.await_args_list}
+    assert keys == {("be-pm", _BE_PM_TID), ("fe-pm", _FE_PM_TID)}
+    counts = {c.args[0]: c.args[2]["count"] for c in persist.await_args_list}
+    assert counts == {"be-pm": 4, "fe-pm": 2}
+
+
+@pytest.mark.asyncio
+async def test_flush_respawn_tracker_noop_when_empty() -> None:
+    """An empty tracker flushes nothing — no DB churn on a clean shutdown."""
+    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    orch_any: Any = orch
+    orch_any._pm_respawn_tracker = {}
+    persist = AsyncMock()
+    orch_any._persist_respawn_record = persist
+
+    await orch._flush_respawn_tracker()
+
+    persist.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_flush_respawn_tracker_swallows_row_errors() -> None:
+    """#74: a row whose persist raises must not skip the remaining rows or crash
+    shutdown — the in-memory value is gone once the process exits anyway."""
+    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    orch_any: Any = orch
+    orch_any._pm_respawn_tracker = {
+        ("be-pm", _BE_PM_TID): _respawn_record(4),
+        ("fe-pm", _FE_PM_TID): _respawn_record(2),
+    }
+
+    async def _persist(slug: str, _tid: str, _record: dict[str, Any]) -> None:
+        if slug == "be-pm":
+            raise RuntimeError("db down")
+        # fe-pm succeeds
+
+    orch_any._persist_respawn_record = _persist
+
+    # Must not raise — the failing row is logged and the rest still flushed.
+    await orch._flush_respawn_tracker()

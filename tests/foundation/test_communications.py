@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import dataclasses
 
+from roboco import agents_config
 from roboco.agents_config import CHANNEL_ACCESS
 from roboco.foundation import identity
 from roboco.foundation.policy import communications
 from roboco.models.base import NotificationPriority, NotificationType
+from roboco.seeds import initial_data as seeds_initial_data
 
 
 def test_priority_enum_matches_notification_priority() -> None:
@@ -141,3 +143,21 @@ def test_parse_priority_explicit_priority_wins_over_legacy_flag() -> None:
         communications.parse_priority("normal", legacy_urgent_flag=True)
         is communications.Priority.NORMAL
     )
+
+
+def test_team_scoped_roles_is_single_sourced() -> None:
+    """#212: ``TEAM_SCOPED_ROLES`` is defined once in the foundation module and
+    every consumer (agents_config, seeds/initial_data) references THAT object —
+    no duplicate definitions that could drift."""
+    expected = frozenset(
+        {
+            identity.Role.DEVELOPER,
+            identity.Role.QA,
+            identity.Role.DOCUMENTER,
+            identity.Role.CELL_PM,
+        }
+    )
+    assert expected == communications.TEAM_SCOPED_ROLES
+    # Same object identity — not a re-built copy that could drift.
+    assert agents_config._TEAM_SCOPED_ROLES is communications.TEAM_SCOPED_ROLES
+    assert seeds_initial_data._TEAM_SCOPED_ROLES is communications.TEAM_SCOPED_ROLES

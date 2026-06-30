@@ -202,10 +202,11 @@ class ProjectService(BaseService):
                     self.log.error("Failed to encrypt git token", error=str(e))
                     raise
 
-        # Apply updates for non-None fields (excluding git_token which we handled)
-        update_data = data.model_dump(
-            exclude_unset=True, exclude_none=True, exclude={"git_token"}
-        )
+        # Apply updates for explicitly-set fields (excluding git_token which we
+        # handled above). exclude_unset keeps UNSET fields out; we do NOT also
+        # exclude_none, so a field the caller explicitly set to None clears the
+        # stored value (distinct from unset = leave unchanged) — #197.
+        update_data = data.model_dump(exclude_unset=True, exclude={"git_token"})
         for key, value in update_data.items():
             if hasattr(project, key):
                 setattr(project, key, value)

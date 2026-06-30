@@ -1069,13 +1069,13 @@ class OptimalService:
         if result is not None and not result.success:
             raise RuntimeError(f"Failed to record learning: {result.error}")
 
-        # Track in database
-        import hashlib
-
-        content_hash = hashlib.md5(
-            params.content.encode(), usedforsecurity=False
-        ).hexdigest()[:12]
-        source = f"roboco://learnings/learn-{content_hash}"
+        # Track in database. The tracking row's ``source`` MUST match the URI
+        # the plugin embedded the chunks under (``roboco://learnings/{doc_id}``,
+        # doc_id = ``lrn-{md5(content[:100])[:12]}``) so a later de-index /
+        # lookup-by-source against the tracking row finds the chunk rows. The
+        # plugin already returned that doc_id — reuse it instead of recomputing
+        # a divergent ``learn-{md5(full_content)}`` that orphans the chunk rows.
+        source = f"roboco://learnings/{doc_id}"
         await self._track_indexed_document(
             IndexType.LEARNINGS,
             source=source,

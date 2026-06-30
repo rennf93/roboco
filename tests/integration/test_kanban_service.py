@@ -321,3 +321,107 @@ async def test_main_pm_board_flat_sorts_into_team_columns(kanban_setup: dict) ->
     assert len(cols["frontend"].cards) >= 1
     assert len(cols["ux_ui"].cards) >= 1
     assert board.blocked_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_main_pm_board_flat_columns_non_cell_teams(kanban_setup: dict) -> None:
+    """#196: a Main-PM (or other non-cell-team) task used to be counted in
+    total_cards but never columned — the card was built and discarded. It now
+    lands in a Coordination column so the board's columns sum to total_cards."""
+    db = kanban_setup["db"]
+    svc = kanban_setup["svc"]
+    db.add(_seed(kanban_setup, status=TaskStatus.IN_PROGRESS, team=Team.MAIN_PM))
+    await db.flush()
+
+    board = await svc.get_main_pm_board_flat()
+    cols = {c.id: c for c in board.columns}
+    assert "coordination" in cols
+    assert len(cols["coordination"].cards) == 1
+    # No card is silently dropped: the columned cards cover every loaded task.
+    assert sum(len(c.cards) for c in board.columns) == board.total_cards
+
+
+# ---------------------------------------------------------------------------
+# #198: subtask_count must reflect the real task tree, not a hardcoded 0
+# ---------------------------------------------------------------------------
+
+
+def _find_card(board: Any, task_id: Any) -> Any:
+    """Locate a card by task id across flat columns and swimlanes."""
+    cols = list(getattr(board, "columns", []))
+    for lane in getattr(board, "swimlanes", []) or []:
+        cols.extend(lane.columns)
+    for col in cols:
+        for card in col.cards:
+            if str(card.id) == str(task_id):
+                return card
+    raise AssertionError(f"card {task_id} not on board")
+
+
+@pytest.mark.asyncio
+async def test_dev_board_card_reports_real_subtask_count(kanban_setup: dict) -> None:
+    """#198: a parent with two children shows subtask_count=N / has_subtasks."""
+    db = kanban_setup["db"]
+    svc = kanban_setup["svc"]
+    parent = _seed(kanban_setup, status=TaskStatus.IN_PROGRESS, title="parent")
+    db.add(parent)
+    await db.flush()
+    children = [
+        _seed(
+            kanban_setup,
+            status=TaskStatus.PENDING,
+            title=title,
+            parent_task_id=parent.id,
+        )
+        for title in ("child-a", "child-b")
+    ]
+    for child in children:
+        db.add(child)
+    await db.flush()
+
+    board = await svc.get_dev_board(Team.BACKEND)
+    card = _find_card(board, parent.id)
+    assert card.subtask_count == len(children)
+    assert card.has_subtasks is True
+
+
+@pytest.mark.asyncio
+async def test_dev_board_card_subtask_count_zero_when_leaf(kanban_setup: dict) -> None:
+    """A leaf task (no children) reports subtask_count=0 / has_subtasks=False."""
+    db = kanban_setup["db"]
+    svc = kanban_setup["svc"]
+    leaf = _seed(kanban_setup, status=TaskStatus.IN_PROGRESS, title="leaf")
+    db.add(leaf)
+    await db.flush()
+
+    board = await svc.get_dev_board(Team.BACKEND)
+    card = _find_card(board, leaf.id)
+    assert card.subtask_count == 0
+    assert card.has_subtasks is False
+
+
+@pytest.mark.asyncio
+async def test_priority_swimlane_board_reports_real_subtask_count(
+    kanban_setup: dict,
+) -> None:
+    """#198: the swimlane path also threads the real count (not a per-lane stub)."""
+    db = kanban_setup["db"]
+    svc = kanban_setup["svc"]
+    parent = _seed(kanban_setup, status=TaskStatus.IN_PROGRESS, priority=1, title="p")
+    db.add(parent)
+    await db.flush()
+    db.add(
+        _seed(
+            kanban_setup,
+            status=TaskStatus.PENDING,
+            priority=1,
+            title="c",
+            parent_task_id=parent.id,
+        )
+    )
+    await db.flush()
+
+    board = await svc.get_dev_board(Team.BACKEND, swimlane_by="priority")
+    card = _find_card(board, parent.id)
+    assert card.subtask_count == 1
+    assert card.has_subtasks is True

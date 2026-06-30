@@ -25,7 +25,9 @@ claim_doc_task(task_id)    # Documenter
 # - assigned_to: your agent ID
 ```
 
-The claim verb both claims and starts the task — there is no separate `start` call. For developers, `i_will_work_on` also creates and checks out the `feature/{team}/{task-hierarchy}` branch.
+The claim verb both claims and starts the task — there is no separate `start` call. For developers, `i_will_work_on` also creates the `feature/{team}/{task-hierarchy}` branch and **adds a dedicated per-task worktree** at `{clone_root}/.worktrees/{task-id-first-8}/`, checking out the branch there. Your container is started with that worktree as its cwd, and the clone root's HEAD is never moved by the claim — so a second claim (or a coordinator PM's many parallel roots) never overwrites your first task's uncommitted work. See `docs/rag/architecture/workspaces.md` for the worktree model.
+
+Exactly one active WorkSession exists per task at a time (enforced in the service layer and by a DB unique index). A re-claim — pool release, reaper unclaim, escalation redirect — supersedes any prior agent's stale active session for that task and re-points the worktree at the new claim.
 
 ## Before Claiming
 

@@ -227,22 +227,34 @@ class TranscriptionService:
         while self._running:
             try:
                 await asyncio.sleep(self.config.flush_interval_seconds)
-
-                async for buffer in self.get_ready_buffers():
-                    # Notify callbacks
-                    for callback in self._segment_callbacks:
-                        try:
-                            callback(buffer)
-                        except Exception as e:
-                            self.log.error(
-                                "Callback error",
-                                error=str(e),
-                            )
-
+                await self._flush_ready_buffers()
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                self.log.error("Periodic flush error", error=str(e))
+                self.log.error("Periodic flush error", error=e.__class__.__name__)
+
+    async def _flush_ready_buffers(self) -> None:
+        """One flush pass: notify callbacks for each ready buffer, then remove it.
+
+        ``get_ready_buffers`` only peeks — without flushing, a ready buffer was
+        re-yielded on every tick and ``_buffers`` grew unbounded (#96). Sync
+        callbacks are offloaded to a worker thread so a slow callback can't
+        block the flush task / event loop (#97). A failing callback is logged
+        and skipped; a sibling callback still runs and the buffer is still
+        flushed.
+        """
+        async for buffer in self.get_ready_buffers():
+            for callback in self._segment_callbacks:
+                try:
+                    await asyncio.to_thread(callback, buffer)
+                except Exception as e:
+                    self.log.error(
+                        "Callback error",
+                        error=e.__class__.__name__,
+                    )
+            # Remove the buffer now that its segment has been handed off —
+            # without this the same ready buffer accumulates forever.
+            await self.flush_buffer(buffer.agent_id, buffer.session_id)
 
     async def _flush_all(self) -> None:
         """Flush all buffers (called on shutdown)."""

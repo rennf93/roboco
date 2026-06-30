@@ -27,6 +27,20 @@ if TYPE_CHECKING:
 # plain ``.ts``. Map each dialect tag to the language family it belongs to.
 _DIALECT_OF: dict[str, str] = {"tsx": "typescript"}
 
+# Languages the validator actually reports (runner._LANGUAGE_BY_SUFFIX). A
+# custom rule scoped to anything else is a typo — the rule would silently
+# never fire, so ``unrecognized_rule_languages`` surfaces it fail-loud (#129).
+# The tsx -> typescript dialect relation above is intentional (#32 BY-DESIGN).
+_KNOWN_LANGUAGES: frozenset[str] = frozenset({"python", "typescript", "tsx"})
+
+
+def unrecognized_rule_languages(rule: CustomRule) -> list[str]:
+    """Language tags on ``rule`` the validator never reports — likely a typo.
+
+    An unscoped rule (empty ``languages``) applies to everything and is valid.
+    """
+    return [lang for lang in rule.languages if lang not in _KNOWN_LANGUAGES]
+
 
 def _rule_applies(rule_languages: list[str], file_language: str) -> bool:
     """Whether a custom rule scoped to ``rule_languages`` applies to a file of

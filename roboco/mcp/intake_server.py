@@ -123,6 +123,39 @@ async def propose_draft(draft: dict[str, Any]) -> str:
     return f"Could not submit the draft to the panel: {detail}"
 
 
+def _draft_title(d: dict[str, Any]) -> str | None:
+    """A draft is well-formed when it carries a string ``title`` OR ``name``."""
+    t = d.get("title")
+    if isinstance(t, str):
+        return t
+    n = d.get("name")
+    if isinstance(n, str):
+        return n
+    return None
+
+
+def _normalize_batch_drafts(
+    raw: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    """Filter + normalize MegaTask drafts for the panel relay (#163).
+
+    A draft without a string ``title``/``name`` is dropped and counted. A
+    ``name``-only draft is normalized onto a copy as ``title`` (the caller's
+    dict is never mutated). Returns ``(well_formed, dropped_count)``.
+    """
+    well_formed: list[dict[str, Any]] = []
+    for d in raw:
+        draft_title = _draft_title(d)
+        if draft_title is None:
+            continue
+        if isinstance(d.get("title"), str):
+            well_formed.append(d)
+        else:
+            # name-only — normalize onto a copy so the relay sees a ``title``.
+            well_formed.append({**d, "title": draft_title})
+    return well_formed, len(raw) - len(well_formed)
+
+
 @mcp.tool()
 async def propose_batch(drafts: list[dict[str, Any]], title: str = "") -> str:
     """Submit a MegaTask — SEVERAL task drafts at once — for the human to confirm.
@@ -144,25 +177,26 @@ async def propose_batch(drafts: list[dict[str, Any]], title: str = "") -> str:
             "No live session id (ROBOCO_PROMPTER_SESSION_ID) — cannot surface the "
             "MegaTask."
         )
-    # Drop malformed entries (a draft needs a string title) and refuse to POST an
-    # empty batch — otherwise it would silently vanish on the panel side, telling
-    # the agent it succeeded while nothing appears.
-    raw = drafts or []
-    well_formed = [
-        d for d in raw if isinstance(d, dict) and isinstance(d.get("title"), str)
-    ]
+    # Malformed entries are dropped and counted; an empty batch is refused
+    # rather than silently vanishing on the panel side (#163).
+    well_formed, dropped = _normalize_batch_drafts(drafts or [])
     if not well_formed:
         return (
-            "That MegaTask had no well-formed task drafts — give each a title and "
-            "project_id and call propose_batch again."
+            "That MegaTask had no well-formed task drafts — give each a title"
+            " (or name) and a project_id and call propose_batch again."
         )
     payload = {
         "drafts": well_formed,
         "title": title,
-        "dropped": len(raw) - len(well_formed),
+        "dropped": dropped,
     }
     result = await post_batch(session_id, payload)
     if result.get("ok"):
+        if dropped:
+            return (
+                "MegaTask submitted — the human can review it in the panel."
+                f" {dropped} draft(s) were dropped for missing a title/name."
+            )
         return "MegaTask submitted — the human can review it in the panel."
     detail = result.get("detail") or result.get("error") or "unknown error"
     return f"Could not submit the MegaTask to the panel: {detail}"

@@ -241,3 +241,40 @@ def test_role_for_slug_or_none_unknown_returns_none() -> None:
 def test_role_for_slug_or_none_known_returns_role() -> None:
     assert identity.role_for_slug_or_none("be-pm") == identity.Role.CELL_PM
     assert identity.role_for_slug_or_none("ceo") == identity.Role.CEO
+
+
+# ---------------------------------------------------------------------------
+# #49: human-only-role + spawnable-slug predicates (layered skip guards)
+# ---------------------------------------------------------------------------
+
+
+def test_is_human_only_role_for_each_human_role() -> None:
+    for role in (identity.Role.CEO, identity.Role.PROMPTER, identity.Role.SECRETARY):
+        assert identity.is_human_only_role(role) is True
+
+
+def test_is_human_only_role_false_for_agent_roles_and_none() -> None:
+    assert identity.is_human_only_role(identity.Role.DEVELOPER) is False
+    assert identity.is_human_only_role(identity.Role.QA) is False
+    assert identity.is_human_only_role(identity.Role.CELL_PM) is False
+    assert identity.is_human_only_role(None) is False
+
+
+def test_is_spawnable_agent_slug_true_for_known_non_human() -> None:
+    assert identity.is_spawnable_agent_slug("be-dev-1") is True
+    assert identity.is_spawnable_agent_slug("be-qa") is True
+    assert identity.is_spawnable_agent_slug("be-pm") is True
+
+
+def test_is_spawnable_agent_slug_false_for_live_human_slugs() -> None:
+    # ceo / intake-1 (prompter) / secretary-1 are the seeded human-only slugs.
+    for slug in ("ceo", "intake-1", "secretary-1"):
+        assert identity.is_spawnable_agent_slug(slug) is False
+
+
+def test_is_spawnable_agent_slug_false_for_stale_slug() -> None:
+    """#49: a slug that resolves to no known agent must not be treated as
+    spawnable — a stale/ex-human slug must not slip past a skip guard that
+    only checks ``role in (CEO, PROMPTER, SECRETARY)`` (None is not in it)."""
+    assert identity.is_spawnable_agent_slug("old-renamed-secretary") is False
+    assert identity.is_spawnable_agent_slug("does-not-exist-in-agents") is False

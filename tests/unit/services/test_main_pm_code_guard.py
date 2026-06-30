@@ -37,6 +37,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+from roboco.foundation.identity import AGENTS
 from roboco.models.base import (
     AgentRole,
     Complexity,
@@ -138,6 +139,79 @@ async def test_create_allows_main_pm_plus_planning() -> None:
     )
     task = await svc.create(req)
     assert task.task_type == TaskType.PLANNING
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_cell_pm_assignee_plus_code() -> None:
+    # The team-based backstop above only catches main_pm+code. A code task on a
+    # cell team (backend) assigned TO the cell PM (be-pm) is the same mismatch
+    # — the role-based guard closes it at create time.
+
+    be_pm_uuid = AGENTS["be-pm"].uuid
+    svc = TaskService(
+        MagicMock(add=MagicMock(), flush=AsyncMock(), execute=AsyncMock())
+    )
+    req = TaskCreateRequest(
+        title="rogue cell-pm code task",
+        description="should not persist",
+        acceptance_criteria=["ship it"],
+        team=Team.BACKEND,
+        created_by=uuid4(),
+        assigned_to=be_pm_uuid,
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        estimated_complexity=Complexity.MEDIUM,
+        project_id=uuid4(),
+    )
+    with pytest.raises(ValidationError, match="PM_NO_CODE"):
+        await svc.create(req)
+
+
+@pytest.mark.asyncio
+async def test_create_allows_cell_pm_assignee_plus_planning() -> None:
+
+    be_pm_uuid = AGENTS["be-pm"].uuid
+    svc = TaskService(
+        MagicMock(add=MagicMock(), flush=AsyncMock(), execute=AsyncMock())
+    )
+    req = TaskCreateRequest(
+        title="cell-pm planning task",
+        description="fine",
+        acceptance_criteria=["decompose the slice"],
+        team=Team.BACKEND,
+        created_by=uuid4(),
+        assigned_to=be_pm_uuid,
+        task_type=TaskType.PLANNING,
+        nature=TaskNature.TECHNICAL,
+        estimated_complexity=Complexity.MEDIUM,
+        project_id=uuid4(),
+    )
+    task = await svc.create(req)
+    assert task.task_type == TaskType.PLANNING
+
+
+@pytest.mark.asyncio
+async def test_create_allows_dev_assignee_plus_code() -> None:
+    # The role-based guard is PM-scoped — a developer assignee + code is fine.
+
+    dev_uuid = AGENTS["be-dev-1"].uuid
+    svc = TaskService(
+        MagicMock(add=MagicMock(), flush=AsyncMock(), execute=AsyncMock())
+    )
+    req = TaskCreateRequest(
+        title="dev code task",
+        description="fine",
+        acceptance_criteria=["implement it"],
+        team=Team.BACKEND,
+        created_by=uuid4(),
+        assigned_to=dev_uuid,
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        estimated_complexity=Complexity.MEDIUM,
+        project_id=uuid4(),
+    )
+    task = await svc.create(req)
+    assert task.task_type == TaskType.CODE
 
 
 # ---------------------------------------------------------------------------

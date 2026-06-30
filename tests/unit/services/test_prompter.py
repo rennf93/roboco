@@ -32,6 +32,7 @@ from roboco.services.base import ServiceError, ValidationError
 from roboco.services.prompter import (
     PrompterService,
     _cell_teams,
+    _clean_list,
     _draft_cell_map,
     compose_description,
     derive_scale,
@@ -434,6 +435,10 @@ async def test_confirm_live_draft_main_pm_route_assigns_main_pm(
     row = await db_session.get(TaskTable, task_id)
     assert row.status == TaskStatus.PENDING
     assert row.assigned_to == UUID(AGENT_UUIDS["main-pm"])
+    # A PM coordinates — a code task handed to the Main PM is coerced to
+    # planning (the PM/code invariant; the draft's team=backend is honored but
+    # the type is retyped so the combo never persists).
+    assert row.task_type == TaskType.PLANNING
 
 
 @pytest.mark.asyncio
@@ -769,19 +774,30 @@ def test_draft_cell_map_empty_when_no_entry_has_project_id() -> None:
     assert _draft_cell_map({"the_work": [{"team": "backend"}]}) == []
 
 
-def test_draft_cell_map_ignores_off_enum_teams_and_bad_uuids() -> None:
-    """Off-enum team names and malformed project_ids are skipped, not crashed on
-    (the intake agent is an LLM)."""
+def test_draft_cell_map_skips_off_enum_teams_but_rejects_bad_uuids() -> None:
+    """Off-enum team names are skipped (the intake agent is an LLM and can emit
+    a non-cell team), and an entry with no project_id is skipped (legacy
+    single-cell). But a present-but-malformed project_id is a hard error —
+    silently dropping it would collapse a 2-cell map to 1-cell and mis-route the
+    draft as a single-project task (#58)."""
     good = uuid4()
     draft = {
         "the_work": [
             _work("backend", good),
             {"team": "marketing", "project_id": str(uuid4())},  # not a cell
-            _work("frontend", None),  # missing
-            {"team": "ux_ui", "project_id": "not-a-uuid"},  # bad uuid
+            _work("frontend", None),  # missing project_id — skipped
         ]
     }
     assert _draft_cell_map(draft) == [(Team.BACKEND, good)]
+
+    bad = {
+        "the_work": [
+            _work("backend", good),
+            {"team": "ux_ui", "project_id": "not-a-uuid"},  # malformed — reject
+        ]
+    }
+    with pytest.raises(ValidationError, match="Invalid project_id"):
+        _draft_cell_map(bad)
 
 
 def test_validate_batch_scope_accepts_single_multi_cell_draft() -> None:
@@ -899,3 +915,107 @@ async def test_resolve_owning_team_single_cell_still_routes_to_lead_cell() -> No
         default_lead=Team.BACKEND,
     )
     assert team is Team.BACKEND
+
+
+@pytest.mark.asyncio
+async def test_resolve_owning_team_product_with_cell_map_stays_board(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#160: a product draft that also carries a ≥2-cell the_work map is still a
+    product root — on the board-review path it stays team=board, not forced to
+    Main PM (which would strand it past the CEO Approve & Start gate)."""
+    service = get_prompter_service()
+    be_proj, fe_proj = uuid4(), uuid4()
+    draft = {"the_work": [_work("backend", be_proj), _work("frontend", fe_proj)]}
+    product_id = uuid4()
+
+    async def _is_board(_agent_id: UUID) -> bool:
+        return True
+
+    monkeypatch.setattr(service, "_assignee_is_board", _is_board)
+    team = await service._resolve_owning_team(
+        draft,
+        resolved_product_id=product_id,
+        resolved_assigned_to=uuid4(),
+        team_override=None,
+        default_lead=Team.BACKEND,
+    )
+    assert team is Team.BOARD
+
+    async def _not_board(_agent_id: UUID) -> bool:
+        return False
+
+    monkeypatch.setattr(service, "_assignee_is_board", _not_board)
+    team = await service._resolve_owning_team(
+        draft,
+        resolved_product_id=product_id,
+        resolved_assigned_to=uuid4(),
+        team_override=None,
+        default_lead=Team.BACKEND,
+    )
+    assert team is Team.MAIN_PM
+
+
+def test_clean_list_extracts_dict_wrapped_items() -> None:
+    """#159: _clean_list (via coerce_str_list) extracts text from the Claude
+    SDK's XML-ish dict wrappers (``<item>…</item>`` -> ``{"item": {"$text": …}}``)
+    instead of rendering ``str(dict)``. Pins the behavior so a regression to
+    ``str(dict)`` in the rendered description is caught."""
+    out = _clean_list([{"item": {"$text": "build it"}}, "ship it", "   ", ""])
+    assert out == ["build it", "ship it"]
+
+
+@pytest.mark.asyncio
+async def test_create_task_from_draft_preserves_product_with_one_cell_map(
+    db_session: Any,
+) -> None:
+    """#57: a draft carrying a top-level product_id AND a 1-cell the_work map
+    keeps the product — the lone cell map is redundant, not a signal to drop the
+    product and force the cell's project_id."""
+    _project_id, ceo_id = await _seed_project_and_ceo(db_session)
+    product_id = uuid4()
+    db_session.add(
+        ProductTable(
+            id=product_id,
+            name="One-cell product",
+            slug=f"prod-{uuid4().hex[:8]}",
+            description="x",
+            created_by=ceo_id,
+        )
+    )
+    await db_session.flush()
+    service = get_prompter_service(db=db_session)
+    draft = {
+        "title": "Board-led single-cell product",
+        "acceptance_criteria": ["done"],
+        "product_id": str(product_id),
+        "the_work": [_work("backend", uuid4())],
+    }
+    task = await service.create_task_from_draft(draft, ceo_id)
+    assert task.product_id == product_id
+    assert task.project_id is None
+
+
+@pytest.mark.asyncio
+async def test_create_task_from_draft_does_not_mutate_caller_draft(
+    db_session: Any,
+) -> None:
+    """#59: create_task_from_draft coerces + recomposes on a copy — the caller's
+    draft dict and its the_work unit dicts are left untouched (no in-place
+    rewrite of acceptance_criteria / items)."""
+    project_id, ceo_id = await _seed_project_and_ceo(db_session)
+    service = get_prompter_service(db=db_session)
+    original_items = ["  trim me  ", "keep"]
+    draft: dict[str, Any] = {
+        "title": "No-mutation check",
+        "acceptance_criteria": ["done"],
+        "project_id": str(project_id),
+        "the_work": [
+            {"team": "backend", "summary": "s", "items": list(original_items)}
+        ],
+    }
+    await service.create_task_from_draft(draft, ceo_id)
+    # The caller's the_work unit items were NOT coerced in place...
+    assert draft["the_work"][0]["items"] == original_items
+    # ...and the top-level acceptance_criteria was NOT replaced.
+    assert draft["acceptance_criteria"] == ["done"]

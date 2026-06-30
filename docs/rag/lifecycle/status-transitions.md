@@ -5,6 +5,7 @@
 | awaiting_ceo_approval | cancelled | cancel | cell_pm, ceo, main_pm |
 | awaiting_ceo_approval | completed | ceo_approve | ceo |
 | awaiting_ceo_approval | needs_revision | ceo_reject | ceo |
+| awaiting_ceo_approval | pending | ceo_reject_to_pool | ceo |
 | awaiting_documentation | awaiting_pm_review | docs_complete | documenter |
 | awaiting_documentation | cancelled | cancel | cell_pm, ceo, main_pm |
 | awaiting_documentation | claimed | claim | documenter |

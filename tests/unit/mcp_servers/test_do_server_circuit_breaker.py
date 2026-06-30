@@ -185,19 +185,25 @@ def test_all_counted_rejection_kinds_forwarded(
 
 
 def test_breaker_open_substitutes_circuit_open(do_module: types.ModuleType) -> None:
-    """When SDK reports open=true, return the circuit_envelope to the agent."""
+    """When SDK reports open=true, return the circuit_envelope to the agent.
+
+    The original fixable rejection is preserved nested as ``inner`` so the
+    agent still sees why the verb failed (#60) — the circuit_open envelope
+    only says the breaker tripped, not the underlying kind/remediate.
+    """
     circuit_env = {
         "error": "circuit_open",
         "message": "verb 'note' rejected too often (3 in 60s)",
         "remediate": "fix the missing fields once, then retry",
         "missing": [],
     }
+    original = {
+        "error": "incomplete_input",
+        "missing": ["context"],
+        "remediate": "fill context",
+    }
     factory, _ = _make_client(
-        orchestrator_response={
-            "error": "incomplete_input",
-            "missing": ["context"],
-            "remediate": "fill context",
-        },
+        orchestrator_response=original,
         sdk_response={
             "verb": "note",
             "task_id": None,
@@ -210,7 +216,12 @@ def test_breaker_open_substitutes_circuit_open(do_module: types.ModuleType) -> N
     )
     with patch("httpx.Client", side_effect=factory):
         result = do_module.note(text="x", scope="decision")
-    assert result == circuit_env
+    assert result["error"] == "circuit_open"
+    assert result["remediate"] == "fix the missing fields once, then retry"
+    # Original fixable rejection preserved, not erased.
+    assert result["inner"] == original
+    # SDK envelope not mutated in place.
+    assert "inner" not in circuit_env
 
 
 def test_sdk_unreachable_falls_open(do_module: types.ModuleType) -> None:

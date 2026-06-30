@@ -409,6 +409,22 @@ def require_pm_or_above(role: Any, action: str) -> None:
         )
 
 
+def require_ceo_role(role: Any, *, action: str = "perform this action") -> None:
+    """Raise 403 unless ``role`` is the CEO (#25 — the single CEO-check).
+
+    The orchestrator router-level gate (header + HMAC token) and the release
+    handler-level gate (``CurrentAgentContext``) had drifted apart on the role
+    comparison; both now delegate here so the CEO check has one source of
+    truth. Accepts an ``AgentRole`` / ``Role`` enum or the lowercase header
+    string. ``action`` tailors the 403 detail message.
+    """
+    if _role_value(role) != Role.CEO:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Only the CEO may {action}",
+        )
+
+
 def require_developer_or_above(role: Any, action: str) -> None:
     """Raise 403 unless caller is developer-or-above."""
     if _role_value(role) not in _DEVELOPER_OR_ABOVE_ROLES:

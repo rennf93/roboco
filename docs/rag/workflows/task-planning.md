@@ -71,6 +71,20 @@ For code subtasks, delegate each developer their **full queue up front** rather 
 
 Caps still apply: at most 12 subtasks per parent, and same-title duplicate subtasks are rejected.
 
+## PMs Do Not Own Code Tasks
+
+A PM (Cell PM or Main PM) is a coordinator — it plans and delegates, it does not write code, and it has no code verb. The role×task_type rule is enforced at **creation**, not just at delegate:
+
+- A `code`-typed task **cannot be assigned to a PM** — `delegate`, `TaskService.create`, batch activation, reassign, and the claim/escalation diversion all consult the same `pm_cannot_own_code` / `main_pm_cannot_own_code` guard and reject it.
+- A Main-PM coordination **root** that is `code`-typed is rejected by `submit_root`'s `PRECONDITION_ROOT_NOT_CODE` — a Main PM can never assemble+merge a code root, because it can't have written one.
+- The one exception — "a PM may take a code task **only to resolve review issues**" (`is_issue_resolution`) — is a server-side signal the platform sets when routing a `needs_revision` code task back to its owning PM to act on concrete review issues; it is **not** something you pass from a verb. In practice no live path exercises it yet; the structural rule is: if you're a PM and you're looking at a `code` task, delegate it to a developer instead.
+
+This is structural, not a hint. Before this guard, a PM assigned a code task would claim it and deadlock into a respawn loop — a coordinator with no code verb holding a code task it can neither do nor hand back. The guard makes that loop unrepresentable.
+
+## Delegation Depth
+
+The task hierarchy is capped at `MAX_TASK_DEPTH = 4` levels (depths 0–3). The normal 3-layer flow (Main-PM root → cell task → dev subtask) fits in 3; **MegaTask** adds one Main-PM layer on top — umbrella (depth 0) → root-subtask (1) → cell task (2) → dev subtask (3) — which is why the cap is 4, not 3. A `delegate` that would create a node at depth 4 is rejected with a clean `invalid_state` and a "create as a sibling" remediation. Don't over-nest; if you're hitting the cap, the work belongs as a sibling, not a child.
+
 ## Git Workflow
 
 All code tasks follow the git workflow:

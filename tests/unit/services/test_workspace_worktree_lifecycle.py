@@ -11,7 +11,7 @@ import os
 import shutil
 import subprocess
 from typing import TYPE_CHECKING
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from roboco.services.workspace import WorkspaceService
@@ -240,3 +240,162 @@ async def test_two_concurrent_task_worktrees_independent(clone: Path) -> None:
     assert _git(wt_b, "rev-parse", "--abbrev-ref", "HEAD").strip() == "feature/8e460893"
     # Clone root stays on main — neither task branch moved it.
     assert _git(clone, "rev-parse", "--abbrev-ref", "HEAD").strip() == "main"
+
+
+# ---------------------------------------------------------------------------
+# ensure_worktree_self_heal — spawn-time clone + branch-ref self-heal (F123).
+# A vanished clone_root fatal-looped the resume path (`git -C <missing>`); the
+# reaper-style claim release preserves ownership + branch_name, so the next
+# dispatch is a RESUME (create_branch never re-runs to re-clone). self_heal
+# recovers the branch ref from origin (create_branch pushes at claim time) so
+# the pushed work survives, falling back to a fresh branch off origin/HEAD
+# only when the branch was never pushed.
+# ---------------------------------------------------------------------------
+
+
+def _ref_exists(repo: Path, ref: str) -> bool:
+    return (
+        subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", ref],
+            check=False,
+        ).returncode
+        == 0
+    )
+
+
+async def test_self_heal_noop_when_worktree_present(clone: Path) -> None:
+    svc = _service()
+    wt = clone / ".worktrees" / "a3c40fe7"
+    with patch("roboco.services.workspace._ensure_agent_owned"):
+        await svc.ensure_worktree(clone, wt, "feature/a3c40fe7", "main")
+
+    with (
+        patch.object(
+            WorkspaceService, "_fetch_branch_ref", new_callable=AsyncMock
+        ) as fetch,
+        patch("roboco.services.workspace._ensure_agent_owned"),
+    ):
+        await svc.ensure_worktree_self_heal(clone, wt, "feature/a3c40fe7", "proj")
+
+    assert fetch.await_count == 0, "present worktree must not trigger a fetch"
+    assert _git(wt, "rev-parse", "--abbrev-ref", "HEAD").strip() == "feature/a3c40fe7"
+
+
+async def test_self_heal_readds_pruned_worktree_from_local_ref(clone: Path) -> None:
+    # Common resume case: clone healthy, worktree pruned, local branch ref
+    # survives -> re-add with NO fetch (no origin round-trip on every spawn).
+    svc = _service()
+    wt = clone / ".worktrees" / "a3c40fe7"
+    with patch("roboco.services.workspace._ensure_agent_owned"):
+        await svc.ensure_worktree(clone, wt, "feature/a3c40fe7", "main")
+    _git(clone, "worktree", "remove", str(wt), "--force")  # prune
+    assert not wt.exists()
+
+    with (
+        patch.object(
+            WorkspaceService, "_fetch_branch_ref", new_callable=AsyncMock
+        ) as fetch,
+        patch("roboco.services.workspace._ensure_agent_owned"),
+    ):
+        await svc.ensure_worktree_self_heal(clone, wt, "feature/a3c40fe7", "proj")
+
+    assert fetch.await_count == 0, "local ref survives -> no fetch needed"
+    assert wt.exists()
+    assert _git(wt, "rev-parse", "--abbrev-ref", "HEAD").strip() == "feature/a3c40fe7"
+
+
+def _bare_remote_with_branch(tmp_path: Path, branch: str, push_branch: bool) -> Path:
+    """A bare remote carrying `main`; optionally also `branch` with a commit."""
+    remote = tmp_path / "remote.git"
+    remote.mkdir()
+    _git(remote, "init", "--bare", "-b", "main")
+    src = tmp_path / "src"
+    _init_clone(src)
+    _git(src, "remote", "add", "origin", str(remote))
+    _git(src, "push", "origin", "main")
+    if push_branch:
+        _git(src, "checkout", "-b", branch)
+        (src / "work.txt").write_text("x")
+        _git(src, "add", "work.txt")
+        _git(src, "commit", "-m", "work")
+        _git(src, "push", "origin", branch)
+    return remote
+
+
+def _recloned_clone(
+    tmp_path: Path, remote: Path, fetch_branch: str | None = None
+) -> Path:
+    """A clone with only `main` locally (simulates a fresh re-clone: no task
+    branch ref). origin/HEAD is set so ensure_worktree's -b fallback resolves.
+    When ``fetch_branch`` is given, its remote-tracking ref is pre-seeded here
+    (the real ``_fetch_branch_ref`` is mocked in the test) to model a branch
+    that was pushed at claim time and is recoverable from origin."""
+    clone = tmp_path / "clone"
+    _init_clone(clone)
+    _git(clone, "remote", "add", "origin", str(remote))
+    _git(clone, "fetch", "origin", "main")
+    if fetch_branch is not None:
+        _git(clone, "fetch", "origin", fetch_branch)
+    _git(clone, "remote", "set-head", "origin", "main")
+    return clone
+
+
+async def test_self_heal_recovers_branch_from_origin(tmp_path: Path) -> None:
+    # THE BUG SCENARIO: clone vanished, re-cloned (only main locally), but the
+    # task branch was pushed at claim time -> recover it from origin so the
+    # pushed work survives (not -b'd over with a divergent branch). The real
+    # _fetch_branch_ref is mocked (a spy); the remote-tracking ref it would
+    # populate is pre-seeded, exercising the ref-recovery + worktree re-add.
+    branch = "feature/8e460893"
+    remote = _bare_remote_with_branch(tmp_path, branch, push_branch=True)
+    clone = _recloned_clone(tmp_path, remote, fetch_branch=branch)
+    assert not _ref_exists(clone, f"refs/heads/{branch}"), "precondition: no local ref"
+    assert _ref_exists(
+        clone, f"refs/remotes/origin/{branch}"
+    ), "precondition: pushed branch reachable on origin"
+
+    svc = _service()
+    wt = clone / ".worktrees" / "8e460893"
+
+    with (
+        patch.object(
+            WorkspaceService, "_fetch_branch_ref", new_callable=AsyncMock
+        ) as fetch,
+        patch("roboco.services.workspace._ensure_agent_owned"),
+    ):
+        await svc.ensure_worktree_self_heal(clone, wt, branch, "proj")
+
+    assert fetch.await_count == 1, "missing local ref must trigger a fetch"
+    assert wt.exists()
+    assert _git(wt, "rev-parse", "--abbrev-ref", "HEAD").strip() == branch
+    # Recovered commit present — pushed work was NOT lost to a divergent -b.
+    assert (wt / "work.txt").exists(), "pushed commit must survive recovery"
+
+
+async def test_self_heal_falls_back_to_origin_head_when_branch_not_pushed(
+    tmp_path: Path,
+) -> None:
+    # Never-pushed branch (push failed at claim time, or first claim never
+    # pushed): origin doesn't have it -> re-create from origin/HEAD rather
+    # than fatal-loop. No pushed work is lost because none existed.
+    branch = "feature/8e460893"
+    remote = _bare_remote_with_branch(tmp_path, branch, push_branch=False)
+    clone = _recloned_clone(tmp_path, remote)
+    assert not _ref_exists(
+        clone, f"refs/remotes/origin/{branch}"
+    ), "precondition: not on origin"
+
+    svc = _service()
+    wt = clone / ".worktrees" / "8e460893"
+
+    with (
+        patch.object(
+            WorkspaceService, "_fetch_branch_ref", new_callable=AsyncMock
+        ) as fetch,
+        patch("roboco.services.workspace._ensure_agent_owned"),
+    ):
+        await svc.ensure_worktree_self_heal(clone, wt, branch, "proj")
+
+    assert fetch.await_count == 1, "missing local ref still attempts a fetch"
+    assert wt.exists(), "fallback -b from origin/HEAD must break the loop"
+    assert _git(wt, "rev-parse", "--abbrev-ref", "HEAD").strip() == branch

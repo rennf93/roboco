@@ -9,6 +9,7 @@ decision points deterministically (logs + tracker + finalize stubbed).
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
@@ -56,6 +57,8 @@ def orch(monkeypatch: pytest.MonkeyPatch) -> AgentOrchestrator:
     orch._waiting_records = {}
     orch._rate_limit_ceo_notified = set()
     orch._instances = {}
+    orch._bg_tasks = set()
+    orch._resume_confirm_delay = 0.0  # #71: deterministic liveness confirmation
     return orch
 
 
@@ -250,7 +253,11 @@ async def test_probe_success_respawns_parked_agent(
     await orch._on_probe_success("anthropic", tracker)
 
     spawn.assert_awaited_once()  # parked agent respawned, not stranded
-    assert "be-dev-1" not in orch._waiting_records
+    # #71: the record is kept past the launch and torn down only once liveness
+    # is confirmed (deferred, not on the bare launch) — so a container that
+    # launches then dies immediately keeps its record for the orphan fallback.
+    assert "be-dev-1" in orch._waiting_records
+    await asyncio.gather(*orch._bg_tasks, return_exceptions=True)
 
 
 # ---------------------------------------------------------------------------

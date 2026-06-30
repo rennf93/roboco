@@ -5,6 +5,8 @@ from __future__ import annotations
 import base64
 import json
 import pathlib
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -218,3 +220,46 @@ def test_main_check_exit_codes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     assert ga.main(["--check"]) == 0
     _write(home / "auth.json", _bundle(_PAST))
     assert ga.main(["--check"]) == 1
+
+
+def test_concurrent_refresh_does_not_double_rotate_single_use_token(
+    tmp_path: Path,
+) -> None:
+    """Two near-simultaneous ``refresh_if_stale`` calls must POST the
+    refresh-token grant ONCE (#94). The grok refresh token is single-use — xAI
+    invalidates the old one the instant it issues the new one — so a second
+    concurrent grant POST (using the now-dead old token) would burn the
+    credential. A process-wide lock + re-load inside the lock makes the second
+    caller see the refreshed token and return ``fresh`` instead of re-rotating.
+    """
+    path = tmp_path / "auth.json"
+    _write(path, _bundle(_PAST))
+    posted: list[str] = []
+    post_lock = threading.Lock()
+
+    def _post(_url: str, form: dict[str, str]) -> dict[str, Any]:
+        with post_lock:
+            posted.append(form["refresh_token"])
+        # Hold the grant long enough that both threads are in flight together.
+        time.sleep(0.1)
+        return {
+            "access_token": "new-access",
+            "refresh_token": "new-rt",
+            "expires_in": 21600,
+        }
+
+    results: list[str] = []
+
+    def _run() -> None:
+        results.append(ga.refresh_if_stale(path, post=_post))
+
+    threads = [threading.Thread(target=_run) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(posted) == 1  # exactly one grant POST — no double rotation
+    # Both callers succeeded (one refreshed, the other saw it and returned fresh).
+    assert all(r in ("refreshed", "fresh") for r in results)
+    assert "refreshed" in results

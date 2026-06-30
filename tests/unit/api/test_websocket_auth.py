@@ -19,6 +19,7 @@ from roboco.api.websocket import (
     agent_stream,
     channel_stream,
     notification_stream,
+    system_stream,
 )
 
 if TYPE_CHECKING:
@@ -165,3 +166,33 @@ async def test_channel_stream_accepts_panel_token_holder(
     assert confirmation["type"] == "connected"
     assert confirmation["channel_id"] == str(channel_id)
     assert confirmation["subscriber_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_system_stream_rejects_missing_token_when_required(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``/ws/system`` was the only /ws/* stream that was ungated (#24). In strict
+    mode a missing CEO token must close it with policy-violation, never accept —
+    matching every sibling /ws/* handler."""
+    monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", _SECRET)
+    monkeypatch.setenv("ROBOCO_AGENT_AUTH_REQUIRED", "true")
+    ws = _mock_ws(headers={}, query={})
+    await system_stream(ws)
+    ws.close.assert_awaited_once()
+    assert ws.close.await_args.kwargs["code"] == status.WS_1008_POLICY_VIOLATION
+    ws.accept.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_system_stream_rejects_forged_token_even_in_dev(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A presented-but-forged token is rejected even in dev mode."""
+    monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", _SECRET)
+    monkeypatch.delenv("ROBOCO_AGENT_AUTH_REQUIRED", raising=False)
+    ws = _mock_ws(headers={"x-agent-token": "forged-not-a-real-hmac"}, query={})
+    await system_stream(ws)
+    ws.close.assert_awaited_once()
+    assert ws.close.await_args.kwargs["code"] == status.WS_1008_POLICY_VIOLATION
+    ws.accept.assert_not_awaited()

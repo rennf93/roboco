@@ -4,6 +4,7 @@ Task API Routes
 Full CRUD operations and lifecycle management for tasks.
 """
 
+from dataclasses import dataclass
 from typing import Annotated, Any, cast
 from uuid import UUID
 
@@ -45,6 +46,7 @@ from roboco.api.schemas.tasks import (
     task_to_response,
     transform_update_data,
 )
+from roboco.db.tables import TaskTable
 from roboco.enforcement import get_valid_transitions
 from roboco.exceptions import GitError, TaskLifecycleError
 from roboco.foundation.policy import task_completeness as tc
@@ -64,10 +66,11 @@ from roboco.services.notification_delivery import (
     EscalationError,
     get_notification_delivery_service,
 )
-from roboco.services.permissions import TaskAction
+from roboco.services.permissions import AgentContext, TaskAction
 from roboco.services.task import (
     SoftBlockInput,
     TaskCreateRequest,
+    TaskService,
     extract_original_developer,
     get_task_service,
 )
@@ -75,6 +78,69 @@ from roboco.utils.converters import require_uuid
 
 router = APIRouter()
 _logger = get_logger(__name__)
+
+# #13: lifecycle-bypass hatch states — a privileged PATCH into one of these is a
+# forced override that must carry the explicit ``force`` acknowledgement flag.
+_HATCH_OVERRIDE_STATES = frozenset(
+    {
+        TaskStatus.COMPLETED,
+        TaskStatus.AWAITING_QA,
+        TaskStatus.AWAITING_PM_REVIEW,
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _StatusOverride:
+    """Bundle of ``update_task`` override params (keeps the helper ≤ 5 args)."""
+
+    service: TaskService
+    task_id: UUID
+    task: TaskTable
+    new_status: TaskStatus
+    force: bool
+    has_higher_perms: bool
+    agent: AgentContext
+
+
+async def _apply_forced_status_override(req: _StatusOverride) -> TaskTable:
+    """Apply an audited admin status override, gating the lifecycle bypass.
+
+    Extracted from ``update_task`` so the route's complexity stays readable.
+    Refuses a non-privileged caller, and refuses a bypass into a hatch state
+    without the explicit ``force`` flag; otherwise delegates to the audited
+    ``admin_set_status`` and asserts the override landed.
+    """
+    if req.new_status == req.task.status:
+        return req.task
+    if not req.has_higher_perms:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only privileged roles may override task status.",
+        )
+    if req.new_status in _HATCH_OVERRIDE_STATES and not req.force:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Overriding a task into "
+                f"{req.new_status.value} bypasses the lifecycle gate; pass "
+                '"force": true to acknowledge the forced override.'
+            ),
+        )
+    task = await req.service.admin_set_status(
+        req.task_id,
+        req.new_status,
+        actor_id=req.agent.agent_id,
+        actor_role=getattr(req.agent, "role", None),
+        force=req.force,
+    )
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Task status override failed unexpectedly",
+        )
+    return task
+
 
 # Minimum character count for notes fields that must be substantive
 # (QA pass notes, doc-complete notes, escalation notes). Below this the
@@ -892,6 +958,9 @@ async def update_task(
     # in-band transition. Pop it out of the generic field update and apply it
     # through the audited path, gated on elevated permissions.
     new_status = updates.pop("status", None)
+    # #13: ``force`` is the explicit acknowledgement of the lifecycle bypass.
+    # Pop it so it is never passed to TaskService.update as a field set.
+    force = bool(updates.pop("force", False))
 
     # Pop explicitly-set-to-None nullable fields. TaskService.update() skips
     # None values (not-None guard), so null-clear intent is re-applied directly
@@ -909,23 +978,18 @@ async def update_task(
     # the MegaTask shape here too — a cleared parent_task_id / project_id must not
     # turn a root-subtask into an umbrella-shaped-but-targeted spoof.
     _reassert_batch_shape(task)
-    if new_status is not None and new_status != task.status:
-        if not has_higher_perms:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Only privileged roles may override task status.",
+    if new_status is not None:
+        task = await _apply_forced_status_override(
+            _StatusOverride(
+                service=service,
+                task_id=task_id,
+                task=task,
+                new_status=new_status,
+                force=force,
+                has_higher_perms=has_higher_perms,
+                agent=agent,
             )
-        task = await service.admin_set_status(
-            task_id,
-            new_status,
-            actor_id=agent.agent_id,
-            actor_role=getattr(agent, "role", None),
         )
-        if not task:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Task status override failed unexpectedly",
-            )
     await db.commit()
     return task_to_response(task)
 

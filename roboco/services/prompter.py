@@ -21,7 +21,11 @@ from sqlalchemy import select
 
 from roboco.db.tables import AgentTable, TaskTable
 from roboco.foundation.identity import CELL_TEAMS
-from roboco.foundation.policy.batch import is_batch_umbrella, main_pm_cannot_own_code
+from roboco.foundation.policy.batch import (
+    is_batch_umbrella,
+    main_pm_cannot_own_code,
+    pm_cannot_own_code,
+)
 from roboco.foundation.policy.content.validators import coerce_str_list
 from roboco.foundation.policy.sequencing.models import DraftSurface, SequencePlan
 from roboco.models.base import (
@@ -179,13 +183,20 @@ class PrompterService:
         team=board until approved (else the CEO's Approve & Start gate, which
         keys on team=board, never appears and the task strands). "Approve &
         Start" (assignee main-pm) and the post-approval state are team=main_pm.
+
+        Product/board routing is consulted BEFORE the multi-cell-map Main-PM
+        force: a product draft that also carries a ≥2-cell the_work map is still
+        a product root, and if it is on the board-review path it must stay
+        team=board — forcing Main PM here would strand the task past the CEO's
+        Approve & Start gate (#160).
         """
         if team_override is not None:
             return team_override
-        if len(_draft_cell_map(draft_data)) >= _MULTI_CELL_MIN:
-            # Ad-hoc multi-cell map → coordination root, like a product root.
-            return Team.MAIN_PM
         if resolved_product_id is None:
+            # No product: ad-hoc multi-cell map → coordination root; else the
+            # single-cell lead cell.
+            if len(_draft_cell_map(draft_data)) >= _MULTI_CELL_MIN:
+                return Team.MAIN_PM
             return self._lead_cell_team(draft_data, default=default_lead)
         if resolved_assigned_to is not None and await self._assignee_is_board(
             resolved_assigned_to
@@ -242,6 +253,43 @@ class PrompterService:
             return UUID(str(draft_data["assigned_to"]))
         return None
 
+    def _coerce_pm_code_to_planning(
+        self,
+        *,
+        team: Team,
+        task_type: TaskType,
+        resolved_assigned_to: UUID | None,
+        title: str,
+    ) -> TaskType:
+        """Coerce code->planning when the owner is a coordination role (PM).
+
+        Two layers: team-based (main_pm) and assignee-based (a PM assignee on a
+        cell team). A brand-new intake task is never in needs_revision so the
+        issue-resolution carve-out does not apply.
+        """
+        if main_pm_cannot_own_code(team=team, task_type=task_type):
+            self.log.info(
+                "Main-PM intake task coerced code->planning",
+                team=str(getattr(team, "value", team)),
+                title=title,
+            )
+            return TaskType.PLANNING
+        if resolved_assigned_to is None:
+            return task_type
+        from roboco.foundation.identity import role_for_uuid_or_none
+
+        assignee_role = role_for_uuid_or_none(resolved_assigned_to)
+        if assignee_role is not None and pm_cannot_own_code(
+            role=assignee_role, task_type=task_type, is_issue_resolution=False
+        ):
+            self.log.info(
+                "PM-assignee intake task coerced code->planning",
+                role=str(getattr(assignee_role, "value", assignee_role)),
+                title=title,
+            )
+            return TaskType.PLANNING
+        return task_type
+
     async def create_task_from_draft(
         self,
         draft_data: dict[str, Any],
@@ -255,8 +303,9 @@ class PrompterService:
 
         Recomposes the description, validates exactly-one target, coerces enums,
         routes the owning team (product → Main PM, project → lead cell), and
-        persists via ``TaskService.create``. Mutates ``draft_data['description']``
-        in place. ``confirmed_by_human=True`` — the CEO confirmed it.
+        persists via ``TaskService.create``. Operates on a copy — the caller's
+        draft dict is never mutated (#59). ``confirmed_by_human=True`` — the
+        CEO confirmed it.
 
         ``status`` defaults to ``BACKLOG``. The live-intake buttons pass
         ``PENDING`` + an ``assigned_to`` (a board agent for "Board review &
@@ -272,6 +321,10 @@ class PrompterService:
         draft through to the task so the analyzer's surface is persisted.
         """
         place = placement or BatchPlacement()
+        # Coerce + recompose on a copy so the caller's draft is never mutated
+        # (#59) — the_work unit dicts are copied too, since coercion rewrites
+        # each unit's ``items``.
+        draft_data = _copy_draft(draft_data)
         self._validate_and_coerce_draft(draft_data)
         # Recompose the description from the (possibly edited) structured fields —
         # the task always carries a freshly-composed, consistent description.
@@ -290,9 +343,16 @@ class PrompterService:
             ]
             resolved_project_id = None
             resolved_product_id = None
-        elif len(cell_map) == 1:
+        elif (
+            len(cell_map) == 1
+            and resolved_project_id is None
+            and resolved_product_id is None
+        ):
+            # A lone the_work cell with no top-level target → single-project
+            # task on that cell's project. A top-level project_id/product_id
+            # wins over a redundant 1-cell map — the explicit target is
+            # preserved, not silently dropped (#57).
             resolved_project_id = cell_map[0][1]
-            resolved_product_id = None
         self._validate_draft_target(
             resolved_project_id,
             resolved_product_id,
@@ -317,22 +377,15 @@ class PrompterService:
             default_lead=_lead,
         )
 
-        # A Main PM coordinates — it never owns a code task. A main_pm + code
-        # draft is the structural mismatch behind the 2026-06-27 MegaTask
-        # meltdown (the git/PR/review layer treated the root as code while the
-        # ownership layer treated it as coordination → pr_fail loop). Intake
-        # coerces code -> planning here so the combo can never persist; a
-        # root-subtask / umbrella / single-task main_pm route is a coordination
-        # root whose code ACs live on the delegated cell/dev leaves. The
-        # TaskService.create backstop rejects main_pm + code for non-intake
-        # create paths (the HTTP route).
-        if main_pm_cannot_own_code(team=team, task_type=task_type):
-            self.log.info(
-                "Main-PM intake task coerced code->planning",
-                team=str(getattr(team, "value", team)),
-                title=_text(draft_data.get("title")) or "",
-            )
-            task_type = TaskType.PLANNING
+        # A coordination role (PM) never owns a code task — coerce code->planning
+        # (team-based main_pm path + assignee-based PM path). See
+        # ``_coerce_pm_code_to_planning`` for the 2026-06-27 meltdown rationale.
+        task_type = self._coerce_pm_code_to_planning(
+            team=team,
+            task_type=task_type,
+            resolved_assigned_to=resolved_assigned_to,
+            title=_text(draft_data.get("title")) or "",
+        )
 
         req = TaskCreateRequest(
             title=draft_data["title"],
@@ -872,8 +925,15 @@ def _draft_cell_map(draft: dict[str, Any]) -> list[tuple[Team, UUID]]:
             continue
         try:
             pid = UUID(str(pid_raw))
-        except (ValueError, TypeError):
-            continue
+        except (ValueError, TypeError) as exc:
+            # A present-but-malformed project_id is a hard error, not an LLM
+            # cosmetic guess to skip: silently dropping it would collapse a
+            # 2-cell map to 1-cell and mis-route the draft as a single-project
+            # task (#58). Reject with a clean 400 so the human re-enters it.
+            raise ValidationError(
+                message=f"Invalid project_id in the_work cell '{team_raw}': {pid_raw}",
+                field="project_id",
+            ) from exc
         seen_teams.add(team)
         out.append((team, pid))
     return out
@@ -891,6 +951,23 @@ def _clean_list(value: Any) -> list[str]:
     etc.) are extracted to text rather than dumped as ``str(dict)``.
     """
     return coerce_str_list(value)
+
+
+def _copy_draft(draft: dict[str, Any]) -> dict[str, Any]:
+    """A shallow copy of the draft whose ``the_work`` unit dicts are also copied.
+
+    Draft coercion (``_validate_and_coerce_draft``) rewrites the top-level list
+    fields and each the_work unit's ``items``; without copying it would mutate
+    the caller's draft in place (#59). The unit dicts are copied because their
+    ``items`` is reassigned; nested scalars are read-only.
+    """
+    out = dict(draft)
+    work = draft.get("the_work")
+    if isinstance(work, list):
+        out["the_work"] = [
+            dict(unit) if isinstance(unit, dict) else unit for unit in work
+        ]
+    return out
 
 
 def _text(value: Any) -> str:

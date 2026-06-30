@@ -303,12 +303,63 @@ def role_for_slug_or_none(slug: str) -> Role | None:
 
     Returns ``None`` for an unknown/stale slug instead of raising ``KeyError``,
     so a stale assignee or notification-target slug can't crash the whole
-    dispatcher tick. Callers that only need to check "is this a human-only
-    role?" treat ``None`` as "not human-only" (``None in (CEO, ...)`` is False)
-    and proceed without raising.
+    dispatcher tick. Prefer :func:`is_human_only_role` /
+    :func:`is_spawnable_agent_slug` over re-deriving the human-only set at each
+    call site — a bare ``role in (CEO, ...)`` test treats a stale ``None`` slug
+    as "not human" and proceeds to spawn it (the #49 layered-guard hole).
     """
     row = AGENTS.get(slug)
     return row.role if row is not None else None
+
+
+_HUMAN_ONLY_ROLES: frozenset[Role] = frozenset(
+    {Role.CEO, Role.PROMPTER, Role.SECRETARY}
+)
+
+
+def is_human_only_role(role: Role | None) -> bool:
+    """True for the CEO / prompter / secretary — the human-driven roles.
+
+    These are never containers. ``None`` (an unresolvable/stale slug) is False:
+    a stale slug is not itself
+    a human role, it is simply unknown. Use :func:`is_spawnable_agent_slug` at
+    spawn-skip sites where a stale slug must also be skipped.
+    """
+    return role in _HUMAN_ONLY_ROLES
+
+
+def is_spawnable_agent_slug(slug: str) -> bool:
+    """True only when ``slug`` resolves to a known non-human agent role.
+
+    A dispatcher may spawn a slug only when this is True. An unresolvable
+    (stale/renamed) slug returns False so the dispatcher skips instead of
+    launching a doomed — or formerly-human — container (#49). Live human-only
+    roles are False; their dedicated spawn paths do not route through the
+    dispatcher. Release/reaper paths that *recover* a stale-slug claim should
+    NOT use this (they want to act on the stale slug, not spawn it).
+    """
+    role = role_for_slug_or_none(slug)
+    if role is None:
+        return False
+    return role not in _HUMAN_ONLY_ROLES
+
+
+def role_for_uuid_or_none(agent_uuid: object | None) -> Role | None:
+    """Resolve a seeded agent's ``UUID`` to its ``Role`` (None if unknown).
+
+    The create path carries ``assigned_to`` as a UUID, not a slug, so the
+    role-vs-task_type guard needs a UUID→role lookup. Built once over the
+    seeded ``AGENTS`` table; a non-seeded / stale UUID returns None (the guard
+    treats None as "not a PM" and proceeds — the team-based ``main_pm`` check
+    still holds the line for the main-pm team).
+    """
+    if agent_uuid is None:
+        return None
+    key = str(agent_uuid)
+    for row in AGENTS.values():
+        if str(row.uuid) == key:
+            return row.role
+    return None
 
 
 def team_for_slug(slug: str) -> Team:

@@ -32,9 +32,10 @@ This automatically:
 1. Prefixes the commit with `[task-id-first-8-chars]`
 2. Validates the message via `commit_validator`
 3. Stages the listed files (or everything tracked + modified if omitted)
-4. Pushes to the agent's auto-created branch
-5. Records the commit on the task (`commits[]` field on `TaskTable`)
-6. Opens a PR through the choreographer when the task transitions out of `in_progress` (no separate `create_pr` call required)
+4. Commits **inside your task worktree** (`{clone_root}/.worktrees/{task-id-first-8}/`) — your cwd, never the clone root
+5. Pushes the task's recorded branch **by name** (independent of whatever the clone happens to be checked out on)
+6. Records the commit on the task (`commits[]` field on `TaskTable`)
+7. Opens a PR through the choreographer when the task transitions out of `in_progress` (no separate `create_pr` call required)
 
 ## Before Committing
 
@@ -42,6 +43,8 @@ This automatically:
 2. Run linter: `uv run ruff check .` or `pnpm lint`
 3. Run type check: `uv run mypy roboco/` or `pnpm typecheck`
 4. Format code: `uv run ruff format .` or `pnpm format`
+
+**Never use `uv run --active` or point uv at `/app`.** Bare `uv run` is cwd-relative and resolves your workspace venv (symlinked into the worktree) — that's always what you want. `--active` retargets onto the image-baked `/app/.venv` (the MCP-gateway venv) and rebuilds it, bricking every tool you have. The bash-guard blocks it; if you ever feel pushed toward `--active`, call `i_am_blocked(reason='workspace venv broken')` instead. See `docs/rag/architecture/workspaces.md`.
 
 ## After Committing
 

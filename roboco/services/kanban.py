@@ -8,6 +8,7 @@ Supports swimlanes, cross-cell views, and real-time updates.
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any, ClassVar
+from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -43,8 +44,25 @@ class KanbanService(BaseService):
     # CARD CREATION
     # =========================================================================
 
+    async def _load_subtask_counts(self, tasks: Sequence[TaskTable]) -> dict[UUID, int]:
+        """#198: batch-count direct children per parent in ONE grouped query, so a
+        board of N cards doesn't fire N child-count queries (and so the count is
+        real, not a hardcoded 0)."""
+        parent_ids = [t.id for t in tasks if t.id is not None]
+        if not parent_ids:
+            return {}
+        result = await self.session.execute(
+            select(TaskTable.parent_task_id, func.count(TaskTable.id))
+            .where(TaskTable.parent_task_id.in_(parent_ids))
+            .group_by(TaskTable.parent_task_id)
+        )
+        return {row[0]: int(row[1]) for row in result.all() if row[0] is not None}
+
     async def _task_to_card(
-        self, task: TaskTable, swimlane_key: str | None = None
+        self,
+        task: TaskTable,
+        swimlane_key: str | None = None,
+        subtask_counts: dict[UUID, int] | None = None,
     ) -> KanbanCard:
         """Convert a task to a kanban card."""
         # Get assignee name if assigned
@@ -62,8 +80,10 @@ class KanbanService(BaseService):
             if last_with_percentage:
                 progress = last_with_percentage["percentage"]
 
-        # Count subtasks (would need a query in real implementation)
-        subtask_count = 0
+        # #198: real subtask count from the batch-loaded map (0 when no map / leaf).
+        subtask_count = (
+            subtask_counts.get(require_uuid(task.id), 0) if subtask_counts else 0
+        )
 
         return KanbanCard(
             id=require_uuid(task.id),
@@ -143,8 +163,9 @@ class KanbanService(BaseService):
 
         # Add cards to columns
         blocked_count = 0
+        subtask_counts = await self._load_subtask_counts(tasks)
         for task in tasks:
-            card = await self._task_to_card(task)
+            card = await self._task_to_card(task, subtask_counts=subtask_counts)
 
             # Find the right column for this task's status
             for col_id, _, col_status in column_config:
@@ -208,6 +229,7 @@ class KanbanService(BaseService):
         lane_key: str,
         lane_tasks: list[TaskTable],
         column_config: list,
+        subtask_counts: dict[UUID, int] | None = None,
     ) -> tuple[list[KanbanColumn], int]:
         """Build columns for a swimlane. Returns (columns, blocked_count)."""
         columns: list[KanbanColumn] = []
@@ -215,7 +237,7 @@ class KanbanService(BaseService):
 
         for col_id, col_title, col_status in column_config:
             cards = [
-                await self._task_to_card(t, lane_key)
+                await self._task_to_card(t, lane_key, subtask_counts=subtask_counts)
                 for t in lane_tasks
                 if t.status == col_status
             ]
@@ -246,6 +268,8 @@ class KanbanService(BaseService):
         agent_names = (
             await self._fetch_agent_names(tasks) if swimlane_by == "assignee" else {}
         )
+        # #198: load subtask counts once for the whole board (not per lane).
+        subtask_counts = await self._load_subtask_counts(tasks)
 
         # Group tasks by swimlane key
         swimlane_groups: dict[str, list[TaskTable]] = {}
@@ -259,7 +283,10 @@ class KanbanService(BaseService):
 
         for lane_key in sorted(swimlane_groups.keys()):
             columns, blocked = await self._build_swimlane_columns(
-                lane_key, swimlane_groups[lane_key], column_config
+                lane_key,
+                swimlane_groups[lane_key],
+                column_config,
+                subtask_counts=subtask_counts,
             )
             total_blocked += blocked
 
@@ -420,6 +447,12 @@ class KanbanService(BaseService):
                 id="ux_ui", title="UX/UI", status=TaskStatus.IN_PROGRESS, cards=[]
             ),
             KanbanColumn(
+                id="coordination",
+                title="Coordination",
+                status=TaskStatus.IN_PROGRESS,
+                cards=[],
+            ),
+            KanbanColumn(
                 id="done", title="Done", status=TaskStatus.COMPLETED, cards=[]
             ),
         ]
@@ -427,15 +460,21 @@ class KanbanService(BaseService):
         # Sort tasks into columns
         col_map = {col.id: col for col in columns}
         blocked_count = 0
+        subtask_counts = await self._load_subtask_counts(tasks)
 
         for task in tasks:
-            card = await self._task_to_card(task)
+            card = await self._task_to_card(task, subtask_counts=subtask_counts)
             if task.team == Team.BACKEND:
                 col_map["backend"].cards.append(card)
             elif task.team == Team.FRONTEND:
                 col_map["frontend"].cards.append(card)
             elif task.team == Team.UX_UI:
                 col_map["ux_ui"].cards.append(card)
+            else:
+                # Non-cell teams (Main PM, Board, fullstack, system, ...) used
+                # to be counted in total_cards but never columned — the card was
+                # built and discarded (#196). Column them under Coordination.
+                col_map["coordination"].cards.append(card)
 
             if task.status == TaskStatus.BLOCKED:
                 blocked_count += 1

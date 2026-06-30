@@ -115,6 +115,19 @@ class ChannelSpec:
 
 # -- Helper sets (DRY across multiple channels) -------------------------------
 
+# Cell-member roles subject to a channel's ``team_scope``. Cross-cell roles
+# (MAIN_PM, AUDITOR, CEO, board) are NOT filtered by team_scope. The single
+# source of truth — ``agents_config`` and ``seeds/initial_data`` import this
+# instead of carrying their own copies (which drifted).
+TEAM_SCOPED_ROLES: frozenset[Role] = frozenset(
+    {
+        Role.DEVELOPER,
+        Role.QA,
+        Role.DOCUMENTER,
+        Role.CELL_PM,
+    }
+)
+
 # Roles present in every cell channel: cell members + main-pm.
 _CELL_READ: frozenset[Role] = frozenset(
     {

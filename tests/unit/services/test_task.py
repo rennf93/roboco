@@ -596,6 +596,126 @@ async def test_admin_set_status_non_blocked_is_bare_status_set() -> None:
 
 
 @pytest.mark.asyncio
+async def test_admin_set_status_force_emits_distinct_override_audit_row() -> None:
+    """#13: a forced override (force=True) emits a distinct ``task.admin_override``
+    audit row marking the bypass past the lifecycle gate — distinguishable from
+    the in-band transition row. Without force, no override row is emitted."""
+    owner = uuid4()
+    task = _build_task(
+        status=TaskStatus.AWAITING_PM_REVIEW,
+        assigned_to=owner,
+        claimed_by=owner,
+    )
+    added: list[object] = []
+    session = MagicMock()
+    session.flush = AsyncMock()
+    session.add.side_effect = added.append
+    svc = TaskService(session)
+    _bind(svc, "get", AsyncMock(return_value=task))
+
+    await svc.admin_set_status(
+        task.id, TaskStatus.COMPLETED, actor_id=owner, actor_role="ceo", force=True
+    )
+
+    rows = [r for r in added if isinstance(r, AuditLogTable)]
+    override_rows = [r for r in rows if r.event_type == "task.admin_override"]
+    assert len(override_rows) == 1
+    row = override_rows[0]
+    assert row.target_id == task.id
+    assert row.severity == "warning"
+    assert row.details["forced"] is True
+    assert row.details["from_status"] == "awaiting_pm_review"
+    assert row.details["to_status"] == "completed"
+    assert row.agent_id == owner
+
+
+@pytest.mark.asyncio
+async def test_admin_set_status_no_force_emits_no_override_audit_row() -> None:
+    """#13: without force, only the transition row is emitted — no
+    ``task.admin_override`` row (the bypass was not acknowledged)."""
+    owner = uuid4()
+    task = _build_task(
+        status=TaskStatus.BLOCKED,
+        assigned_to=owner,
+        claimed_by=owner,
+    )
+    added: list[object] = []
+    session = MagicMock()
+    session.flush = AsyncMock()
+    session.add.side_effect = added.append
+    svc = TaskService(session)
+    _bind(svc, "get", AsyncMock(return_value=task))
+
+    await svc.admin_set_status(task.id, TaskStatus.PENDING, actor_id=owner)
+
+    rows = [r for r in added if isinstance(r, AuditLogTable)]
+    assert not any(r.event_type == "task.admin_override" for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_pre_block_restore_skips_revision_count_bump() -> None:
+    """#101 Gap B: restoring a blocked task to its snapshotted needs_revision
+    state is a RESTORE, not a rework bounce — ``revision_count`` must not
+    increment. The rework counter counts rejections INTO needs_revision, and
+    this task was already rejected before it was blocked; unblocking it back to
+    needs_revision is the same rework cycle resuming, not a new one."""
+    REWORK_BOUNCES_BEFORE_BLOCK = 2
+    dev = uuid4()
+    task = _build_task(
+        status=TaskStatus.BLOCKED,
+        assigned_to=dev,
+        claimed_by=dev,
+        branch_name="feature/backend/abc--def--ghi",
+        pre_block_state="needs_revision",
+        pre_block_assignee=dev,
+        revision_count=REWORK_BOUNCES_BEFORE_BLOCK,
+    )
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    out = await svc.unblock_with_restore(task.id, uuid4(), restore=True)
+    assert out is task
+    assert task.status == TaskStatus.NEEDS_REVISION
+    # A restore must NOT bump the rework counter — only a fresh rejection does.
+    assert task.revision_count == REWORK_BOUNCES_BEFORE_BLOCK
+
+
+@pytest.mark.asyncio
+async def test_activate_batch_root_subtasks_emits_audit_for_activated_child() -> None:
+    """#101 Gap A: ``_activate_batch_root_subtasks`` sets a held root-subtask
+    BACKLOG→PENDING directly. No status change may bypass the audit log — the
+    transition journey (the metric source of truth) must record the activation,
+    or the child's lifecycle reconstruction silently drops its start point."""
+    batch = uuid4()
+    child = _build_task(
+        status=TaskStatus.BACKLOG,
+        batch_id=batch,
+        team=Team.BOARD,
+        task_type=TaskType.CODE,
+    )
+    umbrella = _build_task(
+        status=TaskStatus.PENDING,
+        batch_id=batch,
+        parent_task_id=None,
+        team=Team.BOARD,
+        task_type=TaskType.PLANNING,
+    )
+    added: list[object] = []
+    session = MagicMock()
+    session.flush = AsyncMock()
+    session.add.side_effect = added.append
+    svc = TaskService(session)
+    _bind(svc, "get_subtasks", AsyncMock(return_value=[child]))
+
+    await svc._activate_batch_root_subtasks(umbrella)
+
+    assert child.status == TaskStatus.PENDING
+    rows = [r for r in added if isinstance(r, AuditLogTable)]
+    assert any(
+        r.event_type == "task.pending" and r.target_id == child.id for r in rows
+    ), "batch root-subtask activation must emit a task.pending audit row"
+
+
+@pytest.mark.asyncio
 async def test_create_generates_ac_ids_and_carries_parent_ac_refs() -> None:
     # Every task gets one stable id per acceptance criterion (1:1), and a
     # decomposition child carries the parent AC ids it covers — the linkage the

@@ -8,7 +8,7 @@
 | Verb | Body schema |
 |------|-------------|
 | `complete` | `complete(task_id: UUID, notes: str)` |
-| `delegate` | `delegate(parent_task_id: UUID, title: str, description: str, assigned_to: str, team: str, task_type: str, nature: str, estimated_complexity: str, acceptance_criteria: list[str], project_id: UUID | None = None, covers_parent_criteria: list[str] | BeforeValidator(func=<function coerce_str_list at 0x109dbdee0>, json_schema_input_type=PydanticUndefined) | None = None, intends_to_touch: list[str] | BeforeValidator(func=<function coerce_str_list at 0x109dbdee0>, json_schema_input_type=PydanticUndefined) | None = None, adds_migration: bool = False, touches_shared: bool = False, depends_on: list[UUID] | None = None)` |
+| `delegate` | `delegate(parent_task_id: UUID, title: str, description: str, assigned_to: str, team: str, task_type: str, nature: str, estimated_complexity: str, acceptance_criteria: list[str], project_id: UUID | None = None, covers_parent_criteria: list[str] | None = None, intends_to_touch: list[str] | None = None, adds_migration: bool = False, touches_shared: bool = False, depends_on: list[UUID] | None = None)` |
 | `escalate_to_ceo` | `escalate_to_ceo(task_id: UUID, reason: str)` |
 | `escalate_up` | `escalate_up(task_id: UUID, reason: str)` |
 | `give_me_work` | `give_me_work()` |

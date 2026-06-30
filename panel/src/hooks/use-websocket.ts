@@ -90,10 +90,16 @@ export function useWebSocket<T>(
     connectionRef.current = connection;
     connection.connect();
 
-    // Cleanup on unmount or when dependencies change
+    // Cleanup on unmount or when dependencies change. Disconnect AND clear the
+    // snapshot — otherwise a dep change (navigating to another stream) leaves
+    // the prior subscription's messages/lastMessage/state visible until a fresh
+    // frame arrives, surfacing another stream's stale buffer as live (#79).
     return () => {
       connection.disconnect();
       connectionRef.current = null;
+      setMessages([]);
+      setLastMessage(null);
+      setState("disconnected");
     };
   }, [enabled, endpoint, queryString]); // Stable dependencies
 

@@ -24,6 +24,8 @@ against missing pricing data.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import structlog
 
 logger = structlog.get_logger(__name__)
@@ -90,6 +92,24 @@ def _lookup_prices(lower: str) -> tuple[float, float, float, float] | None:
     return best_prices
 
 
+@dataclass(frozen=True)
+class CostResult:
+    """Estimated cost plus pricing attribution (#65).
+
+    ``cost_usd`` is ``0.0`` for both a genuinely-free non-Anthropic model (local
+    inference — no per-token cost) and an unpriced Anthropic model (a Claude
+    model we forgot to price — real spend we are failing to count). ``unpriced``
+    distinguishes them so a caller can surface the miss instead of silently
+    reporting ``$0``. ``is_anthropic`` records which family the model resolved
+    to. ``calculate_cost`` returns just the ``cost_usd`` float for existing
+    callers; ``calculate_cost_result`` returns the full attribution.
+    """
+
+    cost_usd: float
+    unpriced: bool
+    is_anthropic: bool
+
+
 def calculate_cost(
     model: str,
     tokens_input: int,
@@ -99,11 +119,34 @@ def calculate_cost(
 ) -> float:
     """Calculate the estimated USD cost for a model invocation.
 
+    Thin wrapper over :func:`calculate_cost_result` returning just the USD
+    float (kept for existing callers). See :func:`calculate_cost_result` for the
+    provider-aware miss handling and the ``unpriced`` attribution.
+    """
+    return calculate_cost_result(
+        model,
+        tokens_input=tokens_input,
+        tokens_output=tokens_output,
+        tokens_cache_read=tokens_cache_read,
+        tokens_cache_write=tokens_cache_write,
+    ).cost_usd
+
+
+def calculate_cost_result(
+    model: str,
+    tokens_input: int,
+    tokens_output: int,
+    tokens_cache_read: int = 0,
+    tokens_cache_write: int = 0,
+) -> CostResult:
+    """Calculate the estimated USD cost for a model invocation, with attribution.
+
     Matches the model name against the known pricing table using substring
     search (longest match wins). Provider-aware (see module docstring):
     non-Anthropic models (local Ollama, Ollama Cloud) have no per-token cost
-    and return 0.0 silently; an unpriced Anthropic model returns 0.0 but logs
-    a warning since it represents real spend we are failing to count.
+    and return ``cost_usd=0.0, unpriced=False``; an unpriced Anthropic model
+    returns ``cost_usd=0.0, unpriced=True`` and logs a warning since it
+    represents real spend we are failing to count.
 
     Args:
         model: Model name or short alias (e.g. ``"claude-sonnet-4-6"``,
@@ -118,24 +161,30 @@ def calculate_cost(
             ``grok_cli_usage.usage_and_cost``).
 
     Returns:
-        Estimated cost in USD as a float. Returns 0.0 for unpriced models
-        rather than raising.
+        A :class:`CostResult` (``cost_usd``, ``unpriced``, ``is_anthropic``).
+        ``cost_usd`` is ``0.0`` rather than raising for unpriced models.
     """
     if not model:
-        return 0.0
+        # An empty model name is a caller bug, not an unpriced-Anthropic miss.
+        return CostResult(cost_usd=0.0, unpriced=False, is_anthropic=False)
 
     lower = model.lower()
+    is_anthropic = _is_anthropic_model(lower)
 
     best_prices = _lookup_prices(lower)
     if best_prices is None:
         # No per-token rate. Warn only for Anthropic models (real spend we are
         # undercounting); non-Anthropic models are local/subscription-billed
         # and have no per-token cost, so an intentional 0.0 is correct.
-        if _is_anthropic_model(lower):
+        if is_anthropic:
             logger.warning("No pricing data found for Anthropic model", model=model)
         else:
             logger.debug("Non-Anthropic model has no per-token cost", model=model)
-        return 0.0
+        # Unpriced only when it is an Anthropic model we forgot to price; a
+        # non-Anthropic model with no rate is intentionally free.
+        return CostResult(
+            cost_usd=0.0, unpriced=is_anthropic, is_anthropic=is_anthropic
+        )
 
     inp_price, out_price, cr_price, cw_price = best_prices
 
@@ -145,4 +194,6 @@ def calculate_cost(
         + tokens_cache_read * cr_price / _MILLION
         + tokens_cache_write * cw_price / _MILLION
     )
-    return round(cost, 8)
+    return CostResult(
+        cost_usd=round(cost, 8), unpriced=False, is_anthropic=is_anthropic
+    )

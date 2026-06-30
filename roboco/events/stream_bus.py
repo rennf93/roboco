@@ -26,6 +26,11 @@ logger = structlog.get_logger()
 # Type for event handlers
 EventHandler = Callable[[Event], Coroutine[Any, Any, None]]
 
+# #19: TTL on the per-(event.id, handler) "already processed" marker. Long
+# enough to span a replay window, short enough that the keyspace can't grow
+# unbounded across the fleet.
+_PROCESSED_KEY_TTL = 3600
+
 
 class StreamEventBus:
     """
@@ -299,7 +304,16 @@ class StreamEventBus:
         return all_succeeded
 
     async def _dispatch_event(self, event: Event) -> bool:
-        """Run all handlers for an event; return True if all succeeded."""
+        """Run all handlers for an event; return True if all succeeded.
+
+        #19: ``recover_pending`` re-delivers a message whose ACK was blocked by a
+        sibling handler's failure. Without an idempotency guard, a handler that
+        already SUCCEEDED for that event would re-run on the replay (duplicate
+        side effects). Each (event.id, handler) is marked processed via SET-NX;
+        a handler whose key already exists is skipped, and a handler that raised
+        clears its key so a replay re-runs it. The guard is best-effort — no
+        redis (or a guard error) fails open and just runs the handler.
+        """
         handlers = self._handlers.get(event.type, [])
         if not handlers:
             return True
@@ -309,9 +323,41 @@ class StreamEventBus:
             event_type=event.type.value,
             handler_count=len(handlers),
         )
-        tasks = [handler(event) for handler in handlers]
+        tasks = [self._run_handler_guarded(event, handler) for handler in handlers]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         return self._check_handler_results(event, handlers, results)
+
+    async def _run_handler_guarded(self, event: Event, handler: EventHandler) -> None:
+        """Run one handler under the (event.id, handler) idempotency guard.
+
+        Fail-open: with no redis (or a guard error) the handler runs unguarded
+        rather than being skipped — a dedup-infra outage never silently drops
+        an event.
+        """
+        if self._redis is None:
+            await handler(event)
+            return
+        name = getattr(handler, "__name__", f"h{id(handler)}")
+        key = f"bus:processed:{event.id}:{name}"
+        try:
+            acquired = await self._redis.set(key, "1", nx=True, ex=_PROCESSED_KEY_TTL)
+        except Exception as e:
+            logger.warning(
+                "Bus idempotency guard error; fail-open",
+                error=e.__class__.__name__,
+            )
+            await handler(event)
+            return
+        if not acquired:
+            logger.debug("Skipping already-processed handler on replay", key=key)
+            return
+        try:
+            await handler(event)
+        except Exception:
+            # Clear the marker so a replay re-runs this handler — not a phantom success.
+            with contextlib.suppress(Exception):
+                await self._redis.delete(key)
+            raise
 
     async def _handle_message(
         self,

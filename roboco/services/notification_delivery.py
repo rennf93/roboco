@@ -446,11 +446,18 @@ class NotificationDeliveryService(BaseService):
 
         await self.session.flush()
 
-        # Publish ACK event
+        # Defer the ACK event to the session's after_commit (mirror ``deliver``):
+        # the row state above is only flushed, not durable, so firing the bus
+        # event now would publish an ACK for an acknowledgement that a rollback
+        # can still drop. The event is dropped on rollback (no phantom) and fired
+        # once the row is durable. Best-effort: a bus-init failure is logged but
+        # never propagates — the ack row state is already flushed and the bus is
+        # a secondary channel (the row is the durable store).
         try:
             bus = get_event_bus()
             if bus.is_connected():
-                await bus.publish(
+                defer_bus_publish(
+                    self.session,
                     Event(
                         type=EventType.NOTIFICATION_ACKED,
                         data={
@@ -458,10 +465,14 @@ class NotificationDeliveryService(BaseService):
                             "agent_id": str(agent_id),
                             "ack_type": ack_type,
                         },
-                    )
+                    ),
                 )
         except Exception as e:
-            self.log.warning("Failed to publish ACK event", error=str(e))
+            self.log.warning(
+                "Failed to defer ACK bus publish",
+                notification_id=str(notification_id),
+                error=e.__class__.__name__,
+            )
 
         self.log.info(
             "Notification acknowledged",

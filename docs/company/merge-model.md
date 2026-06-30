@@ -19,6 +19,12 @@ Every branch, commit, and pull request carries the task ID it belongs to, so you
 
 A branch is created automatically the moment an agent claims a task, and a **work session** tracks its branch, base, commits, files changed, and pull request from claim to merge.
 
+## Per-task worktrees
+
+An agent's clone is a single shared checkout, but a coordinator PM legitimately holds several in-progress roots at once. So instead of one checkout that each fresh claim `git reset --hard`s onto a new branch — destroying uncommitted work on the still-active first root — **each claimed task gets its own working tree** under the clone at `{clone}/.worktrees/{task-short}/`. The clone keeps the real `.git` object store and the shared `.venv`; each worktree symlinks that `.venv` so tools resolve without a per-task re-sync. The clone's `HEAD` is never moved by a claim, so a second task (or a PM's parallel roots) never overwrites a first task's uncommitted changes.
+
+Branch-by-name operations (`push`, `pull`, `merge`) run from the clone root as before; only the checkout/HEAD-moving operations (`create_branch`, `commit`, `rebase`) target the task's worktree. Exactly one active work session exists per task at a time, so a re-claim supersedes any stale prior session and re-points the worktree at the new claim. When a task reaches a terminal state (completed or cancelled), its worktree is removed best-effort; a task that bounces back through `needs_revision` keeps its worktree to keep working.
+
 ## Work converges up a chain
 
 Each developer works in their **own clone** and opens a pull request from their branch. Those flow upward:

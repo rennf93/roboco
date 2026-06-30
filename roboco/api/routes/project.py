@@ -200,26 +200,13 @@ async def update_project(
 
     require_cell_access(agent, project.assigned_cell, "update")
 
-    # Convert request to service model
-    update_data = ProjectUpdate(
-        name=data.name,
-        git_url=data.git_url,
-        default_branch=data.default_branch,
-        protected_branches=data.protected_branches,
-        assigned_cell=data.assigned_cell,
-        git_token=data.git_token,
-        test_command=data.test_command,
-        lint_command=data.lint_command,
-        format_command=data.format_command,
-        typecheck_command=data.typecheck_command,
-        build_command=data.build_command,
-        quality_command=data.quality_command,
-        ci_watch_enabled=data.ci_watch_enabled,
-        ci_watch_workflow=data.ci_watch_workflow,
-        dep_update_command=data.dep_update_command,
-        dep_update_paths=data.dep_update_paths,
-        is_active=data.is_active,
-    )
+    # Convert request to service model, preserving the request's own
+    # unset-tracking: only fields the body actually carried are "set" on the
+    # ProjectUpdate, so ProjectService.update's exclude_unset applies only the
+    # body fields — and an explicit null in the body clears the stored value
+    # (distinct from absent = leave unchanged) (#197). Passing every field
+    # explicitly here would mark them all set and defeat that distinction.
+    update_data = ProjectUpdate.model_validate(data.model_dump(exclude_unset=True))
 
     updated = await service.update(cast("UUID", project.id), update_data)
     await db.commit()

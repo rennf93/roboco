@@ -12,8 +12,11 @@ import {
   type EscalateRequest,
 } from "@/types";
 
-// Type for task updates - allows any Task field to be updated
-export type TaskUpdate = Partial<Task>;
+// Type for task updates - allows any Task field to be updated. `force` is not a
+// Task field: it acknowledges that a kanban admin-override into a hatch state
+// (completed / awaiting_qa / awaiting_pm_review) bypasses the lifecycle gate,
+// matching the server-side PATCH override guard.
+export type TaskUpdate = Partial<Task> & { force?: boolean };
 
 // Query keys
 export const taskKeys = {

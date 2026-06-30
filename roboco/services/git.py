@@ -199,6 +199,12 @@ _HTTP_NOT_FOUND = 404
 # a concurrent sibling-subtask merge updated the target branch and our local
 # refs are stale. `pr_merge` re-syncs and retries exactly once on this code.
 _HTTP_CONFLICT = 409
+# GitHub returns 405 when the repo's settings disallow the requested merge
+# method (e.g. "Squash merges are not allowed on this repository" with the
+# squash button off) — distinct from a 405 on an already-merged PR. The agent
+# `_merge_with_retry` falls back to a permitted method on this code, mirroring
+# the CEO `merge_pull_request` path.
+_HTTP_METHOD_NOT_ALLOWED = 405
 
 # --- Self-heal CI signal -------------------------------------------------
 # Pull a WINDOW of recent completed runs (not just the single newest) so the
@@ -3553,7 +3559,8 @@ class GitService(BaseService):
         target: str
 
     async def _merge_with_retry(self, ctx: GitService._MergeContext) -> Any:
-        """Single-retry merge: on 409 (race), sync target then retry once."""
+        """Single-retry merge: on 409 (race) sync target then retry; on 405
+        (repo disallows the merge method) fall back to a permitted method."""
         resp = await self._call_merge_api(
             ctx.owner, ctx.repo, ctx.pr_number, ctx.git_token, "squash"
         )
@@ -3565,6 +3572,28 @@ class GitService(BaseService):
             resp = await self._call_merge_api(
                 ctx.owner, ctx.repo, ctx.pr_number, ctx.git_token, "squash"
             )
+        if resp.status_code == _HTTP_METHOD_NOT_ALLOWED:
+            # The repo's settings disallow squash (the button is off). Try a
+            # method the repo permits before treating this as a conflict —
+            # mirrors the CEO merge_pull_request 405 fallback so a repo's
+            # merge-button config can't wedge the PM on an open, mergeable PR.
+            # A 405 with no permitted fallback (or a second 405) falls through
+            # to the already-merged disambiguation / MergeConflictError below.
+            fallback = await self._first_allowed_merge_method(
+                ctx.owner, ctx.repo, ctx.git_token, exclude="squash"
+            )
+            if fallback and fallback != "squash":
+                self.log.info(
+                    "Merge method refused by repo; retrying with a permitted one",
+                    requested="squash",
+                    fallback=fallback,
+                    owner=ctx.owner,
+                    repo=ctx.repo,
+                    pr=ctx.pr_number,
+                )
+                resp = await self._call_merge_api(
+                    ctx.owner, ctx.repo, ctx.pr_number, ctx.git_token, fallback
+                )
         if not resp.is_success:
             # A merge PUT on an ALREADY-MERGED PR returns the same 405 as a
             # genuine "not mergeable" conflict. An already-merged PR (a prior
@@ -3943,14 +3972,17 @@ class GitService(BaseService):
         *,
         project_id: UUID,
         comment: str | None = None,
-        delete_branch: bool = True,
+        delete_branch: bool = False,
         actor_agent_id: UUID | None = None,
     ) -> None:
         """Close PR ``pr_number`` on GitHub, optionally with an explanatory comment.
 
         Used to retire a PR whose work is already in the base (superseded) so a
         wedged task can complete without a merge — the "close the dead PR"
-        action agents had no verb for. Best-effort branch cleanup on close.
+        action agents had no verb for. Branch deletion is opt-in
+        (``delete_branch=False`` by default): a superseded PR's branch may still
+        be referenced or useful for audit, so close does not destroy it unless
+        the caller explicitly asks — matching the orchestrator supersede path.
 
         ``pr_number`` alone is ambiguous across projects (GitHub numbers PRs
         per-repo, but ``tasks.pr_number`` stores the bare integer with no repo

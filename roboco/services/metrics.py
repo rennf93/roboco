@@ -5,6 +5,7 @@ Collects and aggregates metrics for reporting and dashboards.
 Tracks velocity, blockers, completion rates, and agent performance.
 """
 
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 from uuid import UUID
@@ -172,6 +173,38 @@ class MetricsService(BaseService):
     # BLOCKER METRICS
     # =========================================================================
 
+    async def _blocked_since_map(
+        self, blocked_tasks: Sequence[TaskTable]
+    ) -> dict[str, datetime]:
+        """Per-task ``blocked since`` timestamp from the ``task.blocked`` audit row.
+
+        The real blockage start is the audit transition (#67), indexed on
+        (target_id, event_type, timestamp); the old ``updated_at`` heuristic
+        over-counted when a blocked task was later touched for a non-blocking
+        reason. Returns ``{str(task_id): blocked_at}``; callers fall back to
+        ``updated_at or created_at`` for tasks with no audit row.
+        """
+        blocked_ids = [t.id for t in blocked_tasks]
+        if not blocked_ids:
+            return {}
+        audit_result = await self.session.execute(
+            select(
+                AuditLogTable.target_id,
+                func.max(AuditLogTable.timestamp).label("ts"),
+            )
+            .where(
+                AuditLogTable.event_type == "task.blocked",
+                AuditLogTable.target_type == "task",
+                AuditLogTable.target_id.in_(blocked_ids),
+            )
+            .group_by(AuditLogTable.target_id)
+        )
+        return {
+            str(row.target_id): row.ts
+            for row in audit_result.all()
+            if row.ts is not None
+        }
+
     async def get_blocker_metrics(self) -> BlockerMetrics:
         """Get metrics about blocked tasks."""
         # Count active blockers
@@ -188,6 +221,10 @@ class MetricsService(BaseService):
         )
         blocked_tasks = blocked_result.scalars().all()
 
+        # ``blocked since`` from the ``task.blocked`` audit row, falling back to
+        # ``updated_at or created_at`` when no audit row exists (#67).
+        blocked_at = await self._blocked_since_map(blocked_tasks)
+
         # Calculate average blocked time
         now = datetime.now(UTC)
         blocked_hours = []
@@ -195,8 +232,9 @@ class MetricsService(BaseService):
         longest_hours = 0.0
 
         for task in blocked_tasks:
-            # Assume task got blocked around last update or creation
-            blocked_since = task.updated_at or task.created_at
+            blocked_since = (
+                blocked_at.get(str(task.id)) or task.updated_at or task.created_at
+            )
             hours = (now - blocked_since).total_seconds() / 3600
             blocked_hours.append(hours)
 

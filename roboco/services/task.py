@@ -41,6 +41,7 @@ from roboco.foundation.policy.batch import (
     is_branchless_coordination,
     is_valid_batch_shape,
     main_pm_cannot_own_code,
+    pm_cannot_own_code,
 )
 from roboco.foundation.policy.content import markers
 from roboco.foundation.policy.content.validators import ContentValidationError
@@ -50,6 +51,7 @@ from roboco.models.base import (
     BlockerResolverType,
     Complexity,
     JournalEntryType,
+    NotificationPriority,
     TaskNature,
     TaskStatus,
     TaskType,
@@ -100,6 +102,31 @@ _ROLE_CLAIM_STATUSES: dict[str, set[TaskStatus]] = {
         TaskStatus.AWAITING_PM_REVIEW,
     },
 }
+
+# Statuses a task may be escalated FROM into BLOCKED. The strict transition
+# validator only allows IN_PROGRESS→BLOCKED, but a chain escalation legitimately
+# blocks a task from any active work state (and re-escalates an already-blocked
+# task to a new target). BACKLOG is excluded — a never-activated task has no
+# business being escalated to BLOCKED (no spec edge, nonsensical). Terminal
+# statuses are refused separately by ``_is_terminal_task``. This is the explicit
+# escalation exemption to the validator: an enumerated source set, not an
+# arbitrary source→BLOCKED write.
+_ESCALATABLE_TO_BLOCKED: frozenset[TaskStatus] = frozenset(
+    {
+        TaskStatus.PENDING,
+        TaskStatus.CLAIMED,
+        TaskStatus.IN_PROGRESS,
+        TaskStatus.VERIFYING,
+        TaskStatus.AWAITING_QA,
+        TaskStatus.NEEDS_REVISION,
+        TaskStatus.AWAITING_DOCUMENTATION,
+        TaskStatus.AWAITING_PR_REVIEW,
+        TaskStatus.AWAITING_PM_REVIEW,
+        TaskStatus.AWAITING_CEO_APPROVAL,
+        TaskStatus.PAUSED,
+        TaskStatus.BLOCKED,
+    }
+)
 
 
 # Board / advisory roles review and advise; they never own or execute a
@@ -540,6 +567,14 @@ class TaskService(BaseService):
 
     service_name: ClassVar[str] = "task"
     _background_tasks: ClassVar[set[asyncio.Task[None]]] = set()
+    # #216: consecutive FS/permission failures during terminal worktree
+    # cleanup. A systemic FS issue (stuck mount, perms) would otherwise leak
+    # per-task worktrees indefinitely with only a warning log; after this many
+    # consecutive OSError failures a CEO alert fires once (suppressed until a
+    # success resets the streak). Class-level so it spans all cleanup calls.
+    _worktree_cleanup_fail_streak: ClassVar[int] = 0
+    _worktree_cleanup_escalated: ClassVar[bool] = False
+    _WORKTREE_CLEANUP_ESCALATE_AFTER: ClassVar[int] = 3
 
     # =========================================================================
     # STATUS TRANSITION HELPER
@@ -698,7 +733,9 @@ class TaskService(BaseService):
         # Rework counter: a bounce INTO needs_revision (not a re-entry) is one
         # rework cycle. Incremented at this single chokepoint — every transition
         # path funnels its audit through here exactly once — so the rework rate
-        # is an O(1) column read. Synchronous (part of this unit of work).
+        # is an O(1) column read. Synchronous (part of this unit of work). The
+        # pre-block RESTORE path undoes this bump when it restores to a
+        # snapshotted needs_revision (same cycle resuming, not a new rejection).
         if (
             to_status == TaskStatus.NEEDS_REVISION.value
             and from_status != TaskStatus.NEEDS_REVISION.value
@@ -719,7 +756,7 @@ class TaskService(BaseService):
             except (ValueError, AttributeError):
                 agent_uuid = None
 
-        details = {
+        details: dict[str, Any] = {
             "from_status": from_status,
             "to_status": to_status,
             "agent_role": agent_role,
@@ -861,6 +898,39 @@ class TaskService(BaseService):
                 "(same batch_id, top-level)."
             )
 
+    def _enforce_no_pm_code_on_create(self, req: TaskCreateRequest) -> None:
+        """Refuse a create that would hand a code task to a PM (coordination role).
+
+        Two layers: the team-based Main-PM impossibility backstop (a Main PM
+        coordinates, never owns code — the 2026-06-27 MegaTask meltdown shape),
+        and the assignee-based PM/code guard that closes the create-with-cell-
+        PM-assignee hole the team check misses. A brand-new task is never in
+        ``needs_revision``, so the issue-resolution carve-out does not apply.
+        """
+        if main_pm_cannot_own_code(team=req.team, task_type=req.task_type):
+            raise ValidationError(
+                "MAIN_PM_NO_CODE: A Main PM task coordinates — it does not"
+                " execute code. Re-draft as `planning` with coordination-level"
+                " acceptance criteria, or target a cell so a developer owns the"
+                " code.",
+                field="task_type",
+            )
+        if not req.assigned_to:
+            return
+        from roboco.foundation.identity import role_for_uuid_or_none
+
+        assignee_role = role_for_uuid_or_none(req.assigned_to)
+        if assignee_role is not None and pm_cannot_own_code(
+            role=assignee_role, task_type=req.task_type, is_issue_resolution=False
+        ):
+            raise ValidationError(
+                "PM_NO_CODE: the assignee is a PM — PMs coordinate, they"
+                " do not execute code. Re-draft as `planning` and delegate"
+                " the code to a developer, or assign the code task to a"
+                " developer.",
+                field="task_type",
+            )
+
     async def create(self, req: TaskCreateRequest) -> TaskTable:
         """
         Create a new task.
@@ -874,22 +944,9 @@ class TaskService(BaseService):
         if req.parent_task_id:
             await self._validate_parent_depth(req.parent_task_id)
 
-        # Impossibility backstop: a Main PM coordinates — it never owns a code
-        # task. ``main_pm`` + ``code`` on the same task is the structural
-        # mismatch behind the 2026-06-27 MegaTask meltdown (a root-subtask the
-        # git/PR/review layer treated as code while ownership treated it as
-        # coordination — never reconciled, pr_fail looped). Intake
-        # (create_task_from_draft) coerces code→planning, so this fires only on
-        # a non-intake create (the HTTP route / a direct internal create) that
-        # tries to persist the forbidden combo.
-        if main_pm_cannot_own_code(team=req.team, task_type=req.task_type):
-            raise ValidationError(
-                "MAIN_PM_NO_CODE: A Main PM task coordinates — it does not"
-                " execute code. Re-draft as `planning` with coordination-level"
-                " acceptance criteria, or target a cell so a developer owns the"
-                " code.",
-                field="task_type",
-            )
+        # PM/code guards: a coordination role never owns a freshly created code
+        # task (the Main-PM impossibility + the cell-PM-assignee hole).
+        self._enforce_no_pm_code_on_create(req)
 
         # Stable per-criterion ids (1:1 with acceptance_criteria) so children can
         # reference specific parent criteria; generated here when not supplied.
@@ -1186,24 +1243,35 @@ class TaskService(BaseService):
         return list(result.scalars().all())
 
     async def list_open_ci_watch_tasks(
-        self, git_url: str | None = None
+        self, git_url: str | None = None, workflow: str | None = None
     ) -> list[TaskTable]:
         """Non-terminal ci_watch fix tasks — the dedupe + open-cap basis.
 
         Optionally scoped to one repo by ``git_url``: a monorepo registers
         several cell-projects on ONE git_url, so CI-watch dedupe must key on the
         repo, not the project slug — otherwise a red monorepo would open one fix
-        task per cell-project. While an open task exists for a repo the loop must
-        not originate a second; the rolling open-task cap counts these.
+        task per cell-project. Optionally further scoped by ``workflow``: the
+        dedupe key is ``(git_url, effective workflow)`` so a multi-workflow
+        monorepo with two RED workflows gets a fix task per workflow, not one
+        collapsed task that silently leaves the second workflow un-remediated
+        (#44). The effective workflow is ``COALESCE(ci_watch_workflow, default)``
+        so a NULL-workflow project row matches the default workflow.
         """
         stmt = select(TaskTable).where(
             TaskTable.source == CI_WATCH_SOURCE,
             TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
         )
-        if git_url is not None:
-            stmt = stmt.join(
-                ProjectTable, TaskTable.project_id == ProjectTable.id
-            ).where(ProjectTable.git_url == git_url)
+        if git_url is not None or workflow is not None:
+            stmt = stmt.join(ProjectTable, TaskTable.project_id == ProjectTable.id)
+            if git_url is not None:
+                stmt = stmt.where(ProjectTable.git_url == git_url)
+            if workflow is not None:
+                from roboco.config import settings
+
+                effective = func.coalesce(
+                    ProjectTable.ci_watch_workflow, settings.ci_watch_default_workflow
+                )
+                stmt = stmt.where(effective == workflow)
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
@@ -2064,6 +2132,7 @@ class TaskService(BaseService):
         *,
         actor_id: str | UUID | None = None,
         actor_role: str | None = None,
+        force: bool = False,
     ) -> TaskTable | None:
         """Privileged override: set a task's status directly, always audited.
 
@@ -2071,6 +2140,11 @@ class TaskService(BaseService):
         task wedged in a state with no valid in-band move (e.g. a ``blocked``
         task whose work already merged out-of-band). The change is recorded in
         the audit log like any other transition — no status change may skip it.
+
+        #13: ``force`` marks the override as an explicit, acknowledged bypass
+        (the route requires it for terminal/final hatch states). It is stamped
+        into the audit row's ``details`` so a forced override is distinguishable
+        from an in-band transition in the audit journey.
 
         Taking a task OUT of ``blocked`` here (operator PATCH, or the
         orchestrator's auto-recover/auto-resume) restores the pre-block owner
@@ -2104,12 +2178,40 @@ class TaskService(BaseService):
             agent_role=actor_role,
             audit_agent_id=actor_id,
         )
+        if force:
+            # #13: a distinct audit row marks the override as an explicit,
+            # acknowledged bypass past the lifecycle gate — distinguishable
+            # from the in-band transition row above in the audit journey.
+            from roboco.db.tables import AuditLogTable
+
+            agent_uuid_force: UUID | None = None
+            if actor_id is not None:
+                try:
+                    agent_uuid_force = UUID(str(actor_id))
+                except (ValueError, AttributeError):
+                    agent_uuid_force = None
+            self.session.add(
+                AuditLogTable(
+                    event_type="task.admin_override",
+                    agent_id=agent_uuid_force,
+                    target_type="task",
+                    target_id=task.id,
+                    severity="warning",
+                    details={
+                        "from_status": from_status,
+                        "to_status": new_status.value,
+                        "agent_role": actor_role,
+                        "forced": True,
+                    },
+                )
+            )
         self.log.info(
             "Task status set via admin override",
             task_id=str(task_id),
             from_status=from_status,
             to_status=new_status.value,
             actor=str(actor_id) if actor_id else None,
+            forced=force,
         )
         return task
 
@@ -4939,6 +5041,24 @@ class TaskService(BaseService):
         await self._unblock_dependents(task_id)
         return task
 
+    async def _escalation_diverts_to_pool(
+        self, task: TaskTable, target_agent_id: UUID
+    ) -> bool:
+        """True when an escalation target cannot own the task — divert to the pool.
+
+        Two shapes: a board/advisory role assigned work it has no verb for
+        (``_board_cannot_own``), and a Main-PM target handed a main_pm+code task
+        (the 2026-06-27 meltdown shape — a coordinator with no code verb cannot
+        fix the code). Either diverts to a pool release for a role-matched reclaim.
+        """
+        if _board_cannot_own(task) and await self._is_board_advisory_agent(
+            target_agent_id
+        ):
+            return True
+        return main_pm_cannot_own_code(
+            team=task.team, task_type=task.task_type
+        ) and await self._is_main_pm_agent(target_agent_id)
+
     async def apply_escalation(
         self,
         *,
@@ -4987,27 +5107,27 @@ class TaskService(BaseService):
                 target=target_slug,
             )
             return False
-        if _board_cannot_own(task) and await self._is_board_advisory_agent(
-            target_agent_id
-        ):
-            await self._release_code_task_to_pool(
-                task=task,
-                escalator_slug=escalator_slug,
-                blocked_target_slug=target_slug,
-                reason=reason,
+        current = (
+            task.status
+            if isinstance(task.status, TaskStatus)
+            else TaskStatus(str(task.status))
+        )
+        if current not in _ESCALATABLE_TO_BLOCKED:
+            # No arbitrary source→BLOCKED write: a status outside the escalation
+            # exemption (e.g. BACKLOG, never activated) has no spec edge into
+            # BLOCKED. Refuse rather than bypass the validator silently.
+            self.log.warning(
+                "Refusing escalation from non-escalatable status",
+                task_id=str(task.id),
+                status=str(task.status),
+                escalator=escalator_slug,
+                target=target_slug,
             )
-            return True
-        # Impossibility backstop: a Main-PM target must never receive (back) a
-        # main_pm + code task — a coordinator with no code verb cannot fix the
-        # code, so escalating it to Main PM perpetuates the mismatch (the
-        # 2026-06-27 meltdown shape). Scoped to the team+type combo (NOT a broad
-        # code+main-pm-target rule) so a legacy main_pm+code task can still be
-        # escalated to a cell dev — the correct remediation. The combo is
-        # uncreatable going forward (create backstop + intake coercion), so this
-        # is a backstop for legacy / direct-ORM-write tasks.
-        if main_pm_cannot_own_code(
-            team=task.team, task_type=task.task_type
-        ) and await self._is_main_pm_agent(target_agent_id):
+            return False
+        if await self._escalation_diverts_to_pool(task, target_agent_id):
+            # A board/advisory or Main-PM-coordination target cannot own this
+            # task — divert to a pool release so a role-matched agent reclaims
+            # it (see ``_escalation_diverts_to_pool`` for the two shapes).
             await self._release_code_task_to_pool(
                 task=task,
                 escalator_slug=escalator_slug,
@@ -5198,13 +5318,14 @@ class TaskService(BaseService):
         task.completed_at = datetime.now(UTC)
         # Validate transition with CEO role requirement
         self._validate_and_set_status(task, TaskStatus.COMPLETED, "ceo")
-        await self.session.flush()
+        # Mirror ``complete()``: close the work session (the PR is merged) and
+        # run the full completion-hook fan-out (commits + dev_notes indexing),
+        # not a lone learnings task. Without this the work session stayed ACTIVE
+        # forever after a CEO approval and code/decision RAG indexing was skipped.
+        await self._close_work_session_for_task(task, reason="ceo approved")
         await self._remove_task_worktree_on_terminal(task)
-
-        # Extract learnings (fire-and-forget)
-        bg_task = asyncio.create_task(self._extract_completion_learnings(task, None))
-        self._background_tasks.add(bg_task)
-        bg_task.add_done_callback(self._background_tasks.discard)
+        await self.session.flush()
+        await self._trigger_completion_hooks(task, None)
 
         # Unblock any tasks waiting on this one
         await self._unblock_dependents(task_id)
@@ -5334,6 +5455,7 @@ class TaskService(BaseService):
         released = False
         for child in await self.get_subtasks(cast("UUID", umbrella.id)):
             if child.batch_id is not None and child.status == TaskStatus.BACKLOG:
+                pre_status = child.status.value
                 child.status = TaskStatus.PENDING
                 child.team = cast("Any", Team.MAIN_PM)
                 # a board-routed root-subtask is created in BACKLOG with
@@ -5349,6 +5471,20 @@ class TaskService(BaseService):
                         task_id=str(child.id),
                     )
                     child.task_type = cast("Any", TaskType.PLANNING)
+                # No status change may bypass the audit log — record the
+                # backlog→pending activation so the child's lifecycle
+                # reconstruction (the metric source of truth) keeps its start.
+                # audit_agent_id is None: approve_and_start receives no approver
+                # id, and the audit_log.agent_id FK is nullable — attributing a
+                # hardcoded ceo uuid would FK-violate when the ceo agent row is
+                # absent. agent_role="ceo" still labels the actor.
+                self._emit_status_transition_audit(
+                    child,
+                    from_status=pre_status,
+                    to_status=TaskStatus.PENDING.value,
+                    agent_role="ceo",
+                    audit_agent_id=None,
+                )
                 released = True
         if released:
             await self.session.flush()
@@ -5619,12 +5755,63 @@ class TaskService(BaseService):
             if not project_slug:
                 return
             await self._remove_task_worktree_best_effort(task, project_slug)
+        except OSError as e:
+            # FS/permission failure (stuck mount, perms) — systemic, not
+            # task-specific. Track the streak and escalate a CEO alert once
+            # after N consecutive failures so worktrees don't leak silently.
+            TaskService._worktree_cleanup_fail_streak += 1
+            self.log.warning(
+                "Terminal worktree cleanup skipped (FS/permission)",
+                task_id=str(task.id),
+                streak=TaskService._worktree_cleanup_fail_streak,
+                error=str(e),
+            )
+            if (
+                TaskService._worktree_cleanup_fail_streak
+                >= TaskService._WORKTREE_CLEANUP_ESCALATE_AFTER
+                and not TaskService._worktree_cleanup_escalated
+            ):
+                TaskService._worktree_cleanup_escalated = True
+                self.log.error(
+                    "Recurring worktree-cleanup FS failure escalating to CEO",
+                    streak=TaskService._worktree_cleanup_fail_streak,
+                    task_id=str(task.id),
+                )
+                await self._escalate_worktree_cleanup_failure(task, e)
         except Exception as e:
+            # Non-FS failure (git, DB) — task-specific, best-effort, no streak.
+            TaskService._worktree_cleanup_fail_streak = 0
             self.log.warning(
                 "Terminal worktree cleanup skipped",
                 task_id=str(task.id),
                 error=str(e),
             )
+        else:
+            TaskService._worktree_cleanup_fail_streak = 0
+            TaskService._worktree_cleanup_escalated = False
+
+    async def _escalate_worktree_cleanup_failure(
+        self, task: TaskTable, exc: BaseException
+    ) -> None:
+        """Best-effort CEO alert on recurring worktree-cleanup FS failure."""
+        try:
+            from roboco.services.notification import NotificationService
+
+            await NotificationService().send_ack_notification(
+                from_agent="system",
+                to_agent="ceo",
+                body=(
+                    f"Recurring worktree-cleanup FS failure "
+                    f"(last error: {str(exc)[:160]}). "
+                    f"Task {task.id} terminal worktree could not be removed — "
+                    "per-task worktrees may be leaking on disk. Investigate the "
+                    "workspace mount / permissions."
+                ),
+                priority=NotificationPriority.HIGH,
+                task_id=str(task.id),
+            )
+        except Exception as e:
+            self.log.warning("Worktree-cleanup escalation notify failed", error=str(e))
 
     async def _close_work_session_for_task(self, task: TaskTable, reason: str) -> None:
         """Close the task's work session on successful completion.
@@ -5668,9 +5855,13 @@ class TaskService(BaseService):
         # Cancel all descendants first (children, grandchildren, etc.)
         # Skip tasks already in terminal states (completed or cancelled).
         # Route every descendant through _validate_and_set_status so role
-        # restrictions (e.g., only CEO can cancel awaiting_ceo_approval) still
-        # apply to cascaded cancels — skip descendants that fail validation
-        # rather than bypassing the rules.
+        # restrictions still apply to cascaded cancels. A non-terminal
+        # descendant the caller's role can't cancel REFUSES the whole
+        # cancel — never silently skip it and leave an orphaned subtree
+        # under a cancelled parent. (The spec gates every cancel edge to
+        # {cell_pm, main_pm, ceo} uniformly, so a PM/CEO cancel won't hit
+        # this; the narrow catch + refusal keeps a future per-edge role
+        # gate from silently orphaning.) Non-validation errors propagate.
         descendants = await self.get_all_descendants(task_id)
         cancelled_count = 0
         for descendant in descendants:
@@ -5680,15 +5871,23 @@ class TaskService(BaseService):
                 self._validate_and_set_status(
                     descendant, TaskStatus.CANCELLED, agent_role
                 )
-            except Exception as e:
+            except TaskLifecycleError as e:
                 self.log.warning(
-                    "Skipping cascade-cancel of descendant; role not permitted",
+                    "Refusing cascade-cancel: caller role cannot cancel descendant",
                     descendant_id=str(descendant.id),
                     descendant_status=descendant.status.value,
                     agent_role=agent_role,
                     error=str(e),
                 )
-                continue
+                raise TaskLifecycleError(
+                    current_status=descendant.status.value,
+                    target_status=TaskStatus.CANCELLED.value,
+                    message=(
+                        f"Cannot cancel descendant {descendant.id} in state "
+                        f"{descendant.status.value} with role {agent_role!r}; "
+                        "refusing parent cancel to avoid an orphaned subtree."
+                    ),
+                ) from e
             cancelled_count += 1
             await self._abandon_work_session_for_task(
                 descendant, reason="parent task cancelled"
@@ -8247,7 +8446,9 @@ class TaskService(BaseService):
         await self.session.flush()
         # This restore path sets the status directly (bypassing the strict
         # transition validator), so emit the audit explicitly — no status
-        # change may skip the audit log.
+        # change may skip the audit log. A restore to a snapshotted
+        # needs_revision is the same rework cycle resuming, not a fresh
+        # rejection, so undo the bump the chokepoint applied above.
         self._emit_status_transition_audit(
             task,
             from_status=pre_status,
@@ -8255,6 +8456,11 @@ class TaskService(BaseService):
             agent_role=None,
             audit_agent_id=restored_owner,
         )
+        if (
+            restored_status == TaskStatus.NEEDS_REVISION
+            and pre_status != TaskStatus.NEEDS_REVISION.value
+        ):
+            task.revision_count = max((task.revision_count or 1) - 1, 0)
         return task
 
     async def cell_pm_complete(

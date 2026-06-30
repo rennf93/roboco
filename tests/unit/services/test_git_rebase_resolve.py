@@ -186,7 +186,10 @@ async def test_close_pull_request_patches_state_closed(
 
     with patch("roboco.services.git.httpx.AsyncClient", return_value=_Client()):
         await svc.close_pull_request(
-            159, project_id=uuid4(), comment="superseded by #158"
+            159,
+            project_id=uuid4(),
+            comment="superseded by #158",
+            delete_branch=True,
         )
 
     assert (
@@ -195,6 +198,75 @@ async def test_close_pull_request_patches_state_closed(
     ) in calls
     assert ("PATCH", "https://api.github.com/repos/owner/repo/pulls/159") in calls
     delete_branch.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_close_pull_request_does_not_delete_branch_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#109: close_pull_request defaulted delete_branch=True, so the
+    choreographer supersede path deleted a superseded PR's branch while the
+    orchestrator supersede path explicitly preserved it — the two disagreed,
+    and the destructive default ran on the "close the dead PR" path where the
+    branch may still be referenced / useful for audit. The default is now
+    False (opt-in deletion); a superseded-PR close preserves the branch unless
+    the caller explicitly asks to delete. The PATCH still fires.
+    """
+    svc = _git_service()
+    task = type("T", (), {"id": "t", "assigned_to": None, "created_by": None})()
+    session = AsyncMock()
+    session.execute = AsyncMock(
+        return_value=type("Res", (), {"scalar_one_or_none": lambda _self: task})()
+    )
+    delete_branch = AsyncMock()
+    monkeypatch.setattr(svc, "session", session, raising=False)
+    monkeypatch.setattr(
+        svc,
+        "_project_for_task",
+        AsyncMock(return_value=type("P", (), {"slug": "proj"})()),
+    )
+    monkeypatch.setattr(
+        svc, "_resolve_workspace_agent_id", MagicMock(return_value=None)
+    )
+    monkeypatch.setattr(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
+    monkeypatch.setattr(
+        svc, "_get_project_token_or_raise", AsyncMock(return_value="tok")
+    )
+    monkeypatch.setattr(
+        svc, "_parse_github_remote", MagicMock(return_value=("owner", "repo"))
+    )
+    monkeypatch.setattr(svc, "_delete_pr_branch_best_effort", delete_branch)
+
+    class _Resp:
+        is_success = True
+        status_code = 200
+        text = ""
+
+        def json(self) -> dict[str, str]:
+            return {"state": "open"}
+
+    class _Client:
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *_a: Any) -> None:
+            return None
+
+        async def get(self, _url: str, **_kw: Any) -> _Resp:
+            return _Resp()
+
+        async def post(self, _url: str, **_kw: Any) -> _Resp:
+            return _Resp()
+
+        async def patch(self, _url: str, **_kw: Any) -> _Resp:
+            return _Resp()
+
+    with patch("roboco.services.git.httpx.AsyncClient", return_value=_Client()):
+        # No delete_branch kwarg → default must preserve the branch.
+        await svc.close_pull_request(159, project_id=uuid4(), comment="superseded")
+
+    # The close PATCH still fires (the PR is closed); the branch is NOT deleted.
+    delete_branch.assert_not_awaited()
 
 
 @pytest.mark.asyncio

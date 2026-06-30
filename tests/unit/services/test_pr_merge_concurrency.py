@@ -21,7 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
-from roboco.exceptions import GitError
+from roboco.exceptions import GitError, MergeConflictError
 from roboco.services.git import GitService
 
 # Module-level constants kept local so the assertions stay readable and
@@ -331,3 +331,80 @@ async def test_pr_merge_scopes_task_lookup_by_project_id() -> None:
     # The scoped project_id value is bound into the WHERE (Postgres renders
     # UUID literals without hyphens), not just the column name.
     assert project_id.hex in sql
+
+
+# ---------------------------------------------------------------------------
+# #108: _merge_with_retry 405 method-not-allowed fallback.
+# ---------------------------------------------------------------------------
+
+_HTTP_METHOD_NOT_ALLOWED = 405
+
+
+def _merge_ctx(pr_number: int = 11) -> GitService._MergeContext:
+    return GitService._MergeContext(
+        owner="acme",
+        repo="repo",
+        pr_number=pr_number,
+        git_token="tok",
+        workspace=Path("/tmp/ws"),
+        target="feature/x",
+    )
+
+
+@pytest.mark.asyncio
+async def test_merge_with_retry_falls_back_on_405_method_not_allowed() -> None:
+    """#108: _merge_with_retry hardcoded 'squash' and raised MergeConflictError
+    on a 405 (repo disallows squash) with no method fallback — wedging the PM
+    on an open, mergeable PR whose repo merely has the squash button off. The
+    CEO merge_pull_request path already falls back to a permitted method; the
+    agent path must too. A 405 on squash → retry once with a permitted method.
+    """
+    svc = GitService(_make_session(MagicMock(), MagicMock))
+    _bind(svc, "log", MagicMock())
+    call_seq = AsyncMock(
+        side_effect=[_fake_response(_HTTP_METHOD_NOT_ALLOWED), _fake_response(200)]
+    )
+    _bind(svc, "_call_merge_api", call_seq)
+    first_method = AsyncMock(return_value="merge")
+    _bind(svc, "_first_allowed_merge_method", first_method)
+    pr_is_merged = AsyncMock(return_value=False)
+    _bind(svc, "_pr_is_merged", pr_is_merged)
+    _bind(svc, "_sync_target_branch", AsyncMock())
+
+    resp = await svc._merge_with_retry(_merge_ctx())
+
+    assert resp.is_success
+    # Two merge attempts: squash (405) then the permitted fallback (200).
+    assert call_seq.await_count == _EXPECTED_MERGE_ATTEMPTS
+    # The fallback method was looked up (excluding the refused squash).
+    first_method.assert_awaited_once()
+    first_call = first_method.await_args
+    assert first_call is not None
+    assert first_call.kwargs["exclude"] == "squash"
+    # An already-merged disambiguation must NOT be consulted — the 405 was
+    # method-not-allowed, resolved by retry, not an already-merged PR.
+    pr_is_merged.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_merge_with_retry_raises_when_no_permitted_fallback_on_405() -> None:
+    """A 405 with no permitted fallback method (every merge button off) is a
+    real refusal — raise MergeConflictError, don't loop or mask it. The
+    already-merged disambiguation still runs first so a 405-on-already-merged
+    PR stays idempotent success."""
+    svc = GitService(_make_session(MagicMock(), MagicMock))
+    _bind(svc, "log", MagicMock())
+    call_seq = AsyncMock(side_effect=[_fake_response(_HTTP_METHOD_NOT_ALLOWED)])
+    _bind(svc, "_call_merge_api", call_seq)
+    _bind(svc, "_first_allowed_merge_method", AsyncMock(return_value=None))
+    pr_is_merged = AsyncMock(return_value=False)
+    _bind(svc, "_pr_is_merged", pr_is_merged)
+    _bind(svc, "_sync_target_branch", AsyncMock())
+
+    with pytest.raises(MergeConflictError):
+        await svc._merge_with_retry(_merge_ctx())
+
+    # Only the initial squash attempt — no fallback retry when none permitted.
+    assert call_seq.await_count == 1
+    # Already-merged disambiguation ran (the 405 could also mean already-merged).
+    pr_is_merged.assert_awaited_once()

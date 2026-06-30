@@ -170,10 +170,17 @@ class PRReviewerMixin(_Base):
         plus the ones a hand-formatter reaches for (``## Summary`` / ``## Issues``
         / ``## Verdict``). A real one-paragraph summary does not contain ``## ``
         headers, so the prose word "summary" never trips this.
+
+        The header must sit at the START of a line (a real markdown header the
+        reviewer authored) — a header quoted from the PR itself (``> ## Summary``)
+        or named mid-prose (``the ## Summary section``) is a citation, not a
+        hand-formatted verdict, and must not trip the guard.
         """
+        import re
+
         lowered = (body or "").lower()
         return any(
-            header in lowered
+            re.search(rf"^[ \t]*{re.escape(header)}", lowered, re.MULTILINE)
             for header in ("## summary", "## issues", "## verdict", "## findings")
         )
 

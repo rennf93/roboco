@@ -35,6 +35,7 @@ from roboco.services.base import BaseService
 from roboco.services.git import CONVENTIONS_SCAFFOLD_BRANCH, get_git_service
 
 if TYPE_CHECKING:
+    from sqlalchemy.exc import IntegrityError
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from roboco.db.tables import ProjectTable
@@ -61,6 +62,23 @@ class ConventionsHealth:
     last_ok_sha: str | None
 
 
+def _is_unique_violation(exc: IntegrityError) -> bool:
+    """Whether ``exc`` is a UNIQUE constraint violation (SQLSTATE 23505).
+
+    asyncpg exposes ``sqlstate`` on the wrapped error; psycopg exposes
+    ``pgcode`` / ``sqlstate``. The class-name fallback covers a driver whose
+    orig lacks a code attribute. Anything else (FK / NOT NULL / check) is a
+    real bug, not a benign concurrent duplicate (#130).
+    """
+    orig = getattr(exc, "orig", None)
+    if orig is None:
+        return False
+    code = getattr(orig, "sqlstate", None) or getattr(orig, "pgcode", None)
+    if code == "23505":
+        return True
+    return "UniqueViolation" in type(orig).__name__
+
+
 class ConventionsService(BaseService):
     """Cache, render, scaffold, and restore a project's conventions standard."""
 
@@ -71,18 +89,23 @@ class ConventionsService(BaseService):
         pid = self._pid(project)
         root, head = self._resolve(project, workspace)
         cached = await self._cache_get(pid, head)
-        if cached is not None:
+        # A cached ``degraded`` row is not trusted: a degraded file may have
+        # been repaired in place at the same (stale) head key, and serving the
+        # cached last-good map would hide the repair. Re-derive instead (#132).
+        if cached is not None and cached.status != "degraded":
             return ConventionsStandard.model_validate(cached.effective_map)
 
         file_standard, status = self._read_committed_standard(root)
         if status == "degraded":
             last_good = await self._latest_ok_map(pid)
             if last_good is not None:
-                await self._cache_put(pid, head, last_good, status)
+                # Not cached: a degraded row is unstable (the file may be
+                # repaired in place), so never pin it — re-derive next call.
                 return last_good
 
         mapping = effective_map(self._derive(root), file_standard)
-        await self._cache_put(pid, head, mapping, status)
+        if status != "degraded":
+            await self._cache_put(pid, head, mapping, status)
         return mapping
 
     async def baseline_constraints(
@@ -183,13 +206,23 @@ class ConventionsService(BaseService):
     async def health(
         self, project: ProjectTable, *, workspace: Path | None = None
     ) -> ConventionsHealth:
-        """Report the standard's status at HEAD + the last-good commit SHA."""
+        """Report the standard's status at HEAD + the last-good commit SHA.
+
+        The status is the LIVE file state, not a cached row: a cached
+        ``degraded`` can hide an in-place repair at the same (stale) head key
+        (#132). The map scan is expensive (cached); a single file parse is
+        cheap (re-read). ``unknown`` is reserved for a project with no
+        resolvable workspace at all.
+        """
         pid = self._pid(project)
-        _root, head = self._resolve(project, workspace)
-        current = await self._cache_get(pid, head)
+        root, head = self._resolve(project, workspace)
+        if root is None:
+            status = "unknown"
+        else:
+            _file_standard, status = self._read_committed_standard(root)
         last_ok = await self._latest_ok_row(pid)
         return ConventionsHealth(
-            status=current.status if current is not None else "unknown",
+            status=status,
             head_sha=head,
             last_ok_sha=last_ok.commit_sha if last_ok is not None else None,
         )
@@ -415,7 +448,21 @@ class ConventionsService(BaseService):
                         status=status,
                     )
                 )
-        except IntegrityError:
+        except IntegrityError as exc:
+            # Only a UNIQUE violation (23505) is the benign concurrent-duplicate
+            # case the savepoint is for. A FK / NOT NULL / check violation is a
+            # real bug — silently misattributing it as "concurrent put" would
+            # hide the failure (#130), so log-error and re-raise instead. The
+            # savepoint was rolled back (only the failed insert), leaving the
+            # outer task-create transaction usable.
+            if not _is_unique_violation(exc):
+                self.log.error(
+                    "conventions cache insert failed (non-unique integrity error)",
+                    project_id=str(project_id),
+                    commit_sha=commit_sha,
+                    error=str(exc),
+                )
+                raise
             self.log.debug(
                 "conventions cache row already present (concurrent put)",
                 project_id=str(project_id),

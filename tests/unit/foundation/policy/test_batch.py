@@ -5,12 +5,14 @@ from __future__ import annotations
 
 from uuid import uuid4
 
+from roboco.foundation.identity import Role
 from roboco.foundation.policy.batch import (
     is_batch_root_subtask,
     is_batch_umbrella,
     is_branchless_coordination,
     is_valid_batch_shape,
     main_pm_cannot_own_code,
+    pm_cannot_own_code,
 )
 from roboco.models.base import TaskType, Team
 
@@ -189,3 +191,41 @@ def test_main_pm_cannot_own_code_predicate() -> None:
     # Missing team or type cannot satisfy the invariant.
     assert not main_pm_cannot_own_code(team=None, task_type=TaskType.CODE)
     assert not main_pm_cannot_own_code(team=Team.MAIN_PM, task_type=None)
+
+
+def test_main_pm_cannot_own_code_is_case_insensitive() -> None:
+    """A non-canonical alias (e.g. ``"Main_PM"``) must not fail open (#142)."""
+    assert main_pm_cannot_own_code(team="Main_PM", task_type="Code")
+    assert main_pm_cannot_own_code(team="MAIN_PM", task_type=TaskType.CODE)
+    assert not main_pm_cannot_own_code(team="Backend", task_type="Code")
+
+
+def test_pm_cannot_own_code_predicate_matrix() -> None:
+    """PM roles (cell + main) may not take a code task except to resolve issues."""
+    # Both PM roles + code + fresh task → forbidden.
+    assert pm_cannot_own_code(role=Role.CELL_PM, task_type=TaskType.CODE)
+    assert pm_cannot_own_code(role=Role.MAIN_PM, task_type=TaskType.CODE)
+    # String form (callers pass .value).
+    assert pm_cannot_own_code(role="cell_pm", task_type="code")
+    assert pm_cannot_own_code(role="main_pm", task_type="code")
+    # Carve-out: a PM resolving review issues (needs_revision) may take the code task.
+    assert not pm_cannot_own_code(
+        role=Role.CELL_PM, task_type=TaskType.CODE, is_issue_resolution=True
+    )
+    assert not pm_cannot_own_code(
+        role=Role.MAIN_PM, task_type=TaskType.CODE, is_issue_resolution=True
+    )
+    # PM + planning is always fine (their real job).
+    assert not pm_cannot_own_code(role=Role.CELL_PM, task_type=TaskType.PLANNING)
+    assert not pm_cannot_own_code(role=Role.MAIN_PM, task_type=TaskType.PLANNING)
+    # Non-PM roles + code is fine (devs/QA execute code).
+    assert not pm_cannot_own_code(role=Role.DEVELOPER, task_type=TaskType.CODE)
+    assert not pm_cannot_own_code(role=Role.QA, task_type=TaskType.CODE)
+    # A PM with a non-code type is out of this predicate's scope (the delegate
+    # guard handles PM→planning-only; this predicate is the code carve-out only).
+    assert not pm_cannot_own_code(role=Role.CELL_PM, task_type=TaskType.DOCUMENTATION)
+    # Missing role/type never trip the code invariant.
+    assert not pm_cannot_own_code(role=None, task_type=TaskType.CODE)
+    assert not pm_cannot_own_code(role=Role.CELL_PM, task_type=None)
+    # Board roles are not PMs here.
+    assert not pm_cannot_own_code(role=Role.PRODUCT_OWNER, task_type=TaskType.CODE)

@@ -46,7 +46,12 @@ from roboco.agents_config import (
 )
 from roboco.config import settings
 from roboco.foundation import identity as _foundation
-from roboco.foundation.identity import CELL_TEAMS, Role, role_for_slug_or_none
+from roboco.foundation.identity import (
+    CELL_TEAMS,
+    is_human_only_role,
+    is_spawnable_agent_slug,
+    role_for_slug_or_none,
+)
 from roboco.foundation.policy.agent_loop import DEFAULT_BUDGET as _AGENT_LOOP_BUDGET
 from roboco.foundation.policy.batch import is_branchless_coordination
 from roboco.models import AgentRole, Team
@@ -150,6 +155,11 @@ def _system_api_headers() -> dict[str, str]:
 
 # Consecutive failed recovery probes before the CEO is notified once per episode.
 _CEO_NOTIFY_THRESHOLD = 10
+# Consecutive strategy-engine cycle failures before the CEO is notified once
+# per failure episode (#193). Mirrors _CEO_NOTIFY_THRESHOLD so a persistently
+# failing assess() (bad DB / goals row) surfaces instead of silently producing
+# nothing every tick.
+_STRATEGY_FAIL_CEO_NOTIFY_THRESHOLD = 10
 # Persistent-probe-failure escape hatch (F094): if the recovery probe keeps
 # failing past this threshold, the probe endpoint itself is the problem (a
 # misconfigured URL, a removed API key, a network partition to the probe host)
@@ -360,6 +370,19 @@ class _IntakeRunSpec:
 
 
 @dataclass
+class _StrategyLoopState:
+    """Consecutive-failure tracking for ``_strategy_engine_loop`` (#193).
+
+    ``failures`` counts consecutive cycle exceptions; ``notified`` gates the
+    one-CEO-alert-per-episode. Both reset on the first success so a fresh
+    failure episode re-notifies.
+    """
+
+    failures: int = 0
+    notified: bool = False
+
+
+@dataclass
 class _SecretaryRunSpec:
     """Inputs for ``_build_secretary_run_cmd`` (mirrors ``_IntakeRunSpec``).
 
@@ -380,6 +403,23 @@ class _SecretaryRunSpec:
     provider_auth_token: str | None
     provider_type: str = "anthropic"
     model: str = ""
+
+
+# Roles that always work a concrete task — a spawn row with ``task_id IS NULL``
+# for one of these is an unattributed-cost bug (the usage rollup can't tie the
+# spend to a task). Intake (prompter), secretary, auditor, and PMs legitimately
+# spawn taskless, so they are NOT flagged (#11).
+_TASKLESS_SPAWN_SUSPECT_ROLES = frozenset({"developer", "qa", "documenter"})
+
+
+def is_unattributed_delivery_spawn(role: str, task_id: str | None) -> bool:
+    """True when a delivery-role spawn carries no ``task_id`` (#11).
+
+    The role string comes from ``get_agent_role`` (lowercase); the comparison is
+    case-insensitive for safety. Used by ``_record_spawn_session`` to warn on
+    unattributed usage without noise from the intentional taskless roles.
+    """
+    return task_id is None and role.lower() in _TASKLESS_SPAWN_SUSPECT_ROLES
 
 
 def _read_project_slug(task: dict[str, Any]) -> str | None:
@@ -843,6 +883,10 @@ class AgentOrchestrator:
         # a broken-but-alive agent (see _maybe_recover_broken_gateway).
         self._gateway_broken_since: dict[str, datetime] = {}
         self._waiting_records: dict[str, WaitingRecord] = {}
+        # #71: a resumed agent's WaitingRecord is torn down only once liveness is
+        # confirmed (not on a bare launch) — a container that launches then dies
+        # immediately would otherwise strand its task until the reaper's TTL.
+        self._resume_confirm_delay: float = 30.0
         self._health_task: asyncio.Task | None = None
         self._dispatcher_task: asyncio.Task | None = None
         self._sweeper_task: asyncio.Task | None = None
@@ -954,6 +998,10 @@ class AgentOrchestrator:
         # killed + evicted so the reaper can release its task; see
         # _maybe_kill_wedged_grok.
         self._grok_idle_kill_ttl: int = settings.grok_idle_kill_seconds
+        # #73: a non-GROK agent stuck in a non-verb loop (alive, no heartbeat
+        # advance) is killed past this longer window so the reaper can release
+        # its task; see _maybe_kill_stuck_claude.
+        self._claude_stuck_kill_ttl: int = settings.claude_stuck_kill_seconds
         # Cost ceiling (USD) before a live GROK container is killed — the budget
         # kill-switch parity (the grok CLI exposes no live usage hook). 0 disables.
         # See _enforce_grok_cost_budget.
@@ -1054,6 +1102,35 @@ class AgentOrchestrator:
             with contextlib.suppress(asyncio.CancelledError):
                 await asyncio.gather(*pending, return_exceptions=True)
 
+    async def _flush_respawn_tracker(self) -> None:
+        """Persist the full in-memory PM-respawn snapshot before the process exits.
+
+        Fire-and-forget persists (``_schedule_respawn_persist``) are bounded by
+        the shutdown drain deadline; one cancelled by that deadline leaves the
+        durable count lagging the in-memory counter, so the next restart
+        re-burns the strike threshold against a still-wedged task — the exact
+        re-burn the durable counter exists to stop (#74). Called from ``stop()``
+        AFTER the bounded drain so it is the last writer (no further gate
+        mutations fire once the agents and loops are down) and unbounded (a
+        short upsert must not be dropped on the shutdown path). Best-effort: a
+        row that fails to persist is logged and skipped, never crashing shutdown
+        — the in-memory value is gone either way once the process exits.
+        """
+        if not self._pm_respawn_tracker:
+            return
+        for agent_slug, task_id in list(self._pm_respawn_tracker.keys()):
+            record = self._pm_respawn_tracker.get((agent_slug, task_id))
+            if record is None:
+                continue
+            try:
+                await self._persist_respawn_record(agent_slug, task_id, dict(record))
+            except Exception:
+                logger.exception(
+                    "shutdown respawn-tracker flush failed for one row; continuing",
+                    agent_id=agent_slug,
+                    task_id=task_id,
+                )
+
     async def stop(self) -> None:
         """Stop the orchestrator and all agents."""
         if getattr(self, "_stopped", False):
@@ -1103,6 +1180,13 @@ class AgentOrchestrator:
         # process exits (respawn_tracker upserts, audit-log rows). Bounded so a
         # stuck task can't hang shutdown — it is cancelled past the deadline.
         await self._drain_bg_tasks()
+
+        # #74: flush the authoritative in-memory respawn snapshot AFTER the
+        # bounded drain so a deadline-cancelled persist can't leave the durable
+        # count lagging the in-memory counter (and re-burning the strike
+        # threshold on the next restart). Unbounded — a short upsert must not be
+        # dropped on the shutdown path.
+        await self._flush_respawn_tracker()
 
         self._stopped = True
         logger.info("Orchestrator stopped")
@@ -2010,17 +2094,23 @@ class AgentOrchestrator:
 
         The container launches with ``-w`` at the worktree; a pruned/evicted
         worktree (reaper, disk pressure, manual cleanup while the agent was
-        down) would start the agent in a missing directory. Idempotent —
-        ``ensure_worktree_for_resume`` is a no-op when the worktree is present
-        and re-adds it (no ``-b``) from the surviving branch ref when pruned.
-        No-op for branchless / no-task spawns (no worktree).
+        down) — or a vanished clone root (disk loss, a redeploy that wiped
+        ``/data/workspaces``) — would start the agent in a missing directory.
+        Idempotent: a present worktree is a no-op; a pruned worktree is re-added
+        from the surviving branch ref; a missing clone is re-cloned and the
+        branch ref recovered from origin (``create_branch`` pushes at claim
+        time) so the pushed work survives. No-op for branchless / no-task spawns.
 
-        A fatal git-state failure (``WorkspaceError`` — the branch ref is gone,
-        so the worktree can't be re-added) releases the claim and aborts the
-        spawn so the next claim rebuilds the worktree via ``create_branch``
-        rather than launching the container at a missing ``-w`` path. A
-        transient failure (DB/other) aborts without releasing — the next tick
-        retries the same claim.
+        The reaper-style claim release preserves ownership + ``branch_name``, so
+        a re-dispatch is a RESUME, not a fresh claim — ``create_branch`` never
+        re-runs to re-clone. Without the clone self-heal a vanished clone_root
+        fatal-looped every tick (``git -C <missing>`` -> release -> re-dispatch
+        into the same missing clone). A fatal git-state failure
+        (``WorkspaceError`` — the clone won't re-clone, the token is missing,
+        or the branch ref is unrecoverable) releases the claim and aborts so
+        the next dispatch retries the rebuild, never launching the container at
+        a missing ``-w``. A transient failure (DB/other) aborts without
+        releasing — the next tick retries the same claim.
         """
         if not (git_context and git_context.task_short_id and git_context.branch_name):
             return
@@ -2035,15 +2125,24 @@ class AgentOrchestrator:
 
         try:
             async with get_db_context() as db:
-                await WorkspaceService(db).ensure_worktree_for_resume(
-                    clone_root, worktree, git_context.branch_name
+                ws = WorkspaceService(db)
+                # Heal a vanished/unhealthy clone first. The reaper-style claim
+                # release preserves ownership + branch_name, so a re-dispatch is
+                # a RESUME, not a fresh claim — create_branch never re-runs to
+                # re-clone, and ensure_worktree_for_resume would ``git -C`` a
+                # missing directory and fatal-loop every tick. Skipped on a
+                # healthy clone (no new fetch overhead on the common resume).
+                if not WorkspaceService._is_workspace_healthy(clone_root):
+                    await ws.ensure_workspace(project_slug, agent_id)
+                await ws.ensure_worktree_self_heal(
+                    clone_root, worktree, git_context.branch_name, project_slug
                 )
         except WorkspaceError as e:
-            # Fatal git state: the branch ref is gone, so the worktree cannot be
-            # re-added here. Release the claim so the next claim rebuilds the
-            # worktree via create_branch, and abort before docker run -w lands
-            # on a missing path. The release is best-effort (suppressed) so a
-            # release failure never masks the fatal error.
+            # Fatal git state (clone won't re-clone, token missing, branch ref
+            # unrecoverable): release the claim so the next dispatch can retry
+            # the rebuild, and abort before docker run -w lands on a missing
+            # path. The release is best-effort (suppressed) so a release
+            # failure never masks the fatal error.
             logger.error(
                 "worktree ensure failed (fatal); releasing claim for rebuild",
                 agent_id=agent_id,
@@ -2184,7 +2283,7 @@ class AgentOrchestrator:
         # through spawn_agent (see the _spawn_intake_container note at the top
         # of this file).
         _role = role_for_slug_or_none(agent_id)
-        if _role in (Role.CEO, Role.PROMPTER, Role.SECRETARY):
+        if is_human_only_role(_role):
             logger.error(
                 "spawn_agent refused for human-only role — dispatchers must never"
                 " spawn the CEO / prompter / secretary; these are human-driven",
@@ -4823,6 +4922,17 @@ class AgentOrchestrator:
             team = get_agent_team(agent_slug) or "backend"
             role = get_agent_role(agent_slug) or "developer"
 
+            # A delivery-role spawn with no task_id is unattributed usage (#11) —
+            # the rollup can't tie the spend to a task. Intake/secretary/PM spawns
+            # legitimately carry no task and are not flagged.
+            if is_unattributed_delivery_spawn(role, task_id):
+                logger.warning(
+                    "Spawn session has no task_id for a delivery role — "
+                    "unattributed usage",
+                    agent_slug=agent_slug,
+                    role=role,
+                )
+
             session_id = _uuid4()
             session_factory = get_session_factory()
             async with session_factory() as db:
@@ -5621,6 +5731,11 @@ class AgentOrchestrator:
         if agent_id not in self._waiting_records:
             return None
 
+        # #71: a lingering record (a prior resume whose liveness confirmation
+        # hasn't torn it down yet) must not double-spawn an already-active agent.
+        if self._is_agent_active(agent_id):
+            return None
+
         record = self._waiting_records[agent_id]
 
         # Generate resume prompt
@@ -5660,9 +5775,44 @@ class AgentOrchestrator:
             # Spawn bailed without launching (provider re-parked). Keep the record
             # so the probe-resume loop re-attempts on the next clear.
             return instance
+        if record.waiting_for == "rate_limit_lifted":
+            # #71: don't tear down the record on a bare launch — a container that
+            # launches then dies immediately would orphan the task until the
+            # reaper's TTL. Keep the record past the launch and confirm liveness
+            # in the background; if the container dies the probe-resume orphan
+            # fallback re-resumes within a tick instead of waiting the full TTL.
+            self._schedule_bg(self._confirm_resume_liveness(agent_id))
+            return instance
         del self._waiting_records[agent_id]
         await self._delete_waiting_record(agent_id)
         return instance
+
+    async def _confirm_resume_liveness(self, agent_id: str) -> None:
+        """Tear down a resumed agent's WaitingRecord once it is confirmed alive.
+
+        A container that launches then dies immediately must not strand its task
+        until the reaper's TTL: the record is kept past the launch (``resolve_wait``
+        schedules this) and deleted only once the agent is still active past a
+        short confirmation window. If the container died, the record survives so
+        the probe-resume orphan fallback re-resumes on the next tick (#71). The
+        confirmation reads ``_is_agent_active`` — the same signal the spawn gate
+        trusts — so a container the health loop has marked dead keeps its record.
+        Best-effort: a delete error is swallowed (the in-memory record is gone
+        either way once the process exits, and the orphan fallback is in-memory).
+        """
+        if agent_id not in self._waiting_records:
+            return
+        await asyncio.sleep(self._resume_confirm_delay)
+        if not self._is_agent_active(agent_id):
+            return  # container died — keep the record for the orphan fallback
+        del self._waiting_records[agent_id]
+        try:
+            await self._delete_waiting_record(agent_id)
+        except Exception:
+            logger.warning(
+                "resume-liveness confirm failed to delete the durable record",
+                agent_id=agent_id,
+            )
 
     def _generate_resume_prompt(
         self,
@@ -6362,23 +6512,67 @@ Start by:
 
         Dormant by default — returns immediately unless ``strategy_engine_enabled``
         is set, so it adds zero behaviour to a standard deployment. Notify-only;
-        it never spends or builds.
+        it never spends or builds. A persistently failing cycle surfaces to the
+        CEO once per failure episode (#193) instead of silently logging forever.
         """
         if not settings.strategy_engine_enabled:
             return
-        from roboco.db import get_db_context
-        from roboco.services.strategy_engine import get_strategy_engine
-
+        state = self._new_strategy_loop_state()
         interval = settings.strategy_engine_interval_seconds
         while self._running:
             try:
                 await asyncio.sleep(interval)
-                async with get_db_context() as db:
-                    await get_strategy_engine(db).run_cycle()
+                await self._strategy_engine_cycle(state)
             except asyncio.CancelledError:
                 break
-            except Exception:
-                logger.exception("strategy engine cycle failed")
+
+    @staticmethod
+    def _new_strategy_loop_state() -> _StrategyLoopState:
+        return _StrategyLoopState()
+
+    async def _strategy_engine_cycle(self, state: _StrategyLoopState) -> None:
+        """Run one strategy-engine pass; track consecutive failures (#193).
+
+        On success the failure state resets (a fresh failure episode later
+        re-notifies). On a non-cancel failure, count it and notify the CEO once
+        per episode past ``_STRATEGY_FAIL_CEO_NOTIFY_THRESHOLD``.
+        """
+        from roboco.db import get_db_context
+        from roboco.services.strategy_engine import get_strategy_engine
+
+        try:
+            async with get_db_context() as db:
+                await get_strategy_engine(db).run_cycle()
+            state.failures = 0
+            state.notified = False
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("strategy engine cycle failed")
+            state.failures += 1
+            if (
+                state.failures >= _STRATEGY_FAIL_CEO_NOTIFY_THRESHOLD
+                and not state.notified
+            ):
+                state.notified = True
+                await self._notify_strategy_engine_failure(state.failures)
+
+    async def _notify_strategy_engine_failure(self, fail_count: int) -> None:
+        """Send one CEO alert that the strategy engine is persistently failing."""
+        try:
+            from roboco.services.notification import NotificationService
+
+            await NotificationService().send_ack_notification(
+                from_agent="system",
+                to_agent="ceo",
+                body=(
+                    "[strategy engine] persistently failing: the last "
+                    f"{fail_count} cycles raised and produced no "
+                    "observations. Check the orchestrator logs."
+                ),
+            )
+        except Exception:
+            logger.exception("strategy engine failure-notify dropped")
 
     async def _external_pr_poll_loop(self) -> None:
         """Engine 3: discover inbound PRs and open review tasks.
@@ -8544,6 +8738,47 @@ Start now: evidence(task_id="{task_id}")
         record = records.get(slug)
         return record is not None and record.waiting_for == "rate_limit_lifted"
 
+    async def _agent_holds_live_claim(self, slug: str) -> bool | None:
+        """Whether ``slug`` currently owns a non-terminal task.
+
+        Used by ``_readopt_running_agents`` to tell a still-useful running
+        container (the agent is mid-task) from a zombie left over after a prior
+        orchestrator released the claim: registering a zombie ACTIVE would block
+        the spawn gate from re-dispatching that slug until the stale container is
+        eventually noticed (#72). Returns True when the slug owns a non-terminal
+        task, False when it owns nothing (zombie), and None on a lookup error
+        (indeterminate — the caller falls back to today's register behaviour so a
+        startup DB hiccup can't regress the cold-start double-spawn protection).
+        """
+        from sqlalchemy import select
+
+        from roboco.db.base import get_db_context
+        from roboco.db.tables import TaskTable
+        from roboco.models.base import TaskStatus
+
+        agent_uuid = AGENT_UUIDS.get(slug)
+        if agent_uuid is None:
+            return False  # unknown slug owns nothing by definition
+        try:
+            async with get_db_context() as db:
+                result = await db.execute(
+                    select(TaskTable.id)
+                    .where(
+                        TaskTable.assigned_to == agent_uuid,
+                        TaskTable.status.notin_(
+                            (TaskStatus.COMPLETED, TaskStatus.CANCELLED)
+                        ),
+                    )
+                    .limit(1)
+                )
+                return result.first() is not None
+        except Exception:
+            logger.warning(
+                "readopt live-claim lookup failed; falling back to register",
+                slug=slug,
+            )
+            return None
+
     async def _readopt_running_agents(self) -> int:
         """Re-adopt still-running agent containers into ``_instances`` at startup.
 
@@ -8554,11 +8789,14 @@ Start now: evidence(task_id="{task_id}")
         inactive and can double-spawn it onto work its forgotten-but-running
         container is already doing. Probe each known agent slug's container (the
         same ``docker inspect`` the reaper uses) and register a minimal ACTIVE
-        instance for any that is running and not already tracked, so both the
-        reaper's live-skip and the spawn gate see the live agent immediately.
-        Inert when nothing is running (degrades to today's cold start) and
-        best-effort: a probe error leaves that slot untracked (the reaper's own
-        fallback still covers it). Returns the number re-adopted.
+        instance for any that is running, not already tracked, AND still holds a
+        live (non-terminal) claim — a running container whose claim a prior
+        orchestrator already released is a zombie and is skipped so it can't
+        block the spawn gate from re-dispatching that slug (#72). Inert when
+        nothing is running (degrades to today's cold start) and best-effort: a
+        probe or claim-lookup error leaves that slot untracked / falls back to
+        registering (the reaper's own fallback still covers it). Returns the
+        number re-adopted.
         """
         readopted = 0
         for slug in AGENT_IMAGES:
@@ -8582,6 +8820,18 @@ Start now: evidence(task_id="{task_id}")
                 container_id = await self._resolve_container_id(f"roboco-agent-{slug}")
             except Exception:
                 container_id = None
+            # #72: a running container whose slug no longer holds a live claim is
+            # a zombie from a prior orchestrator that released the claim — skip it
+            # so it can't block re-dispatch of the slug. ``None`` (lookup error)
+            # falls back to registering: a startup DB hiccup must not regress the
+            # cold-start double-spawn protection this readopt exists to provide.
+            holds_claim = await self._agent_holds_live_claim(slug)
+            if holds_claim is False:
+                logger.info(
+                    "readopt skipped a running zombie container (no live claim)",
+                    slug=slug,
+                )
+                continue
             self._instances[slug] = AgentInstance(
                 agent_id=slug,
                 state=AgentState.ACTIVE,
@@ -8686,6 +8936,70 @@ Start now: evidence(task_id="{task_id}")
         )
         return True
 
+    def _stuck_claude_slug(
+        self, task: Any, last_heartbeat: "datetime | None"
+    ) -> str | None:
+        """Slug of an ACTIVE non-GROK container holding ``task``, stuck past the TTL.
+
+        The reaper's live-container skip shields a quiet agent during a long
+        edit/test cycle — correct for a working agent (it fires gateway verbs
+        every few minutes, advancing its heartbeat). A non-GROK agent stuck in a
+        non-verb loop is ACTIVE yet silent, so the skip would protect its claim
+        forever (#73). Returns the slug only for a non-GROK ACTIVE instance whose
+        heartbeat has been stale longer than ``claude_stuck_kill_seconds`` — a
+        recent heartbeat, no owner, a GROK provider (handled by the wedged-grok
+        path), or a non-ACTIVE instance all yield ``None``.
+        """
+        from roboco.models.base import ModelProvider
+
+        cutoff = datetime.now(UTC) - timedelta(
+            seconds=getattr(self, "_claude_stuck_kill_ttl", 3600)
+        )
+        if last_heartbeat is not None and last_heartbeat >= cutoff:
+            return None
+        owner = getattr(task, "assigned_to", None) or getattr(task, "claimed_by", None)
+        if not owner:
+            return None
+        slug = self._resolve_agent_slug(str(owner))
+        instance = (getattr(self, "_instances", None) or {}).get(slug)
+        config = getattr(instance, "config", None)
+        is_active_non_grok = (
+            instance is not None
+            and instance.state == AgentState.ACTIVE
+            and config is not None
+            and config.provider_type != ModelProvider.GROK.value
+        )
+        return slug if is_active_non_grok else None
+
+    async def _maybe_kill_stuck_claude(
+        self, task: Any, last_heartbeat: "datetime | None"
+    ) -> bool:
+        """Kill + evict a stuck non-GROK container so the reaper frees its task.
+
+        On a kill the container is removed and dropped from ``_instances``.
+        Returns True only when a container was actually killed; see
+        :meth:`_stuck_claude_slug` for the eligibility rule (#73).
+        """
+        slug = self._stuck_claude_slug(task, last_heartbeat)
+        if slug is None:
+            return False
+        try:
+            await self._remove_container(f"roboco-agent-{slug}")
+        except Exception as exc:
+            logger.error(
+                "stuck-claude kill failed; will retry next tick",
+                agent_id=slug,
+                error=str(exc),
+            )
+            return False
+        self._instances.pop(slug, None)
+        logger.warning(
+            "stuck non-grok container killed and evicted",
+            agent_id=slug,
+            task_id=str(getattr(task, "id", "")),
+        )
+        return True
+
     async def _maybe_recover_broken_gateway(self, task: Any) -> bool:
         """Kill + evict a live agent whose gateway is broken past the grace window.
 
@@ -8764,6 +9078,7 @@ Start now: evidence(task_id="{task_id}")
         return (
             live
             and not await self._maybe_kill_wedged_grok(t, ts)
+            and not await self._maybe_kill_stuck_claude(t, ts)
             and not await self._maybe_recover_broken_gateway(t)
         )
 
@@ -10321,14 +10636,12 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 # Human-only roles (CEO / prompter / secretary) are never
                 # containers — there is no reviewer agent to respawn. Leave
                 # the task for the human (the CEO approves via the panel).
-                # Mirrors the spawn_agent human-role guard; a skip here keeps
-                # a mis-assigned human task from aborting this dispatcher's
-                # whole tick (the chokepoint would otherwise raise).
-                if role_for_slug_or_none(assigned_slug) in (
-                    Role.CEO,
-                    Role.PROMPTER,
-                    Role.SECRETARY,
-                ):
+                # A stale/ex-human slug is also skipped: is_spawnable_agent_slug
+                # is False for it, so a renamed secretary slug can't slip past
+                # the layered guard to a doomed spawn (#49). Mirrors the
+                # spawn_agent human-role guard; a skip here keeps a mis-assigned
+                # human task from aborting this dispatcher's whole tick.
+                if not is_spawnable_agent_slug(assigned_slug):
                     continue
                 if self._is_agent_active(assigned_slug):
                     continue
@@ -10499,13 +10812,11 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         # Human-only roles (CEO / prompter / secretary) are never containers —
         # there is no agent to respawn. Leave the task as-is for the human to
         # act on through the panel; do NOT release it to pending (that would
-        # re-route a human-owned task to a PM). See spawn_agent's human-role
-        # guard for the structural backstop.
-        if role_for_slug_or_none(agent_slug) in (
-            Role.CEO,
-            Role.PROMPTER,
-            Role.SECRETARY,
-        ):
+        # re-route a human-owned task to a PM). A stale slug (None role) is NOT
+        # skipped here — a stale-slug claim SHOULD be released to pending so a
+        # real agent can reclaim it (recovery, not spawning). See spawn_agent's
+        # human-role guard for the structural backstop.
+        if is_human_only_role(role_for_slug_or_none(agent_slug)):
             return None
         # The assignee is running, and on THIS task — healthy.
         instance = self._instances.get(agent_slug)
@@ -10924,15 +11235,23 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 # dispatched — the CEO is the human operator and intake/
                 # secretary are human-driven chats with their own launch
                 # paths. Spawning a container for one is a trust violation
-                # (the system acting as the human CEO). The CEO being a
-                # notification target (board-review handoff, escalation, etc.)
-                # is expected; it is NOT a spawn signal. Skip — the
-                # notification stays for the human to read in the panel.
-                if role_for_slug_or_none(agent_slug) in (
-                    Role.CEO,
-                    Role.PROMPTER,
-                    Role.SECRETARY,
-                ):
+                # (the system acting as the human CEO). A stale/ex-human slug
+                # is skipped too (is_spawnable_agent_slug is False for it) so
+                # a renamed secretary slug can't slip past to a spawn (#49).
+                # The CEO being a notification target (board-review handoff,
+                # escalation, etc.) is expected; it is NOT a spawn signal.
+                # Skip — the notification stays for the human to read. #75:
+                # surface the skip for a human-only target (vs a silent stale
+                # slug) so an a2a expecting a human-side action (a CEO sign-off
+                # relay) is visible in the dispatch log, not silently dropped.
+                if is_human_only_role(role_for_slug_or_none(agent_slug)):
+                    logger.info(
+                        "a2a request targets a human-only role; left as a "
+                        "notification for the human (not spawned)",
+                        target_slug=agent_slug,
+                    )
+                    continue
+                if not is_spawnable_agent_slug(agent_slug):
                     continue
 
                 if self._is_agent_active(agent_slug):

@@ -759,6 +759,14 @@ class PlaybookTable(Base):
     approved_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Distinct from approval: who retired it (archive/reject) and when. Stamping
+    # the archiver into approved_by overwrote the approval provenance.
+    archived_by: Mapped[PyUUID | None] = mapped_column(
+        UUID(as_uuid=True), nullable=True
+    )
+    archived_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class SecretaryDirectiveTable(Base):

@@ -34,7 +34,7 @@ def test_task_update_rejects_empty_acceptance_criteria() -> None:
 def test_task_update_rejects_explicit_none_when_present() -> None:
     """Pydantic differentiates omitted (default) from explicitly None."""
     with pytest.raises(ValidationError):
-        TaskUpdate(**{"acceptance_criteria": None})
+        TaskUpdate(acceptance_criteria=None)
 
 
 def test_task_update_rejects_short_description() -> None:
