@@ -7,7 +7,10 @@ does not — so after a restart it sees a live agent as inactive and can
 double-spawn it onto work its forgotten-but-running container is already doing.
 ``_readopt_running_agents`` probes each known agent slug's container and
 re-registers a minimal ACTIVE instance for any that is running, so both the
-reaper's live-skip and the spawn gate see the live agent immediately.
+reaper's live-skip and the spawn gate see the live agent immediately. A running
+container whose slug no longer holds a live (non-terminal) claim is a zombie
+left over after a prior orchestrator released the claim — it is NOT registered,
+so it can't block the spawn gate from re-dispatching that slug (#72).
 """
 
 from __future__ import annotations
@@ -37,6 +40,7 @@ async def test_readopts_running_containers_as_active() -> None:
         return (slug in running, 0)
 
     orch._inspect_container_state = AsyncMock(side_effect=inspect)
+    orch._agent_holds_live_claim = AsyncMock(return_value=True)  # mid-task → live
 
     n = await orch._readopt_running_agents()
 
@@ -87,9 +91,55 @@ async def test_readopt_records_container_id_so_health_check_can_see_exit() -> No
     orch = _orch()
     orch._inspect_container_state = AsyncMock(return_value=(True, 0))
     orch._resolve_container_id = AsyncMock(return_value="deadbeef1234")
+    orch._agent_holds_live_claim = AsyncMock(return_value=True)  # live claim
 
     await orch._readopt_running_agents()
 
     inst = orch._instances[next(iter(orch._instances))]
     assert inst.container_id == "deadbeef1234"
+    assert inst.state == AgentState.ACTIVE
+
+
+# ---------------------------------------------------------------------------
+# #72: a running container whose slug holds NO live claim is a zombie left
+# over after a prior orchestrator released the claim — it must NOT be
+# registered ACTIVE, or it blocks the spawn gate from re-dispatching that slug
+# until the stale container is eventually noticed.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_readopt_skips_zombie_container_with_no_live_claim() -> None:
+    """#72: a running container that owns no non-terminal task is a zombie.
+    Registering it ACTIVE would block re-dispatch of its slug; skip it instead."""
+    orch = _orch()
+    orch._inspect_container_state = AsyncMock(return_value=(True, 0))
+    orch._resolve_container_id = AsyncMock(return_value="deadbeef1234")
+    orch._agent_holds_live_claim = AsyncMock(return_value=False)  # claim released
+
+    n = await orch._readopt_running_agents()
+
+    assert n == 0  # zombie not re-adopted
+    assert orch._instances == {}  # spawn gate free to dispatch the slug fresh
+
+
+@pytest.mark.asyncio
+async def test_readopt_failopen_registers_on_claim_lookup_error() -> None:
+    """#72: a DB error in the live-claim lookup is indeterminate — fall back to
+    today's register behaviour so a startup DB hiccup can't regress the
+    cold-start double-spawn protection the readopt exists to provide."""
+    orch = _orch()
+    running = {"be-dev-1"}
+
+    async def inspect(name: str) -> tuple[bool, int | None]:
+        return (name.removeprefix("roboco-agent-") in running, 0)
+
+    orch._inspect_container_state = AsyncMock(side_effect=inspect)
+    orch._resolve_container_id = AsyncMock(return_value="deadbeef1234")
+    orch._agent_holds_live_claim = AsyncMock(return_value=None)  # lookup failed
+
+    n = await orch._readopt_running_agents()
+
+    assert n == 1  # fail-open: register rather than risk a double-spawn
+    inst = orch._instances[next(iter(orch._instances))]
     assert inst.state == AgentState.ACTIVE

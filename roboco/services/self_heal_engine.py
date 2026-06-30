@@ -67,6 +67,9 @@ def _fingerprint(signal_name: str) -> str:
     return hashlib.sha256(signal_name.encode("utf-8")).hexdigest()[:16]
 
 
+_NOTIFY_DEDUPE_KEY_PREFIX = "self_heal:notified:"
+
+
 class SelfHealEngine(BaseService):
     """Detect a regression in RoboCo's own repo; surface it (and later open a fix)."""
 
@@ -105,23 +108,104 @@ class SelfHealEngine(BaseService):
         new regression and STOPS. It never starts, approves, merges, or deploys.
         Writes (any opened task) are flushed here; the caller (the orchestrator
         loop) owns the commit.
+
+        #43: the notify loop dedupes per fingerprint — a regression that stays
+        red across cycles pings the CEO once per episode, not every tick (the
+        notification layer's purpose-dedup only holds while unacked; without
+        this guard a post-ack persistent red state re-fires each cycle). The
+        CEO alert links the open self-heal fix task when one exists so the panel
+        can route the CEO to the fix. The dedupe check fails open: a Redis
+        outage still lets the notify through (better a duplicate ping than a
+        swallowed regression).
         """
         if not settings.self_heal_enabled:
             return []
         observations = await self.assess()
         if not observations:
             return []
+        fp_to_task = await self._open_self_heal_task_ids_by_fp()
         notifier = NotificationService()
         for obs in observations:
+            if await self._already_notified(obs.fingerprint):
+                continue
             body = f"[self-heal] {obs.summary}\n\n{obs.detail}"
             if obs.raw_ref:
                 body += f"\n\nEvidence: {obs.raw_ref}"
             await notifier.send_ack_notification(
-                from_agent="system", to_agent="ceo", body=body
+                from_agent="system",
+                to_agent="ceo",
+                body=body,
+                task_id=fp_to_task.get(obs.fingerprint),
             )
+            await self._mark_notified(obs.fingerprint)
         if settings.self_heal_originate_enabled:
             await self._originate(observations)
         return observations
+
+    async def _open_self_heal_task_ids_by_fp(self) -> dict[str, UUID]:
+        """Map each open self-heal task's fingerprint to its task id.
+
+        Best-effort: a DB/query error returns ``{}`` so the notify loop still
+        runs (task_id simply stays None — the alert floats free, which is the
+        pre-fix behaviour, never a crash). Used both to link the CEO alert to
+        the fix task and as a durable "already notified" corroboration.
+        """
+        try:
+            task_svc = get_task_service(self.session)
+            open_tasks = await task_svc.list_open_self_heal_tasks()
+        except Exception:
+            self.log.exception("self-heal open-task lookup failed; notify floats")
+            return {}
+        mapping: dict[str, UUID] = {}
+        for existing in open_tasks:
+            fp = extract_self_heal_fingerprint(existing)
+            if fp and existing.id is not None:
+                mapping[fp] = cast("UUID", existing.id)
+        return mapping
+
+    async def _already_notified(self, fingerprint: str) -> bool:
+        """True if this fingerprint was already CEO-notified this episode.
+
+        Fail-open: a Redis error returns False (notify anyway) — a dedupe
+        outage must never swallow a regression alert.
+        """
+        try:
+            import redis.asyncio  # local: redis is an agent-runtime dep
+
+            r = redis.asyncio.from_url(settings.redis_url)
+            try:
+                return bool(await r.get(self._dedupe_key(fingerprint)))
+            finally:
+                await r.aclose()
+        except Exception:
+            self.log.exception("self-heal notify-dedupe check failed; failing open")
+            return False
+
+    async def _mark_notified(self, fingerprint: str) -> None:
+        """Record that this fingerprint was CEO-notified, with a TTL window.
+
+        Best-effort: a Redis error is logged and swallowed — the notify already
+        fired, so a missed mark can at worst cause one duplicate on the next
+        cycle, never a lost alert.
+        """
+        try:
+            import redis.asyncio  # local: redis is an agent-runtime dep
+
+            r = redis.asyncio.from_url(settings.redis_url)
+            try:
+                await r.set(
+                    self._dedupe_key(fingerprint),
+                    "1",
+                    ex=settings.self_heal_notify_dedupe_seconds,
+                )
+            finally:
+                await r.aclose()
+        except Exception:
+            self.log.exception("self-heal notify-dedupe mark dropped")
+
+    @staticmethod
+    def _dedupe_key(fingerprint: str) -> str:
+        return f"{_NOTIFY_DEDUPE_KEY_PREFIX}{fingerprint}"
 
     async def _originate(self, observations: list[RegressionObservation]) -> int:
         """Open a PENDING fix task per NEW regression, then STOP. Returns count.

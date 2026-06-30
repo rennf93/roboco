@@ -70,7 +70,9 @@ async def _get_or_create_agent(
         await db.flush()
 
 
-async def _seed_project(db: AsyncSession, slug: str, git_url: str) -> ProjectTable:
+async def _seed_project(
+    db: AsyncSession, slug: str, git_url: str, *, workflow: str | None = None
+) -> ProjectTable:
     project = ProjectTable(
         id=uuid4(),
         name=slug,
@@ -79,6 +81,7 @@ async def _seed_project(db: AsyncSession, slug: str, git_url: str) -> ProjectTab
         assigned_cell=Team.BACKEND,
         created_by=SYSTEM_UUID,
         ci_watch_enabled=True,
+        ci_watch_workflow=workflow,
     )
     db.add(project)
     await db.flush()
@@ -157,3 +160,52 @@ async def test_disabled_is_noop(
     proj = await _seed_project(db_session, "red-e", "https://github.com/x/e.git")
     src = _FakeSource([_breach("red-e")])
     assert await get_ci_watch_engine(db_session, source=src).run_cycle([proj]) == []
+
+
+# ---------------------------------------------------------------------------
+# #44: dedupe by (git_url, workflow) — a multi-workflow monorepo with two red
+# workflows gets a fix task per workflow, not one collapsed task per repo
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_two_red_workflows_of_one_monorepo_both_open(
+    db_session: AsyncSession,
+) -> None:
+    """#44: same git_url, DIFFERENT workflows, both red → two fix tasks."""
+    git = "https://github.com/x/mono.git"
+    p_a = await _seed_project(db_session, "mono-wf-a", git, workflow="wf-a.yml")
+    p_b = await _seed_project(db_session, "mono-wf-b", git, workflow="wf-b.yml")
+    src = _FakeSource([_breach("mono-wf-a"), _breach("mono-wf-b")])
+    projects = [p_a, p_b]
+    created = await get_ci_watch_engine(db_session, source=src).run_cycle(projects)
+    assert len(created) == len(projects)
+    assert {c.project_id for c in created} == {p_a.id, p_b.id}
+
+
+@pytest.mark.asyncio
+async def test_same_git_url_same_workflow_still_deduped(
+    db_session: AsyncSession,
+) -> None:
+    """Regression guard: two cell-projects on one repo, SAME workflow → one task
+    (the (git_url, workflow) key still collapses a same-workflow monorepo)."""
+    git = "https://github.com/x/mono2.git"
+    p1 = await _seed_project(db_session, "mono2-a", git, workflow="wf-a.yml")
+    p2 = await _seed_project(db_session, "mono2-b", git, workflow="wf-a.yml")
+    src = _FakeSource([_breach("mono2-a"), _breach("mono2-b")])
+    created = await get_ci_watch_engine(db_session, source=src).run_cycle([p1, p2])
+    assert len(created) == 1
+
+
+@pytest.mark.asyncio
+async def test_default_workflow_null_rows_deduped(
+    db_session: AsyncSession,
+) -> None:
+    """Two NULL-workflow project rows on one repo both use the default workflow
+    → deduped to one task (coalesce treats NULL as the default workflow)."""
+    git = "https://github.com/x/mono3.git"
+    p1 = await _seed_project(db_session, "mono3-a", git)  # ci_watch_workflow=None
+    p2 = await _seed_project(db_session, "mono3-b", git)
+    src = _FakeSource([_breach("mono3-a"), _breach("mono3-b")])
+    created = await get_ci_watch_engine(db_session, source=src).run_cycle([p1, p2])
+    assert len(created) == 1

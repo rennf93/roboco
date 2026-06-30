@@ -488,6 +488,17 @@ class Settings(BaseSettings):
         ge=1,
         description="Max self-heal fix tasks the loop may originate in one cycle.",
     )
+    self_heal_notify_dedupe_seconds: int = Field(
+        default=7200,
+        ge=60,
+        description=(
+            "Per-fingerprint CEO-notify dedupe window. A regression that stays"
+            " red across cycles notifies the CEO once per episode, not every"
+            " tick; the dedupe key expires after this window so a regression"
+            " that clears and later recurs notifies again. Fail-open: a Redis"
+            " outage in the check still lets the notify through."
+        ),
+    )
 
     # Multi-repo CI-watch — generalizes the single-repo self-heal CI loop to any
     # opted-in project (per-project `ci_watch_enabled` column). Default-off;
@@ -903,6 +914,21 @@ class Settings(BaseSettings):
         description=(
             "Idle-container kill threshold for GROK agents (seconds); "
             "override via ROBOCO_GROK_IDLE_KILL_SECONDS"
+        ),
+    )
+    # A non-GROK agent (Claude / Ollama-cloud / etc.) that gets stuck in a
+    # non-verb loop — alive but firing no gateway verb, so its heartbeat never
+    # advances and the reaper's live-container skip shields its claim forever
+    # (#73). Past this MUCH longer window the orchestrator kills + evicts the
+    # container so the reaper releases the task. Deliberately far beyond any
+    # legit edit/test cycle (a working agent fires gateway verbs every few
+    # minutes) so only a truly-stuck run trips it, never a slow-but-working one.
+    claude_stuck_kill_seconds: int = Field(
+        default=3600,
+        ge=600,
+        description=(
+            "Stuck-in-non-verb-loop kill threshold for non-GROK agents "
+            "(seconds); override via ROBOCO_CLAUDE_STUCK_KILL_SECONDS"
         ),
     )
     # Budget kill-switch parity for GROK. Claude Code's per-agent token-budget

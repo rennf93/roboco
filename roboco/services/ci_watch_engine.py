@@ -9,9 +9,10 @@ project's delivery lifecycle and STOPS. Like self-heal it is conservative:
 * **Never self-deploys** — it only OPENS a fix task; the fix still ships through
   the normal gates (dev -> QA -> PR review -> the CEO's merge). The engine never
   starts / approves / merges / deploys.
-* **Bounded + deduped per repo** — at most one open ci_watch task per repo
-  (keyed on ``git_url``, so a monorepo's several cell-projects share one fix
-  task), plus per-cycle and rolling open-task caps.
+* **Bounded + deduped per (repo, workflow)** — at most one open ci_watch task
+  per ``(git_url, effective workflow)``: a same-workflow monorepo (several
+  cell-projects on one repo) shares one fix task, but two RED workflows of one
+  repo each get their own (#44). Plus per-cycle and rolling open-task caps.
 
 Reuses the hardened per-project CI lookup via ``MultiProjectCITelemetrySource``;
 the single-repo self-heal path is untouched.
@@ -136,12 +137,24 @@ class CiWatchEngine(BaseService):
     async def _should_open(self, task_svc: TaskService, project: Any) -> bool:
         """True when ``project`` resolves and has no open ci_watch task yet.
 
-        Dedupe is per ``git_url`` so a monorepo (several cell-projects, one repo)
-        gets a single open fix task, not one per cell-project.
+        Dedupe is per ``(git_url, effective workflow)`` so a monorepo with
+        several cell-projects on ONE repo still gets a single open fix task per
+        workflow — a same-workflow monorepo collapses to one task, but two RED
+        workflows of one repo each get their own (#44). The effective workflow is
+        ``ci_watch_workflow`` falling back to the configured default.
         """
         if project is None or getattr(project, "id", None) is None:
             return False
-        existing = await task_svc.list_open_ci_watch_tasks(git_url=project.git_url)
+        workflow = (
+            str(
+                getattr(project, "ci_watch_workflow", None)
+                or settings.ci_watch_default_workflow
+            ).strip()
+            or None
+        )
+        existing = await task_svc.list_open_ci_watch_tasks(
+            git_url=project.git_url, workflow=workflow
+        )
         return not existing
 
     async def _open_fix_task(
