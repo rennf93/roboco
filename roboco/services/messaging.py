@@ -1605,7 +1605,11 @@ class MessagingService(BaseService):
         if agent_slug:
             validate_channel_access(agent_slug, channel.slug, "write")
         if req.reply_to:
-            await self._validate_reply_target(req.reply_to, req.session_id)
+            # Validate against the EFFECTIVE session the message lands in
+            # (session.id), not the requested one — a closed-session redirect
+            # makes req.session_id stale, which would let a cross-session reply
+            # slip through (or wrongly reject a valid one).
+            await self._validate_reply_target(req.reply_to, session.id)
 
         content_length = len(req.content)
         message = MessageTable(

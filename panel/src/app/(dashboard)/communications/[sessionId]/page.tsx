@@ -108,11 +108,20 @@ function SessionDetailContent() {
     }) => {
       return messagesApi.send(sessionId, content, type);
     },
-    onSuccess: () => {
+    onSuccess: (sent) => {
       queryClient.invalidateQueries({
         queryKey: ["messages", "list", sessionId],
       });
-      toast.success("Message sent");
+      // If the session closed between load and send, the server redirects the
+      // message to a fresh active session — tell the user it landed elsewhere
+      // instead of letting it appear to vanish from this transcript.
+      if (sent?.session_id && sent.session_id !== sessionId) {
+        toast.warning(
+          "This session had closed — your message was posted to the active session.",
+        );
+      } else {
+        toast.success("Message sent");
+      }
     },
     onError: (error: Error) => {
       toast.error("Failed to send message: " + error.message);
@@ -313,13 +322,22 @@ function SessionDetailContent() {
             )}
           </div>
 
-          {/* Message Composer */}
+          {/* Message Composer. A closed session is read-only: posting to it
+              would silently redirect the message to a fresh active session
+              (server-side get-or-create), making it vanish from this view —
+              so guard the composer and say why. */}
           <div className="shrink-0 border-t">
-            <MessageComposer
-              channelId={sessionId}
-              onSend={handleSendMessage}
-              isSending={sendMessage.isPending}
-            />
+            {session.status === "active" ? (
+              <MessageComposer
+                channelId={sessionId}
+                onSend={handleSendMessage}
+                isSending={sendMessage.isPending}
+              />
+            ) : (
+              <div className="p-4 text-center text-sm text-muted-foreground">
+                This session is closed. New messages can&apos;t be posted here.
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>

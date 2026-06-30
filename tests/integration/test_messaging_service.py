@@ -1215,6 +1215,56 @@ async def test_send_message_reply_target_unknown_raises(
 
 
 @pytest.mark.asyncio
+async def test_reply_to_same_active_session_succeeds(msg_setup: dict) -> None:
+    """A reply to a message in the same active session is accepted."""
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    m1 = await svc.send_message(
+        MessageCreateRequest(agent_id=aid, session_id=sess.id, content="first")
+    )
+    m2 = await svc.send_message(
+        MessageCreateRequest(
+            agent_id=aid, session_id=sess.id, content="reply", reply_to=m1.id
+        )
+    )
+    assert m2.reply_to == m1.id
+    assert m2.session_id == sess.id
+
+
+@pytest.mark.asyncio
+async def test_reply_to_rejected_after_closed_session_redirect(
+    msg_setup: dict,
+) -> None:
+    """reply_to must be validated against the EFFECTIVE session the message
+    lands in, not the requested one. After a closed session redirects the send
+    to a fresh active session, a reply_to a message from the OLD session must be
+    rejected — otherwise the new message carries a dangling cross-session reply.
+    """
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    s1 = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    m1 = await svc.send_message(
+        MessageCreateRequest(agent_id=aid, session_id=s1.id, content="first")
+    )
+    # Close S1 → the next send to S1 redirects to a freshly-created session.
+    await svc.close_session_or_raise(s1.id)
+    with pytest.raises(ValueError, match="Reply target not found"):
+        await svc.send_message(
+            MessageCreateRequest(
+                agent_id=aid,
+                session_id=s1.id,
+                content="reply",
+                reply_to=m1.id,  # belongs to the now-closed S1, not the redirect
+            )
+        )
+
+
+@pytest.mark.asyncio
 async def test_get_messages_with_filters(msg_setup: dict) -> None:
     """get_messages with before/after/type filters."""
     svc = msg_setup["svc"]
