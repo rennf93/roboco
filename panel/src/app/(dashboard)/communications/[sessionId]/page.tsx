@@ -3,7 +3,13 @@
 import { useEffect, useRef } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useSession, useSessionMessages } from "@/hooks/use-channels";
+import {
+  useSession,
+  useSessionMessages,
+  messageKeys,
+  sessionKeys,
+} from "@/hooks/use-channels";
+import { useSessionStream } from "@/hooks/use-websocket";
 import { messagesApi } from "@/lib/api/messages";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -63,6 +69,17 @@ function SessionDetailContent() {
     isLoading: loadingMessages,
     refetch: refetchMessages,
   } = useSessionMessages(sessionId);
+
+  // Live updates: subscribe to the session stream. On a new persisted message
+  // (MESSAGE_SENT → bridge → /ws/sessions/{id}) invalidate the transcript +
+  // session-detail queries so the held (staleTime Infinity) views refresh
+  // without the manual Refresh button.
+  const { lastMessage } = useSessionStream(sessionId);
+  useEffect(() => {
+    if (lastMessage?.type !== "message.new") return;
+    queryClient.invalidateQueries({ queryKey: messageKeys.list(sessionId) });
+    queryClient.invalidateQueries({ queryKey: sessionKeys.detail(sessionId) });
+  }, [lastMessage, queryClient, sessionId]);
 
   // Sort messages chronologically (oldest first for chat UI)
   const messages = [...(messagesData?.items || [])].sort(

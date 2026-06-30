@@ -44,6 +44,19 @@ export interface NotificationMessage {
   timestamp?: string;
 }
 
+export interface SessionMessage {
+  type: "connected" | "message.new";
+  message_id?: string;
+  session_id?: string;
+  channel_id?: string;
+  agent_id?: string;
+  content?: string;
+  message_type?: string;
+  is_reply?: boolean;
+  reply_to?: string | null;
+  timestamp?: string;
+}
+
 // =============================================================================
 // Generic WebSocket Hook
 // =============================================================================
@@ -190,6 +203,42 @@ export function useChannelStream(channelId: string | null) {
     state,
     lastMessage,
     channelMessages,
+    allMessages: messages,
+    clearMessages,
+    isConnected,
+    isConnecting,
+  };
+}
+
+/**
+ * Subscribe to a session's live message stream (`/ws/sessions/{id}`).
+ *
+ * The backend publishes MESSAGE_SENT on every persisted send; the websocket
+ * bridge fans it to this stream as a `message.new` frame. The session detail
+ * view consumes `lastMessage` to refresh its transcript live instead of
+ * relying on the manual Refresh button.
+ */
+export function useSessionStream(sessionId: string | null) {
+  const {
+    state,
+    lastMessage,
+    messages,
+    clearMessages,
+    isConnected,
+    isConnecting,
+  } = useWebSocket<SessionMessage>(
+    sessionId ? "/sessions/" + sessionId : "",
+    { agent_id: CEO_AGENT_ID },
+    !!sessionId,
+  );
+
+  // Filter to only actual messages (drop the initial `connected` frame).
+  const sessionMessages = messages.filter((m) => m.type === "message.new");
+
+  return {
+    state,
+    lastMessage,
+    sessionMessages,
     allMessages: messages,
     clearMessages,
     isConnected,

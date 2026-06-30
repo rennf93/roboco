@@ -17,6 +17,7 @@ from roboco.db.tables import AgentTable, MessageTable, ProjectTable, TaskTable
 from roboco.db.tables import AgentTable as _AgentTable
 from roboco.enforcement.channel_access import ChannelAccessDeniedError
 from roboco.models import AgentRole, AgentStatus, MessageType, Team
+from roboco.models.events import EventType
 from roboco.models.base import (
     ChannelType,
     SessionStatus,
@@ -642,6 +643,59 @@ async def test_send_message_to_session(msg_setup: dict) -> None:
     )
     assert msg.id is not None
     assert msg.content == "hello world"
+
+
+@pytest.mark.asyncio
+async def test_send_message_publishes_message_sent_when_bus_connected(
+    msg_setup: dict,
+) -> None:
+    """Bus connected → a MESSAGE_SENT event is published carrying the message
+    payload so the websocket bridge can fan the new message out to
+    /ws/channels/{id} and /ws/sessions/{id} subscribers. Without this publish
+    the live chat path is dead — the panel never sees incoming messages."""
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    mock_bus = AsyncMock()
+    mock_bus.is_connected = lambda: True
+    mock_bus.publish = AsyncMock(return_value=None)
+    with patch("roboco.services.messaging.get_event_bus", return_value=mock_bus):
+        msg = await svc.send_message(
+            MessageCreateRequest(agent_id=aid, session_id=sess.id, content="hi")
+        )
+    mock_bus.publish.assert_awaited()
+    published = mock_bus.publish.await_args.args[0]
+    assert published.type is EventType.MESSAGE_SENT
+    data = published.data
+    assert data["message_id"] == str(msg.id)
+    assert data["session_id"] == str(sess.id)
+    assert data["channel_id"] == str(ch.id)
+    assert data["agent_id"] == str(aid)
+    assert data["content"] == "hi"
+
+
+@pytest.mark.asyncio
+async def test_send_message_bus_failure_does_not_break_send(
+    msg_setup: dict,
+) -> None:
+    """A bus outage during the MESSAGE_SENT publish is logged but never rolls
+    back the persisted message — live delivery is best-effort."""
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    with patch(
+        "roboco.services.messaging.get_event_bus",
+        side_effect=RuntimeError("bus down"),
+    ):
+        msg = await svc.send_message(
+            MessageCreateRequest(agent_id=aid, session_id=sess.id, content="hi")
+        )
+    assert msg.id is not None
+    assert msg.content == "hi"
 
 
 @pytest.mark.asyncio

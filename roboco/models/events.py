@@ -46,6 +46,10 @@ class EventType(StrEnum):
     SESSION_CLOSED = "session.closed"
     SESSION_TIMEOUT = "session.timeout"
 
+    # Message events — a chat message was persisted and should be pushed live to
+    # /ws/channels/{id} and /ws/sessions/{id} subscribers via the bridge.
+    MESSAGE_SENT = "message.sent"
+
     # Handoff events
     HANDOFF_CREATED = "handoff.created"
     HANDOFF_ACCEPTED = "handoff.accepted"

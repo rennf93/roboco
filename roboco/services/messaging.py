@@ -1597,6 +1597,39 @@ class MessagingService(BaseService):
         self._update_message_stats(session, group, channel, content_length)
         await self.session.flush()
 
+        # Publish MESSAGE_SENT so the websocket bridge fans the new message out
+        # live to /ws/channels/{id} and /ws/sessions/{id} subscribers. Best-effort
+        # — a bus outage logs and never rolls back the persisted message (live
+        # delivery is supplementary; the row is already durable).
+        try:
+            bus = get_event_bus()
+            if bus.is_connected():
+                await bus.publish(
+                    Event(
+                        type=EventType.MESSAGE_SENT,
+                        data={
+                            "message_id": str(message.id),
+                            "session_id": str(session.id),
+                            "channel_id": str(channel.id),
+                            "group_id": str(group.id),
+                            "agent_id": str(req.agent_id),
+                            "content": req.content,
+                            "message_type": (
+                                req.message_type.value
+                                if req.message_type
+                                else "dialogue"
+                            ),
+                            "is_reply": req.reply_to is not None,
+                            "reply_to": str(req.reply_to) if req.reply_to else None,
+                            "timestamp": datetime.now(UTC).isoformat(),
+                        },
+                    )
+                )
+        except Exception as e:
+            self.log.warning(
+                "Failed to publish message event", error=str(e)
+            )
+
         # Notify mentioned agents via Redis Streams
         await self._notify_mentions(message, req.agent_id, channel.slug)
 
