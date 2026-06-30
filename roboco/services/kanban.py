@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.db.tables import AgentTable, TaskTable
-from roboco.models.base import TaskStatus, Team
+from roboco.models.base import TaskStatus, TaskType, Team
 from roboco.models.kanban import (
     KanbanBoard,
     KanbanBoardType,
@@ -161,28 +161,47 @@ class KanbanService(BaseService):
                 card_count=0,
             )
 
-        # Add cards to columns
+        # Add cards to columns; any task whose status matches no configured
+        # column lands in an 'Other' fallback so total_cards == sum(card_count)
+        # and no card is built-then-silently-dropped (the vanished-card leak).
+        other_cards: list[KanbanCard] = []
         blocked_count = 0
         subtask_counts = await self._load_subtask_counts(tasks)
         for task in tasks:
             card = await self._task_to_card(task, subtask_counts=subtask_counts)
 
             # Find the right column for this task's status
+            placed = False
             for col_id, _, col_status in column_config:
                 if task.status == col_status:
                     columns[col_id].cards.append(card)
                     columns[col_id].card_count += 1
+                    placed = True
                     break
+            if not placed:
+                other_cards.append(card)
 
             if task.status == TaskStatus.BLOCKED:
                 blocked_count += 1
+
+        column_list = list(columns.values())
+        if other_cards:
+            column_list.append(
+                KanbanColumn(
+                    id="other",
+                    title="Other",
+                    status=None,
+                    cards=other_cards,
+                    card_count=len(other_cards),
+                )
+            )
 
         return KanbanBoard(
             id=f"{board_type.value}-{team.value if team else 'all'}",
             title=f"{team.value.title() if team else 'All'} {board_type.value.title()} Board",  # noqa: E501
             board_type=board_type,
             team=team,
-            columns=list(columns.values()),
+            columns=column_list,
             total_cards=len(tasks),
             blocked_count=blocked_count,
             last_updated=datetime.now(UTC),
@@ -319,10 +338,11 @@ class KanbanService(BaseService):
 
         Columns: Awaiting Review → In Review → Passed → Failed
         """
-        # QA only sees tasks in QA-relevant statuses
+        # QA only sees tasks in QA-relevant statuses. VERIFYING is the dev's
+        # self-verification (task still with the dev, not with QA) — excluded so
+        # the QA board does not show dev-mid-verification as active QA work.
         qa_statuses = [
             TaskStatus.AWAITING_QA,
-            TaskStatus.VERIFYING,
             TaskStatus.AWAITING_DOCUMENTATION,
             TaskStatus.NEEDS_REVISION,
         ]
@@ -349,7 +369,10 @@ class KanbanService(BaseService):
 
         Columns: Awaiting Handoff → Gathering → Writing → Published
         """
-        # Documenter sees tasks awaiting documentation or completed
+        # Documenter sees documentation-typed tasks in doc-relevant statuses.
+        # The broad IN_PROGRESS/VERIFYING inclusion used to load any dev code
+        # task happening to share the cell team; scope to task_type=documentation
+        # so the board shows only the documenter's own pipeline.
         doc_statuses = [
             TaskStatus.AWAITING_DOCUMENTATION,
             TaskStatus.IN_PROGRESS,  # Gathering
@@ -362,6 +385,7 @@ class KanbanService(BaseService):
             .where(
                 TaskTable.team == team,
                 TaskTable.status.in_(doc_statuses),
+                TaskTable.task_type == TaskType.DOCUMENTATION,
             )
             .order_by(TaskTable.priority, TaskTable.created_at.desc())
         )
@@ -410,15 +434,21 @@ class KanbanService(BaseService):
 
     async def get_main_pm_board_flat(self) -> KanbanBoard:
         """Get Main PM board with team columns instead of swimlanes."""
-        # Get tasks grouped by team
+        # Load every status the board columns represent. The legacy filter
+        # (in_progress/blocked/awaiting_qa only) excluded exactly the statuses
+        # the incoming/distributed/done columns anchor, so those three columns
+        # were structurally always empty.
         result = await self.session.execute(
             select(TaskTable)
             .where(
                 TaskTable.status.in_(
                     [
+                        TaskStatus.PENDING,
+                        TaskStatus.CLAIMED,
                         TaskStatus.IN_PROGRESS,
                         TaskStatus.BLOCKED,
                         TaskStatus.AWAITING_QA,
+                        TaskStatus.COMPLETED,
                     ]
                 )
             )
@@ -457,14 +487,21 @@ class KanbanService(BaseService):
             ),
         ]
 
-        # Sort tasks into columns
+        # Sort tasks into columns: status-keyed columns (incoming/distributed/
+        # done) first, then the in-flight statuses route by team.
         col_map = {col.id: col for col in columns}
         blocked_count = 0
         subtask_counts = await self._load_subtask_counts(tasks)
 
         for task in tasks:
             card = await self._task_to_card(task, subtask_counts=subtask_counts)
-            if task.team == Team.BACKEND:
+            if task.status == TaskStatus.PENDING:
+                col_map["incoming"].cards.append(card)
+            elif task.status == TaskStatus.CLAIMED:
+                col_map["distributed"].cards.append(card)
+            elif task.status == TaskStatus.COMPLETED:
+                col_map["done"].cards.append(card)
+            elif task.team == Team.BACKEND:
                 col_map["backend"].cards.append(card)
             elif task.team == Team.FRONTEND:
                 col_map["frontend"].cards.append(card)

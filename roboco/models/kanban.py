@@ -100,18 +100,28 @@ class KanbanBoard(RobocoBase):
 
 
 DEV_COLUMNS = [
-    ("backlog", "Backlog", TaskStatus.PENDING),
+    ("backlog", "Backlog", TaskStatus.BACKLOG),
+    ("pending", "Ready", TaskStatus.PENDING),
     ("assigned", "Assigned", TaskStatus.CLAIMED),
     ("in_progress", "In Progress", TaskStatus.IN_PROGRESS),
+    ("verifying", "Verifying", TaskStatus.VERIFYING),
     ("blocked", "Blocked", TaskStatus.BLOCKED),
+    ("paused", "Paused", TaskStatus.PAUSED),
+    ("needs_revision", "Needs Revision", TaskStatus.NEEDS_REVISION),
     ("qa_review", "QA Review", TaskStatus.AWAITING_QA),
     ("documenting", "Documenting", TaskStatus.AWAITING_DOCUMENTATION),
+    ("pr_review", "PR Review", TaskStatus.AWAITING_PR_REVIEW),
+    ("pm_review", "PM Review", TaskStatus.AWAITING_PM_REVIEW),
+    ("ceo_approval", "CEO Approval", TaskStatus.AWAITING_CEO_APPROVAL),
     ("done", "Done", TaskStatus.COMPLETED),
+    ("cancelled", "Cancelled", TaskStatus.CANCELLED),
 ]
 
+# VERIFYING is the developer's self-verification state — the task is still with
+# the dev, not with QA. Mapping it to an 'In Review' column misrepresented dev
+# mid-verification as active QA work; QA reviews tasks that reached AWAITING_QA.
 QA_COLUMNS = [
     ("awaiting_review", "Awaiting Review", TaskStatus.AWAITING_QA),
-    ("in_review", "In Review", TaskStatus.VERIFYING),
     ("passed", "Passed", TaskStatus.AWAITING_DOCUMENTATION),
     ("failed", "Failed", TaskStatus.NEEDS_REVISION),
 ]
@@ -123,12 +133,25 @@ DOCUMENTER_COLUMNS = [
     ("published", "Published", TaskStatus.COMPLETED),
 ]
 
+# The cell PM coordinates the QA -> docs -> PR-review -> PM-review -> CEO chain,
+# so every in-flight gate/revision/paused/cancelled status must be visible, not
+# dropped by a column set that only knew pending/claimed/in_progress/blocked.
 PM_COLUMNS = [
     ("incoming", "Incoming", TaskStatus.PENDING),
     ("triaged", "Triaged", TaskStatus.CLAIMED),
     ("assigned", "Assigned", TaskStatus.IN_PROGRESS),
+    ("verifying", "Verifying", TaskStatus.VERIFYING),
     ("blocked", "Blocked", TaskStatus.BLOCKED),
+    ("paused", "Paused", TaskStatus.PAUSED),
+    ("needs_revision", "Needs Revision", TaskStatus.NEEDS_REVISION),
+    ("qa_review", "QA Review", TaskStatus.AWAITING_QA),
+    ("documenting", "Documenting", TaskStatus.AWAITING_DOCUMENTATION),
+    ("pr_review", "PR Review", TaskStatus.AWAITING_PR_REVIEW),
+    ("pm_review", "PM Review", TaskStatus.AWAITING_PM_REVIEW),
+    ("ceo_approval", "CEO Approval", TaskStatus.AWAITING_CEO_APPROVAL),
     ("done", "Done", TaskStatus.COMPLETED),
+    ("cancelled", "Cancelled", TaskStatus.CANCELLED),
+    ("backlog", "Backlog", TaskStatus.BACKLOG),
 ]
 
 MAIN_PM_COLUMNS = [
