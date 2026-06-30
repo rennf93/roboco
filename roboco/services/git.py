@@ -237,6 +237,18 @@ def _select_ci_head_run(runs: list[dict[str, Any]]) -> dict[str, Any]:
     return max(same_head, key=lambda r: int(r.get("run_attempt") or 0))
 
 
+@dataclass(frozen=True)
+class _CiRunQuery:
+    """Bundle of per-project inputs to a CI-run fetch (owner/repo, branch, token,
+    slug for logging) so ``_fetch_latest_ci_run`` stays under the arg-count gate —
+    owner_repo alone was already bundled for the same reason."""
+
+    project_slug: str
+    owner_repo: tuple[str, str]
+    branch: str
+    git_token: str
+
+
 class GitService(BaseService):
     """
     Service for git operations on agent workspaces.
@@ -1933,7 +1945,11 @@ class GitService(BaseService):
         }
 
     async def get_latest_ci_conclusion(
-        self, project_slug: str, *, workflow: str | None = None
+        self,
+        project_slug: str,
+        *,
+        workflow: str | None = None,
+        head_sha: str | None = None,
     ) -> dict[str, Any] | None:
         """Latest completed CI (GitHub Actions) run on a project's default branch.
 
@@ -1944,10 +1960,12 @@ class GitService(BaseService):
         Resolves owner/repo and the git token PER PROJECT. ``workflow`` (a
         workflow file name like ``ci.yml``) scopes the signal to one workflow —
         without it the latest run across ALL workflows is used, which is
-        imprecise on a multi-workflow repo. Returns ``None`` on a missing token,
-        unparseable remote, GitHub error, or a repo with no matching Actions runs
-        (a repo that doesn't use GitHub Actions yields no signal, not a false
-        one). It never raises into the poll loop.
+        imprecise on a multi-workflow repo. ``head_sha`` further scopes the run
+        window to a specific commit (the release gate uses this so a later push
+        to the default branch can't mask the release commit's own CI). Returns
+        ``None`` on a missing token, unparseable remote, GitHub error, or a repo
+        with no matching Actions runs (a repo that doesn't use GitHub Actions
+        yields no signal, not a false one). It never raises into the poll loop.
         """
         project = await get_project_service(self.session).get_by_slug(project_slug)
         if project is None or not project.git_url:
@@ -1960,9 +1978,13 @@ class GitService(BaseService):
         if not git_token:
             return None
         branch = project.default_branch or "master"
-        run = await self._fetch_latest_ci_run(
-            project_slug, (owner, repo), branch, git_token, workflow
+        query = _CiRunQuery(
+            project_slug=project_slug,
+            owner_repo=(owner, repo),
+            branch=branch,
+            git_token=git_token,
         )
+        run = await self._fetch_latest_ci_run(query, workflow, head_sha)
         if run is None:
             return None
         return {
@@ -2013,42 +2035,47 @@ class GitService(BaseService):
 
     async def _fetch_latest_ci_run(
         self,
-        project_slug: str,
-        owner_repo: tuple[str, str],
-        branch: str,
-        git_token: str,
+        query: _CiRunQuery,
         workflow: str | None = None,
+        head_sha: str | None = None,
     ) -> dict[str, Any] | None:
         """Resolve ``branch``'s current-HEAD CI conclusion; None on error.
 
         Scopes to ``workflow`` (a workflow file name) when given — the precise
         signal — otherwise reads across ALL workflows, which on a multi-workflow
-        repo is unreliable (an unrelated green run can mask a red CI run). Pulls a
-        WINDOW of recent completed runs and selects the newest commit's latest
-        attempt (see ``_select_ci_head_run``) rather than the single
-        most-recently-completed run, so a green run on an older commit can't mask
-        the HEAD's failure and a green re-run correctly supersedes it. ``branch``
-        filters by head branch, so only pushes to the default branch (not
-        pull-request runs, whose head is a feature branch) count — exactly the
-        "is the default branch red" signal self-heal needs. Transient network /
-        429 / 5xx errors are retried a few times before giving up so a single
-        blip doesn't silently skip the cycle.
+        repo is unreliable (an unrelated green run can mask a red CI run).
+        ``head_sha`` further scopes the window to one commit so the release gate
+        can wait on a SPECIFIC release commit's CI without a later push to the
+        default branch masking it. Pulls a WINDOW of recent completed runs and
+        selects the newest commit's latest attempt (see
+        ``_select_ci_head_run``) rather than the single most-recently-completed
+        run, so a green run on an older commit can't mask the HEAD's failure and
+        a green re-run correctly supersedes it. ``branch`` filters by head
+        branch, so only pushes to the default branch (not pull-request runs,
+        whose head is a feature branch) count — exactly the "is the default
+        branch red" signal self-heal needs. Transient network / 429 / 5xx errors
+        are retried a few times before giving up so a single blip doesn't
+        silently skip the cycle.
         """
-        owner, repo = owner_repo
+        owner, repo = query.owner_repo
         api_base = settings.github_api_base_url.rstrip("/")
         base = f"{api_base}/repos/{owner}/{repo}/actions"
         url = f"{base}/workflows/{workflow}/runs" if workflow else f"{base}/runs"
         headers = {
-            "Authorization": f"Bearer {git_token}",
+            "Authorization": f"Bearer {query.git_token}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         }
         params: dict[str, str | int] = {
-            "branch": branch,
+            "branch": query.branch,
             "status": "completed",
             "per_page": _CI_RUN_WINDOW,
         }
-        resp = await self._get_ci_runs_response(project_slug, url, headers, params)
+        if head_sha:
+            params["head_sha"] = head_sha
+        resp = await self._get_ci_runs_response(
+            query.project_slug, url, headers, params
+        )
         if resp is None or not resp.is_success:
             return None
         data = resp.json()

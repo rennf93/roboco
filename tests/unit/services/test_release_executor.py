@@ -8,9 +8,24 @@ call sequence; the production git/gh ops is exercised live (CEO-gated).
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from typing import TYPE_CHECKING
+from unittest.mock import MagicMock
+
 import pytest
-from roboco.services.release_executor import ReleaseExecutor, ReleaseResult
+from roboco.config import settings
+from roboco.services import release_executor as re
+from roboco.services.release_executor import (
+    ReleaseExecutor,
+    ReleaseResult,
+    _GitReleaseOps,
+    _ReleaseContext,
+    _resolve_release_ci_workflow,
+)
 from roboco.services.release_readiness import ReleaseReadinessReport
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 _PLAN = ["pyproject.toml", "roboco/__init__.py", "CHANGELOG.md"]
 _VERSION = "0.13.0"
@@ -49,13 +64,27 @@ class _FakeOps:
         self._ci = ci
         self._commit_raises = commit_raises
         self._publish_raises = publish_raises
+        # Half-landed (publish_failed retry) detection: a prior
+        # ``chore(release): {version}`` commit already on the branch. Set on the
+        # instance (not via __init__ — keeps the constructor under the arg-count
+        # gate) by tests that exercise the retry path.
+        self._existing_sha: str | None = None
         self.calls: list[str] = []
         self.bumped_plan: list[str] | None = None
         self.bumped_version: str | None = None
+        self.halflanded_check = False
 
     async def is_already_published(self, _version: str) -> bool:
         self.calls.append("check")
         return self._already
+
+    async def release_commit_sha(self, _version: str) -> str | None:
+        # Half-landed detection: a prior `chore(release): {version}` commit
+        # already on the branch means a publish_failed retry must NOT re-run the
+        # bump→changelog→gate→commit pipeline. Recorded via a flag (not calls)
+        # so the green-path call-sequence assertion is unaffected.
+        self.halflanded_check = True
+        return self._existing_sha
 
     async def apply_version_bumps(self, plan: list[str], new_version: str) -> list[str]:
         self.calls.append("bump")
@@ -186,3 +215,103 @@ def test_release_result_carries_outcome_fields() -> None:
     assert result.version == _VERSION
     assert result.files_changed == _PLAN
     assert result.release_url is not None
+
+
+@pytest.mark.asyncio
+async def test_half_landed_retry_skips_bump_and_republishes_only() -> None:
+    """#87: a publish_failed retry (commit pushed + CI green, no tag yet) must
+    NOT re-run bump/changelog/gate/commit — that would re-insert the changelog
+    entry above the already-present ``## [X.Y.Z]`` heading (duplicate) and land a
+    second ``chore(release): X.Y.Z`` commit. The executor detects the
+    half-landed state via ``release_commit_sha`` (a prior release commit already
+    on the branch) and jumps straight to wait_for_ci + publish."""
+    ops = _FakeOps()
+    ops._existing_sha = "existingbeef"
+    result = await ReleaseExecutor(ops).execute(_report())
+    assert result.status == "published"
+    assert result.commit_sha == "existingbeef"
+    assert result.release_url is not None
+    assert ops.halflanded_check is True
+    assert "bump" not in ops.calls
+    assert "changelog" not in ops.calls
+    assert "gate" not in ops.calls
+    assert "commit" not in ops.calls
+    assert ops.calls == ["check", "ci", "publish"]
+
+
+@pytest.mark.asyncio
+async def test_wait_for_ci_scoped_to_release_commit_not_branch_latest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#318: a later commit landing on master during the ~40min wait must not
+    mask the release commit's green CI. ``wait_for_ci`` scopes the GitHub query
+    to the release commit_sha (``head_sha=``), so the branch-latest run (a later
+    sha) can't make the gate poll forever and false-fail as ci_failed."""
+    commit_sha = "release_commit_abc"
+    later_sha = "later_landed_def"
+
+    async def _fake_get_ci(_slug: str, **_kwargs: object) -> dict[str, str]:
+        # Mimic GitHub's head_sha filter: a run for the release sha only when
+        # asked for it (head_sha=commit_sha); the branch-latest (later commit)
+        # run otherwise. The release gate MUST scope to commit_sha to see green.
+        if _kwargs.get("head_sha") == commit_sha:
+            return {
+                "head_sha": commit_sha,
+                "conclusion": "success",
+                "run_url": "u",
+                "run_name": "n",
+                "branch": "master",
+                "completed_at": "t",
+            }
+        return {
+            "head_sha": later_sha,
+            "conclusion": "success",
+            "run_url": "u2",
+            "run_name": "n2",
+            "branch": "master",
+            "completed_at": "t2",
+        }
+
+    monkeypatch.setattr(
+        "roboco.services.git.get_git_service",
+        lambda _session: SimpleNamespace(get_latest_ci_conclusion=_fake_get_ci),
+    )
+    monkeypatch.setattr(re, "_CI_MAX_POLLS", 2)
+
+    async def _no_sleep(_secs: float) -> None:
+        return None
+
+    monkeypatch.setattr(re.asyncio, "sleep", _no_sleep)
+
+    ctx = _ReleaseContext(
+        slug="roboco-api",
+        default_branch="master",
+        root=tmp_path,
+        auth_url="x",
+        ci_workflow="ci.yml",
+    )
+    ops = _GitReleaseOps(session=MagicMock(), ctx=ctx)
+    ok = await ops.wait_for_ci(commit_sha)
+    assert ok is True
+
+
+def test_release_ci_workflow_decoupled_from_self_heal_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#402: the release CI gate must not inherit ``self_heal_ci_workflow``'s
+    empty-string tuning (documented valid for single-workflow repos), which would
+    degrade the fail-closed gate to the all-workflows mode git.py itself flags as
+    unreliable. The release gate always resolves a named workflow (default
+    ``ci.yml``), never None."""
+    # The dangerous tuning an operator might apply for self-heal on a
+    # single-workflow repo — must NOT leak into the release gate.
+    monkeypatch.setattr(settings, "self_heal_ci_workflow", "")
+    monkeypatch.setattr(settings, "release_ci_workflow", "ci.yml")
+    assert _resolve_release_ci_workflow() == "ci.yml"
+
+    monkeypatch.setattr(settings, "release_ci_workflow", "release.yml")
+    assert _resolve_release_ci_workflow() == "release.yml"
+
+    # An empty release setting never falls through to None — always the default.
+    monkeypatch.setattr(settings, "release_ci_workflow", "")
+    assert _resolve_release_ci_workflow() == "ci.yml"
