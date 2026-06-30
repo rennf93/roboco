@@ -892,6 +892,9 @@ async def update_task(
     # in-band transition. Pop it out of the generic field update and apply it
     # through the audited path, gated on elevated permissions.
     new_status = updates.pop("status", None)
+    # #13: ``force`` is the explicit acknowledgement of the lifecycle bypass.
+    # Pop it so it is never passed to TaskService.update as a field set.
+    force = bool(updates.pop("force", False))
 
     # Pop explicitly-set-to-None nullable fields. TaskService.update() skips
     # None values (not-None guard), so null-clear intent is re-applied directly
@@ -915,11 +918,29 @@ async def update_task(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Only privileged roles may override task status.",
             )
+        # #13: pasting over the lifecycle gate into a terminal/final hatch
+        # state must be an explicit, audited forced override — not a free-form
+        # status set. Refuse without the acknowledgement flag.
+        _HATCH_OVERRIDE_STATES = {
+            TaskStatus.COMPLETED,
+            TaskStatus.AWAITING_QA,
+            TaskStatus.AWAITING_PM_REVIEW,
+        }
+        if new_status in _HATCH_OVERRIDE_STATES and not force:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Overriding a task into "
+                    f"{new_status.value} bypasses the lifecycle gate; pass "
+                    "\"force\": true to acknowledge the forced override."
+                ),
+            )
         task = await service.admin_set_status(
             task_id,
             new_status,
             actor_id=agent.agent_id,
             actor_role=getattr(agent, "role", None),
+            force=force,
         )
         if not task:
             raise HTTPException(

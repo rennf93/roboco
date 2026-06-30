@@ -54,6 +54,16 @@ interface PendingOverride {
   skipped: string[];
 }
 
+// Terminal/hatch states the server-side PATCH override guard refuses without
+// an explicit `force: true` (the bypass is deliberate + audited). A kanban
+// drag is the admin override surface, so a move into one of these must carry
+// the acknowledgement or the backend rejects with 400.
+const HATCH_OVERRIDE_STATES: ReadonlySet<TaskStatus> = new Set([
+  TaskStatus.COMPLETED,
+  TaskStatus.AWAITING_QA,
+  TaskStatus.AWAITING_PM_REVIEW,
+]);
+
 interface ColumnConfig {
   id: string;
   status: TaskStatus;
@@ -164,7 +174,10 @@ export function KanbanBoard({
     try {
       await updateTask.mutateAsync({
         taskId,
-        updates: { status: newStatus },
+        updates: {
+          status: newStatus,
+          force: HATCH_OVERRIDE_STATES.has(newStatus),
+        },
       });
       toast.success(`Task moved to ${newStatus.replace(/_/g, " ")}`);
       refetch();
@@ -179,7 +192,10 @@ export function KanbanBoard({
     try {
       await updateTask.mutateAsync({
         taskId: task.id,
-        updates: { status: newStatus },
+        updates: {
+          status: newStatus,
+          force: HATCH_OVERRIDE_STATES.has(newStatus),
+        },
       });
       toast.success(`Task moved to ${newStatus.replace(/_/g, " ")}`);
       refetch();

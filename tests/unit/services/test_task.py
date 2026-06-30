@@ -596,6 +596,63 @@ async def test_admin_set_status_non_blocked_is_bare_status_set() -> None:
 
 
 @pytest.mark.asyncio
+async def test_admin_set_status_force_emits_distinct_override_audit_row() -> None:
+    """#13: a forced override (force=True) emits a distinct ``task.admin_override``
+    audit row marking the bypass past the lifecycle gate — distinguishable from
+    the in-band transition row. Without force, no override row is emitted."""
+    owner = uuid4()
+    task = _build_task(
+        status=TaskStatus.AWAITING_PM_REVIEW,
+        assigned_to=owner,
+        claimed_by=owner,
+    )
+    added: list[object] = []
+    session = MagicMock()
+    session.flush = AsyncMock()
+    session.add.side_effect = added.append
+    svc = TaskService(session)
+    _bind(svc, "get", AsyncMock(return_value=task))
+
+    await svc.admin_set_status(
+        task.id, TaskStatus.COMPLETED, actor_id=owner, actor_role="ceo", force=True
+    )
+
+    rows = [r for r in added if isinstance(r, AuditLogTable)]
+    override_rows = [r for r in rows if r.event_type == "task.admin_override"]
+    assert len(override_rows) == 1
+    row = override_rows[0]
+    assert row.target_id == task.id
+    assert row.severity == "warning"
+    assert row.details["forced"] is True
+    assert row.details["from_status"] == "awaiting_pm_review"
+    assert row.details["to_status"] == "completed"
+    assert row.agent_id == owner
+
+
+@pytest.mark.asyncio
+async def test_admin_set_status_no_force_emits_no_override_audit_row() -> None:
+    """#13: without force, only the transition row is emitted — no
+    ``task.admin_override`` row (the bypass was not acknowledged)."""
+    owner = uuid4()
+    task = _build_task(
+        status=TaskStatus.BLOCKED,
+        assigned_to=owner,
+        claimed_by=owner,
+    )
+    added: list[object] = []
+    session = MagicMock()
+    session.flush = AsyncMock()
+    session.add.side_effect = added.append
+    svc = TaskService(session)
+    _bind(svc, "get", AsyncMock(return_value=task))
+
+    await svc.admin_set_status(task.id, TaskStatus.PENDING, actor_id=owner)
+
+    rows = [r for r in added if isinstance(r, AuditLogTable)]
+    assert not any(r.event_type == "task.admin_override" for r in rows)
+
+
+@pytest.mark.asyncio
 async def test_pre_block_restore_skips_revision_count_bump() -> None:
     """#101 Gap B: restoring a blocked task to its snapshotted needs_revision
     state is a RESTORE, not a rework bounce — ``revision_count`` must not

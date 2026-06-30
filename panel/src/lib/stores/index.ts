@@ -1,1 +1,1 @@
-export { useUIStore } from "./ui-store";
+export { useScrollRestorationStore } from "./scroll-restoration-store";

@@ -756,7 +756,7 @@ class TaskService(BaseService):
             except (ValueError, AttributeError):
                 agent_uuid = None
 
-        details = {
+        details: dict[str, Any] = {
             "from_status": from_status,
             "to_status": to_status,
             "agent_role": agent_role,
@@ -2122,6 +2122,7 @@ class TaskService(BaseService):
         *,
         actor_id: str | UUID | None = None,
         actor_role: str | None = None,
+        force: bool = False,
     ) -> TaskTable | None:
         """Privileged override: set a task's status directly, always audited.
 
@@ -2129,6 +2130,11 @@ class TaskService(BaseService):
         task wedged in a state with no valid in-band move (e.g. a ``blocked``
         task whose work already merged out-of-band). The change is recorded in
         the audit log like any other transition — no status change may skip it.
+
+        #13: ``force`` marks the override as an explicit, acknowledged bypass
+        (the route requires it for terminal/final hatch states). It is stamped
+        into the audit row's ``details`` so a forced override is distinguishable
+        from an in-band transition in the audit journey.
 
         Taking a task OUT of ``blocked`` here (operator PATCH, or the
         orchestrator's auto-recover/auto-resume) restores the pre-block owner
@@ -2162,12 +2168,40 @@ class TaskService(BaseService):
             agent_role=actor_role,
             audit_agent_id=actor_id,
         )
+        if force:
+            # #13: a distinct audit row marks the override as an explicit,
+            # acknowledged bypass past the lifecycle gate — distinguishable
+            # from the in-band transition row above in the audit journey.
+            from roboco.db.tables import AuditLogTable
+
+            agent_uuid_force: UUID | None = None
+            if actor_id is not None:
+                try:
+                    agent_uuid_force = UUID(str(actor_id))
+                except (ValueError, AttributeError):
+                    agent_uuid_force = None
+            self.session.add(
+                AuditLogTable(
+                    event_type="task.admin_override",
+                    agent_id=agent_uuid_force,
+                    target_type="task",
+                    target_id=task.id,
+                    severity="warning",
+                    details={
+                        "from_status": from_status,
+                        "to_status": new_status.value,
+                        "agent_role": actor_role,
+                        "forced": True,
+                    },
+                )
+            )
         self.log.info(
             "Task status set via admin override",
             task_id=str(task_id),
             from_status=from_status,
             to_status=new_status.value,
             actor=str(actor_id) if actor_id else None,
+            forced=force,
         )
         return task
 

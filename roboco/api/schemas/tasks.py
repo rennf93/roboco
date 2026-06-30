@@ -250,6 +250,13 @@ class TaskUpdate(BaseModel):
     # state with no valid in-band move), never as a free-form field set.
     status: TaskStatus | None = None
 
+    # #13: an explicit acknowledgement that the override pastes over the
+    # lifecycle gate. Required for the terminal/final hatch states
+    # (completed / awaiting_qa / awaiting_pm_review) so the bypass is deliberate
+    # and audited as a forced override, not a free-form status set. Other
+    # recovery overrides (e.g. blocked -> pending) do not require it.
+    force: bool = False
+
     @model_validator(mode="before")
     @classmethod
     def _reject_explicit_blank_acceptance_criteria(cls, data: Any) -> Any:

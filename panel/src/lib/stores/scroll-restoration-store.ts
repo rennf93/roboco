@@ -1,8 +1,10 @@
 /**
- * UI State Store
+ * Scroll-restoration / session-navigation store.
  *
- * Persists UI state across navigation using Zustand with sessionStorage.
- * This handles state that doesn't belong in URL params but should survive navigation.
+ * Persists scroll position and last-visited-route state across navigation using
+ * Zustand with sessionStorage — state that doesn't belong in URL params but
+ * should survive navigation. Renamed from the generic `useUIStore` to avoid a
+ * name clash with the sidebar/theme UI store in `@/store`.
  */
 
 import { create } from "zustand";
@@ -13,7 +15,7 @@ interface ScrollPosition {
   y: number;
 }
 
-interface UIState {
+interface ScrollRestorationState {
   // Scroll positions per route
   scrollPositions: Record<string, ScrollPosition>;
 
@@ -42,7 +44,7 @@ interface UIState {
   getLastVisited: (section: string) => string | undefined;
 }
 
-export const useUIStore = create<UIState>()(
+export const useScrollRestorationStore = create<ScrollRestorationState>()(
   persist(
     (set, get) => ({
       scrollPositions: {},

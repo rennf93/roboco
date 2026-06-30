@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
-import { useUIStore } from "@/lib/stores/ui-store";
+import { useScrollRestorationStore } from "@/lib/stores/scroll-restoration-store";
 
 /**
  * Global scroll restoration component.
@@ -12,7 +12,8 @@ import { useUIStore } from "@/lib/stores/ui-store";
 export function ScrollRestoration() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const { setScrollPosition, getScrollPosition, setLastVisited } = useUIStore();
+  const { setScrollPosition, getScrollPosition, setLastVisited } =
+    useScrollRestorationStore();
   const hasRestored = useRef(false);
   const prevRouteKey = useRef<string>("");
 

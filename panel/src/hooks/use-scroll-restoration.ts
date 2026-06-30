@@ -8,14 +8,14 @@
 
 import { useEffect, useRef } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
-import { useUIStore } from "@/lib/stores/ui-store";
+import { useScrollRestorationStore } from "@/lib/stores/scroll-restoration-store";
 
 export function useScrollRestoration(
   scrollContainerRef?: React.RefObject<HTMLElement>,
 ) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const { setScrollPosition, getScrollPosition } = useUIStore();
+  const { setScrollPosition, getScrollPosition } = useScrollRestorationStore();
 
   // Create a unique key for current route including search params
   const routeKey = `${pathname}?${searchParams.toString()}`;
