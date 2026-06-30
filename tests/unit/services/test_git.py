@@ -161,6 +161,35 @@ async def test_push_task_branch_pushes_task_branch_by_name() -> None:
 
 
 @pytest.mark.asyncio
+async def test_push_branch_pushes_named_branch_not_current_checkout() -> None:
+    """push_branch (open_pr's push side effect) pushes the NAMED branch.
+
+    The clone root is shared across a dev's tasks and (F123) parked on the
+    default branch while the task branch lives in a per-task worktree.
+    push_branch used to call push(workspace) with no ``branch`` arg, so
+    push() fell back to get_current_branch(workspace) and pushed the wrong
+    ref (the clone root's checkout, e.g. the default branch). The dev's
+    commit then never reached origin, create_pr 422'd with "No commits
+    between", and the dev was forced into i_am_blocked — stranded work the
+    PM's unblock cannot repair (it flips status, not git state). The named
+    branch must be passed through to push().
+    """
+    branch_name = "feature/backend/fb836f80--03f80432--d3dab0fc--b04afcb5"
+    svc = _service()
+    _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
+    push_mock = AsyncMock(return_value=(branch_name, _PUSHED_COMMIT_COUNT))
+    _bind(svc, "push", push_mock)
+
+    result_branch, pushed = await svc.push_branch(branch_name)
+
+    assert result_branch == branch_name
+    assert pushed == _PUSHED_COMMIT_COUNT
+    # The named branch is forwarded to push() — NOT push(workspace) which
+    # would default to the clone root's current checkout.
+    push_mock.assert_awaited_once_with(Path("/tmp/ws"), branch=branch_name)
+
+
+@pytest.mark.asyncio
 async def test_push_targets_explicit_branch_not_current_checkout() -> None:
     """push(branch=X) pushes X by ref even when the workspace is on Y."""
     svc = _service()

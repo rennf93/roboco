@@ -3363,7 +3363,16 @@ class GitService(BaseService):
         workspace = await self._workspace_for_branch(
             branch_name, actor_agent_id=actor_agent_id
         )
-        return await self.push(workspace)
+        # Push the NAMED branch, not the workspace's current checkout. The
+        # clone root is shared across a dev's tasks and (F123) parked on the
+        # default branch while the task branch lives in a per-task worktree;
+        # push() with branch=None defaults to get_current_branch(workspace),
+        # which pushed the wrong ref. The dev's commit then never reached
+        # origin, so create_pr 422'd with "No commits between" and the dev was
+        # forced into i_am_blocked — stranded work the PM's unblock can't fix
+        # (it only flips status, not git state). Push-by-name also survives a
+        # clone parked on a LATER task's branch.
+        return await self.push(workspace, branch=branch_name)
 
     async def _ensure_base_on_remote(
         self,
