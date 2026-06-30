@@ -214,6 +214,11 @@ def _uv_subprocess_env(workspace: Path) -> dict[str, str]:
     env = dict(os.environ)
     clone_root = _resolve_clone_root(workspace)
     env["UV_PYTHON_INSTALL_DIR"] = str(clone_root / ".uv-python")
+    # Drop the image-baked /app/.venv pin so uv discovers THIS clone's .venv,
+    # not the orchestrator gateway venv — it only caused a "will be ignored"
+    # warning (uv already used the clone .venv via cwd discovery). No behavior change.
+    env.pop("VIRTUAL_ENV", None)
+    env.pop("UV_PROJECT_ENVIRONMENT", None)
     return env
 
 
