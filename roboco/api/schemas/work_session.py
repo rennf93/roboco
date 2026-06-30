@@ -114,12 +114,6 @@ class UpdatePRStatusRequest(BaseModel):
     pr_status: str  # open, merged, closed
 
 
-class MergePRRequest(BaseModel):
-    """Request to record PR merge."""
-
-    merged_by: UUID
-
-
 # =============================================================================
 # CONVERTERS
 # =============================================================================

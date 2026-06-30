@@ -22,6 +22,7 @@ from roboco.models.base import (
 from roboco.models.permissions import AgentContext
 from roboco.models.work_session import WorkSessionStatus
 from roboco.services.base import ValidationError
+from roboco.services.work_session import get_work_session_service
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -867,3 +868,312 @@ async def test_create_session_unknown_project_reraises(ws_client: dict) -> None:
             },
             headers=_HDR,
         )
+
+
+# ---------------------------------------------------------------------------
+# #158: mutating routes must check session ownership — a second developer
+# cannot commit into / abandon a peer's session, and a foreign-cell PM cannot
+# merge another cell's PR. #271: merge_pr stamps the AUTHENTICATED caller as
+# merged_by, ignoring any client-supplied body value.
+# ---------------------------------------------------------------------------
+
+
+def _build_app(db_session: AsyncSession, ctx: AgentContext) -> FastAPI:
+    """Build a WS-router app whose agent context is ``ctx`` (for ownership tests
+    that need a caller other than the fixture's default dev)."""
+
+    app = FastAPI()
+    app.include_router(ws_router, prefix="/api/work-sessions")
+
+    async def _override_db() -> AsyncIterator[AsyncSession]:
+        yield db_session
+
+    async def _override_agent() -> AgentContext:
+        return ctx
+
+    app.dependency_overrides[get_db] = _override_db
+    app.dependency_overrides[get_agent_context] = _override_agent
+    return app
+
+
+async def _seed_agent(
+    db_session: AsyncSession,
+    *,
+    role: AgentRole,
+    team: Team | None,
+    name: str,
+) -> AgentTable:
+    agent = AgentTable(
+        id=uuid4(),
+        name=name,
+        slug=f"{name.lower()}-{uuid4().hex[:6]}",
+        role=role,
+        team=team,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt=name,
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(agent)
+    await db_session.flush()
+    return agent
+
+
+@pytest.mark.asyncio
+async def test_add_commit_other_dev_forbidden(
+    ws_client: dict, db_session: AsyncSession
+) -> None:
+    """A second developer cannot add commits to a peer's session (#158)."""
+    ws = _seed_ws(ws_client, branch_name="feature/owner")
+    db_session.add(ws)
+    await db_session.flush()
+
+    other = await _seed_agent(
+        db_session, role=AgentRole.DEVELOPER, team=Team.BACKEND, name="Other"
+    )
+    app = _build_app(
+        db_session,
+        AgentContext(
+            agent_id=cast("UUID", other.id), role=AgentRole.DEVELOPER, team=Team.BACKEND
+        ),
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/api/work-sessions/{ws.id}/commits",
+            json={"commit_sha": "abc123"},
+            headers=_HDR,
+        )
+    app.dependency_overrides.clear()
+    assert response.status_code == HTTPStatus.FORBIDDEN
+
+
+@pytest.mark.asyncio
+async def test_abandon_other_dev_forbidden(
+    ws_client: dict, db_session: AsyncSession
+) -> None:
+    """A second developer cannot abandon a peer's active session (#158)."""
+    ws = _seed_ws(ws_client, branch_name="feature/abandon-owner")
+    db_session.add(ws)
+    await db_session.flush()
+
+    other = await _seed_agent(
+        db_session, role=AgentRole.DEVELOPER, team=Team.BACKEND, name="Other2"
+    )
+    app = _build_app(
+        db_session,
+        AgentContext(
+            agent_id=cast("UUID", other.id), role=AgentRole.DEVELOPER, team=Team.BACKEND
+        ),
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/api/work-sessions/{ws.id}/abandon",
+            params={"reason": "hijack"},
+            headers=_HDR,
+        )
+    app.dependency_overrides.clear()
+    assert response.status_code == HTTPStatus.FORBIDDEN
+    # The session is still active — the peer's session was not abandoned.
+    assert ws.status == WorkSessionStatus.ACTIVE
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_foreign_cell_pm_forbidden(db_session: AsyncSession) -> None:
+    """A cell PM cannot merge the PR of a session whose task is in another
+    cell (#158)."""
+    pm = await _seed_agent(
+        db_session, role=AgentRole.CELL_PM, team=Team.BACKEND, name="BePM"
+    )
+    project = ProjectTable(
+        id=uuid4(),
+        name="FE-Proj",
+        slug=f"fe-proj-{uuid4().hex[:6]}",
+        git_url="https://example.com/r.git",
+        assigned_cell=Team.FRONTEND,
+        created_by=pm.id,
+    )
+    db_session.add(project)
+    await db_session.flush()
+    task = TaskTable(
+        id=uuid4(),
+        title="t",
+        description="d",
+        acceptance_criteria=["ac"],
+        status=TaskStatus.PENDING,
+        priority=2,
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        project_id=project.id,
+        created_by=pm.id,
+        team=Team.FRONTEND,  # frontend task — the backend PM does not own it
+    )
+    db_session.add(task)
+    await db_session.flush()
+    ws = WorkSessionTable(
+        id=uuid4(),
+        project_id=project.id,
+        task_id=task.id,
+        agent_id=pm.id,
+        branch_name="feature/fe-merge",
+        base_branch="main",
+        target_branch="main",
+        status=WorkSessionStatus.ACTIVE,
+        pr_number=11,
+        pr_status="open",
+    )
+    db_session.add(ws)
+    await db_session.flush()
+
+    app = _build_app(
+        db_session,
+        AgentContext(
+            agent_id=cast("UUID", pm.id), role=AgentRole.CELL_PM, team=Team.BACKEND
+        ),
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/api/work-sessions/{ws.id}/pr/merge",
+            headers=_HDR,
+        )
+    app.dependency_overrides.clear()
+    assert response.status_code == HTTPStatus.FORBIDDEN
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_same_cell_pm_succeeds(db_session: AsyncSession) -> None:
+    """A cell PM may merge the PR of a session whose task is in their own cell."""
+    pm = await _seed_agent(
+        db_session, role=AgentRole.CELL_PM, team=Team.BACKEND, name="BePM2"
+    )
+    project = ProjectTable(
+        id=uuid4(),
+        name="BE-Proj",
+        slug=f"be-proj-{uuid4().hex[:6]}",
+        git_url="https://example.com/r.git",
+        assigned_cell=Team.BACKEND,
+        created_by=pm.id,
+    )
+    db_session.add(project)
+    await db_session.flush()
+    task = TaskTable(
+        id=uuid4(),
+        title="t",
+        description="d",
+        acceptance_criteria=["ac"],
+        status=TaskStatus.PENDING,
+        priority=2,
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        project_id=project.id,
+        created_by=pm.id,
+        team=Team.BACKEND,
+    )
+    db_session.add(task)
+    await db_session.flush()
+    ws = WorkSessionTable(
+        id=uuid4(),
+        project_id=project.id,
+        task_id=task.id,
+        agent_id=pm.id,
+        branch_name="feature/be-merge",
+        base_branch="main",
+        target_branch="main",
+        status=WorkSessionStatus.ACTIVE,
+        pr_number=12,
+        pr_status="open",
+    )
+    db_session.add(ws)
+    await db_session.flush()
+
+    app = _build_app(
+        db_session,
+        AgentContext(
+            agent_id=cast("UUID", pm.id), role=AgentRole.CELL_PM, team=Team.BACKEND
+        ),
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/api/work-sessions/{ws.id}/pr/merge",
+            headers=_HDR,
+        )
+    app.dependency_overrides.clear()
+    assert response.status_code == HTTPStatus.OK
+
+
+@pytest.mark.asyncio
+async def test_merge_pr_stamps_authenticated_identity_not_body(
+    db_session: AsyncSession,
+) -> None:
+    """merge_pr records the authenticated caller as merged_by — a spoofed body
+    merged_by is ignored (#271)."""
+    pm = await _seed_agent(
+        db_session, role=AgentRole.MAIN_PM, team=None, name="MainPMMerge"
+    )
+    decoy = await _seed_agent(
+        db_session, role=AgentRole.DEVELOPER, team=Team.BACKEND, name="Decoy"
+    )
+    project = ProjectTable(
+        id=uuid4(),
+        name="Stamp-Proj",
+        slug=f"stamp-proj-{uuid4().hex[:6]}",
+        git_url="https://example.com/r.git",
+        assigned_cell=Team.BACKEND,
+        created_by=pm.id,
+    )
+    db_session.add(project)
+    await db_session.flush()
+    task = TaskTable(
+        id=uuid4(),
+        title="t",
+        description="d",
+        acceptance_criteria=["ac"],
+        status=TaskStatus.PENDING,
+        priority=2,
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        project_id=project.id,
+        created_by=pm.id,
+        team=Team.BACKEND,
+    )
+    db_session.add(task)
+    await db_session.flush()
+    ws = WorkSessionTable(
+        id=uuid4(),
+        project_id=project.id,
+        task_id=task.id,
+        agent_id=decoy.id,
+        branch_name="feature/stamp",
+        base_branch="main",
+        target_branch="main",
+        status=WorkSessionStatus.ACTIVE,
+        pr_number=21,
+        pr_status="open",
+    )
+    db_session.add(ws)
+    await db_session.flush()
+
+    app = _build_app(
+        db_session,
+        AgentContext(agent_id=cast("UUID", pm.id), role=AgentRole.MAIN_PM, team=None),
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        # Body carries a SPOOFED merged_by (the decoy dev) — must be ignored.
+        response = await client.post(
+            f"/api/work-sessions/{ws.id}/pr/merge",
+            json={"merged_by": str(decoy.id)},
+            headers=_HDR,
+        )
+    app.dependency_overrides.clear()
+    assert response.status_code == HTTPStatus.OK
+    merged = await get_work_session_service(db_session).get(ws.id)
+    assert merged is not None
+    # The recorded merger is the authenticated PM, NOT the spoofed decoy.
+    assert merged.merged_by == pm.id
+    assert merged.merged_by != decoy.id

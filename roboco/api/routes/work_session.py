@@ -19,7 +19,6 @@ from roboco.api.schemas.work_session import (
     AddCommitRequest,
     AddFilesRequest,
     CreatePRRequest,
-    MergePRRequest,
     UpdatePRStatusRequest,
     WorkSessionCreateRequest,
     WorkSessionResponse,
@@ -27,10 +26,58 @@ from roboco.api.schemas.work_session import (
     session_to_response,
     session_to_summary,
 )
+from roboco.models import AgentRole
+from roboco.models.permissions import AgentContext
 from roboco.models.work_session import WorkSessionCreate, WorkSessionStatus
-from roboco.services.work_session import get_work_session_service
+from roboco.services.work_session import WorkSessionService, get_work_session_service
 
 router = APIRouter()
+
+
+# =============================================================================
+# OWNERSHIP GUARD
+#
+# Every mutating route keys off session_id alone, so without a re-check any
+# developer could mutate a peer's session and any PM could merge any cell's PR
+# — bypassing the verb layer's active-claimant gate. Re-assert the caller owns
+# the session (dev ops) or owns the session's task cell (PM ops) before the
+# service call (#158).
+# =============================================================================
+
+
+async def _assert_ownership(
+    service: WorkSessionService,
+    session_id: UUID,
+    agent: AgentContext,
+    *,
+    pm_op: bool,
+) -> None:
+    """Fetch the session and verify the caller may mutate it.
+
+    Raises 404 for a missing session, 403 for a wrong-owner / wrong-cell caller.
+    Dev ops require the caller to BE the session's agent. PM ops (merge_pr)
+    require a cell PM to own the session's task cell; main PM / CEO / board
+    coordinate every cell and are admitted by the role gate alone.
+    """
+    session = await service.get(session_id)
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Work session not found: {session_id}",
+        )
+    if pm_op:
+        if agent.role == AgentRole.CELL_PM:
+            team = await service.task_team_for_session(session_id)
+            if agent.team is None or team is None or team != agent.team:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="cell PM does not own this session's task cell",
+                )
+    elif session.agent_id != agent.agent_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="not the owner of this work session",
+        )
 
 
 # =============================================================================
@@ -166,6 +213,7 @@ async def add_commit(
     require_developer_or_above(agent.role, "add commits")
 
     service = get_work_session_service(db)
+    await _assert_ownership(service, session_id, agent, pm_op=False)
 
     session = await service.add_commit(session_id, data.commit_sha)
     await db.commit()
@@ -190,6 +238,7 @@ async def add_files_modified(
     require_developer_or_above(agent.role, "add files")
 
     service = get_work_session_service(db)
+    await _assert_ownership(service, session_id, agent, pm_op=False)
 
     session = await service.add_files_modified(session_id, data.file_paths)
     await db.commit()
@@ -219,6 +268,7 @@ async def create_pr(
     require_developer_or_above(agent.role, "create PRs")
 
     service = get_work_session_service(db)
+    await _assert_ownership(service, session_id, agent, pm_op=False)
 
     session = await service.create_pr(session_id, data.pr_number, data.pr_url)
     await db.commit()
@@ -243,6 +293,7 @@ async def update_pr_status(
     require_developer_or_above(agent.role, "update PR status")
 
     service = get_work_session_service(db)
+    await _assert_ownership(service, session_id, agent, pm_op=False)
 
     session = await service.update_pr_status(session_id, data.pr_status)
     await db.commit()
@@ -259,16 +310,22 @@ async def update_pr_status(
 @router.post("/{session_id}/pr/merge", response_model=WorkSessionResponse)
 async def merge_pr(
     session_id: UUID,
-    data: MergePRRequest,
     db: DbSession,
     agent: CurrentAgentContext,
 ) -> WorkSessionResponse:
-    """Record PR merge and complete the session (PM only)."""
+    """Record PR merge and complete the session (PM only).
+
+    The merger is the AUTHENTICATED caller — never a client-supplied body value,
+    which any PM could spoof to record the merge under another agent's id,
+    corrupting the merge audit trail the completion/CEO-approval chain and
+    metrics rely on (#271).
+    """
     require_pm_or_above(agent.role, "merge PRs")
 
     service = get_work_session_service(db)
+    await _assert_ownership(service, session_id, agent, pm_op=True)
 
-    session = await service.merge_pr(session_id, data.merged_by)
+    session = await service.merge_pr(session_id, agent.agent_id)
     await db.commit()
 
     if not session:
@@ -295,6 +352,7 @@ async def complete_session(
     require_developer_or_above(agent.role, "complete sessions")
 
     service = get_work_session_service(db)
+    await _assert_ownership(service, session_id, agent, pm_op=False)
 
     session = await service.complete(session_id)
     await db.commit()
@@ -319,6 +377,7 @@ async def abandon_session(
     require_developer_or_above(agent.role, "abandon sessions")
 
     service = get_work_session_service(db)
+    await _assert_ownership(service, session_id, agent, pm_op=False)
 
     session = await service.abandon(session_id, reason=reason)
     await db.commit()
