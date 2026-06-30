@@ -26,6 +26,8 @@ Claim an inbound external-PR review task and start work. pending -> claimed -> i
 
 **Composes:** claim → start
 
+**Preconditions:** external_review_state
+
 
 ## claim_review
 
@@ -38,13 +40,11 @@ Claim a task in awaiting_qa for review. Returns evidence inline.
 
 ## complete
 
-Cell PM merges the PR (leaf into the cell branch, or the gated cell→root PR into the root branch) + transitions to completed; Main PM escalates the root to the CEO (who merges root→master).
+Cell PM merges the PR (leaf into the cell branch, or the gated cell→root PR into the root branch) + transitions to completed; Main PM escalates the root to the CEO (who merges root→master). The merge runs BEFORE the complete transition: TaskService.complete asserts the PR is already merged, so the choreographer verb body (cell_pm_complete / main_pm_complete) owns the merge-first ordering — no trailing pr_merge side_effect is declared here.
 
 **Allowed roles:** cell_pm, main_pm
 
 **Composes:** complete
-
-**Side effects:** pr_merge
 
 
 ## delegate
@@ -285,9 +285,9 @@ PM unblocks a blocked task; restores pre-block state.
 
 ## unclaim
 
-Voluntarily release a claim back to pending. The work-in-progress branch is preserved.
+Voluntarily release a claim back to pending. The work-in-progress branch is preserved. A PR reviewer who claimed an external review (in_progress) or a gate review (awaiting_pr_review) and cannot finish releases the claim here rather than wedging the lane until the stale-claim reaper.
 
-**Allowed roles:** cell_pm, developer, documenter, main_pm, qa
+**Allowed roles:** cell_pm, developer, documenter, main_pm, pr_reviewer, qa
 
 **Composes:** (no atomic actions)
 

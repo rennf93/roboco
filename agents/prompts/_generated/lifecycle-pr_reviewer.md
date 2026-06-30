@@ -10,3 +10,4 @@ other verb will be rejected with a Decision telling you the right one.
 - **post_pr_review**: Post one complete change-request to the external PR and finish the review task. in_progress -> completed.
 - **pr_fail**: Fail the assembled-PR review with concrete issues. Transitions awaiting_pr_review -> needs_revision, routed back like a QA fail.
 - **pr_pass**: Pass the assembled-PR review. Transitions awaiting_pr_review -> awaiting_pm_review so the PM can merge.
+- **unclaim**: Voluntarily release a claim back to pending. The work-in-progress branch is preserved. A PR reviewer who claimed an external review (in_progress) or a gate review (awaiting_pr_review) and cannot finish releases the claim here rather than wedging the lane until the stale-claim reaper.

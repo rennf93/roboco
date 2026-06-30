@@ -80,12 +80,10 @@
       "composes": [
         "complete"
       ],
-      "description": "Cell PM merges the PR (leaf into the cell branch, or the gated cell\u2192root PR into the root branch) + transitions to completed; Main PM escalates the root to the CEO (who merges root\u2192master).",
+      "description": "Cell PM merges the PR (leaf into the cell branch, or the gated cell\u2192root PR into the root branch) + transitions to completed; Main PM escalates the root to the CEO (who merges root\u2192master). The merge runs BEFORE the complete transition: TaskService.complete asserts the PR is already merged, so the choreographer verb body (cell_pm_complete / main_pm_complete) owns the merge-first ordering \u2014 no trailing pr_merge side_effect is declared here.",
       "name": "complete",
       "pre_side_effects": [],
-      "side_effects": [
-        "pr_merge"
-      ]
+      "side_effects": []
     },
     {
       "allowed_roles": [
@@ -408,10 +406,11 @@
         "developer",
         "documenter",
         "main_pm",
+        "pr_reviewer",
         "qa"
       ],
       "composes": [],
-      "description": "Voluntarily release a claim back to pending. The work-in-progress branch is preserved.",
+      "description": "Voluntarily release a claim back to pending. The work-in-progress branch is preserved. A PR reviewer who claimed an external review (in_progress) or a gate review (awaiting_pr_review) and cannot finish releases the claim here rather than wedging the lane until the stale-claim reaper.",
       "name": "unclaim",
       "pre_side_effects": [],
       "side_effects": []
@@ -421,9 +420,7 @@
     {
       "action": "cancel",
       "roles": [
-        "cell_pm",
-        "ceo",
-        "main_pm"
+        "ceo"
       ],
       "source": "awaiting_ceo_approval",
       "target": "cancelled"

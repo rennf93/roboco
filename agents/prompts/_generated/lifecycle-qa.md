@@ -10,4 +10,4 @@ other verb will be rejected with a Decision telling you the right one.
 - **i_am_idle**: Signal you have no active work. PMs auto-pause owned in_progress tasks.
 - **pass_review**: Pass QA. Transitions awaiting_qa -> awaiting_documentation.
 - **resume**: Resume a paused task you own. paused -> in_progress.
-- **unclaim**: Voluntarily release a claim back to pending. The work-in-progress branch is preserved.
+- **unclaim**: Voluntarily release a claim back to pending. The work-in-progress branch is preserved. A PR reviewer who claimed an external review (in_progress) or a gate review (awaiting_pr_review) and cannot finish releases the claim here rather than wedging the lane until the stale-claim reaper.
