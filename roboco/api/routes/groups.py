@@ -16,16 +16,29 @@ from roboco.api.schemas.groups import (
     GroupDetailResponse,
     GroupResponse,
 )
+from roboco.db.tables import GroupTable
 from roboco.models.base import AgentRole
 from roboco.models.messaging import GroupCreateRequest as ServiceGroupCreate
 from roboco.services.base import NotFoundError
-from roboco.services.messaging import get_messaging_service
+from roboco.services.messaging import MessagingService, get_messaging_service
 from roboco.utils.converters import require_uuid, to_python_uuid
 
 router = APIRouter()
 
 # Roles authorized to create groups
 GROUP_ADMIN_ROLES = frozenset({AgentRole.CEO, AgentRole.MAIN_PM, AgentRole.AUDITOR})
+
+
+async def _require_group_read(
+    service: MessagingService, group_id: UUID, agent_id: UUID
+) -> GroupTable:
+    """Resolve a group for read access, mapping service errors to HTTP."""
+    try:
+        return await service.require_group_read_access(group_id, agent_id)
+    except NotFoundError as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e
 
 
 @router.post(
@@ -114,13 +127,7 @@ async def get_group(
 ) -> GroupDetailResponse:
     """Get a group by ID (requires read access to the group's channel)."""
     service = get_messaging_service(db)
-
-    try:
-        group = await service.require_group_read_access(group_id, agent.agent_id)
-    except NotFoundError as e:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
-    except PermissionError as e:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e)) from e
+    group = await _require_group_read(service, group_id, agent.agent_id)
 
     # The access check eager-loads the channel; reuse it for the slug.
     channel_slug = group.channel.slug if group.channel else "unknown"
