@@ -22,6 +22,7 @@ import structlog
 
 from roboco.foundation.policy import lifecycle as spec_module
 from roboco.foundation.policy import tracing as _tr
+from roboco.foundation.policy.batch import is_batch_root_subtask
 from roboco.foundation.policy.content import markers
 from roboco.services.gateway.envelope import Envelope
 
@@ -587,12 +588,17 @@ class PRGateMixin(_Base):
         """Post the gate verdict as a review on the assembled PR (best-effort).
 
         ``pr_pass`` posts an APPROVE, ``pr_fail`` a REQUEST_CHANGES — EXCEPT on
-        the root→master PR (a root task has no ``parent_task_id``), which always
-        gets a plain COMMENT: only the CEO acts on master, so the gate never
-        leaves an approval that could satisfy branch protection and let anyone
-        else merge, nor a blocking review that could impede the CEO's merge.
-        For the org's own PRs ``git.post_pr_review`` already downgrades a
-        forbidden self-review to a COMMENT, so the verdict lands regardless.
+        the root→master PR, which always gets a plain COMMENT: only the CEO acts
+        on master, so the gate never leaves an approval that could satisfy
+        branch protection and let anyone else merge, nor a blocking review that
+        could impede the CEO's merge. A root→master PR is identified by
+        ``is_root``: a task with no ``parent_task_id`` (a plain Main-PM
+        coordination root) OR a MegaTask root-subtask (which has a parent — the
+        umbrella — but opens its own root→master PR per repo; detected via
+        ``is_batch_root_subtask``). A non-batch cell-PM coordination root keeps
+        ``batch_id=None`` → not a root-subtask → still a cell→root PR. For the
+        org's own PRs ``git.post_pr_review`` already downgrades a forbidden
+        self-review to a COMMENT, so the verdict lands regardless.
         """
         try:
             slug = await self._project_slug_for(t)
@@ -605,7 +611,11 @@ class PRGateMixin(_Base):
         pr_number = getattr(t, "pr_number", None)
         if not slug or not pr_number:
             return
-        is_root = getattr(t, "parent_task_id", None) is None
+        parent_task_id = getattr(t, "parent_task_id", None)
+        is_root = parent_task_id is None or is_batch_root_subtask(
+            batch_id=getattr(t, "batch_id", None),
+            parent_task_id=parent_task_id,
+        )
         event, verdict = self._gate_review_event_verdict(verb, is_root)
         body = self._gate_review_body(verdict, reviewer_slug, notes, is_root)
         try:

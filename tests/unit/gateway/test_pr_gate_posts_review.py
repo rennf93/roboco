@@ -31,8 +31,18 @@ def _make_choreographer(git: AsyncMock) -> Any:
     return c
 
 
-def _task(*, parent_task_id: Any, pr_number: int | None = 77) -> MagicMock:
-    return MagicMock(id=uuid4(), parent_task_id=parent_task_id, pr_number=pr_number)
+def _task(
+    *,
+    parent_task_id: Any,
+    pr_number: int | None = 77,
+    batch_id: Any = None,
+) -> MagicMock:
+    return MagicMock(
+        id=uuid4(),
+        parent_task_id=parent_task_id,
+        pr_number=pr_number,
+        batch_id=batch_id,
+    )
 
 
 @pytest.mark.asyncio
@@ -83,6 +93,55 @@ async def test_root_fail_posts_comment_never_blocks_master() -> None:
         _task(parent_task_id=None), "pr_fail", "pr-reviewer-1", "Issues:\n- x"
     )
     assert git.post_pr_review.await_args.kwargs["event"] == "COMMENT"
+
+
+@pytest.mark.asyncio
+async def test_batch_root_subtask_pass_posts_comment_never_approve() -> None:
+    """#608: a MegaTask root-subtask opens a root→master PR (parent='master')
+    but carries parent_task_id=umbrella, so parentage alone misclassifies it as
+    a cell→root PR and leaves an APPROVE that could satisfy master branch
+    protection. is_batch_root_subtask must re-classify it as root → COMMENT."""
+    git = AsyncMock()
+    c = _make_choreographer(git)
+    await c._post_gate_review_to_pr(
+        _task(parent_task_id=uuid4(), batch_id=uuid4()),
+        "pr_pass",
+        "pr-reviewer-1",
+        "root scope clean",
+    )
+    assert git.post_pr_review.await_args.kwargs["event"] == "COMMENT"
+    assert "master" in git.post_pr_review.await_args.args[2]
+
+
+@pytest.mark.asyncio
+async def test_batch_root_subtask_fail_posts_comment_never_blocks_master() -> None:
+    """#608: a MegaTask root-subtask's root→master PR must never get a blocking
+    REQUEST_CHANGES either — only the CEO acts on master."""
+    git = AsyncMock()
+    c = _make_choreographer(git)
+    await c._post_gate_review_to_pr(
+        _task(parent_task_id=uuid4(), batch_id=uuid4()),
+        "pr_fail",
+        "pr-reviewer-1",
+        "Issues:\n- x",
+    )
+    assert git.post_pr_review.await_args.kwargs["event"] == "COMMENT"
+
+
+@pytest.mark.asyncio
+async def test_batch_cell_task_still_gets_approve() -> None:
+    """A batch cell task (under a root-subtask) is a cell→root PR — it must keep
+    APPROVE/REQUEST_CHANGES. is_valid_batch_shape rejects batch_id on cell tasks,
+    so a well-formed batch cell task carries batch_id=None → not a root-subtask."""
+    git = AsyncMock()
+    c = _make_choreographer(git)
+    await c._post_gate_review_to_pr(
+        _task(parent_task_id=uuid4(), batch_id=None),
+        "pr_pass",
+        "be-pr-reviewer",
+        "looks good",
+    )
+    assert git.post_pr_review.await_args.kwargs["event"] == "APPROVE"
 
 
 @pytest.mark.asyncio
