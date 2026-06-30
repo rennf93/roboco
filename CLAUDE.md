@@ -501,10 +501,10 @@ The orchestrator exposes WebSocket endpoints under `/ws` (router in `roboco/api/
 
 | Endpoint | Purpose |
 |----------|---------|
-| `/ws/channels/{id}`, `/ws/agents/{id}`, `/ws/sessions/{id}`, `/ws/notifications/{id}` | Per-resource live streams |
+| `/ws/channels/{id}`, `/ws/agents/{id}`, `/ws/sessions/{id}`, `/ws/notifications/{id}` | Per-resource live streams — `/ws/channels` + `/ws/sessions` carry live `message.new` frames (from `EventType.MESSAGE_SENT`), so a session transcript updates without a manual refresh |
 | `/ws/system` | Operator/system-wide stream (no per-agent keying) — the rate-limit lifecycle (`RATE_LIMIT_HIT` / `RATE_LIMIT_LIFTED`) and live usage (`USAGE_SNAPSHOT`, pushed to the usage dashboard) |
 
-Server-side events reach these sockets through `roboco/api/websocket_bridge.py`, which subscribes to the `StreamEventBus` and forwards each event to the matching connections. To add a new live event: define an `EventType` (dotted value), publish it to the bus, add a `_handle_*` forwarder in `websocket_bridge`, and consume it on the panel via the `useWebSocket("/<endpoint>", …)` hook — do not stand up a parallel endpoint or client stack.
+Server-side events reach these sockets through `roboco/api/websocket_bridge.py`, which subscribes to the `StreamEventBus` and forwards each event to the matching connections. To add a new live event: define an `EventType` (dotted value), publish it to the bus, add a `_handle_*` forwarder in `websocket_bridge`, and consume it on the panel via the `useWebSocket("/<endpoint>", …)` hook — do not stand up a parallel endpoint or client stack. `MESSAGE_SENT` is the worked example: `send_message` publishes it, `_handle_message_event` fans it out to `/ws/sessions/{id}` + `/ws/channels/{id}` as a `message.new` frame, and the panel's `useSessionStream` consumes it.
 
 ### Rate limiting & usage
 

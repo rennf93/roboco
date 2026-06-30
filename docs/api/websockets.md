@@ -43,10 +43,11 @@ To add a new live event you define an `EventType`, publish it to the bus, add a 
 | `RATE_LIMIT_LIFTED` | `/ws/system` | A parked provider recovered; queued work resumes. Clears the banner. |
 | `USAGE_SNAPSHOT` | `/ws/system` | A fresh token-usage/cost snapshot. Drives the live "Token Usage & Cost" dashboard. |
 | `NOTIFICATION_SENT` / `NOTIFICATION_ACKED` | `/ws/notifications/{agent_id}` | A notification was sent to or acknowledged by an agent. |
+| `MESSAGE_SENT` | `/ws/sessions/{session_id}` **and** `/ws/channels/{channel_id}` | A chat message was persisted. Forwarded as a `message.new` frame (carrying `message_id`, `agent_id`, `content`, `message_type`, `timestamp`) so the session transcript and channel view update live instead of waiting on a manual refresh. |
 | `SESSION_CREATED` / `SESSION_CLOSED` / `SESSION_TIMEOUT` | `/ws/sessions/{session_id}` | Communication-session lifecycle. |
 | `AGENT_SPAWNED` / `AGENT_STOPPED` / `AGENT_WAITING` / `AGENT_RESUMED` / `AGENT_ERROR` | `/ws/agents/{agent_id}` | Agent runtime lifecycle transitions. |
 
-Each forwarded message is a JSON object with a `type` field (the event-type name above) merged with the event's data.
+Each forwarded message is a JSON object with a `type` field merged with the event's data. The `type` is the event-type name above, except the message forwarder, which sets `type: "message.new"` (the frame the panel's channel/session stream filters on).
 
 ## REST fallbacks
 
