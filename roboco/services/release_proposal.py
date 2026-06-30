@@ -140,13 +140,46 @@ class ReleaseProposalService(BaseService):
             )
 
         heartbeat_task: asyncio.Task[None] | None = None
+        execute_task: asyncio.Task[ReleaseResult] | None = None
+        # Set by the heartbeat when IT cancels execute on lock-loss, so the
+        # CancelledError handler below can distinguish a lock-loss abort (→
+        # structured ``lock_lost`` result) from an external cancellation of the
+        # approve coroutine itself (→ must propagate).
+        lock_lost = asyncio.Event()
         try:
             executor = await get_release_executor(self.session)
+            execute_task = asyncio.create_task(executor.execute(report))
             heartbeat_task = asyncio.create_task(
-                self._heartbeat_loop(lock_key, lock_token)
+                self._heartbeat_loop(lock_key, lock_token, execute_task, lock_lost)
             )
-            result = await executor.execute(report)
-            if result.status == "published":
+            try:
+                result = await execute_task
+            except asyncio.CancelledError:
+                if not lock_lost.is_set():
+                    # External cancellation of approve itself — propagate, do not
+                    # mask it as a lock-loss.
+                    raise
+                logger.critical(
+                    "release execute aborted: lock lost mid-execute (fail-closed)"
+                )
+                return ReleaseResult(
+                    status="lock_lost",
+                    version=report.proposed_version,
+                    files_changed=[],
+                    commit_sha=None,
+                    release_url=None,
+                    detail=(
+                        "The release lock was lost mid-execute (an extended Redis"
+                        " outage let the mutex TTL expire); the execute was"
+                        " aborted fail-closed so a concurrent approve could not"
+                        " rm -rf the in-flight release clone. Retry the approve."
+                    ),
+                )
+            # Close the proposal when the release actually shipped — including a
+            # retry that finds the tag already published (a prior publish whose
+            # route commit/HTTP 504'd left the proposal non-terminal). The old
+            # `== "published"`-only check wedged already_published open forever.
+            if result.status in ("published", "already_published"):
                 task.status = TaskStatus.COMPLETED
                 await self.session.flush()
             return result
@@ -154,6 +187,9 @@ class ReleaseProposalService(BaseService):
             if heartbeat_task is not None:
                 heartbeat_task.cancel()
                 await asyncio.gather(heartbeat_task, return_exceptions=True)
+            if execute_task is not None and not execute_task.done():
+                execute_task.cancel()
+                await asyncio.gather(execute_task, return_exceptions=True)
             await self._release_release_lock(lock_key, lock_token)
 
     async def _acquire_release_lock(self, lock_key: str) -> str | None:
@@ -205,22 +241,37 @@ class ReleaseProposalService(BaseService):
         finally:
             await conn.aclose()
 
-    async def _heartbeat_loop(self, lock_key: str, token: str) -> None:
+    async def _heartbeat_loop(
+        self,
+        lock_key: str,
+        token: str,
+        execute_task: asyncio.Task[ReleaseResult],
+        lock_lost: asyncio.Event,
+    ) -> None:
         """Refresh the lock TTL while the execute owns it.
 
         Refreshes before the first sleep so a fast execute still extends the
         TTL. A refresh error logs and continues (never crashes the execute); if
-        the lock is no longer ours (returned 0) we stop — the TTL backstop and
-        the fencing token still hold the line.
+        the lock is no longer ours (returned 0 — only reachable after a >TTL
+        Redis outage lets the mutex expire mid-execute) we CANCEL the in-flight
+        execute fail-closed rather than ``return`` silently and leave it running
+        unguarded — otherwise a concurrent approve (once Redis returns) can
+        acquire the lock and ``_prepare_release_clone`` ``rm -rf``'s the shared
+        release clone while the first execute is still mid-``run_gate``. The
+        fencing token still prevents the first finally from deleting the
+        usurper's lock; this prevents the usurper's rm -rf from corrupting the
+        first execute.
         """
         while True:
             try:
                 if not await self._heartbeat_release_lock(lock_key, token):
                     logger.critical(
                         "release lock no longer owned during execute — "
-                        "TTL backstop active; a concurrent approve was refused "
-                        "by the fencing token"
+                        "aborting execute fail-closed so a concurrent approve"
+                        " cannot rm -rf the in-flight release clone"
                     )
+                    lock_lost.set()
+                    execute_task.cancel()
                     return
             except Exception as exc:
                 logger.warning("release lock heartbeat failed (redis): %s", exc)
