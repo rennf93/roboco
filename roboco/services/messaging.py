@@ -842,6 +842,35 @@ class MessagingService(BaseService):
             raise NotFoundError(resource_type="Session", resource_id=str(session_id))
         return session_row
 
+    async def get_session_with_links(
+        self, session_id: UUID
+    ) -> SessionTable | None:
+        """Get a session with its task_links (+ task) eager-loaded.
+
+        The single-session read used by GET /sessions/{id}: returns task_links
+        in one query so the panel renders linked-task titles without a separate
+        per-link round-trip (mirrors the list endpoint's eager-load).
+        """
+        result = await self.session.execute(
+            select(SessionTable)
+            .where(SessionTable.id == session_id)
+            .options(
+                selectinload(SessionTable.task_links).selectinload(
+                    SessionTaskTable.task
+                )
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_session_with_links_or_raise(
+        self, session_id: UUID
+    ) -> SessionTable:
+        """Return a session with task_links eager-loaded, or raise NotFoundError."""
+        session_row = await self.get_session_with_links(session_id)
+        if not session_row:
+            raise NotFoundError(resource_type="Session", resource_id=str(session_id))
+        return session_row
+
     async def get_channel_by_slug_or_raise(self, slug: str) -> ChannelTable:
         """Return a channel by slug or raise NotFoundError."""
         channel = await self.get_channel_by_slug(slug)

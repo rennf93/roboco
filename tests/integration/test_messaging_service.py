@@ -410,6 +410,41 @@ async def test_unlink_session_from_task_returns_false_when_missing(
 
 
 @pytest.mark.asyncio
+async def test_get_session_with_links_eager_loads_task_links(
+    msg_setup: dict,
+) -> None:
+    """GET /sessions/{id} must return the session's task_links populated in one
+    shot (the panel was forced into a triple-fetch because the single-session
+    read returned them empty). The service read eager-loads task_links → task so
+    the response builder can render titles without a lazy-load greenlet error."""
+    from roboco.api.schemas.sessions import session_to_response_with_links
+
+    svc = msg_setup["svc"]
+    aid = msg_setup["agent_id"]
+    tid = msg_setup["task_id"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    await svc.link_session_to_task(sess.id, tid, aid, is_primary=True)
+
+    loaded = await svc.get_session_with_links_or_raise(sess.id)
+    resp = session_to_response_with_links(loaded)
+
+    assert len(resp.task_links) == 1
+    link = resp.task_links[0]
+    assert link.task_id == tid
+    assert link.task_title == "t"  # fixture task title
+    assert link.is_primary is True
+
+
+@pytest.mark.asyncio
+async def test_get_session_with_links_missing_raises(msg_setup: dict) -> None:
+    svc = msg_setup["svc"]
+    with pytest.raises(NotFoundError):
+        await svc.get_session_with_links_or_raise(uuid4())
+
+
+@pytest.mark.asyncio
 async def test_get_sessions_for_task(msg_setup: dict) -> None:
     svc = msg_setup["svc"]
     aid = msg_setup["agent_id"]

@@ -5,7 +5,6 @@ import { isAxiosError } from "axios";
 import { channelsApi, type ChannelFilters } from "@/lib/api/channels";
 import { sessionsApi } from "@/lib/api/sessions";
 import { messagesApi } from "@/lib/api/messages";
-import { tasksApi } from "@/lib/api/tasks";
 
 // A 404 on a session/message read is terminal: the session has closed and been
 // reaped server-side, so it will never come back. Retrying (or continuing to
@@ -78,47 +77,12 @@ export function useGroupSessions(groupId: string | null) {
   });
 }
 
-// Fetch a single session by ID (with task links and task titles)
+// Fetch a single session by ID. GET /sessions/{id} returns task_links (with
+// titles) in one shot, so no separate per-link task fetch is needed.
 export function useSession(sessionId: string | null) {
   return useQuery({
     queryKey: sessionKeys.detail(sessionId || ""),
-    queryFn: async () => {
-      const session = await sessionsApi.get(sessionId!);
-      // Fetch task links separately since the endpoint doesn't include them
-      try {
-        const taskLinks = await sessionsApi.getTasksForSession(sessionId!);
-
-        // Fetch task details to get titles
-        const taskLinksWithTitles = await Promise.all(
-          taskLinks.map(async (link) => {
-            try {
-              const task = await tasksApi.get(link.task_id);
-              return {
-                task_id: link.task_id,
-                task_title: task.title,
-                is_primary: link.is_primary,
-                relationship_type: link.relationship_type,
-              };
-            } catch {
-              return {
-                task_id: link.task_id,
-                task_title: null,
-                is_primary: link.is_primary,
-                relationship_type: link.relationship_type,
-              };
-            }
-          }),
-        );
-
-        return {
-          ...session,
-          task_links: taskLinksWithTitles,
-        };
-      } catch {
-        // If fetching task links fails, return session without them
-        return session;
-      }
-    },
+    queryFn: () => sessionsApi.get(sessionId!),
     enabled: !!sessionId,
     staleTime: 1000 * 60 * 5, // 5 minutes
     // A reaped (404) session must not be retried — that is the storm source.

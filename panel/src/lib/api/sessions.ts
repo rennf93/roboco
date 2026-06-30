@@ -106,20 +106,6 @@ export const sessionsApi = {
     });
   },
 
-  // Get tasks linked to a session
-  getTasksForSession: async (
-    sessionId: string,
-  ): Promise<SessionTaskLinkResponse[]> => {
-    // Note: Backend doesn't have a dedicated GET endpoint for session tasks
-    // Task links are returned with session detail via get()
-    const session = await sessionsApi.get(sessionId);
-    // Return empty array if session doesn't have task_links
-    return (
-      (session as Session & { task_links?: SessionTaskLinkResponse[] })
-        .task_links || []
-    );
-  },
-
   // Create a session for tasks (PM only)
   createForTasks: async (
     taskIds: string[],
