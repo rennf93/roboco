@@ -209,3 +209,40 @@ async def test_default_workflow_null_rows_deduped(
     src = _FakeSource([_breach("mono3-a"), _breach("mono3-b")])
     created = await get_ci_watch_engine(db_session, source=src).run_cycle([p1, p2])
     assert len(created) == 1
+
+
+# ---------------------------------------------------------------------------
+# #148: an empty-string ci_watch_workflow (saved via panel/API, not NULL) must
+# collapse to the default workflow for dedupe — SQL COALESCE alone treats '' as
+# a real value, so the DB query diverged from the engine's Python truthiness and
+# opened a duplicate fix task every red cycle.
+# #1267: git_url accidentals (case / .git suffix / trailing slash) must collapse
+# to one repo for dedupe, mirroring the orchestrator's poll-set repo_key.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_empty_string_workflow_deduped(db_session: AsyncSession) -> None:
+    """#148: a ''-workflow project and a NULL-workflow project on one repo both
+    use the default workflow -> deduped to one task (NULLIF treats '' as NULL)."""
+    git = "https://github.com/x/empty-wf.git"
+    p1 = await _seed_project(db_session, "empty-wf-a", git, workflow="")
+    p2 = await _seed_project(db_session, "empty-wf-b", git)  # ci_watch_workflow=None
+    src = _FakeSource([_breach("empty-wf-a"), _breach("empty-wf-b")])
+    created = await get_ci_watch_engine(db_session, source=src).run_cycle([p1, p2])
+    assert len(created) == 1
+
+
+@pytest.mark.asyncio
+async def test_git_url_accidentals_deduped(db_session: AsyncSession) -> None:
+    """#1267: two projects whose git_url differs only by a ``.git`` suffix (and
+    trailing slash) are the same repo -> one fix task, not two."""
+    p1 = await _seed_project(
+        db_session, "acc-a", "https://github.com/x/acc.git", workflow="wf.yml"
+    )
+    p2 = await _seed_project(
+        db_session, "acc-b", "https://github.com/x/acc/", workflow="wf.yml"
+    )
+    src = _FakeSource([_breach("acc-a"), _breach("acc-b")])
+    created = await get_ci_watch_engine(db_session, source=src).run_cycle([p1, p2])
+    assert len(created) == 1

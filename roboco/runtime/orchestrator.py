@@ -6828,8 +6828,14 @@ Start by:
 
     @staticmethod
     def _repo_key(git_url: str) -> str:
-        """Normalized repo identity (case/.git/trailing-slash insensitive)."""
-        return git_url.lower().rstrip("/").removesuffix(".git")
+        """Normalized repo identity (case/.git/trailing-slash insensitive).
+
+        Delegates to :func:`roboco.utils.converters.repo_key` so the dedupe
+        queries and the poll-set collapse share one source of truth (#1267).
+        """
+        from roboco.utils.converters import repo_key
+
+        return repo_key(git_url)
 
     @classmethod
     def _projects_one_per_repo(cls, projects: list[Any]) -> list[Any]:

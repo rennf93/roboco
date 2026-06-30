@@ -71,7 +71,7 @@ from roboco.services.base import (
 )
 from roboco.services.content_notes import apply_structured_note
 from roboco.services.work_session import WorkSessionService
-from roboco.utils.converters import require_uuid, to_python_uuid
+from roboco.utils.converters import repo_key, require_uuid, to_python_uuid
 
 if TYPE_CHECKING:
     from roboco.services.permissions import PermissionService
@@ -79,6 +79,14 @@ if TYPE_CHECKING:
 # UUID format constants for validation
 _UUID_LENGTH = 36  # Standard UUID string length
 _UUID_HYPHEN_COUNT = 4  # Number of hyphens in a UUID
+
+
+def _repo_key_expr(column: Any) -> Any:
+    """SQL mirror of :func:`roboco.utils.converters.repo_key`: lower, strip a
+    trailing ``/``, drop a ``.git`` suffix — so two projects whose git_url
+    differs only by case / ``.git`` / trailing-slash collapse to one repo for
+    ci_watch / dep_update dedupe (#1267)."""
+    return func.regexp_replace(func.rtrim(func.lower(column), "/"), r"\.git$", "")
 
 
 _ROLE_CLAIM_STATUSES: dict[str, set[TaskStatus]] = {
@@ -1254,8 +1262,14 @@ class TaskService(BaseService):
         dedupe key is ``(git_url, effective workflow)`` so a multi-workflow
         monorepo with two RED workflows gets a fix task per workflow, not one
         collapsed task that silently leaves the second workflow un-remediated
-        (#44). The effective workflow is ``COALESCE(ci_watch_workflow, default)``
-        so a NULL-workflow project row matches the default workflow.
+        (#44). The effective workflow is
+        ``COALESCE(NULLIF(ci_watch_workflow, ''), default)`` so a NULL OR
+        empty-string workflow row matches the default workflow — the engine and
+        orchestrator collapse an empty string to the default via Python
+        truthiness, and the DB dedupe must match that semantics or a
+        ''-workflow repo opens a duplicate fix task every red cycle (#148). The
+        git_url scope is matched on the normalized repo key (case / ``.git`` /
+        trailing ``/``), mirroring the orchestrator's poll-set collapse (#1267).
         """
         stmt = select(TaskTable).where(
             TaskTable.source == CI_WATCH_SOURCE,
@@ -1264,12 +1278,15 @@ class TaskService(BaseService):
         if git_url is not None or workflow is not None:
             stmt = stmt.join(ProjectTable, TaskTable.project_id == ProjectTable.id)
             if git_url is not None:
-                stmt = stmt.where(ProjectTable.git_url == git_url)
+                stmt = stmt.where(
+                    _repo_key_expr(ProjectTable.git_url) == repo_key(git_url)
+                )
             if workflow is not None:
                 from roboco.config import settings
 
                 effective = func.coalesce(
-                    ProjectTable.ci_watch_workflow, settings.ci_watch_default_workflow
+                    func.nullif(ProjectTable.ci_watch_workflow, ""),
+                    settings.ci_watch_default_workflow,
                 )
                 stmt = stmt.where(effective == workflow)
         result = await self.session.execute(stmt)
@@ -1284,6 +1301,8 @@ class TaskService(BaseService):
         cell-projects, one git_url) gets at most one open dependency-update task,
         not one per cell-project. While an open task exists for a repo the bot
         must not originate a second; the rolling open-task cap counts these.
+        The git_url scope is matched on the normalized repo key (case / ``.git``
+        / trailing ``/``), mirroring the orchestrator's poll-set collapse (#1267).
         """
         stmt = select(TaskTable).where(
             TaskTable.source == DEP_UPDATE_SOURCE,
@@ -1292,7 +1311,7 @@ class TaskService(BaseService):
         if git_url is not None:
             stmt = stmt.join(
                 ProjectTable, TaskTable.project_id == ProjectTable.id
-            ).where(ProjectTable.git_url == git_url)
+            ).where(_repo_key_expr(ProjectTable.git_url) == repo_key(git_url))
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
