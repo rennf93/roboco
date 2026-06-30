@@ -2094,17 +2094,23 @@ class AgentOrchestrator:
 
         The container launches with ``-w`` at the worktree; a pruned/evicted
         worktree (reaper, disk pressure, manual cleanup while the agent was
-        down) would start the agent in a missing directory. Idempotent —
-        ``ensure_worktree_for_resume`` is a no-op when the worktree is present
-        and re-adds it (no ``-b``) from the surviving branch ref when pruned.
-        No-op for branchless / no-task spawns (no worktree).
+        down) — or a vanished clone root (disk loss, a redeploy that wiped
+        ``/data/workspaces``) — would start the agent in a missing directory.
+        Idempotent: a present worktree is a no-op; a pruned worktree is re-added
+        from the surviving branch ref; a missing clone is re-cloned and the
+        branch ref recovered from origin (``create_branch`` pushes at claim
+        time) so the pushed work survives. No-op for branchless / no-task spawns.
 
-        A fatal git-state failure (``WorkspaceError`` — the branch ref is gone,
-        so the worktree can't be re-added) releases the claim and aborts the
-        spawn so the next claim rebuilds the worktree via ``create_branch``
-        rather than launching the container at a missing ``-w`` path. A
-        transient failure (DB/other) aborts without releasing — the next tick
-        retries the same claim.
+        The reaper-style claim release preserves ownership + ``branch_name``, so
+        a re-dispatch is a RESUME, not a fresh claim — ``create_branch`` never
+        re-runs to re-clone. Without the clone self-heal a vanished clone_root
+        fatal-looped every tick (``git -C <missing>`` -> release -> re-dispatch
+        into the same missing clone). A fatal git-state failure
+        (``WorkspaceError`` — the clone won't re-clone, the token is missing,
+        or the branch ref is unrecoverable) releases the claim and aborts so
+        the next dispatch retries the rebuild, never launching the container at
+        a missing ``-w``. A transient failure (DB/other) aborts without
+        releasing — the next tick retries the same claim.
         """
         if not (git_context and git_context.task_short_id and git_context.branch_name):
             return
@@ -2119,15 +2125,24 @@ class AgentOrchestrator:
 
         try:
             async with get_db_context() as db:
-                await WorkspaceService(db).ensure_worktree_for_resume(
-                    clone_root, worktree, git_context.branch_name
+                ws = WorkspaceService(db)
+                # Heal a vanished/unhealthy clone first. The reaper-style claim
+                # release preserves ownership + branch_name, so a re-dispatch is
+                # a RESUME, not a fresh claim — create_branch never re-runs to
+                # re-clone, and ensure_worktree_for_resume would ``git -C`` a
+                # missing directory and fatal-loop every tick. Skipped on a
+                # healthy clone (no new fetch overhead on the common resume).
+                if not WorkspaceService._is_workspace_healthy(clone_root):
+                    await ws.ensure_workspace(project_slug, agent_id)
+                await ws.ensure_worktree_self_heal(
+                    clone_root, worktree, git_context.branch_name, project_slug
                 )
         except WorkspaceError as e:
-            # Fatal git state: the branch ref is gone, so the worktree cannot be
-            # re-added here. Release the claim so the next claim rebuilds the
-            # worktree via create_branch, and abort before docker run -w lands
-            # on a missing path. The release is best-effort (suppressed) so a
-            # release failure never masks the fatal error.
+            # Fatal git state (clone won't re-clone, token missing, branch ref
+            # unrecoverable): release the claim so the next dispatch can retry
+            # the rebuild, and abort before docker run -w lands on a missing
+            # path. The release is best-effort (suppressed) so a release
+            # failure never masks the fatal error.
             logger.error(
                 "worktree ensure failed (fatal); releasing claim for rebuild",
                 agent_id=agent_id,

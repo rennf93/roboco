@@ -1,10 +1,14 @@
-"""Spawn-time worktree ensure (F123, Phase B).
+"""Spawn-time worktree ensure (F123, Phase B) + clone self-heal.
 
-A respawn re-points the container ``-w`` at the task's worktree. If the
-worktree was pruned while the agent was down, ``docker run -w <missing>`` starts
-the agent in a non-existent directory and its first command fails. So the
-worktree must be re-attached (idempotent) BEFORE the container launches.
-``_ensure_worktree_before_spawn`` is the chokepoint; it is a no-op for
+A respawn re-points the container ``-w`` at the task's worktree. If the worktree
+was pruned while the agent was down, ``docker run -w <missing>`` starts the
+agent in a non-existent directory and its first command fails. If the whole
+clone root vanished (disk loss, a redeploy that wiped ``/data/workspaces``,
+manual cleanup) the resume path ``git -C <missing>`` fatal-looped every tick:
+the reaper-style claim release preserves ownership + branch_name, so the
+re-dispatch is a RESUME (not a fresh claim), ``create_branch`` never re-runs
+to re-clone, and the same missing clone fails again. ``_ensure_worktree_before
+_spawn`` is the chokepoint that now self-heals both; it is a no-op for
 branchless / no-task spawns (no worktree).
 """
 
@@ -34,33 +38,71 @@ async def _fake_db_ctx(db: Any) -> Any:
     yield db
 
 
-@pytest.mark.asyncio
-async def test_ensures_worktree_when_task_short_id_set() -> None:
-    orch = _make_orchestrator()
-    ctx = SpawnGitContext(
+def _ctx() -> SpawnGitContext:
+    return SpawnGitContext(
         project_slug="roboco-api",
         branch_name="feature/backend/abc12345",
         task_short_id="a3c40fe7",
     )
+
+
+@pytest.mark.asyncio
+async def test_ensures_worktree_when_task_short_id_set() -> None:
+    orch = _make_orchestrator()
     db = MagicMock()
     ws = MagicMock()
-    ws.ensure_worktree_for_resume = AsyncMock()
+    ws.ensure_worktree_self_heal = AsyncMock()
+    ws.ensure_workspace = AsyncMock()
 
     with (
         patch("roboco.db.base.get_db_context", return_value=_fake_db_ctx(db)),
         patch("roboco.services.workspace.WorkspaceService", return_value=ws),
+        patch(
+            "roboco.services.workspace.WorkspaceService._is_workspace_healthy",
+            return_value=True,
+        ),
     ):
         await orch._ensure_worktree_before_spawn(
-            ctx, "roboco-api", "backend", "be-dev-1", "task-1"
+            _ctx(), "roboco-api", "backend", "be-dev-1", "task-1"
         )
 
-    ws.ensure_worktree_for_resume.assert_awaited_once()
-    args = ws.ensure_worktree_for_resume.call_args.args
+    # Healthy clone -> no re-clone, just the worktree self-heal.
+    ws.ensure_workspace.assert_not_awaited()
+    ws.ensure_worktree_self_heal.assert_awaited_once()
+    args = ws.ensure_worktree_self_heal.call_args.args
     assert args[0] == Path("/data/workspaces/roboco-api/backend/be-dev-1")
     assert args[1] == Path(
         "/data/workspaces/roboco-api/backend/be-dev-1/.worktrees/a3c40fe7"
     )
     assert args[2] == "feature/backend/abc12345"
+    assert args[3] == "roboco-api"
+
+
+@pytest.mark.asyncio
+async def test_heals_missing_clone_before_self_heal() -> None:
+    # The bug: a vanished clone_root fatal-looped because the resume path ran
+    # `git -C <missing>` and the reaper-style release preserved ownership, so
+    # the next dispatch never re-cloned. Now an unhealthy clone is re-cloned
+    # (ensure_workspace) BEFORE the worktree self-heal runs.
+    orch = _make_orchestrator()
+    ws = MagicMock()
+    ws.ensure_worktree_self_heal = AsyncMock()
+    ws.ensure_workspace = AsyncMock()
+
+    with (
+        patch("roboco.db.base.get_db_context", return_value=_fake_db_ctx(MagicMock())),
+        patch("roboco.services.workspace.WorkspaceService", return_value=ws),
+        patch(
+            "roboco.services.workspace.WorkspaceService._is_workspace_healthy",
+            return_value=False,
+        ),
+    ):
+        await orch._ensure_worktree_before_spawn(
+            _ctx(), "roboco-api", "backend", "be-dev-1", "task-1"
+        )
+
+    ws.ensure_workspace.assert_awaited_once_with("roboco-api", "be-dev-1")
+    ws.ensure_worktree_self_heal.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -71,6 +113,8 @@ async def test_noop_when_no_task_short_id() -> None:
 
     db = MagicMock()
     ws = MagicMock()
+    ws.ensure_worktree_self_heal = AsyncMock()
+    ws.ensure_workspace = AsyncMock()
     with (
         patch("roboco.db.base.get_db_context", return_value=_fake_db_ctx(db)),
         patch("roboco.services.workspace.WorkspaceService", return_value=ws),
@@ -79,36 +123,37 @@ async def test_noop_when_no_task_short_id() -> None:
             ctx, "roboco-api", "backend", "be-dev-1", "task-1"
         )
 
-    ws.ensure_worktree_for_resume.assert_not_called()
+    ws.ensure_worktree_self_heal.assert_not_called()
+    ws.ensure_workspace.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_fatal_failure_releases_claim_and_aborts() -> None:
-    # A FATAL git-state failure (WorkspaceError — the branch ref is gone, so the
-    # worktree cannot be re-added) must NOT launch the container at a missing
-    # -w path. It releases the claim (so the next claim rebuilds the worktree
-    # via create_branch) and aborts the spawn with AgentReadinessError.
+    # A FATAL git-state failure (WorkspaceError — the clone won't re-clone, the
+    # token is missing, or the branch ref is unrecoverable) must NOT launch the
+    # container at a missing -w path. It releases the claim (so the next
+    # dispatch retries the rebuild) and aborts with AgentReadinessError.
     orch = _make_orchestrator()
     release = AsyncMock()
     object.__setattr__(orch, "_release_claim_to_pending", release)
     task_id = str(uuid4())
-    ctx = SpawnGitContext(
-        project_slug="roboco-api",
-        branch_name="feature/backend/abc12345",
-        task_short_id="a3c40fe7",
-    )
     ws = MagicMock()
-    ws.ensure_worktree_for_resume = MagicMock(
+    ws.ensure_worktree_self_heal = MagicMock(
         side_effect=WorkspaceError("git worktree re-add failed")
     )
+    ws.ensure_workspace = AsyncMock()
 
     with (
         patch("roboco.db.base.get_db_context", return_value=_fake_db_ctx(MagicMock())),
         patch("roboco.services.workspace.WorkspaceService", return_value=ws),
+        patch(
+            "roboco.services.workspace.WorkspaceService._is_workspace_healthy",
+            return_value=True,
+        ),
         pytest.raises(AgentReadinessError, match="worktree ensure failed"),
     ):
         await orch._ensure_worktree_before_spawn(
-            ctx, "roboco-api", "backend", "be-dev-1", task_id
+            _ctx(), "roboco-api", "backend", "be-dev-1", task_id
         )
 
     release.assert_awaited_once_with(task_id)
@@ -124,21 +169,21 @@ async def test_transient_failure_aborts_without_release() -> None:
     release = AsyncMock()
     object.__setattr__(orch, "_release_claim_to_pending", release)
     task_id = str(uuid4())
-    ctx = SpawnGitContext(
-        project_slug="roboco-api",
-        branch_name="feature/backend/abc12345",
-        task_short_id="a3c40fe7",
-    )
     ws = MagicMock()
-    ws.ensure_worktree_for_resume = MagicMock(side_effect=RuntimeError("db down"))
+    ws.ensure_worktree_self_heal = MagicMock(side_effect=RuntimeError("db down"))
+    ws.ensure_workspace = AsyncMock()
 
     with (
         patch("roboco.db.base.get_db_context", return_value=_fake_db_ctx(MagicMock())),
         patch("roboco.services.workspace.WorkspaceService", return_value=ws),
+        patch(
+            "roboco.services.workspace.WorkspaceService._is_workspace_healthy",
+            return_value=True,
+        ),
         pytest.raises(AgentReadinessError, match="transient"),
     ):
         await orch._ensure_worktree_before_spawn(
-            ctx, "roboco-api", "backend", "be-dev-1", task_id
+            _ctx(), "roboco-api", "backend", "be-dev-1", task_id
         )
 
     release.assert_not_awaited()
@@ -146,26 +191,26 @@ async def test_transient_failure_aborts_without_release() -> None:
 
 @pytest.mark.asyncio
 async def test_recoverable_ensure_no_raise_no_release() -> None:
-    # The happy / recoverable path (worktree present, or pruned-but-re-added
-    # from the surviving branch ref) must stay a silent no-op — that is the
-    # F123 Phase B happy path. No raise, no claim release.
+    # The happy / recoverable path (worktree present, or pruned-but-re-added /
+    # clone-re-cloned) must stay a silent no-op — the F123 Phase B happy path.
+    # No raise, no claim release.
     orch = _make_orchestrator()
     release = AsyncMock()
     object.__setattr__(orch, "_release_claim_to_pending", release)
-    ctx = SpawnGitContext(
-        project_slug="roboco-api",
-        branch_name="feature/backend/abc12345",
-        task_short_id="a3c40fe7",
-    )
     ws = MagicMock()
-    ws.ensure_worktree_for_resume = AsyncMock()  # succeeds
+    ws.ensure_worktree_self_heal = AsyncMock()  # succeeds
+    ws.ensure_workspace = AsyncMock()
 
     with (
         patch("roboco.db.base.get_db_context", return_value=_fake_db_ctx(MagicMock())),
         patch("roboco.services.workspace.WorkspaceService", return_value=ws),
+        patch(
+            "roboco.services.workspace.WorkspaceService._is_workspace_healthy",
+            return_value=True,
+        ),
     ):
         await orch._ensure_worktree_before_spawn(
-            ctx, "roboco-api", "backend", "be-dev-1", str(uuid4())
+            _ctx(), "roboco-api", "backend", "be-dev-1", str(uuid4())
         )
 
     release.assert_not_awaited()

@@ -555,6 +555,126 @@ class WorkspaceService:
         await asyncio.to_thread(_ensure_agent_owned, worktree)
         await asyncio.to_thread(_ensure_agent_owned, clone_root)
 
+    async def _fetch_branch_ref(
+        self, clone_root: Path, branch: str, project_slug: str
+    ) -> None:
+        """Token-aware ``git fetch origin <branch>`` into clone_root. Best-effort.
+
+        A clone's ``.git/config`` carries the token-scrubbed remote URL, so a
+        private-repo fetch needs the token re-injected via ``http.extraheader``
+        (mirrors ``fetch_branch_for_inspection``). Never raises — a failed
+        fetch falls through to ``ensure_worktree``'s ``-b`` from ``origin/HEAD``.
+        """
+        from roboco.services.project import get_project_service
+        from roboco.utils.crypto import EncryptionError
+
+        project_service = get_project_service(self.session)
+        project = await project_service.get_by_slug(project_slug)
+        git_token: str | None = None
+        if project is not None:
+            try:
+                git_token = await project_service.get_decrypted_token_by_slug(
+                    project_slug
+                )
+            except EncryptionError:
+                git_token = None
+
+        prefix: list[str] = []
+        if git_token:
+            import base64
+
+            basic = base64.b64encode(f"x-access-token:{git_token}".encode()).decode()
+            prefix = ["-c", f"http.extraheader=Authorization: Basic {basic}"]
+
+        def _do_fetch() -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(clone_root),
+                    *prefix,
+                    "fetch",
+                    "--no-tags",
+                    "origin",
+                    branch,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=settings.workspace_refresh_fetch_timeout_seconds,
+                check=False,
+            )
+
+        result = await asyncio.to_thread(_do_fetch)
+        if result.returncode != 0:
+            logger.warning(
+                "ensure_worktree_self_heal: branch fetch returned non-zero",
+                branch=branch,
+                clone_root=str(clone_root),
+                stderr=result.stderr.strip(),
+            )
+
+    async def ensure_worktree_self_heal(
+        self,
+        clone_root: Path,
+        worktree: Path,
+        branch: str,
+        project_slug: str,
+    ) -> None:
+        """Re-attach a per-task worktree, self-healing a vanished clone + ref.
+
+        F123 spawn-time chokepoint. A resumed agent's clone can vanish (disk
+        loss, a redeploy that wiped ``/data/workspaces``, manual cleanup) while
+        the task's DB row keeps ``branch_name`` and the reaper-style claim
+        release preserves ownership — so the next dispatch is a RESUME, not a
+        fresh claim, and ``create_branch`` never re-runs to re-clone.
+        ``ensure_worktree_for_resume`` then runs ``git -C <clone_root>`` against
+        a missing directory and fatal-loops (claim released -> re-dispatched
+        into the same missing clone -> repeat, every tick).
+
+        The orchestrator calls ``ensure_workspace`` first when the clone is
+        unhealthy (re-clone from default). This then recovers the task branch
+        ref so the worktree re-attaches with the pushed work intact:
+
+        1. A present, registered worktree is a no-op (just venv + ownership).
+        2. If the local ``refs/heads/{branch}`` ref is absent (a re-clone has
+           none), fetch ``origin <branch>`` (token-aware) and create the local
+           ref from ``refs/remotes/origin/{branch}`` when origin has it —
+           recovering the pushed commits. (``create_branch`` always pushes at
+           claim time, so a claimed task's branch is on origin.)
+        3. ``ensure_worktree`` reuses the recovered ref, or — if origin doesn't
+           have it (a never-pushed branch) — re-creates it from ``origin/HEAD``;
+           no pushed work is lost because none existed.
+
+        A transient fetch failure falls through to the ``origin/HEAD`` ``-b``
+        rather than fatal-looping; a diverged branch re-syncs on the agent's
+        first ``sync_branch``.
+        """
+        if worktree.exists() and (worktree / ".git").is_file():
+            self._link_shared_venv(worktree, clone_root)
+            await asyncio.to_thread(_ensure_agent_owned, worktree)
+            await asyncio.to_thread(_ensure_agent_owned, clone_root)
+            return
+        local = self._worktree_git(
+            clone_root,
+            ["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+            check=False,
+        )
+        if local.returncode != 0:
+            await self._fetch_branch_ref(clone_root, branch, project_slug)
+            remote = self._worktree_git(
+                clone_root,
+                ["rev-parse", "--verify", "--quiet", f"refs/remotes/origin/{branch}"],
+                check=False,
+            )
+            if remote.returncode == 0:
+                self._worktree_git(
+                    clone_root,
+                    ["branch", branch, f"refs/remotes/origin/{branch}"],
+                    check=False,
+                )
+        # Reuse refs/heads/{branch} if recovered; else -b from origin/HEAD.
+        await self.ensure_worktree(clone_root, worktree, branch, "origin/HEAD")
+
     async def remove_worktree(self, clone_root: Path, worktree: Path) -> None:
         """Remove a per-task worktree (cancel / terminal / reaper evict).
 
