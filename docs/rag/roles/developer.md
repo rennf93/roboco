@@ -67,9 +67,10 @@ There is **no** `roboco_git_commit / _push / _create_pr / _merge_pr / _checkout`
 
 ## Branch Discipline
 
-- Branches are auto-created on `i_will_work_on()`.
+- Branches are auto-created on `i_will_work_on()`, and each claimed task gets its own **per-task worktree** (your cwd for that task). See `docs/rag/architecture/workspaces.md`.
 - Don't checkout branches by hand — call the verb on the right task.
 - A drifted clone (after a respawn/resume) is now auto-recovered onto your task branch before you commit — you normally won't see `BRANCH_MISMATCH` at all. If you still do, uncommitted changes are blocking the switch: `commit(...)` your work (or `i_am_blocked` if the changes aren't yours), then continue.
+- Never run `uv run --active` or point uv at `/app` — it bricks the MCP-gateway venv. Bare `uv run` resolves your workspace venv. If the workspace venv is broken, `i_am_blocked(reason='workspace venv broken')`.
 
 ## Before Submitting to QA
 
