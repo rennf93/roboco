@@ -200,3 +200,34 @@ def test_sla_seconds_for_unknown_pair() -> None:
 
 def test_sla_seconds_for_no_role() -> None:
     assert sla_seconds_for(None, "in_progress") is None
+
+
+# ---------------------------------------------------------------------------
+# Cancel from the CEO approval queue is the CEO's call, not a PM's
+# ---------------------------------------------------------------------------
+
+
+def test_cancel_from_awaiting_ceo_is_ceo_only() -> None:
+    """A PM must not cancel a task the CEO is reviewing — that bypasses the
+    human CEO-approval gate. Only the CEO can cancel from awaiting_ceo_approval."""
+    assert can_agent_transition("awaiting_ceo_approval", "cancelled", "ceo") is True
+    assert (
+        can_agent_transition("awaiting_ceo_approval", "cancelled", "cell_pm") is False
+    )
+    assert (
+        can_agent_transition("awaiting_ceo_approval", "cancelled", "main_pm") is False
+    )
+
+
+def test_cancel_from_other_non_terminal_remains_pm_plus_ceo() -> None:
+    """The CEO-only narrowing is scoped to the approval queue; elsewhere a PM
+    may still cancel (unchanged behavior)."""
+    assert can_agent_transition("in_progress", "cancelled", "cell_pm") is True
+    assert can_agent_transition("awaiting_qa", "cancelled", "main_pm") is True
+
+
+def test_validate_cancel_from_awaiting_ceo_raises_for_pm() -> None:
+    with pytest.raises(TaskLifecycleError):
+        validate_task_transition("awaiting_ceo_approval", "cancelled", "cell_pm")
+    # CEO is allowed — no raise.
+    assert validate_task_transition("awaiting_ceo_approval", "cancelled", "ceo") is True

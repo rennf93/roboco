@@ -370,13 +370,19 @@ _STATUS_TRANSITIONS: tuple[StatusTransition, ...] = (
         "submit_pm_review",
         None,
     ),
-    # Cancel — PM/CEO can cancel from any non-terminal status
+    # Cancel — PM/CEO can cancel from any non-terminal status. A task sitting
+    # in the CEO approval queue is the CEO's decision to make: a Cell/Main PM
+    # cancelling it would bypass the human CEO gate (CLAUDE.md role table pins
+    # awaiting_ceo_approval -> cancelled as CEO-only), so that one source is
+    # gated to {CEO} while every other non-terminal source stays PM+CEO.
     *(
         StatusTransition(
             src,
             Status.CANCELLED,
             "cancel",
-            frozenset({Role.CELL_PM, Role.MAIN_PM, Role.CEO}),
+            frozenset({Role.CEO})
+            if src is Status.AWAITING_CEO_APPROVAL
+            else frozenset({Role.CELL_PM, Role.MAIN_PM, Role.CEO}),
         )
         for src in Status
         if src not in (Status.COMPLETED, Status.CANCELLED)
@@ -880,6 +886,12 @@ class Context:
     """
 
     actor_id: UUID | None = None
+    # The calling agent's team, for the needs_team_match rule. None means
+    # "caller did not supply it" — team-match is then enforced at the service
+    # layer (the historical sole enforcer), so the spec gate stays permissive
+    # and backward-compatible. Supplying it lets the spec gate close the gap
+    # for any consumer that trusts can_invoke_action as authoritative.
+    agent_team: str | None = None
     plan: str | dict[str, Any] | None = None
     has_journal_decision: bool = False
     has_journal_reflect: bool = False
@@ -970,6 +982,30 @@ PRECONDITION_NON_TERMINAL = Precondition(
         " escalated — terminal tasks must not be resurrected to blocked"
     ),
     missing_token="non_terminal",
+    rejection_kind="invalid_state",
+)
+
+
+def _p_external_review_pending(task: Any, _agent: Any, _ctx: Any) -> bool:
+    """True iff the task is PENDING — the only valid source for an inbound
+    external-PR review task (claim_pr_review). An awaiting_pr_review task is a
+    gate review, a distinct verb (claim_gate_review); letting claim_pr_review's
+    composed ``claim`` action's union source_statuses accept awaiting_pr_review
+    made the spec gate looser than the runtime and pointed the reviewer at the
+    wrong verb."""
+    status = getattr(task, "status", None)
+    value = status.value if isinstance(status, Status) else str(status)
+    return value == Status.PENDING.value
+
+
+PRECONDITION_EXTERNAL_REVIEW_STATE = Precondition(
+    key="external_review_state",
+    check=_p_external_review_pending,
+    remediate=(
+        "claim_pr_review is for an inbound external-PR task in pending only;"
+        " an assembled in-path gate review uses claim_gate_review"
+    ),
+    missing_token="external_review_state",
     rejection_kind="invalid_state",
 )
 
@@ -1202,10 +1238,15 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
     ),
     "unclaim": IntentSpec(
         name="unclaim",
-        allowed_roles=frozenset(_DEV_ROLES | _QA_ROLES | _DOC_ROLES | _PM_ROLES),
+        allowed_roles=frozenset(
+            _DEV_ROLES | _QA_ROLES | _DOC_ROLES | _PM_ROLES | {Role.PR_REVIEWER}
+        ),
         description=(
             "Voluntarily release a claim back to pending. The"
-            " work-in-progress branch is preserved."
+            " work-in-progress branch is preserved. A PR reviewer who claimed"
+            " an external review (in_progress) or a gate review"
+            " (awaiting_pr_review) and cannot finish releases the claim here"
+            " rather than wedging the lane until the stale-claim reaper."
         ),
         composes=(),  # special - cleared in service layer
         extra_preconditions=(),
@@ -1300,7 +1341,7 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
             " pending -> claimed -> in_progress."
         ),
         composes=("claim", "start"),
-        extra_preconditions=(),
+        extra_preconditions=(PRECONDITION_EXTERNAL_REVIEW_STATE,),
         side_effects=(),
         next_hint=lambda _t: (
             "review the contributor's diff, then post_pr_review(task_id, ...)"
@@ -1385,10 +1426,14 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
             "Cell PM merges the PR (leaf into the cell branch, or the gated"
             " cell→root PR into the root branch) + transitions to completed;"
             " Main PM escalates the root to the CEO (who merges root→master)."
+            " The merge runs BEFORE the complete transition: TaskService.complete"
+            " asserts the PR is already merged, so the choreographer verb body"
+            " (cell_pm_complete / main_pm_complete) owns the merge-first"
+            " ordering — no trailing pr_merge side_effect is declared here."
         ),
         composes=("complete",),
         extra_preconditions=(),
-        side_effects=("pr_merge",),
+        side_effects=(),
         next_hint=_next_hint_pm_complete,
     ),
     "escalate_up": IntentSpec(
@@ -1663,6 +1708,25 @@ def can_invoke_action(
     rejection = _check_self_review_and_preconditions(action, spec_action, task, ctx)
     if rejection is not None:
         return rejection
+    # Team-match rule. needs_team_match was historically a dead spec field —
+    # enforced only at the service layer, so a consumer trusting the spec gate
+    # alone let a backend dev claim a frontend task. When the caller supplies
+    # the agent's team via Context, enforce it here; absent, defer to the
+    # service layer (backward compatible).
+    if spec_action.needs_team_match and getattr(ctx, "agent_team", None) is not None:
+        task_team = getattr(task, "team", None)
+        if task_team is not None and ctx.agent_team != task_team:
+            return Decision.reject(
+                kind="not_authorized",
+                message=(
+                    f"team '{ctx.agent_team}' may not act on a"
+                    f" '{task_team}' task (team-based restriction)"
+                ),
+                remediate=(
+                    "this task belongs to another team; call give_me_work()"
+                    " to find a task in your own team"
+                ),
+            )
     if action == "claim":
         rejection = _check_claim_rules_narrow(role, task)
         if rejection is not None:
@@ -1769,6 +1833,18 @@ def valid_next_verbs(role: Role, task: Any) -> list[str]:
             # Skip ONLY for state-incompatibility; tracing_gap (missing
             # action-level preconditions) is also surfaced lazily.
             if not d.allowed and d.rejection_kind in (
+                "not_authorized",
+                "invalid_state",
+            ):
+                continue
+        elif name in ("claim_review", "claim_doc_task", "claim_gate_review"):
+            # Empty-compose claim verbs still gate on CLAIM_RULES (a status
+            # gate, not a Precondition). Mirroring can_invoke_intent, skip the
+            # verb when the role cannot claim from the task's current status —
+            # otherwise a QA reviewer on a non-awaiting_qa task is told
+            # claim_review is callable and wastes a turn on the rejection.
+            rejection = _check_claim_rules_narrow(role, task)
+            if rejection is not None and rejection.rejection_kind in (
                 "not_authorized",
                 "invalid_state",
             ):
