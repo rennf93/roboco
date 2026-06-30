@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, cast
 
 from fastapi import APIRouter, HTTPException, status
 
-from roboco.api.deps import CurrentAgentContext, DbSession
+from roboco.api.deps import CurrentAgentContext, DbSession, require_ceo_role
 from roboco.api.schemas.release import (
     ReleaseExecuteResponse,
     ReleaseGapModel,
@@ -18,7 +18,6 @@ from roboco.api.schemas.release import (
     ReleaseReportModel,
 )
 from roboco.foundation.policy.content import markers
-from roboco.models import AgentRole
 from roboco.services.release_proposal import get_release_proposal_service
 
 if TYPE_CHECKING:
@@ -30,11 +29,7 @@ router = APIRouter()
 
 
 def _require_ceo(agent: CurrentAgentContext) -> None:
-    if agent.role != AgentRole.CEO:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only the CEO may view or act on release proposals",
-        )
+    require_ceo_role(agent.role, action="view or act on release proposals")
 
 
 def _status_value(task: "TaskTable") -> str:

@@ -9,7 +9,12 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 
-from roboco.api.deps import _check_agent_auth_token, get_orchestrator, set_orchestrator
+from roboco.api.deps import (
+    _check_agent_auth_token,
+    get_orchestrator,
+    require_ceo_role,
+    set_orchestrator,
+)
 from roboco.api.schemas.orchestrator import (
     AgentStatusResponse,
     OrchestratorStatusResponse,
@@ -17,7 +22,7 @@ from roboco.api.schemas.orchestrator import (
     SpawnAgentRequest,
     WaitingAgentResponse,
 )
-from roboco.foundation.identity import Role
+
 
 # Orchestrator control routes (spawn / stop / resolve-wait / mark-waiting,
 # plus the read-only status views) are operator/CEO control surfaces — any
@@ -30,10 +35,8 @@ from roboco.foundation.identity import Role
 # the same contract as the v1 flow role guards and the do router. CEO is the
 # sole operator role; agents (developers/QA/PMs) drive the orchestrator via
 # MCP verbs, not these HTTP routes, so a developer token is correctly 403'd
-# here.
-_CEO_ROLE = Role.CEO.value
-
-
+# here. The CEO role check itself delegates to ``require_ceo_role`` (#25 —
+# the single source of truth shared with the release routes).
 def _require_ceo(
     x_agent_id: Annotated[str, Header(alias="X-Agent-ID")],
     x_agent_role: Annotated[str, Header(alias="X-Agent-Role")],
@@ -43,13 +46,7 @@ def _require_ceo(
     # Bind the role header to a verified token BEFORE trusting it (same
     # defense-in-depth contract as the v1 flow role guards in _role_dep.py).
     _check_agent_auth_token(x_agent_id, x_agent_role, x_agent_team, x_agent_token)
-    # ``Role`` is a StrEnum so the lowercase header string compares equal to
-    # its matching member.
-    if x_agent_role.lower() != _CEO_ROLE:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only the CEO/operator may control the orchestrator",
-        )
+    require_ceo_role(x_agent_role, action="control the orchestrator")
 
 
 router = APIRouter(dependencies=[Depends(_require_ceo)])

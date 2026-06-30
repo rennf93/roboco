@@ -611,9 +611,16 @@ async def system_stream(websocket: WebSocket) -> None:
 
     Carries system-level events for the control panel — currently the
     rate-limit lifecycle (``RATE_LIMIT_HIT`` / ``RATE_LIMIT_LIFTED``), bridged
-    from the event bus by ``websocket_bridge``. No per-agent keying or auth:
-    it's a read-only operator stream behind the panel's own access controls.
+    from the event bus by ``websocket_bridge``. No per-agent keying; the
+    panel/CEO token gate matches every sibling /ws/* stream (#24 — this was the
+    only ungated /ws endpoint): in strict mode a missing CEO token closes with
+    policy-violation, a presented-but-forged token is rejected even in dev.
     """
+    # Verify the panel/CEO token before subscribing — same gate as every other
+    # /ws/* handler (#24).
+    if not await _require_panel_token(websocket):
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
     await manager.connect_system(websocket)
 
     try:

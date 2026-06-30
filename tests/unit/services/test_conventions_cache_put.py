@@ -29,10 +29,11 @@ from roboco.services.conventions import ConventionsService
 from sqlalchemy.exc import IntegrityError
 
 
-class _FakeOrig:
+class _FakeOrig(Exception):
     """A stand-in DBAPI exception carrying a SQLSTATE code."""
 
     def __init__(self, sqlstate: str) -> None:
+        super().__init__(sqlstate)
         self.sqlstate = sqlstate
 
 

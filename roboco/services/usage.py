@@ -77,8 +77,13 @@ class UsageService(BaseService):
     async def get_summary(self, period: str = "24h") -> dict[str, Any]:
         """Return aggregated token and cost totals for the given period.
 
-        Queries daily_usage_rollups for whole-day periods; falls back to
-        agent_spawn_sessions for sub-day precision.
+        Sums the RAW ``agent_spawn_sessions`` rows that started within the
+        period and have closed (``ended_at IS NOT NULL``) — sub-day precise, no
+        rollup dependency. ``daily_usage_rollups`` is the day-grain snapshot
+        written by the background sweeper (``_rollup_daily_usage``) and read by
+        ``get_today_summary``; the two can diverge for "today" until the sweeper
+        closes + aggregates still-open sessions (#66 — the prior docstring
+        falsely claimed this read the rollups).
 
         Returns dict with: tokens_input, tokens_output, total_tokens,
         total_cost_usd, trend_pct.

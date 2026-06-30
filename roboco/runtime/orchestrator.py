@@ -405,6 +405,23 @@ class _SecretaryRunSpec:
     model: str = ""
 
 
+# Roles that always work a concrete task — a spawn row with ``task_id IS NULL``
+# for one of these is an unattributed-cost bug (the usage rollup can't tie the
+# spend to a task). Intake (prompter), secretary, auditor, and PMs legitimately
+# spawn taskless, so they are NOT flagged (#11).
+_TASKLESS_SPAWN_SUSPECT_ROLES = frozenset({"developer", "qa", "documenter"})
+
+
+def is_unattributed_delivery_spawn(role: str, task_id: str | None) -> bool:
+    """True when a delivery-role spawn carries no ``task_id`` (#11).
+
+    The role string comes from ``get_agent_role`` (lowercase); the comparison is
+    case-insensitive for safety. Used by ``_record_spawn_session`` to warn on
+    unattributed usage without noise from the intentional taskless roles.
+    """
+    return task_id is None and role.lower() in _TASKLESS_SPAWN_SUSPECT_ROLES
+
+
 def _read_project_slug(task: dict[str, Any]) -> str | None:
     """Extract project slug from a task payload shape-tolerantly."""
     slug = task.get("project_slug")
@@ -4889,6 +4906,17 @@ class AgentOrchestrator:
             agent_slug = config.agent_id
             team = get_agent_team(agent_slug) or "backend"
             role = get_agent_role(agent_slug) or "developer"
+
+            # A delivery-role spawn with no task_id is unattributed usage (#11) —
+            # the rollup can't tie the spend to a task. Intake/secretary/PM spawns
+            # legitimately carry no task and are not flagged.
+            if is_unattributed_delivery_spawn(role, task_id):
+                logger.warning(
+                    "Spawn session has no task_id for a delivery role — "
+                    "unattributed usage",
+                    agent_slug=agent_slug,
+                    role=role,
+                )
 
             session_id = _uuid4()
             session_factory = get_session_factory()

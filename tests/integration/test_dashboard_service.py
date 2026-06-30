@@ -634,3 +634,34 @@ async def test_get_dashboard_service_factory(
 ) -> None:
     svc = get_dashboard_service(db_session)
     assert isinstance(svc, DashboardService)
+
+
+@pytest.mark.asyncio
+async def test_auditor_flags_are_in_memory_and_lost_on_storage_reset(
+    db_session: AsyncSession,
+) -> None:
+    """Auditor flags/reports live in a process-singleton in-memory store, NOT
+    the DB (#68 — ``DashboardStorage`` docstring: 'In production, these would be
+    database tables'). A reset (the test/prod-restart analog) drops them. This
+    test pins the documented limitation so a silent persistence regression is
+    caught and the stub is not mistaken for a durable store. Persisting to real
+    tables is a migration + service refactor (a feature), deliberately not
+    half-implemented here.
+    """
+    reset_storage()
+    svc = DashboardService(db_session)
+    flag = svc.create_flag(
+        CreateFlagParams(
+            severity="high",
+            category="quality",
+            title="stale-claim",
+            description="be-dev-1 heartbeat stale",
+            related_agent_id=uuid4(),
+        )
+    )
+    assert flag.id in get_storage().flags
+
+    # A process restart / test reset drops the in-memory store.
+    reset_storage()
+    assert flag.id not in get_storage().flags
+    assert get_storage().flags == {}

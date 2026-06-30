@@ -1006,7 +1006,7 @@ async def test_create_task_from_draft_does_not_mutate_caller_draft(
     project_id, ceo_id = await _seed_project_and_ceo(db_session)
     service = get_prompter_service(db=db_session)
     original_items = ["  trim me  ", "keep"]
-    draft = {
+    draft: dict[str, Any] = {
         "title": "No-mutation check",
         "acceptance_criteria": ["done"],
         "project_id": str(project_id),

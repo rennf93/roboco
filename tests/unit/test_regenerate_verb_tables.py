@@ -13,14 +13,17 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 from pydantic import BaseModel, BeforeValidator, Field
+
+if TYPE_CHECKING:
+    from types import ModuleType
 
 _SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "regenerate_verb_tables.py"
 
 
-def _load_module():
+def _load_module() -> ModuleType:
     spec = importlib.util.spec_from_file_location("_regen_verb_tables", _SCRIPT)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
