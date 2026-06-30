@@ -4626,11 +4626,20 @@ class AgentOrchestrator:
         """
         from roboco.db.base import get_session_factory
         from roboco.services.task import TaskService
-        from roboco.utils.converters import require_uuid
+        from roboco.utils.converters import InvalidIdentifierError, require_uuid
 
         try:
             task_id = require_uuid(task_id_str)
-        except Exception:
+        except InvalidIdentifierError as exc:
+            # A malformed task_id_str is a bad identifier, not a transient
+            # failure — log it so the drop is visible instead of swallowed,
+            # then no-op (nothing to release). Other exceptions still fall
+            # through to the broad catch below (#25).
+            logger.warning(
+                "stopped agent claim had malformed task id",
+                task_id_str=task_id_str,
+                error=str(exc),
+            )
             return
         try:
             factory = get_session_factory()

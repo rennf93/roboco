@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import pytest
 from roboco.utils.converters import (
+    InvalidIdentifierError,
     require_uuid,
     to_python_uuid,
     to_python_uuid_list,
@@ -25,6 +26,27 @@ def test_require_uuid_parses_string() -> None:
 def test_require_uuid_raises_for_none() -> None:
     with pytest.raises(ValueError, match="cannot be None"):
         require_uuid(None)
+
+
+def test_require_uuid_none_raises_typed_identifier_error() -> None:
+    """#25: a None identifier raises the typed InvalidIdentifierError (a
+    ValueError subclass), not a bare ValueError, so callers can distinguish a
+    bad identifier from any other exception instead of broad-catching."""
+    with pytest.raises(InvalidIdentifierError, match="cannot be None"):
+        require_uuid(None)
+
+
+def test_require_uuid_unparseable_raises_typed_identifier_error() -> None:
+    """#25: an unparseable identifier raises InvalidIdentifierError, not a bare
+    ValueError — the dropped-identifier pattern must surface as a typed error."""
+    with pytest.raises(InvalidIdentifierError, match="invalid UUID identifier"):
+        require_uuid("not-a-uuid")
+
+
+def test_invalid_identifier_error_is_value_error() -> None:
+    """Back-compat: InvalidIdentifierError subclasses ValueError so existing
+    `except ValueError` callers keep catching it."""
+    assert issubclass(InvalidIdentifierError, ValueError)
 
 
 def test_to_python_uuid_returns_none_for_none() -> None:

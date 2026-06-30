@@ -8,6 +8,16 @@ from typing import Any
 from uuid import UUID as PythonUUID
 
 
+class InvalidIdentifierError(ValueError):
+    """A malformed/None identifier reached UUID coercion.
+
+    A ``ValueError`` subclass so existing ``except ValueError`` callers keep
+    working, but typed so a caller can distinguish a bad identifier from any
+    other exception instead of broad-catching and silently swallowing it
+    (#25).
+    """
+
+
 def require_uuid(value: Any) -> PythonUUID:
     """
     Convert SQLAlchemy UUID to Python UUID, raising if None.
@@ -19,13 +29,19 @@ def require_uuid(value: Any) -> PythonUUID:
         Python UUID
 
     Raises:
-        ValueError: If value is None or cannot be converted
+        InvalidIdentifierError: If value is None or cannot be parsed as a UUID.
+            A ``ValueError`` subclass, so existing ``except ValueError`` /
+            ``except Exception`` callers are unaffected, but typed so callers
+            can handle a bad identifier distinctly instead of swallowing it.
     """
     if value is None:
-        raise ValueError("UUID value cannot be None")
+        raise InvalidIdentifierError("UUID value cannot be None")
     if isinstance(value, PythonUUID):
         return value
-    return PythonUUID(str(value))
+    try:
+        return PythonUUID(str(value))
+    except (ValueError, AttributeError, TypeError) as exc:
+        raise InvalidIdentifierError(f"invalid UUID identifier: {value!r}") from exc
 
 
 def repo_key(git_url: str) -> str:
