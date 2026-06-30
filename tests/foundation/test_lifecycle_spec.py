@@ -11,6 +11,7 @@ from roboco.foundation import _validate_lifecycle as _validate
 from roboco.foundation._validate_lifecycle import reachable_from
 from roboco.foundation.policy import lifecycle as spec
 from roboco.foundation.policy.lifecycle import _INTENT_VERBS, IntentSpec
+from roboco.models.base import TaskStatus as ModelTaskStatus
 from roboco.models.base import TaskType as ModelTaskType
 
 
@@ -77,6 +78,73 @@ def test_task_type_enum_matches_models() -> None:
         f"TaskType drift between lifecycle.spec and models.base: "
         f"{spec_values ^ model_values}"
     )
+
+
+def test_status_enum_matches_models() -> None:
+    """The spec's Status must match models.base.TaskStatus — the ORM column
+    type and the lifecycle map must not drift. TaskType has this guard; Status
+    did not, so adding/renaming a status in one enum only wedged silently."""
+    spec_values = {s.value for s in spec.Status}
+    model_values = {s.value for s in ModelTaskStatus}
+    assert spec_values == model_values, (
+        f"Status drift between lifecycle.spec and models.base: "
+        f"{spec_values ^ model_values}"
+    )
+
+
+def test_status_enum_parity_validator_passes_on_real_spec() -> None:
+    """The import-time parity validator must agree with the real enums."""
+    _validate._check_status_enum_parity()  # no raise
+
+
+def test_status_coverage_rejects_stray_string_target() -> None:
+    """A transition referencing a non-Status target string must fail the
+    coverage validator — the old check was a tautology (STATUS_GRAPH keys every
+    Status by construction) and let stray-string targets through."""
+    fake = (
+        SimpleNamespace(
+            source=spec.Status.PENDING, target="bogus_state", triggered_by_action="x"
+        ),
+    )
+    original = spec._STATUS_TRANSITIONS
+    spec._STATUS_TRANSITIONS = fake  # type: ignore[attr-defined]
+    try:
+        with pytest.raises(_validate.LifecycleSpecError, match="non-Status"):
+            _validate._check_status_enum_coverage()
+    finally:
+        spec._STATUS_TRANSITIONS = original  # type: ignore[attr-defined]
+
+
+def test_status_coverage_rejects_orphan_non_terminal_source() -> None:
+    """A non-terminal status that is the source of no transition (an orphan
+    state) must fail the coverage validator — the cancel fan-out made the old
+    'is a key in STATUS_GRAPH' check structurally always-true."""
+    original = spec._STATUS_TRANSITIONS
+    spec._STATUS_TRANSITIONS = tuple(  # type: ignore[attr-defined]
+        t for t in original if t.source is not spec.Status.PAUSED
+    )
+    try:
+        with pytest.raises(
+            _validate.LifecycleSpecError, match="no outgoing transition"
+        ):
+            _validate._check_status_enum_coverage()
+    finally:
+        spec._STATUS_TRANSITIONS = original  # type: ignore[attr-defined]
+
+
+def test_terminal_exit_requires_a_completed_path() -> None:
+    """Every non-terminal status must reach COMPLETED specifically — the cancel
+    fan-out made the old {COMPLETED, CANCELLED} check trivial, so a status whose
+    sole exit was cancel passed the guard with no real forward completion path."""
+    original = spec.STATUS_GRAPH
+    fake = dict(original)
+    fake[spec.Status.PAUSED] = frozenset({spec.Status.CANCELLED})
+    spec.STATUS_GRAPH = fake  # type: ignore[attr-defined]
+    try:
+        with pytest.raises(_validate.LifecycleSpecError, match="no path to COMPLETED"):
+            _validate._check_terminal_exits()
+    finally:
+        spec.STATUS_GRAPH = original  # type: ignore[attr-defined]
 
 
 def test_decision_allow_has_no_rejection_kind() -> None:

@@ -53,14 +53,63 @@ def reachable_from(start: Status) -> set[Status]:
 
 
 def _check_status_enum_coverage() -> None:
-    """Every Status appears in STATUS_GRAPH (as key)."""
-    from roboco.foundation.policy.lifecycle import STATUS_GRAPH, Status
+    """Every Status is reachable in the transition set, bidirectionally.
 
-    missing = set(Status) - set(STATUS_GRAPH)
-    if missing:
-        missing_values = sorted(s.value for s in missing)
+    The old check (`set(Status) - set(STATUS_GRAPH)`) was a tautology:
+    ``_build_status_graph`` seeds ``{s: set() for s in Status}``, so every
+    Status is a key by construction and the check could never raise. It gave
+    false assurance while an orphan state (no transition references it) or a
+    stray-string target slipped past. This checks the real coverage:
+
+    (a) every non-terminal Status is the SOURCE of at least one transition —
+        an orphan state with no outgoing edge is caught;
+    (b) every source/target referenced in _STATUS_TRANSITIONS is a real Status
+        member — a stray-string target (e.g. a typo or a removed status) is
+        caught.
+    """
+    from roboco.foundation.policy.lifecycle import _STATUS_TRANSITIONS, Status
+
+    all_statuses = set(Status)
+    terminals = {Status.COMPLETED, Status.CANCELLED}
+    sources = {t.source for t in _STATUS_TRANSITIONS}
+    targets = {t.target for t in _STATUS_TRANSITIONS}
+    referenced = sources | targets
+
+    orphan_sources = {s for s in all_statuses - terminals if s not in sources}
+    stray = referenced - all_statuses
+
+    problems: list[str] = []
+    if orphan_sources:
+        problems.append(
+            "non-terminal statuses with no outgoing transition: "
+            + sorted(s.value for s in orphan_sources).__repr__()
+        )
+    if stray:
+        stray_repr = sorted(repr(s) for s in stray)
+        problems.append(f"transitions reference non-Status values: {stray_repr}")
+    if problems:
+        raise LifecycleSpecError("; ".join(problems))
+
+
+def _check_status_enum_parity() -> None:
+    """The spec's Status enum must match models.base.TaskStatus exactly.
+
+    TaskType has long had this guard (test_task_type_enum_matches_models); Status
+    did not. The two StrEnums are textually identical today, but the seam was
+    unguarded: a status added to the ORM column type (TaskStatus) but not the
+    lifecycle map (Status) drifts silently — TaskService writes it to the DB,
+    get_valid_transitions returns [] for the orphan, and the task looks terminal
+    with no valid exits. Fail the build at import before any test runs.
+    """
+    from roboco.foundation.policy.lifecycle import Status
+    from roboco.models.base import TaskStatus
+
+    spec_values = {s.value for s in Status}
+    model_values = {s.value for s in TaskStatus}
+    if spec_values != model_values:
         raise LifecycleSpecError(
-            f"Statuses missing from STATUS_GRAPH keys: {missing_values}"
+            f"Status enum drift between lifecycle.spec and models.base: "
+            f"{spec_values ^ model_values}"
         )
 
 
@@ -79,17 +128,25 @@ def _check_status_reachability() -> None:
 
 
 def _check_terminal_exits() -> None:
-    """Every non-terminal status exits to either COMPLETED or CANCELLED."""
+    """Every non-terminal status reaches COMPLETED and can be CANCELLED.
+
+    The cancel fan-out generates a ``cancel`` edge from every non-terminal
+    status to CANCELLED, so the old ``reachable & {COMPLETED, CANCELLED}``
+    check was structurally trivial — a status whose sole exit was cancel passed
+    the guard with no real forward completion path. Split the check so a
+    state-machine hole that traps work behind a cancel-only exit is caught at
+    import.
+    """
     from roboco.foundation.policy.lifecycle import Status
 
     terminals = {Status.COMPLETED, Status.CANCELLED}
     non_terminal = set(Status) - terminals
     for s in non_terminal:
         reachable = reachable_from(s)
-        if not (reachable & terminals):
-            raise LifecycleSpecError(
-                f"Status '{s.value}' has no path to COMPLETED or CANCELLED"
-            )
+        if Status.COMPLETED not in reachable:
+            raise LifecycleSpecError(f"Status '{s.value}' has no path to COMPLETED")
+        if Status.CANCELLED not in reachable:
+            raise LifecycleSpecError(f"Status '{s.value}' has no cancel exit")
 
 
 def _check_intent_compositions() -> None:
@@ -273,6 +330,7 @@ def _check_unmigrated_is_subset() -> None:
 
 _LIFECYCLE_VALIDATORS = (
     _check_status_enum_coverage,
+    _check_status_enum_parity,
     _check_status_reachability,
     _check_terminal_exits,
     _check_intent_compositions,
