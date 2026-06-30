@@ -605,14 +605,29 @@ class A2AService:
         target_agent = self.resolve_target_agent(metadata)
         skill = metadata.get("skill", "general")
 
-        # Enforce A2A hierarchy permissions
-        if from_agent and target_agent:
-            from roboco.agents_config import can_a2a_direct, get_a2a_route_hint
-
-            allowed, error_msg = can_a2a_direct(from_agent, target_agent)
-            if not allowed:
-                hint = get_a2a_route_hint(from_agent, target_agent)
-                raise ValueError(f"{error_msg} Hint: {hint}")
+        # Enforce A2A hierarchy permissions — UNCONDITIONALLY. The conversation
+        # path (validate_a2a_access, below) requires both ends present and
+        # rejects self-A2A with a typed A2AAccessDeniedError + route_hint. This
+        # legacy notification path used to gate on `if from_agent and
+        # target_agent:`, so an unattributed (from_agent falsy) or untargeted
+        # (target unresolvable) request slipped past the hierarchy matrix and
+        # dispatched with from_agent='unknown' / to_agent='' — and a hierarchy
+        # denial came back as a bare ValueError indistinguishable from the
+        # missing-task_id ValueError above. Require both resolved, then validate
+        # via the shared typed path so both A2A surfaces enforce the same
+        # who-may-talk-to-whom invariant.
+        if not from_agent:
+            raise ValueError(
+                "A2A notification requires a 'from_agent' in metadata — an "
+                "unattributed request would bypass the hierarchy gate"
+            )
+        if not target_agent:
+            raise ValueError(
+                "A2A notification could not resolve a target agent — provide an "
+                "explicit 'target_agent' (a known agent slug) or a 'skill' that "
+                "matches an agent's capability"
+            )
+        validate_a2a_access(from_agent, target_agent)
         # Priority parsing: full tristate (NORMAL/HIGH/URGENT) survives
         # end-to-end. Resolution rules live in
         # foundation.policy.communications.parse_priority.
@@ -1024,6 +1039,7 @@ class A2AService:
         message_kind = opts.get("message_kind", A2AMessageKind.MESSAGE)
         response_to_id = opts.get("response_to_id")
         requires_response = opts.get("requires_response", False)
+        skill = opts.get("skill")
 
         result = await self.session.execute(
             select(A2AConversationTable).where(
@@ -1072,6 +1088,7 @@ class A2AService:
             message_kind=message_kind,
             response_to_id=response_to_id,
             requires_response=requires_response,
+            skill=skill,
         )
         self.session.add(msg)
 
@@ -1354,6 +1371,7 @@ class A2AService:
             from_agent=msg.from_agent,
             content=msg.content,
             message_kind=msg.message_kind,
+            skill=msg.skill,
             response_to_id=str(msg.response_to_id) if msg.response_to_id else None,
             requires_response=msg.requires_response,
             read_at=msg.read_at,
@@ -1396,8 +1414,8 @@ class A2AService:
         1. `get_or_create_conversation(sender_slug, recipient_slug, task_id=...)`
         2. `send_chat_message(conversation.id, sender_slug, content=body, ...)`
 
-        `skill` is recorded in message metadata so the receiver knows which
-        capability is being requested.
+        `skill` is persisted on the message row so the receiver (and the
+        inbox) learns which capability is being requested.
         """
         from_slug = await self._resolve_slug_from_id(from_agent)
         to_slug = (

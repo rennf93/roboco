@@ -1821,6 +1821,9 @@ class A2AMessageTable(Base):
         nullable=False,
         default=A2AMessageKind.MESSAGE,
     )
+    # Capability this A2A concerns (e.g. ``code_review``); nullable for legacy /
+    # unspecified messages. Migration 054.
+    skill: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     # Threading
     response_to_id: Mapped[UUID | None] = mapped_column(
