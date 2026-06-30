@@ -72,7 +72,7 @@ async def test_board_escalate_to_ceo_succeeds_for_product_owner() -> None:
     after = MagicMock(**{**t.__dict__, "status": "awaiting_ceo_approval"})
     task_svc = AsyncMock()
     task_svc.get.return_value = t
-    task_svc.agent_for.return_value = MagicMock(role="product_owner")
+    task_svc.agent_for.return_value = MagicMock(id=agent_id, role="product_owner")
     task_svc.escalate_to_ceo.return_value = after
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
@@ -87,6 +87,7 @@ async def test_board_escalate_to_ceo_succeeds_for_product_owner() -> None:
         task_id=task_id,
         agent_role="product_owner",
         notes="ready for CEO sign-off",
+        actor_agent_id=agent_id,
     )
 
 
@@ -102,7 +103,7 @@ async def test_board_escalate_to_ceo_succeeds_for_head_marketing() -> None:
     after = MagicMock(**{**t.__dict__, "status": "awaiting_ceo_approval"})
     task_svc = AsyncMock()
     task_svc.get.return_value = t
-    task_svc.agent_for.return_value = MagicMock(role="head_marketing")
+    task_svc.agent_for.return_value = MagicMock(id=agent_id, role="head_marketing")
     task_svc.escalate_to_ceo.return_value = after
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
@@ -117,6 +118,7 @@ async def test_board_escalate_to_ceo_succeeds_for_head_marketing() -> None:
         task_id=task_id,
         agent_role="head_marketing",
         notes="brand-affecting change",
+        actor_agent_id=agent_id,
     )
 
 
@@ -236,7 +238,7 @@ async def test_board_escalate_to_ceo_succeeds_for_main_pm() -> None:
     after = MagicMock(**{**t.__dict__, "status": "awaiting_ceo_approval"})
     task_svc = AsyncMock()
     task_svc.get.return_value = t
-    task_svc.agent_for.return_value = MagicMock(role="main_pm")
+    task_svc.agent_for.return_value = MagicMock(id=agent_id, role="main_pm")
     task_svc.escalate_to_ceo.return_value = after
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
@@ -251,6 +253,7 @@ async def test_board_escalate_to_ceo_succeeds_for_main_pm() -> None:
         task_id=task_id,
         agent_role="main_pm",
         notes="root task done",
+        actor_agent_id=agent_id,
     )
 
 

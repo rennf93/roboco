@@ -95,8 +95,18 @@ class VerbRunner:
                         "Re-fetch with evidence(task_id) and re-issue your verb."
                     )
                 task = await self._dispatch_atomic(action_name, task, agent, context)
-        for side_effect_name in intent.side_effects:
-            await self._dispatch_side_effect(side_effect_name, task, agent)
+        # A TRAILING None (the last composed action returned None because its
+        # source-status check failed under a concurrent transition) is the
+        # verb's own result and flows out as the runner's return value. The
+        # side_effects loop must NOT run on that None — a side effect
+        # dereferences task.branch_name / task.pr_number and crashes
+        # (_do_push_branch(None) -> None.branch_name AttributeError), turning
+        # the clean INVALID_STATE the entry/intermediate guards give into a
+        # 500/respawn loop. Skip side effects so the caller's `if task is None`
+        # handler surfaces the verb-specific message.
+        if task is not None:
+            for side_effect_name in intent.side_effects:
+                await self._dispatch_side_effect(side_effect_name, task, agent)
         return task
 
     async def _dispatch_atomic(
@@ -181,10 +191,17 @@ class VerbRunner:
     ) -> Any:
         # Use the actor's real role — escalate_to_ceo is allow-listed for
         # main_pm, product_owner, head_marketing in the spec, and the task
-        # service stamps the escalator's role into the audit trail.
+        # service stamps the escalator's role into the audit trail. Forward
+        # the actor's UUID so the awaiting_ceo_approval audit row attributes
+        # the escalation to the specific PM/Board agent (every sibling
+        # transition forwards the actor; this branch was the only one that
+        # lost it, leaving a role-only record ambiguous across same-role PMs).
         agent_role = str(agent.role) if agent is not None else "main_pm"
         return await self.task_service.escalate_to_ceo(
-            task_id=task.id, agent_role=agent_role, notes=ctx.notes or ""
+            task_id=task.id,
+            agent_role=agent_role,
+            notes=ctx.notes or "",
+            actor_agent_id=agent.id,
         )
 
     async def _do_block(self, task: Any, agent: Any, ctx: spec.Context) -> Any:
@@ -236,22 +253,37 @@ class VerbRunner:
 
     # -- Side-effect handlers ---------------------------------------------
 
-    async def _do_push_branch(self, task: Any, _agent: Any) -> Any:
-        return await self.git_service.push_branch(task.branch_name)
+    async def _do_push_branch(self, task: Any, agent: Any) -> Any:
+        # Forward the actor so the workspace resolves from the actor's clone
+        # (actor_agent_id wins over the assigned_to/created_by fallback) —
+        # matches _do_pr_merge. Without it, a verb on a task whose
+        # assigned_to was cleared before the side effect falls through to the
+        # wrong workspace and pushes from / opens a PR against it.
+        return await self.git_service.push_branch(
+            task.branch_name, actor_agent_id=agent.id
+        )
 
-    async def _do_create_pr(self, task: Any, _agent: Any) -> Any:
+    async def _do_create_pr(self, task: Any, agent: Any) -> Any:
         from roboco.services.gateway.merge_chain import resolve_parent_branch
 
         parent = await resolve_parent_branch(task, self.task_service)
         return await self.git_service.create_pr(
-            task.branch_name, parent=parent, is_root_pr=False
+            task.branch_name,
+            parent=parent,
+            is_root_pr=False,
+            actor_agent_id=agent.id,
         )
 
-    async def _do_create_root_pr(self, task: Any, _agent: Any) -> Any:
+    async def _do_create_root_pr(self, task: Any, agent: Any) -> Any:
         # Root→master PR for the in-path gate's root level (submit_root). The
         # base is always master and is_root_pr marks it for the CEO-merge path.
+        # The PM opening the master PR is the assigned_to-may-be-None case
+        # create_pr's actor_agent_id exists for.
         return await self.git_service.create_pr(
-            task.branch_name, parent="master", is_root_pr=True
+            task.branch_name,
+            parent="master",
+            is_root_pr=True,
+            actor_agent_id=agent.id,
         )
 
     async def _do_pr_merge(self, task: Any, agent: Any) -> Any:

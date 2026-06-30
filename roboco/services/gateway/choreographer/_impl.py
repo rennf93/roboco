@@ -6602,9 +6602,13 @@ class Choreographer:
 
         # Use kwargs — service signature is (task_id, agent_role="cell_pm",
         # notes=None). Positional was passing agent_id as task_id and the
-        # actual task_id as agent_role.
+        # actual task_id as agent_role. Forward the main PM's UUID so the
+        # awaiting_ceo_approval audit row attributes to the specific PM.
         t = await self.task.escalate_to_ceo(
-            task_id=root_task_id, agent_role="main_pm", notes=notes
+            task_id=root_task_id,
+            agent_role="main_pm",
+            notes=notes,
+            actor_agent_id=main_pm_agent_id,
         )
         # Defense-in-depth: escalate_to_ceo returns None when it refuses (e.g. a
         # transition guard rejects). Surface that as a clean rejection instead of

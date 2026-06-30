@@ -5196,6 +5196,7 @@ class TaskService(BaseService):
         task_id: UUID,
         agent_role: str = "cell_pm",
         notes: str | None = None,
+        actor_agent_id: UUID | None = None,
     ) -> TaskTable | None:
         """
         Escalate a task to CEO for final approval (PM only).
@@ -5209,6 +5210,11 @@ class TaskService(BaseService):
             task_id: The task to escalate
             agent_role: Role of the agent escalating (must be PM)
             notes: Optional notes for the CEO
+            actor_agent_id: The escalating agent's UUID, stamped on the
+                audit row so the awaiting_ceo_approval transition attributes
+                to the specific PM/Board agent (every sibling transition
+                forwards the actor; without it the record is role-only and
+                ambiguous across same-role PMs).
 
         Returns:
             The escalated task or None if escalation not allowed
@@ -5255,7 +5261,10 @@ class TaskService(BaseService):
 
         # Validate transition with PM role requirement
         self._validate_and_set_status(
-            task, TaskStatus.AWAITING_CEO_APPROVAL, agent_role
+            task,
+            TaskStatus.AWAITING_CEO_APPROVAL,
+            agent_role,
+            audit_agent_id=actor_agent_id,
         )
         await self.session.flush()
 
@@ -5263,13 +5272,20 @@ class TaskService(BaseService):
         await self._emit_task_event(
             EventType.TASK_AWAITING_CEO_APPROVAL,
             task_id,
-            {"escalated_by_role": agent_role, "notes": notes},
+            {
+                "escalated_by_role": agent_role,
+                "escalated_by_agent_id": str(actor_agent_id)
+                if actor_agent_id
+                else None,
+                "notes": notes,
+            },
         )
 
         self.log.info(
             "Task escalated to CEO for approval",
             task_id=str(task_id),
             escalated_by_role=agent_role,
+            escalated_by_agent_id=str(actor_agent_id) if actor_agent_id else None,
         )
         return task
 
@@ -7151,7 +7167,9 @@ class TaskService(BaseService):
             task, task_id, agent, permissions, notes
         )
 
-        escalated = await self.escalate_to_ceo(task_id, agent.role.value, notes)
+        escalated = await self.escalate_to_ceo(
+            task_id, agent.role.value, notes, actor_agent_id=agent.agent_id
+        )
         if not escalated:
             raise ValidationError(
                 "Cannot escalate to CEO - task must be in awaiting_pm_review status"

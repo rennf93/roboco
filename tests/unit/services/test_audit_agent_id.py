@@ -350,3 +350,101 @@ async def test_log_agent_event_unknown_slug_writes_null_agent_id(
     # and the slug is preserved in details for forensic lookup.
     assert rows[0].agent_id is None
     assert rows[0].details.get("agent_slug") == unknown_slug
+
+
+@pytest.mark.asyncio
+async def test_escalate_to_ceo_writes_audit_with_actor_agent_id(
+    patched_session_factory: AsyncSession,
+) -> None:
+    """End-to-end: ``escalate_to_ceo(actor_agent_id=...)`` -> the
+    ``task.awaiting_ceo_approval`` audit row carries the escalating agent's
+    UUID, not NULL.
+
+    Every sibling transition (claim/start/qa_pass/pr_pass) forwards the actor
+    UUID to ``_validate_and_set_status(audit_agent_id=...)``; the
+    escalate_to_ceo branch lost it, attributing the escalation only to a role
+    (ambiguous when multiple PMs of the same role could escalate). Mirrors
+    ``test_submit_for_qa_writes_audit_with_dev_agent_id``.
+    """
+    actor_uuid, _ = await _seed_agent_with_slug(patched_session_factory)
+    system_uuid, _ = await _seed_agent_with_slug(patched_session_factory)
+
+    project = ProjectTable(
+        id=uuid4(),
+        name="Escalate Audit Test Project",
+        slug=f"escalate-audit-{uuid4().hex[:8]}",
+        git_url="https://github.com/example/escalate-audit.git",
+        default_branch="main",
+        protected_branches=["main"],
+        assigned_cell=Team.BACKEND,
+        created_by=system_uuid,
+        is_active=True,
+    )
+    patched_session_factory.add(project)
+    await patched_session_factory.flush()
+
+    task = TaskTable(
+        id=uuid4(),
+        title="Escalate audit-id test",
+        description="Verifies escalate_to_ceo stamps the actor UUID on the audit row.",
+        acceptance_criteria=["audit row has agent_id populated"],
+        status=TaskStatus.AWAITING_PM_REVIEW,
+        priority=2,
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        project_id=project.id,
+        branch_name="feature/main_pm/ROOT0001",
+        pr_number=99,
+        pr_url="https://github.com/example/escalate-audit/pull/99",
+        docs_complete=True,
+        pr_created=True,
+        created_by=system_uuid,
+        assigned_to=actor_uuid,
+        claimed_by=actor_uuid,
+        team=Team.BACKEND,
+        dependency_ids=[],
+        blocker_ids=[],
+        sequence=0,
+        plan={"steps": ["impl"]},
+        estimated_complexity=Complexity.MEDIUM,
+        checkpoints=[],
+        progress_updates=[],
+        commits=[{"sha": "abc123", "message": "[ROOT0001] init"}],
+        documents=[],
+        dev_notes="root complete",
+        self_verified=True,
+    )
+    patched_session_factory.add(task)
+    await patched_session_factory.commit()
+
+    service = TaskService(patched_session_factory)
+    captured_task_id = UUID(str(task.id))
+    result = await service.escalate_to_ceo(
+        captured_task_id,
+        agent_role="main_pm",
+        actor_agent_id=actor_uuid,
+    )
+    assert result is not None
+    assert result.status == TaskStatus.AWAITING_CEO_APPROVAL
+
+    # Drain any background tasks the transition scheduled.
+    pending = [bg for bg in service._background_tasks if not bg.done()]
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+    for _ in range(5):
+        await asyncio.sleep(0.05)
+
+    result_rows = await patched_session_factory.execute(
+        select(AuditLogTable)
+        .where(AuditLogTable.event_type == "task.awaiting_ceo_approval")
+        .where(AuditLogTable.target_id == captured_task_id)
+    )
+    rows = list(result_rows.scalars().all())
+    assert len(rows) == 1, (
+        f"Expected exactly one task.awaiting_ceo_approval audit row, got {len(rows)}"
+    )
+    assert rows[0].agent_id == actor_uuid, (
+        f"audit_log.agent_id must be the escalating PM's UUID ({actor_uuid}), "
+        f"got {rows[0].agent_id} — escalate_to_ceo dropped the actor from the "
+        "audit trail"
+    )
