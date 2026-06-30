@@ -842,9 +842,7 @@ class MessagingService(BaseService):
             raise NotFoundError(resource_type="Session", resource_id=str(session_id))
         return session_row
 
-    async def get_session_with_links(
-        self, session_id: UUID
-    ) -> SessionTable | None:
+    async def get_session_with_links(self, session_id: UUID) -> SessionTable | None:
         """Get a session with its task_links (+ task) eager-loaded.
 
         The single-session read used by GET /sessions/{id}: returns task_links
@@ -862,14 +860,58 @@ class MessagingService(BaseService):
         )
         return result.scalar_one_or_none()
 
-    async def get_session_with_links_or_raise(
-        self, session_id: UUID
-    ) -> SessionTable:
+    async def get_session_with_links_or_raise(self, session_id: UUID) -> SessionTable:
         """Return a session with task_links eager-loaded, or raise NotFoundError."""
         session_row = await self.get_session_with_links(session_id)
         if not session_row:
             raise NotFoundError(resource_type="Session", resource_id=str(session_id))
         return session_row
+
+    async def require_group_read_access(
+        self, group_id: UUID, agent_id: UUID
+    ) -> GroupTable:
+        """Raise unless `agent_id` may read `group_id`; return the group if so.
+
+        Read-side counterpart of list_group_sessions_for_agent's check: the
+        agent must be a channel member / silent observer, or hold a privileged
+        role. Closes the IDOR where any authenticated agent could read any
+        private channel's group / session / message transcripts.
+        """
+        from roboco.services.permissions import has_privileged_access
+
+        group_result = await self.session.execute(
+            select(GroupTable)
+            .where(GroupTable.id == group_id)
+            .options(selectinload(GroupTable.channel))
+        )
+        group = group_result.scalar_one_or_none()
+        if not group:
+            raise NotFoundError(resource_type="Group", resource_id=str(group_id))
+        channel = group.channel
+        allowed = (
+            agent_id in channel.members
+            or agent_id in channel.silent_observers
+            or await has_privileged_access(self.session, agent_id)
+        )
+        if not allowed:
+            raise PermissionError("You don't have access to this group")
+        return group
+
+    async def require_session_read_access(
+        self, session_id: UUID, agent_id: UUID
+    ) -> SessionTable:
+        """Raise unless `agent_id` may read `session_id`; return the session."""
+        session = await self.get_session_or_raise(session_id)
+        await self.require_group_read_access(cast("UUID", session.group_id), agent_id)
+        return session
+
+    async def get_session_with_links_for_agent(
+        self, session_id: UUID, agent_id: UUID
+    ) -> SessionTable:
+        """get_session_with_links + a read-access check for `agent_id`."""
+        session = await self.get_session_with_links_or_raise(session_id)
+        await self.require_group_read_access(cast("UUID", session.group_id), agent_id)
+        return session
 
     async def get_channel_by_slug_or_raise(self, slug: str) -> ChannelTable:
         """Return a channel by slug or raise NotFoundError."""
@@ -934,7 +976,7 @@ class MessagingService(BaseService):
         # Verify session exists
         session = await self.get_session(session_id)
         if not session:
-            raise NotFoundError(f"Session {session_id} not found")
+            raise NotFoundError(resource_type="Session", resource_id=str(session_id))
 
         # Idempotent duplicate handling: if this exact (session, task) pair
         # is already linked, return the existing row. Re-creating sessions
@@ -1248,7 +1290,9 @@ class MessagingService(BaseService):
             )
             group = group_result.scalar_one_or_none()
             if not group:
-                raise NotFoundError(f"Group '{req.group_id}' not found")
+                raise NotFoundError(
+                    resource_type="Group", resource_id=str(req.group_id)
+                )
             return group
 
         group = await self._resolve_group_from_parent_tasks(req.task_ids)
@@ -1370,7 +1414,7 @@ class MessagingService(BaseService):
         """
         channel = await self.get_channel_by_slug(req.channel_slug)
         if not channel:
-            raise NotFoundError(f"Channel '{req.channel_slug}' not found")
+            raise NotFoundError(resource_type="Channel", resource_id=req.channel_slug)
 
         channel_id = cast("UUID", channel.id)
         reusable = await self._find_ancestor_session_on_channel(
@@ -1609,7 +1653,7 @@ class MessagingService(BaseService):
             # (session.id), not the requested one — a closed-session redirect
             # makes req.session_id stale, which would let a cross-session reply
             # slip through (or wrongly reject a valid one).
-            await self._validate_reply_target(req.reply_to, session.id)
+            await self._validate_reply_target(req.reply_to, cast("UUID", session.id))
 
         content_length = len(req.content)
         message = MessageTable(
@@ -1659,9 +1703,7 @@ class MessagingService(BaseService):
                     )
                 )
         except Exception as e:
-            self.log.warning(
-                "Failed to publish message event", error=str(e)
-            )
+            self.log.warning("Failed to publish message event", error=str(e))
 
         # Notify mentioned agents via Redis Streams
         await self._notify_mentions(message, req.agent_id, channel.slug)

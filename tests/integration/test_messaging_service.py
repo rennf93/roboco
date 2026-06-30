@@ -12,12 +12,12 @@ from uuid import uuid4 as _u
 
 import pytest
 import pytest_asyncio
+from roboco.api.schemas.sessions import session_to_response_with_links
 from roboco.config import settings
 from roboco.db.tables import AgentTable, MessageTable, ProjectTable, TaskTable
 from roboco.db.tables import AgentTable as _AgentTable
 from roboco.enforcement.channel_access import ChannelAccessDeniedError
 from roboco.models import AgentRole, AgentStatus, MessageType, Team
-from roboco.models.events import EventType
 from roboco.models.base import (
     ChannelType,
     SessionStatus,
@@ -25,6 +25,7 @@ from roboco.models.base import (
     TaskStatus,
     TaskType,
 )
+from roboco.models.events import EventType
 from roboco.models.messaging import (
     ChannelCreateRequest,
     GroupCreateRequest,
@@ -109,6 +110,26 @@ def _channel_req(slug_suffix: str) -> ChannelCreateRequest:
         channel_type=ChannelType.CELL,
         description="desc",
     )
+
+
+async def _make_agent(svc: MessagingService, role: AgentRole) -> AgentTable:
+    """Insert a fresh agent with `role` (no channel membership) for access tests."""
+    agent = AgentTable(
+        id=uuid4(),
+        name="X",
+        slug=f"x-{uuid4().hex[:8]}",
+        role=role,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="x",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    svc.session.add(agent)
+    await svc.session.flush()
+    return agent
 
 
 # ---------------------------------------------------------------------------
@@ -384,8 +405,12 @@ async def test_link_session_to_task_missing_session(msg_setup: dict) -> None:
     svc = msg_setup["svc"]
     aid = msg_setup["agent_id"]
     tid = msg_setup["task_id"]
-    with pytest.raises(NotFoundError):
+    with pytest.raises(NotFoundError) as exc:
         await svc.link_session_to_task(uuid4(), tid, aid)
+    # Message must not read "... not found not found" — the raise passed a full
+    # sentence as resource_type, which NotFoundError appends " not found" to.
+    assert "not found not found" not in str(exc.value)
+    assert exc.value.resource_type == "Session"
 
 
 @pytest.mark.asyncio
@@ -417,8 +442,6 @@ async def test_get_session_with_links_eager_loads_task_links(
     shot (the panel was forced into a triple-fetch because the single-session
     read returned them empty). The service read eager-loads task_links → task so
     the response builder can render titles without a lazy-load greenlet error."""
-    from roboco.api.schemas.sessions import session_to_response_with_links
-
     svc = msg_setup["svc"]
     aid = msg_setup["agent_id"]
     tid = msg_setup["task_id"]
@@ -442,6 +465,79 @@ async def test_get_session_with_links_missing_raises(msg_setup: dict) -> None:
     svc = msg_setup["svc"]
     with pytest.raises(NotFoundError):
         await svc.get_session_with_links_or_raise(uuid4())
+
+
+@pytest.mark.asyncio
+async def test_require_group_read_access_denies_non_member(msg_setup: dict) -> None:
+    """An authenticated agent that is neither a channel member/observer nor
+    privileged must be denied — closes the IDOR where any agent could read any
+    private channel's group/session transcripts."""
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    outsider = await _make_agent(svc, AgentRole.DEVELOPER)
+    with pytest.raises(PermissionError):
+        await svc.require_group_read_access(grp.id, outsider.id)
+
+
+@pytest.mark.asyncio
+async def test_require_group_read_access_allows_member(msg_setup: dict) -> None:
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    member = await _make_agent(svc, AgentRole.DEVELOPER)
+    await svc.add_channel_member_or_raise(
+        channel_id=ch.id, member_id=member.id, can_write=True
+    )
+    allowed = await svc.require_group_read_access(grp.id, member.id)
+    assert allowed.id == grp.id
+
+
+@pytest.mark.asyncio
+async def test_require_group_read_access_allows_privileged(msg_setup: dict) -> None:
+    """A privileged role (CEO) reads any group without channel membership."""
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    ceo = await _make_agent(svc, AgentRole.CEO)
+    allowed = await svc.require_group_read_access(grp.id, ceo.id)
+    assert allowed.id == grp.id
+
+
+@pytest.mark.asyncio
+async def test_require_group_read_access_missing_group_raises(
+    msg_setup: dict,
+) -> None:
+    svc = msg_setup["svc"]
+    outsider = await _make_agent(svc, AgentRole.DEVELOPER)
+    with pytest.raises(NotFoundError):
+        await svc.require_group_read_access(uuid4(), outsider.id)
+
+
+@pytest.mark.asyncio
+async def test_get_session_with_links_for_agent_denies_non_member(
+    msg_setup: dict,
+) -> None:
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    outsider = await _make_agent(svc, AgentRole.DEVELOPER)
+    with pytest.raises(PermissionError):
+        await svc.get_session_with_links_for_agent(sess.id, outsider.id)
+
+
+@pytest.mark.asyncio
+async def test_require_session_read_access_denies_non_member(
+    msg_setup: dict,
+) -> None:
+    svc = msg_setup["svc"]
+    ch = await svc.create_channel(_channel_req(uuid4().hex[:6]))
+    grp = await svc.create_group(GroupCreateRequest(name="g1", channel_id=ch.id))
+    sess = await svc.create_session(SessionCreateRequest(group_id=grp.id))
+    outsider = await _make_agent(svc, AgentRole.DEVELOPER)
+    with pytest.raises(PermissionError):
+        await svc.require_session_read_access(sess.id, outsider.id)
 
 
 @pytest.mark.asyncio
