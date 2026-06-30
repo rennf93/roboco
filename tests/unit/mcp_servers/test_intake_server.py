@@ -70,7 +70,49 @@ async def test_post_draft_reports_http_error() -> None:
 
     async with _client(handler) as client:
         result = await intake_server.post_draft("s", {}, client=client)
-    assert result == {"error": "http_503"}
+    # A no-body failure still surfaces the status; ``detail`` is None when the
+    # body is absent/unparseable (#57 — the body is now captured, not dropped).
+    assert result == {"error": "http_503", "detail": None}
+
+
+@pytest.mark.asyncio
+async def test_post_event_captures_body_on_non_success() -> None:
+    """#57: on a non-success response the relay's body carries the real reason
+    (e.g. 'session not in MegaTask scope' on a 422); _post_event must capture it
+    under ``detail`` so the intake agent gets actionable remediation instead of an
+    opaque ``http_422`` token."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(422, json={"detail": "session not in MegaTask scope"})
+
+    async with _client(handler) as client:
+        result = await intake_server.post_draft("s", {}, client=client)
+    assert result["error"] == "http_422"
+    assert result["detail"] == {"detail": "session not in MegaTask scope"}
+
+
+@pytest.mark.asyncio
+async def test_propose_batch_result_string_includes_relay_detail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The propose_batch failure string surfaces the captured relay body so the
+    grok intake agent can tell whether to re-shape the draft or surface to the
+    CEO (#57). ``post_batch`` is stubbed to the dict _post_event now returns when
+    the relay rejects with a body."""
+
+    async def _relay_rejected(
+        _session_id: str, _payload: dict[str, Any], **_kw: Any
+    ) -> dict[str, Any]:
+        return {
+            "error": "http_422",
+            "detail": {"detail": "session not in MegaTask scope"},
+        }
+
+    monkeypatch.setattr(intake_server, "post_batch", _relay_rejected)
+    monkeypatch.setenv("ROBOCO_PROMPTER_SESSION_ID", "sess-1")
+    msg = await intake_server.propose_batch([{"title": "A"}], "MegaTask")
+    assert "Could not submit the MegaTask to the panel" in msg
+    assert "session not in MegaTask scope" in msg
 
 
 @pytest.mark.asyncio

@@ -20,6 +20,7 @@ provides ``ROBOCO_API_URL`` + ``ROBOCO_PROMPTER_SESSION_ID``.
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any
 
@@ -55,7 +56,15 @@ async def _post_event(
         if owns:
             await http.aclose()
     if not resp.is_success:
-        return {"error": f"http_{resp.status_code}"}
+        # Capture the relay's body so the caller can surface the real reason
+        # (e.g. 'session not in MegaTask scope' on a 422) instead of an opaque
+        # `http_422` token with no remediation (#57). None when the body is
+        # absent or not JSON.
+        try:
+            body = resp.json()
+        except (ValueError, json.JSONDecodeError):
+            body = None
+        return {"error": f"http_{resp.status_code}", "detail": body}
     return {"ok": True}
 
 
