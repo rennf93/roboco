@@ -243,6 +243,16 @@ async def test_pr_review_claim_and_complete(db_session: AsyncSession) -> None:
     # claim to the reaper and, for a GROK reviewer, trips the idle-kill
     # watchdog before the review is posted (the wedge/respawn loop).
     assert claimed.last_heartbeat_at is not None
+    # Single-claimant invariant (mirrors _qa_or_doc_claim / _finalize_claim):
+    # active_claimant_id is what _active_claim_violation checks for content
+    # writes (note/evidence). Without it the reviewer can claim + read the PR
+    # but every note() returns _not_active_claimant -> the journal:learning
+    # entry post_pr_review's tracing gate requires can never be recorded ->
+    # the reviewer deadlocks at post_pr_review (tracing_gap) and burns tokens
+    # into the do-server breaker. claimed_at is set for parity with QA/doc.
+    assert claimed.active_claimant_id is not None
+    assert UUID(str(claimed.active_claimant_id)) == reviewer_id
+    assert claimed.claimed_at is not None
 
     # Re-claiming a non-pending task is a no-op.
     assert await svc.pr_review_claim(reviewer_id, task_id) is None
@@ -257,6 +267,8 @@ async def test_pr_review_claim_and_complete(db_session: AsyncSession) -> None:
     assert done.qa_notes is None
     assert (done.notes_structured or {}).get("pr_review", {}).get("verdict")
     assert done.claimed_by is None
+    # Single-claimant lock cleared on completion (the review hand-off is done).
+    assert done.active_claimant_id is None
 
     # Re-completing a completed task is a no-op.
     assert await svc.complete_review(reviewer_id, task_id) is None

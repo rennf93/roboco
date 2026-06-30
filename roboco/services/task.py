@@ -1386,8 +1386,18 @@ class TaskService(BaseService):
         task = await self.get(task_id)
         if task is None or task.status != TaskStatus.PENDING:
             return None
+        now = datetime.now(UTC)
         task.assigned_to = cast("Any", reviewer_agent_id)
         task.claimed_by = cast("Any", reviewer_agent_id)
+        task.claimed_at = now
+        # Single-claimant invariant (mirrors _qa_or_doc_claim / _finalize_claim):
+        # active_claimant_id is what _active_claim_violation checks for content
+        # writes (note/evidence). Without it the reviewer can claim + read the PR
+        # but every note() returns _not_active_claimant, so the journal:learning
+        # entry post_pr_review's tracing gate requires can never be recorded ->
+        # the reviewer deadlocks at post_pr_review (tracing_gap) and burns tokens
+        # into the do-server breaker. Cleared by complete_review.
+        task.active_claimant_id = cast("Any", reviewer_agent_id)
         self._validate_and_set_status(
             task, TaskStatus.CLAIMED, "pr_reviewer", audit_agent_id=reviewer_agent_id
         )
