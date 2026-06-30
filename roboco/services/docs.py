@@ -218,8 +218,11 @@ class DocsService(BaseService):
         # 4. Search RAG for similar existing documentation (by content, not just title)
         existing_path = await self._find_similar_doc(req.title, req.content, team)
 
-        if existing_path:
-            # UPDATE existing doc instead of creating new
+        if existing_path and Path(existing_path).name == req.filename:
+            # UPDATE the similar doc — but only when the agent is writing the
+            # SAME filename. A different filename means the agent intends a new
+            # file; collapsing it onto the similar doc's path would overwrite
+            # an unrelated file (#35).
             result = await self._update_existing_doc(
                 agent_id=agent_id,
                 existing_path=existing_path,
@@ -227,7 +230,8 @@ class DocsService(BaseService):
                 doc_type=doc_type,
             )
         else:
-            # 5. No similar doc found - create new
+            # 5. No similar doc found (or the similar doc has a different
+            # filename) — create new.
             result = await self._create_new_doc(
                 agent_id=agent_id,
                 team=team,
@@ -238,18 +242,26 @@ class DocsService(BaseService):
         # 6. Persist the doc into the project's repo and commit it onto the task
         # branch, so the documenter's output actually lands in the repository via
         # the open PR — not only in the /app/docs knowledge store. Best-effort: a
-        # documenter without a cloned workspace / task branch still succeeds.
-        await self._commit_doc_to_repo(agent_id, req, doc_type)
-        return result
+        # documenter without a cloned workspace / task branch still succeeds, but
+        # the outcome is surfaced on the doc_ref (#34) so a failed commit is not
+        # silently swallowed.
+        commit_status = await self._commit_doc_to_repo(agent_id, req, doc_type)
+        rel_path, doc_ref, is_update = result
+        doc_ref.commit_status = commit_status
+        return rel_path, doc_ref, is_update
 
     async def _commit_doc_to_repo(
         self, agent_id: str, req: WriteDocInput, doc_type: str
-    ) -> None:
+    ) -> str:
         """Write the doc into the project's workspace clone and commit it onto
         the task branch, so it persists to the repository through the open PR.
 
-        Best-effort: any failure (no task branch yet, workspace not cloned, a git
-        hiccup) is logged and swallowed — it must never fail the doc write.
+        Best-effort: a failure (no task branch yet, workspace not cloned, a git
+        hiccup) never fails the doc write, but the outcome is returned so the
+        caller can surface it (#34) — ``committed`` (landed on the branch),
+        ``skipped`` (no branch / workspace / actor to commit onto — the doc
+        still saved to /app/docs), or ``failed`` (a git hiccup — tell the cell
+        PM the doc did not reach the repo).
         """
         from roboco.services.git import get_git_service
         from roboco.services.project import get_project_service
@@ -260,15 +272,15 @@ class DocsService(BaseService):
             )
             task = result.scalar_one_or_none()
             if task is None or not task.branch_name or task.project_id is None:
-                return
+                return "skipped"
             project = await get_project_service(self.session).get(
                 UUID(str(task.project_id))
             )
             if project is None:
-                return
+                return "skipped"
             actor = self._agent_uuid(agent_id)
             if actor is None:
-                return
+                return "skipped"
 
             git = get_git_service(self.session)
             workspace = await git.get_workspace(project.slug, actor)
@@ -292,13 +304,18 @@ class DocsService(BaseService):
                 task_id=str(req.task_id),
                 path=rel_path,
             )
+            return "committed"
         except Exception as exc:
+            # Fail-loud (#34): a git hiccup is surfaced as ``failed`` (logged),
+            # not silently swallowed — the agent can tell the cell PM the doc
+            # did not reach the repo. The /app/docs write already succeeded.
             self.log.warning(
                 "Could not commit documentation to repo (non-fatal)",
                 agent_id=agent_id,
                 task_id=str(req.task_id),
                 error=str(exc),
             )
+            return "failed"
 
     @staticmethod
     def _agent_uuid(agent_id: str) -> UUID | None:
@@ -390,7 +407,10 @@ class DocsService(BaseService):
         else:
             rel_path = f"{team_path}/{req.filename}"
 
-        full_path = DOCS_BASE_PATH / rel_path
+        # Containment-check the built path (#33): a bare ``DOCS_BASE_PATH /
+        # rel_path`` would silently escape on a malformed team path. The
+        # filename is already validated, but the resolved path is asserted too.
+        full_path = _resolve_contained_path(DOCS_BASE_PATH, rel_path)
 
         self.log.info(
             "Creating new documentation",
@@ -428,7 +448,10 @@ class DocsService(BaseService):
         doc_type: str,
     ) -> tuple[str, DocRef, bool]:
         """Update an existing documentation file."""
-        full_path = DOCS_BASE_PATH / existing_path
+        # The update path comes from RAG ``source`` — containment-check it
+        # (#33): a ``source`` that escapes the docs dir must be refused, not
+        # written / overwritten.
+        full_path = _resolve_contained_path(DOCS_BASE_PATH, existing_path)
 
         self.log.info(
             "Updating existing documentation (RAG dedup)",

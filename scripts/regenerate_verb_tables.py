@@ -114,6 +114,12 @@ def _format_field(name: str, field_info: Any) -> str:
 def _annot_str(annot: Any) -> str:
     if annot is None or annot is type(None):
         return "None"
+    # Drop Annotated[T, ...] metadata (BeforeValidator, etc.) — render the bare
+    # type so the prompt table never leaks ``BeforeValidator(func=...)`` repr
+    # (with a memory address) into agent-facing prompt text (#199).
+    metadata = getattr(annot, "__metadata__", None)
+    if metadata is not None:
+        annot = annot.__origin__
     origin = get_origin(annot)
     if origin is None:
         return getattr(annot, "__name__", str(annot))

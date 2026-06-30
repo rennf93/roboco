@@ -60,10 +60,23 @@ async def _handle_write(
             "The file has been indexed in RAG and linked to the task."
         )
 
+    # Surface the repo-commit outcome (#34): a 'failed' commit means the doc
+    # saved to /app/docs but did NOT reach the project repo — the cell PM must
+    # be told so the PR does not ship without the docs.
+    doc_ref = result.get("doc_ref") or {}
+    commit_status = doc_ref.get("commit_status") if isinstance(doc_ref, dict) else None
+    if commit_status == "failed":
+        guidance += (
+            " WARNING: the doc could NOT be committed to the project repo — tell"
+            " the cell PM so the docs are not missing from the PR."
+        )
+    elif commit_status == "skipped":
+        guidance += " (saved to /app/docs only — no task branch to commit onto yet)."
+
     return {
         "status": status,
         "path": path,
-        "doc_ref": result.get("doc_ref"),
+        "doc_ref": doc_ref,
         "is_update": is_update,
         "guidance": guidance,
     }

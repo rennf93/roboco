@@ -58,6 +58,14 @@ class DocRef(RobocoBase):
     updated_at: str | None = Field(
         default=None, description="ISO timestamp of last update"
     )
+    commit_status: str | None = Field(
+        default=None,
+        description=(
+            "Whether the doc reached the project repo: 'committed', 'skipped' "
+            "(no task branch — saved to /app/docs only), or 'failed' (git "
+            "hiccup — tell the cell PM)"
+        ),
+    )
 
 
 class ProgressUpdate(RobocoBase):

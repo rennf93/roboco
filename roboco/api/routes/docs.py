@@ -97,6 +97,7 @@ async def write_doc(
                 created_at=doc_ref.created_at,
                 updated_by=doc_ref.updated_by,
                 updated_at=doc_ref.updated_at,
+                commit_status=doc_ref.commit_status,
             ),
         )
     except ValidationError as e:

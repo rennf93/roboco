@@ -124,6 +124,59 @@ async def test_corrupt_file_falls_back_to_last_ok(
     assert health.last_ok_sha == "ok1"
 
 
+async def test_health_recovers_after_in_place_repair(
+    db_session: AsyncSession, tmp_path: Path
+) -> None:
+    """#132: ``health`` re-reads the LIVE file status — a cached ``degraded``
+    row must not hide an in-place repair at the same (stale) head key."""
+    project = await _seed_project(
+        db_session, head_commit="h", workspace_path=str(tmp_path)
+    )
+    conv = tmp_path / ".roboco"
+    conv.mkdir()
+    (conv / "conventions.yml").write_text("modules: [unterminated\n")
+    svc = get_conventions_service(db_session)
+    await svc.get_map(project)  # caches the degraded state
+    assert (await svc.health(project)).status == "degraded"
+
+    # Repair the file in place at the SAME head key.
+    (conv / "conventions.yml").write_text(
+        "modules:\n  - path: lib/fixed\n    purpose: fixed\n"
+    )
+    assert (await svc.health(project)).status == "ok"
+
+
+async def test_get_map_recovers_after_in_place_repair(
+    db_session: AsyncSession, tmp_path: Path
+) -> None:
+    """#132: ``get_map`` does not serve a cached ``degraded`` (last-good) map
+    once the file is repaired in place — it re-derives the fixed map."""
+    project = await _seed_project(
+        db_session, head_commit="ok1", workspace_path=str(tmp_path)
+    )
+    conv = tmp_path / ".roboco"
+    conv.mkdir()
+    (conv / "conventions.yml").write_text(
+        "modules:\n  - path: lib/special\n    purpose: special\n"
+    )
+    svc = get_conventions_service(db_session)
+    await svc.get_map(project)  # caches ok1 (lib/special)
+
+    project.head_commit = "bad1"
+    await db_session.flush()
+    (conv / "conventions.yml").write_text("modules: [unterminated\n")
+    degraded = await svc.get_map(project)  # falls back to last_good (lib/special)
+    assert any(m.path == "lib/special" for m in degraded.modules)
+
+    # Repair in place at the same bad1 head with a NEW module.
+    (conv / "conventions.yml").write_text(
+        "modules:\n  - path: lib/fixed\n    purpose: fixed\n"
+    )
+    recovered = await svc.get_map(project)
+    assert any(m.path == "lib/fixed" for m in recovered.modules)
+    assert not any(m.path == "lib/special" for m in recovered.modules)
+
+
 async def test_baseline_constraints_include_block_rules(
     db_session: AsyncSession, tmp_path: Path
 ) -> None:

@@ -254,7 +254,7 @@ async def test_write_doc_creates_new_subfolder_empty(
 
 @pytest.mark.asyncio
 async def test_write_doc_updates_existing(docs_setup: dict, tmp_path: Path) -> None:
-    """When _find_similar_doc returns a path, update path is taken."""
+    """When _find_similar_doc returns a path AND the filename matches, update."""
     svc = docs_setup["svc"]
     existing_path = "backend/api/existing.md"
     with (
@@ -266,7 +266,7 @@ async def test_write_doc_updates_existing(docs_setup: dict, tmp_path: Path) -> N
             agent_id="be-doc",
             req=WriteDocInput(
                 task_id=docs_setup["task_id"],
-                filename="example.md",
+                filename="existing.md",
                 doc_type="api",
                 title="New Title",
                 content="# Updated",
@@ -311,7 +311,7 @@ async def test_write_doc_update_preserves_existing_metadata(
             agent_id="be-doc",
             req=WriteDocInput(
                 task_id=docs_setup["task_id"],
-                filename="example.md",
+                filename="existing.md",
                 doc_type="api",
                 title="New Title",
                 content="# Updated",
@@ -321,6 +321,155 @@ async def test_write_doc_update_preserves_existing_metadata(
     # Original creator preserved, updater set to current agent.
     assert doc_ref.created_by == "be-pm"
     assert doc_ref.updated_by == "be-doc"
+
+
+@pytest.mark.asyncio
+async def test_write_doc_no_collapse_on_different_filename(
+    docs_setup: dict, tmp_path: Path
+) -> None:
+    """#35: a similar doc with a DIFFERENT filename must not be overwritten —
+    the agent named a new file, so create it instead of collapsing onto the
+    similar doc's path."""
+    svc = docs_setup["svc"]
+    existing_path = "backend/api/existing.md"
+    with (
+        patch("roboco.services.docs.DOCS_BASE_PATH", tmp_path),
+        patch.object(svc, "_find_similar_doc", AsyncMock(return_value=existing_path)),
+        patch.object(svc, "_index_doc_in_rag", AsyncMock(return_value=None)),
+    ):
+        rel_path, _doc_ref, is_update = await svc.write_doc(
+            agent_id="be-doc",
+            req=WriteDocInput(
+                task_id=docs_setup["task_id"],
+                filename="other.md",
+                doc_type="api",
+                title="New Title",
+                content="# New",
+            ),
+        )
+    assert is_update is False
+    # A new file is created at the requested filename, NOT the similar doc path.
+    assert rel_path.endswith("other.md")
+    assert rel_path != existing_path
+
+
+@pytest.mark.asyncio
+async def test_write_doc_update_path_containment_checked(
+    docs_setup: dict, tmp_path: Path
+) -> None:
+    """#33: the RAG-returned update path is containment-checked — a ``source``
+    that escapes the docs dir (``../../etc/evil.md``) is refused, not written."""
+    svc = docs_setup["svc"]
+    escaping = "../../etc/evil.md"
+    with (
+        patch("roboco.services.docs.DOCS_BASE_PATH", tmp_path),
+        patch.object(svc, "_find_similar_doc", AsyncMock(return_value=escaping)),
+        patch.object(svc, "_index_doc_in_rag", AsyncMock(return_value=None)),
+        pytest.raises(ValidationError),
+    ):
+        await svc.write_doc(
+            agent_id="be-doc",
+            req=WriteDocInput(
+                task_id=docs_setup["task_id"],
+                filename="evil.md",
+                doc_type="api",
+                title="Title",
+                content="# x",
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_write_doc_commit_status_skipped_when_no_branch(
+    docs_setup: dict, tmp_path: Path
+) -> None:
+    """#34: when there is no task branch to commit onto, the doc still saves to
+    /app/docs and the doc_ref carries ``commit_status='skipped'`` (not a silent
+    None) so the agent knows the repo commit did not happen."""
+    svc = docs_setup["svc"]
+    with (
+        patch("roboco.services.docs.DOCS_BASE_PATH", tmp_path),
+        patch.object(svc, "_find_similar_doc", AsyncMock(return_value=None)),
+        patch.object(svc, "_index_doc_in_rag", AsyncMock(return_value=None)),
+    ):
+        _rel, doc_ref, _is_update = await svc.write_doc(
+            agent_id="be-doc",
+            req=WriteDocInput(
+                task_id=docs_setup["task_id"],
+                filename="example.md",
+                doc_type="api",
+                title="Title",
+                content="# Hello",
+            ),
+        )
+    # The fixture task has no branch_name → commit is skipped, not silent.
+    assert doc_ref.commit_status == "skipped"
+
+
+@pytest.mark.asyncio
+async def test_commit_doc_to_repo_returns_failed_on_git_error(
+    docs_setup: dict,
+) -> None:
+    """#34: a git hiccup surfaces as ``failed`` (fail-loud), not a swallowed
+    None — the agent can tell the cell PM the doc did not reach the repo."""
+    svc = docs_setup["svc"]
+    # Give the task a branch + project so the commit path is entered.
+    result = await svc.session.execute(
+        select(TaskTable).where(TaskTable.id == docs_setup["task_id"])
+    )
+    task = result.scalar_one()
+    task.branch_name = "feature/docs"
+    await svc.session.flush()
+
+    fake_git = MagicMock()
+    fake_git.get_workspace = AsyncMock(side_effect=RuntimeError("git boom"))
+    with patch("roboco.services.git.get_git_service", return_value=fake_git):
+        status = await svc._commit_doc_to_repo(
+            "be-doc",
+            WriteDocInput(
+                task_id=docs_setup["task_id"],
+                filename="example.md",
+                doc_type="api",
+                title="Title",
+                content="# Hello",
+            ),
+            "api",
+        )
+    assert status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_commit_doc_to_repo_returns_committed_on_success(
+    docs_setup: dict, tmp_path: Path
+) -> None:
+    """#34: a successful repo commit reports ``committed``."""
+    svc = docs_setup["svc"]
+    result = await svc.session.execute(
+        select(TaskTable).where(TaskTable.id == docs_setup["task_id"])
+    )
+    task = result.scalar_one()
+    task.branch_name = "feature/docs"
+    await svc.session.flush()
+
+    fake_git = MagicMock()
+    fake_git.get_workspace = AsyncMock(return_value=tmp_path)
+    fake_git.commit = AsyncMock(return_value={"oid": "abc"})
+    with (
+        patch("roboco.services.git.get_git_service", return_value=fake_git),
+        patch.object(svc, "_write_file", AsyncMock(return_value=None)),
+    ):
+        status = await svc._commit_doc_to_repo(
+            str(docs_setup["agent_id"]),
+            WriteDocInput(
+                task_id=docs_setup["task_id"],
+                filename="example.md",
+                doc_type="api",
+                title="Title",
+                content="# Hello",
+            ),
+            "api",
+        )
+    assert status == "committed"
 
 
 # ---------------------------------------------------------------------------

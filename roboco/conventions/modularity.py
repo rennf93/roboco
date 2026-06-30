@@ -47,6 +47,8 @@ _DB_METHODS = frozenset(
         "execute",
         "scalar",
         "scalars",
+        "stream",
+        "stream_scalars",
         "add",
         "add_all",
         "merge",

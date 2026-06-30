@@ -90,6 +90,7 @@ class DocRefResponse(BaseModel):
     created_at: str | None = None
     updated_by: str | None = None
     updated_at: str | None = None
+    commit_status: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
