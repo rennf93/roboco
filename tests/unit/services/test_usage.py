@@ -578,6 +578,27 @@ class TestGetByModel:
         assert result[_ZERO]["model"] == "claude-sonnet-5"
 
     @pytest.mark.asyncio
+    async def test_result_includes_cache_fields_and_hit_rate(self) -> None:
+        """Breakdown rows carry cache tokens + cache_hit_rate = read/(input+read)."""
+        _cache_write = 100
+        rows = [
+            _make_row(
+                model="claude-sonnet-5",
+                tokens_input=_INPUT_TOKENS,
+                tokens_output=200,
+                tokens_cache_read=_CACHE_READ_TOKENS,
+                tokens_cache_write=_cache_write,
+                cost_usd=0.05,
+            )
+        ]
+        svc = _service_with_execute(_result_fetchall(rows))
+        result = await svc.get_by_model("24h")
+        item = result[_ZERO]
+        assert item["tokens_cache_read"] == _CACHE_READ_TOKENS
+        assert item["tokens_cache_write"] == _cache_write
+        assert abs(item["cache_hit_rate"] - _EXPECTED_HIT_RATE) < _TOL
+
+    @pytest.mark.asyncio
     async def test_cache_tokens_included_in_total_tokens(self) -> None:
         """total_tokens must include cache_read and cache_write."""
         _cache_read = 300

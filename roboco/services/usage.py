@@ -292,11 +292,17 @@ class UsageService(BaseService):
         for r in rows:
             ti, to_, tcr, tcw = _row_tokens(r)
             total = ti + to_ + tcr + tcw
+            input_like = ti + tcr
             items.append(
                 {
                     key_name: getattr(r, key_name),
                     "tokens_input": ti,
                     "tokens_output": to_,
+                    "tokens_cache_read": tcr,
+                    "tokens_cache_write": tcw,
+                    "cache_hit_rate": round(tcr / input_like, 4)
+                    if input_like > 0
+                    else 0.0,
                     "total_tokens": total,
                     "cost_usd": round(float(r.cost_usd or 0.0), 6),
                     "pct_of_total": round(total / grand_total * 100, 2)
