@@ -7,6 +7,8 @@ destructive index-management group, which is dev/test-only).
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from roboco.mcp.optimal_server import (
     _RESULT_CONTENT_CAP,
@@ -73,7 +75,7 @@ _ITEM_LIMIT = 2
 
 
 def test_cap_result_content_caps_text_and_count() -> None:
-    items = [
+    items: list[Any] = [
         {"content": "x" * (_RESULT_CONTENT_CAP + 200), "source": "a"},
         {"content": "short", "source": "b"},
         "bare-string-item",
