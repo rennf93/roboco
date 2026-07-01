@@ -93,7 +93,7 @@ The Pydantic/dataclass domain surface of RoboCo — the typed contract the API, 
 | `OrchestratorAgentState` | StrEnum | runtime.py:15 | offline/starting/active/waiting_short/waiting_long/idle/stopping |
 | `AgentInstance` | dataclass | runtime.py:70 | Running Claude Code container record + `usage_session_id` |
 | `SpawnGitContext` | dataclass | runtime.py:28 | Git context for spawn (project_slug, branch, `task_short_id` for worktree) |
-| `MODEL_MAP` | dict | runtime.py:106 | short-name→full Claude id (opus→claude-opus-4-6, sonnet→claude-sonnet-4-6, haiku→…) |
+| `MODEL_MAP` | dict | runtime.py:106 | short-name→full Claude id (opus→claude-opus-4-6, sonnet→claude-sonnet-5, haiku→…) |
 | `MODEL_CATALOG` | tuple | llm_catalog.py:67 | Settings-dropdown source of truth; Anthropic entries derived from `MODEL_MAP` |
 | `OLLAMA_ROLE_DEFAULTS` | dict | llm_catalog.py:107 | Per-role model for "pure Ollama" mode |
 | `PermissionLevel` | IntEnum | permissions.py:15 | CEO=0/BOARD=1/MAIN_PM=2/CELL_PM=3/CELL_MEMBER=4/AUDITOR=99 |

@@ -105,7 +105,7 @@ class WaitingRecord:
 # Model mapping for cost optimization
 MODEL_MAP: dict[str, str] = {
     "opus": "claude-opus-4-6",
-    "sonnet": "claude-sonnet-4-6",
+    "sonnet": "claude-sonnet-5",
     "haiku": "claude-haiku-4-5-20251001",
 }
 
@@ -114,6 +114,9 @@ MODEL_MAP: dict[str, str] = {
 ROLE_MODEL_MAP: dict[str, str] = {
     "developer": "sonnet",
     "qa": "sonnet",
+    # PR reviewer — reviews untrusted external/fork PRs and gates root→master;
+    # highest-stakes review, so opus rather than the sonnet review tier.
+    "pr_reviewer": "opus",
     "documenter": "haiku",
     "cell_pm": "sonnet",
     "main_pm": "opus",
