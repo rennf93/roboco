@@ -526,8 +526,11 @@ class StreamEventBus:
         recovered = 0
         for msg in pending_details:
             if int(msg["time_since_delivered"]) >= idle_time_ms:
+                # Decode the id: xpending_range returns bytes (no
+                # decode_responses); str(bytes) → "b'..'", which Redis rejects
+                # as an unrecognized XCLAIM option, wedging pending recovery.
                 recovered += await self._claim_and_handle(
-                    stream, str(msg["message_id"]), idle_time_ms
+                    stream, self._to_str(msg["message_id"]), idle_time_ms
                 )
         return recovered
 

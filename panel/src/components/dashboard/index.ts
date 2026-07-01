@@ -14,3 +14,4 @@ export { ReleaseProposalCard } from "./release-proposal-card";
 export { PlaybookReviewQueue } from "./playbook-review-queue";
 export { StrategySignalsPanel } from "./strategy-signals-panel";
 export { UsageOverviewPanel } from "./usage-overview-panel";
+export { ScorecardOverviewPanel } from "./scorecard-overview-panel";

@@ -4980,8 +4980,8 @@ class AgentOrchestrator:
     @staticmethod
     def _usage_from_transcript(
         agent_id: str, claude_session_id: str | None = None
-    ) -> tuple[int, int, int, int]:
-        """Sum token usage from the agent's Claude Code transcript.
+    ) -> tuple[int, int, int, int, int]:
+        """Sum token usage + turn count from the agent's Claude Code transcript.
 
         The host ``~/.claude`` is mounted into the orchestrator, so transcripts
         are readable here under ``projects/<cwd-dir>/<session-id>.jsonl``. When
@@ -5008,11 +5008,11 @@ class AgentOrchestrator:
                 for f in d.glob("*.jsonl")
             ]
             if not jsonl:
-                return (0, 0, 0, 0)
+                return (0, 0, 0, 0, 0)
             newest = max(jsonl, key=lambda f: f.stat().st_mtime)
             return sum_transcript_usage(newest)
         except OSError:
-            return (0, 0, 0, 0)
+            return (0, 0, 0, 0, 0)
 
     def _grok_usage_json(self, agent_id: str) -> dict[str, Any] | None:
         """Read a GROK agent's ``usage.json`` (``{model, total_tokens, cost_usd}``).
@@ -5167,12 +5167,52 @@ class AgentOrchestrator:
             )
 
         if not tokens[0] and not tokens[1]:
-            tin, tout, cr, cw = self._usage_from_transcript(
+            tin, tout, cr, cw, _turns = self._usage_from_transcript(
                 agent_id, self._claude_session_id_for(agent_id)
             )
             if tin or tout:
                 tokens = (tin, tout, cr, cw)
         return tokens
+
+    async def _resolve_final_turns_tools(self, agent_id: str) -> tuple[int, int]:
+        """Resolve final ``(turns, tool_calls)`` for a stopping agent.
+
+        Primary source is the live SDK ``/usage/status`` (which carries both).
+        For ``turns`` only there is a durable Claude-transcript fallback (unique
+        assistant-message count) for short-lived agents whose SDK counts race
+        teardown; ``tool_calls`` has no transcript equivalent and stays 0 ("n/a")
+        when the SDK misses. Grok agents have neither — returns ``(0, 0)``.
+        Best-effort: any failure degrades to zeros, never blocks finalize.
+        """
+        from roboco.models.base import ModelProvider
+
+        if self.get_provider_for_agent(agent_id) == ModelProvider.GROK.value:
+            return (0, 0)
+
+        turns = tool_calls = 0
+        sdk_url = f"http://roboco-agent-{agent_id}:{SDK_PORT}/usage/status"
+        try:
+            async with httpx.AsyncClient(
+                timeout=3.0, headers=_system_api_headers()
+            ) as client:
+                resp = await client.get(sdk_url)
+                if resp.status_code == http_status.HTTP_200_OK:
+                    data = resp.json()
+                    turns = int(data.get("turns", 0) or 0)
+                    tool_calls = int(data.get("tool_calls", 0) or 0)
+        except Exception as sdk_exc:
+            logger.debug(
+                "Could not fetch final turns/tool_calls from SDK",
+                agent_id=agent_id,
+                error=str(sdk_exc),
+            )
+
+        if not turns:
+            *_tokens, t = self._usage_from_transcript(
+                agent_id, self._claude_session_id_for(agent_id)
+            )
+            turns = t
+        return turns, tool_calls
 
     async def _finalize_spawn_session(
         self,
@@ -5198,6 +5238,10 @@ class AgentOrchestrator:
                 tokens_cache_read,
                 tokens_cache_write,
             ) = await self._resolve_final_token_usage(agent_id)
+            # Resolve LLM iterations + tool calls (live SDK; turns has a
+            # transcript fallback). Separate from the token tuple so the live
+            # snapshot helpers keep their 4-tuple contract.
+            turns, tool_calls = await self._resolve_final_turns_tools(agent_id)
 
             # Look up the model and usage_session_id from the running instance config.
             model = "unknown"
@@ -5248,6 +5292,8 @@ class AgentOrchestrator:
                             tokens_output=tokens_output,
                             tokens_cache_read=tokens_cache_read,
                             tokens_cache_write=tokens_cache_write,
+                            turns=turns,
+                            tool_calls=tool_calls,
                             exit_reason=exit_reason,
                             estimated_cost_usd=cost,
                         )
@@ -5305,10 +5351,11 @@ class AgentOrchestrator:
         tokens = await self._fetch_agent_tokens(client, agent_id)
         if tokens is not None:
             return tokens
-        transcript = self._usage_from_transcript(
+        tin, tout, cr, cw, _turns = self._usage_from_transcript(
             agent_id, self._claude_session_id_for(agent_id)
         )
-        return transcript if any(transcript) else None
+        token_counts = (tin, tout, cr, cw)
+        return token_counts if any(token_counts) else None
 
     @staticmethod
     async def _persist_token_snapshot(
@@ -5593,6 +5640,385 @@ class AgentOrchestrator:
             )
         else:
             db.add(DailyUsageRollupTable(id=uuid4(), **key, **values))
+
+    # =========================================================================
+    # MEMBER-PERFORMANCE ROLLUP (granular per-member scorecards)
+    # =========================================================================
+
+    async def _sweep_member_performance(self) -> None:
+        """Upsert member_performance_daily from spawn sessions + audit_log.
+
+        Mirrors _sweep_daily_rollup: a trailing 7-day, overwrite-upsert sweep
+        (idempotent — re-running overwrites, never accumulates). Aggregates each
+        metric with one query keyed (date, agent_slug) into an accumulator, then
+        upserts one row per member per day plus one CEO row per day. Wrapped in
+        its own try/except so a bad member rollup never aborts the sweeper.
+        """
+        try:
+            from roboco.db.base import get_session_factory
+        except ImportError:
+            return
+        try:
+            window_start = datetime.now(UTC) - timedelta(days=7)
+            session_factory = get_session_factory()
+            async with session_factory() as db:
+                acc: dict[tuple[Any, str], dict[str, Any]] = {}
+                await self._msweep_spawn(db, window_start, acc)
+                await self._msweep_delivery(db, window_start, acc)
+                await self._msweep_caused(db, window_start, acc)
+                await self._msweep_qa(db, window_start, acc)
+                await self._msweep_escalations(db, window_start, acc)
+                await self._msweep_blocked_others(db, window_start, acc)
+                await self._msweep_idle(db, window_start, acc)
+                await self._msweep_blocked_seconds(db, window_start, acc)
+                for (day, slug), fields in acc.items():
+                    await self._upsert_member_perf_row(db, day, "agent", slug, fields)
+                await self._msweep_ceo(db, window_start)
+                await db.commit()
+                logger.debug("Member performance rollup complete", rows=len(acc))
+        except Exception as exc:
+            logger.warning("Member performance rollup failed", error=str(exc))
+
+    @staticmethod
+    def _merge_member(
+        acc: dict[tuple[Any, str], dict[str, Any]],
+        day: Any,
+        slug: str,
+        **fields: Any,
+    ) -> None:
+        """Merge one metric's aggregate into the (date, slug) accumulator entry."""
+        if not slug:
+            return
+        entry = acc.setdefault((day, slug), {})
+        for key, value in fields.items():
+            entry[key] = value
+
+    async def _msweep_spawn(
+        self,
+        db: Any,
+        window_start: datetime,
+        acc: dict[tuple[Any, str], dict[str, Any]],
+    ) -> None:
+        """Effort / turns / tool_calls / tokens / cost from closed spawn sessions."""
+        from sqlalchemy import text
+
+        sql = text(
+            """
+            SELECT date(started_at) AS d, agent_slug AS slug, team, role,
+              COALESCE(SUM(EXTRACT(epoch FROM
+                (COALESCE(ended_at, now()) - started_at))), 0) AS active_s,
+              COALESCE(SUM(turns), 0) AS turns,
+              COALESCE(SUM(tool_calls), 0) AS tool_calls,
+              COALESCE(SUM(tokens_input + tokens_output
+                + tokens_cache_read + tokens_cache_write), 0) AS tokens,
+              COALESCE(SUM(estimated_cost_usd), 0) AS cost
+            FROM agent_spawn_sessions
+            WHERE ended_at IS NOT NULL AND started_at >= :ws
+            GROUP BY date(started_at), agent_slug, team, role
+            """
+        )
+        for r in (await db.execute(sql, {"ws": window_start})).all():
+            self._merge_member(
+                acc,
+                r.d,
+                r.slug,
+                team=r.team,
+                role=r.role,
+                active_runtime_seconds=int(r.active_s or 0),
+                turns=int(r.turns or 0),
+                tool_calls=int(r.tool_calls or 0),
+                tokens=int(r.tokens or 0),
+                cost_usd=float(r.cost or 0.0),
+            )
+
+    async def _msweep_delivery(
+        self,
+        db: Any,
+        window_start: datetime,
+        acc: dict[tuple[Any, str], dict[str, Any]],
+    ) -> None:
+        """Completed / first-pass / revisions-received per task owner per day."""
+        from sqlalchemy import text
+
+        sql = text(
+            """
+            SELECT date(t.completed_at) AS d, ag.slug AS slug,
+              COUNT(*) AS completed,
+              COUNT(*) FILTER (WHERE COALESCE(t.revision_count, 0) = 0) AS first_pass,
+              COALESCE(SUM(t.revision_count), 0) AS received
+            FROM tasks t JOIN agents ag ON ag.id = t.assigned_to
+            WHERE t.status = 'completed' AND t.completed_at >= :ws
+              AND t.assigned_to IS NOT NULL
+            GROUP BY date(t.completed_at), ag.slug
+            """
+        )
+        for r in (await db.execute(sql, {"ws": window_start})).all():
+            self._merge_member(
+                acc,
+                r.d,
+                r.slug,
+                tasks_completed=int(r.completed or 0),
+                tasks_first_pass=int(r.first_pass or 0),
+                revisions_received=int(r.received or 0),
+            )
+
+    async def _msweep_caused(
+        self,
+        db: Any,
+        window_start: datetime,
+        acc: dict[tuple[Any, str], dict[str, Any]],
+    ) -> None:
+        """Revisions caused — qa/pr fail events attributed to the rejector."""
+        from sqlalchemy import text
+
+        sql = text(
+            """
+            SELECT date(al.timestamp) AS d, ag.slug AS slug, COUNT(*) AS caused
+            FROM audit_log al JOIN agents ag ON ag.id = al.agent_id
+            WHERE al.event_type IN ('task.qa_fail', 'task.pr_fail')
+              AND al.timestamp >= :ws
+            GROUP BY date(al.timestamp), ag.slug
+            """
+        )
+        for r in (await db.execute(sql, {"ws": window_start})).all():
+            self._merge_member(acc, r.d, r.slug, revisions_caused=int(r.caused or 0))
+
+    async def _msweep_qa(
+        self,
+        db: Any,
+        window_start: datetime,
+        acc: dict[tuple[Any, str], dict[str, Any]],
+    ) -> None:
+        """QA pass-rate — passed (awaiting_documentation by qa) + failed (qa_fail)."""
+        from sqlalchemy import text
+
+        sql = text(
+            """
+            SELECT date(al.timestamp) AS d, ag.slug AS slug,
+              COUNT(*) FILTER (
+                WHERE al.event_type = 'task.awaiting_documentation') AS passed,
+              COUNT(*) FILTER (WHERE al.event_type = 'task.qa_fail') AS failed
+            FROM audit_log al JOIN agents ag ON ag.id = al.agent_id
+            WHERE al.timestamp >= :ws AND (
+              (al.event_type = 'task.awaiting_documentation'
+                AND (al.details->>'agent_role') = 'qa')
+              OR al.event_type = 'task.qa_fail'
+            )
+            GROUP BY date(al.timestamp), ag.slug
+            """
+        )
+        for r in (await db.execute(sql, {"ws": window_start})).all():
+            passed = int(r.passed or 0)
+            failed = int(r.failed or 0)
+            self._merge_member(
+                acc,
+                r.d,
+                r.slug,
+                qa_reviews_passed=passed,
+                qa_reviews_total=passed + failed,
+            )
+
+    async def _msweep_escalations(
+        self,
+        db: Any,
+        window_start: datetime,
+        acc: dict[tuple[Any, str], dict[str, Any]],
+    ) -> None:
+        """Escalations raised per member (keyed on details.escalator_slug)."""
+        from sqlalchemy import text
+
+        sql = text(
+            """
+            SELECT date(timestamp) AS d,
+              (details->>'escalator_slug') AS slug, COUNT(*) AS n
+            FROM audit_log
+            WHERE event_type = 'task.escalated' AND timestamp >= :ws
+              AND (details->>'escalator_slug') IS NOT NULL
+            GROUP BY date(timestamp), (details->>'escalator_slug')
+            """
+        )
+        for r in (await db.execute(sql, {"ws": window_start})).all():
+            self._merge_member(acc, r.d, r.slug, escalations=int(r.n or 0))
+
+    async def _msweep_blocked_others(
+        self,
+        db: Any,
+        window_start: datetime,
+        acc: dict[tuple[Any, str], dict[str, Any]],
+    ) -> None:
+        """Downstream tasks a member's completed task was blocking."""
+        from sqlalchemy import text
+
+        sql = text(
+            """
+            SELECT date(al.timestamp) AS d, ag.slug AS slug,
+              COALESCE(SUM((al.details->>'count')::int), 0) AS n
+            FROM audit_log al
+            JOIN tasks t ON t.id = al.target_id
+            JOIN agents ag ON ag.id = t.assigned_to
+            WHERE al.event_type = 'task.unblocked_dependents' AND al.timestamp >= :ws
+            GROUP BY date(al.timestamp), ag.slug
+            """
+        )
+        for r in (await db.execute(sql, {"ws": window_start})).all():
+            self._merge_member(acc, r.d, r.slug, blocked_others=int(r.n or 0))
+
+    async def _msweep_idle(
+        self,
+        db: Any,
+        window_start: datetime,
+        acc: dict[tuple[Any, str], dict[str, Any]],
+    ) -> None:
+        """Idle seconds — each idle mark to the member's next spawn (else now)."""
+        from sqlalchemy import text
+
+        sql = text(
+            """
+            WITH idle AS (
+              SELECT date(al.timestamp) AS d,
+                (al.details->>'agent_slug') AS slug, al.timestamp AS idle_at
+              FROM audit_log al
+              WHERE al.event_type = 'agent.idle' AND al.timestamp >= :ws
+                AND (al.details->>'agent_slug') IS NOT NULL
+            )
+            SELECT i.d, i.slug,
+              COALESCE(SUM(EXTRACT(epoch FROM (
+                COALESCE((SELECT MIN(s.started_at) FROM agent_spawn_sessions s
+                          WHERE s.agent_slug = i.slug AND s.started_at > i.idle_at),
+                         now()) - i.idle_at))), 0) AS idle_s
+            FROM idle i GROUP BY i.d, i.slug
+            """
+        )
+        for r in (await db.execute(sql, {"ws": window_start})).all():
+            self._merge_member(acc, r.d, r.slug, idle_seconds=int(r.idle_s or 0))
+
+    async def _msweep_blocked_seconds(
+        self,
+        db: Any,
+        window_start: datetime,
+        acc: dict[tuple[Any, str], dict[str, Any]],
+    ) -> None:
+        """Wall-clock a member's tasks spent in `blocked`, per owner per day."""
+        from sqlalchemy import text
+
+        sql = text(
+            """
+            WITH ordered AS (
+              SELECT a.target_id, a.timestamp AS entered,
+                (a.details->>'to_status') AS status,
+                LEAD(a.timestamp) OVER (
+                  PARTITION BY a.target_id ORDER BY a.timestamp) AS exited
+              FROM audit_log a
+              WHERE a.event_type LIKE 'task.%'
+                AND a.event_type = 'task.' || (a.details->>'to_status')
+                AND a.timestamp >= :ws
+            )
+            SELECT date(o.entered) AS d, ag.slug AS slug,
+              COALESCE(SUM(EXTRACT(epoch FROM
+                (COALESCE(o.exited, now()) - o.entered))), 0) AS blocked_s
+            FROM ordered o
+            JOIN tasks t ON t.id = o.target_id
+            JOIN agents ag ON ag.id = t.assigned_to
+            WHERE o.status = 'blocked'
+            GROUP BY date(o.entered), ag.slug
+            """
+        )
+        for r in (await db.execute(sql, {"ws": window_start})).all():
+            self._merge_member(acc, r.d, r.slug, blocked_seconds=int(r.blocked_s or 0))
+
+    async def _msweep_ceo(self, db: Any, window_start: datetime) -> None:
+        """Upsert one CEO row per day: approval/unblock dwell + god-mode count."""
+        from sqlalchemy import text
+
+        sql = text(
+            """
+            WITH events AS (
+              SELECT target_id, timestamp, date(timestamp) AS d,
+                (details->>'to_status') AS to_status,
+                (details->>'agent_role') AS role
+              FROM audit_log
+              WHERE event_type LIKE 'task.%' AND timestamp >= :ws
+            ),
+            approvals AS (
+              SELECT e.d, EXTRACT(epoch FROM ((
+                SELECT MIN(x.timestamp) FROM events x
+                WHERE x.target_id = e.target_id AND x.timestamp > e.timestamp
+                  AND x.role = 'ceo'
+                  AND x.to_status IN
+                    ('completed', 'needs_revision', 'cancelled', 'pending')
+              ) - e.timestamp)) AS latency
+              FROM events e WHERE e.to_status = 'awaiting_ceo_approval'
+            ),
+            unblocks AS (
+              SELECT e.d, EXTRACT(epoch FROM ((
+                SELECT MIN(x.timestamp) FROM events x
+                WHERE x.target_id = e.target_id AND x.timestamp > e.timestamp
+                  AND x.role = 'ceo' AND x.to_status IN ('in_progress', 'pending')
+              ) - e.timestamp)) AS latency
+              FROM events e WHERE e.to_status = 'blocked'
+            )
+            SELECT d,
+              COALESCE(SUM(approval_latency), 0) AS approval_s,
+              COALESCE(SUM(unblock_latency), 0) AS unblock_s,
+              COALESCE(SUM(godmode), 0) AS godmode
+            FROM (
+              SELECT d, latency AS approval_latency, 0 AS unblock_latency, 0 AS godmode
+                FROM approvals WHERE latency IS NOT NULL
+              UNION ALL
+              SELECT d, 0, latency, 0 FROM unblocks WHERE latency IS NOT NULL
+              UNION ALL
+              SELECT d, 0, 0, 1 FROM events WHERE role = 'ceo'
+            ) u GROUP BY d
+            """
+        )
+        for r in (await db.execute(sql, {"ws": window_start})).all():
+            await self._upsert_member_perf_row(
+                db,
+                r.d,
+                "ceo",
+                "",
+                {
+                    "ceo_approval_dwell_seconds": int(r.approval_s or 0),
+                    "ceo_unblock_dwell_seconds": int(r.unblock_s or 0),
+                    "godmode_actions": int(r.godmode or 0),
+                },
+            )
+
+    async def _upsert_member_perf_row(
+        self, db: Any, day: Any, member_kind: str, slug: str, fields: dict[str, Any]
+    ) -> None:
+        """Overwrite-upsert one member_performance_daily row on the natural key."""
+        from uuid import uuid4 as _uuid4
+
+        from sqlalchemy import select, update
+
+        from roboco.db.tables import MemberPerformanceDailyTable
+
+        existing = (
+            await db.execute(
+                select(MemberPerformanceDailyTable).where(
+                    MemberPerformanceDailyTable.date == day,
+                    MemberPerformanceDailyTable.member_kind == member_kind,
+                    MemberPerformanceDailyTable.agent_slug == slug,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            await db.execute(
+                update(MemberPerformanceDailyTable)
+                .where(MemberPerformanceDailyTable.id == existing.id)
+                .values(**fields)
+            )
+        else:
+            db.add(
+                MemberPerformanceDailyTable(
+                    id=_uuid4(),
+                    date=day,
+                    member_kind=member_kind,
+                    agent_slug=slug,
+                    **fields,
+                )
+            )
 
     async def restore_waiting_records(self) -> int:
         """Load persisted waiting records into memory on orchestrator start.
@@ -5956,6 +6382,8 @@ Start by:
         # closed sessions into the daily aggregation table.
         await self._sweep_token_snapshots()
         await self._sweep_daily_rollup()
+        # Granular per-member performance rollup (own try/except inside).
+        await self._sweep_member_performance()
 
         # Prune old agent transcripts (throttled internally to ~hourly) so the
         # operator's bind-mounted ~/.claude doesn't grow without bound.

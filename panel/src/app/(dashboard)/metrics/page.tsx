@@ -21,6 +21,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { OfflineState } from "@/components/ui/offline-state";
 import { DeliveryTabContent } from "@/components/metrics/delivery-tab";
+import { ScorecardsTabContent } from "@/components/metrics/scorecards-tab";
 import {
   UsageTimeSeriesChart,
   ModelUsageDonut,
@@ -602,12 +603,13 @@ function CacheEfficiencyCard({
 
 // ─── Tab types ────────────────────────────────────────────────────────────────
 
-type MetricsTab = "performance" | "token-usage" | "delivery";
+type MetricsTab = "performance" | "token-usage" | "delivery" | "scorecards";
 
 const VALID_METRICS_TABS: MetricsTab[] = [
   "performance",
   "token-usage",
   "delivery",
+  "scorecards",
 ];
 
 function isValidMetricsTab(value: string | null): value is MetricsTab {
@@ -649,6 +651,7 @@ function MetricsPageContent() {
           <TabsTrigger value="performance">Performance</TabsTrigger>
           <TabsTrigger value="token-usage">Token Usage</TabsTrigger>
           <TabsTrigger value="delivery">Delivery</TabsTrigger>
+          <TabsTrigger value="scorecards">Scorecards</TabsTrigger>
         </TabsList>
 
         <TabsContent value="performance" className="mt-6">
@@ -661,6 +664,10 @@ function MetricsPageContent() {
 
         <TabsContent value="delivery" className="mt-6">
           <DeliveryTabContent />
+        </TabsContent>
+
+        <TabsContent value="scorecards" className="mt-6">
+          <ScorecardsTabContent />
         </TabsContent>
       </Tabs>
     </div>

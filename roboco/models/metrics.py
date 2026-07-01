@@ -8,7 +8,15 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
+from roboco.foundation.policy.stage_effort import StageEffort
 from roboco.models.base import Team
+
+# CEO decision transitions used by the CEO scorecard (audit-log to_status
+# values). Approval = any CEO exit from awaiting_ceo_approval (incl. the
+# coordination-root reject that lands in `pending`); unblock = a CEO revive
+# out of `blocked`.
+CEO_APPROVAL_DECISIONS = ("completed", "needs_revision", "cancelled", "pending")
+CEO_UNBLOCK_DECISIONS = ("in_progress", "pending")
 
 
 class VelocityMetrics:
@@ -246,4 +254,169 @@ class Scorecard:
             "rework_rate": round(self.rework_rate, 4),
             "tokens": self.tokens,
             "cost_usd": round(self.cost_usd, 4),
+        }
+
+
+@dataclass
+class MemberScorecard:
+    """Per-member rollup scorecard (agent) with derived rates.
+
+    Served from member_performance_daily (terminal work) optionally enriched
+    with a live in-flight overlay (the member's non-terminal tasks' effort so
+    far). Completion counts stay rollup-only — the two sets are disjoint by
+    status — so ``includes_live_inflight`` only enriches effort/turns/cost.
+    """
+
+    scope: str  # "member"
+    id: str
+    name: str
+    tasks_completed: int
+    first_pass_yield: float | None
+    effort_throughput_per_hour: float | None
+    active_runtime_hours: float
+    turns: int
+    tool_calls: int
+    tokens: int
+    cost_usd: float
+    turns_per_task: float | None
+    tool_calls_per_task: float | None
+    revisions_caused: int
+    revisions_received: int
+    qa_pass_rate: float | None
+    escalations: int
+    blocked_others: int
+    idle_hours: float
+    utilization: float | None
+    includes_live_inflight: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "scope": self.scope,
+            "id": self.id,
+            "name": self.name,
+            "member_kind": "agent",
+            "tasks_completed": self.tasks_completed,
+            "first_pass_yield": self.first_pass_yield,
+            "effort_throughput_per_hour": self.effort_throughput_per_hour,
+            "active_runtime_hours": round(self.active_runtime_hours, 2),
+            "turns": self.turns,
+            "tool_calls": self.tool_calls,
+            "tokens": self.tokens,
+            "cost_usd": round(self.cost_usd, 4),
+            "turns_per_task": self.turns_per_task,
+            "tool_calls_per_task": self.tool_calls_per_task,
+            "revisions_caused": self.revisions_caused,
+            "revisions_received": self.revisions_received,
+            "qa_pass_rate": self.qa_pass_rate,
+            "escalations": self.escalations,
+            "blocked_others": self.blocked_others,
+            "idle_hours": round(self.idle_hours, 2),
+            "utilization": self.utilization,
+            "includes_live_inflight": self.includes_live_inflight,
+        }
+
+
+@dataclass
+class OrgScorecard:
+    """Team or whole-org rollup aggregate (rollup-only, no live overlay)."""
+
+    scope: str  # "org" | "team"
+    team: str | None
+    member_count: int
+    tasks_completed: int
+    first_pass_yield: float | None
+    effort_throughput_per_hour: float | None
+    active_runtime_hours: float
+    turns: int
+    tool_calls: int
+    tokens: int
+    cost_usd: float
+    revisions_caused: int
+    revisions_received: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "scope": self.scope,
+            "team": self.team,
+            "member_count": self.member_count,
+            "tasks_completed": self.tasks_completed,
+            "first_pass_yield": self.first_pass_yield,
+            "effort_throughput_per_hour": self.effort_throughput_per_hour,
+            "active_runtime_hours": round(self.active_runtime_hours, 2),
+            "turns": self.turns,
+            "tool_calls": self.tool_calls,
+            "tokens": self.tokens,
+            "cost_usd": round(self.cost_usd, 4),
+            "revisions_caused": self.revisions_caused,
+            "revisions_received": self.revisions_received,
+        }
+
+
+@dataclass
+class CeoScorecard:
+    """The human CEO as a measured member — read purely from the audit_log.
+
+    The CEO never runs an LLM, so token/cost/turns are n/a. Its metrics are
+    approval dwell (awaiting_ceo_approval -> a CEO decision), unblock dwell
+    (blocked -> a CEO revive), and god-mode action count (every ceo-attributed
+    transition in the window).
+    """
+
+    approval_p50_seconds: float
+    approval_p90_seconds: float
+    approval_count: int
+    unblock_p50_seconds: float
+    unblock_count: int
+    godmode_actions: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "member_kind": "ceo",
+            "approval_p50_seconds": round(self.approval_p50_seconds, 2),
+            "approval_p90_seconds": round(self.approval_p90_seconds, 2),
+            "approval_count": self.approval_count,
+            "unblock_p50_seconds": round(self.unblock_p50_seconds, 2),
+            "unblock_count": self.unblock_count,
+            "godmode_actions": self.godmode_actions,
+        }
+
+
+@dataclass
+class TaskMetrics:
+    """Granular per-task effort: real runtime vs wall-clock, turns, cost, rework.
+
+    ``active_runtime_seconds`` is summed spawn-stint effort (can exceed
+    wall-clock when stints run concurrently); ``stages`` is the wall-clock
+    active-vs-wait decomposition per status window (active clamped to the
+    window). Computed live from ``agent_spawn_sessions`` (by task_id) joined
+    with ``audit_log`` (by target_id).
+    """
+
+    task_id: str
+    active_runtime_seconds: int
+    wall_clock_seconds: int
+    turns: int
+    tool_calls: int
+    tokens: int
+    cost_usd: float
+    revision_count: int
+    qa_fails: int
+    pr_fails: int
+    stints: int
+    stages: list[StageEffort]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "task_id": self.task_id,
+            "active_runtime_seconds": self.active_runtime_seconds,
+            "wall_clock_seconds": self.wall_clock_seconds,
+            "turns": self.turns,
+            "tool_calls": self.tool_calls,
+            "tokens": self.tokens,
+            "cost_usd": round(self.cost_usd, 4),
+            "revision_count": self.revision_count,
+            "qa_fails": self.qa_fails,
+            "pr_fails": self.pr_fails,
+            "stints": self.stints,
+            "stages": [s.to_dict() for s in self.stages],
         }

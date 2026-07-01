@@ -25,7 +25,7 @@ A feature flag set in `.env` takes effect on the next backend restart. The env-g
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `ROBOCO_APP_VERSION` | `0.14.0` | Reported app version. |
+| `ROBOCO_APP_VERSION` | `0.15.0` | Reported app version. |
 | `ROBOCO_DEBUG` | `false` | Debug mode. |
 | `ROBOCO_ENVIRONMENT` | `development` | One of `development` / `staging` / `production`. Selects the JSON log renderer (prod) vs console renderer. The compose stack sets `production`. |
 | `ROBOCO_HOST` | `127.0.0.1` | Bind address. Use `0.0.0.0` in containers. |

@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-07-01
+
+### Added
+
+- **Metrics granularity — the company is now measurable per member, per task, and as a whole, with the CEO measured as a member too.** Every agent spawn session now captures its operational shape, not just its token/cost total: LLM iterations (`turns`) and tool invocations (`tool_calls`) are parsed from the transcript, exposed over the SDK `/usage/status` + `/usage/sync`, and persisted on `agent_spawn_sessions` (migration 055) alongside the existing 4 token dimensions. A new per-task metrics endpoint (`GET /dashboard/metrics/task/{id}`) decomposes a task's lifetime into **active vs. wait** effort — merged-overlap active-runtime across every spawn stint mapped onto the audit-log stage windows (the pure `compute_stage_effort` helper) — so a slow task can be read as "the work was hard" vs. "it sat in a queue." A nightly rollup table `member_performance_daily` (migration 056) + orchestrator sweeper aggregate each member's day from data already captured: tasks completed, first-pass yield, active-effort throughput/hr, turns & tool-calls per task, revisions caused/received, **QA pass-rate, escalations raised, times-this-member-blocked-others, and idle/utilization** (idle paired from `agent.idle` audit marks to the next spawn), plus derived ratios. Member / team / org scorecards read the rollup with a **live in-flight overlay** (today's not-yet-rolled sessions are folded in so the numbers aren't a day stale), served by `GET /dashboard/metrics/member/{id}`, `/dashboard/metrics/member/ceo`, and `/dashboard/metrics/org?team=`. The human CEO is a first-class measured member: the CEO scorecard reports approval-decision and unblock latency (p50/p90 from the audit journey) and god-mode override count — reconstructed entirely from the audit log, no new hot-path writes.
+- **A granular completion notification.** When a task completes, the CEO now gets a notification carrying the task's metrics breakdown (active vs. wait effort, turns, tool calls, revisions, cost) instead of a bare "done" — the completion signal doubles as a per-task scorecard.
+- **Panel: a Scorecards tab and a dashboard Performance card.** The Metrics page gains a **Scorecards** tab — an org rollup headline, the CEO-as-member card (approval/unblock dwell + god-mode count), and a per-member table (completed, first-pass yield, active effort, turns/task, QA pass-rate, escalations, blocked-others, utilization) where each row self-fetches its rollup and live in-flight rows carry a "live" badge. The dashboard gains a **Performance** overview card (org-wide 30-day completed / first-pass-yield / throughput-per-hour / active-effort / cost) that deep-links into the Scorecards tab.
+
+### Fixed
+
+- **`ceo_reject` now leaves an audit trail.** The CEO's reject-with-changes and cancel decisions emitted no named audit event, so rework and decision-latency attribution had a hole at the CEO chokepoint. Both now emit the transition audit event at the single `_emit_status_transition_audit` chokepoint, so the CEO's decisions are reconstructable alongside every other role's.
+- **Stream pending-message recovery no longer fails on every reclaim tick.** `StreamEventBus._recover_stream` decoded a Redis message id with `str()` on the raw bytes the client returns (no `decode_responses`), producing `"b'…-0'"` — which Redis rejects with "Unrecognized XCLAIM option", so unacknowledged messages from crashed/slow consumers were never reclaimed and leaked in the pending-entries list on every stream (`roboco:stream:usage` and others), spamming the error log each interval. It now decodes the id via the existing `_to_str` helper before XCLAIM.
+
 ## [0.14.0] - 2026-06-29
 
 ### Added

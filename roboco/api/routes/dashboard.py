@@ -608,3 +608,61 @@ async def get_team_scorecard(
             status_code=status.HTTP_404_NOT_FOUND, detail="Team scorecard unavailable"
         )
     return card.to_dict()
+
+
+@router.get("/metrics/task/{task_id}")
+async def get_task_metrics(
+    task_id: UUID,
+    db: DbSession,
+) -> dict[str, Any]:
+    """Granular per-task metrics: real effort vs wall-clock, turns/tool-calls,
+    per-stage active-vs-wait, who-caused-rework, tokens + cost (live)."""
+    metrics_service = get_metrics_service(db)
+    metrics = await metrics_service.get_task_metrics(task_id)
+    if metrics is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
+    return metrics.to_dict()
+
+
+# NOTE: /metrics/member/ceo MUST be declared before any /metrics/member/{id}
+# UUID-typed route so the literal "ceo" isn't captured as a path param.
+@router.get("/metrics/member/ceo")
+async def get_ceo_scorecard(
+    db: DbSession,
+    days: int = Query(default=30, ge=1, le=90),
+) -> dict[str, Any]:
+    """The human CEO as a measured member: approval/unblock dwell + god-mode count."""
+    metrics_service = get_metrics_service(db)
+    card = await metrics_service.get_ceo_scorecard(days=days)
+    return card.to_dict()
+
+
+@router.get("/metrics/member/{agent_id}")
+async def get_member_scorecard(
+    agent_id: UUID,
+    db: DbSession,
+    days: int = Query(default=30, ge=1, le=90),
+) -> dict[str, Any]:
+    """Per-member rollup scorecard (real effort, FPY, turns, cost, rework, the
+    four extras) + a live in-flight overlay. 404 if the agent doesn't exist."""
+    metrics_service = get_metrics_service(db)
+    card = await metrics_service.get_member_scorecard(agent_id, days=days)
+    if card is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found"
+        )
+    return card.to_dict()
+
+
+@router.get("/metrics/org")
+async def get_org_scorecard(
+    db: DbSession,
+    team: Team | None = None,
+    days: int = Query(default=30, ge=1, le=90),
+) -> dict[str, Any]:
+    """Org-wide (or per-cell with ?team=) rollup aggregate from the member table."""
+    metrics_service = get_metrics_service(db)
+    card = await metrics_service.get_org_scorecard(team=team, days=days)
+    return card.to_dict()

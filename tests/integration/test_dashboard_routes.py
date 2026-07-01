@@ -14,10 +14,18 @@ from httpx import ASGITransport, AsyncClient
 from roboco.api.deps import get_agent_context, get_db
 from roboco.api.routes.dashboard import get_main_pm_kanban
 from roboco.api.routes.dashboard import router as dashboard_router
-from roboco.db.tables import AgentTable
+from roboco.db.tables import AgentTable, ProjectTable, TaskTable
 from roboco.models import AgentRole, AgentStatus
+from roboco.models.base import (
+    Complexity,
+    TaskNature,
+    TaskStatus,
+    TaskType,
+    Team,
+)
 from roboco.models.permissions import AgentContext
 from roboco.services.dashboard import reset_storage
+from sqlalchemy import select
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, AsyncIterator
@@ -408,3 +416,110 @@ async def test_get_main_pm_kanban_function_directly(
     """
     result = await get_main_pm_kanban(db_session)
     assert isinstance(result, dict)
+
+
+@pytest.mark.asyncio
+async def test_ceo_scorecard_endpoint(dashboard_client: AsyncClient) -> None:
+    resp = await dashboard_client.get(
+        "/api/dashboard/metrics/member/ceo?days=30", headers=_HDR
+    )
+    assert resp.status_code == HTTPStatus.OK
+    body = resp.json()
+    assert body["member_kind"] == "ceo"
+    assert set(body) >= {
+        "approval_p50_seconds",
+        "approval_count",
+        "unblock_p50_seconds",
+        "unblock_count",
+        "godmode_actions",
+    }
+
+
+@pytest.mark.asyncio
+async def test_member_scorecard_404_when_absent(dashboard_client: AsyncClient) -> None:
+    resp = await dashboard_client.get(
+        f"/api/dashboard/metrics/member/{uuid4()}", headers=_HDR
+    )
+    assert resp.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_ceo_route_wins_over_member_uuid_route(
+    dashboard_client: AsyncClient,
+) -> None:
+    # The literal "ceo" must resolve to the CEO route, not the {agent_id} route.
+    resp = await dashboard_client.get("/api/dashboard/metrics/member/ceo", headers=_HDR)
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.json()["member_kind"] == "ceo"
+
+
+@pytest.mark.asyncio
+async def test_org_scorecard_endpoint(dashboard_client: AsyncClient) -> None:
+    resp = await dashboard_client.get("/api/dashboard/metrics/org", headers=_HDR)
+    assert resp.status_code == HTTPStatus.OK
+    body = resp.json()
+    assert body["scope"] == "org"
+    assert set(body) >= {"member_count", "tasks_completed", "first_pass_yield"}
+
+
+@pytest.mark.asyncio
+async def test_task_metrics_404_for_missing_task(
+    dashboard_client: AsyncClient,
+) -> None:
+    resp = await dashboard_client.get(
+        f"/api/dashboard/metrics/task/{uuid4()}", headers=_HDR
+    )
+    assert resp.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_task_metrics_returns_shape_for_existing_task(
+    db_session: AsyncSession, dashboard_client: AsyncClient
+) -> None:
+    creator = (await db_session.execute(select(AgentTable).limit(1))).scalar_one()
+    project = ProjectTable(
+        id=uuid4(),
+        name="P",
+        slug=f"p-{uuid4().hex[:6]}",
+        git_url="https://example.com/r.git",
+        assigned_cell=Team.BACKEND,
+        created_by=creator.id,
+    )
+    db_session.add(project)
+    await db_session.flush()
+    task = TaskTable(
+        id=uuid4(),
+        title="t",
+        description="d",
+        acceptance_criteria=["ac"],
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        status=TaskStatus.IN_PROGRESS,
+        team=Team.BACKEND,
+        project_id=project.id,
+        created_by=creator.id,
+        estimated_complexity=Complexity.MEDIUM,
+    )
+    db_session.add(task)
+    await db_session.flush()
+
+    resp = await dashboard_client.get(
+        f"/api/dashboard/metrics/task/{task.id}", headers=_HDR
+    )
+    assert resp.status_code == HTTPStatus.OK
+    body = resp.json()
+    assert body["task_id"] == str(task.id)
+    assert set(body) >= {
+        "active_runtime_seconds",
+        "wall_clock_seconds",
+        "turns",
+        "tool_calls",
+        "tokens",
+        "cost_usd",
+        "revision_count",
+        "qa_fails",
+        "pr_fails",
+        "stints",
+        "stages",
+    }
+    assert isinstance(body["stages"], list)

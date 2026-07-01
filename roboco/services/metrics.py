@@ -10,27 +10,35 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 from uuid import UUID
 
-from sqlalchemy import and_, func, select, text
+from sqlalchemy import and_, bindparam, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.db.tables import (
     AgentSpawnSessionTable,
     AgentTable,
     AuditLogTable,
+    MemberPerformanceDailyTable,
     MessageTable,
     NotificationTable,
     TaskTable,
 )
+from roboco.foundation.policy.stage_effort import compute_stage_effort
 from roboco.models.base import TaskStatus, Team
 from roboco.models.metrics import (
+    CEO_APPROVAL_DECISIONS,
+    CEO_UNBLOCK_DECISIONS,
     AgentMetrics,
     AgentReworkRate,
     BlockerMetrics,
     BottleneckReport,
+    CeoScorecard,
+    MemberScorecard,
+    OrgScorecard,
     ReworkReport,
     Scorecard,
     StageBottleneck,
     StageTiming,
+    TaskMetrics,
     TeamMetrics,
     TeamReworkRate,
     VelocityMetrics,
@@ -781,6 +789,440 @@ class MetricsService(BaseService):
             )
         ).scalar() or 0.0
         return float(cost)
+
+    async def _spawn_rollup_for_task(
+        self, task_id: UUID, close_at: datetime
+    ) -> dict[str, Any]:
+        """Per-task spawn aggregates: stints, effort, turns, tool_calls, tokens, cost.
+
+        ``active_runtime`` is summed stint duration (an open stint runs to
+        ``close_at`` — completed_at for a terminal task, else now); it can exceed
+        wall-clock when stints overlap. ``stints`` is the list of
+        ``(started, ended)`` intervals for the stage decomposition. ``task_id``
+        is bound as ``str`` — the column is ``String(36)``.
+        """
+        rows = (
+            await self.session.execute(
+                select(
+                    AgentSpawnSessionTable.started_at,
+                    AgentSpawnSessionTable.ended_at,
+                    AgentSpawnSessionTable.turns,
+                    AgentSpawnSessionTable.tool_calls,
+                    AgentSpawnSessionTable.tokens_input,
+                    AgentSpawnSessionTable.tokens_output,
+                    AgentSpawnSessionTable.tokens_cache_read,
+                    AgentSpawnSessionTable.tokens_cache_write,
+                    AgentSpawnSessionTable.estimated_cost_usd,
+                ).where(AgentSpawnSessionTable.task_id == str(task_id))
+            )
+        ).all()
+        stints: list[tuple[datetime, datetime]] = []
+        active = turns = tool_calls = tokens = 0.0
+        cost = 0.0
+        for r in rows:
+            ended = r.ended_at or close_at
+            stints.append((r.started_at, ended))
+            active += max(0.0, (ended - r.started_at).total_seconds())
+            turns += r.turns or 0
+            tool_calls += r.tool_calls or 0
+            tokens += (
+                (r.tokens_input or 0)
+                + (r.tokens_output or 0)
+                + (r.tokens_cache_read or 0)
+                + (r.tokens_cache_write or 0)
+            )
+            cost += r.estimated_cost_usd or 0.0
+        return {
+            "stints": stints,
+            "active_runtime_seconds": round(active),
+            "turns": int(turns),
+            "tool_calls": int(tool_calls),
+            "tokens": int(tokens),
+            "cost_usd": float(cost),
+        }
+
+    async def _stage_windows_for_task(
+        self, task_id: UUID, close_at: datetime
+    ) -> list[tuple[str, datetime, datetime]]:
+        """Ordered status windows for one task from the audit_log journey.
+
+        Single-task variant of ``get_cycle_time_by_stage``: LEAD gives each
+        generic ``task.<status>`` row's exit as the next row's timestamp; the
+        open final window (``exited_at IS NULL``) is closed at ``close_at``
+        (completed_at for a terminal task, else now) so an in-flight stage still
+        decomposes and a terminal task's final stage doesn't grow forever.
+        """
+        sql = text(
+            """
+            WITH ordered AS (
+                SELECT
+                    (a.details->>'to_status') AS status,
+                    a.timestamp AS entered_at,
+                    LEAD(a.timestamp) OVER (ORDER BY a.timestamp) AS exited_at
+                FROM audit_log a
+                WHERE a.target_id = CAST(:tid AS uuid)
+                  AND a.event_type LIKE 'task.%'
+                  AND a.event_type = 'task.' || (a.details->>'to_status')
+            )
+            SELECT status, entered_at, exited_at FROM ordered ORDER BY entered_at
+            """
+        )
+        rows = (await self.session.execute(sql, {"tid": str(task_id)})).all()
+        return [(r.status, r.entered_at, r.exited_at or close_at) for r in rows]
+
+    async def _task_fail_counts(self, task_id: UUID) -> tuple[int, int]:
+        """(qa_fails, pr_fails) attributed to this task from named audit events."""
+        rows = (
+            await self.session.execute(
+                select(AuditLogTable.event_type, func.count())
+                .where(
+                    AuditLogTable.target_id == task_id,
+                    AuditLogTable.event_type.in_(["task.qa_fail", "task.pr_fail"]),
+                )
+                .group_by(AuditLogTable.event_type)
+            )
+        ).all()
+        counts: dict[str, int] = {row[0]: row[1] for row in rows}
+        return counts.get("task.qa_fail", 0), counts.get("task.pr_fail", 0)
+
+    async def get_task_metrics(self, task_id: UUID) -> TaskMetrics | None:
+        """Live granular metrics for one task, or None if the task doesn't exist.
+
+        Composes summed effort + turns/tool_calls/tokens/cost (spawn sessions),
+        the per-stage active-vs-wait decomposition (audit windows x stints), and
+        who-caused-rework (revision_count + named qa/pr fail events).
+        """
+        task_row = (
+            await self.session.execute(
+                select(
+                    TaskTable.started_at,
+                    TaskTable.completed_at,
+                    TaskTable.revision_count,
+                ).where(TaskTable.id == task_id)
+            )
+        ).one_or_none()
+        if task_row is None:
+            return None
+        started_at, completed_at, revision_count = task_row
+        # Close open stints / the open final stage window at completed_at for a
+        # terminal task (so stages don't grow past completion), else at now.
+        wall_end = completed_at or datetime.now(UTC)
+        wall_clock = (wall_end - started_at).total_seconds() if started_at else 0.0
+
+        spawn = await self._spawn_rollup_for_task(task_id, wall_end)
+        windows = await self._stage_windows_for_task(task_id, wall_end)
+        qa_fails, pr_fails = await self._task_fail_counts(task_id)
+        stages = compute_stage_effort(windows, spawn["stints"])
+
+        return TaskMetrics(
+            task_id=str(task_id),
+            active_runtime_seconds=spawn["active_runtime_seconds"],
+            wall_clock_seconds=round(max(0.0, wall_clock)),
+            turns=spawn["turns"],
+            tool_calls=spawn["tool_calls"],
+            tokens=spawn["tokens"],
+            cost_usd=spawn["cost_usd"],
+            revision_count=revision_count or 0,
+            qa_fails=qa_fails,
+            pr_fails=pr_fails,
+            stints=len(spawn["stints"]),
+            stages=stages,
+        )
+
+    async def _ceo_latency(
+        self, since: datetime, from_status: str, to_statuses: Sequence[str]
+    ) -> tuple[float, float, int]:
+        """(p50, p90, count) seconds from a ``from_status`` entry to the next
+        CEO-attributed decision (``to_statuses``) on the same task.
+
+        Reads only ``audit_log`` (agent_role='ceo' serializes from the CEO
+        StrEnum). The decision is the earliest ceo row after the from-event.
+        """
+        sql = text(
+            """
+            WITH events AS (
+                SELECT target_id, timestamp,
+                       (details->>'to_status') AS to_status,
+                       (details->>'agent_role') AS role
+                FROM audit_log
+                WHERE event_type LIKE 'task.%' AND timestamp >= :since
+            ),
+            paired AS (
+                SELECT (
+                    SELECT MIN(d.timestamp) FROM events d
+                    WHERE d.target_id = e.target_id
+                      AND d.timestamp > e.timestamp
+                      AND d.role = 'ceo'
+                      AND d.to_status IN :to_statuses
+                ) - e.timestamp AS latency
+                FROM events e
+                WHERE e.to_status = :from_status
+            )
+            SELECT
+                PERCENTILE_CONT(0.5) WITHIN GROUP (
+                    ORDER BY EXTRACT(epoch FROM latency))::float AS p50,
+                PERCENTILE_CONT(0.9) WITHIN GROUP (
+                    ORDER BY EXTRACT(epoch FROM latency))::float AS p90,
+                COUNT(latency) AS n
+            FROM paired WHERE latency IS NOT NULL
+            """
+        ).bindparams(bindparam("to_statuses", expanding=True))
+        row = (
+            await self.session.execute(
+                sql,
+                {
+                    "since": since,
+                    "from_status": from_status,
+                    "to_statuses": list(to_statuses),
+                },
+            )
+        ).one()
+        return float(row.p50 or 0.0), float(row.p90 or 0.0), int(row.n or 0)
+
+    async def _ceo_godmode_count(self, since: datetime) -> int:
+        """Count every CEO-attributed task transition in the window."""
+        sql = text(
+            """
+            SELECT COUNT(*) AS n FROM audit_log
+            WHERE event_type LIKE 'task.%'
+              AND timestamp >= :since
+              AND (details->>'agent_role') = 'ceo'
+            """
+        )
+        return int((await self.session.execute(sql, {"since": since})).scalar() or 0)
+
+    async def get_ceo_scorecard(self, days: int = 30) -> CeoScorecard:
+        """The human CEO's scorecard — approval/unblock dwell + god-mode count."""
+        since = datetime.now(UTC) - timedelta(days=days)
+        approval_p50, approval_p90, approval_n = await self._ceo_latency(
+            since, "awaiting_ceo_approval", CEO_APPROVAL_DECISIONS
+        )
+        unblock_p50, _unblock_p90, unblock_n = await self._ceo_latency(
+            since, "blocked", CEO_UNBLOCK_DECISIONS
+        )
+        godmode = await self._ceo_godmode_count(since)
+        return CeoScorecard(
+            approval_p50_seconds=approval_p50,
+            approval_p90_seconds=approval_p90,
+            approval_count=approval_n,
+            unblock_p50_seconds=unblock_p50,
+            unblock_count=unblock_n,
+            godmode_actions=godmode,
+        )
+
+    _ROLLUP_SUM_COLUMNS: ClassVar[tuple[str, ...]] = (
+        "tasks_completed",
+        "tasks_first_pass",
+        "revisions_caused",
+        "revisions_received",
+        "active_runtime_seconds",
+        "turns",
+        "tool_calls",
+        "tokens",
+        "cost_usd",
+        "qa_reviews_total",
+        "qa_reviews_passed",
+        "escalations",
+        "blocked_others",
+        "idle_seconds",
+    )
+
+    async def _rollup_sums(
+        self, since_date: Any, *, agent_slug: str | None, team: Team | None
+    ) -> tuple[dict[str, float], int]:
+        """SUM the rollup columns over member_performance_daily agent rows.
+
+        Filters to ``member_kind='agent'`` in the window, optionally scoped to
+        one member (``agent_slug``) or one cell (``team``). Returns
+        ``(sums, member_count)`` where member_count is the distinct slugs.
+        """
+        cols = [
+            func.coalesce(
+                func.sum(getattr(MemberPerformanceDailyTable, name)), 0
+            ).label(name)
+            for name in self._ROLLUP_SUM_COLUMNS
+        ]
+        conds: list[Any] = [
+            MemberPerformanceDailyTable.member_kind == "agent",
+            MemberPerformanceDailyTable.date >= since_date,
+        ]
+        if agent_slug is not None:
+            conds.append(MemberPerformanceDailyTable.agent_slug == agent_slug)
+        if team is not None:
+            conds.append(MemberPerformanceDailyTable.team == team.value)
+        row = (
+            await self.session.execute(
+                select(
+                    *cols,
+                    func.count(func.distinct(MemberPerformanceDailyTable.agent_slug)),
+                ).where(and_(*conds))
+            )
+        ).one()
+        sums = {
+            name: float(getattr(row, name) or 0) for name in self._ROLLUP_SUM_COLUMNS
+        }
+        member_count = int(row[-1] or 0)
+        return sums, member_count
+
+    async def _live_inflight_overlay(self, agent_id: UUID) -> dict[str, float]:
+        """Effort of the member's currently-OPEN (running) spawn sessions on
+        non-terminal tasks — the live delta the terminal-day rollup cannot hold
+        yet.
+
+        Disjoint from the rollup by ``ended_at``: ``_msweep_spawn`` rolls up only
+        CLOSED sessions (``ended_at IS NOT NULL``), so this counts only OPEN ones
+        (``ended_at IS NULL``). A just-closed session lands in the rollup on the
+        next ~60s sweep, so there is no double-count. (Summing *all* of a task's
+        sessions here — as an earlier version did via ``get_task_metrics`` —
+        re-counted the closed sessions the rollup already holds, inflating the
+        member's effort on the common reap/respawn path.)
+        """
+        overlay = {
+            "active_runtime_seconds": 0.0,
+            "turns": 0.0,
+            "tool_calls": 0.0,
+            "tokens": 0.0,
+            "cost_usd": 0.0,
+        }
+        ids = (
+            (
+                await self.session.execute(
+                    select(TaskTable.id).where(
+                        TaskTable.assigned_to == agent_id,
+                        TaskTable.status.notin_(
+                            [TaskStatus.COMPLETED, TaskStatus.CANCELLED]
+                        ),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if not ids:
+            return overlay
+        # Aggregate in SQL (mirrors _msweep_spawn); active_runtime for an open
+        # session runs to now(). One row back — no per-row Python branching.
+        s = AgentSpawnSessionTable
+        row = (
+            await self.session.execute(
+                select(
+                    func.coalesce(
+                        func.sum(func.extract("epoch", func.now() - s.started_at)),
+                        0,
+                    ),
+                    func.coalesce(func.sum(s.turns), 0),
+                    func.coalesce(func.sum(s.tool_calls), 0),
+                    func.coalesce(
+                        func.sum(
+                            s.tokens_input
+                            + s.tokens_output
+                            + s.tokens_cache_read
+                            + s.tokens_cache_write
+                        ),
+                        0,
+                    ),
+                    func.coalesce(func.sum(s.estimated_cost_usd), 0),
+                ).where(
+                    s.task_id.in_([str(i) for i in ids]),
+                    s.ended_at.is_(None),
+                )
+            )
+        ).one()
+        overlay["active_runtime_seconds"] = float(row[0] or 0)
+        overlay["turns"] = float(row[1] or 0)
+        overlay["tool_calls"] = float(row[2] or 0)
+        overlay["tokens"] = float(row[3] or 0)
+        overlay["cost_usd"] = float(row[4] or 0)
+        return overlay
+
+    @staticmethod
+    def _ratio(numerator: float, denominator: float) -> float | None:
+        """Guarded ratio → None when the denominator is 0."""
+        return round(numerator / denominator, 4) if denominator else None
+
+    async def get_member_scorecard(
+        self, agent_id: UUID, days: int = 30
+    ) -> MemberScorecard | None:
+        """Per-member rollup scorecard + live in-flight overlay, or None if no
+        such agent."""
+        agent = (
+            await self.session.execute(
+                select(AgentTable.slug, AgentTable.name).where(
+                    AgentTable.id == agent_id
+                )
+            )
+        ).one_or_none()
+        if agent is None:
+            return None
+        slug, name = agent
+        since_date = (datetime.now(UTC) - timedelta(days=days)).date()
+        sums, _ = await self._rollup_sums(since_date, agent_slug=slug, team=None)
+
+        overlay = await self._live_inflight_overlay(agent_id)
+        includes_live = any(v for v in overlay.values())
+        active_runtime = (
+            sums["active_runtime_seconds"] + overlay["active_runtime_seconds"]
+        )
+        turns = int(sums["turns"] + overlay["turns"])
+        tool_calls = int(sums["tool_calls"] + overlay["tool_calls"])
+        tokens = int(sums["tokens"] + overlay["tokens"])
+        cost = sums["cost_usd"] + overlay["cost_usd"]
+        completed = sums["tasks_completed"]
+
+        return MemberScorecard(
+            scope="member",
+            id=str(agent_id),
+            name=name,
+            tasks_completed=int(completed),
+            first_pass_yield=self._ratio(sums["tasks_first_pass"], completed),
+            effort_throughput_per_hour=self._ratio(completed, active_runtime / 3600),
+            active_runtime_hours=active_runtime / 3600,
+            turns=turns,
+            tool_calls=tool_calls,
+            tokens=tokens,
+            cost_usd=cost,
+            turns_per_task=self._ratio(turns, completed),
+            tool_calls_per_task=self._ratio(tool_calls, completed),
+            revisions_caused=int(sums["revisions_caused"]),
+            revisions_received=int(sums["revisions_received"]),
+            qa_pass_rate=self._ratio(
+                sums["qa_reviews_passed"], sums["qa_reviews_total"]
+            ),
+            escalations=int(sums["escalations"]),
+            blocked_others=int(sums["blocked_others"]),
+            idle_hours=sums["idle_seconds"] / 3600,
+            utilization=self._ratio(
+                sums["active_runtime_seconds"],
+                sums["active_runtime_seconds"] + sums["idle_seconds"],
+            ),
+            includes_live_inflight=includes_live,
+        )
+
+    async def get_org_scorecard(
+        self, team: Team | None = None, days: int = 30
+    ) -> OrgScorecard:
+        """Team (or whole-org when team is None) rollup aggregate."""
+        since_date = (datetime.now(UTC) - timedelta(days=days)).date()
+        sums, member_count = await self._rollup_sums(
+            since_date, agent_slug=None, team=team
+        )
+        completed = sums["tasks_completed"]
+        active_runtime = sums["active_runtime_seconds"]
+        return OrgScorecard(
+            scope="team" if team else "org",
+            team=team.value if team else None,
+            member_count=member_count,
+            tasks_completed=int(completed),
+            first_pass_yield=self._ratio(sums["tasks_first_pass"], completed),
+            effort_throughput_per_hour=self._ratio(completed, active_runtime / 3600),
+            active_runtime_hours=active_runtime / 3600,
+            turns=int(sums["turns"]),
+            tool_calls=int(sums["tool_calls"]),
+            tokens=int(sums["tokens"]),
+            cost_usd=sums["cost_usd"],
+            revisions_caused=int(sums["revisions_caused"]),
+            revisions_received=int(sums["revisions_received"]),
+        )
 
     async def get_rework_metrics(
         self, team: Team | None = None, days: int = 30

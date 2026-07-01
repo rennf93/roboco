@@ -784,6 +784,33 @@ class TaskService(BaseService):
                 )
             )
 
+    def _emit_escalation_audit(
+        self, task: TaskTable, *, escalator_slug: str, target_slug: str
+    ) -> None:
+        """Emit a ``task.escalated`` audit row (per-member escalation metric).
+
+        Additive to the ``task.blocked`` / pool-release audit of an escalation —
+        it carries WHO escalated (``escalator_slug``) so the member scorecard can
+        charge the escalation to the escalator. Written in the caller's session
+        so it commits atomically with the escalation. Best-effort for metrics:
+        never gates the escalation itself.
+        """
+        from roboco.db.tables import AuditLogTable
+
+        self.session.add(
+            AuditLogTable(
+                event_type="task.escalated",
+                agent_id=None,
+                target_type="task",
+                target_id=task.id,
+                severity="info",
+                details={
+                    "escalator_slug": escalator_slug,
+                    "target_slug": target_slug,
+                },
+            )
+        )
+
     @staticmethod
     def _audit_events_for(to_status: str, agent_role: str | None) -> list[str]:
         """Audit event types to emit for a transition.
@@ -5077,6 +5104,10 @@ class TaskService(BaseService):
 
         await self._trigger_completion_hooks(task, agent_id)
         await self._unblock_dependents(task_id)
+        # Emit the completion event (previously defined but never emitted) so the
+        # WS bridge can forward a live completion signal. The CEO-facing granular
+        # notification fires on the root's ceo_approve, not on each leaf complete.
+        await self._emit_task_event(EventType.TASK_COMPLETED, task_id, {})
         return task
 
     async def _escalation_diverts_to_pool(
@@ -5172,6 +5203,9 @@ class TaskService(BaseService):
                 blocked_target_slug=target_slug,
                 reason=reason,
             )
+            self._emit_escalation_audit(
+                task, escalator_slug=escalator_slug, target_slug=target_slug
+            )
             return True
         if task.assigned_to and not task.blocker_raised_by:
             task.blocker_raised_by = cast("Any", task.assigned_to)
@@ -5206,6 +5240,9 @@ class TaskService(BaseService):
             to_status=TaskStatus.BLOCKED.value,
             agent_role=None,
             audit_agent_id=pre_block_owner,
+        )
+        self._emit_escalation_audit(
+            task, escalator_slug=escalator_slug, target_slug=target_slug
         )
         self.log.info(
             "Task escalated and blocked",
@@ -5383,6 +5420,11 @@ class TaskService(BaseService):
 
         # Unblock any tasks waiting on this one
         await self._unblock_dependents(task_id)
+
+        # Emit the completion event (previously dead code — never emitted) + the
+        # CEO-facing granular completion notification (real effort vs wall-clock).
+        await self._emit_task_event(EventType.TASK_COMPLETED, task_id, {})
+        await self._notify_completion(task, task_id)
 
         # Emit event for CEO approval
         await self._emit_task_event(
@@ -5979,6 +6021,26 @@ class TaskService(BaseService):
 
         return task
 
+    async def _notify_completion(self, task: TaskTable, task_id: UUID) -> None:
+        """Best-effort CEO completion notification (granular effort breakdown).
+
+        A notification/metrics failure must never block the completion, so any
+        error is logged and swallowed.
+        """
+        try:
+            from roboco.services.notification_delivery import (
+                get_notification_delivery_service,
+            )
+
+            delivery = get_notification_delivery_service(self.session)
+            await delivery.notify_ceo_of_completion(task=task, task_id=task_id)
+        except Exception as exc:
+            self.log.warning(
+                "Completion notification failed",
+                task_id=str(task_id),
+                error=str(exc),
+            )
+
     async def _emit_task_event(
         self,
         event_type: EventType,
@@ -6039,6 +6101,26 @@ class TaskService(BaseService):
                     task_id=str(task.id),
                     completed_dependency=str(completed_task_id),
                 )
+
+        if blocked_tasks:
+            # Metrics (blocked-others): record how many downstream tasks this
+            # completed task was blocking. _unblock_dependents PRUNES the
+            # dependency edges above, destroying the only other record — so
+            # capture the count NOW as a durable audit row. The sweeper
+            # attributes it to the completed task's owner. target_id is the
+            # BLOCKER (completed) task.
+            from roboco.db.tables import AuditLogTable
+
+            self.session.add(
+                AuditLogTable(
+                    event_type="task.unblocked_dependents",
+                    agent_id=None,
+                    target_type="task",
+                    target_id=completed_task_id,
+                    severity="info",
+                    details={"count": len(blocked_tasks)},
+                )
+            )
 
         await self.session.flush()
 
@@ -8146,7 +8228,13 @@ class TaskService(BaseService):
         return task
 
     async def mark_agent_idle(self, agent_id: UUID) -> None:
-        """Set agent.status = IDLE."""
+        """Set agent.status = IDLE + emit an ``agent.idle`` audit row.
+
+        The audit row (target = the agent, details.agent_slug) is the idle
+        signal the member scorecard needs — it lets the sweeper compute idle
+        time as the gap from an idle mark to the member's next spawn. Written in
+        the same session so it commits with the status change.
+        """
         result = await self.session.execute(
             select(AgentTable).where(AgentTable.id == agent_id)
         )
@@ -8154,6 +8242,18 @@ class TaskService(BaseService):
         if agent is None:
             return
         agent.status = AgentStatus.IDLE
+        from roboco.db.tables import AuditLogTable
+
+        self.session.add(
+            AuditLogTable(
+                event_type="agent.idle",
+                agent_id=agent_id,
+                target_type="agent",
+                target_id=agent_id,
+                severity="info",
+                details={"agent_slug": agent.slug},
+            )
+        )
         await self.session.flush()
 
     async def _qa_or_doc_claim(

@@ -1431,3 +1431,77 @@ export interface Scorecard {
   tokens: number;
   cost_usd: number;
 }
+
+// --- Granular per-member metrics (v0.15.0) ---
+
+export interface StageEffort {
+  status: string;
+  active_seconds: number;
+  wait_seconds: number;
+}
+
+export interface TaskMetrics {
+  task_id: string;
+  active_runtime_seconds: number;
+  wall_clock_seconds: number;
+  turns: number;
+  tool_calls: number;
+  tokens: number;
+  cost_usd: number;
+  revision_count: number;
+  qa_fails: number;
+  pr_fails: number;
+  stints: number;
+  stages: StageEffort[];
+}
+
+export interface MemberScorecard {
+  scope: string;
+  id: string;
+  name: string;
+  member_kind: "agent";
+  tasks_completed: number;
+  first_pass_yield: number | null;
+  effort_throughput_per_hour: number | null;
+  active_runtime_hours: number;
+  turns: number;
+  tool_calls: number;
+  tokens: number;
+  cost_usd: number;
+  turns_per_task: number | null;
+  tool_calls_per_task: number | null;
+  revisions_caused: number;
+  revisions_received: number;
+  qa_pass_rate: number | null;
+  escalations: number;
+  blocked_others: number;
+  idle_hours: number;
+  utilization: number | null;
+  includes_live_inflight: boolean;
+}
+
+export interface OrgScorecard {
+  scope: string;
+  team: string | null;
+  member_count: number;
+  tasks_completed: number;
+  first_pass_yield: number | null;
+  effort_throughput_per_hour: number | null;
+  active_runtime_hours: number;
+  turns: number;
+  tool_calls: number;
+  tokens: number;
+  cost_usd: number;
+  revisions_caused: number;
+  revisions_received: number;
+}
+
+export interface CeoScorecard {
+  member_kind: "ceo";
+  approval_p50_seconds: number;
+  approval_p90_seconds: number;
+  approval_count: number;
+  unblock_p50_seconds: number;
+  unblock_count: number;
+  godmode_actions: number;
+}
