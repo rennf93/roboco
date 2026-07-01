@@ -67,13 +67,17 @@ def _task(project_id: Any, created_by: Any, **over: Any) -> TaskTable:
 
 async def _audit_of(db: AsyncSession, event_type: str, target_id: Any) -> list[Any]:
     rows = (
-        await db.execute(
-            select(AuditLogTable).where(
-                AuditLogTable.event_type == event_type,
-                AuditLogTable.target_id == target_id,
+        (
+            await db.execute(
+                select(AuditLogTable).where(
+                    AuditLogTable.event_type == event_type,
+                    AuditLogTable.target_id == target_id,
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return list(rows)
 
 
@@ -93,16 +97,23 @@ async def env(db_session: AsyncSession) -> AsyncIterator[dict]:
     )
     db_session.add(project)
     await db_session.flush()
-    yield {"svc": TaskService(db_session), "db": db_session, "project_id": project.id,
-           "dev": dev, "pm": pm}
+    yield {
+        "svc": TaskService(db_session),
+        "db": db_session,
+        "project_id": project.id,
+        "dev": dev,
+        "pm": pm,
+    }
 
 
 @pytest.mark.asyncio
 async def test_apply_escalation_emits_task_escalated(env: dict) -> None:
     db = env["db"]
     task = _task(
-        env["project_id"], env["dev"].id,
-        assigned_to=env["dev"].id, claimed_by=env["dev"].id,
+        env["project_id"],
+        env["dev"].id,
+        assigned_to=env["dev"].id,
+        claimed_by=env["dev"].id,
     )
     db.add(task)
     await db.flush()
@@ -126,9 +137,12 @@ async def test_unblock_dependents_emits_count(env: dict) -> None:
     db.add(blocker)
     await db.flush()
     dependent = _task(
-        env["project_id"], env["dev"].id,
-        status=TaskStatus.BLOCKED, dependency_ids=[blocker.id],
-        assigned_to=env["dev"].id, claimed_by=env["dev"].id,
+        env["project_id"],
+        env["dev"].id,
+        status=TaskStatus.BLOCKED,
+        dependency_ids=[blocker.id],
+        assigned_to=env["dev"].id,
+        claimed_by=env["dev"].id,
     )
     db.add(dependent)
     await db.flush()

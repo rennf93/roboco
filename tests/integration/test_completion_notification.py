@@ -88,10 +88,26 @@ def test_format_body_degrades_without_metrics() -> None:
 
 @pytest_asyncio.fixture
 async def env(db_session: AsyncSession) -> AsyncIterator[dict]:
-    ceo = AgentTable(
+    # The CEO is a singleton in the real system, and `_get_ceo_agent()` resolves
+    # it by `role == CEO` with `scalar_one_or_none()`. The session-scoped test DB
+    # is shared across the run, and a sibling real-DB test commits a role=CEO
+    # agent (slug="ceo") without cleanup, so it can already be present here.
+    # Reuse an existing CEO rather than inserting a second one — creating another
+    # would both collide on the unique slug and make `_get_ceo_agent()` raise
+    # MultipleResultsFound. Order-independent: in isolation we create one.
+    existing_ceo = (
+        (
+            await db_session.execute(
+                select(AgentTable).where(AgentTable.role == AgentRole.CEO)
+            )
+        )
+        .scalars()
+        .first()
+    )
+    ceo = existing_ceo or AgentTable(
         id=uuid4(),
         name="CEO",
-        slug="ceo",
+        slug=f"ceo-{uuid4().hex[:6]}",
         role=AgentRole.CEO,
         team=None,
         status=AgentStatus.ACTIVE,
@@ -101,6 +117,8 @@ async def env(db_session: AsyncSession) -> AsyncIterator[dict]:
         permissions={},
         metrics={},
     )
+    if existing_ceo is None:
+        db_session.add(ceo)
     dev = AgentTable(
         id=uuid4(),
         name="dev",
@@ -114,7 +132,7 @@ async def env(db_session: AsyncSession) -> AsyncIterator[dict]:
         permissions={},
         metrics={},
     )
-    db_session.add_all([ceo, dev])
+    db_session.add(dev)
     await db_session.flush()
     project = ProjectTable(
         id=uuid4(),
