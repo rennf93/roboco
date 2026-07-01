@@ -212,6 +212,15 @@ class Settings(BaseSettings):
             "of crash-retrying into the overload. Off => crash-retry behavior."
         ),
     )
+    notification_spawn_cooldown_seconds: int = Field(
+        default=600,
+        description=(
+            "Cross-tick cooldown for notification-triggered spawns (escalation/"
+            "approval/audit/a2a): one spawn per (agent, notification) per window. "
+            "The notification stays pending, so the next window retries if still "
+            "unacknowledged. 0 disables the damper (legacy every-tick respawn)."
+        ),
+    )
     spawn_preflight_enabled: bool = Field(
         default=False,
         description=(

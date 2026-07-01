@@ -18,6 +18,7 @@ import json
 import os
 import shutil
 import tempfile
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -973,6 +974,15 @@ class AgentOrchestrator:
         # delegate, or complete, so a respawn cannot advance the task and would
         # just loop. Tracks (agent_slug, task_id) already dispatched.
         self._board_dispatched: set[tuple[str, str]] = set()
+        # Cross-tick damper for notification-triggered spawns (escalation /
+        # approval / audit / a2a). Those dispatchers carry no task_id, so the
+        # readiness gate and the PM respawn breaker never see them — without
+        # this, an unacknowledged notification respawns its recipient every
+        # dispatch tick, unbounded. One spawn per (agent, notification) per
+        # cooldown window; the notification stays pending, so the next window
+        # retries if it is still unacked. In-memory by design (a restart just
+        # allows one immediate retry — a tick damper, not durable state).
+        self._notification_spawn_at: dict[tuple[str, str], float] = {}
         # Cluster C5: a board review is a two-reviewer gate — BOTH the Product
         # Owner and the Head of Marketing must review a board/coordination task
         # before it is handed to the CEO for Approve & Start. Once both have
@@ -3675,6 +3685,33 @@ class AgentOrchestrator:
     def _is_task_handled_this_tick(self, task_id: str | None) -> bool:
         """True if a prior dispatcher already handled this task this tick."""
         return bool(task_id and task_id in self._tick_handled_tasks)
+
+    _NOTIFICATION_COOLDOWN_PRUNE_AT = 512
+
+    def _notification_spawn_cooled(
+        self, agent_slug: str, notification_id: str | None
+    ) -> bool:
+        """True when this (agent, notification) spawned within the cooldown.
+
+        Returns False — and stamps the pair — when a spawn is allowed. A
+        notification with no id is never damped (fail-open: better one extra
+        spawn than a silently dropped escalation).
+        """
+        if not notification_id:
+            return False
+        key = (agent_slug, str(notification_id))
+        now = time.monotonic()
+        cooldown = settings.notification_spawn_cooldown_seconds
+        last = self._notification_spawn_at.get(key)
+        if last is not None and (now - last) < cooldown:
+            return True
+        self._notification_spawn_at[key] = now
+        if len(self._notification_spawn_at) > self._NOTIFICATION_COOLDOWN_PRUNE_AT:
+            cutoff = now - cooldown
+            self._notification_spawn_at = {
+                k: v for k, v in self._notification_spawn_at.items() if v >= cutoff
+            }
+        return False
 
     def _is_parallel_phase_claim(
         self, task: dict[str, Any], dev_uuid: str | None
@@ -11416,6 +11453,8 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 if self._is_agent_active(agent_slug):
                     continue
 
+                if self._notification_spawn_cooled(agent_slug, notif.get("id")):
+                    continue
                 await self.spawn_agent(
                     agent_id=agent_slug,
                     initial_prompt=self._build_escalation_prompt(notif),
@@ -11444,6 +11483,8 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 if self._is_agent_active(agent_slug):
                     continue
 
+                if self._notification_spawn_cooled(agent_slug, notif.get("id")):
+                    continue
                 await self.spawn_agent(
                     agent_id=agent_slug,
                     initial_prompt=self._build_approval_prompt(notif),
@@ -11466,6 +11507,8 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             # Resolve UUIDs to slugs and check if auditor is a target
             target_slugs = [self._resolve_agent_slug(str(t)) for t in targets]
             if "auditor" in target_slugs and not self._is_agent_active("auditor"):
+                if self._notification_spawn_cooled("auditor", alert.get("id")):
+                    continue
                 await self.spawn_agent(
                     agent_id="auditor",
                     initial_prompt=self._build_audit_prompt(alert),
@@ -11744,6 +11787,8 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                     continue
 
                 # Agent is offline - spawn them with A2A context
+                if self._notification_spawn_cooled(agent_slug, notif.get("id")):
+                    continue
                 await self.spawn_agent(
                     agent_id=agent_slug,
                     initial_prompt=self._build_a2a_prompt(notif),
