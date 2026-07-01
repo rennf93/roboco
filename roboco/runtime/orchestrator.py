@@ -3706,17 +3706,22 @@ class AgentOrchestrator:
         """
         if not notification_id:
             return False
+        # Lazy init keeps the damper working on partially-constructed
+        # instances (tests build the orchestrator via __new__).
+        store: dict[tuple[str, str], float] = self.__dict__.setdefault(
+            "_notification_spawn_at", {}
+        )
         key = (agent_slug, str(notification_id))
         now = time.monotonic()
         cooldown = settings.notification_spawn_cooldown_seconds
-        last = self._notification_spawn_at.get(key)
+        last = store.get(key)
         if last is not None and (now - last) < cooldown:
             return True
-        self._notification_spawn_at[key] = now
-        if len(self._notification_spawn_at) > self._NOTIFICATION_COOLDOWN_PRUNE_AT:
+        store[key] = now
+        if len(store) > self._NOTIFICATION_COOLDOWN_PRUNE_AT:
             cutoff = now - cooldown
             self._notification_spawn_at = {
-                k: v for k, v in self._notification_spawn_at.items() if v >= cutoff
+                k: v for k, v in store.items() if v >= cutoff
             }
         return False
 
