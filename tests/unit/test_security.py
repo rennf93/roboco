@@ -130,3 +130,30 @@ def test_build_security_config_reads_settings(
     assert cfg.passive_mode is True
     assert cfg.trust_x_forwarded_proto is True
     assert "/ws" in cfg.exclude_paths
+
+
+def test_build_security_config_excludes_freetext_body_fields() -> None:
+    """The WAF calibration excludes RoboCo's free-text + container body fields."""
+    cfg = security.build_security_config()
+    excluded = {f.lower() for f in cfg.excluded_detection_body_fields}
+    # A sampling of free-text fields and free-form containers.
+    for field in (
+        "description",
+        "content",
+        "code",
+        "notes",
+        "risks",
+        "plan",
+        "payload",
+    ):
+        assert field in excluded
+
+
+def test_build_security_config_arms_scanner_ban_categories() -> None:
+    """Surface N: scanner/decoy categories carry a threat-ban threshold."""
+    cfg = security.build_security_config()
+    ban = cfg.threat_ban_config
+    for category in ("recon", "sensitive_file", "cms_probing"):
+        assert category in ban
+        assert ban[category].threshold >= 1
+        assert ban[category].duration > 0

@@ -193,6 +193,15 @@ _THREAT_BAN_CONFIG: dict[str, ThreatBanConfig] = {
     "cmd_injection": ThreatBanConfig(threshold=1, duration=86400),
     "ssrf": ThreatBanConfig(threshold=2, duration=7200),
     "file_inclusion": ThreatBanConfig(threshold=2, duration=7200),
+    # Scanner / decoy-path auto-ban (Surface N). A bot probing scanner
+    # fingerprints (/.git/config, /wp-login.php, /phpmyadmin, …) is detected on
+    # the URL-path scan; these thresholds turn repeated probes into a ban. Only
+    # /api|/ws paths reach the app behind nginx — the classic root probes are
+    # dropped at the edge (444) in docker/nginx.conf. Requires redis (24h ban >
+    # in-memory cap) and only bans in active mode; passive logs the recon hit.
+    "recon": ThreatBanConfig(threshold=5, duration=86400),
+    "sensitive_file": ThreatBanConfig(threshold=3, duration=86400),
+    "cms_probing": ThreatBanConfig(threshold=3, duration=86400),
 }
 
 # WAF false-positive calibration. RoboCo is an internal, authenticated API whose

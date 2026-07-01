@@ -80,6 +80,12 @@ def _guarded_app(*, passive: bool) -> _InjectClientIP:
     async def _plain() -> dict[str, bool]:
         return {"ok": True}
 
+    # A registered decoy path (Surface N) — returns 200 so the test can tell a
+    # guard block (active) from a pass-through (passive log-only).
+    @app.get("/.git/config")
+    async def _decoy() -> dict[str, bool]:
+        return {"ok": True}
+
     app.state.guard_decorator = deco
     app.add_middleware(SecurityMiddleware, config=cfg)
     return _InjectClientIP(app)
@@ -153,3 +159,22 @@ class TestActiveModeStillBlocksThreats:
         with _client(_guarded_app(passive=False)) as client:
             resp = client.post("/plain", json={"zzq_ref": "'; DROP TABLE x; --"})
         assert resp.status_code != HTTPStatus.OK
+
+
+class TestDecoyPaths:
+    """Surface N: scanner/decoy URL paths are detected by the WAF url-path scan.
+
+    The per-request block is verified here (hermetic, single request); the
+    accumulating auto-ban across repeated probes needs redis + active mode and is
+    exercised out-of-band, not in the gate.
+    """
+
+    def test_decoy_path_blocked_in_active_mode(self) -> None:
+        with _client(_guarded_app(passive=False)) as client:
+            resp = client.get("/.git/config")
+        assert resp.status_code != HTTPStatus.OK
+
+    def test_decoy_path_not_blocked_in_passive_mode(self) -> None:
+        with _client(_guarded_app(passive=True)) as client:
+            resp = client.get("/.git/config")
+        assert resp.status_code == HTTPStatus.OK

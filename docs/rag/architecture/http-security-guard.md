@@ -36,3 +36,7 @@ A blocked request gets a generic `400` or `403` response — no rule or signatur
 Agent traffic legitimately carries code, SQL, diffs, file paths, HTML snippets, and URLs — for example inside `note` / `commit` / `say` bodies. To avoid false positives, the free-text body fields on those routes are excluded from WAF signature scanning via `excluded_detection_body_fields` in `build_security_config`, so normal code/SQL/diff/HTML payloads from agents are not flagged by the WAF layer.
 
 The three custom validators above are not covered by that exclusion — they scan those same bodies regardless of the WAF exclusion. See `docs/rag/troubleshooting/blocked-http-requests.md` for what this means in practice and what not to put in a request body.
+
+## Scanner Auto-Ban
+
+A separate layer targets automated scanners (not agents — agents run on Docker-internal IPs). Repeated probes to scanner fingerprints on `/api` paths (`recon`/`sensitive_file`/`cms_probing` categories) trip a per-IP auto-ban in active mode, and nginx drops the classic root scanner paths (`/.env`, `/wp-login.php`, `/.git/config`, …) at the edge with `444`. This does not affect legitimate agent traffic to the gateway verbs.

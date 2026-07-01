@@ -31,6 +31,13 @@ Guard has two enforcement postures, and the intended rollout is **passive → ac
 
 The NAS composes arm the guard in passive/log-only mode by default (`ROBOCO_GUARD_PASSIVE_MODE=true`, `ROBOCO_GUARD_FAIL_SECURE=false`) so a deploy calibrates against real traffic before you enforce.
 
+## Scanner honeytrap & auto-ban
+
+Automated scanners probe every host for well-known soft spots (`/.env`, `/wp-login.php`, `/phpmyadmin`, `/.git/config`, …). RoboCo turns those probes against the scanner, in two layers matched to where the traffic actually lands — behind nginx only `/api`, `/ws`, `/health`, and `/ready` reach the orchestrator, so guard can only see probes on those paths:
+
+- **Guard adaptive ban (the `/api` surface).** The guard `threat_ban_config` carries `recon` / `sensitive_file` / `cms_probing` categories. A scanner probing those fingerprints on an `/api` path is detected on the URL-path scan, and repeated probes from one IP trip a per-IP auto-ban (redis-backed, 24h). This only bans in **active** mode (passive logs the recon hit) and requires redis (the 24h ban exceeds the in-memory cap).
+- **nginx edge-drop (the classic root paths).** The classic scanner paths never reach the orchestrator, so nginx drops them at the edge with `444` (closes the connection, returns nothing) before they touch the panel. It's anchored to known scanner fingerprints — `/.well-known` and every real panel/API route are untouched — and is always on, independent of `ROBOCO_GUARD_ENABLED`.
+
 ## Fail-secure
 
 `ROBOCO_GUARD_FAIL_SECURE` decides what happens if a security check itself errors: `true` (default) fails **closed** — block the request — which is the right default for public hosting. The personal NAS compose overrides it to `false` so a guard-internal bug can never 500 your own deploy.
