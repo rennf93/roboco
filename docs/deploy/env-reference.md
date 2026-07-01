@@ -131,6 +131,7 @@ The orchestrator's dispatcher uses these to pace spawns, detect loops, and recla
 | `ROBOCO_CLAIM_STALE_SECONDS` | `180` | Claim-heartbeat staleness used by the spawn trigger filter. |
 | `ROBOCO_STALE_CLAIM_REAP_SECONDS` | `600` | Reaper-only stale-claim threshold before releasing a claim back to pending. |
 | `ROBOCO_PM_CLOSURE_RECENTLY_PAUSED_SECONDS` | `45` | Debounce before respawning a PM to close a recently paused parent. |
+| `ROBOCO_NOTIFICATION_SPAWN_COOLDOWN_SECONDS` | `600` | Cross-tick damper for notification-triggered spawns (escalation/approval/audit/a2a): one spawn per (agent, notification) per window. The notification stays pending, so the next window retries if still unacknowledged; `0` restores the legacy every-tick respawn. |
 | `ROBOCO_GROK_IDLE_KILL_SECONDS` | `900` | Idle-container kill threshold for Grok agents (they emit no SDK heartbeat). |
 | `ROBOCO_GROK_MAX_COST_USD` | `0.0` | Per-agent Grok cost ceiling (USD) before kill; `0` disables. |
 | `ROBOCO_INTERACTIVE_IDLE_REAP_SECONDS` | `1800` | Idle-reap threshold for live intake/secretary chats; `0` disables. |
