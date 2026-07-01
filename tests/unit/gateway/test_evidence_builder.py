@@ -60,15 +60,20 @@ class TestContextBriefing:
             blockers_in_my_lane=[],
         )
         b = build_context_briefing(inputs)
-        for key in (
-            "unread_a2a",
-            "unread_mentions",
-            "pending_notifications",
-            "task_metadata_gaps",
-            "recent_team_activity",
-            "blockers_in_my_lane",
-        ):
-            assert b[key] == []
+        # Empty sections are omitted to keep the per-verb payload compact — an
+        # all-empty briefing collapses to {}.
+        assert b == {}
+
+    def test_omits_empty_keeps_nonempty(self) -> None:
+        inputs = BriefingInputs(
+            unread_a2a=[{"id": "a1"}],
+            unread_mentions=[],
+            pending_notifications=[],
+            task_metadata_gaps=[],
+            recent_team_activity=[],
+            blockers_in_my_lane=[],
+        )
+        assert build_context_briefing(inputs) == {"unread_a2a": [{"id": "a1"}]}
 
     def test_lists_capped_at_10(self) -> None:
         twenty = [{"i": i} for i in range(20)]
@@ -96,7 +101,8 @@ class TestContextBriefing:
             recent_team_activity=[],
             blockers_in_my_lane=[],
         )
-        assert build_context_briefing(inputs)["task_handoff"] is None
+        # A None handoff is an empty section → omitted from the briefing.
+        assert "task_handoff" not in build_context_briefing(inputs)
 
         with_handoff = BriefingInputs(
             unread_a2a=[],
@@ -118,7 +124,8 @@ class TestContextBriefing:
             recent_team_activity=[],
             blockers_in_my_lane=[],
         )
-        assert build_context_briefing(inputs)["company_goals"] is None
+        # None goals is an empty section → omitted from the briefing.
+        assert "company_goals" not in build_context_briefing(inputs)
 
         with_goals = BriefingInputs(
             unread_a2a=[],

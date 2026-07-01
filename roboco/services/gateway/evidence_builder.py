@@ -192,8 +192,13 @@ def _extract_pr_review(notes_structured: Any) -> dict[str, Any] | None:
 
 
 def build_context_briefing(inputs: BriefingInputs) -> dict[str, Any]:
-    """Compose the context_briefing dict; caps each list at BRIEFING_LIST_CAP items."""
-    return {
+    """Compose the context_briefing dict; caps each list at BRIEFING_LIST_CAP items.
+
+    Empty sections (empty lists / dicts) are omitted: the agent reads this payload
+    on every verb response, and an absent section reads as "nothing here" to the
+    model, identical to an empty one, without the per-call token cost.
+    """
+    briefing: dict[str, Any] = {
         "unread_a2a": inputs.unread_a2a[:BRIEFING_LIST_CAP],
         "unread_mentions": inputs.unread_mentions[:BRIEFING_LIST_CAP],
         "pending_notifications": inputs.pending_notifications[:BRIEFING_LIST_CAP],
@@ -203,6 +208,7 @@ def build_context_briefing(inputs: BriefingInputs) -> dict[str, Any]:
         "task_handoff": inputs.task_handoff,
         "company_goals": inputs.company_goals,
     }
+    return {key: value for key, value in briefing.items() if value}
 
 
 def shape_memory_query(role: str, title: str, task_type: str) -> str:
