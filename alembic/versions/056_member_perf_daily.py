@@ -3,8 +3,8 @@
 One row per (date, member_kind, agent_slug) populated by the orchestrator's
 sweeper from data already captured (agent_spawn_sessions + audit_log). Serves
 the per-member / team / org scorecards without re-scanning raw task lists. The
-CEO is a first-class ``member_kind='ceo'`` row (agent_slug='' — Postgres UNIQUE
-treats NULL as distinct, so the empty string keeps the CEO row unique).
+CEO is a first-class ``member_kind='ceo'`` row (agent_slug='' — a distinct
+natural-key tuple from every ``member_kind='agent'`` row, so it never collides).
 
 Includes the four CEO-approved extra metrics (qa pass-rate counts, escalations,
 blocked-others, idle_seconds) plus blocked_seconds. All columns DEFAULT 0 so a

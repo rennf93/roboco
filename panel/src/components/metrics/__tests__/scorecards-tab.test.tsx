@@ -138,4 +138,24 @@ describe("ScorecardsTabContent", () => {
     expect(screen.queryByText("Renzo")).not.toBeInTheDocument();
     expect(screen.queryByText("system")).not.toBeInTheDocument();
   });
+
+  it("surfaces load errors instead of an endless skeleton", () => {
+    mockOrg.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+    });
+    mockMember.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+    });
+    render(<ScorecardsTabContent />);
+    expect(
+      screen.getByText(/failed to load organization metrics/i),
+    ).toBeInTheDocument();
+    // The member row shows a failed marker rather than a perpetual skeleton
+    // (exact lowercase text, distinct from the org card's message).
+    expect(screen.getByText("failed to load")).toBeInTheDocument();
+  });
 });

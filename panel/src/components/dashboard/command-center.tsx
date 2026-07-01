@@ -125,7 +125,7 @@ export function CommandCenter() {
       <PlaybookReviewQueue />
 
       {/* Metrics, Alerts, Usage, and Performance Row */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-4 gap-6">
         <KeyMetricsPanel
           metrics={overview?.key_metrics}
           isLoading={loadingOverview}

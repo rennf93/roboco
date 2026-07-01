@@ -42,6 +42,7 @@ _TODAY = datetime.now(UTC).date()
 _TOTAL_COMPLETED = 3
 _ROLLUP_COMPLETED = 2
 _OVERLAY_TURNS = 3
+_ROLLUP_ONLY_TURNS = 5  # closed session already in the rollup, not re-added
 _ORG_MEMBERS = 2
 _ORG_COMPLETED = 3
 
@@ -177,6 +178,7 @@ async def test_live_overlay_enriches_effort_not_completion(
     db_session.add(inflight)
     await db_session.flush()
     now = datetime.now(UTC)
+    # OPEN (still-running) session — the live delta the rollup cannot hold yet.
     db_session.add(
         AgentSpawnSessionTable(
             id=uuid4(),
@@ -186,7 +188,7 @@ async def test_live_overlay_enriches_effort_not_completion(
             model="claude",
             task_id=str(inflight.id),
             started_at=now - timedelta(seconds=200),
-            ended_at=now,
+            ended_at=None,
             turns=3,
             tool_calls=4,
             tokens_input=10,
@@ -202,6 +204,75 @@ async def test_live_overlay_enriches_effort_not_completion(
     assert card.includes_live_inflight is True
     assert card.active_runtime_hours > 100 / 3600  # rollup + overlay effort
     assert card.turns == _OVERLAY_TURNS  # from the overlay (rollup row had 0)
+
+
+@pytest.mark.asyncio
+async def test_live_overlay_excludes_closed_session_no_double_count(
+    svc: MetricsService, db_session: AsyncSession
+) -> None:
+    """A CLOSED session on a non-terminal task is already in the daily rollup
+    (via _msweep_spawn, which counts ended_at IS NOT NULL). The overlay must NOT
+    re-add it, or the member's effort/turns double-count on the common
+    reap/respawn path."""
+    dev = _agent(AgentRole.DEVELOPER, f"be-dev-{uuid4().hex[:6]}")
+    db_session.add(dev)
+    await db_session.flush()
+    project = ProjectTable(
+        id=uuid4(),
+        name="P",
+        slug=f"p-{uuid4().hex[:6]}",
+        git_url="https://example.com/r.git",
+        assigned_cell=Team.BACKEND,
+        created_by=dev.id,
+    )
+    db_session.add(project)
+    await db_session.flush()
+    # Rollup row already reflects the closed session (turns=5, active=300s).
+    db_session.add(
+        _daily(dev.slug, tasks_completed=0, active_runtime_seconds=300, turns=5)
+    )
+    inflight = TaskTable(
+        id=uuid4(),
+        title="t",
+        description="d",
+        acceptance_criteria=["ac"],
+        task_type=TaskType.CODE,
+        nature=TaskNature.TECHNICAL,
+        status=TaskStatus.IN_PROGRESS,
+        team=Team.BACKEND,
+        project_id=project.id,
+        created_by=dev.id,
+        assigned_to=dev.id,
+        estimated_complexity=Complexity.MEDIUM,
+        started_at=datetime.now(UTC) - timedelta(hours=1),
+    )
+    db_session.add(inflight)
+    await db_session.flush()
+    now = datetime.now(UTC)
+    db_session.add(
+        AgentSpawnSessionTable(
+            id=uuid4(),
+            agent_slug=dev.slug,
+            team="backend",
+            role="developer",
+            model="claude",
+            task_id=str(inflight.id),
+            started_at=now - timedelta(seconds=300),
+            ended_at=now,  # CLOSED — already counted by the rollup
+            turns=5,
+            tool_calls=4,
+            tokens_input=10,
+            tokens_output=5,
+            estimated_cost_usd=0.2,
+        )
+    )
+    await db_session.flush()
+
+    card = await svc.get_member_scorecard(cast("UUID", dev.id), days=30)
+    assert card is not None
+    assert card.turns == _ROLLUP_ONLY_TURNS  # closed session is NOT re-added
+    assert card.active_runtime_hours == pytest.approx(300 / 3600, abs=1e-4)
+    assert card.includes_live_inflight is False  # no OPEN session
 
 
 @pytest.mark.asyncio

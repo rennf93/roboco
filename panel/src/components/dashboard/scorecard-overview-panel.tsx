@@ -44,7 +44,7 @@ function MetricRow({ icon, label, value }: MetricRowProps) {
  * figures from useOrgScorecard with a deep-link into the full Scorecards tab.
  */
 export function ScorecardOverviewPanel() {
-  const { data, isLoading } = useOrgScorecard();
+  const { data, isLoading, isError } = useOrgScorecard();
 
   return (
     <Card>
@@ -64,7 +64,11 @@ export function ScorecardOverviewPanel() {
         </div>
       </CardHeader>
       <CardContent>
-        {isLoading || !data ? (
+        {isError ? (
+          <div className="text-muted-foreground text-sm">
+            Failed to load performance metrics.
+          </div>
+        ) : isLoading || !data ? (
           <div className="space-y-3">
             {Array.from({ length: 5 }).map((_, i) => (
               <Skeleton key={i} className="h-6" />

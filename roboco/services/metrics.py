@@ -1065,8 +1065,18 @@ class MetricsService(BaseService):
         return sums, member_count
 
     async def _live_inflight_overlay(self, agent_id: UUID) -> dict[str, float]:
-        """Effort of the member's NON-terminal tasks (live overlay, disjoint from
-        the terminal rollup). Sums active_runtime/turns/tool_calls/tokens/cost."""
+        """Effort of the member's currently-OPEN (running) spawn sessions on
+        non-terminal tasks — the live delta the terminal-day rollup cannot hold
+        yet.
+
+        Disjoint from the rollup by ``ended_at``: ``_msweep_spawn`` rolls up only
+        CLOSED sessions (``ended_at IS NOT NULL``), so this counts only OPEN ones
+        (``ended_at IS NULL``). A just-closed session lands in the rollup on the
+        next ~60s sweep, so there is no double-count. (Summing *all* of a task's
+        sessions here — as an earlier version did via ``get_task_metrics`` —
+        re-counted the closed sessions the rollup already holds, inflating the
+        member's effort on the common reap/respawn path.)
+        """
         overlay = {
             "active_runtime_seconds": 0.0,
             "turns": 0.0,
@@ -1088,15 +1098,41 @@ class MetricsService(BaseService):
             .scalars()
             .all()
         )
-        for task_id in ids:
-            metrics = await self.get_task_metrics(task_id)
-            if metrics is None:
-                continue
-            overlay["active_runtime_seconds"] += metrics.active_runtime_seconds
-            overlay["turns"] += metrics.turns
-            overlay["tool_calls"] += metrics.tool_calls
-            overlay["tokens"] += metrics.tokens
-            overlay["cost_usd"] += metrics.cost_usd
+        if not ids:
+            return overlay
+        # Aggregate in SQL (mirrors _msweep_spawn); active_runtime for an open
+        # session runs to now(). One row back — no per-row Python branching.
+        s = AgentSpawnSessionTable
+        row = (
+            await self.session.execute(
+                select(
+                    func.coalesce(
+                        func.sum(func.extract("epoch", func.now() - s.started_at)),
+                        0,
+                    ),
+                    func.coalesce(func.sum(s.turns), 0),
+                    func.coalesce(func.sum(s.tool_calls), 0),
+                    func.coalesce(
+                        func.sum(
+                            s.tokens_input
+                            + s.tokens_output
+                            + s.tokens_cache_read
+                            + s.tokens_cache_write
+                        ),
+                        0,
+                    ),
+                    func.coalesce(func.sum(s.estimated_cost_usd), 0),
+                ).where(
+                    s.task_id.in_([str(i) for i in ids]),
+                    s.ended_at.is_(None),
+                )
+            )
+        ).one()
+        overlay["active_runtime_seconds"] = float(row[0] or 0)
+        overlay["turns"] = float(row[1] or 0)
+        overlay["tool_calls"] = float(row[2] or 0)
+        overlay["tokens"] = float(row[3] or 0)
+        overlay["cost_usd"] = float(row[4] or 0)
         return overlay
 
     @staticmethod

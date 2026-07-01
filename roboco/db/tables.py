@@ -2325,9 +2325,10 @@ class MemberPerformanceDailyTable(Base):
 
     One row per (date, member_kind, agent_slug), populated by the orchestrator
     sweeper from agent_spawn_sessions + audit_log. The CEO is a first-class
-    ``member_kind='ceo'`` row with ``agent_slug=''`` (Postgres UNIQUE treats NULL
-    as distinct, so the empty string keeps the CEO row unique). Overwrite-upsert
-    on the natural key makes the sweep idempotent. All counters default 0.
+    ``member_kind='ceo'`` row with ``agent_slug=''`` — a distinct natural-key
+    tuple from every ``member_kind='agent'`` row, so it never collides.
+    Overwrite-upsert on the natural key makes the sweep idempotent. All counters
+    default 0.
     """
 
     __tablename__ = "member_performance_daily"

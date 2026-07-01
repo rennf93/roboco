@@ -33,7 +33,17 @@ function hoursOrDash(seconds: number): string {
 
 /** One member's row — each row self-fetches its rollup scorecard. */
 function MemberRow({ agent }: { agent: Agent }) {
-  const { data, isLoading } = useMemberScorecard(agent.id);
+  const { data, isLoading, isError } = useMemberScorecard(agent.id);
+  if (isError) {
+    return (
+      <TableRow>
+        <TableCell>{agent.name || agent.slug}</TableCell>
+        <TableCell colSpan={8} className="text-muted-foreground text-xs">
+          failed to load
+        </TableCell>
+      </TableRow>
+    );
+  }
   if (isLoading || !data) {
     return (
       <TableRow>
@@ -67,14 +77,20 @@ function MemberRow({ agent }: { agent: Agent }) {
 }
 
 function OrgSummary() {
-  const { data, isLoading } = useOrgScorecard();
+  const { data, isLoading, isError } = useOrgScorecard();
+  if (isError)
+    return (
+      <div className="text-muted-foreground text-sm">
+        Failed to load organization metrics.
+      </div>
+    );
   if (isLoading || !data) return <Skeleton className="h-24 w-full" />;
   const cells: [string, string][] = [
     ["Members", String(data.member_count)],
     ["Completed", String(data.tasks_completed)],
     ["First-pass yield", pctOrNa(data.first_pass_yield)],
     ["Throughput/hr", numOrNa(data.effort_throughput_per_hour, 2)],
-    ["Active effort", hoursOrDash(data.active_runtime_hours * 3600)],
+    ["Active effort", data.active_runtime_hours.toFixed(1) + "h"],
     ["Cost", "$" + data.cost_usd.toFixed(2)],
   ];
   return (
@@ -90,7 +106,13 @@ function OrgSummary() {
 }
 
 function CeoCard() {
-  const { data, isLoading } = useCeoScorecard();
+  const { data, isLoading, isError } = useCeoScorecard();
+  if (isError)
+    return (
+      <div className="text-muted-foreground text-sm">
+        Failed to load CEO metrics.
+      </div>
+    );
   if (isLoading || !data) return <Skeleton className="h-24 w-full" />;
   const cells: [string, string][] = [
     ["Approvals", String(data.approval_count)],

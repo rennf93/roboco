@@ -49,4 +49,17 @@ describe("ScorecardOverviewPanel", () => {
     const { container } = render(<ScorecardOverviewPanel />);
     expect(container.querySelectorAll('[data-slot="skeleton"]').length).toBe(5);
   });
+
+  it("surfaces an error instead of an endless skeleton", () => {
+    mockOrg.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+    });
+    const { container } = render(<ScorecardOverviewPanel />);
+    expect(
+      screen.getByText(/failed to load performance metrics/i),
+    ).toBeInTheDocument();
+    expect(container.querySelectorAll('[data-slot="skeleton"]').length).toBe(0);
+  });
 });
