@@ -269,7 +269,7 @@ async def test_finalize_spawn_session_http_error_uses_zero_tokens() -> None:
 
     with (
         patch("roboco.runtime.orchestrator.httpx.AsyncClient", _client_cls),
-        patch.object(orch, "_usage_from_transcript", return_value=(0, 0, 0, 0)),
+        patch.object(orch, "_usage_from_transcript", return_value=(0, 0, 0, 0, 0)),
         patch("roboco.db.base.get_session_factory", return_value=db_factory),
         patch("roboco.billing.pricing.calculate_cost", return_value=0.0) as mock_cost,
     ):
@@ -303,7 +303,7 @@ async def test_finalize_spawn_session_non_200_uses_zero_tokens() -> None:
 
     with (
         patch("roboco.runtime.orchestrator.httpx.AsyncClient", _client_cls),
-        patch.object(orch, "_usage_from_transcript", return_value=(0, 0, 0, 0)),
+        patch.object(orch, "_usage_from_transcript", return_value=(0, 0, 0, 0, 0)),
         patch("roboco.db.base.get_session_factory", return_value=db_factory),
         patch("roboco.billing.pricing.calculate_cost", return_value=0.0) as mock_cost,
     ):
@@ -389,7 +389,7 @@ async def test_sweep_token_snapshots_skips_zero_token_agents() -> None:
 
     with (
         patch("roboco.runtime.orchestrator.httpx.AsyncClient", _client_cls),
-        patch.object(orch, "_usage_from_transcript", return_value=(0, 0, 0, 0)),
+        patch.object(orch, "_usage_from_transcript", return_value=(0, 0, 0, 0, 0)),
         patch("roboco.db.base.get_session_factory", return_value=db_factory),
     ):
         await orch._sweep_token_snapshots()
@@ -765,7 +765,9 @@ async def test_resolve_active_tokens_falls_back_to_transcript() -> None:
         )
 
     client = _FakeHTTPClient(_handler)
-    with patch.object(orch, "_usage_from_transcript", return_value=(6, 514, 100, 50)):
+    with patch.object(
+        orch, "_usage_from_transcript", return_value=(6, 514, 100, 50, 3)
+    ):
         tokens = await orch._resolve_active_tokens(
             cast("httpx.AsyncClient", client), _AGENT_ID
         )
@@ -790,7 +792,7 @@ async def test_resolve_active_tokens_prefers_sdk() -> None:
 
     client = _FakeHTTPClient(_handler)
     with patch.object(
-        orch, "_usage_from_transcript", return_value=(999, 999, 999, 999)
+        orch, "_usage_from_transcript", return_value=(999, 999, 999, 999, 0)
     ) as mock_tx:
         tokens = await orch._resolve_active_tokens(
             cast("httpx.AsyncClient", client), _AGENT_ID
@@ -798,6 +800,50 @@ async def test_resolve_active_tokens_prefers_sdk() -> None:
 
     assert tokens == (10, 20, 0, 0)
     mock_tx.assert_not_called()
+
+
+async def test_resolve_final_turns_tools_from_sdk() -> None:
+    """turns + tool_calls come from the SDK /usage/status when present."""
+    orch = _make_orchestrator()
+
+    def _handler(_url: str) -> Any:
+        return _mock_response(200, {"turns": 7, "tool_calls": 42, "tokens_input": 1})
+
+    with patch(
+        "roboco.runtime.orchestrator.httpx.AsyncClient",
+        lambda **_kw: _FakeHTTPClient(_handler),
+    ):
+        turns, tool_calls = await orch._resolve_final_turns_tools(_AGENT_ID)
+
+    assert (turns, tool_calls) == (7, 42)
+
+
+async def test_resolve_final_turns_tools_transcript_fallback_for_turns() -> None:
+    """When the SDK reports 0 turns, fall back to the transcript turn count.
+
+    tool_calls has no transcript equivalent and stays 0 ("n/a").
+    """
+    orch = _make_orchestrator()
+
+    def _handler(_url: str) -> Any:
+        return _mock_response(200, {"turns": 0, "tool_calls": 0})
+
+    transcript_turns = 9
+    with (
+        patch(
+            "roboco.runtime.orchestrator.httpx.AsyncClient",
+            lambda **_kw: _FakeHTTPClient(_handler),
+        ),
+        patch.object(
+            orch,
+            "_usage_from_transcript",
+            return_value=(1, 2, 3, 4, transcript_turns),
+        ),
+    ):
+        turns, tool_calls = await orch._resolve_final_turns_tools(_AGENT_ID)
+
+    assert turns == transcript_turns  # recovered from the transcript
+    assert tool_calls == 0
 
 
 # ---------------------------------------------------------------------------
@@ -836,7 +882,7 @@ def test_usage_from_transcript_finds_by_session_id_in_shared_app_dir(
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
     result = AgentOrchestrator._usage_from_transcript("main-pm", sid)
-    assert result == (exp_in, exp_out, exp_cr, exp_cw)
+    assert result == (exp_in, exp_out, exp_cr, exp_cw, 1)  # one message => 1 turn
 
 
 def test_usage_from_transcript_without_session_id_uses_slug_glob(
@@ -859,4 +905,4 @@ def test_usage_from_transcript_without_session_id_uses_slug_glob(
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
     result = AgentOrchestrator._usage_from_transcript("be-dev-1")
-    assert result == (exp_in, exp_out, 0, 0)
+    assert result == (exp_in, exp_out, 0, 0, 1)  # one message => 1 turn

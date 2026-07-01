@@ -139,7 +139,11 @@ def test_missing_transcript_returns_zero_without_error(
         "/usage/sync", json={"transcript_path": str(tmp_path / "nope.jsonl")}
     )
     assert resp.status_code == _OK
-    assert resp.json() == _expected([])
+    body = resp.json()
+    for key, value in _expected([]).items():
+        assert body[key] == value
+    assert body["turns"] == 0
+    assert body["tool_calls"] == 0
 
 
 def test_malformed_lines_are_skipped(client: TestClient, tmp_path: Path) -> None:
@@ -167,7 +171,7 @@ def test_parser_handles_entries_without_message(tmp_path: Path) -> None:
         json.dumps({"type": "system", "subtype": "init"}),
         _assistant_line(rows[0]),
     )
-    tin, tout, cread, cwrite = srv._sum_transcript_usage(transcript)
+    tin, tout, cread, cwrite, turns = srv._sum_transcript_usage(transcript)
     exp = _expected(rows)
     assert (tin, tout, cread, cwrite) == (
         exp["tokens_input"],
@@ -175,6 +179,7 @@ def test_parser_handles_entries_without_message(tmp_path: Path) -> None:
         exp["tokens_cache_read"],
         exp["tokens_cache_write"],
     )
+    assert turns == 0  # _assistant_line carries no message id
 
 
 def _assistant_line_with_id(row: _UsageRow, message_id: str) -> str:
@@ -214,7 +219,7 @@ def test_parser_dedupes_repeated_message_id(tmp_path: Path) -> None:
         _assistant_line_with_id(msg, "msg_aaa"),  # tool_use block (same id)
         _assistant_line_with_id(other, "msg_bbb"),
     )
-    tin, tout, cread, cwrite = srv._sum_transcript_usage(transcript)
+    tin, tout, cread, cwrite, turns = srv._sum_transcript_usage(transcript)
     # Counted once per id: msg + other, NOT msg * 3 + other.
     exp = _expected([msg, other])
     assert (tin, tout, cread, cwrite) == (
@@ -223,3 +228,20 @@ def test_parser_dedupes_repeated_message_id(tmp_path: Path) -> None:
         exp["tokens_cache_read"],
         exp["tokens_cache_write"],
     )
+    expected_turns = 2  # two unique message ids
+    assert turns == expected_turns
+
+
+def test_sync_response_surfaces_turns(client: TestClient, tmp_path: Path) -> None:
+    """/usage/sync (and thus /usage/status) reports the LLM turn count."""
+    transcript = tmp_path / "session.jsonl"
+    _write(
+        transcript,
+        _assistant_line_with_id((10, 5, 0, 0), "msg_a"),
+        _assistant_line_with_id((10, 5, 0, 0), "msg_a"),  # same id
+        _assistant_line_with_id((2, 1, 0, 0), "msg_b"),
+    )
+    body = client.post("/usage/sync", json={"transcript_path": str(transcript)}).json()
+    expected_turns = 2
+    assert body["turns"] == expected_turns
+    assert "tool_calls" in body

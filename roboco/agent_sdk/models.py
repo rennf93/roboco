@@ -229,6 +229,12 @@ class TokenReportRequest(BaseModel):
 class TokenUsageStatus(BaseModel):
     """Current cumulative token usage for this session (GET /usage/status)."""
 
+    turns: int = Field(
+        default=0, description="LLM iterations (unique assistant messages)"
+    )
+    tool_calls: int = Field(
+        default=0, description="Tool invocations accumulated this session"
+    )
     tokens_input: int = Field(
         default=0, description="Total input tokens accumulated this session"
     )

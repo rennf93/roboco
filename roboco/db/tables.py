@@ -2213,6 +2213,11 @@ class AgentSpawnSessionTable(Base):
     tokens_cache_write: Mapped[int] = mapped_column(
         BigInteger, nullable=False, default=0
     )
+    # LLM iterations (unique assistant messages) + tool invocations for this
+    # stint, captured at finalize from the SDK /usage/status (turns has a
+    # transcript fallback). Default 0 — historical/Grok rows read 0 ("n/a").
+    turns: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    tool_calls: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     exit_reason: Mapped[str | None] = mapped_column(String(100), nullable=True)
     estimated_cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
 

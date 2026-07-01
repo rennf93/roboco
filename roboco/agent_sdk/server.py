@@ -433,6 +433,10 @@ class _SessionState:
         self.tokens_output: int = 0
         self.tokens_cache_read: int = 0
         self.tokens_cache_write: int = 0
+        # LLM iterations (unique assistant message ids), set by /usage/sync from
+        # the transcript. tool_calls is total_calls (above). Both surfaced on
+        # /usage/status so the orchestrator persists them at session finalize.
+        self.turns: int = 0
         # (size, mtime) of the last transcript parsed for /usage/sync, so a
         # re-sync of an unchanged transcript skips the re-parse.
         self.transcript_fingerprint: tuple[int, float] | None = None
@@ -737,6 +741,8 @@ async def usage_status() -> TokenUsageStatus:
 
 def _token_usage_snapshot() -> TokenUsageStatus:
     return TokenUsageStatus(
+        turns=_state.turns,
+        tool_calls=_state.total_calls,
         tokens_input=_state.tokens_input,
         tokens_output=_state.tokens_output,
         tokens_cache_read=_state.tokens_cache_read,
@@ -798,11 +804,12 @@ async def usage_sync(req: TranscriptSyncRequest) -> TokenUsageStatus:
         return _token_usage_snapshot()
 
     try:
-        tin, tout, tcr, tcw = _sum_transcript_usage(path)
+        tin, tout, tcr, tcw, turns = _sum_transcript_usage(path)
     except OSError as exc:
         logger.warning("Transcript usage sync failed", error=str(exc))
         return _token_usage_snapshot()
 
+    _state.turns = turns
     _state.tokens_input = tin
     _state.tokens_output = tout
     _state.tokens_cache_read = tcr

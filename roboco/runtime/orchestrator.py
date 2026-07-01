@@ -4980,8 +4980,8 @@ class AgentOrchestrator:
     @staticmethod
     def _usage_from_transcript(
         agent_id: str, claude_session_id: str | None = None
-    ) -> tuple[int, int, int, int]:
-        """Sum token usage from the agent's Claude Code transcript.
+    ) -> tuple[int, int, int, int, int]:
+        """Sum token usage + turn count from the agent's Claude Code transcript.
 
         The host ``~/.claude`` is mounted into the orchestrator, so transcripts
         are readable here under ``projects/<cwd-dir>/<session-id>.jsonl``. When
@@ -5008,11 +5008,11 @@ class AgentOrchestrator:
                 for f in d.glob("*.jsonl")
             ]
             if not jsonl:
-                return (0, 0, 0, 0)
+                return (0, 0, 0, 0, 0)
             newest = max(jsonl, key=lambda f: f.stat().st_mtime)
             return sum_transcript_usage(newest)
         except OSError:
-            return (0, 0, 0, 0)
+            return (0, 0, 0, 0, 0)
 
     def _grok_usage_json(self, agent_id: str) -> dict[str, Any] | None:
         """Read a GROK agent's ``usage.json`` (``{model, total_tokens, cost_usd}``).
@@ -5167,12 +5167,52 @@ class AgentOrchestrator:
             )
 
         if not tokens[0] and not tokens[1]:
-            tin, tout, cr, cw = self._usage_from_transcript(
+            tin, tout, cr, cw, _turns = self._usage_from_transcript(
                 agent_id, self._claude_session_id_for(agent_id)
             )
             if tin or tout:
                 tokens = (tin, tout, cr, cw)
         return tokens
+
+    async def _resolve_final_turns_tools(self, agent_id: str) -> tuple[int, int]:
+        """Resolve final ``(turns, tool_calls)`` for a stopping agent.
+
+        Primary source is the live SDK ``/usage/status`` (which carries both).
+        For ``turns`` only there is a durable Claude-transcript fallback (unique
+        assistant-message count) for short-lived agents whose SDK counts race
+        teardown; ``tool_calls`` has no transcript equivalent and stays 0 ("n/a")
+        when the SDK misses. Grok agents have neither — returns ``(0, 0)``.
+        Best-effort: any failure degrades to zeros, never blocks finalize.
+        """
+        from roboco.models.base import ModelProvider
+
+        if self.get_provider_for_agent(agent_id) == ModelProvider.GROK.value:
+            return (0, 0)
+
+        turns = tool_calls = 0
+        sdk_url = f"http://roboco-agent-{agent_id}:{SDK_PORT}/usage/status"
+        try:
+            async with httpx.AsyncClient(
+                timeout=3.0, headers=_system_api_headers()
+            ) as client:
+                resp = await client.get(sdk_url)
+                if resp.status_code == http_status.HTTP_200_OK:
+                    data = resp.json()
+                    turns = int(data.get("turns", 0) or 0)
+                    tool_calls = int(data.get("tool_calls", 0) or 0)
+        except Exception as sdk_exc:
+            logger.debug(
+                "Could not fetch final turns/tool_calls from SDK",
+                agent_id=agent_id,
+                error=str(sdk_exc),
+            )
+
+        if not turns:
+            *_tokens, t = self._usage_from_transcript(
+                agent_id, self._claude_session_id_for(agent_id)
+            )
+            turns = t
+        return turns, tool_calls
 
     async def _finalize_spawn_session(
         self,
@@ -5198,6 +5238,10 @@ class AgentOrchestrator:
                 tokens_cache_read,
                 tokens_cache_write,
             ) = await self._resolve_final_token_usage(agent_id)
+            # Resolve LLM iterations + tool calls (live SDK; turns has a
+            # transcript fallback). Separate from the token tuple so the live
+            # snapshot helpers keep their 4-tuple contract.
+            turns, tool_calls = await self._resolve_final_turns_tools(agent_id)
 
             # Look up the model and usage_session_id from the running instance config.
             model = "unknown"
@@ -5248,6 +5292,8 @@ class AgentOrchestrator:
                             tokens_output=tokens_output,
                             tokens_cache_read=tokens_cache_read,
                             tokens_cache_write=tokens_cache_write,
+                            turns=turns,
+                            tool_calls=tool_calls,
                             exit_reason=exit_reason,
                             estimated_cost_usd=cost,
                         )
@@ -5305,10 +5351,11 @@ class AgentOrchestrator:
         tokens = await self._fetch_agent_tokens(client, agent_id)
         if tokens is not None:
             return tokens
-        transcript = self._usage_from_transcript(
+        tin, tout, cr, cw, _turns = self._usage_from_transcript(
             agent_id, self._claude_session_id_for(agent_id)
         )
-        return transcript if any(transcript) else None
+        token_counts = (tin, tout, cr, cw)
+        return token_counts if any(token_counts) else None
 
     @staticmethod
     async def _persist_token_snapshot(

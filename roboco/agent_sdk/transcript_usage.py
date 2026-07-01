@@ -54,16 +54,17 @@ def _line_usage(line: str) -> tuple[str | None, tuple[int, int, int, int]] | Non
     return message.get("id"), deltas
 
 
-def sum_transcript_usage(path: Path) -> tuple[int, int, int, int]:
-    """Sum per-message token usage across a Claude Code JSONL transcript.
+def sum_transcript_usage(path: Path) -> tuple[int, int, int, int, int]:
+    """Sum per-message token usage + turn count across a Claude Code transcript.
 
     Each assistant message carries a ``message.usage`` block with the token
     counts for that API response; summing them yields the session total.
     Messages that span several lines (same ``message.id``) are counted once —
     Claude Code emits one line per content block, each repeating the message's
     usage, so naive summing roughly doubles the totals. Returns
-    ``(input, output, cache_read, cache_write)``. Malformed lines are skipped —
-    a single bad line must never lose the whole count.
+    ``(input, output, cache_read, cache_write, turns)`` where ``turns`` is the
+    number of UNIQUE assistant ``message.id``s (i.e. LLM iterations). Malformed
+    lines are skipped — a single bad line must never lose the whole count.
     """
     tin = tout = tcr = tcw = 0
     seen: set[str] = set()
@@ -81,4 +82,4 @@ def sum_transcript_usage(path: Path) -> tuple[int, int, int, int]:
             tout += line_out
             tcr += line_cr
             tcw += line_cw
-    return tin, tout, tcr, tcw
+    return tin, tout, tcr, tcw, len(seen)
