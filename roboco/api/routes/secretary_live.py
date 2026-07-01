@@ -29,6 +29,11 @@ from roboco.api.schemas.secretary_live import (
     StartSecretaryRequest,
     StartSecretaryResponse,
 )
+from roboco.security import (
+    guard_deco,
+    prompt_injection_validator,
+    secret_exfil_validator,
+)
 from roboco.services.prompter_live import get_live_registry
 
 if TYPE_CHECKING:
@@ -43,6 +48,9 @@ router = APIRouter()
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(require_panel_token)],
 )
+@guard_deco.rate_limit(requests=10, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(prompt_injection_validator)
 async def start_live(body: StartSecretaryRequest) -> StartSecretaryResponse:
     """Spawn the Secretary agent for a new chat and return its session id."""
     session_id = uuid4().hex
@@ -79,6 +87,9 @@ async def session_status(session_id: str) -> dict[str, bool]:
 
 
 @router.post("/live/{session_id}/messages", dependencies=[Depends(require_panel_token)])
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(prompt_injection_validator)
 async def send_message(session_id: str, body: LiveMessageRequest) -> dict[str, bool]:
     """Deliver the CEO's message to the running Secretary agent."""
     delivered = await get_live_registry().deliver(session_id, body.text)
@@ -94,6 +105,7 @@ async def send_message(session_id: str, body: LiveMessageRequest) -> dict[str, b
 
 
 @router.post("/live/{session_id}/stop", dependencies=[Depends(require_panel_token)])
+@guard_deco.rate_limit(requests=10, window=60)
 async def stop_live(session_id: str) -> dict[str, bool]:
     """Reap the live Secretary session."""
     await get_orchestrator().reap_secretary_session(session_id)
@@ -101,6 +113,9 @@ async def stop_live(session_id: str) -> dict[str, bool]:
 
 
 @router.post("/live/{session_id}/events")
+@guard_deco.rate_limit(requests=60, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(secret_exfil_validator)
 async def relay_event(session_id: str, event: AgentEvent) -> dict[str, bool]:
     """Relay one agent event from the container onto the session's stream."""
     return {"pushed": get_live_registry().push(session_id, event.model_dump())}

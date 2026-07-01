@@ -17,6 +17,7 @@ from roboco.api.schemas.v1.flow import (
     ResumeRequest,
     UnclaimRequest,
 )
+from roboco.security import guard_deco
 from roboco.services.gateway.choreographer import Choreographer
 
 router = APIRouter(
@@ -31,6 +32,7 @@ _ChoreographerDep = Annotated[Choreographer, Depends(get_choreographer)]
 
 
 @router.post("/give_me_work")
+@guard_deco.rate_limit(requests=30, window=60)
 async def give_me_work(
     request: Request,
     _body: GiveMeWorkRequest,
@@ -42,6 +44,7 @@ async def give_me_work(
 
 
 @router.post("/claim_review")
+@guard_deco.rate_limit(requests=30, window=60)
 async def claim_review(
     request: Request,
     body: ClaimReviewRequest,
@@ -53,6 +56,7 @@ async def claim_review(
 
 
 @router.post("/pass")
+@guard_deco.rate_limit(requests=30, window=60)
 async def qa_pass(
     request: Request,
     body: PassReviewRequest,
@@ -66,6 +70,7 @@ async def qa_pass(
 
 
 @router.post("/fail")
+@guard_deco.rate_limit(requests=30, window=60)
 async def qa_fail(
     request: Request,
     body: FailReviewRequest,
@@ -77,6 +82,7 @@ async def qa_fail(
 
 
 @router.post("/unclaim")
+@guard_deco.rate_limit(requests=30, window=60)
 async def unclaim(
     request: Request,
     body: UnclaimRequest,
@@ -88,6 +94,7 @@ async def unclaim(
 
 
 @router.post("/resume")
+@guard_deco.rate_limit(requests=30, window=60)
 async def resume(
     request: Request,
     body: ResumeRequest,
@@ -99,6 +106,7 @@ async def resume(
 
 
 @router.post("/i_am_idle")
+@guard_deco.rate_limit(requests=30, window=60)
 async def i_am_idle(
     request: Request,
     _body: IAmIdleRequest,
@@ -110,6 +118,7 @@ async def i_am_idle(
 
 
 @router.post("/i_am_blocked")
+@guard_deco.rate_limit(requests=30, window=60)
 async def i_am_blocked(
     request: Request,
     body: IAmBlockedRequest,

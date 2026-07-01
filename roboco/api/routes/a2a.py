@@ -55,6 +55,7 @@ from roboco.models.a2a import (
     ListTasksResponse,
     SendMessageRequest,
 )
+from roboco.security import guard_deco, prompt_injection_validator
 from roboco.services.a2a import A2AService
 from roboco.utils.converters import require_uuid
 
@@ -118,6 +119,9 @@ async def get_agent_card(
     "/message/send",
     dependencies=[require_any_authenticated_agent],
 )
+@guard_deco.rate_limit(requests=60, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(prompt_injection_validator)
 async def send_message(
     request: SendMessageRequest,
     db: DbSession,
@@ -207,6 +211,9 @@ async def send_message(
     "/message/stream",
     dependencies=[require_any_authenticated_agent],
 )
+@guard_deco.rate_limit(requests=60, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(prompt_injection_validator)
 async def send_message_stream(
     request: Request,
     body: SendMessageRequest,
@@ -435,6 +442,7 @@ async def list_tasks(
     "/tasks/{task_id}/cancel",
     dependencies=[require_any_authenticated_agent],
 )
+@guard_deco.rate_limit(requests=10, window=60)
 async def cancel_task(
     task_id: str,
     db: DbSession,
@@ -608,6 +616,9 @@ async def list_chat_conversations(
 
 
 @router.post("/chat/conversations", status_code=status.HTTP_201_CREATED)
+@guard_deco.rate_limit(requests=60, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(prompt_injection_validator)
 async def create_conversation(
     db: DbSession,
     agent_slug: CurrentAgentSlug,
@@ -702,6 +713,7 @@ async def get_conversation(
 
 
 @router.post("/chat/conversations/{conversation_id}/close")
+@guard_deco.rate_limit(requests=30, window=60)
 async def close_conversation(
     conversation_id: str,
     db: DbSession,
@@ -774,6 +786,9 @@ async def list_chat_messages(
     "/chat/conversations/{conversation_id}/messages",
     status_code=status.HTTP_201_CREATED,
 )
+@guard_deco.rate_limit(requests=60, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(prompt_injection_validator)
 async def send_chat_message(
     conversation_id: str,
     db: DbSession,
@@ -817,6 +832,7 @@ async def send_chat_message(
 
 
 @router.post("/chat/conversations/{conversation_id}/read", status_code=204)
+@guard_deco.rate_limit(requests=60, window=60)
 async def mark_read(
     conversation_id: str,
     db: DbSession,

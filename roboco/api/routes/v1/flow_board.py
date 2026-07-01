@@ -15,6 +15,7 @@ from roboco.api.schemas.v1.flow import (
     IAmIdleRequest,
     TriageRequest,
 )
+from roboco.security import guard_deco
 from roboco.services.gateway.choreographer import Choreographer
 
 router = APIRouter(
@@ -29,6 +30,7 @@ _ChoreographerDep = Annotated[Choreographer, Depends(get_choreographer)]
 
 
 @router.post("/triage")
+@guard_deco.rate_limit(requests=30, window=60)
 async def triage(
     request: Request,
     _body: TriageRequest,
@@ -40,6 +42,7 @@ async def triage(
 
 
 @router.post("/escalate_to_ceo")
+@guard_deco.rate_limit(requests=30, window=60)
 async def escalate_to_ceo(
     request: Request,
     body: EscalateToCeoRequest,
@@ -51,6 +54,7 @@ async def escalate_to_ceo(
 
 
 @router.post("/i_am_idle")
+@guard_deco.rate_limit(requests=30, window=60)
 async def i_am_idle(
     request: Request,
     _body: IAmIdleRequest,

@@ -22,6 +22,7 @@ from roboco.api.schemas.orchestrator import (
     SpawnAgentRequest,
     WaitingAgentResponse,
 )
+from roboco.security import guard_deco, prompt_injection_validator
 
 
 # Orchestrator control routes (spawn / stop / resolve-wait / mark-waiting,
@@ -91,6 +92,7 @@ def _validated_agent_id(agent_id: str) -> str:
     summary="Get orchestrator status",
     description="Get the overall status of the orchestrator and all agents.",
 )
+@guard_deco.rate_limit(requests=60, window=60)
 async def get_status() -> OrchestratorStatusResponse:
     """Get orchestrator status."""
     orchestrator = get_orchestrator()
@@ -185,6 +187,9 @@ async def get_waiting_agents() -> list[WaitingAgentResponse]:
     summary="Spawn agent",
     description="Spawn a Claude Code instance for an agent.",
 )
+@guard_deco.rate_limit(requests=10, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(prompt_injection_validator)
 async def spawn_agent(
     agent_id: str,
     data: SpawnAgentRequest | None = None,
@@ -227,6 +232,7 @@ async def spawn_agent(
     summary="Stop agent",
     description="Stop a running agent.",
 )
+@guard_deco.rate_limit(requests=10, window=60)
 async def stop_agent(agent_id: str, graceful: bool = True) -> None:
     """Stop an agent."""
     agent_id = _validated_agent_id(agent_id)
@@ -240,6 +246,8 @@ async def stop_agent(agent_id: str, graceful: bool = True) -> None:
     summary="Resolve wait",
     description="Resolve a WAITING_LONG condition and respawn the agent.",
 )
+@guard_deco.rate_limit(requests=10, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
 async def resolve_wait(
     agent_id: str,
     data: ResolveWaitRequest,
@@ -272,6 +280,7 @@ async def resolve_wait(
     summary="Mark waiting",
     description="Mark an agent as WAITING_LONG and terminate it.",
 )
+@guard_deco.rate_limit(requests=10, window=60)
 async def mark_waiting(
     agent_id: str,
     waiting_for: str,

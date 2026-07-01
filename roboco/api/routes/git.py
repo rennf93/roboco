@@ -57,6 +57,11 @@ from roboco.api.schemas.git import (
 from roboco.exceptions import GitCommandError, GitError, GitTimeoutError
 from roboco.logging import get_logger
 from roboco.models.base import AgentRole
+from roboco.security import (
+    guard_deco,
+    prompt_injection_validator,
+    secret_exfil_validator,
+)
 from roboco.services.base import (
     NotFoundError,
     ServiceError,
@@ -341,6 +346,9 @@ async def get_git_diff(
 
 
 @router.post("/commit", response_model=GitCommitResponse)
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(secret_exfil_validator)
 async def create_commit(
     data: GitCommitRequest,
     db: DbSession,
@@ -369,6 +377,8 @@ async def create_commit(
 
 
 @router.post("/push", response_model=GitPushResponse)
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
 async def push_commits(
     data: GitPushRequest,
     db: DbSession,
@@ -392,6 +402,8 @@ async def push_commits(
 
 
 @router.post("/branch/create", response_model=GitCreateBranchResponse)
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
 async def create_branch(
     data: GitCreateBranchRequest,
     db: DbSession,
@@ -417,6 +429,8 @@ async def create_branch(
 
 
 @router.post("/checkout", response_model=GitCheckoutResponse)
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
 async def checkout_branch(
     data: GitCheckoutRequest,
     db: DbSession,
@@ -442,6 +456,9 @@ async def checkout_branch(
 
 
 @router.post("/pr/create", response_model=GitCreatePRResponse)
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(prompt_injection_validator)
 async def create_pull_request(
     data: GitCreatePRRequest,
     db: DbSession,
@@ -470,6 +487,8 @@ async def create_pull_request(
 
 
 @router.post("/pr/merge", response_model=GitMergePRResponse)
+@guard_deco.rate_limit(requests=10, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
 async def merge_pull_request(
     data: GitMergePRRequest,
     db: DbSession,
@@ -493,6 +512,8 @@ async def merge_pull_request(
 
 
 @router.post("/pull", response_model=GitPullResponse)
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
 async def pull_commits(
     data: GitPullRequest,
     db: DbSession,
@@ -529,6 +550,8 @@ async def pull_commits(
 
 
 @router.post("/fetch", response_model=GitFetchResponse)
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
 async def fetch_commits(
     data: GitFetchRequest,
     db: DbSession,
@@ -565,6 +588,8 @@ async def fetch_commits(
 
 
 @router.post("/rebase", response_model=GitRebaseResponse)
+@guard_deco.rate_limit(requests=10, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
 async def rebase_branch(
     data: GitRebaseRequest,
     db: DbSession,

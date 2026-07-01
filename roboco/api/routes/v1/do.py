@@ -32,6 +32,11 @@ from roboco.api.schemas.v1.do import (
     RejectPlaybookRequest,
     SayRequest,
 )
+from roboco.security import (
+    guard_deco,
+    prompt_injection_validator,
+    secret_exfil_validator,
+)
 from roboco.services.gateway.content_actions import ContentActions
 
 router = APIRouter(
@@ -48,6 +53,9 @@ _ContentActionsDep = Annotated[ContentActions, Depends(get_content_actions)]
 
 
 @router.post("/commit")
+@guard_deco.rate_limit(requests=60, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(secret_exfil_validator)
 async def do_commit(
     request: Request,
     body: CommitRequest,
@@ -63,6 +71,9 @@ async def do_commit(
 
 
 @router.post("/note")
+@guard_deco.rate_limit(requests=60, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(secret_exfil_validator)
 async def do_note(
     request: Request,
     body: NoteRequest,
@@ -95,6 +106,9 @@ async def do_note(
 
 
 @router.post("/pitch")
+@guard_deco.rate_limit(requests=60, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(secret_exfil_validator)
 async def do_pitch(
     request: Request,
     body: PitchRequest,
@@ -113,6 +127,9 @@ async def do_pitch(
 
 
 @router.post("/say")
+@guard_deco.rate_limit(requests=60, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(prompt_injection_validator)
 async def do_say(
     request: Request,
     body: SayRequest,
@@ -129,6 +146,9 @@ async def do_say(
 
 
 @router.post("/dm")
+@guard_deco.rate_limit(requests=60, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(prompt_injection_validator)
 async def do_dm(
     request: Request,
     body: DmRequest,
@@ -146,6 +166,8 @@ async def do_dm(
 
 
 @router.post("/notify")
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
 async def do_notify(
     request: Request,
     body: NotifyRequest,
@@ -179,6 +201,9 @@ async def do_evidence(
 
 
 @router.post("/progress")
+@guard_deco.rate_limit(requests=60, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(secret_exfil_validator)
 async def do_progress(
     request: Request,
     body: ProgressRequest,
@@ -196,6 +221,7 @@ async def do_progress(
 
 
 @router.post("/open_session")
+@guard_deco.rate_limit(requests=30, window=60)
 async def do_open_session(
     request: Request,
     body: OpenSessionRequest,
@@ -214,6 +240,7 @@ async def do_open_session(
 
 
 @router.post("/link_session")
+@guard_deco.rate_limit(requests=30, window=60)
 async def do_link_session(
     request: Request,
     body: LinkSessionRequest,
@@ -261,6 +288,7 @@ async def do_notify_get(
 
 
 @router.post("/notify_ack")
+@guard_deco.rate_limit(requests=30, window=60)
 async def do_notify_ack(
     request: Request,
     body: NotifyAckRequest,
@@ -297,6 +325,9 @@ async def do_channels(
 
 
 @router.post("/pr_update")
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(secret_exfil_validator)
 async def do_pr_update(
     request: Request,
     body: PRUpdateRequest,
@@ -314,6 +345,9 @@ async def do_pr_update(
 
 
 @router.post("/draft_playbook")
+@guard_deco.rate_limit(requests=60, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(secret_exfil_validator)
 async def do_draft_playbook(
     request: Request,
     body: DraftPlaybookRequest,
@@ -332,6 +366,7 @@ async def do_draft_playbook(
 
 
 @router.post("/approve_playbook")
+@guard_deco.rate_limit(requests=30, window=60)
 async def do_approve_playbook(
     request: Request,
     body: ApprovePlaybookRequest,
@@ -345,6 +380,9 @@ async def do_approve_playbook(
 
 
 @router.post("/reject_playbook")
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(secret_exfil_validator)
 async def do_reject_playbook(
     request: Request,
     body: RejectPlaybookRequest,
@@ -358,6 +396,7 @@ async def do_reject_playbook(
 
 
 @router.post("/archive_playbook")
+@guard_deco.rate_limit(requests=30, window=60)
 async def do_archive_playbook(
     request: Request,
     body: ArchivePlaybookRequest,

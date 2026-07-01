@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, Header, Request
 from roboco.api.deps import get_choreographer
 from roboco.api.routes.v1._role_dep import envelope_to_response, require_auditor
 from roboco.api.schemas.v1.flow import IAmIdleRequest, TriageRequest
+from roboco.security import guard_deco
 from roboco.services.gateway.choreographer import Choreographer
 
 router = APIRouter(
@@ -25,6 +26,7 @@ _ChoreographerDep = Annotated[Choreographer, Depends(get_choreographer)]
 
 
 @router.post("/triage")
+@guard_deco.rate_limit(requests=30, window=60)
 async def triage(
     request: Request,
     _body: TriageRequest,
@@ -36,6 +38,7 @@ async def triage(
 
 
 @router.post("/i_am_idle")
+@guard_deco.rate_limit(requests=30, window=60)
 async def i_am_idle(
     request: Request,
     _body: IAmIdleRequest,

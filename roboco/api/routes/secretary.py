@@ -18,6 +18,7 @@ from roboco.api.schemas.secretary import (
 )
 from roboco.models import AgentRole
 from roboco.models.secretary import DirectiveKind, DirectiveStatus
+from roboco.security import guard_deco, prompt_injection_validator
 from roboco.services.base import ConflictError, NotFoundError, ValidationError
 from roboco.services.secretary import get_secretary_service
 
@@ -59,6 +60,9 @@ async def read_task(
 @router.post(
     "/directives", response_model=DirectiveResponse, status_code=status.HTTP_201_CREATED
 )
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(prompt_injection_validator)
 async def submit_directive(
     data: DirectiveSubmit, db: DbSession, agent: CurrentAgentContext
 ) -> DirectiveResponse:
@@ -103,6 +107,7 @@ async def list_directives(
 
 
 @router.post("/directives/{directive_id}/confirm", response_model=DirectiveResponse)
+@guard_deco.rate_limit(requests=10, window=60)
 async def confirm_directive(
     directive_id: UUID, db: DbSession, agent: CurrentAgentContext
 ) -> DirectiveResponse:
@@ -124,6 +129,8 @@ async def confirm_directive(
 
 
 @router.post("/directives/{directive_id}/reject", response_model=DirectiveResponse)
+@guard_deco.rate_limit(requests=10, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
 async def reject_directive(
     directive_id: UUID,
     data: DirectiveDecision,
