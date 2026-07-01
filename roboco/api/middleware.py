@@ -12,6 +12,7 @@ from typing import Any, cast
 import structlog
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi import status as http_status
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -431,7 +432,15 @@ async def request_validation_handler(request: Request, exc: Exception) -> JSONRe
         body=body_for_log,
         errors=errors,
     )
-    content: dict[str, Any] = {"detail": errors, "body": body}
+    # jsonable_encoder is mandatory: Pydantic v2 stashes the raw exception
+    # object under error['ctx']['error'] for any validator that raises
+    # ValueError (e.g. blocker_type), and a raw Exception is not JSON
+    # serializable — without this json.dumps crashes the 422 render into a
+    # 500. FastAPI's own default validation handler encodes for the same reason.
+    content: dict[str, Any] = {
+        "detail": jsonable_encoder(errors),
+        "body": jsonable_encoder(body),
+    }
     remediate = _uuid_field_remediation(errors)
     if remediate is not None:
         content["remediate"] = remediate

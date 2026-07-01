@@ -12,7 +12,7 @@ from uuid import UUID  # noqa: TC003
 
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from roboco.api.middleware import (
     _uuid_field_remediation,
     get_status_code,
@@ -276,6 +276,43 @@ def test_request_validation_handler_returns_422_with_details() -> None:
     body = response.json()
     assert "detail" in body
     assert "body" in body
+
+
+class _EnumFieldBody(BaseModel):
+    """Mirrors IAmBlockedRequest: a field_validator that raises ValueError.
+
+    Pydantic v2 stashes the raw ValueError object in error['ctx']['error'],
+    which is not JSON-serializable — the handler must encode it (jsonable_encoder)
+    or json.dumps crashes the 422 render into a 500."""
+
+    kind: str
+
+    @field_validator("kind")
+    @classmethod
+    def _one_of(cls, v: str) -> str:
+        if v not in {"a", "b"}:
+            raise ValueError(f"kind must be one of: a | b. Got {v!r}.")
+        return v
+
+
+def test_validator_valueerror_returns_422_not_500() -> None:
+    """A field_validator ValueError (raw exc in ctx) must render a clean 422,
+    not crash the handler into a 500. Reproduces the live i_am_blocked
+    blocker_type='task_complete' crash."""
+    app = FastAPI()
+    setup_middleware(app)
+
+    @app.post("/enum")
+    async def _e(_data: _EnumFieldBody) -> Any:
+        return {"ok": True}
+
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.post("/enum", json={"kind": "task_complete"})
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+    body = response.json()
+    assert "detail" in body
+    # The human-readable validator message must survive serialization.
+    assert "kind must be one of" in str(body["detail"])
 
 
 # ---------------------------------------------------------------------------
