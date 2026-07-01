@@ -2258,6 +2258,49 @@ class AgentOrchestrator:
             )
         return None
 
+    async def _refuse_unspawnable(self, agent_id: str, task_id: str | None) -> None:
+        """Chokepoint guards for ``spawn_agent``; raise ``AgentReadinessError``.
+
+        Three refusals, in order:
+        1. A traversal-shaped ``agent_id`` (it flows into log dirs, settings and
+           container names) — rejected before any filesystem op.
+        2. Human-only roles (ceo / prompter / secretary) are NEVER spawned by a
+           dispatcher. The CEO is the human operator; intake and secretary are
+           human-driven chats launched through their own guarded paths
+           (_spawn_intake_container / _spawn_secretary_container), not this
+           method. Without this, a dispatcher that spawns "any A2A/notification
+           target" could resolve a CEO-addressed notification to slug "ceo" and
+           launch a CEO container — the system acting as the human CEO.
+        3. Spawn preflight (flag-gated): a non-gateway delivery role could never
+           claim its work and would respawn forever — refuse + alert once.
+        """
+        AgentOrchestrator._safe_agent_path_segment(agent_id)
+        task_id_str = str(task_id) if task_id else None
+        _role = role_for_slug_or_none(agent_id)
+        if is_human_only_role(_role):
+            logger.error(
+                "spawn_agent refused for human-only role — dispatchers must never"
+                " spawn the CEO / prompter / secretary; these are human-driven",
+                agent_id=agent_id,
+                role=str(_role),
+                task_id=task_id_str,
+            )
+            raise AgentReadinessError(
+                f"refused to spawn human-only role {_role!r} ({agent_id}) — the"
+                f" CEO is the human operator, not a container; intake and secretary"
+                f" launch through their dedicated paths, not spawn_agent"
+            )
+        preflight_reason = AgentOrchestrator._spawn_preflight_reason(agent_id)
+        if preflight_reason:
+            logger.error(
+                "spawn_agent refused (spawn preflight): role not gateway-enabled",
+                agent_id=agent_id,
+                task_id=task_id_str,
+            )
+            if task_id_str:
+                await self._notify_stuck_agent(agent_id, task_id_str, None)
+            raise AgentReadinessError(preflight_reason)
+
     async def spawn_agent(
         self,
         agent_id: str,
@@ -2285,50 +2328,8 @@ class AgentOrchestrator:
                 is auto-blocked before we raise so the dispatcher doesn't
                 keep retrying.
         """
-        # agent_id flows into path building (log dirs, settings, container
-        # names) — reject a traversal-shaped id at the chokepoint, before any
-        # filesystem op. The orchestrator only ever assigns plain slug/uuid
-        # ids, so this never fires on a real agent.
-        AgentOrchestrator._safe_agent_path_segment(agent_id)
-        # Human-only roles (ceo / prompter / secretary) are NEVER spawned by a
-        # dispatcher. The CEO is the human operator; intake (prompter) and
-        # secretary are human-driven interactive chats launched through their
-        # own deliberately-separate guarded paths (_spawn_intake_container /
-        # _spawn_secretary_container), NOT through this method. A dispatcher
-        # that spawns "any A2A/notification target" (e.g. _dispatch_a2a_work)
-        # could otherwise resolve a CEO-addressed notification to slug "ceo" and
-        # launch a CEO container — a trust violation (the system acting as the
-        # human CEO). This chokepoint guard is the single structural fix: no
-        # matter which dispatcher calls in, a human role never gets a container
-        # here. Safe because the dedicated human-spawn paths do not route
-        # through spawn_agent (see the _spawn_intake_container note at the top
-        # of this file).
-        _role = role_for_slug_or_none(agent_id)
-        if is_human_only_role(_role):
-            logger.error(
-                "spawn_agent refused for human-only role — dispatchers must never"
-                " spawn the CEO / prompter / secretary; these are human-driven",
-                agent_id=agent_id,
-                role=str(_role),
-                task_id=str(task_id) if task_id else None,
-            )
-            raise AgentReadinessError(
-                f"refused to spawn human-only role {_role!r} ({agent_id}) — the"
-                f" CEO is the human operator, not a container; intake and secretary"
-                f" launch through their dedicated paths, not spawn_agent"
-            )
-        # Spawn preflight (flag-gated): refuse a non-gateway delivery role that
-        # could never claim its work and would respawn forever. Alert once.
-        preflight_reason = AgentOrchestrator._spawn_preflight_reason(agent_id)
-        if preflight_reason:
-            logger.error(
-                "spawn_agent refused (spawn preflight): role not gateway-enabled",
-                agent_id=agent_id,
-                task_id=str(task_id) if task_id else None,
-            )
-            if task_id:
-                await self._notify_stuck_agent(agent_id, str(task_id), None)
-            raise AgentReadinessError(preflight_reason)
+        # Chokepoint guards: path-safe id, never-a-human-role, spawn preflight.
+        await self._refuse_unspawnable(agent_id, task_id)
         # Pre-flight: refuse to spawn if the task isn't ready. Auto-block
         # on refusal so the dispatcher doesn't keep spinning a container
         # that will immediately fail (wasted image pull + startup tokens).
