@@ -5104,6 +5104,10 @@ class TaskService(BaseService):
 
         await self._trigger_completion_hooks(task, agent_id)
         await self._unblock_dependents(task_id)
+        # Emit the completion event (previously defined but never emitted) so the
+        # WS bridge can forward a live completion signal. The CEO-facing granular
+        # notification fires on the root's ceo_approve, not on each leaf complete.
+        await self._emit_task_event(EventType.TASK_COMPLETED, task_id, {})
         return task
 
     async def _escalation_diverts_to_pool(
@@ -5416,6 +5420,11 @@ class TaskService(BaseService):
 
         # Unblock any tasks waiting on this one
         await self._unblock_dependents(task_id)
+
+        # Emit the completion event (previously dead code — never emitted) + the
+        # CEO-facing granular completion notification (real effort vs wall-clock).
+        await self._emit_task_event(EventType.TASK_COMPLETED, task_id, {})
+        await self._notify_completion(task, task_id)
 
         # Emit event for CEO approval
         await self._emit_task_event(
@@ -6011,6 +6020,26 @@ class TaskService(BaseService):
         bg_task.add_done_callback(self._background_tasks.discard)
 
         return task
+
+    async def _notify_completion(self, task: TaskTable, task_id: UUID) -> None:
+        """Best-effort CEO completion notification (granular effort breakdown).
+
+        A notification/metrics failure must never block the completion, so any
+        error is logged and swallowed.
+        """
+        try:
+            from roboco.services.notification_delivery import (
+                get_notification_delivery_service,
+            )
+
+            delivery = get_notification_delivery_service(self.session)
+            await delivery.notify_ceo_of_completion(task=task, task_id=task_id)
+        except Exception as exc:
+            self.log.warning(
+                "Completion notification failed",
+                task_id=str(task_id),
+                error=str(exc),
+            )
 
     async def _emit_task_event(
         self,
