@@ -4,7 +4,7 @@ Slice key: `api-core-websocket` Repo root: `/Users/renzof/Documents/GitHub/ZZZ/r
 
 ## Purpose
 
-The FastAPI application shell, request pipeline, and real-time WebSocket fan-out layer for RoboCo. `app.py` builds the ASGI app, wires ~40 route routers, and runs the async lifespan (DB migrations, feature-flag overlay, transcription/extraction/RAG/learning service init, ordered shutdown). `middleware.py` adds correlation IDs, request logging, and a full exception-handler chain mapping domain/service/HTTP errors to structured JSON. `websocket.py` + `websocket_bridge.py` own the live panel streams (channels, agents, sessions, notifications, system) with per-connection bounded send queues and an event-bus bridge. `deps.py` is the dependency-injection spine: agent header auth, role-gate helpers, and Choreographer/ContentActions wiring. `utils/` provides route-layer error factories and get-or-404/ownership helpers. `middleware_docs.py` enforces the docs-path permission matrix.
+The FastAPI application shell, request pipeline, and real-time WebSocket fan-out layer for RoboCo. `app.py` builds the ASGI app, wires ~40 route routers, and runs the async lifespan (DB migrations, feature-flag overlay, transcription/extraction/RAG/learning service init, ordered shutdown). `middleware.py` adds correlation IDs, request logging, and a full exception-handler chain mapping domain/service/HTTP errors to structured JSON. `websocket.py` + `websocket_bridge.py` own the live panel streams (channels, agents, sessions, notifications, system) with per-connection bounded send queues and an event-bus bridge. `deps.py` is the dependency-injection spine: agent header auth, role-gate helpers, and Choreographer/ContentActions wiring. `utils/` provides route-layer error factories and get-or-404/ownership helpers. `middleware_docs.py` enforces the docs-path permission matrix. `roboco/security.py` (outside `api/` but wired here) supplies the optional fastapi-guard HTTP security layer: `apply_guard(app)` mounts `SecurityMiddleware` last — outermost — in `create_app`, and `guarded_lifespan(lifespan)` wraps the async lifespan, both gated by `ROBOCO_GUARD_ENABLED` (default off, byte-for-byte unchanged request path while off).
 
 ## Files
 
@@ -20,6 +20,7 @@ The FastAPI application shell, request pipeline, and real-time WebSocket fan-out
 | `roboco/api/utils/errors.py` | HTTPException factories + `handle_service_error` + `service_error_handler` decorator | ~214 |
 | `roboco/api/utils/resources.py` | `get_or_404`, `get_by_field_or_404`, `require_ownership`/`require_recipient`/`require_membership` | ~180 |
 | `roboco/api/__init__.py` | Deliberately does NOT re-export `app` (circular-import guard, documented) | ~14 |
+| `roboco/security.py` | fastapi-guard 7.2.1 / guard-core 3.3.0 HTTP security layer: `SecurityMiddleware` + `guard_deco` (`SecurityDecorator`) singleton, gated by `ROBOCO_GUARD_ENABLED` (default off); wired into `create_app` via `apply_guard`/`guarded_lifespan` | ~407 |
 
 ## Key Symbols
 
@@ -74,10 +75,16 @@ The FastAPI application shell, request pipeline, and real-time WebSocket fan-out
 | `handle_service_error`/`service_error_handler` | func/deco | utils/errors.py:150/191 | ServiceError → HTTPException translation |
 | `get_or_404`/`get_by_field_or_404` | funcs | utils/resources.py:17/59 | Generic get-or-404 helpers |
 | `require_ownership`/`require_recipient`/`require_membership` | funcs | utils/resources.py:96/130/156 | Authorization checks |
+| `apply_guard` | func | security.py:378 | Mounts `SecurityMiddleware` on `app` + sets `app.state.guard_decorator`; no-op unless `settings.guard_enabled` |
+| `guarded_lifespan` | func | security.py:399 | Wraps `lifespan` with guard's `make_lifespan` (redis/geo/agent init) when armed; passthrough when off |
+| `build_security_config` | func | security.py:329 | Assembles the global `SecurityConfig` from settings: passive_mode, fail_secure, enforce_https, WAF calibration fields |
+| `security_config` / `guard_deco` | module singletons | security.py:374-375 | Built once at import (pure, no I/O); `guard_deco` is the `SecurityDecorator` route files decorate with `@guard_deco.<verb>` |
+| `prompt_injection_validator`/`secret_exfil_validator`/`internal_ssrf_validator` | async funcs | security.py:116/128/139 | Custom `@guard_deco.custom_validation` content checks the signature WAF can't cover; each returns a generic 400 (no rule detail leaked) |
+| `_WAF_FREETEXT_BODY_FIELDS` | const | security.py:211 | Top-level free-text body-field exclusion set (`excluded_detection_body_fields`) — the WAF calibration; includes free-form container fields (plan/risks/findings/section/payload/...) whose nested prose is stringified and scanned |
 
 ## Data Flow
 
-**HTTP request**: nginx → ASGI `app` → `CorrelationIdMiddleware` (binds correlation_id + path/method to structlog) → `RequestLoggingMiddleware` (start timer) → route. Route resolves `CurrentAgentContext` via `get_agent_context` (headers + HMAC verify + identity/role/team resolution), plus service deps from `get_choreographer`/`get_content_actions`. On exception, the handler chain maps: `RequestValidationError` → 422 (scrubbed log + UUID remediation hint), `HTTPException` → standardized error code, `RobocoError` → domain status, `ServiceError` → parallel-hierarchy status, `RateLimitError` → 429 + `Retry-After`, `Exception` → 500. Response gains `X-Correlation-ID` + `X-Response-Time-Ms`.
+**HTTP request**: nginx → ASGI `app` → `CorrelationIdMiddleware` (binds correlation_id + path/method to structlog) → `RequestLoggingMiddleware` (start timer) → route. Route resolves `CurrentAgentContext` via `get_agent_context` (headers + HMAC verify + identity/role/team resolution), plus service deps from `get_choreographer`/`get_content_actions`. On exception, the handler chain maps: `RequestValidationError` → 422 (scrubbed log + UUID remediation hint), `HTTPException` → standardized error code, `RobocoError` → domain status, `ServiceError` → parallel-hierarchy status, `RateLimitError` → 429 + `Retry-After`, `Exception` → 500. Response gains `X-Correlation-ID` + `X-Response-Time-Ms`. When `ROBOCO_GUARD_ENABLED` is on, `SecurityMiddleware` (mounted last in `create_app`, so outermost) runs before any of this: rate/size/WAF/custom-validator checks either block the request (enforce mode) or only log the detection (`guard_passive_mode`, the calibration posture) ahead of the correlation-id middleware; off by default, the whole path is unchanged.
 
 **Lifespan startup**: `init_db` (alembic upgrade + create_all fallback) → `apply_persisted_feature_flags` (panel settings overlay, best-effort) → `TranscriptionService.start()` + `ExtractionPipeline` → `get_optimal_service()` (BLOCKS 30-90s for RAG) → `LearningPropagationService.initialize(optimal)`. `app.state.*` holds singletons. **Shutdown**: stop orchestrator (drains bg DB writes) → `close_optimal_service` → `close_db`. The orchestrator-stop-before-DB order is load-bearing.
 
@@ -200,7 +207,8 @@ roboco/api/
 - `settings.cors_origins` / `settings.cors_allow_credentials` — CORS middleware config (app.py:218).
 - `settings.app_version` / `settings.environment` / `settings.debug` — logged at startup; docs/redoc URLs are unconditional (the `if settings.debug` is commented out, app.py:207-208).
 - `settings.host` / `settings.port` — no longer used in websocket.py (the httpx self-call was removed); still referenced elsewhere.
-- No direct ROBOCO_* feature flags live in this slice; the lifespan applies persisted flag overlays via `apply_persisted_feature_flags` but does not itself read individual subsystem flags.
+- `ROBOCO_GUARD_ENABLED` / `_PASSIVE_MODE` / `_FAIL_SECURE` / `_TELEMETRY_ENABLED` / `_AGENT_API_KEY` / `_PROJECT_ID` / `_EMERGENCY` / `_EMERGENCY_WHITELIST` — read by `roboco/security.py`, wired into `create_app` via `apply_guard(app)` (app.py:234) + `guarded_lifespan(lifespan)` (app.py:212); `ROBOCO_ENVIRONMENT` additionally drives `enforce_https` (production only).
+- Otherwise no direct ROBOCO_* feature flags live in this slice; the lifespan applies persisted flag overlays via `apply_persisted_feature_flags` but does not itself read individual subsystem flags.
 
 ## Gotchas
 
@@ -218,6 +226,8 @@ roboco/api/
 - **`roboco/api/__init__.py` deliberately does NOT re-export `app`** — importing `roboco.api.schemas.X` must not transitively load the FastAPI app + routes (circular-import cycle). The entrypoint imports `roboco.api.app:app` directly. Do not "helpfully" re-export here.
 - **`docs_url`/`redoc_url` are unconditional** (app.py:207-208) — the `if settings.debug` gating is commented out, so `/docs` and `/redoc` are always served.
 - **`apply_persisted_feature_flags` is best-effort** (app.py:115-121) — a DB failure logs a warning and continues with env defaults; startup is never blocked.
+- **fastapi-guard is a genuine no-op when off** (`ROBOCO_GUARD_ENABLED` default `false`) — `apply_guard` returns before `add_middleware`, so `create_app`'s request path is byte-for-byte unchanged; the per-route `@guard_deco.*` decorators across ~21 route files are harmless because the decorator only takes effect once `app.state.guard_decorator` is set by `apply_guard` (security.py:388).
+- **`excluded_detection_body_fields` is the only reliable WAF-calibration knob on guard 7.2.1** — the per-route `categories`/`enabled_detection_categories` config is bypassed for JSON bodies, and the body scanner excludes TOP-LEVEL keys only, scanning `str(value)` of every non-excluded field (the whole stringified subtree). A free-form container field (e.g. `plan`, `findings`) must therefore be excluded wholesale or its nested prose still trips the WAF.
 
 ## Drift from CLAUDE.md
 
@@ -229,6 +239,7 @@ roboco/api/
 - `CLAUDE.md` "Orchestrator runtime-state durability" notes the respawn_tracker DB-durable writes are drained on `stop()` — `app.py:170-186` implements the required ordering (stop before close_db). Consistent.
 - `CLAUDE.md` "Feature flags / company-in-a-box" says flags "toggle from the panel's Settings → Feature Flags card ... A toggle persists in the settings store and takes effect on the next backend restart" — `app.py:115-121` applies them in lifespan. Consistent.
 - `CLAUDE.md` does not mention the `CorrelationIdMiddleware` / `RequestLoggingMiddleware` / exception-handler chain by name; `middleware.py` is the implementation of the implied "structured error" contract. No contradiction.
+- `CLAUDE.md`'s "Feature flags / company-in-a-box" list of env-gated default-off subsystems does not mention `ROBOCO_GUARD_ENABLED` / the fastapi-guard HTTP security layer (`roboco/security.py`, wired here via `apply_guard`/`guarded_lifespan`); the doc is silent rather than contradictory.
 
 Net: **no direct contradictions with CLAUDE.md**; the one stale security docstring lives in `websocket.py` itself.
 
@@ -241,6 +252,8 @@ Diff stat: `app.py +20`, `deps.py +44`, `middleware.py +49`, `websocket.py +309/
 > **Post-snapshot update (2026-07-01, chat-subsystem live-delivery work `76ce53e3`):** `websocket_bridge.py` is no longer unchanged — it gained `_handle_message_event` (forwards `EventType.MESSAGE_SENT` to `/ws/sessions/{id}` + `/ws/channels/{id}` as a `message.new` frame) and a `MESSAGE_SENT` subscription in `register_websocket_bridge_handlers`. This is the live transcript-update path that was previously dead (`send_message` never broadcast).
 
 > **Post-snapshot update (2026-07-01, logical-gap sweep `536bbb64`):** `deps.py` gained `require_ceo_role` (deps.py:412) — single source-of-truth CEO-role check shared by the orchestrator router gate and the release handler, replacing two diverged inline comparisons. `websocket.py` gated `/ws/system` with `_require_panel_token` (websocket.py:621), closing the medium regression risk; all five `/ws/*` endpoints are now consistently gated.
+
+> **Local branch (not on master, NOT deployed):** `feature/fastapi-guard-hardening` (6 fastapi-guard commits `896532a3`..`99ee666e`, branched off `ab69851d`, plus 2 unrelated bundled commits) adds `roboco/security.py` and wires it into this slice — `apply_guard(app)` mounts `SecurityMiddleware` last in `create_app` (app.py:234) and `guarded_lifespan(lifespan)` wraps the async lifespan (app.py:212), both gated by `ROBOCO_GUARD_ENABLED` (default off, byte-for-byte unchanged request path when off). Per-route `@guard_deco.*` decorators (rate_limit/max_request_size/content_type_filter/behavior_analysis/block_clouds/honeypot_detection/usage_monitor/suspicious_detection/custom_validation — 9 kinds) are applied across 21 route files outside this slice (api-routes-schemas + v1 flow/do). `build_security_config` also carries a WAF false-positive calibration: `excluded_detection_body_fields` (75 free-text top-level body fields, including container fields like plan/risks/findings/section/payload) plus `enable_penetration_detection=True`, dropping active-mode false positives on RoboCo's own code/SQL/diff/URL-bearing traffic to zero while leaving the three custom validators and the WAF on non-excluded (id/enum/slug/branch) fields fully in force. New tests: `tests/unit/test_security.py` (unit) + `tests/unit/test_security_middleware.py` (integration — mounts the real middleware end-to-end). Both NAS composes (`docker-compose.yml`/`.yaml`) arm the layer passive/log-only (`c496b677`, Phase 5) — see deployment-tooling.
 
 Logic-touching changes in that commit, scoped to this slice:
 
