@@ -326,6 +326,10 @@ class UsageService(BaseService):
         """Return per-model token usage with pct_of_total."""
         return await self._aggregate_by(AgentSpawnSessionTable.model, "model", period)
 
+    async def get_by_role(self, period: str = "24h") -> list[dict[str, Any]]:
+        """Return per-role token usage with cache hit rate and pct_of_total."""
+        return await self._aggregate_by(AgentSpawnSessionTable.role, "role", period)
+
     # =========================================================================
     # PROJECTION
     # =========================================================================

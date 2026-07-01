@@ -646,6 +646,33 @@ class TestGetByModel:
 
 
 # ---------------------------------------------------------------------------
+# get_by_role — groups by role, carries cache fields
+# ---------------------------------------------------------------------------
+
+
+class TestGetByRole:
+    @pytest.mark.asyncio
+    async def test_groups_by_role_with_cache_fields(self) -> None:
+        """get_by_role emits the role key plus cache tokens + hit rate."""
+        rows = [
+            _make_row(
+                role="developer",
+                tokens_input=_INPUT_TOKENS,
+                tokens_output=200,
+                tokens_cache_read=_CACHE_READ_TOKENS,
+                tokens_cache_write=100,
+                cost_usd=0.05,
+            )
+        ]
+        svc = _service_with_execute(_result_fetchall(rows))
+        result = await svc.get_by_role("24h")
+        item = result[_ZERO]
+        assert item["role"] == "developer"
+        assert item["tokens_cache_read"] == _CACHE_READ_TOKENS
+        assert abs(item["cache_hit_rate"] - _EXPECTED_HIT_RATE) < _TOL
+
+
+# ---------------------------------------------------------------------------
 # get_projection — formula: projected_monthly = (total_7d / 7) * 30
 # ---------------------------------------------------------------------------
 
