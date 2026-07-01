@@ -243,6 +243,7 @@ All status transitions are validated through the enforcement layer. Key restrict
 | `awaiting_pr_review` → `awaiting_pm_review` (pr_pass) | PR reviewer only |
 | `awaiting_pr_review` → `needs_revision` (pr_fail) | PR reviewer only |
 | `awaiting_pm_review` → `completed` | PM roles only |
+| `awaiting_pm_review` → `needs_revision` (request_changes) | PM roles only — the merge-level reject with concrete issues |
 | `awaiting_pm_review` → `awaiting_ceo_approval` | PM roles only |
 | `awaiting_ceo_approval` → `completed/needs_revision/cancelled` | CEO only |
 | Any → `cancelled` | PM roles only |
@@ -344,8 +345,8 @@ Each agent gets a **spawn manifest** at `/app/tool-manifest.json` listing the ve
 | developer     | `give_me_work`, `i_will_work_on`, `open_pr`, `i_am_done`, `i_am_blocked`, `resume`, `sync_branch`, `unclaim`     |
 | qa            | `give_me_work`, `claim_review`, `pass_review`, `fail_review`, `i_am_blocked`, `resume`, `unclaim` |
 | documenter    | `give_me_work`, `claim_doc_task`, `i_documented`, `i_am_blocked`, `resume`, `unclaim`             |
-| cell_pm       | `give_me_work`, `i_will_plan`, `delegate`, `complete`, `submit_up`, `triage`, `unblock`, `escalate_up`, `reassign`, `resume`, `unclaim` |
-| main_pm       | `give_me_work`, `i_will_plan`, `delegate`, `complete`, `submit_root`, `triage`, `triage_all`, `unblock`, `escalate_up`, `escalate_to_ceo`, `resume`, `unclaim` |
+| cell_pm       | `give_me_work`, `i_will_plan`, `delegate`, `complete`, `request_changes`, `submit_up`, `triage`, `unblock`, `escalate_up`, `reassign`, `resume`, `unclaim` |
+| main_pm       | `give_me_work`, `i_will_plan`, `delegate`, `complete`, `request_changes`, `submit_root`, `triage`, `triage_all`, `unblock`, `escalate_up`, `escalate_to_ceo`, `resume`, `unclaim` |
 | pr_reviewer   | `give_me_work`, `claim_pr_review`, `post_pr_review` (inbound external/fork PRs), `claim_gate_review`, `pr_pass`, `pr_fail` (in-path assembled-PR gate), `unclaim` |
 | product_owner | `triage`, `escalate_to_ceo`                                                                      |
 | head_marketing| `triage`, `escalate_to_ceo`                                                                      |

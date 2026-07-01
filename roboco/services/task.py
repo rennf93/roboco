@@ -137,6 +137,21 @@ _ESCALATABLE_TO_BLOCKED: frozenset[TaskStatus] = frozenset(
 )
 
 
+# Review/queue states are entered unowned and re-claimed via the claim verbs
+# (claim_review, claim_doc_task, i_will_plan, ...). An admin override landing a
+# blocked task in one of these must clear the stale claim or the next claimant
+# is handed a task it cannot write to.
+_REVIEW_QUEUE_STATES: frozenset[TaskStatus] = frozenset(
+    {
+        TaskStatus.NEEDS_REVISION,
+        TaskStatus.AWAITING_QA,
+        TaskStatus.AWAITING_DOCUMENTATION,
+        TaskStatus.AWAITING_PR_REVIEW,
+        TaskStatus.AWAITING_PM_REVIEW,
+    }
+)
+
+
 # Board / advisory roles review and advise; they never own or execute a
 # descendant code task. Handing one to them (e.g. via the main_pm→product_owner
 # escalation rung) strands the work: the board has no verb to claim, build, or
@@ -2219,21 +2234,11 @@ class TaskService(BaseService):
             if isinstance(task.status, TaskStatus)
             else str(task.status)
         )
-        if (
-            from_status == TaskStatus.BLOCKED.value
-            and new_status in (TaskStatus.PENDING, TaskStatus.IN_PROGRESS)
-            and task.pre_block_assignee is not None
-        ):
-            # Thread the admin actor into the restore so the audit attributes
-            # the re-owning to the admin (not the restored owner) and an
-            # admin_override row is emitted (#2176).
-            return await self._apply_pre_block_restore(
-                task,
-                new_status,
-                actor_id=actor_id,
-                actor_role=actor_role,
-                admin_override=True,
-            )
+        restored = await self._admin_out_of_blocked(
+            task, from_status, new_status, actor_id=actor_id, actor_role=actor_role
+        )
+        if restored is not None:
+            return restored
         task.status = new_status
         await self.session.flush()
         self._emit_status_transition_audit(
@@ -8535,6 +8540,51 @@ class TaskService(BaseService):
         self.log.info("Assembled PR failed review", task_id=str(task_id))
         return task
 
+    async def request_changes(
+        self,
+        pm_agent_id: UUID,
+        task_id: UUID,
+        notes: str,
+        issues: list[str],
+        agent_role: str = "cell_pm",
+    ) -> TaskTable | None:
+        """PM rejects the merge review: awaiting_pm_review -> needs_revision.
+
+        The merge-level reject the PM otherwise lacks at awaiting_pm_review
+        (its only verbs were complete/escalate, so an AC violation caught at
+        merge review looped block→escalate). Issues are appended for the
+        dev's revision; routing mirrors a QA fail — original developer for a
+        leaf, the revision PM for an assembled task.
+        """
+        task = await self.get(task_id)
+        if task is None or task.status != TaskStatus.AWAITING_PM_REVIEW:
+            return None
+        if issues:
+            issue_block = "[PM REVIEW ISSUES]\n" + "\n".join(f"- {i}" for i in issues)
+            task.dev_notes = _append_capped(task.dev_notes, issue_block)
+        original_dev = extract_original_developer(task)
+        if original_dev:
+            task.assigned_to = cast("Any", UUID(original_dev))
+            task.claimed_by = cast("Any", UUID(original_dev))
+        else:
+            pm = await self._revision_pm_for_task(task)
+            task.assigned_to = cast("Any", pm.id) if pm is not None else None
+            task.claimed_by = cast("Any", pm.id) if pm is not None else None
+        task.active_claimant_id = cast("Any", None)
+        self._validate_and_set_status(
+            task,
+            TaskStatus.NEEDS_REVISION,
+            agent_role,
+            audit_agent_id=pm_agent_id,
+        )
+        await self.session.flush()
+        self.log.info(
+            "PM requested changes at merge review",
+            task_id=str(task_id),
+            notes=notes[:200],
+        )
+        return task
+
     async def unblock_with_restore(
         self,
         pm_agent_id: UUID,
@@ -8645,12 +8695,66 @@ class TaskService(BaseService):
         if task.pre_block_assignee:
             task.assigned_to = cast("Any", task.pre_block_assignee)
             task.claimed_by = cast("Any", task.pre_block_assignee)
+            # The claimant lock must follow the re-owning — a stale claimant
+            # bounces every content write from the restored owner.
+            task.active_claimant_id = cast("Any", task.pre_block_assignee)
         task.pre_block_state = None
         task.pre_block_assignee = None
         task.pre_block_metadata = None
         task.blocker_resolver_type = None
         task.blocker_raised_by = None
         return pre_status, restored_status, restored_owner
+
+    async def _admin_out_of_blocked(
+        self,
+        task: TaskTable,
+        from_status: str,
+        new_status: TaskStatus,
+        *,
+        actor_id: str | UUID | None,
+        actor_role: str | None,
+    ) -> TaskTable | None:
+        """Ownership reconciliation when an admin override leaves BLOCKED.
+
+        pending/in_progress with a snapshot → full pre-block restore (returns
+        the restored task). Review/queue targets → clear the stale claim so
+        the next claimant starts clean (returns None; caller sets status).
+        Any other target → no-op (returns None).
+        """
+        if from_status != TaskStatus.BLOCKED.value:
+            return None
+        if (
+            new_status in (TaskStatus.PENDING, TaskStatus.IN_PROGRESS)
+            and task.pre_block_assignee is not None
+        ):
+            # Thread the admin actor into the restore so the audit attributes
+            # the re-owning to the admin (not the restored owner) and an
+            # admin_override row is emitted (#2176).
+            return await self._apply_pre_block_restore(
+                task,
+                new_status,
+                actor_id=actor_id,
+                actor_role=actor_role,
+                admin_override=True,
+            )
+        if new_status in _REVIEW_QUEUE_STATES:
+            # Review/queue targets are re-claimed via the claim verbs — a stale
+            # escalation claim surviving the override strands the next claimant
+            # (give_me_work hands out the task while its note() writes bounce).
+            self._clear_claim_and_block_snapshot(task)
+        return None
+
+    def _clear_claim_and_block_snapshot(self, task: TaskTable) -> None:
+        """Release the claim + consume the pre-block snapshot on an admin
+        override into a review/queue state — the next claimant starts clean."""
+        task.claimed_by = cast("Any", None)
+        task.claimed_at = None
+        task.active_claimant_id = cast("Any", None)
+        task.pre_block_state = None
+        task.pre_block_assignee = None
+        task.pre_block_metadata = None
+        task.blocker_resolver_type = None
+        task.blocker_raised_by = None
 
     def _emit_admin_override_audit(
         self,

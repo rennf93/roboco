@@ -324,6 +324,15 @@ _STATUS_TRANSITIONS: tuple[StatusTransition, ...] = (
         "complete",
         frozenset({Role.CELL_PM, Role.MAIN_PM}),
     ),
+    # PM merge-level reject: a PM that catches an AC/scope violation at merge
+    # review sends the work back with concrete issues — previously its only
+    # verbs here were complete/escalate, so it looped block→escalate instead.
+    StatusTransition(
+        Status.AWAITING_PM_REVIEW,
+        Status.NEEDS_REVISION,
+        "request_changes",
+        frozenset({Role.CELL_PM, Role.MAIN_PM}),
+    ),
     StatusTransition(
         Status.AWAITING_PM_REVIEW,
         Status.AWAITING_CEO_APPROVAL,
@@ -604,6 +613,16 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
         allowed_roles=_PM_ROLES,
         source_statuses=frozenset({Status.AWAITING_PM_REVIEW}),
         target_status=Status.COMPLETED,
+        allowed_task_types=None,
+        preconditions=(),
+        self_review_block=False,
+        needs_team_match=True,
+    ),
+    "request_changes": ActionSpec(
+        name="request_changes",
+        allowed_roles=_PM_ROLES,
+        source_statuses=frozenset({Status.AWAITING_PM_REVIEW}),
+        target_status=Status.NEEDS_REVISION,
         allowed_task_types=None,
         preconditions=(),
         self_review_block=False,
@@ -1435,6 +1454,21 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         extra_preconditions=(),
         side_effects=(),
         next_hint=_next_hint_pm_complete,
+    ),
+    "request_changes": IntentSpec(
+        name="request_changes",
+        allowed_roles=_PM_ROLES,
+        description=(
+            "Reject the merge review with concrete issues. Transitions"
+            " awaiting_pm_review -> needs_revision, routed back like a QA fail"
+            " (original developer for a leaf, revision PM for an assembled"
+            " task). Use this for an AC/scope violation caught at merge review"
+            " — never i_am_blocked/escalate, which have no revision routing."
+        ),
+        composes=("request_changes",),
+        extra_preconditions=(),
+        side_effects=(),
+        next_hint=_next_hint_idle,
     ),
     "escalate_up": IntentSpec(
         name="escalate_up",

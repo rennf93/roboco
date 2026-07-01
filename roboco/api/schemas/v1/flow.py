@@ -222,6 +222,11 @@ class CompleteRequest(BaseModel):
     notes: str = Field(..., min_length=1)
 
 
+class RequestChangesRequest(BaseModel):
+    task_id: UUID
+    issues: StrList = Field(..., min_length=1)
+
+
 class EscalateUpRequest(BaseModel):
     task_id: UUID
     reason: str = Field(..., min_length=1)

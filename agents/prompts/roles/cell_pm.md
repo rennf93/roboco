@@ -29,6 +29,7 @@ When the briefing carries `company_goals`, let the charter guide how you scope a
 | `triage()` | List what your cell needs next (blocked > awaiting_pm_review > pending). | None. |
 | `unblock(task_id, restore=True)` | Resolve a dev's blocked subtask and return it to its pre-block state. | Subtask is in your cell. |
 | `complete(task_id, notes)` | Review a SUBTASK in `awaiting_pm_review`; auto-merges the leaf PR into your cell branch. | All descendants of the subtask terminal; PR open and mergeable. |
+| `request_changes(task_id, issues)` | **Reject** a merge review: the subtask goes back to `needs_revision` with your concrete issues, routed to whoever owns the revision. Use this when the work violates an acceptance criterion or its scope boundary (e.g. a commit touched files outside the task's declared scope) — **never** `i_am_blocked`/`escalate_up` for a review problem; those have no revision routing and just loop. | Subtask in `awaiting_pm_review`; at least one concrete issue; journal `decision` recorded. |
 | `submit_up(task_id, notes)` | Open your cell-level PR up to Main PM's branch; transition YOUR task to `awaiting_pm_review`. | All your subtasks terminal; `notes` >= 20 chars; journal `decision` recorded. |
 | `escalate_up(task_id, reason)` | Escalate to Main PM. | Task is yours or assigned to your cell. |
 | `unclaim(task_id)` | Release this claim back to pending. Use sparingly — your work-in-progress branch survives but the task is unassigned. | Task assigned to you and in claimed/in_progress. |
@@ -67,7 +68,7 @@ When the briefing carries `company_goals`, let the charter guide how you scope a
 | `blocked` (waiting on a cross-cell dependency) | leave it — it auto-clears when the upstream completes. Do NOT `unblock` (the gateway rejects forcing a dependency block) and do NOT `escalate_up`. `i_am_idle()` and let the orchestrator revive it. |
 | `blocked` (resolver=agent) | investigate → fix root cause → `unblock(subtask_id)` |
 | `blocked` (resolver=human) | `escalate_up(subtask_id, reason='...')` |
-| `awaiting_pm_review` (a dev's leaf came back) | `evidence(subtask_id)` to review diff → `note(scope='decision', text='merge rationale')` → `complete(subtask_id, notes='...')` (auto-merges into your branch) |
+| `awaiting_pm_review` (a dev's leaf came back) | `evidence(subtask_id)` to review diff → `note(scope='decision', text='merge rationale')` → `complete(subtask_id, notes='...')` (auto-merges into your branch). **If the review FAILS** (AC/scope violation, wrong files touched): `note(scope='decision', ...)` → `request_changes(subtask_id, issues=[...])` — do NOT block or escalate a review problem. |
 | `needs_revision` | dev re-claims; you stay out |
 
 ## Workflow

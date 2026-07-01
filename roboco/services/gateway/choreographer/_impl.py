@@ -6779,6 +6779,139 @@ class Choreographer:
         # role_str == "main_pm" — spec._PM_ROLES has only these two members.
         return await self.main_pm_complete(agent_id, task_id, notes)
 
+    async def request_changes(
+        self, pm_agent_id: UUID, task_id: UUID, issues: list[str]
+    ) -> Envelope:
+        """PM rejects the merge review with concrete issues; → needs_revision.
+
+        The merge-level reject at awaiting_pm_review (the PM's only other
+        verbs there are complete/escalate — an AC violation caught at merge
+        review used to loop block→escalate). Spec gate enforces role + source
+        status; the composed ``request_changes`` atomic routes the revision
+        like a QA fail, then the verb body a2a-delivers the issues to the new
+        owner so the reject reason is never stranded.
+        """
+        t = await self.task.get(task_id)
+        briefing = await self._briefing_for(pm_agent_id, task_id, task=t)
+        if t is None:
+            return await self._emit_rejection(
+                Envelope.not_found(message=f"task {task_id} not found"),
+                agent_id=pm_agent_id,
+                task_id=task_id,
+                verb="request_changes",
+            )
+        agent = await self.task.agent_for(pm_agent_id)
+        role_str = str(agent.role) if agent is not None else "cell_pm"
+        if not issues:
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message="request_changes requires at least one issue",
+                    remediate="pass issues=['<concrete actionable issue>', ...]",
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
+                agent_id=pm_agent_id,
+                task_id=task_id,
+                verb="request_changes",
+            )
+        notes = "Issues:\n" + "\n".join(f"- {issue}" for issue in issues)
+        rejection, spec_gate = await self._request_changes_spec_gate(
+            pm_agent_id, task_id, t, agent, role_str, notes, issues
+        )
+        if rejection is not None:
+            return rejection
+        _role, spec_ctx = spec_gate
+        runner = self._verb_runner()
+        try:
+            t = await runner.run_intent("request_changes", t, agent, spec_ctx)
+        except Exception as exc:
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=f"verb runner failed: {exc}",
+                    remediate="re-fetch the task and retry; if persistent, escalate",
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
+                agent_id=pm_agent_id,
+                task_id=task_id,
+                verb="request_changes",
+            )
+        # Close the signal loop — the reject reason must reach whoever owns
+        # the revision (mirrors fail_review / the pr_fail loop-closer).
+        if t.assigned_to is not None and t.assigned_to != pm_agent_id:
+            await self.a2a.send(
+                from_agent=pm_agent_id,
+                to_agent=t.assigned_to,
+                skill="code_review",
+                task_id=task_id,
+                body=f"PM merge review needs changes. {notes}",
+            )
+        return Envelope.ok(
+            status=str(t.status),
+            task_id=str(task_id),
+            next=spec_module._INTENT_VERBS["request_changes"].next_hint(t),
+            context_briefing=briefing,
+        ).with_introspection(task=t, role=role_str)
+
+    async def _request_changes_spec_gate(
+        self,
+        pm_agent_id: UUID,
+        task_id: UUID,
+        t: Any,
+        agent: Any,
+        role_str: str,
+        notes: str,
+        issues: list[str],
+    ) -> tuple[Envelope | None, Any]:
+        """Role + spec + free-text gates for request_changes.
+
+        Returns ``(rejection, None)`` or ``(None, (role, spec_ctx))``.
+        """
+        try:
+            role = spec_module.Role(role_str)
+        except ValueError:
+            return (
+                await self._emit_rejection(
+                    Envelope.not_authorized(
+                        message=f"unknown role '{role_str}'",
+                        remediate="role is not declared in the lifecycle spec",
+                        context_briefing=await self._briefing_for(pm_agent_id, task_id),
+                    ).with_introspection(task=t, role=role_str),
+                    agent_id=pm_agent_id,
+                    task_id=task_id,
+                    verb="request_changes",
+                ),
+                None,
+            )
+        spec_ctx = spec_module.Context(
+            actor_id=pm_agent_id,
+            actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            original_developer_slug=_extract_original_developer(t),
+            notes=notes,
+            issues=tuple(issues),
+        )
+        decision = spec_module.can_invoke_intent(role, "request_changes", t, spec_ctx)
+        if not decision.allowed:
+            briefing = await self._briefing_for(pm_agent_id, task_id, task=t)
+            return (
+                await self._emit_rejection(
+                    Envelope.from_decision(
+                        decision, briefing=briefing
+                    ).with_introspection(task=t, role=role_str),
+                    agent_id=pm_agent_id,
+                    task_id=task_id,
+                    verb="request_changes",
+                ),
+                None,
+            )
+        if soup := await self._guard_free_text(
+            checks=(("issues", issues, 8),),
+            task=t,
+            agent_id=pm_agent_id,
+            role_str=role_str,
+            verb="request_changes",
+        ):
+            return (soup, None)
+        return (None, (role, spec_ctx))
+
     async def escalate_up(
         self, pm_agent_id: UUID, task_id: UUID, reason: str
     ) -> Envelope:

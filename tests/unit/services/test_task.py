@@ -7,7 +7,7 @@ session boundary and checks the method's contract.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -698,6 +698,176 @@ async def test_admin_set_status_blocked_restore_attributes_admin_actor() -> None
     # the admin actor — the restored owner is NOT recorded as the actor.
     assert all(r.agent_id == admin for r in rows)
     assert not any(r.agent_id == dev for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_admin_set_status_blocked_to_review_state_clears_claim() -> None:
+    """Forcing a BLOCKED task into a review/queue state must clear the claim.
+
+    Live wedge (2026-07-01 22:13Z): the CEO forced blocked ->
+    awaiting_pm_review, the stale escalation claim (main-pm) survived, and the
+    respawned cell PM was handed the task by give_me_work while every
+    note(task_id=...) bounced not_authorized "you do not hold the claim" — so
+    it re-blocked. Review-state targets are re-claimed via the claim verbs, so
+    the override must leave no stale claimant behind.
+    """
+    pm = uuid4()
+    task = _build_task(
+        status=TaskStatus.BLOCKED,
+        assigned_to=pm,
+        claimed_by=pm,
+        claimed_at=datetime.now(UTC),
+        active_claimant_id=pm,
+        pre_block_state="awaiting_pm_review",
+        pre_block_assignee=pm,
+    )
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    out = await svc.admin_set_status(task.id, TaskStatus.AWAITING_PM_REVIEW)
+    assert out is task
+    assert task.status == TaskStatus.AWAITING_PM_REVIEW
+    assert task.claimed_by is None
+    assert task.claimed_at is None
+    assert task.active_claimant_id is None
+    # The consumed snapshot must not survive to confuse a later unblock.
+    assert task.pre_block_state is None
+    assert task.pre_block_assignee is None
+
+
+@pytest.mark.asyncio
+async def test_admin_set_status_blocked_to_needs_revision_clears_claim() -> None:
+    """blocked -> needs_revision (the other live recovery target) also clears
+    the claim so the revision coordinator / re-claiming dev starts clean."""
+    pm = uuid4()
+    task = _build_task(
+        status=TaskStatus.BLOCKED,
+        assigned_to=pm,
+        claimed_by=pm,
+        claimed_at=datetime.now(UTC),
+        active_claimant_id=pm,
+        pre_block_state="awaiting_pm_review",
+        pre_block_assignee=pm,
+    )
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    out = await svc.admin_set_status(task.id, TaskStatus.NEEDS_REVISION)
+    assert out is task
+    assert task.status == TaskStatus.NEEDS_REVISION
+    assert task.claimed_by is None
+    assert task.claimed_at is None
+    assert task.active_claimant_id is None
+
+
+@pytest.mark.asyncio
+async def test_admin_set_status_non_blocked_source_keeps_claim() -> None:
+    """The claim-clear fires only when leaving BLOCKED — a plain override on a
+    non-blocked task (e.g. completing a reviewed task) must not strip the
+    owner's claim."""
+    owner = uuid4()
+    claimed_at = datetime.now(UTC)
+    task = _build_task(
+        status=TaskStatus.AWAITING_PM_REVIEW,
+        assigned_to=owner,
+        claimed_by=owner,
+        claimed_at=claimed_at,
+        active_claimant_id=owner,
+    )
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    await svc.admin_set_status(task.id, TaskStatus.COMPLETED)
+    assert task.claimed_by == owner
+    assert task.claimed_at == claimed_at
+    assert task.active_claimant_id == owner
+
+
+@pytest.mark.asyncio
+async def test_request_changes_routes_leaf_back_to_original_dev() -> None:
+    """PM merge-review reject: awaiting_pm_review -> needs_revision, issues
+    appended for the dev, task re-owned by the original developer (the QA-fail
+    routing), stale claimant cleared."""
+    dev = uuid4()
+    pm = uuid4()
+    task = _build_task(
+        status=TaskStatus.AWAITING_PM_REVIEW,
+        assigned_to=pm,
+        claimed_by=pm,
+        active_claimant_id=pm,
+        dev_notes=None,
+        orchestration_markers={"original_developer": str(dev)},
+    )
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    _bind(svc, "_validate_and_set_status", MagicMock())
+    out = await svc.request_changes(
+        pm, task.id, "scope violation", ["frontend/CLAUDE.md modified out of scope"]
+    )
+    assert out is task
+    assert task.assigned_to == dev
+    assert task.claimed_by == dev
+    assert task.active_claimant_id is None
+    assert "[PM REVIEW ISSUES]" in (task.dev_notes or "")
+    assert "frontend/CLAUDE.md modified out of scope" in (task.dev_notes or "")
+
+
+@pytest.mark.asyncio
+async def test_request_changes_without_dev_marker_routes_to_revision_pm() -> None:
+    """An assembled task (no original-developer marker) lands on the PM who
+    owns its revision — same fallback pr_fail uses."""
+    cell_pm = SimpleNamespace(id=uuid4())
+    actor = uuid4()
+    task = _build_task(
+        status=TaskStatus.AWAITING_PM_REVIEW,
+        assigned_to=actor,
+        claimed_by=actor,
+        active_claimant_id=actor,
+        dev_notes=None,
+        orchestration_markers=None,
+    )
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    _bind(svc, "_validate_and_set_status", MagicMock())
+    _bind(svc, "_revision_pm_for_task", AsyncMock(return_value=cell_pm))
+    out = await svc.request_changes(actor, task.id, "assembly issue", ["bad merge"])
+    assert out is task
+    assert task.assigned_to == cell_pm.id
+    assert task.claimed_by == cell_pm.id
+    assert task.active_claimant_id is None
+
+
+@pytest.mark.asyncio
+async def test_request_changes_rejects_wrong_status() -> None:
+    """Only awaiting_pm_review is a valid source — anything else returns None
+    (the gateway spec gate rejects earlier; this is the service backstop)."""
+    task = _build_task(status=TaskStatus.IN_PROGRESS)
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    out = await svc.request_changes(uuid4(), task.id, "notes", ["issue"])
+    assert out is None
+
+
+@pytest.mark.asyncio
+async def test_admin_set_status_pre_block_restore_syncs_active_claimant() -> None:
+    """The pending/in_progress restore path re-owns the task to the pre-block
+    dev — active_claimant_id must follow, or the restored dev's content writes
+    bounce off the stale claimant exactly like the review-state wedge."""
+    dev = uuid4()
+    pm = uuid4()
+    task = _build_task(
+        status=TaskStatus.BLOCKED,
+        assigned_to=pm,
+        claimed_by=pm,
+        active_claimant_id=pm,
+        branch_name="feature/backend/abc--def",
+        pre_block_state="in_progress",
+        pre_block_assignee=dev,
+    )
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    out = await svc.admin_set_status(task.id, TaskStatus.IN_PROGRESS)
+    assert out is task
+    assert task.assigned_to == dev
+    assert task.claimed_by == dev
+    assert task.active_claimant_id == dev
 
 
 @pytest.mark.asyncio

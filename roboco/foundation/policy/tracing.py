@@ -358,6 +358,9 @@ VERB_REQUIREMENTS: dict[str, frozenset[Requirement]] = {
             Requirement.NOTES_MIN_CHARS,
         }
     ),
+    # PM merge-review reject — a decision like complete; issues are enforced
+    # verb-side (non-empty + soup check), so no notes requirement here.
+    "request_changes": frozenset({Requirement.JOURNAL_DECISION}),
     # PM unblock — was inline at _impl.py:2192-2200; now declared.
     "unblock": frozenset({Requirement.JOURNAL_DECISION}),
     # PM escalate up — was inline.
