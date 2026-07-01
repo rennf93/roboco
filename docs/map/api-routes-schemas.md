@@ -37,7 +37,7 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | roboco/api/routes/playbooks.py | Playbook approve/reject/archive (Auditor/CEO). |
 | roboco/api/routes/pitch.py | Pitch create/list/approve/reject. |
 | roboco/api/routes/provider.py | Provider catalog + ollama/grok/self-hosted key + mode. |
-| roboco/api/routes/usage.py | Token usage summary/time-series/by-agent/team/model/sessions. |
+| roboco/api/routes/usage.py | Token usage summary/time-series/by-agent/team/model/role/sessions, cache-efficiency, spawn-waste (per-role unproductive-spawn rate + respawn strikes). |
 | roboco/api/routes/system.py | System-wide info. |
 | roboco/api/routes/docs.py | Project docs write/read/list/delete. |
 | roboco/api/routes/v1/_role_dep.py | Per-role HMAC guards + `envelope_to_response` helper. |

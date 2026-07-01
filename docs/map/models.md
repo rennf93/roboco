@@ -94,6 +94,8 @@ The Pydantic/dataclass domain surface of RoboCo — the typed contract the API, 
 | `AgentInstance` | dataclass | runtime.py:70 | Running Claude Code container record + `usage_session_id` |
 | `SpawnGitContext` | dataclass | runtime.py:28 | Git context for spawn (project_slug, branch, `task_short_id` for worktree) |
 | `MODEL_MAP` | dict | runtime.py:106 | short-name→full Claude id (opus→claude-opus-4-6, sonnet→claude-sonnet-5, haiku→…) |
+| `ROLE_MODEL_MAP` | dict | runtime.py:114 | per-role default tier: developer/cell_pm/main_pm→sonnet, qa/documenter→haiku, pr_reviewer/auditor/board/ceo→opus (qa→haiku, main_pm→sonnet, pr_reviewer→opus are the cost-tuned defaults) |
+| `ROLE_EFFORT_MAP` | dict | runtime.py | per-role `CLAUDE_CODE_EFFORT_LEVEL` override injected at spawn; **empty/inert by default** (opt-in per role after verifying the level moves usage) |
 | `MODEL_CATALOG` | tuple | llm_catalog.py:67 | Settings-dropdown source of truth; Anthropic entries derived from `MODEL_MAP` |
 | `OLLAMA_ROLE_DEFAULTS` | dict | llm_catalog.py:107 | Per-role model for "pure Ollama" mode |
 | `PermissionLevel` | IntEnum | permissions.py:15 | CEO=0/BOARD=1/MAIN_PM=2/CELL_PM=3/CELL_MEMBER=4/AUDITOR=99 |

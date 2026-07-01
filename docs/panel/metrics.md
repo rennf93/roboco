@@ -20,6 +20,8 @@ The Token Usage tab is the cost dashboard, scoped to the last 24 hours unless a 
 - **Per-agent and per-team bars** — who and which cell is spending.
 - **Monthly projection** — projected monthly cost from a rolling-average daily run rate.
 - **Cache efficiency** — cache hit rate and the cost it saved.
+- **Cost & cache by role** — cost and cache-hit-rate broken out per role (developer, main PM, QA, …), so you can see which roles are cheap-and-cached versus expensive.
+- **Spawn waste** — the share of spawns that produced no output (loaded a prompt, delivered nothing), per role, plus any wedged tasks with open respawn strikes.
 - **Sessions table** — the recent agent spawn sessions behind the numbers.
 
 !!! tip "These panels update live"

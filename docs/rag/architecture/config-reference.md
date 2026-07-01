@@ -83,6 +83,7 @@ Env-gated subsystems, default-off except the overload break. Each takes effect o
 | `ROBOCO_CONVENTIONS_ENABLED` | `false` | Architectural Conventions Standard: auto-scaffold `.roboco/conventions.yml`, inject the architecture map, attach baseline constraints, and block `i_am_done` / `pr_pass` on block-level placement and hygiene violations. Off = fully inert. |
 | `ROBOCO_TOOLCHAIN_MATCH_ENABLED` | `false` | Provision each agent workspace with the target project's Python (resolved from its `requires-python` / `.python-version`) and block delivery gates when the suite cannot be executed under it. Off = today's behavior. |
 | `ROBOCO_OVERLOAD_BREAK_ENABLED` | `true` | Park a provider on a persistent model-API overload (HTTP 529 / 500 / 503) the same way a 429 is parked — queue its spawns and probe until it recovers — instead of crash-retrying into the overload. Off = crash-retry behavior. |
+| `ROBOCO_SPAWN_PREFLIGHT_ENABLED` | `false` | Refuse to spawn a non-human delivery role absent from `GATEWAY_ENABLED_ROLES` (no manifest → can never claim → would respawn on the same task forever); refuse + alert the overseer once instead. Inert in practice (all delivery roles are gateway-enabled). Armed on the NAS composes. |
 
 The company-in-a-box subsystems toggle the same way and are all default-off: web research (`ROBOCO_RESEARCH_ENABLED`), the strategy engine (`ROBOCO_STRATEGY_ENGINE_ENABLED`), and pitch provisioning (`ROBOCO_PROVISIONING_ENABLED`).
 
