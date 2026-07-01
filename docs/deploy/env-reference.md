@@ -284,6 +284,22 @@ The global switch arms the engine; each project opts in via `dep_update_command`
 | `ROBOCO_ORG_MEMORY_TOP_K` | `3` | Max institutional-memory items injected into a briefing on claim. |
 | `ROBOCO_ORG_MEMORY_MIN_SCORE` | `0.6` | Cosine-similarity floor for injected memory; below it, nothing is injected. |
 
+### HTTP security (fastapi-guard)
+
+Default **off**. When off, `create_app` never mounts the middleware and the request path is byte-for-byte unchanged. See [HTTP security hardening](../optional/http-security.md) for the full picture. The NAS compose arms it in passive/log-only mode; enforcement (`ROBOCO_GUARD_PASSIVE_MODE=false`) is a deliberate later step after calibrating against real traffic.
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `ROBOCO_GUARD_ENABLED` | `false` | Master switch. On ⇒ `create_app` mounts `SecurityMiddleware` and the per-route guard decorators become active. |
+| `ROBOCO_GUARD_PASSIVE_MODE` | `false` | Detect-and-log without blocking — the calibration switch. Arm this first on live traffic to surface false positives, then set `false` to enforce. |
+| `ROBOCO_GUARD_FAIL_SECURE` | `true` | Fail **closed** when a security check itself errors (block the request). The personal/NAS compose overrides to `false` so a guard-internal bug never 500s your deploy. |
+| `ROBOCO_ENVIRONMENT` | `development` | Drives `enforce_https` — TLS is enforced only when set to `production`. |
+| `ROBOCO_GUARD_EMERGENCY` | `false` | Emergency lockdown: block every non-whitelisted IP. A flip-on-without-redeploy kill switch for an active attack. |
+| `ROBOCO_GUARD_EMERGENCY_WHITELIST` | *(empty)* | Comma-separated IPs / CIDRs always allowed during lockdown, in addition to loopback. |
+| `ROBOCO_GUARD_TELEMETRY_ENABLED` | `false` | Report security events/metrics to a guard-core platform via guard-agent. No data leaves the box while off. |
+| `ROBOCO_GUARD_AGENT_API_KEY` | *(empty)* | guard-core API key — telemetry only. |
+| `ROBOCO_GUARD_PROJECT_ID` | *(empty)* | guard-core project id — telemetry only. |
+
 ## Next
 
 - **[Production deploy](./deployment.md)** — compose files, host mounts, secure mode, startup.

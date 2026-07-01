@@ -195,6 +195,97 @@ _THREAT_BAN_CONFIG: dict[str, ThreatBanConfig] = {
     "file_inclusion": ThreatBanConfig(threshold=2, duration=7200),
 }
 
+# WAF false-positive calibration. RoboCo is an internal, authenticated API whose
+# request bodies legitimately carry code, SQL, diffs, file paths, HTML and URLs
+# (task specs, agent notes/commits, RAG queries, git bodies, chat). The signature
+# WAF (SQLi/XSS/path-traversal/URL) false-positives on ~half of that traffic when
+# active, so these free-text TOP-LEVEL body fields are excluded from scanning.
+# guard scans each non-excluded top-level field's whole stringified value, so the
+# free-form container fields (plan/risks/findings/section/payload/…) are excluded
+# too — otherwise their nested prose is stringified and scanned. The actual roboco
+# threats (prompt-injection, secret-exfil, internal SSRF) are caught by the custom
+# validators, which run independently of this exclusion; the WAF still scans every
+# non-excluded (id/enum/slug/branch) field. Matching is case-insensitive and
+# top-level only. Field set derived from the real request models; passive-mode NAS
+# logs calibrate any stragglers.
+_WAF_FREETEXT_BODY_FIELDS: set[str] = {
+    "ac_verdicts",
+    "acceptance_criteria",
+    "actual",
+    "approach",
+    "auditor_notes",
+    "base_url",
+    "body",
+    "chosen",
+    "code",
+    "cons",
+    "consequences",
+    "content",
+    "context",
+    "decision",
+    "description",
+    "details",
+    "dev_notes",
+    "doc_notes",
+    "done",
+    "draft",
+    "drafts",
+    "error_message",
+    "expected",
+    "file",
+    "file_path",
+    "files",
+    "findings",
+    "initial_message",
+    "initial_prompt",
+    "intends_to_touch",
+    "issues",
+    "justification",
+    "message",
+    "mitigation",
+    "next",
+    "next_steps",
+    "notes",
+    "notes_structured",
+    "open_questions",
+    "options",
+    "payload",
+    "plan",
+    "pr_reviewer_notes",
+    "problem",
+    "procedure",
+    "proposed_solution",
+    "pros",
+    "qa_notes",
+    "query",
+    "question",
+    "quick_context",
+    "rationale",
+    "reason",
+    "remaining_work",
+    "required_changes",
+    "resolution",
+    "risks",
+    "scope",
+    "section",
+    "solution",
+    "sources",
+    "state_summary",
+    "steps",
+    "sub_tasks",
+    "technical_considerations",
+    "text",
+    "title",
+    "topic",
+    "url",
+    "value",
+    "what_done",
+    "what_learned",
+    "what_needed",
+    "what_struggled",
+    "where_to_look",
+}
+
 # Log-only 404-scan sweep detection (calibration signal, never bans).
 _BEHAVIOR_RULES: list[BehaviorRuleConfig] = [
     BehaviorRuleConfig(
@@ -268,7 +359,10 @@ def build_security_config() -> SecurityConfig:
         security_headers=_SECURITY_HEADERS,
         threat_ban_config=_THREAT_BAN_CONFIG,
         global_behavior_rules=_BEHAVIOR_RULES,
+        # Signature WAF on, but calibrated: free-text bodies excluded (below).
+        enable_penetration_detection=True,
         excluded_detection_headers=_TRACING_HEADERS,
+        excluded_detection_body_fields=_WAF_FREETEXT_BODY_FIELDS,
         # roboco keeps its own CORSMiddleware (single origin via nginx).
         enable_cors=False,
         **_agent_kwargs(),

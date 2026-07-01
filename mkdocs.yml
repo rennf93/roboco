@@ -167,6 +167,7 @@ nav:
       - External / internal PR review: optional/pr-review.md
       - Self-healing CI: optional/self-heal.md
       - Autonomous maintenance: optional/autonomous-maintenance.md
+      - HTTP security (fastapi-guard): optional/http-security.md
   - Configure & Deploy:
       - deploy/index.md
       - Deployment: deploy/deployment.md

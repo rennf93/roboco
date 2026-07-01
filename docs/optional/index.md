@@ -22,6 +22,7 @@ You toggle these from **Settings → Feature Flags** in the panel rather than ha
 | [Self-healing CI](self-heal.md) | `ROBOCO_SELF_HEAL_ENABLED` (+ originate) | off | Watches RoboCo's own CI and, optionally, queues a CEO-gated fix task. |
 | [Multi-repo CI-watch](autonomous-maintenance.md) | `ROBOCO_CI_WATCH_ENABLED` (+ per-project) | off | Watches each opted-in project's CI and opens one fix task when it goes red; never auto-merges. |
 | [Dependency-update bot](autonomous-maintenance.md) | `ROBOCO_DEP_UPDATE_ENABLED` (+ per-project) | off | Read-only checks whether an upgrade changes a project's lockfiles and opens an update task; never auto-merges. |
+| [HTTP security (fastapi-guard)](http-security.md) | `ROBOCO_GUARD_ENABLED` | off | Fronts the API with a WAF, IP/rate controls, security headers, and prompt-injection / secret-exfil / SSRF validators for public/cloud exposure — calibrated so active mode doesn't false-positive on agent traffic. |
 
 !!! note "Always-on resilience"
     Provider overload parking (`ROBOCO_OVERLOAD_BREAK_ENABLED`) and the dangling-image prune (`ROBOCO_IMAGE_PRUNE_ENABLED`) are **on by default** — they're not things you enable, they're safety nets you can disable. See [Resilience](../models/resilience.md).
