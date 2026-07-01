@@ -381,6 +381,15 @@ services:
       # OFF in docker-compose.registry.yml so the published default stays conservative.
       ROBOCO_STRATEGY_ENGINE_ENABLED: ${ROBOCO_STRATEGY_ENGINE_ENABLED:-true}
       ROBOCO_INTERNAL_PR_ENABLED: ${ROBOCO_INTERNAL_PR_ENABLED:-true}
+      # fastapi-guard HTTP security layer (v0.16.0). ARMED here in PASSIVE /
+      # log-only calibration mode: guard mounts + observes + logs what it WOULD
+      # block, but blocks nothing until PASSIVE_MODE is flipped off after the
+      # false-positive review. FAIL_SECURE=false so a guard-internal error never
+      # 500s this personal deploy. Left OFF entirely in the registry compose.
+      # enforce_https follows ROBOCO_ENVIRONMENT (dev on the NAS → not enforced).
+      ROBOCO_GUARD_ENABLED: ${ROBOCO_GUARD_ENABLED:-true}
+      ROBOCO_GUARD_PASSIVE_MODE: ${ROBOCO_GUARD_PASSIVE_MODE:-true}
+      ROBOCO_GUARD_FAIL_SECURE: ${ROBOCO_GUARD_FAIL_SECURE:-false}
     volumes:
       # Docker socket - allows spawning agent containers
       - /var/run/docker.sock:/var/run/docker.sock
