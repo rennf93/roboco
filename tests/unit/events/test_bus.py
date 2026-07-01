@@ -267,6 +267,43 @@ async def test_undecodable_message_is_acked_and_dead_lettered() -> None:
     assert invoked == []
 
 
+class _FakeRecoverRedis:
+    """Fake whose xpending_range returns the message id as BYTES (the real
+    client has no decode_responses), and which captures the ids XCLAIM gets."""
+
+    def __init__(self, message_id: bytes) -> None:
+        self._message_id = message_id
+        self.claimed_ids: list[object] = []
+
+    async def xpending(self, *args: object, **kwargs: object) -> dict:
+        del args, kwargs
+        return {"pending": 1}
+
+    async def xpending_range(self, *args: object, **kwargs: object) -> list:
+        del args, kwargs
+        return [{"message_id": self._message_id, "time_since_delivered": 10_000}]
+
+    async def xclaim(self, *args: object, **kwargs: object) -> list:
+        del args
+        self.claimed_ids = cast("list[object]", kwargs.get("message_ids") or [])
+        return []  # nothing claimed back → no handling
+
+
+@pytest.mark.asyncio
+async def test_recover_stream_decodes_bytes_message_id_for_xclaim() -> None:
+    """xpending_range returns the message id as bytes; _recover_stream must
+    decode it before XCLAIM. A raw ``str(bytes)`` yields ``"b'1782..-0'"``,
+    which Redis rejects with "Unrecognized XCLAIM option", so pending-message
+    recovery silently fails every reclaim tick."""
+    bus = StreamEventBus()
+    fake = _FakeRecoverRedis(b"1782066556728-0")
+    bus._redis = cast("Redis", fake)
+
+    await bus._recover_stream("roboco:stream:usage", idle_time_ms=0)
+
+    assert fake.claimed_ids == ["1782066556728-0"]  # decoded, not "b'...'"
+
+
 # --- periodic reclaim: a runtime handler failure is retried without a restart ---
 
 

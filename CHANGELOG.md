@@ -17,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed
 
 - **`ceo_reject` now leaves an audit trail.** The CEO's reject-with-changes and cancel decisions emitted no named audit event, so rework and decision-latency attribution had a hole at the CEO chokepoint. Both now emit the transition audit event at the single `_emit_status_transition_audit` chokepoint, so the CEO's decisions are reconstructable alongside every other role's.
+- **Stream pending-message recovery no longer fails on every reclaim tick.** `StreamEventBus._recover_stream` decoded a Redis message id with `str()` on the raw bytes the client returns (no `decode_responses`), producing `"b'…-0'"` — which Redis rejects with "Unrecognized XCLAIM option", so unacknowledged messages from crashed/slow consumers were never reclaimed and leaked in the pending-entries list on every stream (`roboco:stream:usage` and others), spamming the error log each interval. It now decodes the id via the existing `_to_str` helper before XCLAIM.
 
 ## [0.14.0] - 2026-06-29
 
