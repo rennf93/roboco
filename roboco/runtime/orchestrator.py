@@ -57,6 +57,7 @@ from roboco.foundation.policy.batch import is_branchless_coordination
 from roboco.models import AgentRole, Team
 from roboco.models.runtime import (
     MODEL_MAP,
+    ROLE_EFFORT_MAP,
     ROLE_MODEL_MAP,
     AgentInstance,
     OrchestratorAgentConfig,
@@ -2495,7 +2496,7 @@ class AgentOrchestrator:
     ) -> list[str]:
         """The always-on -v/-e block (prompt, docs, workspaces, env)."""
         docs_ro = "" if config.agent_id in ALL_DOCS else ":ro"
-        return [
+        env = [
             "-v",
             f"{hosts['prompt']}:/app/system-prompt.md:ro",
             "-v",
@@ -2525,6 +2526,12 @@ class AgentOrchestrator:
             "-e",
             f"ROBOCO_AGENT_STOP_ATTEMPT_ALLOWANCE={settings.agent_stop_attempt_allowance}",
         ]
+        # Per-role reasoning-effort override (default-inert: ROLE_EFFORT_MAP is
+        # empty until a role is opted in after verifying the effect on usage).
+        effort = ROLE_EFFORT_MAP.get(role)
+        if effort:
+            env.extend(["-e", f"CLAUDE_CODE_EFFORT_LEVEL={effort}"])
+        return env
 
     @staticmethod
     def _append_provider_env(cmd: list[str], config: AgentConfig) -> None:
