@@ -258,6 +258,101 @@ class Scorecard:
 
 
 @dataclass
+class MemberScorecard:
+    """Per-member rollup scorecard (agent) with derived rates.
+
+    Served from member_performance_daily (terminal work) optionally enriched
+    with a live in-flight overlay (the member's non-terminal tasks' effort so
+    far). Completion counts stay rollup-only — the two sets are disjoint by
+    status — so ``includes_live_inflight`` only enriches effort/turns/cost.
+    """
+
+    scope: str  # "member"
+    id: str
+    name: str
+    tasks_completed: int
+    first_pass_yield: float | None
+    effort_throughput_per_hour: float | None
+    active_runtime_hours: float
+    turns: int
+    tool_calls: int
+    tokens: int
+    cost_usd: float
+    turns_per_task: float | None
+    tool_calls_per_task: float | None
+    revisions_caused: int
+    revisions_received: int
+    qa_pass_rate: float | None
+    escalations: int
+    blocked_others: int
+    idle_hours: float
+    utilization: float | None
+    includes_live_inflight: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "scope": self.scope,
+            "id": self.id,
+            "name": self.name,
+            "member_kind": "agent",
+            "tasks_completed": self.tasks_completed,
+            "first_pass_yield": self.first_pass_yield,
+            "effort_throughput_per_hour": self.effort_throughput_per_hour,
+            "active_runtime_hours": round(self.active_runtime_hours, 2),
+            "turns": self.turns,
+            "tool_calls": self.tool_calls,
+            "tokens": self.tokens,
+            "cost_usd": round(self.cost_usd, 4),
+            "turns_per_task": self.turns_per_task,
+            "tool_calls_per_task": self.tool_calls_per_task,
+            "revisions_caused": self.revisions_caused,
+            "revisions_received": self.revisions_received,
+            "qa_pass_rate": self.qa_pass_rate,
+            "escalations": self.escalations,
+            "blocked_others": self.blocked_others,
+            "idle_hours": round(self.idle_hours, 2),
+            "utilization": self.utilization,
+            "includes_live_inflight": self.includes_live_inflight,
+        }
+
+
+@dataclass
+class OrgScorecard:
+    """Team or whole-org rollup aggregate (rollup-only, no live overlay)."""
+
+    scope: str  # "org" | "team"
+    team: str | None
+    member_count: int
+    tasks_completed: int
+    first_pass_yield: float | None
+    effort_throughput_per_hour: float | None
+    active_runtime_hours: float
+    turns: int
+    tool_calls: int
+    tokens: int
+    cost_usd: float
+    revisions_caused: int
+    revisions_received: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "scope": self.scope,
+            "team": self.team,
+            "member_count": self.member_count,
+            "tasks_completed": self.tasks_completed,
+            "first_pass_yield": self.first_pass_yield,
+            "effort_throughput_per_hour": self.effort_throughput_per_hour,
+            "active_runtime_hours": round(self.active_runtime_hours, 2),
+            "turns": self.turns,
+            "tool_calls": self.tool_calls,
+            "tokens": self.tokens,
+            "cost_usd": round(self.cost_usd, 4),
+            "revisions_caused": self.revisions_caused,
+            "revisions_received": self.revisions_received,
+        }
+
+
+@dataclass
 class CeoScorecard:
     """The human CEO as a measured member — read purely from the audit_log.
 

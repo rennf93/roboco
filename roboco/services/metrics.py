@@ -17,6 +17,7 @@ from roboco.db.tables import (
     AgentSpawnSessionTable,
     AgentTable,
     AuditLogTable,
+    MemberPerformanceDailyTable,
     MessageTable,
     NotificationTable,
     TaskTable,
@@ -31,6 +32,8 @@ from roboco.models.metrics import (
     BlockerMetrics,
     BottleneckReport,
     CeoScorecard,
+    MemberScorecard,
+    OrgScorecard,
     ReworkReport,
     Scorecard,
     StageBottleneck,
@@ -1005,6 +1008,184 @@ class MetricsService(BaseService):
             unblock_p50_seconds=unblock_p50,
             unblock_count=unblock_n,
             godmode_actions=godmode,
+        )
+
+    _ROLLUP_SUM_COLUMNS: ClassVar[tuple[str, ...]] = (
+        "tasks_completed",
+        "tasks_first_pass",
+        "revisions_caused",
+        "revisions_received",
+        "active_runtime_seconds",
+        "turns",
+        "tool_calls",
+        "tokens",
+        "cost_usd",
+        "qa_reviews_total",
+        "qa_reviews_passed",
+        "escalations",
+        "blocked_others",
+        "idle_seconds",
+    )
+
+    async def _rollup_sums(
+        self, since_date: Any, *, agent_slug: str | None, team: Team | None
+    ) -> tuple[dict[str, float], int]:
+        """SUM the rollup columns over member_performance_daily agent rows.
+
+        Filters to ``member_kind='agent'`` in the window, optionally scoped to
+        one member (``agent_slug``) or one cell (``team``). Returns
+        ``(sums, member_count)`` where member_count is the distinct slugs.
+        """
+        cols = [
+            func.coalesce(
+                func.sum(getattr(MemberPerformanceDailyTable, name)), 0
+            ).label(name)
+            for name in self._ROLLUP_SUM_COLUMNS
+        ]
+        conds: list[Any] = [
+            MemberPerformanceDailyTable.member_kind == "agent",
+            MemberPerformanceDailyTable.date >= since_date,
+        ]
+        if agent_slug is not None:
+            conds.append(MemberPerformanceDailyTable.agent_slug == agent_slug)
+        if team is not None:
+            conds.append(MemberPerformanceDailyTable.team == team.value)
+        row = (
+            await self.session.execute(
+                select(
+                    *cols,
+                    func.count(func.distinct(MemberPerformanceDailyTable.agent_slug)),
+                ).where(and_(*conds))
+            )
+        ).one()
+        sums = {
+            name: float(getattr(row, name) or 0) for name in self._ROLLUP_SUM_COLUMNS
+        }
+        member_count = int(row[-1] or 0)
+        return sums, member_count
+
+    async def _live_inflight_overlay(self, agent_id: UUID) -> dict[str, float]:
+        """Effort of the member's NON-terminal tasks (live overlay, disjoint from
+        the terminal rollup). Sums active_runtime/turns/tool_calls/tokens/cost."""
+        overlay = {
+            "active_runtime_seconds": 0.0,
+            "turns": 0.0,
+            "tool_calls": 0.0,
+            "tokens": 0.0,
+            "cost_usd": 0.0,
+        }
+        ids = (
+            (
+                await self.session.execute(
+                    select(TaskTable.id).where(
+                        TaskTable.assigned_to == agent_id,
+                        TaskTable.status.notin_(
+                            [TaskStatus.COMPLETED, TaskStatus.CANCELLED]
+                        ),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for task_id in ids:
+            metrics = await self.get_task_metrics(task_id)
+            if metrics is None:
+                continue
+            overlay["active_runtime_seconds"] += metrics.active_runtime_seconds
+            overlay["turns"] += metrics.turns
+            overlay["tool_calls"] += metrics.tool_calls
+            overlay["tokens"] += metrics.tokens
+            overlay["cost_usd"] += metrics.cost_usd
+        return overlay
+
+    @staticmethod
+    def _ratio(numerator: float, denominator: float) -> float | None:
+        """Guarded ratio → None when the denominator is 0."""
+        return round(numerator / denominator, 4) if denominator else None
+
+    async def get_member_scorecard(
+        self, agent_id: UUID, days: int = 30
+    ) -> MemberScorecard | None:
+        """Per-member rollup scorecard + live in-flight overlay, or None if no
+        such agent."""
+        agent = (
+            await self.session.execute(
+                select(AgentTable.slug, AgentTable.name).where(
+                    AgentTable.id == agent_id
+                )
+            )
+        ).one_or_none()
+        if agent is None:
+            return None
+        slug, name = agent
+        since_date = (datetime.now(UTC) - timedelta(days=days)).date()
+        sums, _ = await self._rollup_sums(since_date, agent_slug=slug, team=None)
+
+        overlay = await self._live_inflight_overlay(agent_id)
+        includes_live = any(v for v in overlay.values())
+        active_runtime = (
+            sums["active_runtime_seconds"] + overlay["active_runtime_seconds"]
+        )
+        turns = int(sums["turns"] + overlay["turns"])
+        tool_calls = int(sums["tool_calls"] + overlay["tool_calls"])
+        tokens = int(sums["tokens"] + overlay["tokens"])
+        cost = sums["cost_usd"] + overlay["cost_usd"]
+        completed = sums["tasks_completed"]
+
+        return MemberScorecard(
+            scope="member",
+            id=str(agent_id),
+            name=name,
+            tasks_completed=int(completed),
+            first_pass_yield=self._ratio(sums["tasks_first_pass"], completed),
+            effort_throughput_per_hour=self._ratio(completed, active_runtime / 3600),
+            active_runtime_hours=active_runtime / 3600,
+            turns=turns,
+            tool_calls=tool_calls,
+            tokens=tokens,
+            cost_usd=cost,
+            turns_per_task=self._ratio(turns, completed),
+            tool_calls_per_task=self._ratio(tool_calls, completed),
+            revisions_caused=int(sums["revisions_caused"]),
+            revisions_received=int(sums["revisions_received"]),
+            qa_pass_rate=self._ratio(
+                sums["qa_reviews_passed"], sums["qa_reviews_total"]
+            ),
+            escalations=int(sums["escalations"]),
+            blocked_others=int(sums["blocked_others"]),
+            idle_hours=sums["idle_seconds"] / 3600,
+            utilization=self._ratio(
+                sums["active_runtime_seconds"],
+                sums["active_runtime_seconds"] + sums["idle_seconds"],
+            ),
+            includes_live_inflight=includes_live,
+        )
+
+    async def get_org_scorecard(
+        self, team: Team | None = None, days: int = 30
+    ) -> OrgScorecard:
+        """Team (or whole-org when team is None) rollup aggregate."""
+        since_date = (datetime.now(UTC) - timedelta(days=days)).date()
+        sums, member_count = await self._rollup_sums(
+            since_date, agent_slug=None, team=team
+        )
+        completed = sums["tasks_completed"]
+        active_runtime = sums["active_runtime_seconds"]
+        return OrgScorecard(
+            scope="team" if team else "org",
+            team=team.value if team else None,
+            member_count=member_count,
+            tasks_completed=int(completed),
+            first_pass_yield=self._ratio(sums["tasks_first_pass"], completed),
+            effort_throughput_per_hour=self._ratio(completed, active_runtime / 3600),
+            active_runtime_hours=active_runtime / 3600,
+            turns=int(sums["turns"]),
+            tool_calls=int(sums["tool_calls"]),
+            tokens=int(sums["tokens"]),
+            cost_usd=sums["cost_usd"],
+            revisions_caused=int(sums["revisions_caused"]),
+            revisions_received=int(sums["revisions_received"]),
         )
 
     async def get_rework_metrics(

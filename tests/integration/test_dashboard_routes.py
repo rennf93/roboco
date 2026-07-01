@@ -436,6 +436,33 @@ async def test_ceo_scorecard_endpoint(dashboard_client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_member_scorecard_404_when_absent(dashboard_client: AsyncClient) -> None:
+    resp = await dashboard_client.get(
+        f"/api/dashboard/metrics/member/{uuid4()}", headers=_HDR
+    )
+    assert resp.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_ceo_route_wins_over_member_uuid_route(
+    dashboard_client: AsyncClient,
+) -> None:
+    # The literal "ceo" must resolve to the CEO route, not the {agent_id} route.
+    resp = await dashboard_client.get("/api/dashboard/metrics/member/ceo", headers=_HDR)
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.json()["member_kind"] == "ceo"
+
+
+@pytest.mark.asyncio
+async def test_org_scorecard_endpoint(dashboard_client: AsyncClient) -> None:
+    resp = await dashboard_client.get("/api/dashboard/metrics/org", headers=_HDR)
+    assert resp.status_code == HTTPStatus.OK
+    body = resp.json()
+    assert body["scope"] == "org"
+    assert set(body) >= {"member_count", "tasks_completed", "first_pass_yield"}
+
+
+@pytest.mark.asyncio
 async def test_task_metrics_404_for_missing_task(
     dashboard_client: AsyncClient,
 ) -> None:
