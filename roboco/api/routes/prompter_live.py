@@ -39,6 +39,7 @@ from roboco.api.schemas.prompter_live import (
     StartLiveRequest,
     StartLiveResponse,
 )
+from roboco.security import guard_deco, prompt_injection_validator
 from roboco.services.base import NotFoundError, ServiceError, ValidationError
 from roboco.services.prompter import get_prompter_service
 from roboco.services.prompter_live import get_live_registry
@@ -77,6 +78,9 @@ def _translate_service_error(e: ServiceError) -> HTTPException:
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(require_panel_token)],
 )
+@guard_deco.rate_limit(requests=10, window=60)
+@guard_deco.max_request_size(size_bytes=32768)
+@guard_deco.custom_validation(prompt_injection_validator)
 async def start_live(body: StartLiveRequest, db: DbSession) -> StartLiveResponse:
     """Spawn the intake agent for a new chat and return its session id.
 
@@ -145,6 +149,9 @@ async def session_status(session_id: str) -> dict[str, bool]:
 
 
 @router.post("/live/{session_id}/messages", dependencies=[Depends(require_panel_token)])
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=32768)
+@guard_deco.custom_validation(prompt_injection_validator)
 async def send_message(session_id: str, body: LiveMessageRequest) -> dict[str, bool]:
     """Deliver the human's message to the running intake agent."""
     delivered = await get_live_registry().deliver(session_id, body.text)
@@ -337,6 +344,9 @@ async def re_interview(
 
 
 @router.post("/live/{session_id}/events")
+@guard_deco.rate_limit(requests=60, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(prompt_injection_validator)
 async def relay_event(session_id: str, event: AgentEvent) -> dict[str, bool]:
     """Relay one agent event from the container onto the session's stream."""
     return {"pushed": get_live_registry().push(session_id, event.model_dump())}

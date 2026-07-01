@@ -14,6 +14,7 @@ from roboco.api.schemas.settings import (
     SettingsResponse,
     SettingUpdate,
 )
+from roboco.security import guard_deco
 from roboco.services.settings import (
     FEATURE_FLAGS,
     SettingValidationError,
@@ -43,6 +44,8 @@ async def get_feature_flags(db: DbSession) -> FeatureFlagsResponse:
 
 
 @router.put("/{key}", response_model=SettingsResponse)
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.max_request_size(size_bytes=8192)
 async def update_setting(
     key: str, data: SettingUpdate, db: DbSession
 ) -> SettingsResponse:
