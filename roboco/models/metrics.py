@@ -11,6 +11,13 @@ from uuid import UUID
 from roboco.foundation.policy.stage_effort import StageEffort
 from roboco.models.base import Team
 
+# CEO decision transitions used by the CEO scorecard (audit-log to_status
+# values). Approval = any CEO exit from awaiting_ceo_approval (incl. the
+# coordination-root reject that lands in `pending`); unblock = a CEO revive
+# out of `blocked`.
+CEO_APPROVAL_DECISIONS = ("completed", "needs_revision", "cancelled", "pending")
+CEO_UNBLOCK_DECISIONS = ("in_progress", "pending")
+
 
 class VelocityMetrics:
     """Velocity metrics over a time period."""
@@ -247,6 +254,35 @@ class Scorecard:
             "rework_rate": round(self.rework_rate, 4),
             "tokens": self.tokens,
             "cost_usd": round(self.cost_usd, 4),
+        }
+
+
+@dataclass
+class CeoScorecard:
+    """The human CEO as a measured member — read purely from the audit_log.
+
+    The CEO never runs an LLM, so token/cost/turns are n/a. Its metrics are
+    approval dwell (awaiting_ceo_approval -> a CEO decision), unblock dwell
+    (blocked -> a CEO revive), and god-mode action count (every ceo-attributed
+    transition in the window).
+    """
+
+    approval_p50_seconds: float
+    approval_p90_seconds: float
+    approval_count: int
+    unblock_p50_seconds: float
+    unblock_count: int
+    godmode_actions: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "member_kind": "ceo",
+            "approval_p50_seconds": round(self.approval_p50_seconds, 2),
+            "approval_p90_seconds": round(self.approval_p90_seconds, 2),
+            "approval_count": self.approval_count,
+            "unblock_p50_seconds": round(self.unblock_p50_seconds, 2),
+            "unblock_count": self.unblock_count,
+            "godmode_actions": self.godmode_actions,
         }
 
 

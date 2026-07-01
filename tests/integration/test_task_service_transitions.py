@@ -15,6 +15,7 @@ import pytest
 import pytest_asyncio
 from roboco.db.tables import (
     AgentTable,
+    AuditLogTable,
     JournalEntryTable,
     ProductTable,
     ProjectTable,
@@ -1198,6 +1199,29 @@ async def test_ceo_reject_routes_coordination_task_to_main_pm(
     assert rejected.team == Team.MAIN_PM
     assert rejected.assigned_to == main_pm_id
     assert rejected.claimed_by is None
+
+    # Regression (metrics-granularity Phase 3): the coordination-root reject
+    # routes through admin_set_status, so it MUST still emit a CEO-attributed
+    # audit row transitioning OUT of awaiting_ceo_approval — the signal the CEO
+    # scorecard pairs for approval latency + counts as a god-mode action. If a
+    # future refactor drops the audit (the old gap), this fails.
+    audit_rows = (
+        (
+            await db_session.execute(
+                select(AuditLogTable).where(AuditLogTable.target_id == task.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    ceo_rows = [
+        a
+        for a in audit_rows
+        if (a.details or {}).get("agent_role") == "ceo"
+        and (a.details or {}).get("from_status") == "awaiting_ceo_approval"
+    ]
+    assert ceo_rows, "coordination ceo_reject must emit a ceo-attributed audit row"
+    assert ceo_rows[0].details.get("to_status") == "pending"
 
 
 @pytest.mark.asyncio

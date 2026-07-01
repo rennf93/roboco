@@ -624,3 +624,16 @@ async def get_task_metrics(
             status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
         )
     return metrics.to_dict()
+
+
+# NOTE: /metrics/member/ceo MUST be declared before any /metrics/member/{id}
+# UUID-typed route so the literal "ceo" isn't captured as a path param.
+@router.get("/metrics/member/ceo")
+async def get_ceo_scorecard(
+    db: DbSession,
+    days: int = Query(default=30, ge=1, le=90),
+) -> dict[str, Any]:
+    """The human CEO as a measured member: approval/unblock dwell + god-mode count."""
+    metrics_service = get_metrics_service(db)
+    card = await metrics_service.get_ceo_scorecard(days=days)
+    return card.to_dict()

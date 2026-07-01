@@ -419,6 +419,23 @@ async def test_get_main_pm_kanban_function_directly(
 
 
 @pytest.mark.asyncio
+async def test_ceo_scorecard_endpoint(dashboard_client: AsyncClient) -> None:
+    resp = await dashboard_client.get(
+        "/api/dashboard/metrics/member/ceo?days=30", headers=_HDR
+    )
+    assert resp.status_code == HTTPStatus.OK
+    body = resp.json()
+    assert body["member_kind"] == "ceo"
+    assert set(body) >= {
+        "approval_p50_seconds",
+        "approval_count",
+        "unblock_p50_seconds",
+        "unblock_count",
+        "godmode_actions",
+    }
+
+
+@pytest.mark.asyncio
 async def test_task_metrics_404_for_missing_task(
     dashboard_client: AsyncClient,
 ) -> None:

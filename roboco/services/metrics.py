@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 from uuid import UUID
 
-from sqlalchemy import and_, func, select, text
+from sqlalchemy import and_, bindparam, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.db.tables import (
@@ -24,10 +24,13 @@ from roboco.db.tables import (
 from roboco.foundation.policy.stage_effort import compute_stage_effort
 from roboco.models.base import TaskStatus, Team
 from roboco.models.metrics import (
+    CEO_APPROVAL_DECISIONS,
+    CEO_UNBLOCK_DECISIONS,
     AgentMetrics,
     AgentReworkRate,
     BlockerMetrics,
     BottleneckReport,
+    CeoScorecard,
     ReworkReport,
     Scorecard,
     StageBottleneck,
@@ -876,7 +879,7 @@ class MetricsService(BaseService):
                 .group_by(AuditLogTable.event_type)
             )
         ).all()
-        counts = dict(rows)
+        counts: dict[str, int] = {row[0]: row[1] for row in rows}
         return counts.get("task.qa_fail", 0), counts.get("task.pr_fail", 0)
 
     async def get_task_metrics(self, task_id: UUID) -> TaskMetrics | None:
@@ -921,6 +924,87 @@ class MetricsService(BaseService):
             pr_fails=pr_fails,
             stints=len(spawn["stints"]),
             stages=stages,
+        )
+
+    async def _ceo_latency(
+        self, since: datetime, from_status: str, to_statuses: Sequence[str]
+    ) -> tuple[float, float, int]:
+        """(p50, p90, count) seconds from a ``from_status`` entry to the next
+        CEO-attributed decision (``to_statuses``) on the same task.
+
+        Reads only ``audit_log`` (agent_role='ceo' serializes from the CEO
+        StrEnum). The decision is the earliest ceo row after the from-event.
+        """
+        sql = text(
+            """
+            WITH events AS (
+                SELECT target_id, timestamp,
+                       (details->>'to_status') AS to_status,
+                       (details->>'agent_role') AS role
+                FROM audit_log
+                WHERE event_type LIKE 'task.%' AND timestamp >= :since
+            ),
+            paired AS (
+                SELECT (
+                    SELECT MIN(d.timestamp) FROM events d
+                    WHERE d.target_id = e.target_id
+                      AND d.timestamp > e.timestamp
+                      AND d.role = 'ceo'
+                      AND d.to_status IN :to_statuses
+                ) - e.timestamp AS latency
+                FROM events e
+                WHERE e.to_status = :from_status
+            )
+            SELECT
+                PERCENTILE_CONT(0.5) WITHIN GROUP (
+                    ORDER BY EXTRACT(epoch FROM latency))::float AS p50,
+                PERCENTILE_CONT(0.9) WITHIN GROUP (
+                    ORDER BY EXTRACT(epoch FROM latency))::float AS p90,
+                COUNT(latency) AS n
+            FROM paired WHERE latency IS NOT NULL
+            """
+        ).bindparams(bindparam("to_statuses", expanding=True))
+        row = (
+            await self.session.execute(
+                sql,
+                {
+                    "since": since,
+                    "from_status": from_status,
+                    "to_statuses": list(to_statuses),
+                },
+            )
+        ).one()
+        return float(row.p50 or 0.0), float(row.p90 or 0.0), int(row.n or 0)
+
+    async def _ceo_godmode_count(self, since: datetime) -> int:
+        """Count every CEO-attributed task transition in the window."""
+        sql = text(
+            """
+            SELECT COUNT(*) AS n FROM audit_log
+            WHERE event_type LIKE 'task.%'
+              AND timestamp >= :since
+              AND (details->>'agent_role') = 'ceo'
+            """
+        )
+        return int((await self.session.execute(sql, {"since": since})).scalar() or 0)
+
+    async def get_ceo_scorecard(self, days: int = 30) -> CeoScorecard:
+        """The human CEO's scorecard — approval/unblock dwell + god-mode count."""
+        since = datetime.now(UTC) - timedelta(days=days)
+        approval_p50, approval_p90, approval_n = await self._ceo_latency(
+            since, "awaiting_ceo_approval", CEO_APPROVAL_DECISIONS
+        )
+        unblock_p50, _unblock_p90, unblock_n = await self._ceo_latency(
+            since, "blocked", CEO_UNBLOCK_DECISIONS
+        )
+        godmode = await self._ceo_godmode_count(since)
+        return CeoScorecard(
+            approval_p50_seconds=approval_p50,
+            approval_p90_seconds=approval_p90,
+            approval_count=approval_n,
+            unblock_p50_seconds=unblock_p50,
+            unblock_count=unblock_n,
+            godmode_actions=godmode,
         )
 
     async def get_rework_metrics(
