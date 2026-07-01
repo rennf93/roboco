@@ -2558,11 +2558,6 @@ class AgentOrchestrator:
             "-e",
             f"ROBOCO_AGENT_STOP_ATTEMPT_ALLOWANCE={settings.agent_stop_attempt_allowance}",
         ]
-        # Per-role reasoning-effort override (default-inert: ROLE_EFFORT_MAP is
-        # empty until a role is opted in after verifying the effect on usage).
-        effort = ROLE_EFFORT_MAP.get(role)
-        if effort:
-            env.extend(["-e", f"CLAUDE_CODE_EFFORT_LEVEL={effort}"])
         return env
 
     @staticmethod
@@ -2750,6 +2745,13 @@ class AgentOrchestrator:
             "stream-json",
             "--verbose",
         ]
+        # Per-role reasoning-effort override via Claude Code's `--effort` flag.
+        # Only set for roles in ROLE_EFFORT_MAP; models without effort support
+        # ignore it, so passing it for a mapped role is always safe.
+        _effort_role = get_agent_role(config.agent_id)
+        _effort = ROLE_EFFORT_MAP.get(_effort_role) if _effort_role else None
+        if _effort:
+            claude_args += ["--effort", _effort]
         # Pin the Claude session id so the agent's transcript is locatable by id
         # at finalize, regardless of which project/cwd dir Claude Code writes it
         # to (review/coordinate roles run at /app, not a per-agent workspace).

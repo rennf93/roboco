@@ -136,11 +136,21 @@ ROLE_MODEL_MAP: dict[str, str] = {
 }
 
 
-# Per-role reasoning-effort override, injected as CLAUDE_CODE_EFFORT_LEVEL into
-# the agent container. Default-INERT: an empty map means every role keeps Claude
-# Code's model default. This is opt-in — populate a role ("low"|"medium"|"high"|
-# "xhigh") only AFTER verifying on one spawn that the level actually moves token
-# usage (the CLI config key is version-dependent; a wrong value is a silent
-# no-op). Roles routed to Haiku ignore effort entirely (Haiku has no effort
-# control), so only sonnet/opus roles are candidates.
-ROLE_EFFORT_MAP: dict[str, str] = {}
+# Per-role reasoning-effort override, passed as Claude Code's `--effort` CLI flag
+# at spawn (a verified flag on Claude Code 2.x). Effort governs how much the model
+# thinks and explores — thinking tokens and, more importantly, tool-call/turn
+# count; lowering it on roles that don't need deep multi-step reasoning cuts turns,
+# and turns drive the dominant cache-read cost. Delivery-critical reasoning roles
+# (developer, pr_reviewer) keep the model default; main_pm is left at default to
+# isolate its Opus→Sonnet-5 model experiment; Haiku roles (qa, documenter) ignore
+# effort. Conservative and revertible — watch coordination/triage quality on the
+# per-role panel and tune.
+ROLE_EFFORT_MAP: dict[str, str] = {
+    # Cell PM — delegation + light triage, not deep reasoning; highest-volume
+    # role where lowering effort below the model default is defensible.
+    "cell_pm": "medium",
+    # Board + Auditor — triage / read-only observation, shallow reasoning depth.
+    "product_owner": "medium",
+    "head_marketing": "medium",
+    "auditor": "medium",
+}
