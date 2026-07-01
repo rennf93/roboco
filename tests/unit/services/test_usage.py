@@ -86,6 +86,13 @@ def _result_fetchall(rows: list[MagicMock]) -> MagicMock:
     return result
 
 
+def _result_scalars(objs: list[MagicMock]) -> MagicMock:
+    """Return a mock execute() result whose .scalars().all() returns `objs`."""
+    result = MagicMock()
+    result.scalars.return_value.all = MagicMock(return_value=objs)
+    return result
+
+
 def _service_with_execute(*return_values: object) -> UsageService:
     """Build a UsageService whose session.execute() returns the provided
     values in sequence (one per call)."""
@@ -532,7 +539,7 @@ class TestGetByModel:
     async def test_pct_of_total_sums_to_100(self) -> None:
         rows = [
             _make_row(
-                model="claude-sonnet-4-6",
+                model="claude-sonnet-5",
                 tokens_input=600,
                 tokens_output=600,
                 tokens_cache_read=0,
@@ -565,7 +572,7 @@ class TestGetByModel:
     async def test_result_contains_model_field(self) -> None:
         rows = [
             _make_row(
-                model="claude-sonnet-4-6",
+                model="claude-sonnet-5",
                 tokens_input=100,
                 tokens_output=100,
                 tokens_cache_read=0,
@@ -575,7 +582,28 @@ class TestGetByModel:
         ]
         svc = _service_with_execute(_result_fetchall(rows))
         result = await svc.get_by_model()
-        assert result[_ZERO]["model"] == "claude-sonnet-4-6"
+        assert result[_ZERO]["model"] == "claude-sonnet-5"
+
+    @pytest.mark.asyncio
+    async def test_result_includes_cache_fields_and_hit_rate(self) -> None:
+        """Breakdown rows carry cache tokens + cache_hit_rate = read/(input+read)."""
+        _cache_write = 100
+        rows = [
+            _make_row(
+                model="claude-sonnet-5",
+                tokens_input=_INPUT_TOKENS,
+                tokens_output=200,
+                tokens_cache_read=_CACHE_READ_TOKENS,
+                tokens_cache_write=_cache_write,
+                cost_usd=0.05,
+            )
+        ]
+        svc = _service_with_execute(_result_fetchall(rows))
+        result = await svc.get_by_model("24h")
+        item = result[_ZERO]
+        assert item["tokens_cache_read"] == _CACHE_READ_TOKENS
+        assert item["tokens_cache_write"] == _cache_write
+        assert abs(item["cache_hit_rate"] - _EXPECTED_HIT_RATE) < _TOL
 
     @pytest.mark.asyncio
     async def test_cache_tokens_included_in_total_tokens(self) -> None:
@@ -585,7 +613,7 @@ class TestGetByModel:
         _expected_total = 600 + 600 + _cache_read + _cache_write  # 1600
         rows = [
             _make_row(
-                model="claude-sonnet-4-6",
+                model="claude-sonnet-5",
                 tokens_input=600,
                 tokens_output=600,
                 tokens_cache_read=_cache_read,
@@ -602,7 +630,7 @@ class TestGetByModel:
         """pct_of_total still sums to 100% when models have cache tokens."""
         rows = [
             _make_row(
-                model="claude-sonnet-4-6",
+                model="claude-sonnet-5",
                 tokens_input=500,
                 tokens_output=500,
                 tokens_cache_read=200,
@@ -622,6 +650,69 @@ class TestGetByModel:
         result = await svc.get_by_model("24h")
         total_pct = sum(item["pct_of_total"] for item in result)
         assert abs(total_pct - _FULL_PCT) < _PCT_TOL
+
+
+# ---------------------------------------------------------------------------
+# get_by_role — groups by role, carries cache fields
+# ---------------------------------------------------------------------------
+
+
+class TestGetByRole:
+    @pytest.mark.asyncio
+    async def test_groups_by_role_with_cache_fields(self) -> None:
+        """get_by_role emits the role key plus cache tokens + hit rate."""
+        rows = [
+            _make_row(
+                role="developer",
+                tokens_input=_INPUT_TOKENS,
+                tokens_output=200,
+                tokens_cache_read=_CACHE_READ_TOKENS,
+                tokens_cache_write=100,
+                cost_usd=0.05,
+            )
+        ]
+        svc = _service_with_execute(_result_fetchall(rows))
+        result = await svc.get_by_role("24h")
+        item = result[_ZERO]
+        assert item["role"] == "developer"
+        assert item["tokens_cache_read"] == _CACHE_READ_TOKENS
+        assert abs(item["cache_hit_rate"] - _EXPECTED_HIT_RATE) < _TOL
+
+
+# ---------------------------------------------------------------------------
+# get_spawn_waste — per-role unproductive rate + respawn strikes
+# ---------------------------------------------------------------------------
+
+
+class TestGetSpawnWaste:
+    @pytest.mark.asyncio
+    async def test_computes_unproductive_pct_and_strikes(self) -> None:
+        """unproductive_pct = 0-output spawns / spawns; strikes from tracker."""
+        _spawns = 10
+        _unproductive = 8
+        _strike_count = 4
+        _expected_pct = 80.0
+        role_rows = [
+            _make_row(role="developer", spawns=_spawns, unproductive=_unproductive)
+        ]
+        strike = _make_row(
+            agent_slug="be-dev-1",
+            task_id=UUID("11111111-1111-1111-1111-111111111111"),
+            count=_strike_count,
+            last_status="in_progress",
+            notified=True,
+        )
+        svc = _service_with_execute(
+            _result_fetchall(role_rows), _result_scalars([strike])
+        )
+        result = await svc.get_spawn_waste("24h")
+        assert result["total_spawns"] == _spawns
+        assert result["unproductive_spawns"] == _unproductive
+        assert abs(result["unproductive_pct"] - _expected_pct) < _TOL
+        assert result["by_role"][_ZERO]["role"] == "developer"
+        strike_row = result["respawn_strikes"][_ZERO]
+        assert strike_row["count"] == _strike_count
+        assert strike_row["notified"] is True
 
 
 # ---------------------------------------------------------------------------

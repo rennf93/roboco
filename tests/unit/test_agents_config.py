@@ -385,6 +385,28 @@ def test_can_a2a_direct_board_to_developer_denied() -> None:
     assert reason is not None
 
 
+def test_can_a2a_direct_pr_reviewer_to_main_pm_allowed() -> None:
+    """The root→master gate reviewer delivers pr_fail change-requests to the
+    owning Main PM. Denying it silently strands the verdict (blind re-submit)."""
+    allowed, reason = can_a2a_direct("pr-reviewer-1", "main-pm")
+    assert allowed is True
+    assert reason is None
+
+
+def test_can_a2a_direct_cell_pr_reviewer_to_cell_pm_allowed() -> None:
+    """The cell→root gate reviewer delivers its verdict to the owning cell PM."""
+    allowed, reason = can_a2a_direct("be-pr-reviewer", "be-pm")
+    assert allowed is True
+    assert reason is None
+
+
+def test_can_a2a_direct_pr_reviewer_to_developer_denied() -> None:
+    """A PR reviewer only A2As the owning PM — never devs/qa directly."""
+    allowed, reason = can_a2a_direct("pr-reviewer-1", "be-dev-1")
+    assert allowed is False
+    assert reason is not None
+
+
 def test_get_a2a_route_hint_cell_member_to_management() -> None:
     """Non-CEO cell-member → management agent (no team) routes via cell PM."""
     hint = get_a2a_route_hint("be-dev-1", "main-pm")

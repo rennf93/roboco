@@ -111,6 +111,40 @@ async def get_usage_by_model(
     return await svc.get_by_model(period)
 
 
+@router.get("/by-role")
+async def get_usage_by_role(
+    db: DbSession,
+    period: _PeriodQuery = "24h",
+) -> list[dict[str, Any]]:
+    """Return per-role token usage with cache hit rate + pct_of_total.
+
+    Each row carries: role, tokens_input/output, tokens_cache_read/write,
+    cache_hit_rate, total_tokens, cost_usd, pct_of_total.
+    """
+    svc = get_usage_service(db)
+    return await svc.get_by_role(period)
+
+
+# =============================================================================
+# SPAWN WASTE
+# =============================================================================
+
+
+@router.get("/spawn-waste")
+async def get_usage_spawn_waste(
+    db: DbSession,
+    period: _PeriodQuery = "24h",
+) -> dict[str, Any]:
+    """Return spawn-churn signals for the period.
+
+    - by_role: per-role spawn count + unproductive count (0 output tokens) + pct
+    - respawn_strikes: current wedged agent/task pairs the circuit breaker counts
+    - total_spawns / unproductive_spawns / unproductive_pct: fleet totals
+    """
+    svc = get_usage_service(db)
+    return await svc.get_spawn_waste(period)
+
+
 # =============================================================================
 # PROJECTION
 # =============================================================================

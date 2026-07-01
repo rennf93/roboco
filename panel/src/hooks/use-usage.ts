@@ -8,9 +8,11 @@ import type {
   AgentUsageRow,
   TeamUsageRow,
   ModelUsageSlice,
+  RoleUsageRow,
   UsageTimePoint,
   UsageProjection,
   CacheEfficiencyResponse,
+  SpawnWasteResponse,
   UsageSession,
 } from "@/types";
 
@@ -30,9 +32,13 @@ export const usageKeys = {
     [...usageKeys.all, "by-team", period] as const,
   modelUsage: (period: UsagePeriod) =>
     [...usageKeys.all, "by-model", period] as const,
+  roleUsage: (period: UsagePeriod) =>
+    [...usageKeys.all, "by-role", period] as const,
   projection: () => [...usageKeys.all, "projection"] as const,
   cacheEfficiency: (period: UsagePeriod) =>
     [...usageKeys.all, "cache-efficiency", period] as const,
+  spawnWaste: (period: UsagePeriod) =>
+    [...usageKeys.all, "spawn-waste", period] as const,
   sessions: (limit: number) => [...usageKeys.all, "sessions", limit] as const,
 };
 
@@ -85,6 +91,15 @@ export function useModelUsage(period: UsagePeriod = "24h") {
   });
 }
 
+/** Per-role usage rows (cost + cache hit rate) */
+export function useRoleUsage(period: UsagePeriod = "24h") {
+  return useQuery<RoleUsageRow[]>({
+    queryKey: usageKeys.roleUsage(period),
+    queryFn: () => usageApi.getRoleUsage(period),
+    refetchInterval: 60_000,
+  });
+}
+
 /** Monthly cost projection based on 7-day rolling average */
 export function useUsageProjection() {
   return useQuery<UsageProjection>({
@@ -100,6 +115,15 @@ export function useCacheEfficiency(period: UsagePeriod = "24h") {
     queryKey: usageKeys.cacheEfficiency(period),
     queryFn: () => usageApi.getCacheEfficiency(period),
     refetchInterval: 120_000,
+  });
+}
+
+/** Spawn-churn signal (per-role unproductive rate + respawn strikes) */
+export function useSpawnWaste(period: UsagePeriod = "24h") {
+  return useQuery<SpawnWasteResponse>({
+    queryKey: usageKeys.spawnWaste(period),
+    queryFn: () => usageApi.getSpawnWaste(period),
+    refetchInterval: 60_000,
   });
 }
 

@@ -70,6 +70,12 @@ from roboco.models.optimal import (
     IndexErrorParams,
 )
 from roboco.models.permissions import KBAction
+from roboco.security import (
+    guard_deco,
+    internal_ssrf_validator,
+    prompt_injection_validator,
+    secret_exfil_validator,
+)
 from roboco.services.gateway.kb_authz import authorize_kb_action
 from roboco.services.optimal import (
     IndexType,
@@ -119,6 +125,10 @@ def _kb_denial_response(
     response_model=IndexResponse,
     status_code=status.HTTP_201_CREATED,
 )
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.usage_monitor(max_calls=30, window=3600)
 async def index_code(
     request: IndexCodeRequest,
     agent: CurrentAgentContext,
@@ -153,6 +163,11 @@ async def index_code(
     response_model=IndexResponse,
     status_code=status.HTTP_201_CREATED,
 )
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(internal_ssrf_validator)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.usage_monitor(max_calls=30, window=3600)
 async def index_documentation(
     request: IndexDocsRequest,
     agent: CurrentAgentContext,
@@ -188,6 +203,10 @@ async def index_documentation(
 
 
 @router.post("/kb/search", response_model=SearchResponse)
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(prompt_injection_validator)
+@guard_deco.content_type_filter(["application/json"])
 async def search(
     request: SearchRequest,
     agent: CurrentAgentContext,
@@ -291,6 +310,10 @@ async def find_similar(
 
 
 @router.post("/rag/query", response_model=RAGQueryResponse)
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(prompt_injection_validator)
+@guard_deco.content_type_filter(["application/json"])
 async def rag_query(
     request: RAGQueryRequest,
     agent: CurrentAgentContext,
@@ -368,6 +391,10 @@ async def rag_query(
 
 
 @router.post("/rag/context")
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(prompt_injection_validator)
+@guard_deco.content_type_filter(["application/json"])
 async def get_context(
     request: RAGQueryRequest,
     agent: CurrentAgentContext,
@@ -526,6 +553,7 @@ async def rag_health_check() -> RAGHealthResponse:
 
 
 @router.delete("/kb/{index_type}", response_model=ClearIndexResponse)
+@guard_deco.rate_limit(requests=10, window=60)
 async def clear_index(
     index_type: str,
     agent: CurrentAgentContext,
@@ -604,6 +632,9 @@ async def list_documents(
 
 
 @router.post("/kb/refresh", response_model=RefreshIndexResponse)
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.usage_monitor(max_calls=30, window=3600)
 async def refresh_index(
     request: RefreshRequest,
     agent: CurrentAgentContext,
@@ -650,6 +681,9 @@ async def refresh_index(
 
 
 @router.post("/kb/reindex", response_model=None)
+@guard_deco.rate_limit(requests=10, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.usage_monitor(max_calls=30, window=3600)
 async def reindex_all(
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
@@ -700,6 +734,10 @@ async def reindex_all(
     response_model=PromptTemplateResponse,
     status_code=status.HTTP_201_CREATED,
 )
+@guard_deco.rate_limit(requests=60, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(secret_exfil_validator)
+@guard_deco.content_type_filter(["application/json"])
 async def create_prompt_template(
     request: PromptTemplateRequest,
     agent: CurrentAgentContext,
@@ -768,6 +806,11 @@ async def list_prompt_templates(
 
 
 @router.post("/mentor/ask", response_model=MentorAskResponse)
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(prompt_injection_validator)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.usage_monitor(max_calls=30, window=3600)
 async def mentor_ask(
     request: MentorAskRequest,
     agent: CurrentAgentContext,
@@ -839,6 +882,10 @@ async def mentor_ask(
 
 
 @router.post("/errors/search", response_model=ErrorSearchResponse)
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(prompt_injection_validator)
+@guard_deco.content_type_filter(["application/json"])
 async def search_errors(
     request: ErrorSearchRequest,
     agent: CurrentAgentContext,
@@ -871,6 +918,10 @@ async def search_errors(
 
 
 @router.post("/errors/record", response_model=ErrorRecordResponse)
+@guard_deco.rate_limit(requests=60, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(secret_exfil_validator)
+@guard_deco.content_type_filter(["application/json"])
 async def record_error(
     request: ErrorRecordRequest,
     agent: CurrentAgentContext,
@@ -906,6 +957,10 @@ async def record_error(
 
 
 @router.post("/decisions/check", response_model=DecisionCheckResponse)
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(prompt_injection_validator)
+@guard_deco.content_type_filter(["application/json"])
 async def check_decision(
     request: DecisionCheckRequest,
     agent: CurrentAgentContext,
@@ -948,6 +1003,10 @@ async def check_decision(
 
 
 @router.post("/decisions/record", response_model=DecisionRecordResponse)
+@guard_deco.rate_limit(requests=60, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(secret_exfil_validator)
+@guard_deco.content_type_filter(["application/json"])
 async def record_decision(
     request: DecisionRecordRequest,
     agent: CurrentAgentContext,
@@ -985,6 +1044,10 @@ async def record_decision(
 
 
 @router.post("/standards/get", response_model=StandardsGetResponse)
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(prompt_injection_validator)
+@guard_deco.content_type_filter(["application/json"])
 async def get_standards(
     request: StandardsGetRequest,
     agent: CurrentAgentContext,
@@ -1015,6 +1078,10 @@ async def get_standards(
 
 
 @router.post("/standards/validate", response_model=ValidateActionResponse)
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(prompt_injection_validator)
+@guard_deco.content_type_filter(["application/json"])
 async def validate_action(
     request: ValidateActionRequest,
     agent: CurrentAgentContext,
@@ -1096,6 +1163,10 @@ async def validate_action(
 
 
 @router.post("/review/code", response_model=CodeReviewResponse)
+@guard_deco.rate_limit(requests=60, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(secret_exfil_validator)
+@guard_deco.content_type_filter(["application/json"])
 async def review_code(
     request: CodeReviewRequest,
     agent: CurrentAgentContext,
@@ -1142,6 +1213,8 @@ async def review_code(
 
 
 @router.post("/tokens/estimate", response_model=TokenEstimateResponse)
+@guard_deco.rate_limit(requests=60, window=60)
+@guard_deco.content_type_filter(["application/json"])
 async def estimate_tokens(
     request: TokenEstimateRequest,
     agent: CurrentAgentContext,
@@ -1170,6 +1243,10 @@ async def estimate_tokens(
 
 
 @router.post("/learnings/record", response_model=LearningRecordResponse)
+@guard_deco.rate_limit(requests=60, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(secret_exfil_validator)
+@guard_deco.content_type_filter(["application/json"])
 async def record_learning(
     request: LearningRecordRequest,
     agent: CurrentAgentContext,
@@ -1200,6 +1277,10 @@ async def record_learning(
 
 
 @router.post("/learnings/search", response_model=SearchResponse)
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(prompt_injection_validator)
+@guard_deco.content_type_filter(["application/json"])
 async def search_learnings(
     request: LearningSearchRequest,
     agent: CurrentAgentContext,
@@ -1238,6 +1319,9 @@ async def search_learnings(
 
 
 @router.post("/context/proactive", response_model=ProactiveContextResponse)
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.usage_monitor(max_calls=30, window=3600)
 async def get_proactive_context(
     request: ProactiveContextRequest,
     agent: CurrentAgentContext,

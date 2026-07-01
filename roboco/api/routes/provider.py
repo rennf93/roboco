@@ -28,6 +28,7 @@ from roboco.api.schemas.provider import (
 )
 from roboco.models.base import ModelProvider
 from roboco.models.llm_catalog import MODEL_CATALOG
+from roboco.security import guard_deco
 from roboco.services.base import NotFoundError
 from roboco.services.llm import get_model_routing_service, probe_ollama_tags
 from roboco.services.provider import ProviderUpdate, get_provider_service
@@ -91,6 +92,12 @@ async def get_ollama_key_status(
 
 
 @router.put("/ollama-key", response_model=OllamaKeyStatus)
+@guard_deco.rate_limit(requests=10, window=60)
+@guard_deco.max_request_size(size_bytes=8192)
+@guard_deco.block_clouds()
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
+@guard_deco.usage_monitor(max_calls=30, window=3600)
 async def set_ollama_key(
     data: SetOllamaKeyRequest,
     db: DbSession,
@@ -142,6 +149,12 @@ async def get_grok_key_status(
 
 
 @router.put("/grok-key", response_model=GrokKeyStatus)
+@guard_deco.rate_limit(requests=10, window=60)
+@guard_deco.max_request_size(size_bytes=8192)
+@guard_deco.block_clouds()
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
+@guard_deco.usage_monitor(max_calls=30, window=3600)
 async def set_grok_key(
     data: SetGrokKeyRequest,
     db: DbSession,
@@ -204,6 +217,12 @@ async def get_self_hosted_config(
 
 
 @router.put("/self-hosted", response_model=SelfHostedConfigResponse)
+@guard_deco.rate_limit(requests=10, window=60)
+@guard_deco.max_request_size(size_bytes=8192)
+@guard_deco.block_clouds()
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
+@guard_deco.usage_monitor(max_calls=30, window=3600)
 async def set_self_hosted_config(
     data: SelfHostedConfigRequest,
     db: DbSession,
@@ -353,6 +372,10 @@ async def get_current_mode(
 
 
 @router.post("", response_model=ModeResponse)
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.block_clouds()
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
 async def apply_mode(
     data: ApplyModeRequest,
     db: DbSession,

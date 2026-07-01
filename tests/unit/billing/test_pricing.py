@@ -6,7 +6,8 @@ Covers:
 - Unknown model name returns 0.0 without raising.
 - Empty model string returns 0.0 without raising.
 - Substring match correctness: longer fragment wins
-  (e.g. 'claude-sonnet-4-6' matches 'claude-sonnet-4' not bare 'sonnet').
+  (e.g. 'claude-sonnet-4-6' matches 'claude-sonnet-4' not bare 'sonnet';
+  'claude-sonnet-5' matches its own promo entry).
 """
 
 from __future__ import annotations
@@ -36,6 +37,12 @@ _SONNET_INPUT = 3.00
 _SONNET_OUTPUT = 15.00
 _SONNET_CACHE_READ = 0.30
 _SONNET_CACHE_WRITE = 0.75
+
+# Sonnet 5 — promotional pricing (33% off Sonnet 4.6, pay 67%) through 2026-08-31
+_SONNET5_INPUT = 2.01
+_SONNET5_OUTPUT = 10.05
+_SONNET5_CACHE_READ = 0.201
+_SONNET5_CACHE_WRITE = 0.5025
 
 _HAIKU_INPUT = 1.00
 _HAIKU_OUTPUT = 5.00
@@ -115,7 +122,7 @@ class TestOpusTier:
 
 
 class TestSonnetTier:
-    """claude-sonnet-4 family pricing."""
+    """claude-sonnet-4 family pricing (full rate — pre-promo / historical)."""
 
     def test_input_only(self) -> None:
         cost = calculate_cost("claude-sonnet-4-6", tokens_input=_M, tokens_output=0)
@@ -167,6 +174,60 @@ class TestSonnetTier:
             "claude-3-5-sonnet-20241022", tokens_input=_M, tokens_output=0
         )
         assert abs(cost - _SONNET_INPUT) < _TOL
+
+
+class TestSonnet5PromoTier:
+    """claude-sonnet-5 promotional pricing — 33% off Sonnet 4.6 (through
+    2026-08-31). A dedicated table entry wins over the bare 'sonnet' fragment."""
+
+    def test_input_only(self) -> None:
+        cost = calculate_cost("claude-sonnet-5", tokens_input=_M, tokens_output=0)
+        assert abs(cost - _SONNET5_INPUT) < _TOL
+
+    def test_output_only(self) -> None:
+        cost = calculate_cost("claude-sonnet-5", tokens_input=0, tokens_output=_M)
+        assert abs(cost - _SONNET5_OUTPUT) < _TOL
+
+    def test_cache_read_only(self) -> None:
+        cost = calculate_cost(
+            "claude-sonnet-5", tokens_input=0, tokens_output=0, tokens_cache_read=_M
+        )
+        assert abs(cost - _SONNET5_CACHE_READ) < _TOL
+
+    def test_cache_write_only(self) -> None:
+        cost = calculate_cost(
+            "claude-sonnet-5", tokens_input=0, tokens_output=0, tokens_cache_write=_M
+        )
+        assert abs(cost - _SONNET5_CACHE_WRITE) < _TOL
+
+    def test_all_token_types(self) -> None:
+        cost = calculate_cost(
+            "claude-sonnet-5",
+            tokens_input=_M,
+            tokens_output=_M,
+            tokens_cache_read=_M,
+            tokens_cache_write=_M,
+        )
+        expected = (
+            _SONNET5_INPUT
+            + _SONNET5_OUTPUT
+            + _SONNET5_CACHE_READ
+            + _SONNET5_CACHE_WRITE
+        )
+        assert abs(cost - expected) < _TOL
+
+    def test_cheaper_than_sonnet4(self) -> None:
+        """The promo must actually be cheaper than full Sonnet 4.6."""
+        five = calculate_cost("claude-sonnet-5", tokens_input=_M, tokens_output=_M)
+        four = calculate_cost("claude-sonnet-4-6", tokens_input=_M, tokens_output=_M)
+        assert five < four
+
+    def test_dated_variant_matches_promo(self) -> None:
+        """A dated 'claude-sonnet-5-*' id still resolves to the promo entry."""
+        cost = calculate_cost(
+            "claude-sonnet-5-20260930", tokens_input=_M, tokens_output=0
+        )
+        assert abs(cost - _SONNET5_INPUT) < _TOL
 
 
 # ---------------------------------------------------------------------------
@@ -341,10 +402,10 @@ class TestSubstringMatchPriority:
     def test_case_insensitive_matching(self) -> None:
         """Model name matching is case-insensitive."""
         lower_cost = calculate_cost(
-            "claude-sonnet-4-6", tokens_input=1000, tokens_output=1000
+            "claude-sonnet-5", tokens_input=1000, tokens_output=1000
         )
         upper_cost = calculate_cost(
-            "CLAUDE-SONNET-4-6", tokens_input=1000, tokens_output=1000
+            "CLAUDE-SONNET-5", tokens_input=1000, tokens_output=1000
         )
         assert lower_cost == upper_cost
         assert lower_cost > _ZERO_COST
@@ -411,7 +472,7 @@ class TestCostResult:
 
     def test_priced_anthropic_model_is_not_unpriced(self) -> None:
         result = calculate_cost_result(
-            "claude-sonnet-4-6", tokens_input=_M, tokens_output=0
+            "claude-sonnet-5", tokens_input=_M, tokens_output=0
         )
         assert result.cost_usd > 0.0
         assert result.unpriced is False

@@ -50,6 +50,10 @@ _PRICING: list[tuple[str, float, float, float, float]] = [
     # (fragment, input/1M, output/1M, cache_read/1M, cache_write/1M)
     # Opus 4 family
     ("claude-opus-4", 5.00, 25.00, 0.50, 6.25),
+    # Sonnet 5 — promotional pricing: 33% off Sonnet 4.6 (pay 67%) through
+    # 2026-08-31. Revert to 3.00 / 15.00 / 0.30 / 0.75 when the promo ends.
+    # Dedicated fragment so it beats the bare "sonnet" alias below.
+    ("claude-sonnet-5", 2.01, 10.05, 0.201, 0.5025),
     # Sonnet 4 / 3.7 / 3.5 family
     ("claude-sonnet-4", 3.00, 15.00, 0.30, 0.75),
     ("claude-3-7-sonnet", 3.00, 15.00, 0.30, 0.75),
@@ -149,7 +153,7 @@ def calculate_cost_result(
     represents real spend we are failing to count.
 
     Args:
-        model: Model name or short alias (e.g. ``"claude-sonnet-4-6"``,
+        model: Model name or short alias (e.g. ``"claude-sonnet-5"``,
                ``"sonnet"``, ``"opus"``).
         tokens_input: Number of input tokens (prompt / context).
         tokens_output: Number of output tokens (completion).

@@ -623,6 +623,20 @@ def _check_main_pm_a2a(to_role: str, to_team: str | None) -> tuple[bool, str | N
     return False, f"Main PM cannot A2A {to_role}s. Route through {pm or 'cell-pm'}."
 
 
+def _check_pr_reviewer_a2a(to_role: str) -> tuple[bool, str | None]:
+    """Check A2A permissions for a PR reviewer.
+
+    The reviewer sits above cells (it reviews cross-cell assembled PRs), so it
+    never shares a team with the owning PM the way QA does with its cell PM. Its
+    one comms surface is delivering the in-path gate verdict (pr_fail
+    change-requests) to that owning PM — cell PM for a cell→root PR, Main PM for
+    a root→master PR. Everything else it posts on the PR itself, not via A2A.
+    """
+    if to_role in ("cell_pm", "main_pm"):
+        return True, None
+    return False, f"PR reviewers only A2A the owning PM, not {to_role}s."
+
+
 def can_a2a_direct(from_agent: str, to_agent: str) -> tuple[bool, str | None]:
     """
     Check if from_agent can send A2A directly to to_agent.
@@ -650,6 +664,7 @@ def can_a2a_direct(from_agent: str, to_agent: str) -> tuple[bool, str | None]:
     handlers: dict[str, tuple[bool, str | None]] = {
         "main_pm": _check_main_pm_a2a(to_role, to_team),
         "cell_pm": _check_cell_pm_a2a(from_team, to_agent, to_role, to_team),
+        "pr_reviewer": _check_pr_reviewer_a2a(to_role),
     }
     if from_role in handlers:
         return handlers[from_role]
@@ -670,6 +685,10 @@ def get_a2a_route_hint(from_agent: str, to_agent: str) -> str:
     # CEO is human - no A2A route, use notifications
     if to_role == "ceo":
         return "CEO is human. Use notify() for CEO communication."
+
+    # PR reviewer only reaches the owning PM; everything else goes on the PR.
+    if get_agent_role(from_agent) == "pr_reviewer":
+        return "PR reviewers A2A only the owning PM; post other feedback on the PR."
 
     # Cross-cell routing
     if from_team and to_team and from_team != to_team:

@@ -212,6 +212,15 @@ class Settings(BaseSettings):
             "of crash-retrying into the overload. Off => crash-retry behavior."
         ),
     )
+    spawn_preflight_enabled: bool = Field(
+        default=False,
+        description=(
+            "Refuse to spawn a non-human delivery role that isn't in "
+            "GATEWAY_ENABLED_ROLES — it could never claim its work and would "
+            "respawn on the same task forever; alert the overseer once instead. "
+            "Off => legacy behavior (respawn until the strike breaker trips)."
+        ),
+    )
     gateway_health_enabled: bool = Field(
         default=True,
         description=(
@@ -420,6 +429,72 @@ class Settings(BaseSettings):
             "NOT tied to an active task — i.e. branches pushed outside the agent "
             "task-flow. The org's own in-flight integration PRs (whose branch a "
             "live task owns) are skipped, since they already pass QA + PM review."
+        ),
+    )
+
+    # ==========================================================================
+    # HTTP security hardening (fastapi-guard 7.2.0) — DEFAULT OFF
+    # ==========================================================================
+    # A fastapi-guard SecurityMiddleware + per-route decorator layer (IP/rate/geo
+    # controls, WAF signature detection, security headers, honeypots, and custom
+    # prompt-injection / secret-exfil validators). Entirely inert unless
+    # guard_enabled is set: create_app never adds the middleware when off, so the
+    # request path is byte-for-byte unchanged. Cloud-host-ready but env-driven, so
+    # a personal NAS deploy stays relaxed (ROBOCO_ENVIRONMENT=development).
+    guard_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for the fastapi-guard HTTP security layer. OFF by "
+            "default; when on, create_app mounts SecurityMiddleware and the "
+            "per-route guard decorators become active."
+        ),
+    )
+    guard_fail_secure: bool = Field(
+        default=True,
+        description=(
+            "Fail CLOSED: when a security check raises an unhandled error, block "
+            "the request instead of letting it through. Secure default for "
+            "cloud/public hosting; the NAS compose overrides this to false so a "
+            "guard-internal bug never 500s the operator's personal deploy."
+        ),
+    )
+    guard_passive_mode: bool = Field(
+        default=False,
+        description=(
+            "Detect-and-log without blocking. The calibration switch: turn on "
+            "when first arming guard on live traffic to surface false positives "
+            "before enforcing, then turn off to enforce. Default off (enforce)."
+        ),
+    )
+    guard_telemetry_enabled: bool = Field(
+        default=False,
+        description=(
+            "Report security events/metrics to a guard-core platform via "
+            "guard-agent. OFF by default; flip on and set guard_agent_api_key + "
+            "guard_project_id to enable. No data leaves the box while off."
+        ),
+    )
+    guard_agent_api_key: str = Field(
+        default="",
+        description="guard-core API key for guard-agent telemetry (telemetry only).",
+    )
+    guard_project_id: str = Field(
+        default="",
+        description="guard-core project id for guard-agent telemetry (telemetry only).",
+    )
+    guard_emergency: bool = Field(
+        default=False,
+        description=(
+            "Emergency lockdown: block every non-whitelisted IP with 503. A "
+            "flip-on-without-redeploy kill switch for an active attack. OFF by "
+            "default."
+        ),
+    )
+    guard_emergency_whitelist: str = Field(
+        default="",
+        description=(
+            "Comma-separated IPs / CIDRs always allowed during emergency "
+            "lockdown, in addition to loopback. Empty = loopback only."
         ),
     )
 

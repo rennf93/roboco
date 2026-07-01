@@ -7,6 +7,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, Request
+from guard_core.handlers.behavior_handler import BehaviorRule
 
 from roboco.api.deps import get_choreographer
 from roboco.api.routes.v1._role_dep import envelope_to_response, require_board
@@ -15,7 +16,12 @@ from roboco.api.schemas.v1.flow import (
     IAmIdleRequest,
     TriageRequest,
 )
+from roboco.security import guard_deco
 from roboco.services.gateway.choreographer import Choreographer
+
+_RUNAWAY_RULES = [
+    BehaviorRule(rule_type="frequency", threshold=120, window=60, action="log")
+]
 
 router = APIRouter(
     prefix="/api/v1/flow/board",
@@ -29,6 +35,9 @@ _ChoreographerDep = Annotated[Choreographer, Depends(get_choreographer)]
 
 
 @router.post("/triage")
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
 async def triage(
     request: Request,
     _body: TriageRequest,
@@ -40,6 +49,9 @@ async def triage(
 
 
 @router.post("/escalate_to_ceo")
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
 async def escalate_to_ceo(
     request: Request,
     body: EscalateToCeoRequest,
@@ -51,6 +63,9 @@ async def escalate_to_ceo(
 
 
 @router.post("/i_am_idle")
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
 async def i_am_idle(
     request: Request,
     _body: IAmIdleRequest,

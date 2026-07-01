@@ -105,7 +105,7 @@ class WaitingRecord:
 # Model mapping for cost optimization
 MODEL_MAP: dict[str, str] = {
     "opus": "claude-opus-4-6",
-    "sonnet": "claude-sonnet-4-6",
+    "sonnet": "claude-sonnet-5",
     "haiku": "claude-haiku-4-5-20251001",
 }
 
@@ -113,10 +113,18 @@ MODEL_MAP: dict[str, str] = {
 # Default model by role
 ROLE_MODEL_MAP: dict[str, str] = {
     "developer": "sonnet",
-    "qa": "sonnet",
+    # QA — mechanical gate work (read diff, run the gate, pass/fail); its cost is
+    # cache-dominated, so the cheapest tier fits. Haiku ignores effort (fine here).
+    "qa": "haiku",
+    # PR reviewer — reviews untrusted external/fork PRs and gates root→master;
+    # highest-stakes review, so opus rather than the sonnet review tier.
+    "pr_reviewer": "opus",
     "documenter": "haiku",
     "cell_pm": "sonnet",
-    "main_pm": "opus",
+    # Main PM — cost is dominated by cache read/write of a large coordination
+    # context; Sonnet 5's cache-write is ~12x cheaper than Opus. Experiment: watch
+    # rework + coordination quality; revert here or via a per-slug DB override.
+    "main_pm": "sonnet",
     "auditor": "opus",
     "product_owner": "opus",
     "head_marketing": "opus",
@@ -125,4 +133,24 @@ ROLE_MODEL_MAP: dict[str, str] = {
     "prompter": "opus",
     # Secretary — carries CEO authority; needs strong judgment.
     "secretary": "opus",
+}
+
+
+# Per-role reasoning-effort override, passed as Claude Code's `--effort` CLI flag
+# at spawn (a verified flag on Claude Code 2.x). Effort governs how much the model
+# thinks and explores — thinking tokens and, more importantly, tool-call/turn
+# count; lowering it on roles that don't need deep multi-step reasoning cuts turns,
+# and turns drive the dominant cache-read cost. Delivery-critical reasoning roles
+# (developer, pr_reviewer) keep the model default; main_pm is left at default to
+# isolate its Opus→Sonnet-5 model experiment; Haiku roles (qa, documenter) ignore
+# effort. Conservative and revertible — watch coordination/triage quality on the
+# per-role panel and tune.
+ROLE_EFFORT_MAP: dict[str, str] = {
+    # Cell PM — delegation + light triage, not deep reasoning; highest-volume
+    # role where lowering effort below the model default is defensible.
+    "cell_pm": "medium",
+    # Board + Auditor — triage / read-only observation, shallow reasoning depth.
+    "product_owner": "medium",
+    "head_marketing": "medium",
+    "auditor": "medium",
 }

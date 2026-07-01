@@ -1587,7 +1587,7 @@ The Pydantic/dataclass domain surface of RoboCo — the typed contract the API, 
 | `OrchestratorAgentState` | StrEnum | runtime.py:15 | offline/starting/active/waiting_short/waiting_long/idle/stopping |
 | `AgentInstance` | dataclass | runtime.py:70 | Running Claude Code container record + `usage_session_id` |
 | `SpawnGitContext` | dataclass | runtime.py:28 | Git context for spawn (project_slug, branch, `task_short_id` for worktree) |
-| `MODEL_MAP` | dict | runtime.py:106 | short-name→full Claude id (opus→claude-opus-4-6, sonnet→claude-sonnet-4-6, haiku→…) |
+| `MODEL_MAP` | dict | runtime.py:106 | short-name→full Claude id (opus→claude-opus-4-6, sonnet→claude-sonnet-5, haiku→…) |
 | `MODEL_CATALOG` | tuple | llm_catalog.py:67 | Settings-dropdown source of truth; Anthropic entries derived from `MODEL_MAP` |
 | `OLLAMA_ROLE_DEFAULTS` | dict | llm_catalog.py:107 | Per-role model for "pure Ollama" mode |
 | `PermissionLevel` | IntEnum | permissions.py:15 | CEO=0/BOARD=1/MAIN_PM=2/CELL_PM=3/CELL_MEMBER=4/AUDITOR=99 |
@@ -2233,10 +2233,12 @@ roboco/api/
 - `settings.cors_origins` / `settings.cors_allow_credentials` — CORS middleware config (app.py:218).
 - `settings.app_version` / `settings.environment` / `settings.debug` — logged at startup; docs/redoc URLs are unconditional (the `if settings.debug` is commented out, app.py:207-208).
 - `settings.host` / `settings.port` — no longer used in websocket.py (the httpx self-call was removed); still referenced elsewhere.
-- No direct ROBOCO_* feature flags live in this slice; the lifespan applies persisted flag overlays via `apply_persisted_feature_flags` but does not itself read individual subsystem flags.
+- `ROBOCO_GUARD_ENABLED` / `_PASSIVE_MODE` / `_FAIL_SECURE` / `_TELEMETRY_ENABLED` / `_AGENT_API_KEY` / `_PROJECT_ID` / `_EMERGENCY` / `_EMERGENCY_WHITELIST` — read by `roboco/security.py` (local branch `feature/fastapi-guard-hardening`, not on master at this snapshot), wired into `create_app` via `apply_guard(app)` (app.py:234) + `guarded_lifespan(lifespan)` (app.py:212); `ROBOCO_ENVIRONMENT` additionally drives `enforce_https` (production only). See the post-snapshot note below.
+- Otherwise no direct ROBOCO_* feature flags live in this slice; the lifespan applies persisted flag overlays via `apply_persisted_feature_flags` but does not itself read individual subsystem flags.
 
 ## Gotchas
 
+- **fastapi-guard is a genuine no-op when off** (`ROBOCO_GUARD_ENABLED` default `false`, local branch only) — `apply_guard` returns before `add_middleware`, so `create_app`'s request path is byte-for-byte unchanged; `excluded_detection_body_fields` is the only reliable WAF-calibration knob on guard 7.2.1 (the per-route `categories` config is bypassed for JSON bodies, and the scanner excludes top-level keys only, scanning the whole stringified subtree of every non-excluded field).
 - **`/ws/system` is the only WS endpoint WITHOUT `_require_panel_token`** (websocket.py:608). The other four gate on the CEO HMAC; system is ungated. It is read-only operator data, but if nginx does not gate `/ws/system` at the edge, any reachable client gets rate-limit + usage telemetry. The other streams are also reachable with a dev-mode missing token (header-trust).
 - **`websocket.py` module docstring (lines 8-13) is STALE** — it claims WS "validates agent_id via query params and verify the agent exists in the database. In production, this should be enhanced with proper token-based authentication." Actual security is now the CEO HMAC panel token via `_require_panel_token`, and `validate_agent_exists` is only called on `/agents`, `/sessions`, `/notifications` (NOT `/channels`). The docstring misleads.
 - **`get_choreographer` passes `stream_bus=None` when no orchestrator is set** (deps.py:557) — fine, but means the rate-limit park path is inert during the startup window before bootstrap sets the orchestrator.
@@ -2262,6 +2264,7 @@ roboco/api/
 - `CLAUDE.md` "Orchestrator runtime-state durability" notes the respawn_tracker DB-durable writes are drained on `stop()` — `app.py:170-186` implements the required ordering (stop before close_db). Consistent.
 - `CLAUDE.md` "Feature flags / company-in-a-box" says flags "toggle from the panel's Settings → Feature Flags card ... A toggle persists in the settings store and takes effect on the next backend restart" — `app.py:115-121` applies them in lifespan. Consistent.
 - `CLAUDE.md` does not mention the `CorrelationIdMiddleware` / `RequestLoggingMiddleware` / exception-handler chain by name; `middleware.py` is the implementation of the implied "structured error" contract. No contradiction.
+- `CLAUDE.md`'s "Feature flags / company-in-a-box" list of env-gated default-off subsystems does not mention `ROBOCO_GUARD_ENABLED` / the fastapi-guard HTTP security layer (`roboco/security.py`); the doc is silent rather than contradictory, and the feature is local-branch-only at this snapshot.
 
 Net: **no direct contradictions with CLAUDE.md**; the one stale security docstring lives in `websocket.py` itself.
 
@@ -2272,6 +2275,8 @@ Only ONE commit in `fd10cc86..HEAD` touched this slice: `15effce0` "Chore: 141 G
 Diff stat: `app.py +20`, `deps.py +44`, `middleware.py +49`, `websocket.py +309/-66` (net), `middleware_docs.py` / `websocket_bridge.py` / `utils/*` UNCHANGED.
 
 > **Post-snapshot update (2026-07-01):** `websocket_bridge.py` is no longer unchanged — the chat-subsystem live-delivery work added `_handle_message_event` (forwards `EventType.MESSAGE_SENT` to `/ws/sessions/{id}` + `/ws/channels/{id}` as a `message.new` frame) and a `MESSAGE_SENT` subscription. This is the live transcript-update path that was previously dead.
+
+> **Local branch (not on master, NOT deployed):** `feature/fastapi-guard-hardening` (6 fastapi-guard commits `896532a3`..`99ee666e`) adds `roboco/security.py` and wires it into this slice — `apply_guard(app)` mounts `SecurityMiddleware` last in `create_app` (app.py:234) and `guarded_lifespan(lifespan)` wraps the async lifespan (app.py:212), both gated by `ROBOCO_GUARD_ENABLED` (default off). Nine `@guard_deco.*` decorator kinds are applied across 21 route files outside this slice. `build_security_config` also carries a WAF false-positive calibration: `excluded_detection_body_fields` excludes 75 free-text top-level body fields (including container fields like plan/risks/findings/section/payload) so active-mode enforcement does not false-positive on RoboCo's own code/SQL/diff/URL-bearing traffic, while the three custom validators (prompt-injection/secret-exfil/internal-SSRF) and the WAF on non-excluded fields stay fully in force. Both NAS composes arm the layer passive/log-only (`c496b677`). Full detail in the standalone `api-core-websocket.md`.
 
 Logic-touching changes in that commit, scoped to this slice:
 
@@ -8075,6 +8080,7 @@ deployment-tooling
 - ROBOCO_OVERLOAD_BREAK_ENABLED
 - ROBOCO_GATEWAY_HEALTH_ENABLED / ROBOCO_GATEWAY_HEALTH_GRACE_SECONDS
 - ROBOCO_CONVENTIONS_ENABLED
+- ROBOCO_GUARD_ENABLED / _PASSIVE_MODE / _FAIL_SECURE / _TELEMETRY_ENABLED / _AGENT_API_KEY / _PROJECT_ID / _EMERGENCY / _EMERGENCY_WHITELIST (fastapi-guard HTTP security layer, `roboco/security.py`; local branch `feature/fastapi-guard-hardening`, not on master at this snapshot — see post-snapshot note below)
 - ROBOCO_RESEARCH_ENABLED / ROBOCO_RESEARCH_PROVIDER / ROBOCO_RESEARCH_API_KEY / ROBOCO_RESEARCH_*_QUOTA
 - ROBOCO_PROVISIONING_ENABLED / ROBOCO_PROVISIONING_TOKEN / ROBOCO_PROVISIONING_ORG / ROBOCO_GITHUB_API_BASE_URL
 - ROBOCO_STRATEGY_ENGINE_ENABLED / _INTERVAL_SECONDS / _STRANDED_BLOCKED_MINUTES
@@ -8118,6 +8124,7 @@ deployment-tooling
 - ROBOCO_CLAIM_STALE_SECONDS and ROBOCO_STALE_CLAIM_REAP_SECONDS are intentionally distinct fields — claim_stale_seconds drives trigger_filter spawn queueing, stale_claim_reap_seconds drives the reaper's release. Splitting them opens a duplicate-spawn window; merging them delays spawn decisions. NAS compose raises both to 1800.
 - pyproject [project.scripts] declares `roboco-bootstrap = roboco.bootstrap:cli` but roboco/bootstrap.py defines NO `cli` symbol (only `main`); the canonical entry is `roboco = roboco.cli:cli`. The bootstrap-script entry is dead/broken (see drift).
 - The Dockerfiles COPY pyproject.toml uv.lock README.md into /app for the uv sync layer; a missing/stale uv.lock at build time breaks the --frozen sync. The Makefile's `make upgrade` re-locks but does not rebuild images.
+- Both NAS composes (`docker-compose.yml`/`.yaml`) set `ROBOCO_GUARD_ENABLED=true` / `ROBOCO_GUARD_PASSIVE_MODE=true` / `ROBOCO_GUARD_FAIL_SECURE=false` (local branch, see post-snapshot note) — the fastapi-guard HTTP security layer runs in detect-and-log calibration mode on the NAS, never blocking; `docker-compose.registry.yml` does not set these three and stays off.
 
 
 ## Drift from CLAUDE.md
@@ -8135,6 +8142,8 @@ deployment-tooling
 | SHA | Subject | Impact |
 |---|---|---|
 | 15effce0 | Chore: 141 Gaps fill-in (#283) — squash of megatask per-cell project map + multi-fix | Bumped version 0.13.0 -> 0.14.0 in pyproject.toml, roboco/__init__.py, config.app_version, and the agent_image_tag doc example; renamed the local LLM model glm-5:cloud -> glm-5.2:cloud in config.py default and in all three compose files' ollama-init pull/verify + ROBOCO_LOCAL_LLM_MODEL env; rewrote verify_postgres_enums.py to embed skip semantics (exit 0 on unreachable/unmigrated, 1 on drift) with new type_exists/should_skip_for_unmigrated/enum_drift helpers and removed the Makefile's masking `// echo skipped`; added two bash-guard-hook deny rules for `uv run --active` and any uv run/uvx targeting /app/.venv (with matching bash-guard-tests cases) to prevent the be-dev-1 venv-brick; updated grok-cli-agent-entrypoint.sh to symlink ~/.grok/auth.json from a read-only host directory mount (F005) so the atomic auth refresh reaches running containers. |
+
+> **Local branch (not on master, NOT deployed):** `feature/fastapi-guard-hardening` landed `ROBOCO_GUARD_ENABLED` / `_PASSIVE_MODE` / `_FAIL_SECURE` / `_TELEMETRY_ENABLED` / `_AGENT_API_KEY` / `_PROJECT_ID` / `_EMERGENCY` / `_EMERGENCY_WHITELIST` in `config.py` (6 commits, `896532a3`..`99ee666e`) and set both NAS composes' `ROBOCO_GUARD_ENABLED=true` / `ROBOCO_GUARD_PASSIVE_MODE=true` / `ROBOCO_GUARD_FAIL_SECURE=false` (`c496b677`, Phase 5); `docker-compose.registry.yml` is untouched and stays off. See the standalone api-core-websocket section for the `roboco/security.py` module + `create_app` wiring detail.
 
 ## Regression Risks
 

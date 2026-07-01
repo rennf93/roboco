@@ -10,8 +10,10 @@ import {
   useAgentUsage,
   useTeamUsage,
   useModelUsage,
+  useRoleUsage,
   useUsageProjection,
   useCacheEfficiency,
+  useSpawnWaste,
   useUsageSessions,
 } from "@/hooks/use-usage";
 import { TaskStatus, Team } from "@/types";
@@ -46,6 +48,8 @@ import {
 import type {
   UsageProjection as UP,
   CacheEfficiencyResponse as CER,
+  RoleUsageRow,
+  SpawnWasteResponse,
 } from "@/types";
 
 // ─── Humanized number formatting ─────────────────────────────────────────────
@@ -395,6 +399,8 @@ function TokenUsageCostsSection() {
   const { data: projection, isLoading: loadingProj } = useUsageProjection();
   const { data: cacheStats, isLoading: loadingCache } =
     useCacheEfficiency("24h");
+  const { data: roleUsage, isLoading: loadingRoles } = useRoleUsage("24h");
+  const { data: waste, isLoading: loadingWaste } = useSpawnWaste("24h");
 
   const trendUp = (summary?.trend_pct ?? 0) >= 0;
 
@@ -474,7 +480,13 @@ function TokenUsageCostsSection() {
         <CacheEfficiencyCard cacheStats={cacheStats} isLoading={loadingCache} />
       </div>
 
-      {/* Row 5 — Sessions table */}
+      {/* Row 5 — Per-role cost/cache + spawn waste */}
+      <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-2 2xl:grid-cols-2">
+        <RoleUsageTable data={roleUsage} isLoading={loadingRoles} />
+        <SpawnWasteCard data={waste} isLoading={loadingWaste} />
+      </div>
+
+      {/* Row 6 — Sessions table */}
       <SessionsTable data={sessions} isLoading={loadingSessions} />
     </div>
   );
@@ -594,6 +606,119 @@ function CacheEfficiencyCard({
               {cacheStats?.cost_saved_by_cache_usd.toFixed(4) ?? "—"}
             </p>
             <Progress value={pct} className="mt-2" />
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+interface RoleUsageTableProps {
+  data: RoleUsageRow[] | undefined;
+  isLoading: boolean;
+}
+
+function RoleUsageTable({ data, isLoading }: RoleUsageTableProps) {
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base flex items-center gap-2">
+          <Users className="h-4 w-4 text-blue-500" />
+          Cost &amp; Cache by Role
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <Skeleton className="h-40 w-full" />
+        ) : !data || data.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            No usage recorded yet.
+          </p>
+        ) : (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-left text-xs text-muted-foreground">
+                <th className="pb-1 font-medium">Role</th>
+                <th className="pb-1 font-medium text-right">Cost</th>
+                <th className="pb-1 font-medium text-right">Cache hit</th>
+                <th className="pb-1 font-medium text-right">%</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.map((r) => (
+                <tr key={r.role} className="border-t">
+                  <td className="py-1 font-mono text-xs">{r.role}</td>
+                  <td className="py-1 text-right">${r.cost_usd.toFixed(4)}</td>
+                  <td className="py-1 text-right">
+                    {(r.cache_hit_rate * 100).toFixed(1)}%
+                  </td>
+                  <td className="py-1 text-right text-muted-foreground">
+                    {r.pct_of_total.toFixed(1)}%
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+interface SpawnWasteCardProps {
+  data: SpawnWasteResponse | undefined;
+  isLoading: boolean;
+}
+
+function SpawnWasteCard({ data, isLoading }: SpawnWasteCardProps) {
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base flex items-center gap-2">
+          <AlertTriangle className="h-4 w-4 text-orange-500" />
+          Spawn Waste
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <Skeleton className="h-40 w-full" />
+        ) : !data ? (
+          <p className="text-sm text-muted-foreground">No spawn data yet.</p>
+        ) : (
+          <div className="space-y-2">
+            <div>
+              <div className="text-3xl font-bold">
+                {data.unproductive_pct.toFixed(1)}%
+              </div>
+              <p className="text-xs text-muted-foreground mt-1">
+                {data.unproductive_spawns} of {data.total_spawns} spawns
+                produced no output
+              </p>
+            </div>
+            {data.by_role.length > 0 && (
+              <table className="w-full text-xs">
+                <tbody>
+                  {data.by_role.map((r) => (
+                    <tr key={r.role} className="border-t">
+                      <td className="py-1 font-mono">{r.role}</td>
+                      <td className="py-1 text-right text-muted-foreground">
+                        {r.unproductive}/{r.spawns}
+                      </td>
+                      <td className="py-1 text-right">
+                        {r.unproductive_pct.toFixed(0)}%
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            {data.respawn_strikes.length > 0 && (
+              <p className="text-xs text-muted-foreground">
+                {data.respawn_strikes.length} wedged task
+                {data.respawn_strikes.length === 1 ? "" : "s"} with open respawn
+                strikes
+              </p>
+            )}
           </div>
         )}
       </CardContent>

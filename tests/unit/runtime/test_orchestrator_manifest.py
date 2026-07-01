@@ -71,7 +71,7 @@ class TestBuildManifestForAgent:
             mock_settings.manifest_host_dir = str(tmp_path)
             mock_settings.workspaces_root = str(tmp_path / "workspaces")
 
-            result = _build_manifest_for_agent("be-dev-1", "claude-sonnet-4-6")
+            result = _build_manifest_for_agent("be-dev-1", "claude-sonnet-5")
 
         assert result is not None
         assert result.exists()
@@ -88,7 +88,7 @@ class TestBuildManifestForAgent:
             mock_settings.manifest_host_dir = str(tmp_path)
             mock_settings.workspaces_root = str(tmp_path / "workspaces")
 
-            result = _build_manifest_for_agent("fe-dev-2", "claude-sonnet-4-6")
+            result = _build_manifest_for_agent("fe-dev-2", "claude-sonnet-5")
 
         assert result is not None
         assert result.parent == tmp_path
@@ -122,7 +122,7 @@ class TestBuildManifestForAgent:
             mock_settings.manifest_host_dir = str(tmp_path)
             mock_settings.workspaces_root = str(tmp_path / "workspaces")
 
-            result = _build_manifest_for_agent("be-dev-1", "claude-sonnet-4-6")
+            result = _build_manifest_for_agent("be-dev-1", "claude-sonnet-5")
 
         assert result is not None
         data = json.loads(result.read_text())
@@ -134,7 +134,7 @@ class TestBuildManifestForAgent:
             mock_settings.manifest_host_dir = str(tmp_path)
             mock_settings.workspaces_root = str(tmp_path / "workspaces")
 
-            result = _build_manifest_for_agent("be-qa", "claude-sonnet-4-6")
+            result = _build_manifest_for_agent("be-qa", "claude-sonnet-5")
 
         assert result is not None
         assert result.exists()
@@ -164,7 +164,7 @@ class TestBuildManifestForAgent:
             mock_settings.manifest_host_dir = str(tmp_path)
             mock_settings.workspaces_root = str(tmp_path / "workspaces")
 
-            result = _build_manifest_for_agent("be-pm", "claude-sonnet-4-6")
+            result = _build_manifest_for_agent("be-pm", "claude-sonnet-5")
 
         assert result is not None
         assert result.exists()
@@ -179,7 +179,7 @@ class TestBuildManifestForAgent:
             mock_settings.manifest_host_dir = str(tmp_path)
             mock_settings.workspaces_root = str(tmp_path / "workspaces")
 
-            result = _build_manifest_for_agent("main-pm", "claude-sonnet-4-6")
+            result = _build_manifest_for_agent("main-pm", "claude-sonnet-5")
 
         assert result is not None
         assert result.exists()
@@ -197,7 +197,7 @@ class TestBuildManifestForAgent:
             mock_settings.manifest_host_dir = str(tmp_path)
             mock_settings.workspaces_root = str(tmp_path / "workspaces")
 
-            result = _build_manifest_for_agent("pr-reviewer-1", "claude-sonnet-4-6")
+            result = _build_manifest_for_agent("pr-reviewer-1", "claude-sonnet-5")
 
         assert result is not None, "pr-reviewer-1 must produce a manifest"
         assert result.exists()
@@ -216,7 +216,7 @@ class TestBuildManifestForAgent:
             mock_settings.manifest_host_dir = str(nested)
             mock_settings.workspaces_root = str(tmp_path / "workspaces")
 
-            result = _build_manifest_for_agent("be-dev-1", "claude-sonnet-4-6")
+            result = _build_manifest_for_agent("be-dev-1", "claude-sonnet-5")
 
         assert result is not None
         assert nested.exists()
