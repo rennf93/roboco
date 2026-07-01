@@ -376,6 +376,11 @@ services:
       ROBOCO_DEP_UPDATE_ENABLED: ${ROBOCO_DEP_UPDATE_ENABLED:-true}
       ROBOCO_RELEASE_MANAGER_ENABLED: ${ROBOCO_RELEASE_MANAGER_ENABLED:-true}
       ROBOCO_ORG_MEMORY_ENABLED: ${ROBOCO_ORG_MEMORY_ENABLED:-true}
+      # Strategy engine (proactive strategy signals) + internal PR review — both
+      # default-OFF in config; ARMED here for the NAS deploy like the rest. Left
+      # OFF in docker-compose.registry.yml so the published default stays conservative.
+      ROBOCO_STRATEGY_ENGINE_ENABLED: ${ROBOCO_STRATEGY_ENGINE_ENABLED:-true}
+      ROBOCO_INTERNAL_PR_ENABLED: ${ROBOCO_INTERNAL_PR_ENABLED:-true}
     volumes:
       # Docker socket - allows spawning agent containers
       - /var/run/docker.sock:/var/run/docker.sock
