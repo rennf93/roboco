@@ -11,13 +11,17 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
     from sqlalchemy.orm import InstrumentedAttribute
 
-from roboco.db.tables import AgentSpawnSessionTable, DailyUsageRollupTable
+from roboco.db.tables import (
+    AgentSpawnSessionTable,
+    DailyUsageRollupTable,
+    RespawnTrackerTable,
+)
 from roboco.services.base import BaseService
 
 
@@ -329,6 +333,88 @@ class UsageService(BaseService):
     async def get_by_role(self, period: str = "24h") -> list[dict[str, Any]]:
         """Return per-role token usage with cache hit rate and pct_of_total."""
         return await self._aggregate_by(AgentSpawnSessionTable.role, "role", period)
+
+    # =========================================================================
+    # SPAWN WASTE
+    # =========================================================================
+
+    async def get_spawn_waste(self, period: str = "24h") -> dict[str, Any]:
+        """Return spawn-churn signals for the period.
+
+        A spawn is "unproductive" when it produced no output tokens — the system
+        prompt + briefing were loaded for zero delivered work. Also surfaces the
+        current respawn-tracker strikes (wedged agent/task pairs the circuit
+        breaker is counting) and whether the overseer was already alerted.
+        """
+        start_dt, _ = _parse_period(period)
+
+        per_role = await self.session.execute(
+            select(
+                AgentSpawnSessionTable.role.label("role"),
+                func.count().label("spawns"),
+                func.coalesce(
+                    func.sum(
+                        case(
+                            (AgentSpawnSessionTable.tokens_output == 0, 1),
+                            else_=0,
+                        )
+                    ),
+                    0,
+                ).label("unproductive"),
+            )
+            .where(
+                AgentSpawnSessionTable.started_at >= start_dt,
+                AgentSpawnSessionTable.ended_at.isnot(None),
+            )
+            .group_by(AgentSpawnSessionTable.role)
+            .order_by(func.count().desc())
+        )
+
+        roles: list[dict[str, Any]] = []
+        total_spawns = 0
+        total_unproductive = 0
+        for r in per_role.fetchall():
+            spawns = int(r.spawns or 0)
+            unproductive = int(r.unproductive or 0)
+            total_spawns += spawns
+            total_unproductive += unproductive
+            roles.append(
+                {
+                    "role": r.role,
+                    "spawns": spawns,
+                    "unproductive": unproductive,
+                    "unproductive_pct": round(unproductive / spawns * 100, 1)
+                    if spawns > 0
+                    else 0.0,
+                }
+            )
+
+        strikes_result = await self.session.execute(
+            select(RespawnTrackerTable)
+            .order_by(RespawnTrackerTable.count.desc())
+            .limit(20)
+        )
+        strikes = [
+            {
+                "agent_slug": t.agent_slug,
+                "task_id": str(t.task_id),
+                "count": int(t.count),
+                "last_status": t.last_status,
+                "notified": bool(t.notified),
+            }
+            for t in strikes_result.scalars().all()
+        ]
+
+        return {
+            "total_spawns": total_spawns,
+            "unproductive_spawns": total_unproductive,
+            "unproductive_pct": round(total_unproductive / total_spawns * 100, 1)
+            if total_spawns > 0
+            else 0.0,
+            "by_role": roles,
+            "respawn_strikes": strikes,
+            "period": period,
+        }
 
     # =========================================================================
     # PROJECTION

@@ -86,6 +86,13 @@ def _result_fetchall(rows: list[MagicMock]) -> MagicMock:
     return result
 
 
+def _result_scalars(objs: list[MagicMock]) -> MagicMock:
+    """Return a mock execute() result whose .scalars().all() returns `objs`."""
+    result = MagicMock()
+    result.scalars.return_value.all = MagicMock(return_value=objs)
+    return result
+
+
 def _service_with_execute(*return_values: object) -> UsageService:
     """Build a UsageService whose session.execute() returns the provided
     values in sequence (one per call)."""
@@ -670,6 +677,42 @@ class TestGetByRole:
         assert item["role"] == "developer"
         assert item["tokens_cache_read"] == _CACHE_READ_TOKENS
         assert abs(item["cache_hit_rate"] - _EXPECTED_HIT_RATE) < _TOL
+
+
+# ---------------------------------------------------------------------------
+# get_spawn_waste — per-role unproductive rate + respawn strikes
+# ---------------------------------------------------------------------------
+
+
+class TestGetSpawnWaste:
+    @pytest.mark.asyncio
+    async def test_computes_unproductive_pct_and_strikes(self) -> None:
+        """unproductive_pct = 0-output spawns / spawns; strikes from tracker."""
+        _spawns = 10
+        _unproductive = 8
+        _strike_count = 4
+        _expected_pct = 80.0
+        role_rows = [
+            _make_row(role="developer", spawns=_spawns, unproductive=_unproductive)
+        ]
+        strike = _make_row(
+            agent_slug="be-dev-1",
+            task_id=UUID("11111111-1111-1111-1111-111111111111"),
+            count=_strike_count,
+            last_status="in_progress",
+            notified=True,
+        )
+        svc = _service_with_execute(
+            _result_fetchall(role_rows), _result_scalars([strike])
+        )
+        result = await svc.get_spawn_waste("24h")
+        assert result["total_spawns"] == _spawns
+        assert result["unproductive_spawns"] == _unproductive
+        assert abs(result["unproductive_pct"] - _expected_pct) < _TOL
+        assert result["by_role"][_ZERO]["role"] == "developer"
+        strike_row = result["respawn_strikes"][_ZERO]
+        assert strike_row["count"] == _strike_count
+        assert strike_row["notified"] is True
 
 
 # ---------------------------------------------------------------------------
