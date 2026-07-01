@@ -284,6 +284,12 @@ The global switch arms the engine; each project opts in via `dep_update_command`
 | `ROBOCO_ORG_MEMORY_TOP_K` | `3` | Max institutional-memory items injected into a briefing on claim. |
 | `ROBOCO_ORG_MEMORY_MIN_SCORE` | `0.6` | Cosine-similarity floor for injected memory; below it, nothing is injected. |
 
+### Spawn preflight — **off** (config) / **on** (compose)
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `ROBOCO_SPAWN_PREFLIGHT_ENABLED` | `false` (config) / `true` (compose) | Refuse to spawn a non-human delivery role that isn't in `GATEWAY_ENABLED_ROLES` — such a role gets no gateway manifest and could never claim its work, so the dispatcher would respawn it on the same task forever. On refusal the spawn is rejected (`AgentReadinessError`) and the overseer is alerted once. Inert in practice (every delivery role is gateway-enabled); a misconfiguration guardrail. Armed on the NAS composes, off in `docker-compose.registry.yml`. |
+
 ### HTTP security (fastapi-guard)
 
 Default **off**. When off, `create_app` never mounts the middleware and the request path is byte-for-byte unchanged. See [HTTP security hardening](../optional/http-security.md) for the full picture. The NAS compose arms it in passive/log-only mode; enforcement (`ROBOCO_GUARD_PASSIVE_MODE=false`) is a deliberate later step after calibrating against real traffic.

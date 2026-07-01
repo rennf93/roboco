@@ -1361,6 +1361,46 @@ export interface CacheEfficiencyResponse {
   period: string;
 }
 
+/** Per-role usage row (with cache hit rate) — GET /usage/by-role?period=24h|7d|30d */
+export interface RoleUsageRow {
+  role: string;
+  tokens_input: number;
+  tokens_output: number;
+  tokens_cache_read: number;
+  tokens_cache_write: number;
+  cache_hit_rate: number;
+  total_tokens: number;
+  cost_usd: number;
+  pct_of_total: number;
+}
+
+/** One per-role row in the spawn-waste signal */
+export interface RoleWasteRow {
+  role: string;
+  spawns: number;
+  unproductive: number;
+  unproductive_pct: number;
+}
+
+/** One wedged agent/task pair the circuit breaker is counting */
+export interface RespawnStrikeRow {
+  agent_slug: string;
+  task_id: string;
+  count: number;
+  last_status: string | null;
+  notified: boolean;
+}
+
+/** Spawn-churn signal — GET /usage/spawn-waste?period=24h|7d|30d */
+export interface SpawnWasteResponse {
+  total_spawns: number;
+  unproductive_spawns: number;
+  unproductive_pct: number;
+  by_role: RoleWasteRow[];
+  respawn_strikes: RespawnStrikeRow[];
+  period: string;
+}
+
 /** Individual inference session for the sessions table (mock-mode only — no real backend endpoint) */
 export interface UsageSession {
   id: string;

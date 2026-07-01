@@ -5,9 +5,11 @@ import type {
   AgentUsageRow,
   TeamUsageRow,
   ModelUsageSlice,
+  RoleUsageRow,
   UsageTimePoint,
   UsageProjection,
   CacheEfficiencyResponse,
+  SpawnWasteResponse,
   UsageSession,
 } from "@/types";
 
@@ -153,6 +155,72 @@ function mockCacheEfficiency(
   };
 }
 
+function mockRoleUsage(period: UsagePeriod = "24h"): RoleUsageRow[] {
+  const scale = period === "30d" ? 30 : period === "7d" ? 7 : 1;
+  const roles = [
+    { role: "developer", share: 0.375 },
+    { role: "main_pm", share: 0.301 },
+    { role: "cell_pm", share: 0.176 },
+    { role: "pr_reviewer", share: 0.058 },
+    { role: "qa", share: 0.056 },
+    { role: "documenter", share: 0.034 },
+  ];
+  const base = 124_800 * scale;
+  return roles.map((r) => {
+    const ti = Math.round(base * r.share * 0.05);
+    const to_ = Math.round(base * r.share * 0.03);
+    const cr = Math.round(base * r.share * 0.8);
+    const cw = Math.round(base * r.share * 0.12);
+    const total = ti + to_ + cr + cw;
+    return {
+      role: r.role,
+      tokens_input: ti,
+      tokens_output: to_,
+      tokens_cache_read: cr,
+      tokens_cache_write: cw,
+      cache_hit_rate: parseFloat((cr / (ti + cr)).toFixed(4)),
+      total_tokens: total,
+      cost_usd: parseFloat((total * 0.00002).toFixed(6)),
+      pct_of_total: parseFloat((r.share * 100).toFixed(1)),
+    };
+  });
+}
+
+function mockSpawnWaste(period: UsagePeriod = "24h"): SpawnWasteResponse {
+  const scale = period === "30d" ? 30 : period === "7d" ? 7 : 1;
+  const by_role = [
+    { role: "developer", spawns: 51 * scale, unproductive: 42 * scale },
+    { role: "cell_pm", spawns: 34 * scale, unproductive: 18 * scale },
+    { role: "main_pm", spawns: 20 * scale, unproductive: 9 * scale },
+    { role: "qa", spawns: 18 * scale, unproductive: 14 * scale },
+  ].map((r) => ({
+    ...r,
+    unproductive_pct: parseFloat(
+      ((r.unproductive / r.spawns) * 100).toFixed(1),
+    ),
+  }));
+  const total_spawns = by_role.reduce((s, r) => s + r.spawns, 0);
+  const unproductive_spawns = by_role.reduce((s, r) => s + r.unproductive, 0);
+  return {
+    total_spawns,
+    unproductive_spawns,
+    unproductive_pct: parseFloat(
+      ((unproductive_spawns / total_spawns) * 100).toFixed(1),
+    ),
+    by_role,
+    respawn_strikes: [
+      {
+        agent_slug: "be-dev-1",
+        task_id: "11111111-1111-1111-1111-111111111111",
+        count: 4,
+        last_status: "in_progress",
+        notified: true,
+      },
+    ],
+    period,
+  };
+}
+
 function mockSessions(): UsageSession[] {
   const models = ["claude-opus-4", "claude-sonnet-4", "claude-haiku-4"];
   const agentSlugs = ["be-dev-1", "be-dev-2", "fe-dev-1", "fe-qa", "main-pm"];
@@ -241,6 +309,28 @@ export const usageApi = {
   ): Promise<ModelUsageSlice[]> => {
     if (isMockMode()) return mockModelUsage(period);
     const { data } = await api.get<ModelUsageSlice[]>("/usage/by-model", {
+      params: { period },
+    });
+    return data;
+  },
+
+  /** Per-role usage rows (with cache hit rate) — GET /usage/by-role?period= */
+  getRoleUsage: async (
+    period: UsagePeriod = "24h",
+  ): Promise<RoleUsageRow[]> => {
+    if (isMockMode()) return mockRoleUsage(period);
+    const { data } = await api.get<RoleUsageRow[]>("/usage/by-role", {
+      params: { period },
+    });
+    return data;
+  },
+
+  /** Spawn-churn signal — GET /usage/spawn-waste?period= */
+  getSpawnWaste: async (
+    period: UsagePeriod = "24h",
+  ): Promise<SpawnWasteResponse> => {
+    if (isMockMode()) return mockSpawnWaste(period);
+    const { data } = await api.get<SpawnWasteResponse>("/usage/spawn-waste", {
       params: { period },
     });
     return data;

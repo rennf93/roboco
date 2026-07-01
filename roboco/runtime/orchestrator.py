@@ -57,6 +57,7 @@ from roboco.foundation.policy.batch import is_branchless_coordination
 from roboco.models import AgentRole, Team
 from roboco.models.runtime import (
     MODEL_MAP,
+    ROLE_EFFORT_MAP,
     ROLE_MODEL_MAP,
     AgentInstance,
     OrchestratorAgentConfig,
@@ -2237,6 +2238,26 @@ class AgentOrchestrator:
             )
             raise
 
+    @staticmethod
+    def _spawn_preflight_reason(agent_id: str) -> str | None:
+        """Refusal reason if this spawn is deterministically futile, else None.
+
+        Flag-gated (``spawn_preflight_enabled``, default off). A non-human
+        delivery role absent from ``GATEWAY_ENABLED_ROLES`` gets no manifest and
+        ``ROBOCO_GATEWAY_ENABLED=false``, so it can never claim its work and the
+        dispatcher would respawn it on the same task forever. Fail fast instead of
+        burning the full system prompt on each futile retry.
+        """
+        if not settings.spawn_preflight_enabled:
+            return None
+        role = get_agent_role(agent_id)
+        if role is not None and role not in GATEWAY_ENABLED_ROLES:
+            return (
+                f"role {role!r} ({agent_id}) is not gateway-enabled — it could "
+                f"never claim its work and would respawn forever"
+            )
+        return None
+
     async def spawn_agent(
         self,
         agent_id: str,
@@ -2296,6 +2317,18 @@ class AgentOrchestrator:
                 f" CEO is the human operator, not a container; intake and secretary"
                 f" launch through their dedicated paths, not spawn_agent"
             )
+        # Spawn preflight (flag-gated): refuse a non-gateway delivery role that
+        # could never claim its work and would respawn forever. Alert once.
+        preflight_reason = AgentOrchestrator._spawn_preflight_reason(agent_id)
+        if preflight_reason:
+            logger.error(
+                "spawn_agent refused (spawn preflight): role not gateway-enabled",
+                agent_id=agent_id,
+                task_id=str(task_id) if task_id else None,
+            )
+            if task_id:
+                await self._notify_stuck_agent(agent_id, str(task_id), None)
+            raise AgentReadinessError(preflight_reason)
         # Pre-flight: refuse to spawn if the task isn't ready. Auto-block
         # on refusal so the dispatcher doesn't keep spinning a container
         # that will immediately fail (wasted image pull + startup tokens).
@@ -2495,7 +2528,7 @@ class AgentOrchestrator:
     ) -> list[str]:
         """The always-on -v/-e block (prompt, docs, workspaces, env)."""
         docs_ro = "" if config.agent_id in ALL_DOCS else ":ro"
-        return [
+        env = [
             "-v",
             f"{hosts['prompt']}:/app/system-prompt.md:ro",
             "-v",
@@ -2525,6 +2558,12 @@ class AgentOrchestrator:
             "-e",
             f"ROBOCO_AGENT_STOP_ATTEMPT_ALLOWANCE={settings.agent_stop_attempt_allowance}",
         ]
+        # Per-role reasoning-effort override (default-inert: ROLE_EFFORT_MAP is
+        # empty until a role is opted in after verifying the effect on usage).
+        effort = ROLE_EFFORT_MAP.get(role)
+        if effort:
+            env.extend(["-e", f"CLAUDE_CODE_EFFORT_LEVEL={effort}"])
+        return env
 
     @staticmethod
     def _append_provider_env(cmd: list[str], config: AgentConfig) -> None:

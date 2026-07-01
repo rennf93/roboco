@@ -113,13 +113,18 @@ MODEL_MAP: dict[str, str] = {
 # Default model by role
 ROLE_MODEL_MAP: dict[str, str] = {
     "developer": "sonnet",
-    "qa": "sonnet",
+    # QA — mechanical gate work (read diff, run the gate, pass/fail); its cost is
+    # cache-dominated, so the cheapest tier fits. Haiku ignores effort (fine here).
+    "qa": "haiku",
     # PR reviewer — reviews untrusted external/fork PRs and gates root→master;
     # highest-stakes review, so opus rather than the sonnet review tier.
     "pr_reviewer": "opus",
     "documenter": "haiku",
     "cell_pm": "sonnet",
-    "main_pm": "opus",
+    # Main PM — cost is dominated by cache read/write of a large coordination
+    # context; Sonnet 5's cache-write is ~12x cheaper than Opus. Experiment: watch
+    # rework + coordination quality; revert here or via a per-slug DB override.
+    "main_pm": "sonnet",
     "auditor": "opus",
     "product_owner": "opus",
     "head_marketing": "opus",
@@ -129,3 +134,13 @@ ROLE_MODEL_MAP: dict[str, str] = {
     # Secretary — carries CEO authority; needs strong judgment.
     "secretary": "opus",
 }
+
+
+# Per-role reasoning-effort override, injected as CLAUDE_CODE_EFFORT_LEVEL into
+# the agent container. Default-INERT: an empty map means every role keeps Claude
+# Code's model default. This is opt-in — populate a role ("low"|"medium"|"high"|
+# "xhigh") only AFTER verifying on one spawn that the level actually moves token
+# usage (the CLI config key is version-dependent; a wrong value is a silent
+# no-op). Roles routed to Haiku ignore effort entirely (Haiku has no effort
+# control), so only sonnet/opus roles are candidates.
+ROLE_EFFORT_MAP: dict[str, str] = {}

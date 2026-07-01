@@ -212,6 +212,15 @@ class Settings(BaseSettings):
             "of crash-retrying into the overload. Off => crash-retry behavior."
         ),
     )
+    spawn_preflight_enabled: bool = Field(
+        default=False,
+        description=(
+            "Refuse to spawn a non-human delivery role that isn't in "
+            "GATEWAY_ENABLED_ROLES — it could never claim its work and would "
+            "respawn on the same task forever; alert the overseer once instead. "
+            "Off => legacy behavior (respawn until the strike breaker trips)."
+        ),
+    )
     gateway_health_enabled: bool = Field(
         default=True,
         description=(
