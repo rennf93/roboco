@@ -13,6 +13,11 @@ from uuid import uuid4
 
 import pytest
 from roboco.services.gateway.choreographer import Choreographer
+from roboco.services.gateway.evidence_builder import (
+    EVIDENCE_DIFF_CAP_CHARS,
+    build_evidence_for_task,
+    truncate_diff,
+)
 
 _PR_NUMBER = 8
 
@@ -86,3 +91,34 @@ class TestBriefingScope:
         briefing = await choreo._briefing_for(uuid4(), uuid4(), task=task)
         assert "task_handoff" not in briefing
         repo.journal_highlights_for_task.assert_not_awaited()
+
+
+class TestPayloadCaps:
+    def test_truncate_diff_caps_and_annotates(self) -> None:
+        big = "x" * (EVIDENCE_DIFF_CAP_CHARS + 5_000)
+        capped = truncate_diff(big)
+        assert capped is not None
+        assert len(capped) < len(big)
+        assert capped.startswith("x" * 100)  # head preserved
+        assert "diff truncated" in capped
+
+    def test_truncate_diff_passes_small_and_none(self) -> None:
+        assert truncate_diff("small diff") == "small diff"
+        assert truncate_diff(None) is None
+
+    def test_build_evidence_caps_the_diff(self) -> None:
+        task = MagicMock(
+            pr_number=None,
+            pr_url=None,
+            commits=[],
+            dev_notes=None,
+            acceptance_criteria_status=[],
+        )
+        ev = build_evidence_for_task(
+            task,
+            journal_highlights=[],
+            files_changed=[],
+            pr_diff_summary="y" * (EVIDENCE_DIFF_CAP_CHARS * 2),
+        )
+        assert ev.pr_diff_summary is not None
+        assert "diff truncated" in ev.pr_diff_summary

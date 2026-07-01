@@ -55,6 +55,24 @@ class BriefingInputs:
     company_goals: dict[str, Any] | None = None
 
 
+# Char cap for a unified diff embedded in an LLM-facing payload (~5K tokens).
+# The head is kept (file headers + earliest hunks carry the most signal); the
+# marker points at the full diff so a reviewer is never silently blinded.
+EVIDENCE_DIFF_CAP_CHARS = 20_000
+
+
+def truncate_diff(diff: str | None, limit: int = EVIDENCE_DIFF_CAP_CHARS) -> str | None:
+    """Cap a diff for envelope embedding; annotate what was omitted."""
+    if not diff or len(diff) <= limit:
+        return diff
+    omitted = len(diff) - limit
+    return (
+        diff[:limit]
+        + f"\n… [diff truncated: {omitted} chars omitted — read the full diff on"
+        " the PR, or scope roboco_git_diff to a single file_path]"
+    )
+
+
 def build_evidence_for_task(
     task: Any,
     *,
@@ -67,7 +85,7 @@ def build_evidence_for_task(
     return EvidencePayload(
         pr_number=task.pr_number,
         pr_url=task.pr_url,
-        pr_diff_summary=pr_diff_summary,
+        pr_diff_summary=truncate_diff(pr_diff_summary),
         commits=list(task.commits or []),
         files_changed=list(files_changed),
         dev_summary=task.dev_notes,
