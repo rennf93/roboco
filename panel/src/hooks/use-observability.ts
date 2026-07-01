@@ -7,6 +7,10 @@ import type {
   BottleneckReport,
   ReworkReport,
   Scorecard,
+  CeoScorecard,
+  MemberScorecard,
+  OrgScorecard,
+  TaskMetrics,
 } from "@/types";
 
 // =============================================================================
@@ -23,6 +27,14 @@ export const observabilityKeys = {
     [...observabilityKeys.all, "rework", days, team ?? "all"] as const,
   teamScorecard: (team: string, days: number) =>
     [...observabilityKeys.all, "scorecard", "team", team, days] as const,
+  ceoScorecard: (days: number) =>
+    [...observabilityKeys.all, "scorecard", "ceo", days] as const,
+  memberScorecard: (agentId: string, days: number) =>
+    [...observabilityKeys.all, "scorecard", "member", agentId, days] as const,
+  orgScorecard: (days: number, team?: string) =>
+    [...observabilityKeys.all, "scorecard", "org", team ?? "all", days] as const,
+  taskMetrics: (taskId: string) =>
+    [...observabilityKeys.all, "task-metrics", taskId] as const,
 };
 
 // =============================================================================
@@ -62,5 +74,42 @@ export function useTeamScorecard(team: string, days = 7) {
     queryKey: observabilityKeys.teamScorecard(team, days),
     queryFn: () => observabilityApi.getTeamScorecard(team, days),
     refetchInterval: 60_000,
+  });
+}
+
+/** The human CEO as a measured member (approval/unblock dwell + god-mode). */
+export function useCeoScorecard(days = 30) {
+  return useQuery<CeoScorecard>({
+    queryKey: observabilityKeys.ceoScorecard(days),
+    queryFn: () => observabilityApi.getCeoScorecard(days),
+    refetchInterval: 60_000,
+  });
+}
+
+/** Per-member rollup scorecard (+ live in-flight overlay). */
+export function useMemberScorecard(agentId: string, days = 30) {
+  return useQuery<MemberScorecard>({
+    queryKey: observabilityKeys.memberScorecard(agentId, days),
+    queryFn: () => observabilityApi.getMemberScorecard(agentId, days),
+    enabled: Boolean(agentId),
+    refetchInterval: 60_000,
+  });
+}
+
+/** Org-wide (or per-cell) rollup aggregate. */
+export function useOrgScorecard(days = 30, team?: string) {
+  return useQuery<OrgScorecard>({
+    queryKey: observabilityKeys.orgScorecard(days, team),
+    queryFn: () => observabilityApi.getOrgScorecard(days, team),
+    refetchInterval: 60_000,
+  });
+}
+
+/** Granular per-task metrics (active-vs-wait drill-down). */
+export function useTaskMetrics(taskId: string) {
+  return useQuery<TaskMetrics | null>({
+    queryKey: observabilityKeys.taskMetrics(taskId),
+    queryFn: () => observabilityApi.getTaskMetrics(taskId),
+    enabled: Boolean(taskId),
   });
 }

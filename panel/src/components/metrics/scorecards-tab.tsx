@@ -1,0 +1,169 @@
+"use client";
+
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Badge } from "@/components/ui/badge";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  useCeoScorecard,
+  useMemberScorecard,
+  useOrgScorecard,
+} from "@/hooks/use-observability";
+import { useAgents } from "@/hooks/use-agents";
+import { AgentRole, type Agent } from "@/types";
+
+function pctOrNa(rate: number | null): string {
+  return rate === null ? "n/a" : (rate * 100).toFixed(0) + "%";
+}
+
+function numOrNa(value: number | null, digits = 1): string {
+  return value === null ? "n/a" : value.toFixed(digits);
+}
+
+function hoursOrDash(seconds: number): string {
+  return (seconds / 3600).toFixed(1) + "h";
+}
+
+/** One member's row — each row self-fetches its rollup scorecard. */
+function MemberRow({ agent }: { agent: Agent }) {
+  const { data, isLoading } = useMemberScorecard(agent.id);
+  if (isLoading || !data) {
+    return (
+      <TableRow>
+        <TableCell>{agent.name || agent.slug}</TableCell>
+        <TableCell colSpan={8}>
+          <Skeleton className="h-4 w-full" />
+        </TableCell>
+      </TableRow>
+    );
+  }
+  return (
+    <TableRow>
+      <TableCell className="font-medium">
+        {agent.name || agent.slug}
+        {data.includes_live_inflight && (
+          <Badge variant="outline" className="ml-2 text-xs">
+            live
+          </Badge>
+        )}
+      </TableCell>
+      <TableCell>{data.tasks_completed}</TableCell>
+      <TableCell>{pctOrNa(data.first_pass_yield)}</TableCell>
+      <TableCell>{data.active_runtime_hours.toFixed(1)}h</TableCell>
+      <TableCell>{numOrNa(data.turns_per_task)}</TableCell>
+      <TableCell>{pctOrNa(data.qa_pass_rate)}</TableCell>
+      <TableCell>{data.escalations}</TableCell>
+      <TableCell>{data.blocked_others}</TableCell>
+      <TableCell>{pctOrNa(data.utilization)}</TableCell>
+    </TableRow>
+  );
+}
+
+function OrgSummary() {
+  const { data, isLoading } = useOrgScorecard();
+  if (isLoading || !data) return <Skeleton className="h-24 w-full" />;
+  const cells: [string, string][] = [
+    ["Members", String(data.member_count)],
+    ["Completed", String(data.tasks_completed)],
+    ["First-pass yield", pctOrNa(data.first_pass_yield)],
+    ["Throughput/hr", numOrNa(data.effort_throughput_per_hour, 2)],
+    ["Active effort", hoursOrDash(data.active_runtime_hours * 3600)],
+    ["Cost", "$" + data.cost_usd.toFixed(2)],
+  ];
+  return (
+    <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
+      {cells.map(([k, v]) => (
+        <div key={k}>
+          <div className="text-2xl font-semibold">{v}</div>
+          <div className="text-muted-foreground text-sm">{k}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function CeoCard() {
+  const { data, isLoading } = useCeoScorecard();
+  if (isLoading || !data) return <Skeleton className="h-24 w-full" />;
+  const cells: [string, string][] = [
+    ["Approvals", String(data.approval_count)],
+    ["Approval p50", hoursOrDash(data.approval_p50_seconds)],
+    ["Approval p90", hoursOrDash(data.approval_p90_seconds)],
+    ["Unblocks", String(data.unblock_count)],
+    ["Unblock p50", hoursOrDash(data.unblock_p50_seconds)],
+    ["God-mode actions", String(data.godmode_actions)],
+  ];
+  return (
+    <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
+      {cells.map(([k, v]) => (
+        <div key={k}>
+          <div className="text-2xl font-semibold">{v}</div>
+          <div className="text-muted-foreground text-sm">{k}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function ScorecardsTabContent() {
+  const { data: agents } = useAgents();
+  const members = (agents ?? []).filter(
+    (a) => a.role !== AgentRole.CEO && a.role !== AgentRole.SYSTEM,
+  );
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader>
+          <CardTitle>Organization</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <OrgSummary />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>CEO (you)</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <CeoCard />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Members</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Member</TableHead>
+                <TableHead>Done</TableHead>
+                <TableHead>FPY</TableHead>
+                <TableHead>Effort</TableHead>
+                <TableHead>Turns/task</TableHead>
+                <TableHead>QA pass</TableHead>
+                <TableHead>Escal.</TableHead>
+                <TableHead>Blocked others</TableHead>
+                <TableHead>Util.</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {members.map((a) => (
+                <MemberRow key={a.id} agent={a} />
+              ))}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}

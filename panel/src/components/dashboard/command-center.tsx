@@ -20,6 +20,7 @@ import { StrategySignalsPanel } from "./strategy-signals-panel";
 import type { Activity } from "./activity-item";
 import { Button } from "@/components/ui/button";
 import { UsageOverviewPanel } from "./usage-overview-panel";
+import { ScorecardOverviewPanel } from "./scorecard-overview-panel";
 import { RefreshCw, Settings, AlertCircle } from "lucide-react";
 import Link from "next/link";
 
@@ -123,14 +124,15 @@ export function CommandCenter() {
       {/* Playbook review queue (hidden when no drafts) */}
       <PlaybookReviewQueue />
 
-      {/* Metrics, Alerts, and Usage Row */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 xl:grid-cols-3 2xl:grid-cols-3 gap-6">
+      {/* Metrics, Alerts, Usage, and Performance Row */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-4 gap-6">
         <KeyMetricsPanel
           metrics={overview?.key_metrics}
           isLoading={loadingOverview}
         />
         <AuditorAlertsPanel alerts={flags} isLoading={loadingFlags} />
         <UsageOverviewPanel />
+        <ScorecardOverviewPanel />
       </div>
 
       {/* Blockers and Activity Row */}
