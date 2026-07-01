@@ -449,6 +449,14 @@ class Settings(BaseSettings):
             "guard-internal bug never 500s the operator's personal deploy."
         ),
     )
+    guard_passive_mode: bool = Field(
+        default=False,
+        description=(
+            "Detect-and-log without blocking. The calibration switch: turn on "
+            "when first arming guard on live traffic to surface false positives "
+            "before enforcing, then turn off to enforce. Default off (enforce)."
+        ),
+    )
     guard_telemetry_enabled: bool = Field(
         default=False,
         description=(

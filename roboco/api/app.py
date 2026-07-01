@@ -60,6 +60,7 @@ from roboco.api.websocket import router as ws_router
 from roboco.config import settings
 from roboco.db.base import close_db, get_session_factory, init_db
 from roboco.logging import get_logger, setup_logging
+from roboco.security import apply_guard, guarded_lifespan
 from roboco.services.extraction import ExtractionPipeline, ExtractionService
 from roboco.services.learning import get_learning_service
 from roboco.services.optimal import close_optimal_service, get_optimal_service
@@ -206,7 +207,9 @@ def create_app() -> FastAPI:
         version=settings.app_version,
         docs_url="/docs",  # if settings.debug else None,
         redoc_url="/redoc",  # if settings.debug else None,
-        lifespan=lifespan,
+        # Wraps the existing lifespan with fastapi-guard's when armed (drives the
+        # middleware's redis/geo/agent init); returns it unchanged when off.
+        lifespan=guarded_lifespan(lifespan),
     )
 
     # ==========================================================================
@@ -223,6 +226,12 @@ def create_app() -> FastAPI:
 
     # Setup custom middleware (error handling, logging, correlation IDs)
     setup_middleware(app)
+
+    # fastapi-guard HTTP security layer — no-op unless ROBOCO_GUARD_ENABLED.
+    # Mounted last so SecurityMiddleware is outermost and blocks hostile traffic
+    # before it reaches the app (guard does its own request logging); order can
+    # be tuned during passive-mode calibration.
+    apply_guard(app)
 
     # ==========================================================================
     # Routes
