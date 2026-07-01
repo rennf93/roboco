@@ -236,10 +236,13 @@ export function TaskHeader({ task, onAction }: TaskHeaderProps) {
     // reopening a `cancelled` task). Audited via PATCH /tasks/{id} {status} ->
     // admin_set_status. No PR merge / lifecycle side effects fire — this is a
     // pure, operator-driven state correction the CEO is entitled to make.
+    // `force: true` is the explicit acknowledgement the backend requires to
+    // override into a hatch state (awaiting_*, completed, cancelled) or to
+    // resurrect a terminal task; without it the PATCH is refused with 400.
     try {
       await updateTask.mutateAsync({
         taskId: task.id,
-        updates: { status: newStatus },
+        updates: { status: newStatus, force: true },
       });
       toast.success(`Status forced to ${statusLabels[newStatus]}`);
     } catch {
