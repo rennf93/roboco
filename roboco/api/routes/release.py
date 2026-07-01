@@ -82,6 +82,8 @@ async def get_release_proposal(
     status_code=status.HTTP_202_ACCEPTED,
 )
 @guard_deco.rate_limit(requests=10, window=60)
+@guard_deco.block_clouds()
+@guard_deco.usage_monitor(max_calls=30, window=3600)
 async def approve_release_proposal(
     db: DbSession, agent: CurrentAgentContext
 ) -> ReleaseExecuteResponse:
@@ -126,6 +128,9 @@ async def approve_release_proposal(
 
 @router.post("/proposal/reject", response_model=ReleaseProposalResponse)
 @guard_deco.rate_limit(requests=10, window=60)
+@guard_deco.block_clouds()
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
 async def reject_release_proposal(
     data: ReleaseRejectRequest, db: DbSession, agent: CurrentAgentContext
 ) -> ReleaseProposalResponse:

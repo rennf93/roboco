@@ -4,6 +4,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, Request
+from guard_core.handlers.behavior_handler import BehaviorRule
 
 from roboco.api.deps import get_choreographer
 from roboco.api.routes.v1._role_dep import envelope_to_response, require_pr_reviewer
@@ -19,6 +20,10 @@ from roboco.api.schemas.v1.flow import (
 from roboco.security import guard_deco
 from roboco.services.gateway.choreographer import Choreographer
 
+_RUNAWAY_RULES = [
+    BehaviorRule(rule_type="frequency", threshold=120, window=60, action="log")
+]
+
 router = APIRouter(
     prefix="/api/v1/flow/pr_reviewer",
     tags=["v1-flow-pr-reviewer"],
@@ -32,6 +37,8 @@ _ChoreographerDep = Annotated[Choreographer, Depends(get_choreographer)]
 
 @router.post("/give_me_work")
 @guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
 async def give_me_work(
     request: Request,
     _body: GiveMeWorkRequest,
@@ -44,6 +51,8 @@ async def give_me_work(
 
 @router.post("/claim_pr_review")
 @guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
 async def claim_pr_review(
     request: Request,
     body: ClaimPrReviewRequest,
@@ -56,6 +65,8 @@ async def claim_pr_review(
 
 @router.post("/post_pr_review")
 @guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
 async def post_pr_review(
     request: Request,
     body: PostPrReviewRequest,
@@ -70,6 +81,8 @@ async def post_pr_review(
 
 @router.post("/claim_gate_review")
 @guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
 async def claim_gate_review(
     request: Request,
     body: ClaimGateReviewRequest,
@@ -82,6 +95,8 @@ async def claim_gate_review(
 
 @router.post("/pr_pass")
 @guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
 async def pr_pass(
     request: Request,
     body: PrPassRequest,
@@ -94,6 +109,8 @@ async def pr_pass(
 
 @router.post("/pr_fail")
 @guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
 async def pr_fail(
     request: Request,
     body: PrFailRequest,
@@ -106,6 +123,8 @@ async def pr_fail(
 
 @router.post("/i_am_idle")
 @guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
 async def i_am_idle(
     request: Request,
     _body: IAmIdleRequest,

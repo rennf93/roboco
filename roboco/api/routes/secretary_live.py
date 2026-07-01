@@ -51,6 +51,10 @@ router = APIRouter()
 @guard_deco.rate_limit(requests=10, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(prompt_injection_validator)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
+@guard_deco.suspicious_detection(enabled=True)
+@guard_deco.block_clouds()
 async def start_live(body: StartSecretaryRequest) -> StartSecretaryResponse:
     """Spawn the Secretary agent for a new chat and return its session id."""
     session_id = uuid4().hex
@@ -90,6 +94,9 @@ async def session_status(session_id: str) -> dict[str, bool]:
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(prompt_injection_validator)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
+@guard_deco.suspicious_detection(enabled=True)
 async def send_message(session_id: str, body: LiveMessageRequest) -> dict[str, bool]:
     """Deliver the CEO's message to the running Secretary agent."""
     delivered = await get_live_registry().deliver(session_id, body.text)
@@ -116,6 +123,7 @@ async def stop_live(session_id: str) -> dict[str, bool]:
 @guard_deco.rate_limit(requests=60, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(secret_exfil_validator)
+@guard_deco.content_type_filter(["application/json"])
 async def relay_event(session_id: str, event: AgentEvent) -> dict[str, bool]:
     """Relay one agent event from the container onto the session's stream."""
     return {"pushed": get_live_registry().push(session_id, event.model_dump())}

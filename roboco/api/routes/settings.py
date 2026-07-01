@@ -46,6 +46,9 @@ async def get_feature_flags(db: DbSession) -> FeatureFlagsResponse:
 @router.put("/{key}", response_model=SettingsResponse)
 @guard_deco.rate_limit(requests=20, window=60)
 @guard_deco.max_request_size(size_bytes=8192)
+@guard_deco.block_clouds()
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
 async def update_setting(
     key: str, data: SettingUpdate, db: DbSession
 ) -> SettingsResponse:

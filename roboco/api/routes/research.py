@@ -74,6 +74,8 @@ async def _enforce_quota(agent: CurrentAgentContext) -> None:
 @guard_deco.rate_limit(requests=20, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(prompt_injection_validator)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.suspicious_detection(enabled=True)
 async def research_search(
     data: SearchRequest, agent: CurrentAgentContext
 ) -> SearchResponse:
@@ -110,6 +112,8 @@ async def research_search(
 @router.post("/fetch", response_model=FetchResponse)
 @guard_deco.rate_limit(requests=20, window=60)
 @guard_deco.custom_validation(internal_ssrf_validator)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.suspicious_detection(enabled=True)
 async def research_fetch(
     data: FetchRequest, agent: CurrentAgentContext
 ) -> FetchResponse:

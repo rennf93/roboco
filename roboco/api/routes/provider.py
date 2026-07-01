@@ -95,6 +95,9 @@ async def get_ollama_key_status(
 @guard_deco.rate_limit(requests=10, window=60)
 @guard_deco.max_request_size(size_bytes=8192)
 @guard_deco.block_clouds()
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
+@guard_deco.usage_monitor(max_calls=30, window=3600)
 async def set_ollama_key(
     data: SetOllamaKeyRequest,
     db: DbSession,
@@ -149,6 +152,9 @@ async def get_grok_key_status(
 @guard_deco.rate_limit(requests=10, window=60)
 @guard_deco.max_request_size(size_bytes=8192)
 @guard_deco.block_clouds()
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
+@guard_deco.usage_monitor(max_calls=30, window=3600)
 async def set_grok_key(
     data: SetGrokKeyRequest,
     db: DbSession,
@@ -213,6 +219,10 @@ async def get_self_hosted_config(
 @router.put("/self-hosted", response_model=SelfHostedConfigResponse)
 @guard_deco.rate_limit(requests=10, window=60)
 @guard_deco.max_request_size(size_bytes=8192)
+@guard_deco.block_clouds()
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
+@guard_deco.usage_monitor(max_calls=30, window=3600)
 async def set_self_hosted_config(
     data: SelfHostedConfigRequest,
     db: DbSession,
@@ -363,6 +373,9 @@ async def get_current_mode(
 
 @router.post("", response_model=ModeResponse)
 @guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.block_clouds()
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
 async def apply_mode(
     data: ApplyModeRequest,
     db: DbSession,

@@ -4,6 +4,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, Request
+from guard_core.handlers.behavior_handler import BehaviorRule
 
 from roboco.api.deps import get_choreographer
 from roboco.api.routes.v1._role_dep import envelope_to_response, require_dev
@@ -21,6 +22,10 @@ from roboco.api.schemas.v1.flow import (
 from roboco.security import guard_deco
 from roboco.services.gateway.choreographer import Choreographer
 
+_RUNAWAY_RULES = [
+    BehaviorRule(rule_type="frequency", threshold=120, window=60, action="log")
+]
+
 router = APIRouter(
     prefix="/api/v1/flow/developer",
     tags=["v1-flow-developer"],
@@ -34,6 +39,8 @@ _ChoreographerDep = Annotated[Choreographer, Depends(get_choreographer)]
 
 @router.post("/give_me_work")
 @guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
 async def give_me_work(
     request: Request,
     _body: GiveMeWorkRequest,
@@ -46,6 +53,8 @@ async def give_me_work(
 
 @router.post("/i_will_work_on")
 @guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
 async def i_will_work_on(
     request: Request,
     body: IWillWorkOnRequest,
@@ -66,6 +75,8 @@ async def i_will_work_on(
 
 @router.post("/open_pr")
 @guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
 async def open_pr(
     request: Request,
     body: OpenPrRequest,
@@ -78,6 +89,8 @@ async def open_pr(
 
 @router.post("/i_am_done")
 @guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
 async def i_am_done(
     request: Request,
     body: IAmDoneRequest,
@@ -90,6 +103,8 @@ async def i_am_done(
 
 @router.post("/i_am_blocked")
 @guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
 async def i_am_blocked(
     request: Request,
     body: IAmBlockedRequest,
@@ -108,6 +123,8 @@ async def i_am_blocked(
 
 @router.post("/unclaim")
 @guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
 async def unclaim(
     request: Request,
     body: UnclaimRequest,
@@ -120,6 +137,8 @@ async def unclaim(
 
 @router.post("/resume")
 @guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
 async def resume(
     request: Request,
     body: ResumeRequest,
@@ -132,6 +151,8 @@ async def resume(
 
 @router.post("/sync_branch")
 @guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
 async def sync_branch(
     request: Request,
     body: SyncBranchRequest,
@@ -144,6 +165,8 @@ async def sync_branch(
 
 @router.post("/i_am_idle")
 @guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
 async def i_am_idle(
     request: Request,
     _body: IAmIdleRequest,

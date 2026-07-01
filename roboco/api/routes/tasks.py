@@ -451,6 +451,8 @@ async def _resolve_project_for_merge(task: Any, db: AsyncSession) -> Any:
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(prompt_injection_validator)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
 async def create_task(
     data: TaskCreate,
     db: DbSession,
@@ -840,6 +842,8 @@ async def get_external_pr_reviews(
 
 @router.post("/{task_id}/supersede-external-pr")
 @guard_deco.rate_limit(requests=10, window=60)
+@guard_deco.block_clouds()
+@guard_deco.usage_monitor(max_calls=30, window=3600)
 async def supersede_external_pr(
     task_id: UUID,
     agent: CurrentAgentContext,
@@ -870,6 +874,7 @@ async def supersede_external_pr(
 
 @router.post("/{task_id}/dismiss-external-pr")
 @guard_deco.rate_limit(requests=10, window=60)
+@guard_deco.block_clouds()
 async def dismiss_external_pr(
     task_id: UUID,
     db: DbSession,
@@ -977,6 +982,8 @@ async def get_task(
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(prompt_injection_validator)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
 async def update_task(
     task_id: UUID,
     data: TaskUpdate,
@@ -1286,6 +1293,7 @@ async def block_task(
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(secret_exfil_validator)
+@guard_deco.content_type_filter(["application/json"])
 async def soft_block_task(
     task_id: UUID,
     data: SoftBlockRequest,
@@ -1540,6 +1548,7 @@ async def submit_for_qa(
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(secret_exfil_validator)
+@guard_deco.content_type_filter(["application/json"])
 async def pass_qa(
     task_id: UUID,
     db: DbSession,
@@ -1632,6 +1641,7 @@ async def pass_qa(
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(secret_exfil_validator)
+@guard_deco.content_type_filter(["application/json"])
 async def fail_qa(
     task_id: UUID,
     data: QANotes,
@@ -1677,6 +1687,7 @@ async def fail_qa(
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(secret_exfil_validator)
+@guard_deco.content_type_filter(["application/json"])
 async def docs_complete(
     task_id: UUID,
     db: DbSession,
@@ -1709,6 +1720,7 @@ async def docs_complete(
 @guard_deco.rate_limit(requests=30, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(secret_exfil_validator)
+@guard_deco.content_type_filter(["application/json"])
 async def submit_for_pm_review(
     task_id: UUID,
     db: DbSession,
@@ -1768,6 +1780,8 @@ async def submit_for_pm_review(
 @router.post("/{task_id}/complete", response_model=TaskResponse)
 @guard_deco.rate_limit(requests=20, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
 async def complete_task(
     task_id: UUID,
     db: DbSession,
@@ -1826,6 +1840,8 @@ async def complete_task(
 @router.post("/{task_id}/cancel", response_model=TaskResponse)
 @guard_deco.rate_limit(requests=20, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
 async def cancel_task(
     task_id: UUID,
     data: CancelTaskRequest,
@@ -1873,6 +1889,9 @@ async def cancel_task(
 @router.post("/{task_id}/escalate-to-ceo", response_model=TaskResponse)
 @guard_deco.rate_limit(requests=20, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
+@guard_deco.block_clouds()
 async def escalate_to_ceo(
     task_id: UUID,
     db: DbSession,
@@ -1898,6 +1917,10 @@ async def escalate_to_ceo(
 @router.post("/{task_id}/ceo-approve", response_model=TaskResponse)
 @guard_deco.rate_limit(requests=10, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
+@guard_deco.block_clouds()
+@guard_deco.usage_monitor(max_calls=30, window=3600)
 async def ceo_approve_task(
     task_id: UUID,
     db: DbSession,
@@ -1988,6 +2011,8 @@ async def ceo_approve_eligibility_check(
 
 @router.post("/{task_id}/approve-and-merge", response_model=TaskResponse)
 @guard_deco.rate_limit(requests=10, window=60)
+@guard_deco.block_clouds()
+@guard_deco.usage_monitor(max_calls=30, window=3600)
 async def approve_and_merge_task(
     task_id: UUID,
     db: DbSession,
@@ -2072,6 +2097,10 @@ async def approve_and_merge_task(
 @router.post("/{task_id}/approve-and-start", response_model=TaskResponse)
 @guard_deco.rate_limit(requests=10, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
+@guard_deco.block_clouds()
+@guard_deco.usage_monitor(max_calls=30, window=3600)
 async def approve_and_start_task(
     task_id: UUID,
     db: DbSession,
@@ -2134,6 +2163,9 @@ async def approve_and_start_task(
 @router.post("/{task_id}/ceo-reject", response_model=TaskResponse)
 @guard_deco.rate_limit(requests=10, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
+@guard_deco.block_clouds()
 async def ceo_reject_task(
     task_id: UUID,
     data: QANotes,
@@ -2188,6 +2220,9 @@ async def ceo_reject_task(
 @router.post("/{task_id}/escalate", response_model=EscalateResponse)
 @guard_deco.rate_limit(requests=20, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
+@guard_deco.suspicious_detection(enabled=True)
 async def escalate_task(
     task_id: UUID,
     data: EscalateRequest,
@@ -2287,6 +2322,8 @@ async def escalate_task(
 @router.post("/{task_id}/substitute", response_model=TaskResponse)
 @guard_deco.rate_limit(requests=20, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
 async def substitute_task(
     task_id: UUID,
     data: SubstituteRequest,
@@ -2318,6 +2355,7 @@ async def substitute_task(
 @guard_deco.rate_limit(requests=60, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(secret_exfil_validator)
+@guard_deco.content_type_filter(["application/json"])
 async def add_progress(
     task_id: UUID,
     data: ProgressRequest,
@@ -2355,6 +2393,7 @@ async def add_progress(
 @guard_deco.rate_limit(requests=60, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(secret_exfil_validator)
+@guard_deco.content_type_filter(["application/json"])
 async def add_checkpoint(
     task_id: UUID,
     data: CheckpointRequest,
@@ -2396,6 +2435,7 @@ async def add_checkpoint(
 @guard_deco.rate_limit(requests=60, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(secret_exfil_validator)
+@guard_deco.content_type_filter(["application/json"])
 async def add_commit(
     task_id: UUID,
     data: CommitRequest,

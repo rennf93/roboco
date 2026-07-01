@@ -122,6 +122,9 @@ async def get_agent_card(
 @guard_deco.rate_limit(requests=60, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(prompt_injection_validator)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
+@guard_deco.suspicious_detection(enabled=True)
 async def send_message(
     request: SendMessageRequest,
     db: DbSession,
@@ -214,6 +217,9 @@ async def send_message(
 @guard_deco.rate_limit(requests=60, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(prompt_injection_validator)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
+@guard_deco.suspicious_detection(enabled=True)
 async def send_message_stream(
     request: Request,
     body: SendMessageRequest,
@@ -443,6 +449,7 @@ async def list_tasks(
     dependencies=[require_any_authenticated_agent],
 )
 @guard_deco.rate_limit(requests=10, window=60)
+@guard_deco.content_type_filter(["application/json"])
 async def cancel_task(
     task_id: str,
     db: DbSession,
@@ -619,6 +626,9 @@ async def list_chat_conversations(
 @guard_deco.rate_limit(requests=60, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(prompt_injection_validator)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
+@guard_deco.suspicious_detection(enabled=True)
 async def create_conversation(
     db: DbSession,
     agent_slug: CurrentAgentSlug,
@@ -714,6 +724,7 @@ async def get_conversation(
 
 @router.post("/chat/conversations/{conversation_id}/close")
 @guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
 async def close_conversation(
     conversation_id: str,
     db: DbSession,
@@ -789,6 +800,9 @@ async def list_chat_messages(
 @guard_deco.rate_limit(requests=60, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
 @guard_deco.custom_validation(prompt_injection_validator)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
+@guard_deco.suspicious_detection(enabled=True)
 async def send_chat_message(
     conversation_id: str,
     db: DbSession,

@@ -4,6 +4,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, Request
+from guard_core.handlers.behavior_handler import BehaviorRule
 
 from roboco.api.deps import get_choreographer
 from roboco.api.routes.v1._role_dep import envelope_to_response, require_main_pm
@@ -24,6 +25,10 @@ from roboco.api.schemas.v1.flow import (
 from roboco.security import guard_deco
 from roboco.services.gateway.choreographer import Choreographer, DelegateInputs
 
+_RUNAWAY_RULES = [
+    BehaviorRule(rule_type="frequency", threshold=120, window=60, action="log")
+]
+
 router = APIRouter(
     prefix="/api/v1/flow/main_pm",
     tags=["v1-flow-main-pm"],
@@ -37,6 +42,8 @@ _ChoreographerDep = Annotated[Choreographer, Depends(get_choreographer)]
 
 @router.post("/give_me_work")
 @guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
 async def give_me_work(
     request: Request,
     _body: GiveMeWorkRequest,
@@ -49,6 +56,8 @@ async def give_me_work(
 
 @router.post("/i_will_plan")
 @guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
 async def i_will_plan(
     request: Request,
     body: IWillPlanRequest,
@@ -72,6 +81,8 @@ async def i_will_plan(
 
 @router.post("/delegate")
 @guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
 async def delegate(
     request: Request,
     body: DelegateRequest,
@@ -100,6 +111,8 @@ async def delegate(
 
 @router.post("/triage_all")
 @guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
 async def triage_all(
     request: Request,
     _body: TriageRequest,
@@ -112,6 +125,8 @@ async def triage_all(
 
 @router.post("/triage")
 @guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
 async def triage(
     request: Request,
     _body: TriageRequest,
@@ -133,6 +148,8 @@ async def triage(
 
 @router.post("/submit_root")
 @guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
 async def submit_root(
     request: Request,
     body: SubmitRootRequest,
@@ -145,6 +162,8 @@ async def submit_root(
 
 @router.post("/complete")
 @guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
 async def complete(
     request: Request,
     body: CompleteRequest,
@@ -157,6 +176,8 @@ async def complete(
 
 @router.post("/escalate_up")
 @guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
 async def escalate_up(
     request: Request,
     body: EscalateUpRequest,
@@ -169,6 +190,8 @@ async def escalate_up(
 
 @router.post("/escalate_to_ceo")
 @guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
 async def escalate_to_ceo(
     request: Request,
     body: EscalateToCeoRequest,
@@ -181,6 +204,8 @@ async def escalate_to_ceo(
 
 @router.post("/unblock")
 @guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
 async def unblock(
     request: Request,
     body: UnblockRequest,
@@ -195,6 +220,8 @@ async def unblock(
 
 @router.post("/unclaim")
 @guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
 async def unclaim(
     request: Request,
     body: UnclaimRequest,
@@ -207,6 +234,8 @@ async def unclaim(
 
 @router.post("/resume")
 @guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
 async def resume(
     request: Request,
     body: ResumeRequest,
@@ -219,6 +248,8 @@ async def resume(
 
 @router.post("/i_am_idle")
 @guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
 async def i_am_idle(
     request: Request,
     _body: IAmIdleRequest,
