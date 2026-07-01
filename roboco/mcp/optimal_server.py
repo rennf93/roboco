@@ -64,6 +64,27 @@ def normalize_index_types(index_types: list[str] | None) -> list[str] | None:
     return [_INDEX_TYPE_ALIASES.get(t, t) for t in index_types]
 
 
+# Per-item free-text cap for search/mentor results embedded in agent context
+# (observed p90 payloads of ~37KB; results are for finding, not full reading).
+_RESULT_CONTENT_CAP = 800
+
+
+def _cap_result_content(
+    items: list[Any], *, cap: int = _RESULT_CONTENT_CAP, limit: int | None = None
+) -> list[Any]:
+    """Cap each dict item's `content` text (and optionally the item count)."""
+    capped = items[:limit] if limit is not None else list(items)
+    out: list[Any] = []
+    for item in capped:
+        trimmed = item
+        if isinstance(item, dict):
+            content = item.get("content")
+            if isinstance(content, str) and len(content) > cap:
+                trimmed = {**item, "content": content[:cap] + "…"}
+        out.append(trimmed)
+    return out
+
+
 def _register_search_tools(mcp: FastMCP, client: ApiClient) -> None:
     """Register search tools available to all agents."""
 
@@ -119,7 +140,7 @@ def _register_search_tools(mcp: FastMCP, client: ApiClient) -> None:
             "status": "success",
             "query": query,
             "total": total,
-            "results": result.get("results", []),
+            "results": _cap_result_content(result.get("results", [])),
         }
         if total == 0:
             response["hint"] = (
@@ -179,7 +200,7 @@ def _register_search_tools(mcp: FastMCP, client: ApiClient) -> None:
             "status": "success",
             "query": query,
             "answer": answer,
-            "citations": result.get("citations", []),
+            "citations": _cap_result_content(result.get("citations", []), limit=8),
             "context_used": context_used,
         }
         # Guide to mentor for better results
@@ -427,7 +448,7 @@ def _register_mentor_tools(mcp: FastMCP, client: ApiClient) -> None:
         return {
             "status": "success",
             "answer": result.get("answer", ""),
-            "sources": result.get("sources", []),
+            "sources": _cap_result_content(result.get("sources", []), limit=8),
             "conversation_id": result.get("conversation_id", ""),
             "suggested_followups": result.get("suggested_followups", []),
         }
@@ -472,7 +493,7 @@ def _register_error_tools(mcp: FastMCP, client: ApiClient) -> None:
             "status": "success",
             "error_message": error_message,
             "solutions_found": solutions_found,
-            "results": result.get("results", []),
+            "results": _cap_result_content(result.get("results", [])),
         }
         if solutions_found == 0:
             response["hint"] = (
@@ -865,7 +886,7 @@ def _register_learning_tools(mcp: FastMCP, client: ApiClient) -> None:
             "status": "success",
             "query": query,
             "total": total,
-            "results": result.get("results", []),
+            "results": _cap_result_content(result.get("results", [])),
         }
         if total == 0:
             response["hint"] = (

@@ -8,7 +8,11 @@ destructive index-management group, which is dev/test-only).
 from __future__ import annotations
 
 import pytest
-from roboco.mcp.optimal_server import create_optimal_mcp_server
+from roboco.mcp.optimal_server import (
+    _RESULT_CONTENT_CAP,
+    _cap_result_content,
+    create_optimal_mcp_server,
+)
 
 
 async def _tool_names(role: str, monkeypatch: pytest.MonkeyPatch) -> set[str]:
@@ -63,6 +67,24 @@ async def test_unknown_role_fails_open_except_admin(
     assert "roboco_record_decision" in names
     # Destructive index management never registers without the escape hatch.
     assert "roboco_reindex_all" not in names
+
+
+_ITEM_LIMIT = 2
+
+
+def test_cap_result_content_caps_text_and_count() -> None:
+    items = [
+        {"content": "x" * (_RESULT_CONTENT_CAP + 200), "source": "a"},
+        {"content": "short", "source": "b"},
+        "bare-string-item",
+    ]
+    capped = _cap_result_content(items, limit=_ITEM_LIMIT)
+    assert len(capped) == _ITEM_LIMIT
+    assert len(capped[0]["content"]) == _RESULT_CONTENT_CAP + 1  # + ellipsis
+    assert capped[0]["content"].endswith("…")
+    assert capped[1]["content"] == "short"
+    # Original items are not mutated.
+    assert len(items[0]["content"]) == _RESULT_CONTENT_CAP + 200
 
 
 @pytest.mark.asyncio
