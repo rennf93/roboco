@@ -1398,6 +1398,8 @@ export interface SpawnWasteResponse {
   unproductive_pct: number;
   by_role: RoleWasteRow[];
   respawn_strikes: RespawnStrikeRow[];
+  /** Counting scope — non-Anthropic transcripts don't populate output tokens. */
+  basis?: string;
   period: string;
 }
 

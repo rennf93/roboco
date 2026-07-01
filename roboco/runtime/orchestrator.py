@@ -1622,6 +1622,13 @@ class AgentOrchestrator:
                 "allow": base_allow + role_config["allow"],
                 "deny": base_deny + role_config["deny"],
             },
+            # Explicit Bash-output cap: a gate/test dump enters the session
+            # context once and is re-read at cache-read price on every later
+            # turn. 20K chars (~5K tokens) keeps failures diagnosable without
+            # relying on the CLI's default ceiling.
+            "env": {
+                "BASH_MAX_OUTPUT_LENGTH": "20000",
+            },
             "hooks": {
                 # Start SDK server on session start (for A2A communication)
                 "SessionStart": [
