@@ -782,7 +782,9 @@ class Choreographer:
                 status=str(t.status),
                 task_id=str(t.id),
                 next=self._claim_verb_hint(role, t),
-                context_briefing=await self._briefing_for(agent_id, t.id, task=t),
+                context_briefing=await self._briefing_for(
+                    agent_id, t.id, task=t, full=True
+                ),
             ).with_introspection(task=t, role=role)
         assigned = await self._drop_dependency_held(
             await self._deps.task.list_assigned_for_agent(agent_id)
@@ -793,7 +795,9 @@ class Choreographer:
                 status=str(t.status),
                 task_id=str(t.id),
                 next=self._claim_verb_hint(role, t),
-                context_briefing=await self._briefing_for(agent_id, t.id, task=t),
+                context_briefing=await self._briefing_for(
+                    agent_id, t.id, task=t, full=True
+                ),
             ).with_introspection(task=t, role=role)
         paused = await self._deps.task.list_paused_for_agent(agent_id)
         if paused:
@@ -802,7 +806,9 @@ class Choreographer:
                 status=str(t.status),
                 task_id=str(t.id),
                 next=f"call resume(task_id='{t.id}') to continue paused work",
-                context_briefing=await self._briefing_for(agent_id, t.id, task=t),
+                context_briefing=await self._briefing_for(
+                    agent_id, t.id, task=t, full=True
+                ),
             ).with_introspection(task=t, role=role)
         return Envelope.ok(
             status="idle",
@@ -818,8 +824,18 @@ class Choreographer:
         *,
         task: Any | None = None,
         include_ac_coverage: bool = False,
+        full: bool = False,
     ) -> dict[str, Any]:
         """Assemble context_briefing for agent_id, optionally scoped to task_id.
+
+        ``full`` gates the heavy, verb-invariant sections (company_goals,
+        recent_team_activity, blockers_in_my_lane, task_handoff,
+        institutional_memory). Only context-acquisition verbs (give_me_work /
+        claim / plan / resume / triage) pass ``full=True``; every other verb —
+        progress, transition and rejection envelopes included — gets the slim
+        signals-only briefing (unread a2a/mentions/notifications + metadata
+        gaps). The agent already holds the heavy context from its claim, and
+        every extra copy is re-read at cache-read price on all later turns.
 
         ``task`` is the already-loaded row (every claim / give_me_work / done
         path holds it). The prior-work handoff is built only when it is passed —
@@ -831,10 +847,11 @@ class Choreographer:
         parent criterion, what is still unclaimed and can pass
         ``covers_parent_criteria`` on delegate. Off everywhere else so a leaf's
         own criteria never surface as bogus "unclaimed" noise to a developer.
+        It is functional (not bulk), so it stays independent of ``full``.
         """
         repo = self._deps.evidence_repo
         task_handoff: dict[str, Any] | None = None
-        if task_id is not None and task is not None:
+        if full and task_id is not None and task is not None:
             # Push the prior-work digest so a freshly spawned / respawned agent
             # resumes from the previous worker's PR + commits + journal rather
             # than re-exploring the codebase cold on every lifecycle hand-off.
@@ -847,13 +864,15 @@ class Choreographer:
             task_metadata_gaps=(
                 await repo.task_metadata_gaps(task_id) if task_id else []
             ),
-            recent_team_activity=await repo.recent_team_activity(agent_id),
-            blockers_in_my_lane=await repo.blockers_in_lane(agent_id),
+            recent_team_activity=(
+                await repo.recent_team_activity(agent_id) if full else []
+            ),
+            blockers_in_my_lane=(await repo.blockers_in_lane(agent_id) if full else []),
             task_handoff=task_handoff,
-            company_goals=await repo.company_goals(),
+            company_goals=(await repo.company_goals() if full else None),
         )
         briefing = build_context_briefing(inputs)
-        memory = await self._institutional_memory(agent_id, task)
+        memory = await self._institutional_memory(agent_id, task) if full else []
         if memory:
             # "What the company already knows about work like this" — distilled
             # lessons + approved playbooks, pushed so the agent never has to ask.
@@ -1370,7 +1389,7 @@ class Choreographer:
             )
         agent = await self.task.agent_for(agent_id)
         role_str = str(agent.role) if agent is not None else "developer"
-        briefing = await self._briefing_for(agent_id, task_id, task=t)
+        briefing = await self._briefing_for(agent_id, task_id, task=t, full=True)
         try:
             role = spec_module.Role(role_str)
         except ValueError:
@@ -3449,7 +3468,7 @@ class Choreographer:
         atomic chain wrapped in a savepoint.
         """
         t = await self.task.get(task_id)
-        briefing = await self._briefing_for(agent_id, task_id, task=t)
+        briefing = await self._briefing_for(agent_id, task_id, task=t, full=True)
         if t is None:
             return await self._emit_rejection(
                 Envelope.not_found(message=f"task {task_id} not found"),
@@ -4114,7 +4133,7 @@ class Choreographer:
         agent = await self.task.agent_for(pm_agent_id)
         role_str = str(agent.role) if agent is not None else "cell_pm"
         briefing = await self._briefing_for(
-            pm_agent_id, task_id, task=t, include_ac_coverage=True
+            pm_agent_id, task_id, task=t, include_ac_coverage=True, full=True
         )
         try:
             role = spec_module.Role(role_str)
@@ -5640,7 +5659,9 @@ class Choreographer:
                 status=str(t.status),
                 task_id=str(t.id),
                 next=self._pm_next_hint(str(t.status), t.id),
-                context_briefing=await self._briefing_for(pm_agent_id, t.id, task=t),
+                context_briefing=await self._briefing_for(
+                    pm_agent_id, t.id, task=t, full=True
+                ),
             )
         assigned = await self.task.list_assigned_for_agent(pm_agent_id)
         if assigned:
@@ -5650,7 +5671,9 @@ class Choreographer:
                 status=str(t.status),
                 task_id=str(t.id),
                 next=self._pm_next_hint(str(t.status), t.id),
-                context_briefing=await self._briefing_for(pm_agent_id, t.id, task=t),
+                context_briefing=await self._briefing_for(
+                    pm_agent_id, t.id, task=t, full=True
+                ),
             )
         return Envelope.ok(
             status="idle",
@@ -5685,7 +5708,9 @@ class Choreographer:
                 status=str(t.status),
                 task_id=str(t.id),
                 next=f"investigate the block, then unblock(task_id='{t.id}')",
-                context_briefing=await self._briefing_for(pm_agent_id, t.id, task=t),
+                context_briefing=await self._briefing_for(
+                    pm_agent_id, t.id, task=t, full=True
+                ),
             )
         awaiting = await self.task.list_awaiting_pm_review_for_team(pm.team)
         if awaiting:
@@ -5694,7 +5719,9 @@ class Choreographer:
                 status=str(t.status),
                 task_id=str(t.id),
                 next=f"review and complete(task_id='{t.id}')",
-                context_briefing=await self._briefing_for(pm_agent_id, t.id, task=t),
+                context_briefing=await self._briefing_for(
+                    pm_agent_id, t.id, task=t, full=True
+                ),
             )
         return Envelope.ok(
             status="idle",
@@ -5715,7 +5742,9 @@ class Choreographer:
                     f"escalation/cross-cell help required: investigate, then "
                     f"unblock(task_id='{t.id}') or escalate_up()"
                 ),
-                context_briefing=await self._briefing_for(pm_agent_id, t.id, task=t),
+                context_briefing=await self._briefing_for(
+                    pm_agent_id, t.id, task=t, full=True
+                ),
             )
         awaiting = await self.task.list_awaiting_main_pm_all()
         if awaiting:
@@ -5724,7 +5753,9 @@ class Choreographer:
                 status=str(t.status),
                 task_id=str(t.id),
                 next=f"complete(task_id='{t.id}') opens master PR + escalates to CEO",
-                context_briefing=await self._briefing_for(pm_agent_id, t.id, task=t),
+                context_briefing=await self._briefing_for(
+                    pm_agent_id, t.id, task=t, full=True
+                ),
             )
         return Envelope.ok(
             status="idle",

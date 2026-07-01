@@ -107,7 +107,7 @@ class DocMixin(_Base):
         """
         agent = await self.task.agent_for(doc_agent_id)
         role_str = str(agent.role) if agent is not None else "documenter"
-        briefing = await self._briefing_for(doc_agent_id, task_id)
+        briefing = await self._briefing_for(doc_agent_id, task_id, full=True)
         try:
             role = spec_module.Role(role_str)
         except ValueError:

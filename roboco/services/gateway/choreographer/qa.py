@@ -114,7 +114,7 @@ class QAMixin(_Base):
             )
         agent = await self.task.agent_for(qa_agent_id)
         role_str = str(agent.role) if agent is not None else "qa"
-        briefing = await self._briefing_for(qa_agent_id, task_id)
+        briefing = await self._briefing_for(qa_agent_id, task_id, full=True)
         try:
             role = spec_module.Role(role_str)
         except ValueError:

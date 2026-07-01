@@ -62,7 +62,7 @@ class PRGateMixin(_Base):
             )
         agent = await self.task.agent_for(reviewer_agent_id)
         role_str = str(agent.role) if agent is not None else "pr_reviewer"
-        briefing = await self._briefing_for(reviewer_agent_id, task_id)
+        briefing = await self._briefing_for(reviewer_agent_id, task_id, full=True)
         role = await self._gate_role_or_rejection(
             t, role_str, briefing, reviewer_agent_id, task_id, "claim_gate_review"
         )
