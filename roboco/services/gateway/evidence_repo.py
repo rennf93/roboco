@@ -16,9 +16,15 @@ if TYPE_CHECKING:
 
 # Free-text caps for LLM-facing briefing/handoff payloads. Full texts stay
 # readable through their dedicated verbs (notify_get) and the panel/API.
+_MENTION_EXCERPT_CAP = 280
 _NOTIFICATION_BODY_CAP = 500
 _HANDOFF_CONTENT_CAP = 800
 _NORTH_STAR_CAP = 600
+
+
+def _clip(text: str | None, cap: int) -> str:
+    """None-safe prefix clip for nullable text columns."""
+    return (text or "")[:cap]
 
 
 class EvidenceRepo:
@@ -141,7 +147,7 @@ class EvidenceRepo:
                 "notification_id": str(row.id),
                 "from_agent": str(row.from_agent) if row.from_agent else None,
                 "subject": row.subject,
-                "excerpt": (row.body or "")[:280],
+                "excerpt": _clip(row.body, _MENTION_EXCERPT_CAP),
                 "task_id": (str(row.related_task_id) if row.related_task_id else None),
                 "timestamp": row.timestamp.isoformat() if row.timestamp else None,
             }
@@ -187,7 +193,7 @@ class EvidenceRepo:
                 "subject": row.subject,
                 # Briefing carries an excerpt; the full body stays readable
                 # via notify_get / notify_list.
-                "body": (row.body or "")[:_NOTIFICATION_BODY_CAP],
+                "body": _clip(row.body, _NOTIFICATION_BODY_CAP),
                 "from_agent": str(row.from_agent) if row.from_agent else None,
                 "task_id": str(row.related_task_id) if row.related_task_id else None,
                 "timestamp": row.timestamp.isoformat() if row.timestamp else None,
@@ -327,7 +333,7 @@ class EvidenceRepo:
                 # Cap per-entry content: distilled handoff lessons (≤120 words)
                 # stay whole; a raw multi-page journal entry can't flood the
                 # handoff/evidence payload it is embedded in.
-                "content": (row.content or "")[:_HANDOFF_CONTENT_CAP],
+                "content": _clip(row.content, _HANDOFF_CONTENT_CAP),
                 "timestamp": row.timestamp.isoformat() if row.timestamp else None,
             }
             for row in result.all()

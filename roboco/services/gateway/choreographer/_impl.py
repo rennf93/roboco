@@ -850,13 +850,9 @@ class Choreographer:
         It is functional (not bulk), so it stays independent of ``full``.
         """
         repo = self._deps.evidence_repo
-        task_handoff: dict[str, Any] | None = None
-        if full and task_id is not None and task is not None:
-            # Push the prior-work digest so a freshly spawned / respawned agent
-            # resumes from the previous worker's PR + commits + journal rather
-            # than re-exploring the codebase cold on every lifecycle hand-off.
-            handoff_highlights = await repo.journal_highlights_for_task(task_id)
-            task_handoff = build_task_handoff(task, handoff_highlights)
+        heavy = (
+            await self._heavy_briefing_sections(agent_id, task_id, task) if full else {}
+        )
         inputs = BriefingInputs(
             unread_a2a=await repo.list_unread_a2a(agent_id),
             unread_mentions=await repo.list_unread_mentions(agent_id),
@@ -864,15 +860,13 @@ class Choreographer:
             task_metadata_gaps=(
                 await repo.task_metadata_gaps(task_id) if task_id else []
             ),
-            recent_team_activity=(
-                await repo.recent_team_activity(agent_id) if full else []
-            ),
-            blockers_in_my_lane=(await repo.blockers_in_lane(agent_id) if full else []),
-            task_handoff=task_handoff,
-            company_goals=(await repo.company_goals() if full else None),
+            recent_team_activity=heavy.get("recent_team_activity", []),
+            blockers_in_my_lane=heavy.get("blockers_in_my_lane", []),
+            task_handoff=heavy.get("task_handoff"),
+            company_goals=heavy.get("company_goals"),
         )
         briefing = build_context_briefing(inputs)
-        memory = await self._institutional_memory(agent_id, task) if full else []
+        memory = heavy.get("institutional_memory", [])
         if memory:
             # "What the company already knows about work like this" — distilled
             # lessons + approved playbooks, pushed so the agent never has to ask.
@@ -892,6 +886,31 @@ class Choreographer:
                     ],
                 }
         return briefing
+
+    async def _heavy_briefing_sections(
+        self, agent_id: UUID, task_id: UUID | None, task: Any | None
+    ) -> dict[str, Any]:
+        """The full-briefing-only sections (see ``_briefing_for``'s docstring).
+
+        The prior-work handoff is built only when the loaded ``task`` row is
+        passed — no extra fetch — so task-scoped error paths that carry only an
+        id simply omit the digest rather than pay a redundant read for it.
+        """
+        repo = self._deps.evidence_repo
+        task_handoff: dict[str, Any] | None = None
+        if task_id is not None and task is not None:
+            # Push the prior-work digest so a freshly spawned / respawned agent
+            # resumes from the previous worker's PR + commits + journal rather
+            # than re-exploring the codebase cold on every lifecycle hand-off.
+            handoff_highlights = await repo.journal_highlights_for_task(task_id)
+            task_handoff = build_task_handoff(task, handoff_highlights)
+        return {
+            "recent_team_activity": await repo.recent_team_activity(agent_id),
+            "blockers_in_my_lane": await repo.blockers_in_lane(agent_id),
+            "task_handoff": task_handoff,
+            "company_goals": await repo.company_goals(),
+            "institutional_memory": await self._institutional_memory(agent_id, task),
+        }
 
     async def _institutional_memory(
         self, agent_id: UUID, task: Any | None
