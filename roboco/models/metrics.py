@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
+from roboco.foundation.policy.stage_effort import StageEffort
 from roboco.models.base import Team
 
 
@@ -246,4 +247,45 @@ class Scorecard:
             "rework_rate": round(self.rework_rate, 4),
             "tokens": self.tokens,
             "cost_usd": round(self.cost_usd, 4),
+        }
+
+
+@dataclass
+class TaskMetrics:
+    """Granular per-task effort: real runtime vs wall-clock, turns, cost, rework.
+
+    ``active_runtime_seconds`` is summed spawn-stint effort (can exceed
+    wall-clock when stints run concurrently); ``stages`` is the wall-clock
+    active-vs-wait decomposition per status window (active clamped to the
+    window). Computed live from ``agent_spawn_sessions`` (by task_id) joined
+    with ``audit_log`` (by target_id).
+    """
+
+    task_id: str
+    active_runtime_seconds: int
+    wall_clock_seconds: int
+    turns: int
+    tool_calls: int
+    tokens: int
+    cost_usd: float
+    revision_count: int
+    qa_fails: int
+    pr_fails: int
+    stints: int
+    stages: list[StageEffort]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "task_id": self.task_id,
+            "active_runtime_seconds": self.active_runtime_seconds,
+            "wall_clock_seconds": self.wall_clock_seconds,
+            "turns": self.turns,
+            "tool_calls": self.tool_calls,
+            "tokens": self.tokens,
+            "cost_usd": round(self.cost_usd, 4),
+            "revision_count": self.revision_count,
+            "qa_fails": self.qa_fails,
+            "pr_fails": self.pr_fails,
+            "stints": self.stints,
+            "stages": [s.to_dict() for s in self.stages],
         }

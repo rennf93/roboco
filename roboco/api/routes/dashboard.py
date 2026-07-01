@@ -608,3 +608,19 @@ async def get_team_scorecard(
             status_code=status.HTTP_404_NOT_FOUND, detail="Team scorecard unavailable"
         )
     return card.to_dict()
+
+
+@router.get("/metrics/task/{task_id}")
+async def get_task_metrics(
+    task_id: UUID,
+    db: DbSession,
+) -> dict[str, Any]:
+    """Granular per-task metrics: real effort vs wall-clock, turns/tool-calls,
+    per-stage active-vs-wait, who-caused-rework, tokens + cost (live)."""
+    metrics_service = get_metrics_service(db)
+    metrics = await metrics_service.get_task_metrics(task_id)
+    if metrics is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
+        )
+    return metrics.to_dict()

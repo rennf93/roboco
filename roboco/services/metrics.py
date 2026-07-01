@@ -21,6 +21,7 @@ from roboco.db.tables import (
     NotificationTable,
     TaskTable,
 )
+from roboco.foundation.policy.stage_effort import compute_stage_effort
 from roboco.models.base import TaskStatus, Team
 from roboco.models.metrics import (
     AgentMetrics,
@@ -31,6 +32,7 @@ from roboco.models.metrics import (
     Scorecard,
     StageBottleneck,
     StageTiming,
+    TaskMetrics,
     TeamMetrics,
     TeamReworkRate,
     VelocityMetrics,
@@ -781,6 +783,145 @@ class MetricsService(BaseService):
             )
         ).scalar() or 0.0
         return float(cost)
+
+    async def _spawn_rollup_for_task(
+        self, task_id: UUID, close_at: datetime
+    ) -> dict[str, Any]:
+        """Per-task spawn aggregates: stints, effort, turns, tool_calls, tokens, cost.
+
+        ``active_runtime`` is summed stint duration (an open stint runs to
+        ``close_at`` — completed_at for a terminal task, else now); it can exceed
+        wall-clock when stints overlap. ``stints`` is the list of
+        ``(started, ended)`` intervals for the stage decomposition. ``task_id``
+        is bound as ``str`` — the column is ``String(36)``.
+        """
+        rows = (
+            await self.session.execute(
+                select(
+                    AgentSpawnSessionTable.started_at,
+                    AgentSpawnSessionTable.ended_at,
+                    AgentSpawnSessionTable.turns,
+                    AgentSpawnSessionTable.tool_calls,
+                    AgentSpawnSessionTable.tokens_input,
+                    AgentSpawnSessionTable.tokens_output,
+                    AgentSpawnSessionTable.tokens_cache_read,
+                    AgentSpawnSessionTable.tokens_cache_write,
+                    AgentSpawnSessionTable.estimated_cost_usd,
+                ).where(AgentSpawnSessionTable.task_id == str(task_id))
+            )
+        ).all()
+        stints: list[tuple[datetime, datetime]] = []
+        active = turns = tool_calls = tokens = 0.0
+        cost = 0.0
+        for r in rows:
+            ended = r.ended_at or close_at
+            stints.append((r.started_at, ended))
+            active += max(0.0, (ended - r.started_at).total_seconds())
+            turns += r.turns or 0
+            tool_calls += r.tool_calls or 0
+            tokens += (
+                (r.tokens_input or 0)
+                + (r.tokens_output or 0)
+                + (r.tokens_cache_read or 0)
+                + (r.tokens_cache_write or 0)
+            )
+            cost += r.estimated_cost_usd or 0.0
+        return {
+            "stints": stints,
+            "active_runtime_seconds": round(active),
+            "turns": int(turns),
+            "tool_calls": int(tool_calls),
+            "tokens": int(tokens),
+            "cost_usd": float(cost),
+        }
+
+    async def _stage_windows_for_task(
+        self, task_id: UUID, close_at: datetime
+    ) -> list[tuple[str, datetime, datetime]]:
+        """Ordered status windows for one task from the audit_log journey.
+
+        Single-task variant of ``get_cycle_time_by_stage``: LEAD gives each
+        generic ``task.<status>`` row's exit as the next row's timestamp; the
+        open final window (``exited_at IS NULL``) is closed at ``close_at``
+        (completed_at for a terminal task, else now) so an in-flight stage still
+        decomposes and a terminal task's final stage doesn't grow forever.
+        """
+        sql = text(
+            """
+            WITH ordered AS (
+                SELECT
+                    (a.details->>'to_status') AS status,
+                    a.timestamp AS entered_at,
+                    LEAD(a.timestamp) OVER (ORDER BY a.timestamp) AS exited_at
+                FROM audit_log a
+                WHERE a.target_id = CAST(:tid AS uuid)
+                  AND a.event_type LIKE 'task.%'
+                  AND a.event_type = 'task.' || (a.details->>'to_status')
+            )
+            SELECT status, entered_at, exited_at FROM ordered ORDER BY entered_at
+            """
+        )
+        rows = (await self.session.execute(sql, {"tid": str(task_id)})).all()
+        return [(r.status, r.entered_at, r.exited_at or close_at) for r in rows]
+
+    async def _task_fail_counts(self, task_id: UUID) -> tuple[int, int]:
+        """(qa_fails, pr_fails) attributed to this task from named audit events."""
+        rows = (
+            await self.session.execute(
+                select(AuditLogTable.event_type, func.count())
+                .where(
+                    AuditLogTable.target_id == task_id,
+                    AuditLogTable.event_type.in_(["task.qa_fail", "task.pr_fail"]),
+                )
+                .group_by(AuditLogTable.event_type)
+            )
+        ).all()
+        counts = dict(rows)
+        return counts.get("task.qa_fail", 0), counts.get("task.pr_fail", 0)
+
+    async def get_task_metrics(self, task_id: UUID) -> TaskMetrics | None:
+        """Live granular metrics for one task, or None if the task doesn't exist.
+
+        Composes summed effort + turns/tool_calls/tokens/cost (spawn sessions),
+        the per-stage active-vs-wait decomposition (audit windows x stints), and
+        who-caused-rework (revision_count + named qa/pr fail events).
+        """
+        task_row = (
+            await self.session.execute(
+                select(
+                    TaskTable.started_at,
+                    TaskTable.completed_at,
+                    TaskTable.revision_count,
+                ).where(TaskTable.id == task_id)
+            )
+        ).one_or_none()
+        if task_row is None:
+            return None
+        started_at, completed_at, revision_count = task_row
+        # Close open stints / the open final stage window at completed_at for a
+        # terminal task (so stages don't grow past completion), else at now.
+        wall_end = completed_at or datetime.now(UTC)
+        wall_clock = (wall_end - started_at).total_seconds() if started_at else 0.0
+
+        spawn = await self._spawn_rollup_for_task(task_id, wall_end)
+        windows = await self._stage_windows_for_task(task_id, wall_end)
+        qa_fails, pr_fails = await self._task_fail_counts(task_id)
+        stages = compute_stage_effort(windows, spawn["stints"])
+
+        return TaskMetrics(
+            task_id=str(task_id),
+            active_runtime_seconds=spawn["active_runtime_seconds"],
+            wall_clock_seconds=round(max(0.0, wall_clock)),
+            turns=spawn["turns"],
+            tool_calls=spawn["tool_calls"],
+            tokens=spawn["tokens"],
+            cost_usd=spawn["cost_usd"],
+            revision_count=revision_count or 0,
+            qa_fails=qa_fails,
+            pr_fails=pr_fails,
+            stints=len(spawn["stints"]),
+            stages=stages,
+        )
 
     async def get_rework_metrics(
         self, team: Team | None = None, days: int = 30
