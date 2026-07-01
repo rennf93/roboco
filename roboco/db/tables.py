@@ -2320,6 +2320,63 @@ class DailyUsageRollupTable(Base):
     )
 
 
+class MemberPerformanceDailyTable(Base):
+    """Pre-aggregated daily per-member performance (the granular scorecard rollup).
+
+    One row per (date, member_kind, agent_slug), populated by the orchestrator
+    sweeper from agent_spawn_sessions + audit_log. The CEO is a first-class
+    ``member_kind='ceo'`` row with ``agent_slug=''`` (Postgres UNIQUE treats NULL
+    as distinct, so the empty string keeps the CEO row unique). Overwrite-upsert
+    on the natural key makes the sweep idempotent. All counters default 0.
+    """
+
+    __tablename__ = "member_performance_daily"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    date: Mapped[Any] = mapped_column(Date, nullable=False)  # datetime.date
+    member_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    agent_slug: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    team: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    role: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    tasks_completed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    tasks_first_pass: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    revisions_caused: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    revisions_received: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    active_runtime_seconds: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0
+    )
+    turns: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    tool_calls: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    ceo_approval_dwell_seconds: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0
+    )
+    ceo_unblock_dwell_seconds: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0
+    )
+    godmode_actions: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # The four CEO-approved extras (+ blocked_seconds).
+    qa_reviews_total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    qa_reviews_passed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    escalations: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    blocked_others: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    idle_seconds: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    blocked_seconds: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "date", "member_kind", "agent_slug", name="uq_member_perf_day"
+        ),
+        Index("ix_member_perf_date", "date"),
+        Index("ix_member_perf_agent_slug", "agent_slug"),
+        Index("ix_member_perf_team", "team"),
+        Index("ix_member_perf_kind", "member_kind"),
+    )
+
+
 # =============================================================================
 # PROMPTER TABLES
 # =============================================================================
