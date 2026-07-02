@@ -428,29 +428,13 @@ high-load-stress-test:
 	@docker compose down --rmi all --remove-orphans -v
 	@docker system prune -f
 
-# Serve docs
-.PHONY: serve-docs
-serve-docs:
-	@uv run --extra docs mkdocs serve
-	@find . | grep -E "(__pycache__|\.pyc|\.pyo|\.pytest_cache|\.ruff_cache|\.mypy_cache)" | xargs rm -rf
-
-# Build the documentation site (strict — fails on broken links / nav)
-.PHONY: build-docs
-build-docs:
-	@uv run --extra docs mkdocs build --strict
-	@find . | grep -E "(__pycache__|\.pyc|\.pyo|\.pytest_cache|\.ruff_cache|\.mypy_cache)" | xargs rm -rf
-
-# Lint documentation
-.PHONY: lint-docs
-lint-docs:
-	@uv run --extra docs pymarkdownlnt --config .pymarkdown.json scan -r docs/index.md docs/get-started docs/company docs/how-to docs/panel docs/models docs/operations docs/optional docs/deploy docs/api docs/troubleshooting
-	@find . | grep -E "(__pycache__|\.pyc|\.pyo|\.pytest_cache|\.ruff_cache|\.mypy_cache)" | xargs rm -rf
-
-# Fix documentation
-.PHONY: fix-docs
-fix-docs:
-	@uv run --extra docs pymarkdownlnt --config .pymarkdown.json fix -r docs/index.md docs/get-started docs/company docs/how-to docs/panel docs/models docs/operations docs/optional docs/deploy docs/api docs/troubleshooting
-	@find . | grep -E "(__pycache__|\.pyc|\.pyo|\.pytest_cache|\.ruff_cache|\.mypy_cache)" | xargs rm -rf
+# Regenerate the GitHub Pages redirect stubs (docs-redirects/) that replaced
+# the old MkDocs-built site — docs.roboco.tech is canonical now. Only needed
+# if a legacy URL is missing a stub; requires a restored copy of the old
+# nav-bearing mkdocs.yml (see git history) since the live one is gone.
+.PHONY: regen-docs-redirects
+regen-docs-redirects:
+	@uv run python scripts/gen_docs_redirects.py
 
 # Prune
 .PHONY: prune
@@ -514,16 +498,12 @@ help:
 	@echo "  make test-all                 - Run tests (all Python versions)"
 	@echo "  make stress-test              - Run stress test"
 	@echo ""
-	@echo "Documentation:"
-	@echo "  make serve-docs               - Serve documentation"
-	@echo "  make lint-docs                - Lint markdown files"
-	@echo ""
 	@echo "Cleanup:"
 	@echo "  make stop                     - Stop all containers"
 	@echo "  make clean                    - Clean cache files"
 	@echo "  make prune                    - Prune docker resources"
 	@echo ""
-	@echo "Full docs: https://rennf93.github.io/roboco/  (preview locally: make serve-docs)"
+	@echo "Full docs: https://docs.roboco.tech"
 
 # Python versions list
 .PHONY: show-python-versions
