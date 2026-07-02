@@ -77,6 +77,29 @@ def test_delegate_tool_covers_every_gate_required_field(
     )
 
 
+# Choreographer plan-depth gates hard-reject with `missing=[...]` naming these
+# fields (_pm_sub_tasks_gate for i_will_plan; the dev rich-plan gate for
+# i_will_work_on). The named tool must be able to send every one of them, or
+# the rejected agent can never comply — the delegate/intends_to_touch wall.
+_PLAN_GATE_FIELDS: dict[str, set[str]] = {
+    "i_will_plan": {"plan", "approach", "sub_tasks"},
+    "i_will_work_on": {"plan", "steps", "technical_considerations", "risks"},
+}
+
+
+def test_plan_gate_fields_are_tool_parameters(
+    flow_module_pm: types.ModuleType,
+) -> None:
+    """Every field a plan gate can demand exists on the corresponding tool."""
+    for verb, required in _PLAN_GATE_FIELDS.items():
+        params = set(inspect.signature(getattr(flow_module_pm, verb)).parameters)
+        missing = required - params
+        assert not missing, (
+            f"{verb} gate demands fields the MCP tool cannot send: "
+            f"{sorted(missing)} — same class as the delegate wall."
+        )
+
+
 def test_delegate_forwards_collision_surface_in_payload(
     flow_module_pm: types.ModuleType,
     monkeypatch: pytest.MonkeyPatch,
