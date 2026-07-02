@@ -567,3 +567,14 @@ The remaining live-run leak fixes from the S6/fb836f80 postmortems, TDD'd per it
 7. **Dead spawn-cooldown path deleted (CEO-ratified)** — `_safe_spawn` + `gateway_pre_spawn_check` (orchestrator) + `roboco/services/gateway/trigger_filter.py` + both test files + the dead `spawn_cooldown_seconds`/`role_spawn_rate_per_minute` settings. Never called in repo history; superseded by provider parking (in `spawn_agent`), claim guards/reaper, the respawn circuit breaker, and the notification-spawn cooldown. Rule 4 (per-task cooldown) would have queue-stalled every stage handoff if wired. `GatewayTriggerTable` kept inert (drop = future migration decision).
 
 Slices touched: orchestrator (1, 7), api-routes-schemas + taskservice (2), panel (3), choreographer/gateway-support (6, 7), tests (4, 5, 6, 7). `docs/map/_complete_map.md` still not regenerated.
+
+---
+## Delta 2026-07-02 (late) — CEO-ratified follow-ups (branch `fix/leak-fix-batch`)
+
+1. **Dead spawn-cooldown path deleted** (see item 7 above; commit `78fa0f6f`).
+2. **uv serialization in the Makefile** (`cf5043fe`) — `export UV_NO_SYNC := 1` + `sync` prerequisite on quality/quality-fast/gate: gate recipes never implicitly re-sync the venv (the recurring rich/pip/bandit corruption came from two uv writers racing one `.venv`).
+3. **`_api_base()` in git.py** (`13b9c5d4`) — 15 hardcoded `https://api.github.com` PR/merge/branch sites now honor `settings.github_api_base_url` like the CI/open-PR sites already did (GHE/test override fix; enables the smoke harness's fake GitHub).
+4. **CI split** (`db6b3088`) — ci.yml (backend `quality` only; FILE name kept — self-heal/ci-watch/release default to it), `panel-ci.yml` (panel job, `panel/**` paths), `e2e-smoke.yml` (new job). Panel-only reds now land on Panel CI, unwatched by the ci.yml-pinned engines.
+5. **e2e smoke harness** — `tests/e2e_smoke/{conftest,harness,test_dev_lifecycle}.py` + `make e2e-smoke` (env-gated `ROBOCO_E2E_SMOKE=1`, skipped in the default suite). Harness: real routers/middleware on uvicorn over the ephemeral test DB (`settings.database_*` patched + `_DbHolder` reset), bare origin at `<tmp>/github.com/e2e-smoke/proj.git` (satisfies `_parse_git_url`, clones tokenless), fake GitHub REST router doing real squash-merges via an admin clone, `ScriptedAgent` reloading the real MCP modules per role. Scenario 1 (leaf dev arc → awaiting_pm_review) GREEN in ~5s. Learned seams scripted: post-claim tracing gap keeps the claim; note scopes are decision/learning/note/reflect/struggle (no 'progress'); i_am_done demands during-work+handoff+reflect+per-AC artifacts; pass_review demands learning note + ac_verdicts; A2A resolves roles from the STATIC agents_config registry (seed canonical slugs: be-dev-1/be-qa/be-doc/be-pm/main-pm).
+
+Slices touched: worksession-git (3), orchestrator (1), deployment-tooling (2, 4), tests (5).

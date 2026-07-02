@@ -165,6 +165,11 @@ select = [
 # to avoid import cycles with the modules it wires (same rationale as above).
 "roboco/api/deps.py" = ["PLC0415"]
 "roboco/runtime/*.py" = ["PLC0415"]
+# The e2e smoke harness defers every roboco import until the stack fixture
+# runs, so the default (skipped) suite never pays the app-surface import
+# cost; ARG001 covers FastAPI path params the fake-GitHub handlers must
+# name but not read.
+"tests/e2e_smoke/*.py" = ["PLC0415", "ARG001"]
 # PTH119: _grok_usage_json sanitizes the agent id with os.path.basename — the
 # path-injection sanitizer CodeQL's query models; the pathlib equivalent
 # (Path(...).name) is not recognized by that query, so we keep os.path here.
