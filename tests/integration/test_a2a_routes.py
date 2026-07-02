@@ -894,6 +894,35 @@ async def test_send_chat_message_success(a2a_route_client: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_send_chat_message_over_budget_returns_403(
+    a2a_route_client: dict,
+) -> None:
+    """An over-budget reply to the CEO raises A2AAccessDeniedError from the
+    service — the route must surface 403, not crash into a 500 or fall
+    through to the ValueError->404 branch."""
+    client = a2a_route_client["client"]
+    with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
+        instance = AsyncMock()
+        instance.send_chat_message = AsyncMock(
+            side_effect=A2AAccessDeniedError(
+                from_agent="be-dev-1",
+                to_agent="ceo",
+                reason=(
+                    "you have already replied to the CEO's last message — "
+                    "wait for the CEO to respond before sending again"
+                ),
+            )
+        )
+        mock_service_cls.return_value = instance
+        response = await client.post(
+            f"/api/a2a/chat/conversations/{uuid4()}/messages",
+            json={"content": "another update"},
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.FORBIDDEN
+
+
+@pytest.mark.asyncio
 async def test_mark_read(a2a_route_client: dict) -> None:
 
     client = a2a_route_client["client"]
@@ -935,6 +964,281 @@ async def test_chat_list_with_status_filter(a2a_route_client: dict) -> None:
             "/api/a2a/chat/conversations?status=active", headers=_HDR
         )
     assert response.status_code == HTTPStatus.OK
+
+
+# ---------------------------------------------------------------------------
+# Admin / live-view endpoints (CEO-only) — GET all conversations, GET any
+# conversation's messages, POST a reply as the CEO.
+# ---------------------------------------------------------------------------
+
+
+def _set_ceo_context(app: FastAPI, dev: AgentTable) -> None:
+    """Override the agent context to the CEO so the admin live-view routes
+    admit the call (the default fixture context is a developer)."""
+
+    async def _ceo() -> AgentContext:
+        return AgentContext(
+            agent_id=cast("UUID", dev.id),
+            role=AgentRole.CEO,
+            team=None,
+            slug="ceo",
+        )
+
+    app.dependency_overrides[get_agent_context] = _ceo
+
+
+def _admin_conv_obj(
+    *,
+    conv_id: UUID,
+    agent_a: str = "be-dev-1",
+    agent_b: str = "fe-dev-1",
+    task_id: UUID | None = None,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=str(conv_id),
+        agent_a=agent_a,
+        agent_b=agent_b,
+        topic=None,
+        task_id=str(task_id) if task_id else None,
+        status="active",
+        resolution=None,
+        message_count=2,
+        unread_by_a=0,
+        unread_by_b=0,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+        last_message_at=datetime.now(UTC),
+        last_message_preview="hi there",
+    )
+
+
+@pytest.mark.asyncio
+async def test_admin_list_conversations_forbidden_for_non_ceo(
+    a2a_route_client: dict,
+) -> None:
+    client = a2a_route_client["client"]
+    response = await client.get("/api/a2a/chat/admin/conversations", headers=_HDR)
+    assert response.status_code == HTTPStatus.FORBIDDEN
+
+
+@pytest.mark.asyncio
+async def test_admin_get_messages_forbidden_for_non_ceo(
+    a2a_route_client: dict,
+) -> None:
+    client = a2a_route_client["client"]
+    response = await client.get(
+        f"/api/a2a/chat/admin/conversations/{uuid4()}/messages", headers=_HDR
+    )
+    assert response.status_code == HTTPStatus.FORBIDDEN
+
+
+@pytest.mark.asyncio
+async def test_admin_reply_forbidden_for_non_ceo(a2a_route_client: dict) -> None:
+    client = a2a_route_client["client"]
+    response = await client.post(
+        f"/api/a2a/chat/admin/conversations/{uuid4()}/reply",
+        json={"to_agent": "be-dev-1", "content": "hi"},
+        headers=_HDR,
+    )
+    assert response.status_code == HTTPStatus.FORBIDDEN
+
+
+@pytest.mark.asyncio
+async def test_admin_list_conversations_as_ceo(a2a_route_client: dict) -> None:
+    """CEO sees conversations it is not itself a participant in."""
+    app = a2a_route_client["app"]
+    dev = a2a_route_client["dev"]
+    client = a2a_route_client["client"]
+    _set_ceo_context(app, dev)
+
+    conv = _admin_conv_obj(conv_id=uuid4())
+    with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
+        instance = AsyncMock()
+        instance.list_conversations_admin = AsyncMock(return_value=[conv])
+        mock_service_cls.return_value = instance
+        response = await client.get(
+            "/api/a2a/chat/admin/conversations?limit=10", headers=_HDR
+        )
+    assert response.status_code == HTTPStatus.OK
+    instance.list_conversations_admin.assert_awaited_once_with(10)
+    body = response.json()
+    assert body["total"] == 1
+    assert body["items"][0]["agent_a"] == "be-dev-1"
+    assert body["items"][0]["agent_b"] == "fe-dev-1"
+
+
+@pytest.mark.asyncio
+async def test_admin_get_messages_as_ceo_returns_full_transcript(
+    a2a_route_client: dict,
+) -> None:
+    """The route uses get_messages_admin — the participant-bypassing
+    accessor — not the ordinary get_messages()."""
+    app = a2a_route_client["app"]
+    dev = a2a_route_client["dev"]
+    client = a2a_route_client["client"]
+    _set_ceo_context(app, dev)
+
+    conv_id = uuid4()
+    msg = SimpleNamespace(
+        id=uuid4(),
+        conversation_id=conv_id,
+        from_agent="be-dev-1",
+        content="hello",
+        message_kind="message",
+        response_to_id=None,
+        requires_response=False,
+        read_at=None,
+        created_at=datetime.now(UTC),
+        edited_at=None,
+    )
+    with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
+        instance = AsyncMock()
+        instance.get_messages_admin = AsyncMock(return_value=[msg, msg])
+        mock_service_cls.return_value = instance
+        response = await client.get(
+            f"/api/a2a/chat/admin/conversations/{conv_id}/messages", headers=_HDR
+        )
+    assert response.status_code == HTTPStatus.OK
+    instance.get_messages_admin.assert_awaited_once()
+    body = response.json()
+    _EXPECTED_MESSAGES = 2
+    assert body["total"] == _EXPECTED_MESSAGES
+    assert not body["has_more"]
+
+
+@pytest.mark.asyncio
+async def test_admin_reply_unknown_conversation_404(a2a_route_client: dict) -> None:
+    app = a2a_route_client["app"]
+    dev = a2a_route_client["dev"]
+    client = a2a_route_client["client"]
+    _set_ceo_context(app, dev)
+
+    with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
+        instance = AsyncMock()
+        instance.get_conversation_admin = AsyncMock(return_value=None)
+        mock_service_cls.return_value = instance
+        response = await client.post(
+            f"/api/a2a/chat/admin/conversations/{uuid4()}/reply",
+            json={"to_agent": "be-dev-1", "content": "hi"},
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_admin_reply_non_participant_target_400(a2a_route_client: dict) -> None:
+    app = a2a_route_client["app"]
+    dev = a2a_route_client["dev"]
+    client = a2a_route_client["client"]
+    _set_ceo_context(app, dev)
+
+    conv_id = uuid4()
+    task_id = uuid4()
+    conv = _admin_conv_obj(conv_id=conv_id, task_id=task_id)
+    with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
+        instance = AsyncMock()
+        instance.get_conversation_admin = AsyncMock(return_value=conv)
+        mock_service_cls.return_value = instance
+        response = await client.post(
+            f"/api/a2a/chat/admin/conversations/{conv_id}/reply",
+            json={"to_agent": "ghost-agent", "content": "hi"},
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.BAD_REQUEST
+
+
+@pytest.mark.asyncio
+async def test_admin_reply_no_task_id_400(a2a_route_client: dict) -> None:
+    app = a2a_route_client["app"]
+    dev = a2a_route_client["dev"]
+    client = a2a_route_client["client"]
+    _set_ceo_context(app, dev)
+
+    conv_id = uuid4()
+    conv = _admin_conv_obj(conv_id=conv_id, task_id=None)
+    with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
+        instance = AsyncMock()
+        instance.get_conversation_admin = AsyncMock(return_value=conv)
+        mock_service_cls.return_value = instance
+        response = await client.post(
+            f"/api/a2a/chat/admin/conversations/{conv_id}/reply",
+            json={"to_agent": "be-dev-1", "content": "hi"},
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.BAD_REQUEST
+
+
+@pytest.mark.asyncio
+async def test_admin_reply_success(a2a_route_client: dict) -> None:
+    app = a2a_route_client["app"]
+    dev = a2a_route_client["dev"]
+    client = a2a_route_client["client"]
+    _set_ceo_context(app, dev)
+
+    conv_id = uuid4()
+    task_id = uuid4()
+    conv = _admin_conv_obj(conv_id=conv_id, task_id=task_id)
+    sent_msg = SimpleNamespace(
+        id=uuid4(),
+        conversation_id=conv_id,
+        from_agent="ceo",
+        content="chiming in",
+        message_kind="message",
+        response_to_id=None,
+        requires_response=False,
+        read_at=None,
+        created_at=datetime.now(UTC),
+        edited_at=None,
+    )
+    with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
+        instance = AsyncMock()
+        instance.get_conversation_admin = AsyncMock(return_value=conv)
+        instance.send = AsyncMock(return_value=sent_msg)
+        mock_service_cls.return_value = instance
+        response = await client.post(
+            f"/api/a2a/chat/admin/conversations/{conv_id}/reply",
+            json={"to_agent": "be-dev-1", "content": "chiming in"},
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.CREATED
+    instance.send.assert_awaited_once()
+    call_kwargs = instance.send.await_args.kwargs
+    assert call_kwargs["to_agent"] == "be-dev-1"
+    assert call_kwargs["task_id"] == task_id
+    assert call_kwargs["body"] == "chiming in"
+    body = response.json()
+    assert body["content"] == "chiming in"
+
+
+@pytest.mark.asyncio
+async def test_admin_reply_access_denied_maps_to_403(a2a_route_client: dict) -> None:
+    """Defensive: if send() ever rejects a CEO-authored A2A, surface 403
+    rather than crash — mirrors create_conversation's handling."""
+    app = a2a_route_client["app"]
+    dev = a2a_route_client["dev"]
+    client = a2a_route_client["client"]
+    _set_ceo_context(app, dev)
+
+    conv_id = uuid4()
+    task_id = uuid4()
+    conv = _admin_conv_obj(conv_id=conv_id, task_id=task_id)
+    with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
+        instance = AsyncMock()
+        instance.get_conversation_admin = AsyncMock(return_value=conv)
+        instance.send = AsyncMock(
+            side_effect=A2AAccessDeniedError(
+                from_agent="ceo",
+                to_agent="be-dev-1",
+                reason="denied",
+            )
+        )
+        mock_service_cls.return_value = instance
+        response = await client.post(
+            f"/api/a2a/chat/admin/conversations/{conv_id}/reply",
+            json={"to_agent": "be-dev-1", "content": "hi"},
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.FORBIDDEN
 
 
 # ---------------------------------------------------------------------------

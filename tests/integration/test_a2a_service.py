@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, patch
@@ -32,7 +32,8 @@ from roboco.models.base import (
     TaskStatus,
     TaskType,
 )
-from roboco.services.a2a import A2AService
+from roboco.models.events import EventType
+from roboco.services.a2a import _LIVE_VIEW_EXCERPT_CHARS, A2AService
 from sqlalchemy import select
 from sqlalchemy import select as _sel
 
@@ -439,6 +440,353 @@ async def test_send_records_skill_on_message_for_receiver(a2a_setup: dict) -> No
     inbox = await svc.get_messages(UUID(sent.conversation_id), "be-qa")
     assert inbox
     assert inbox[-1].skill == "code_review"
+
+
+@pytest.mark.asyncio
+async def test_send_publishes_a2a_message_sent_event_when_bus_connected(
+    a2a_setup: dict,
+) -> None:
+    """A2AService.send() is the gateway's one publish point for A2A chat — it
+    must fan an A2A_MESSAGE_SENT event so the CEO's live view (operator
+    /ws/system stream) sees every directed agent-to-agent message."""
+    svc = a2a_setup["svc"]
+    dev = a2a_setup["dev"]
+    task_id = a2a_setup["task_id"]
+    mock_bus = AsyncMock()
+    mock_bus.is_connected = lambda: True
+    mock_bus.publish = AsyncMock(return_value=None)
+    with patch("roboco.services.a2a.get_event_bus", return_value=mock_bus):
+        sent = await svc.send(
+            from_agent=dev.id,
+            to_agent="be-qa",
+            task_id=task_id,
+            body="please review",
+            skill="code_review",
+        )
+    mock_bus.publish.assert_awaited()
+    published = mock_bus.publish.await_args.args[0]
+    assert published.type is EventType.A2A_MESSAGE_SENT
+    data = published.data
+    assert data["conversation_id"] == sent.conversation_id
+    assert data["message_id"] == sent.id
+    assert data["task_id"] == str(task_id)
+    assert data["from_agent"] == "be-dev-1"
+    assert data["to_agent"] == "be-qa"
+    assert data["skill"] == "code_review"
+    assert data["body_excerpt"] == "please review"
+    assert data["timestamp"] == sent.created_at.isoformat()
+
+
+@pytest.mark.asyncio
+async def test_send_excerpts_long_body_in_event(a2a_setup: dict) -> None:
+    """The WS live-view frame carries a capped excerpt, not the full body —
+    but the persisted message keeps the full untruncated text (readable via
+    the existing REST message endpoints)."""
+    svc = a2a_setup["svc"]
+    dev = a2a_setup["dev"]
+    task_id = a2a_setup["task_id"]
+    long_body = "x" * (_LIVE_VIEW_EXCERPT_CHARS + 100)
+    mock_bus = AsyncMock()
+    mock_bus.is_connected = lambda: True
+    mock_bus.publish = AsyncMock(return_value=None)
+    with patch("roboco.services.a2a.get_event_bus", return_value=mock_bus):
+        sent = await svc.send(
+            from_agent=dev.id,
+            to_agent="be-qa",
+            task_id=task_id,
+            body=long_body,
+        )
+    published = mock_bus.publish.await_args.args[0]
+    assert published.type is EventType.A2A_MESSAGE_SENT
+    excerpt = published.data["body_excerpt"]
+    assert len(excerpt) < len(long_body)
+    assert excerpt.endswith("…")
+    # Full body survives untruncated in persistent storage.
+    assert sent.content == long_body
+    stored = await svc.get_messages(UUID(sent.conversation_id), "be-qa")
+    assert stored[-1].content == long_body
+
+
+@pytest.mark.asyncio
+async def test_send_bus_failure_does_not_break_send(a2a_setup: dict) -> None:
+    """A bus outage during the A2A_MESSAGE_SENT publish is logged but never
+    rolls back the persisted message — live delivery is best-effort."""
+    svc = a2a_setup["svc"]
+    dev = a2a_setup["dev"]
+    task_id = a2a_setup["task_id"]
+    with patch(
+        "roboco.services.a2a.get_event_bus",
+        side_effect=RuntimeError("bus down"),
+    ):
+        sent = await svc.send(
+            from_agent=dev.id,
+            to_agent="be-qa",
+            task_id=task_id,
+            body="hello",
+        )
+    assert sent.id is not None
+    assert sent.content == "hello"
+
+
+# ---------------------------------------------------------------------------
+# Admin (CEO live view) service methods — no participant filter
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_conversations_admin_includes_non_participant_pairs(
+    a2a_setup: dict,
+) -> None:
+    """The CEO's live view has no participant filter — it must show
+    conversations between two agents where the CEO is not itself a party."""
+    svc = a2a_setup["svc"]
+    conv1 = await svc.get_or_create_conversation("be-dev-1", "be-qa")
+    conv2 = await svc.get_or_create_conversation("fe-dev-1", "fe-qa")
+
+    summaries = await svc.list_conversations_admin(limit=50)
+
+    ids = {s.id for s in summaries}
+    assert conv1.id in ids
+    assert conv2.id in ids
+    pairs = {(s.agent_a, s.agent_b) for s in summaries}
+    assert ("be-dev-1", "be-qa") in pairs
+    assert ("fe-dev-1", "fe-qa") in pairs
+
+
+@pytest.mark.asyncio
+async def test_list_conversations_admin_orders_most_recent_first_and_bounds(
+    a2a_setup: dict,
+) -> None:
+    """Most-recent-first ordering and a hard limit — proven by forcing
+    distinguishable updated_at values across three seeded conversations."""
+    svc = a2a_setup["svc"]
+    db = a2a_setup["db"]
+    conv_a = await svc.get_or_create_conversation("be-dev-1", "be-qa")
+    conv_b = await svc.get_or_create_conversation("fe-dev-1", "fe-qa")
+    conv_c = await svc.get_or_create_conversation("ux-dev-1", "ux-qa")
+
+    now = datetime.now(UTC)
+    for conv_id, offset in (
+        (conv_a.id, timedelta(minutes=-10)),
+        (conv_b.id, timedelta(minutes=-5)),
+        (conv_c.id, timedelta(minutes=0)),
+    ):
+        row = await db.get(A2AConversationTable, UUID(conv_id))
+        assert row is not None
+        row.updated_at = now + offset
+    await db.flush()
+
+    summaries = await svc.list_conversations_admin(limit=2)
+
+    _LIMIT = 2
+    assert len(summaries) == _LIMIT
+    assert [s.id for s in summaries] == [conv_c.id, conv_b.id]
+
+
+@pytest.mark.asyncio
+async def test_get_messages_admin_returns_full_transcript_for_non_participant(
+    a2a_setup: dict,
+) -> None:
+    """The plain get_messages() denies a non-participant (returns []); the
+    admin bypass returns the full transcript regardless — the exact behavior
+    a normal agent-scoped call cannot give the CEO today."""
+    svc = a2a_setup["svc"]
+    conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
+    cid = UUID(conv.id)
+    await svc.send_chat_message(cid, "be-dev-1", "hello")
+    await svc.send_chat_message(cid, "be-qa", "hi back")
+
+    as_ceo_scoped = await svc.get_messages(cid, "ceo")
+    assert as_ceo_scoped == []
+
+    admin_view = await svc.get_messages_admin(cid)
+    _EXPECTED = 2
+    assert len(admin_view) == _EXPECTED
+    assert admin_view[0].content == "hello"
+    assert admin_view[1].content == "hi back"
+
+
+@pytest.mark.asyncio
+async def test_get_messages_admin_unknown_conversation_returns_empty(
+    a2a_setup: dict,
+) -> None:
+    svc = a2a_setup["svc"]
+    assert await svc.get_messages_admin(uuid4()) == []
+
+
+@pytest.mark.asyncio
+async def test_get_conversation_admin_returns_conversation_ceo_not_part_of(
+    a2a_setup: dict,
+) -> None:
+    svc = a2a_setup["svc"]
+    conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
+
+    fetched = await svc.get_conversation_admin(UUID(conv.id))
+
+    assert fetched is not None
+    assert fetched.id == conv.id
+    assert fetched.agent_a == "be-dev-1"
+    assert fetched.agent_b == "be-qa"
+
+
+@pytest.mark.asyncio
+async def test_get_conversation_admin_returns_none_for_unknown(
+    a2a_setup: dict,
+) -> None:
+    svc = a2a_setup["svc"]
+    assert await svc.get_conversation_admin(uuid4()) is None
+
+
+# ---------------------------------------------------------------------------
+# CEO reply-only budget — an agent may only reply to the CEO inside a
+# conversation the CEO itself opened, and only up to the CEO's own message
+# count in that conversation.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_send_to_ceo_without_existing_conversation_denied(
+    a2a_setup: dict,
+) -> None:
+    """An agent can never INITIATE a CEO conversation via the gateway
+    send() adapter — only reply inside one the CEO already opened."""
+    svc = a2a_setup["svc"]
+    dev = a2a_setup["dev"]
+    task_id = a2a_setup["task_id"]
+    with pytest.raises(A2AAccessDeniedError):
+        await svc.send(from_agent=dev.id, to_agent="ceo", task_id=task_id, body="hi")
+
+
+@pytest.mark.asyncio
+async def test_ceo_can_post_consecutive_messages_no_budget(a2a_setup: dict) -> None:
+    """CEO -> agent direction is unrestricted — no budget applies to CEO
+    sends, so the CEO may post twice in a row with no reply in between."""
+    svc = a2a_setup["svc"]
+    conv = await svc.get_or_create_conversation("ceo", "be-dev-1")
+    cid = UUID(conv.id)
+    await svc.send_chat_message(cid, "ceo", "first")
+    second = await svc.send_chat_message(cid, "ceo", "second, no reply needed yet")
+    assert second.content == "second, no reply needed yet"
+
+
+@pytest.mark.asyncio
+async def test_ceo_reply_budget_first_reply_allowed(a2a_setup: dict) -> None:
+    svc = a2a_setup["svc"]
+    conv = await svc.get_or_create_conversation("ceo", "be-dev-1")
+    cid = UUID(conv.id)
+    await svc.send_chat_message(cid, "ceo", "hi dev")
+    reply = await svc.send_chat_message(cid, "be-dev-1", "on it")
+    assert reply.content == "on it"
+
+
+@pytest.mark.asyncio
+async def test_ceo_reply_budget_second_reply_without_new_ceo_message_rejected(
+    a2a_setup: dict,
+) -> None:
+    svc = a2a_setup["svc"]
+    conv = await svc.get_or_create_conversation("ceo", "be-dev-1")
+    cid = UUID(conv.id)
+    await svc.send_chat_message(cid, "ceo", "hi dev")
+    await svc.send_chat_message(cid, "be-dev-1", "on it")
+    with pytest.raises(A2AAccessDeniedError, match="already replied"):
+        await svc.send_chat_message(cid, "be-dev-1", "another update")
+
+
+@pytest.mark.asyncio
+async def test_ceo_reply_budget_refreshes_after_new_ceo_message(
+    a2a_setup: dict,
+) -> None:
+    svc = a2a_setup["svc"]
+    conv = await svc.get_or_create_conversation("ceo", "be-dev-1")
+    cid = UUID(conv.id)
+    await svc.send_chat_message(cid, "ceo", "hi dev")
+    await svc.send_chat_message(cid, "be-dev-1", "on it")
+    await svc.send_chat_message(cid, "ceo", "any update?")
+    reply2 = await svc.send_chat_message(cid, "be-dev-1", "done!")
+    assert reply2.content == "done!"
+
+
+@pytest.mark.asyncio
+async def test_ceo_reply_budget_independent_across_conversations(
+    a2a_setup: dict,
+) -> None:
+    """The a2a_conversations model is strictly pairwise — a literal 3-party
+    thread can't exist. Adapted form: two agents each in their OWN
+    conversation with the CEO get independent budgets; one agent exhausting
+    its budget must not affect the other's."""
+    svc = a2a_setup["svc"]
+    conv_dev = await svc.get_or_create_conversation("ceo", "be-dev-1")
+    conv_qa = await svc.get_or_create_conversation("ceo", "be-qa")
+    cid_dev = UUID(conv_dev.id)
+    cid_qa = UUID(conv_qa.id)
+
+    await svc.send_chat_message(cid_dev, "ceo", "dev, status?")
+    await svc.send_chat_message(cid_qa, "ceo", "qa, status?")
+
+    await svc.send_chat_message(cid_dev, "be-dev-1", "on it")
+    with pytest.raises(A2AAccessDeniedError):
+        await svc.send_chat_message(cid_dev, "be-dev-1", "again")
+
+    # qa's independent budget is untouched by dev's exhausted one.
+    qa_reply = await svc.send_chat_message(cid_qa, "be-qa", "on it too")
+    assert qa_reply.content == "on it too"
+
+
+@pytest.mark.asyncio
+async def test_ceo_reply_dedup_before_budget_check(a2a_setup: dict) -> None:
+    """Dedup runs BEFORE the budget check: a respawned agent re-sending its
+    identical unread reply gets the existing row back idempotently — never a
+    budget error — even once the agent has exhausted its reply budget."""
+    svc = a2a_setup["svc"]
+    conv = await svc.get_or_create_conversation("ceo", "be-dev-1")
+    cid = UUID(conv.id)
+    await svc.send_chat_message(cid, "ceo", "status?")
+    first = await svc.send_chat_message(cid, "be-dev-1", "on it")
+    # Budget is now exhausted (agent_count == ceo_count == 1); an identical
+    # resend must still dedup instead of hitting the budget gate.
+    again = await svc.send_chat_message(cid, "be-dev-1", "on it")
+    assert again.id == first.id
+
+
+@pytest.mark.asyncio
+async def test_send_to_ceo_via_gateway_when_ceo_opened_conversation(
+    a2a_setup: dict,
+) -> None:
+    """Once the CEO has opened a conversation with the agent, the gateway
+    send() adapter finds it directly — bypassing
+    get_or_create_conversation's validate-first gate, which would otherwise
+    deny even a legitimate reply — and the reply persists under budget."""
+    svc = a2a_setup["svc"]
+    dev = a2a_setup["dev"]
+    task_id = a2a_setup["task_id"]
+    conv = await svc.get_or_create_conversation("ceo", "be-dev-1")
+    await svc.send_chat_message(UUID(conv.id), "ceo", "status?")
+
+    reply = await svc.send(
+        from_agent=dev.id, to_agent="ceo", task_id=task_id, body="on it"
+    )
+    assert reply.content == "on it"
+    assert reply.from_agent == "be-dev-1"
+
+
+@pytest.mark.asyncio
+async def test_send_publishes_only_after_persist_not_on_reply_denial(
+    a2a_setup: dict,
+) -> None:
+    """A rejected send (no existing CEO conversation) must never publish
+    A2A_MESSAGE_SENT — the event is a record of a persisted message."""
+    svc = a2a_setup["svc"]
+    dev = a2a_setup["dev"]
+    task_id = a2a_setup["task_id"]
+    mock_bus = AsyncMock()
+    mock_bus.is_connected = lambda: True
+    mock_bus.publish = AsyncMock(return_value=None)
+    with (
+        patch("roboco.services.a2a.get_event_bus", return_value=mock_bus),
+        pytest.raises(A2AAccessDeniedError),
+    ):
+        await svc.send(from_agent=dev.id, to_agent="ceo", task_id=task_id, body="hi")
+    mock_bus.publish.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

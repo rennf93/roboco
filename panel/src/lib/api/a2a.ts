@@ -58,6 +58,57 @@ export interface A2AStreamChunk {
   is_final: boolean;
 }
 
+/** Summary row for the CEO's admin view of an agent-to-agent conversation. */
+export interface AdminConversationSummary {
+  id: string;
+  agent_a: string;
+  agent_b: string;
+  topic: string | null;
+  task_id: string | null;
+  status: string;
+  message_count: number;
+  last_message_at: string | null;
+  last_message_preview: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** One persisted A2A chat message (full body — WS frames only carry excerpts). */
+export interface A2AChatMessage {
+  id: string;
+  conversation_id: string;
+  from_agent: string;
+  content: string;
+  message_kind: string;
+  response_to_id: string | null;
+  requires_response: boolean;
+  read_at: string | null;
+  created_at: string;
+  edited_at: string | null;
+}
+
+/**
+ * CEO reply payload. The backend sends a DIRECT CEO -> to_agent message (it
+ * lands in the CEO<->to_agent pairwise conversation), not an injection into
+ * the watched transcript.
+ */
+export interface AdminReplyRequest {
+  to_agent: string;
+  content: string;
+  skill?: string | null;
+}
+
+export interface AdminConversationListResponse {
+  items: AdminConversationSummary[];
+  total: number;
+}
+
+export interface AdminMessageListResponse {
+  items: A2AChatMessage[];
+  total: number;
+  has_more: boolean;
+}
+
 // =============================================================================
 // API Client
 // =============================================================================
@@ -195,6 +246,108 @@ export const a2aApi = {
       };
     }
     const { data } = await api.get<A2AAgentCard>(`/a2a/agents/${agentId}/card`);
+    return data;
+  },
+
+  // ===========================================================================
+  // ADMIN (CEO) ENDPOINTS — A2A live view
+  // ===========================================================================
+
+  /**
+   * List agent<->agent conversations, most-recent-first (CEO-only).
+   */
+  listAdminConversations: async (
+    limit: number = 50,
+  ): Promise<AdminConversationListResponse> => {
+    if (isMockMode()) {
+      const now = new Date().toISOString();
+      return {
+        items: [
+          {
+            id: "mock-conversation-1",
+            agent_a: "be-dev-1",
+            agent_b: "be-qa",
+            topic: "QA handoff",
+            task_id: null,
+            status: "active",
+            message_count: 3,
+            last_message_at: now,
+            last_message_preview: "Tests are green on the branch.",
+            created_at: now,
+            updated_at: now,
+          },
+        ],
+        total: 1,
+      };
+    }
+    const { data } = await api.get<AdminConversationListResponse>(
+      "/a2a/chat/admin/conversations",
+      { params: { limit } },
+    );
+    return data;
+  },
+
+  /**
+   * List a conversation's messages, chronological oldest-first (CEO-only).
+   */
+  listAdminMessages: async (
+    conversationId: string,
+    limit: number = 100,
+  ): Promise<AdminMessageListResponse> => {
+    if (isMockMode()) {
+      const now = new Date().toISOString();
+      return {
+        items: [
+          {
+            id: "mock-a2a-message-1",
+            conversation_id: conversationId,
+            from_agent: "be-dev-1",
+            content: "Branch is ready for QA.",
+            message_kind: "text",
+            response_to_id: null,
+            requires_response: false,
+            read_at: null,
+            created_at: now,
+            edited_at: null,
+          },
+        ],
+        total: 1,
+        has_more: false,
+      };
+    }
+    const { data } = await api.get<AdminMessageListResponse>(
+      `/a2a/chat/admin/conversations/${conversationId}/messages`,
+      { params: { limit } },
+    );
+    return data;
+  },
+
+  /**
+   * Send a CEO reply. Lands in the CEO<->to_agent pairwise conversation (the
+   * A2A model is strictly pairwise), NOT inside the watched transcript.
+   */
+  replyAsCeo: async (
+    conversationId: string,
+    request: AdminReplyRequest,
+  ): Promise<A2AChatMessage> => {
+    if (isMockMode()) {
+      return {
+        id: `mock-reply-${Date.now()}`,
+        conversation_id: conversationId,
+        from_agent: "ceo",
+        content: request.content,
+        message_kind: "text",
+        response_to_id: null,
+        requires_response: false,
+        read_at: null,
+        created_at: new Date().toISOString(),
+        edited_at: null,
+      };
+    }
+    const { data } = await api.post<A2AChatMessage>(
+      `/a2a/chat/admin/conversations/${conversationId}/reply`,
+      request,
+    );
     return data;
   },
 };

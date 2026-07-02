@@ -7,8 +7,8 @@ Provides business logic for A2A protocol operations including:
 - Message handling and routing
 """
 
-from datetime import datetime
-from typing import Any, cast
+from datetime import UTC, datetime
+from typing import Any, Final, cast
 from uuid import UUID
 
 import structlog
@@ -23,12 +23,13 @@ from roboco.db.tables import (
     AgentTable,
     TaskTable,
 )
-from roboco.enforcement import validate_a2a_access
+from roboco.enforcement import A2AAccessDeniedError, validate_a2a_access
 from roboco.events import Event, EventType, get_event_bus
 from roboco.models.a2a import (
     A2AArtifact,
     A2AChatMessage,
     A2AConversation,
+    A2AConversationAdminSummary,
     A2AConversationStatus,
     A2AConversationSummary,
     A2AInboxSummary,
@@ -50,6 +51,17 @@ from roboco.models.base import Team
 from roboco.seeds.initial_data import AGENT_UUIDS
 
 logger = structlog.get_logger()
+
+# The A2A_MESSAGE_SENT WS frame (operator live view) carries a briefing-sized
+# excerpt only — the full body remains readable via the existing REST message
+# endpoints, so the live stream doesn't balloon on long A2A bodies.
+_LIVE_VIEW_EXCERPT_CHARS: Final[int] = 240
+
+
+def _excerpt(text: str, limit: int = _LIVE_VIEW_EXCERPT_CHARS) -> str:
+    """Truncate ``text`` to ``limit`` chars, appending an ellipsis marker
+    only when truncation actually happened."""
+    return text if len(text) <= limit else text[:limit].rstrip() + "…"
 
 
 class A2AService:
@@ -931,6 +943,26 @@ class A2AService:
 
         return self._conv_to_model(conv)
 
+    async def get_conversation_admin(
+        self,
+        conversation_id: UUID,
+    ) -> A2AConversation | None:
+        """Get a conversation by ID with NO participant check.
+
+        The CEO's live view needs to look up (and reply into) any
+        conversation, including ones it is not itself a party to — unlike
+        ``get_conversation``, which gates on membership.
+        """
+        result = await self.session.execute(
+            select(A2AConversationTable).where(
+                A2AConversationTable.id == conversation_id
+            )
+        )
+        conv = result.scalar_one_or_none()
+        if conv is None:
+            return None
+        return self._conv_to_model(conv)
+
     async def list_conversations(
         self,
         agent_slug: str,
@@ -1012,6 +1044,54 @@ class A2AService:
 
         return summaries
 
+    async def _last_message(self, conversation_id: UUID) -> A2AMessageTable | None:
+        """Most recent message row in a conversation, or None."""
+        result = await self.session.execute(
+            select(A2AMessageTable)
+            .where(A2AMessageTable.conversation_id == conversation_id)
+            .order_by(A2AMessageTable.created_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def list_conversations_admin(
+        self, limit: int = 50
+    ) -> list[A2AConversationAdminSummary]:
+        """ALL conversations across every agent pair, most-recent-first, bounded.
+
+        No participant filter — this is the CEO's org-wide live view, not a
+        per-agent inbox. Reuses the same last-message-preview lookup as
+        ``list_conversations``.
+        """
+        query = (
+            select(A2AConversationTable)
+            .order_by(A2AConversationTable.updated_at.desc())
+            .limit(limit)
+        )
+        result = await self.session.execute(query)
+        conversations = result.scalars().all()
+
+        summaries = []
+        for conv in conversations:
+            last_msg = await self._last_message(cast("UUID", conv.id))
+            summaries.append(
+                A2AConversationAdminSummary(
+                    id=str(conv.id),
+                    agent_a=conv.agent_a,
+                    agent_b=conv.agent_b,
+                    topic=conv.topic,
+                    task_id=str(conv.task_id) if conv.task_id else None,
+                    status=conv.status,
+                    message_count=conv.message_count,
+                    last_message_at=conv.last_message_at,
+                    last_message_preview=(last_msg.content[:100] if last_msg else None),
+                    created_at=conv.created_at,
+                    updated_at=conv.updated_at,
+                )
+            )
+
+        return summaries
+
     async def close_conversation(
         self,
         conversation_id: UUID,
@@ -1041,6 +1121,54 @@ class A2AService:
             conversation_id=str(conversation_id),
             by_agent=agent_slug,
         )
+
+    async def _enforce_ceo_reply_budget(
+        self,
+        conv: A2AConversationTable,
+        conversation_id: UUID,
+        from_agent: str,
+    ) -> None:
+        """Reply-then-wait budget on the CEO's inbox — the one stateful gate
+        the stateless ``can_a2a_direct`` matrix can't see (it only blocks
+        conversation *creation*, unconditionally, as defense-in-depth).
+
+        An agent may message the CEO only inside a conversation the CEO
+        itself opened, and only up to the CEO's own message count there:
+        reject when the agent's message count >= the CEO's message count.
+        No-op for CEO-authored sends or conversations the CEO isn't part of.
+        """
+        other = conv.agent_b if from_agent == conv.agent_a else conv.agent_a
+        if other != "ceo" or from_agent == "ceo":
+            return
+
+        from sqlalchemy import func
+
+        agent_count = await self.session.scalar(
+            select(func.count())
+            .select_from(A2AMessageTable)
+            .where(
+                A2AMessageTable.conversation_id == conversation_id,
+                A2AMessageTable.from_agent == from_agent,
+            )
+        )
+        ceo_count = await self.session.scalar(
+            select(func.count())
+            .select_from(A2AMessageTable)
+            .where(
+                A2AMessageTable.conversation_id == conversation_id,
+                A2AMessageTable.from_agent == "ceo",
+            )
+        )
+        if (agent_count or 0) >= (ceo_count or 0):
+            raise A2AAccessDeniedError(
+                from_agent=from_agent,
+                to_agent="ceo",
+                reason=(
+                    "you have already replied to the CEO's last message — "
+                    "wait for the CEO to respond before sending again"
+                ),
+                route_hint="Wait for the CEO to post again in this conversation.",
+            )
 
     async def send_chat_message(
         self,
@@ -1118,6 +1246,8 @@ class A2AService:
             )
             return self._msg_to_model(dup)
 
+        await self._enforce_ceo_reply_budget(conv, conversation_id, from_agent)
+
         # Create message
         msg = A2AMessageTable(
             conversation_id=conversation_id,
@@ -1188,6 +1318,41 @@ class A2AService:
         messages = result.scalars().all()
 
         # Return in chronological order
+        return [self._msg_to_model(m) for m in reversed(list(messages))]
+
+    async def get_messages_admin(
+        self,
+        conversation_id: UUID,
+        limit: int = 100,
+        before: datetime | None = None,
+    ) -> list[A2AChatMessage]:
+        """Like ``get_messages`` but WITHOUT the participant check — the CEO
+        can read any conversation's transcript for the live view. Returns
+        ``[]`` only when the conversation truly doesn't exist.
+        """
+        conv_result = await self.session.execute(
+            select(A2AConversationTable).where(
+                A2AConversationTable.id == conversation_id
+            )
+        )
+        conv = conv_result.scalar_one_or_none()
+
+        if conv is None:
+            return []
+
+        query = (
+            select(A2AMessageTable)
+            .where(A2AMessageTable.conversation_id == conversation_id)
+            .order_by(A2AMessageTable.created_at.desc())
+            .limit(limit)
+        )
+
+        if before:
+            query = query.where(A2AMessageTable.created_at < before)
+
+        result = await self.session.execute(query)
+        messages = result.scalars().all()
+
         return [self._msg_to_model(m) for m in reversed(list(messages))]
 
     async def mark_read(
@@ -1432,6 +1597,38 @@ class A2AService:
             raise ValueError(f"Agent not found for id {agent_id}")
         return str(slug)
 
+    async def _get_conversation_for_reply_to_ceo(
+        self, from_slug: str, to_slug: str
+    ) -> A2AConversation:
+        """Resolve the conversation for an agent replying to the CEO.
+
+        Agents can never CREATE a CEO conversation (the matrix blocks
+        initiation unconditionally), so an existing pair conversation's mere
+        presence proves the CEO opened it. Looked up directly here —
+        bypassing ``get_or_create_conversation``'s validate-first gate,
+        which would otherwise deny even a legitimate reply.
+        """
+        a, b = self._canonical_pair(from_slug, to_slug)
+        result = await self.session.execute(
+            select(A2AConversationTable).where(
+                A2AConversationTable.agent_a == a,
+                A2AConversationTable.agent_b == b,
+                A2AConversationTable.topic.is_(None),
+            )
+        )
+        conv = result.scalar_one_or_none()
+        if conv is None:
+            raise A2AAccessDeniedError(
+                from_agent=from_slug,
+                to_agent=to_slug,
+                reason=(
+                    "CEO is human. You may only reply inside a conversation "
+                    "the CEO opened — use notify() otherwise."
+                ),
+                route_hint="Wait for the CEO to open an A2A conversation with you.",
+            )
+        return self._conv_to_model(conv)
+
     async def send(
         self,
         *,
@@ -1454,6 +1651,13 @@ class A2AService:
 
         `skill` is persisted on the message row so the receiver (and the
         inbox) learns which capability is being requested.
+
+        The recipient "ceo" is special-cased: an agent can never CREATE a
+        CEO conversation (the matrix blocks it unconditionally), so calling
+        ``get_or_create_conversation`` would deny even a legitimate reply.
+        Instead the existing pair conversation is looked up directly — its
+        mere existence proves the CEO opened it — and the reply proceeds to
+        ``send_chat_message``, where the reply budget applies.
         """
         from_slug = await self._resolve_slug_from_id(from_agent)
         to_slug = (
@@ -1462,17 +1666,61 @@ class A2AService:
             else to_agent
         )
 
-        conv = await self.get_or_create_conversation(
-            agent_a=from_slug,
-            agent_b=to_slug,
-            task_id=task_id,
-        )
+        if to_slug == "ceo" and from_slug != "ceo":
+            conv = await self._get_conversation_for_reply_to_ceo(from_slug, to_slug)
+        else:
+            conv = await self.get_or_create_conversation(
+                agent_a=from_slug,
+                agent_b=to_slug,
+                task_id=task_id,
+            )
         options: dict[str, Any] = {}
         if skill is not None:
             options["skill"] = skill
-        return await self.send_chat_message(
+        msg = await self.send_chat_message(
             conversation_id=UUID(conv.id),
             from_agent=from_slug,
             content=body,
             options=options or None,
         )
+        await self._publish_a2a_message_sent(msg, task_id, from_slug, to_slug, skill)
+        return msg
+
+    @staticmethod
+    async def _publish_a2a_message_sent(
+        msg: A2AChatMessage,
+        task_id: UUID,
+        from_slug: str,
+        to_slug: str,
+        skill: str | None,
+    ) -> None:
+        """Best-effort publish of A2A_MESSAGE_SENT for the operator live view.
+
+        Mirrors MessagingService.send_message's publish pattern: a bus outage
+        is logged and never rolls back the already-persisted message.
+        """
+        try:
+            bus = get_event_bus()
+            if bus.is_connected():
+                timestamp = (
+                    msg.created_at.isoformat()
+                    if msg.created_at
+                    else datetime.now(UTC).isoformat()
+                )
+                await bus.publish(
+                    Event(
+                        type=EventType.A2A_MESSAGE_SENT,
+                        data={
+                            "conversation_id": msg.conversation_id,
+                            "message_id": msg.id,
+                            "task_id": str(task_id),
+                            "from_agent": from_slug,
+                            "to_agent": to_slug,
+                            "skill": skill,
+                            "body_excerpt": _excerpt(msg.content),
+                            "timestamp": timestamp,
+                        },
+                    )
+                )
+        except Exception as e:
+            logger.warning("Failed to publish A2A message event", error=str(e))

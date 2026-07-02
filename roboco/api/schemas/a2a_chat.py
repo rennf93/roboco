@@ -158,3 +158,39 @@ class PairListResponse(BaseModel):
 
     items: list[PairResponse]
     total: int
+
+
+# =============================================================================
+# ADMIN / LIVE VIEW SCHEMAS (CEO-only)
+# =============================================================================
+
+
+class AdminConversationSummaryResponse(BaseModel):
+    """Conversation summary for the CEO's cross-agent live view."""
+
+    id: UUID
+    agent_a: str
+    agent_b: str
+    topic: str | None
+    task_id: UUID | None
+    status: A2AConversationStatus
+    message_count: int
+    last_message_at: datetime | None
+    last_message_preview: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AdminConversationListResponse(BaseModel):
+    """List of admin conversation summaries."""
+
+    items: list[AdminConversationSummaryResponse]
+    total: int
+
+
+class AdminReplyRequest(BaseModel):
+    """Request for the CEO to chime into an existing A2A conversation."""
+
+    to_agent: str = Field(..., description="Which participant to address")
+    content: str = Field(..., min_length=1, max_length=10000)
+    skill: str | None = None

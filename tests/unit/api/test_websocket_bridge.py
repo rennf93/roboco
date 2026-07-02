@@ -13,6 +13,7 @@ from uuid import uuid4
 
 import pytest
 from roboco.api.websocket_bridge import (
+    _handle_a2a_message_event,
     _handle_agent_event,
     _handle_message_event,
     _handle_notification_sent,
@@ -430,6 +431,44 @@ async def test_handle_usage_snapshot_broadcasts_to_system() -> None:
 
 
 # ---------------------------------------------------------------------------
+# _handle_a2a_message_event
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_handle_a2a_message_event_broadcasts_to_system() -> None:
+    """An A2A_MESSAGE_SENT event is forwarded to /ws/system as an
+    `a2a.message` frame — the CEO's live view of every agent-to-agent chat."""
+    event = _evt(
+        EventType.A2A_MESSAGE_SENT,
+        {
+            "conversation_id": "conv-1",
+            "message_id": "msg-1",
+            "task_id": "task-1",
+            "from_agent": "be-dev-1",
+            "to_agent": "be-qa",
+            "skill": "code_review",
+            "body_excerpt": "please review",
+            "timestamp": "2026-07-02T00:00:00+00:00",
+        },
+    )
+    with patch("roboco.api.websocket_bridge.manager") as mgr:
+        mgr.broadcast_system = AsyncMock()
+        await _handle_a2a_message_event(event)
+    mgr.broadcast_system.assert_awaited_once()
+    msg = mgr.broadcast_system.await_args.args[0]
+    assert msg["type"] == "a2a.message"
+    assert msg["conversation_id"] == "conv-1"
+    assert msg["message_id"] == "msg-1"
+    assert msg["task_id"] == "task-1"
+    assert msg["from_agent"] == "be-dev-1"
+    assert msg["to_agent"] == "be-qa"
+    assert msg["skill"] == "code_review"
+    assert msg["body_excerpt"] == "please review"
+    assert msg["timestamp"] == "2026-07-02T00:00:00+00:00"
+
+
+# ---------------------------------------------------------------------------
 # Registration + start
 # ---------------------------------------------------------------------------
 
@@ -465,6 +504,8 @@ def test_register_websocket_bridge_handlers_subscribes_all_event_types() -> None
     assert EventType.USAGE_SNAPSHOT in types
     # Message delivery forwarded to /ws/channels + /ws/sessions.
     assert EventType.MESSAGE_SENT in types
+    # A2A live chat forwarded to /ws/system (CEO live view).
+    assert EventType.A2A_MESSAGE_SENT in types
 
 
 @pytest.mark.asyncio
