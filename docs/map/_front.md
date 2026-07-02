@@ -578,3 +578,11 @@ Slices touched: orchestrator (1, 7), api-routes-schemas + taskservice (2), panel
 5. **e2e smoke harness** — `tests/e2e_smoke/{conftest,harness,test_dev_lifecycle}.py` + `make e2e-smoke` (env-gated `ROBOCO_E2E_SMOKE=1`, skipped in the default suite). Harness: real routers/middleware on uvicorn over the ephemeral test DB (`settings.database_*` patched + `_DbHolder` reset), bare origin at `<tmp>/github.com/e2e-smoke/proj.git` (satisfies `_parse_git_url`, clones tokenless), fake GitHub REST router doing real squash-merges via an admin clone, `ScriptedAgent` reloading the real MCP modules per role. Scenario 1 (leaf dev arc → awaiting_pm_review) GREEN in ~5s. Learned seams scripted: post-claim tracing gap keeps the claim; note scopes are decision/learning/note/reflect/struggle (no 'progress'); i_am_done demands during-work+handoff+reflect+per-AC artifacts; pass_review demands learning note + ac_verdicts; A2A resolves roles from the STATIC agents_config registry (seed canonical slugs: be-dev-1/be-qa/be-doc/be-pm/main-pm).
 
 Slices touched: worksession-git (3), orchestrator (1), deployment-tooling (2, 4), tests (5).
+
+---
+## Delta 2026-07-02 (night) — wave 1 begins (branch `feat/wave-1`, post-v0.16.0)
+
+1. **PR-gate turn cut** — `orchestrator._try_auto_submit` (+ `_AUTO_SUBMIT_VERB_BY_ROLE`), hooked in `_maybe_spawn_pm_closure` after the all-descendants-terminal check: POSTs the real `submit_up`/`submit_root` through the internal API as the owning PM (X-Agent-ID = task.assigned_to, fallback static `AGENT_UUIDS`); any refusal falls back to the classic PM closure spawn. Flag `ROBOCO_PR_GATE_AUTO_SUBMIT_ENABLED` (config, default on); audit `task.auto_submitted`. Tests: `tests/unit/runtime/test_pr_gate_auto_submit.py` (7) + e2e scenario 2b.
+2. **e2e scenarios 2/2b** — `tests/e2e_smoke/arcs.py` (canonical-company seeding — A2A resolves roles from static agents_config so slugs must match; `seed_hierarchy` with task-short-id branch chains; dev/qa/doc/reviewer arcs; `dispatcher_assign` mirroring `_dispatch_pm_review_work`'s claim-for-PM lane since `pr_pass` clears ownership BY DESIGN) + `test_pm_merge_chain.py`. Seams scripted: commit-subject validator ≥20 chars; reviewer learning-note gate before pr_pass; child PR bases on the parent's branch via ancestor resolution.
+
+Slices touched: orchestrator (1), tests (1, 2).

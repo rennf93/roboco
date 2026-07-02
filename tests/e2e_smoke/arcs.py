@@ -437,3 +437,111 @@ def doc_arc(stack: E2EStack, company: Company, task_id: Any, *, filename: str) -
     state = task_state(stack, task_id)
     assert state["status"] == "awaiting_pm_review", state
     assert state["docs_complete"] is True, state
+
+
+def seed_hierarchy(
+    stack: E2EStack, company: Company, project_id: Any
+) -> dict[str, Any]:
+    """Root (Main-PM) → cell (cell-PM) → dev child, seeded mid-flight.
+
+    Branch names follow the real convention (the task-short-id chain); the
+    PM planning/delegation lane is a later scenario's subject.
+    """
+    from roboco.models.base import TaskStatus
+
+    root_id = uuid4()
+    cell_id = uuid4()
+    root_branch = f"feature/backend/{str(root_id)[:8]}"
+    cell_branch = f"{root_branch}--{str(cell_id)[:8]}"
+    origin_branch(stack, root_branch, start="master")
+    origin_branch(stack, cell_branch, start=root_branch)
+    seed_task(
+        stack,
+        id=root_id,
+        title="Delivery root: greeting program",
+        description=(
+            "Root coordination task assembling the greeting feature across "
+            "the backend cell for the smoke harness merge-chain scenarios."
+        ),
+        acceptance_criteria=["the greeting feature lands on the root branch"],
+        project_id=project_id,
+        created_by=company.main_pm_id,
+        assigned_to=company.main_pm_id,
+        status=TaskStatus.IN_PROGRESS,
+        branch_name=root_branch,
+        active_claimant_id=company.main_pm_id,
+    )
+    seed_task(
+        stack,
+        id=cell_id,
+        title="Backend slice: greeting file",
+        description=(
+            "Cell task assembling the backend slice of the greeting feature; "
+            "one dev leaf writes the file, the cell PM assembles and submits."
+        ),
+        acceptance_criteria=["hello.txt exists at the repo root"],
+        project_id=project_id,
+        created_by=company.main_pm_id,
+        assigned_to=company.cell_pm_id,
+        parent_task_id=root_id,
+        status=TaskStatus.IN_PROGRESS,
+        branch_name=cell_branch,
+        active_claimant_id=company.cell_pm_id,
+    )
+    child_id = seed_task(
+        stack,
+        title="Write hello.txt",
+        description=(
+            "Create hello.txt with a friendly greeting at the repo root so "
+            "the merge-chain scenario has a real change to assemble upward."
+        ),
+        acceptance_criteria=["hello.txt exists at the repo root"],
+        project_id=project_id,
+        created_by=company.cell_pm_id,
+        parent_task_id=cell_id,
+        assigned_to=company.dev_id,
+    )
+    return {
+        "root_id": root_id,
+        "root_branch": root_branch,
+        "cell_id": cell_id,
+        "cell_branch": cell_branch,
+        "child_id": child_id,
+    }
+
+
+def reviewer_gate_pass_arc(stack: E2EStack, company: Company, task_id: Any) -> None:
+    """awaiting_pr_review → awaiting_pm_review via the in-path gate."""
+    reviewer = ScriptedAgent(
+        stack, company.pr_reviewer_id, "pr-reviewer-1", "pr_reviewer"
+    )
+    expect_ok(
+        reviewer.flow("claim_gate_review", task_id=str(task_id)),
+        "reviewer claim_gate_review",
+    )
+    expect_ok(
+        reviewer.do(
+            "note",
+            scope="learning",
+            task_id=str(task_id),
+            text=(
+                "Gate review learning: the assembled diff is exactly the "
+                "child's additive file with the integrity marker present; "
+                "squash-merge assembly verified against the base branch."
+            ),
+        ),
+        "reviewer learning note",
+    )
+    expect_ok(
+        reviewer.flow(
+            "pr_pass",
+            task_id=str(task_id),
+            notes=(
+                "Assembled diff reviewed against the base branch: exactly the "
+                "expected additive change, integrity markers present, no "
+                "scope creep — passing to the PM for merge."
+            ),
+        ),
+        "reviewer pr_pass",
+    )
+    assert task_state(stack, task_id)["status"] == "awaiting_pm_review"

@@ -10246,6 +10246,83 @@ Start now: evidence(task_id="{task_id}")
             return self._TEAM_PM_MAP.get(team, "be-pm")
         return "main-pm"
 
+    # Which flow route + verb submits an assembled parent, per PM role.
+    _AUTO_SUBMIT_VERB_BY_ROLE: ClassVar[dict[str, tuple[str, str]]] = {
+        "cell_pm": ("cell_pm", "submit_up"),
+        "main_pm": ("main_pm", "submit_root"),
+    }
+
+    async def _try_auto_submit(
+        self, client: httpx.AsyncClient, task: dict[str, Any], pm_slug: str
+    ) -> bool:
+        """Submit an assembled, all-children-terminal parent to the PR gate
+        WITHOUT spawning its PM — the turn's substance (freshness rebase,
+        integrity check, PR open) is deterministic gate code, so the real
+        submit verb is run through the internal API as the owning PM.
+
+        Returns True when the gate accepted (the reviewer dispatch takes it
+        from awaiting_pr_review); False on ANY refusal — flag off, a
+        branchless coordination parent (a MegaTask umbrella assembles no
+        PR), an unmapped role, a gate rejection (freshness/integrity — the
+        PM turn is then genuinely needed), or a transport error — and the
+        caller falls back to the classic PM closure spawn.
+        """
+        role = get_agent_role(pm_slug) or ""
+        pair = self._AUTO_SUBMIT_VERB_BY_ROLE.get(role)
+        pm_uuid = str(task.get("assigned_to") or AGENT_UUIDS.get(pm_slug) or "")
+        if (
+            not settings.pr_gate_auto_submit_enabled
+            or not task.get("branch_name")
+            or not task.get("project_id")
+            or pair is None
+            or not pm_uuid
+        ):
+            return False
+        role_path, verb = pair
+        task_id = str(task.get("id"))
+        notes = (
+            "Auto-submitted for gate review: every child task is terminal and "
+            "the assembled branch is ready. Freshness and integrity are "
+            "enforced by the submit gate itself; the in-path PR reviewer "
+            "takes it from here."
+        )
+        try:
+            resp = await client.post(
+                f"{self._api_url}/v1/flow/{role_path}/{verb}",
+                headers={"X-Agent-ID": pm_uuid, "X-Agent-Role": role},
+                json={"task_id": task_id, "notes": notes},
+            )
+            body = resp.json()
+        except Exception as e:
+            logger.warning(
+                "Auto-submit transport failure; falling back to PM closure spawn",
+                task_id=task_id,
+                error=str(e),
+            )
+            return False
+        if not isinstance(body, dict) or body.get("error"):
+            logger.info(
+                "Auto-submit rejected by the gate; PM closure spawn proceeds",
+                task_id=task_id,
+                error=(body or {}).get("error") if isinstance(body, dict) else body,
+                message=(body or {}).get("message") if isinstance(body, dict) else None,
+            )
+            return False
+        logger.info(
+            "Assembled parent auto-submitted to the PR gate (PM turn skipped)",
+            task_id=task_id,
+            verb=verb,
+            pm=pm_slug,
+        )
+        self._fire_audit(
+            event_type="task.auto_submitted",
+            agent_slug=pm_slug,
+            task_id=task_id,
+            details={"verb": verb, "auto": True},
+        )
+        self._mark_task_handled(task_id)
+        return True
+
     async def _maybe_spawn_pm_closure(
         self, client: httpx.AsyncClient, task: dict[str, Any]
     ) -> None:
@@ -10263,9 +10340,7 @@ Start now: evidence(task_id="{task_id}")
             return
 
         descendants = await self._fetch_all_descendants(client, task_id)
-        if not descendants:
-            return
-        if not self._all_descendants_terminal(descendants):
+        if not descendants or not self._all_descendants_terminal(descendants):
             return
         if self._already_promoted_for_closure(task):
             return
@@ -10294,6 +10369,17 @@ Start now: evidence(task_id="{task_id}")
             await self._auto_resume_paused_parent(client, task_id)
         elif parent_status == "blocked":
             await self._auto_recover_blocked_parent(client, task_id)
+
+        # The turn cut: an assembled parent whose children are all terminal
+        # is submitted to the PR gate system-side; the PM spawn only happens
+        # when the gate refuses (a rework/judgment turn) or for parents past
+        # the gate (awaiting_pm_review — the merge turn).
+        if parent_status in (
+            "claimed",
+            "in_progress",
+            "paused",
+        ) and await self._try_auto_submit(client, task, pm_id):
+            return
 
         prompt = self._build_pm_closure_prompt(task, descendants)
         await self.spawn_agent(

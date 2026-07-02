@@ -4,6 +4,13 @@ All notable changes to RoboCo are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **The PR-gate turn cut — assembled parents auto-submit to the reviewer.** When every child of an assembled parent is terminal, the orchestrator used to spawn the PM just to call `submit_up`/`submit_root` — a whole agent turn whose substance (freshness rebase, integrity check, PR open) is deterministic gate code. The closure dispatcher now runs the REAL submit verb through the internal API as the owning PM (`_try_auto_submit`); the task lands in `awaiting_pr_review` and the reviewer dispatch takes it with no PM turn spent. Every gate is intact: a submit rejection (freshness/integrity — the case that genuinely needs judgment) falls back to the classic PM closure spawn, `pr_fail` still routes `needs_revision` to the PM, and the PM keeps the final merge turn. Branchless coordination parents (MegaTask umbrellas) never auto-submit. Gated by `ROBOCO_PR_GATE_AUTO_SUBMIT_ENABLED` (default **on**); each auto-submit leaves a `task.auto_submitted` audit row.
+- **e2e scenarios 2 + 2b — the PM merge chain, before and after the cut.** Shared scripted-agent arcs (`tests/e2e_smoke/arcs.py`) drive a root→cell→dev hierarchy: the child lands via the scenario-1 arc (real squash through the fake GitHub), then scenario 2 walks the classic PM `submit_up` → reviewer `pr_pass` → dispatcher re-claim → PM merge chain, and scenario 2b proves the turn cut end-to-end — no agent calls submit; `_try_auto_submit` drives the real verb through the real API and the reviewer→PM tail runs unchanged, landing the child's file on the root branch.
+
 ## [0.16.0] - 2026-07-02
 
 ### Added
