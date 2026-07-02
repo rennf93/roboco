@@ -166,6 +166,7 @@ export function PrReviewQueue({ className }: PrReviewQueueProps) {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <Link
+                        prefetch={false}
                         href={`/tasks/${task.id}`}
                         className="font-medium hover:underline line-clamp-1"
                       >
@@ -202,7 +203,11 @@ export function PrReviewQueue({ className }: PrReviewQueueProps) {
                     )}
                   </div>
                   <div className="flex items-center gap-2 ml-4 flex-shrink-0">
-                    <Link href={`/tasks/${task.id}`} title="Review details">
+                    <Link
+                      href={`/tasks/${task.id}`}
+                      title="Review details"
+                      prefetch={false}
+                    >
                       <Button variant="ghost" size="sm">
                         <FileText className="h-4 w-4" />
                       </Button>

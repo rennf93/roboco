@@ -25,7 +25,7 @@ function OnDemandAgentCard({
   description: string;
 }) {
   return (
-    <Link href={href} className="block">
+    <Link href={href} className="block" prefetch={false}>
       <div className="rounded-lg border bg-card p-4 hover:bg-accent/50 transition-colors h-full flex flex-col gap-2">
         <div className="flex items-center gap-2">
           <Icon className="h-4 w-4 text-muted-foreground" />

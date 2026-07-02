@@ -73,6 +73,7 @@ export function BoardReviewSentCard({
       <CardFooter className="gap-2 pt-0">
         <Button variant="outline" size="sm" asChild className="flex-1">
           <Link
+            prefetch={false}
             href={`/tasks/${taskId}`}
             target="_blank"
             rel="noopener noreferrer"

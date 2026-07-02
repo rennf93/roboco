@@ -566,6 +566,7 @@ export function TaskTable({
                           <span className="w-5 shrink-0" />
                         )}
                         <Link
+                          prefetch={false}
                           href={"/tasks/" + task.id}
                           className="block hover:underline min-w-0"
                         >

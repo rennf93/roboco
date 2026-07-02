@@ -76,7 +76,7 @@ function SessionCard({ session }: { session: TaskSessionLink }) {
       </CardHeader>
       <CardContent className="pt-0">
         <div className="flex justify-end">
-          <Link href={`/communications/${session.session_id}`}>
+          <Link href={`/communications/${session.session_id}`} prefetch={false}>
             <Button variant="outline" size="sm" className="gap-2">
               <ExternalLink className="h-3 w-3" />
               View Session

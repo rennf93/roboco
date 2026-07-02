@@ -76,7 +76,7 @@ export function CommandCenter() {
             <RefreshCw className="h-4 w-4 mr-2" />
             Refresh
           </Button>
-          <Link href="/settings">
+          <Link href="/settings" prefetch={false}>
             <Button variant="ghost" size="icon">
               <Settings className="h-5 w-5" />
             </Button>

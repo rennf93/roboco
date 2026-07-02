@@ -24,6 +24,7 @@ export function TabOverview({ task }: TabOverviewProps) {
             <div className="flex items-center gap-2 text-sm">
               <span className="text-muted-foreground">Subtask of:</span>
               <Link
+                prefetch={false}
                 href={`/tasks/${task.parent_task_id}`}
                 className="text-primary hover:underline font-medium"
               >

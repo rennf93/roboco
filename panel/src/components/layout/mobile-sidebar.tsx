@@ -41,6 +41,7 @@ export function MobileSidebar() {
         <SheetHeader className="h-16 justify-center border-b px-4 text-left">
           <SheetTitle asChild>
             <Link
+              prefetch={false}
               href="/overview"
               onClick={close}
               className="flex items-center gap-2"

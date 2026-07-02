@@ -79,7 +79,11 @@ export function NotificationBell() {
           )}
 
           <div className="pt-2 border-t">
-            <Link href="/notifications" onClick={() => setOpen(false)}>
+            <Link
+              href="/notifications"
+              onClick={() => setOpen(false)}
+              prefetch={false}
+            >
               <Button variant="outline" size="sm" className="w-full">
                 View All Notifications
               </Button>

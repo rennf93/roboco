@@ -103,6 +103,7 @@ export function WorkSessionTable({
                 <div className="flex items-center gap-2">
                   <GitBranch className="h-4 w-4 text-muted-foreground" />
                   <Link
+                    prefetch={false}
                     href={`/work-sessions/${session.id}`}
                     className="font-medium hover:underline font-mono text-sm"
                   >
@@ -112,6 +113,7 @@ export function WorkSessionTable({
               </TableCell>
               <TableCell>
                 <Link
+                  prefetch={false}
                   href={`/tasks/${session.task_id}`}
                   className="text-sm text-muted-foreground hover:text-foreground hover:underline"
                 >
@@ -135,7 +137,7 @@ export function WorkSessionTable({
                 })}
               </TableCell>
               <TableCell>
-                <Link href={`/work-sessions/${session.id}`}>
+                <Link href={`/work-sessions/${session.id}`} prefetch={false}>
                   <Button variant="ghost" size="icon">
                     <ExternalLink className="h-4 w-4" />
                   </Button>

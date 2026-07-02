@@ -76,7 +76,7 @@ export function FlaggedItem({
                 {formatTime(flag.created_at)}
               </span>
               {flag.related_task_id && (
-                <Link href={"/tasks/" + flag.related_task_id}>
+                <Link href={"/tasks/" + flag.related_task_id} prefetch={false}>
                   <span className="text-primary hover:underline">
                     Task #{flag.related_task_id.slice(0, 8)}
                   </span>
@@ -88,7 +88,7 @@ export function FlaggedItem({
         {!isResolved && (
           <div className="flex items-center gap-2 shrink-0">
             {flag.related_task_id && (
-              <Link href={"/tasks/" + flag.related_task_id}>
+              <Link href={"/tasks/" + flag.related_task_id} prefetch={false}>
                 <Button variant="ghost" size="sm">
                   <Eye className="h-4 w-4" />
                 </Button>

@@ -74,7 +74,7 @@ export function AgentCard({ agent, agentStatus, usageRow }: AgentCardProps) {
               {isActive && (
                 <>
                   <DropdownMenuItem asChild>
-                    <Link href={"/agents/" + agent.id}>
+                    <Link href={"/agents/" + agent.id} prefetch={false}>
                       <Activity className="h-4 w-4 mr-2" />
                       View Details
                     </Link>

@@ -219,6 +219,7 @@ export function CeoApprovalQueue({ className }: CeoApprovalQueueProps) {
           <Badge variant="outline">{task.team}</Badge>
         </div>
         <Link
+          prefetch={false}
           href={`/tasks/${task.id}`}
           className="font-medium hover:underline line-clamp-1"
         >
@@ -231,7 +232,7 @@ export function CeoApprovalQueue({ className }: CeoApprovalQueueProps) {
         )}
       </div>
       <div className="flex items-center gap-2 ml-4 flex-shrink-0">
-        <Link href={`/tasks/${task.id}`}>
+        <Link href={`/tasks/${task.id}`} prefetch={false}>
           <Button variant="ghost" size="sm">
             <FileText className="h-4 w-4" />
           </Button>
@@ -348,6 +349,7 @@ export function CeoApprovalQueue({ className }: CeoApprovalQueueProps) {
                 </p>
               )}
               <Link
+                prefetch={false}
                 href={`/tasks/${selectedTask.id}`}
                 target="_blank"
                 className="text-sm text-primary flex items-center gap-1 mt-2 hover:underline"

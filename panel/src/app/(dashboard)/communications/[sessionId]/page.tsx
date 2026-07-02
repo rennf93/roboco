@@ -154,7 +154,7 @@ function SessionDetailContent() {
   if (!session) {
     return (
       <div className="space-y-6">
-        <Link href={backUrl}>
+        <Link href={backUrl} prefetch={false}>
           <Button variant="ghost" size="sm">
             <ArrowLeft className="h-4 w-4 mr-2" />
             Back to Communications
@@ -181,7 +181,7 @@ function SessionDetailContent() {
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-4">
-          <Link href={backUrl}>
+          <Link href={backUrl} prefetch={false}>
             <Button variant="ghost" size="sm">
               <ArrowLeft className="h-4 w-4 mr-2" />
               Back
@@ -235,6 +235,7 @@ function SessionDetailContent() {
                   <ListTodo className="h-4 w-4 text-muted-foreground" />
                   {primaryTask && (
                     <Link
+                      prefetch={false}
                       href={`/tasks/${primaryTask.task_id}`}
                       className="text-sm text-primary hover:underline"
                     >

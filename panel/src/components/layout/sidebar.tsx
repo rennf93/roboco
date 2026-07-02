@@ -81,6 +81,7 @@ export function SidebarNav({
         const isActive = pathname.startsWith(item.href);
         return (
           <Link
+            prefetch={false}
             key={item.href}
             href={item.href}
             onClick={onNavigate}
@@ -114,6 +115,7 @@ export function SidebarFooter({
     <div className="space-y-1">
       {footerItems.map((item) => (
         <Link
+          prefetch={false}
           key={item.href}
           href={item.href}
           onClick={onNavigate}
@@ -146,7 +148,11 @@ export function Sidebar() {
       {/* Logo */}
       <div className="flex h-16 items-center justify-between border-b px-4">
         {!sidebarCollapsed && (
-          <Link href="/overview" className="flex items-center gap-2">
+          <Link
+            href="/overview"
+            className="flex items-center gap-2"
+            prefetch={false}
+          >
             <Image
               src="/roboco-logo.png"
               alt="RoboCo"

@@ -47,7 +47,7 @@ export function RecentActivityFeed({
           </ScrollArea>
         )}
         <div className="mt-4 pt-3 border-t">
-          <Link href="/notifications">
+          <Link href="/notifications" prefetch={false}>
             <Button variant="ghost" size="sm" className="w-full">
               View Full Activity
               <ArrowRight className="h-4 w-4 ml-2" />

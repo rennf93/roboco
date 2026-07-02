@@ -24,7 +24,7 @@ function formatTime(timestamp: string): string {
 
 export function EntryCard({ entry }: EntryCardProps) {
   return (
-    <Link href={`/journals/${entry.id}`}>
+    <Link href={`/journals/${entry.id}`} prefetch={false}>
       <Card className="hover:shadow-md transition-shadow cursor-pointer group">
         <CardContent className="pt-4">
           {/* Header */}

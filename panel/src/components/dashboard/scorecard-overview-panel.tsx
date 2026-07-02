@@ -55,6 +55,7 @@ export function ScorecardOverviewPanel() {
             Performance
           </CardTitle>
           <Link
+            prefetch={false}
             href="/metrics?tab=scorecards"
             className="text-muted-foreground hover:text-foreground flex items-center gap-1 text-xs"
           >
