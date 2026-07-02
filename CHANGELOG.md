@@ -48,6 +48,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **Admin status override now reconciles claim ownership.** Forcing a `blocked` task into a review/queue state (`needs_revision`, `awaiting_qa`, `awaiting_documentation`, `awaiting_pr_review`, `awaiting_pm_review`) previously left the stale escalation claim in place, so the next claimant was handed the task by `give_me_work`/`triage` while its `note()` writes bounced `not_authorized "you do not hold the claim"` — it re-blocked immediately. The override now clears the claim (`claimed_by`/`claimed_at`/`active_claimant_id`) and consumes the pre-block snapshot for review-state targets; the pending/in_progress owner-restore path additionally syncs `active_claimant_id` so the restored owner's content writes don't bounce either. A REST PATCH that unassigns a task (`assigned_to: null`) now releases the claim with it.
 
+### Removed
+
+- **The never-wired dispatch-time spawn-cooldown path.** `_safe_spawn` / `gateway_pre_spawn_check` / `trigger_filter.decide_spawn` had no caller anywhere in the repo's history — the "enable gateway cooldown logic in production" commit only flipped its flag, and the protections it promised have since shipped better elsewhere: provider parking lives inside `spawn_agent` itself, claim freshness is enforced by the claim guards + reaper, and runaway respawns are bounded by the progress-aware circuit breaker (all 14 task-keyed sites) plus the notification-spawn cooldown. Wiring it now would have re-introduced a per-task cooldown that queue-stalls every normal stage handoff (dev→QA→doc→PM spawn the same task within one window). Deleted: the orchestrator block, `trigger_filter.py`, its tests, and the dead `spawn_cooldown_seconds` / `role_spawn_rate_per_minute` settings. The `gateway_triggers` table is kept (inert; dropping it is a migration decision).
+
 ## [0.15.0] - 2026-07-01
 
 ### Added

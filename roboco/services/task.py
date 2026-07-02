@@ -2488,7 +2488,7 @@ class TaskService(BaseService):
         # tight loop hammering the orchestrator.
         task.last_heartbeat_at = now
         # Single-claimant invariant (alembic 006): claimant_lock.try_acquire
-        # and trigger_filter.decide_spawn both branch on this column. Was
+        # branches on this column. Was
         # declared but never written; now wired so the
         # invariant is functional.
         task.active_claimant_id = cast("Any", agent_id)
@@ -8308,7 +8308,7 @@ class TaskService(BaseService):
         # tasks will misclassify the live claim as abandoned.
         task.last_heartbeat_at = now
         # Single-claimant invariant — see _finalize_claim. Same column
-        # used by claimant_lock + trigger_filter. Cleared by QA pass/fail
+        # used by claimant_lock. Cleared by QA pass/fail
         # and doc-complete when the review hand-off finishes.
         task.active_claimant_id = cast("Any", agent_id)
         await self.session.flush()
