@@ -110,3 +110,6 @@ docs/internal/
 # MkDocs build output (published to gh-pages by CI; never committed to master)
 /site/
 .playwright-mcp/
+
+# Private per-repo uv cache (see Makefile UV_CACHE_DIR)
+.uv-cache/

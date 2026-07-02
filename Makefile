@@ -10,6 +10,14 @@ DEFAULT_PYTHON = 3.10
 # fresh env depend on the explicit `sync` below, which runs once, up front.
 export UV_NO_SYNC := 1
 
+# Private per-repo uv cache. The user-level ~/.cache/uv is SHARED with every
+# `uvx` tool server on the machine (e.g. Claude Code's mcp-server-fetch runs
+# for days holding/contending the cache lock); concurrent cache writes from
+# those processes poisoned package entries (rich/pip/bandit rot that survived
+# venv rebuilds — the cache, not the venv, was the carrier). One-time cost:
+# the first sync re-downloads; after that, total isolation.
+export UV_CACHE_DIR := $(CURDIR)/.uv-cache
+
 .PHONY: sync
 sync:
 	@echo "==> uv sync --extra dev"
