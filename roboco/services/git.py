@@ -249,6 +249,16 @@ def _select_ci_head_run(runs: list[dict[str, Any]]) -> dict[str, Any]:
     return max(same_head, key=lambda r: int(r.get("run_attempt") or 0))
 
 
+def _api_base() -> str:
+    """GitHub REST base URL — honors ``settings.github_api_base_url``.
+
+    Five call sites already read the setting (CI runs, open-PR list); the
+    PR create/merge/branch sites hardcoded the public host, which broke any
+    GitHub Enterprise or test override. One helper keeps them uniform.
+    """
+    return settings.github_api_base_url.rstrip("/")
+
+
 @dataclass(frozen=True)
 class _CiRunQuery:
     """Bundle of per-project inputs to a CI-run fetch (owner/repo, branch, token,
@@ -1856,7 +1866,7 @@ class GitService(BaseService):
         """Return the first open PR for head→base, or None."""
         async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
             existing = await client.get(
-                f"https://api.github.com/repos/{owner}/{repo}/pulls",
+                f"{_api_base()}/repos/{owner}/{repo}/pulls",
                 headers={
                     "Authorization": f"Bearer {git_token}",
                     "Accept": "application/vnd.github+json",
@@ -2107,7 +2117,7 @@ class GitService(BaseService):
         try:
             async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
                 return await client.post(
-                    f"https://api.github.com/repos/{owner}/{repo}/pulls",
+                    f"{_api_base()}/repos/{owner}/{repo}/pulls",
                     headers={
                         "Authorization": f"Bearer {git_token}",
                         "Accept": "application/vnd.github+json",
@@ -2304,7 +2314,7 @@ class GitService(BaseService):
         try:
             async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
                 resp = await client.patch(
-                    f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}",
+                    f"{_api_base()}/repos/{owner}/{repo}/pulls/{pr_number}",
                     headers={
                         "Authorization": f"Bearer {git_token}",
                         "Accept": "application/vnd.github+json",
@@ -2345,7 +2355,7 @@ class GitService(BaseService):
         try:
             async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
                 resp = await client.post(
-                    f"https://api.github.com/repos/{owner}/{repo}/pulls/"
+                    f"{_api_base()}/repos/{owner}/{repo}/pulls/"
                     f"{pr_number}/requested_reviewers",
                     headers={
                         "Authorization": f"Bearer {git_token}",
@@ -2722,8 +2732,7 @@ class GitService(BaseService):
         try:
             async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
                 return await client.put(
-                    f"https://api.github.com/repos/{owner}/{repo}/pulls/"
-                    f"{pr_number}/merge",
+                    f"{_api_base()}/repos/{owner}/{repo}/pulls/{pr_number}/merge",
                     headers={
                         "Authorization": f"Bearer {git_token}",
                         "Accept": "application/vnd.github+json",
@@ -2820,7 +2829,7 @@ class GitService(BaseService):
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(
-                    f"https://api.github.com/repos/{owner}/{repo}/pulls",
+                    f"{_api_base()}/repos/{owner}/{repo}/pulls",
                     params={"base": branch, "state": "open", "per_page": 1},
                     headers={
                         "Authorization": f"Bearer {git_token}",
@@ -2857,7 +2866,7 @@ class GitService(BaseService):
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 await client.delete(
-                    f"https://api.github.com/repos/{owner}/{repo}/git/refs/heads/{branch}",
+                    f"{_api_base()}/repos/{owner}/{repo}/git/refs/heads/{branch}",
                     headers={
                         "Authorization": f"Bearer {git_token}",
                         "Accept": "application/vnd.github+json",
@@ -2877,7 +2886,7 @@ class GitService(BaseService):
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 pr_resp = await client.get(
-                    f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}",
+                    f"{_api_base()}/repos/{owner}/{repo}/pulls/{pr_number}",
                     headers={
                         "Authorization": f"Bearer {git_token}",
                         "Accept": "application/vnd.github+json",
@@ -2934,7 +2943,7 @@ class GitService(BaseService):
         try:
             async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
                 resp = await client.get(
-                    f"https://api.github.com/repos/{owner}/{repo}",
+                    f"{_api_base()}/repos/{owner}/{repo}",
                     headers={
                         "Authorization": f"Bearer {git_token}",
                         "Accept": "application/vnd.github+json",
@@ -3677,7 +3686,7 @@ class GitService(BaseService):
         try:
             async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
                 resp = await client.get(
-                    f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}",
+                    f"{_api_base()}/repos/{owner}/{repo}/pulls/{pr_number}",
                     headers={
                         "Authorization": f"Bearer {git_token}",
                         "Accept": "application/vnd.github+json",
@@ -3789,7 +3798,7 @@ class GitService(BaseService):
         try:
             async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
                 resp = await client.get(
-                    f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}",
+                    f"{_api_base()}/repos/{owner}/{repo}/pulls/{pr_number}",
                     headers={
                         "Authorization": f"Bearer {git_token}",
                         "Accept": "application/vnd.github+json",
@@ -4166,7 +4175,7 @@ class GitService(BaseService):
         }
         async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
             existing = await client.get(
-                f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}",
+                f"{_api_base()}/repos/{owner}/{repo}/pulls/{pr_number}",
                 headers=headers,
             )
             already_closed = (
@@ -4175,13 +4184,13 @@ class GitService(BaseService):
             if not already_closed:
                 if comment:
                     await client.post(
-                        f"https://api.github.com/repos/{owner}/{repo}/issues/"
+                        f"{_api_base()}/repos/{owner}/{repo}/issues/"
                         f"{pr_number}/comments",
                         headers=headers,
                         json={"body": comment},
                     )
                 resp = await client.patch(
-                    f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}",
+                    f"{_api_base()}/repos/{owner}/{repo}/pulls/{pr_number}",
                     headers=headers,
                     json={"state": "closed"},
                 )
@@ -4239,7 +4248,7 @@ class GitService(BaseService):
         try:
             async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
                 resp = await client.get(
-                    f"https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}",
+                    f"{_api_base()}/repos/{owner}/{repo}/pulls/{pr_number}",
                     headers={
                         "Authorization": f"Bearer {git_token}",
                         "Accept": "application/vnd.github+json",
