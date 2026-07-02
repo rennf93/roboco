@@ -10968,20 +10968,16 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 # QA already running, they'll pick up on scan
                 continue
 
-            # Respawn circuit breaker — before claiming, so a wedged QA task
-            # doesn't churn claims while the gate is open.
+            # Respawn circuit breaker — same progress-aware gate as every
+            # other task-keyed spawn path.
             if await self._pm_respawn_should_gate(agent_id, task):
                 continue
-            # Claim the task for QA agent BEFORE spawning
-            if not await self._claim_task_for_agent(client, task["id"], agent_id):
-                logger.warning(
-                    "Failed to claim awaiting_qa task for QA",
-                    task_id=task["id"],
-                    agent_id=agent_id,
-                )
-                continue
-
-            # Spawn QA agent with task assignment
+            # NO pre-claim (matches _spawn_assigned_qa and the external-PR
+            # reviewer dispatch): the transitioning claim moved the task to
+            # 'claimed' before the agent existed, stranding the QA whose own
+            # claim_review/pass_review demand awaiting_qa (live 2026-07-02,
+            # ba7b751c). The agent claims itself via claim_review; the
+            # _is_agent_active guard prevents a double-spawn across ticks.
             await self.spawn_agent(
                 agent_id=agent_id,
                 task_id=task["id"],
