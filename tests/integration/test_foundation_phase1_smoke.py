@@ -76,6 +76,7 @@ async def test_skeleton_task_path_returns_incomplete_input() -> None:
         status="in_progress",
         assigned_to=pm_id,
         priority=2,
+        team="backend",
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = parent
