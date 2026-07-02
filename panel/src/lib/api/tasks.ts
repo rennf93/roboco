@@ -19,6 +19,9 @@ export interface TaskFilters {
   team?: Team;
   limit?: number;
   offset?: number;
+  // Server-side search over title, description, and id prefix — summaries
+  // carry no description, so the search must happen on the backend.
+  q?: string;
 }
 
 // One board reviewer's decision-log entry for a task (PO or Head of Marketing).
@@ -107,6 +110,7 @@ export const tasksApi = {
     if (filters?.status) params.append("status", filters.status);
     if (filters?.team) params.append("team", filters.team);
     if (filters?.limit) params.append("limit", String(filters.limit));
+    if (filters?.q) params.append("q", filters.q);
 
     const url = "/tasks/summary?" + params.toString();
     const { data } = await api.get<TaskSummaryWire[]>(url);

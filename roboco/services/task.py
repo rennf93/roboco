@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, func, or_, select, text, update
+from sqlalchemy import String, and_, func, or_, select, text, update
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstanceState
@@ -6303,6 +6303,36 @@ class TaskService(BaseService):
     # =========================================================================
     # QUERIES
     # =========================================================================
+
+    async def search_tasks(
+        self,
+        q: str,
+        *,
+        team: Team | None = None,
+        status: TaskStatus | None = None,
+        limit: int = 100,
+    ) -> list[TaskTable]:
+        """Case-insensitive task search over title, description, and id.
+
+        Backs the panel's task-list search bar: title/keyword/details hits
+        via ILIKE, plus an id-prefix match so a pasted short id resolves.
+        Filters compose with the list routes' team/status semantics.
+        """
+        needle = f"%{q}%"
+        conditions = [
+            TaskTable.title.ilike(needle),
+            TaskTable.description.ilike(needle),
+            cast("Any", TaskTable.id).cast(String).ilike(f"{q}%"),
+        ]
+        stmt = select(TaskTable).where(or_(*conditions))
+        if team is not None:
+            stmt = stmt.where(TaskTable.team == team)
+        if status is not None:
+            stmt = stmt.where(TaskTable.status == status)
+        result = await self.session.execute(
+            stmt.order_by(TaskTable.created_at.desc()).limit(limit)
+        )
+        return list(result.scalars().all())
 
     async def list_all(
         self,

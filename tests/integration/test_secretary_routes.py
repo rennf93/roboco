@@ -159,3 +159,37 @@ async def test_state_allows_secretary(monkeypatch: pytest.MonkeyPatch) -> None:
     _install(monkeypatch, _FakeService())
     resp = await sec_route.read_state(_db(), _agent(AgentRole.SECRETARY))
     assert resp.pending_pitches == []
+
+
+@pytest.mark.asyncio
+async def test_search_tasks_forbidden_for_developer() -> None:
+    with pytest.raises(HTTPException) as exc:
+        await sec_route.search_tasks(_db(), _agent(AgentRole.DEVELOPER), q="greeting")
+    assert exc.value.status_code == HTTPStatus.FORBIDDEN
+
+
+@pytest.mark.asyncio
+async def test_search_tasks_returns_compact_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The CEO refers to tasks by NAME in the Secretary chat — the search
+    resolves names to ids so a directive can target the right task."""
+    row = MagicMock()
+    row.id = uuid4()
+    row.title = "Rework the greeting banner"
+    row.status = "pending"
+    row.team = "backend"
+    row.priority = 2
+    task_svc = MagicMock()
+    task_svc.search_tasks = AsyncMock(return_value=[row])
+    monkeypatch.setattr("roboco.services.task.get_task_service", lambda _db: task_svc)
+    out = await sec_route.search_tasks(_db(), _agent(AgentRole.SECRETARY), q="greeting")
+    assert out == [
+        {
+            "id": str(row.id),
+            "title": "Rework the greeting banner",
+            "status": "pending",
+            "team": "backend",
+            "priority": 2,
+        }
+    ]

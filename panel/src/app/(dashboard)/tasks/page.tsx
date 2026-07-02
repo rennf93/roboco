@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useMemo, useCallback } from "react";
+import { Suspense, useEffect, useMemo, useCallback, useState } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useTasks } from "@/hooks/use-tasks";
 import { useProjects } from "@/hooks/use-projects";
@@ -160,7 +160,17 @@ function TasksPageContent() {
   );
 
   // Fetch all tasks and filter client-side for multi-select
-  const { data: tasks, isLoading, error, refetch } = useTasks();
+  // Debounced server-side search: title + description + id prefix. The
+  // old client-side title-only filter hid description/id matches the
+  // server now returns, so it is gone.
+  const [debouncedQuery, setDebouncedQuery] = useState(searchQuery);
+  useEffect(() => {
+    const handle = setTimeout(() => setDebouncedQuery(searchQuery), 300);
+    return () => clearTimeout(handle);
+  }, [searchQuery]);
+  const { data: tasks, isLoading, error, refetch } = useTasks(
+    debouncedQuery ? { q: debouncedQuery } : undefined,
+  );
 
   // Projects + products: power the Project/Product filter options + name display.
   const { data: projects } = useProjects();
@@ -191,14 +201,6 @@ function TasksPageContent() {
     if (!tasks) return [];
 
     return tasks.filter((task) => {
-      // Search filter
-      if (
-        searchQuery &&
-        !task.title.toLowerCase().includes(searchQuery.toLowerCase())
-      ) {
-        return false;
-      }
-
       // Status filter (if any selected, task must match one of them)
       if (statusFilter.length > 0 && !statusFilter.includes(task.status)) {
         return false;
@@ -239,7 +241,6 @@ function TasksPageContent() {
     });
   }, [
     tasks,
-    searchQuery,
     statusFilter,
     teamFilter,
     taskTypeFilter,

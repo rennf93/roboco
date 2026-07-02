@@ -5,9 +5,10 @@ queued and the CEO confirms/rejects them (CEO-only routes). The Secretary also
 reads company state. Writes commit explicitly.
 """
 
+from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
 
 from roboco.api.deps import CurrentAgentContext, DbSession
 from roboco.api.schemas.secretary import (
@@ -41,6 +42,34 @@ async def read_state(db: DbSession, agent: CurrentAgentContext) -> CompanyStateR
     _require(agent, _SECRETARY_OR_CEO)
     state = await get_secretary_service(db).read_company_state()
     return CompanyStateResponse(**state)
+
+
+@router.get("/tasks")
+async def search_tasks(
+    db: DbSession,
+    agent: CurrentAgentContext,
+    q: Annotated[str, Query(min_length=2, max_length=200)],
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> list[dict[str, object]]:
+    """Search tasks by title/description/id prefix (Secretary or CEO).
+
+    The CEO refers to tasks by NAME in the Secretary chat; this resolves a
+    name to concrete ids so a directive can target the right task.
+    """
+    _require(agent, _SECRETARY_OR_CEO)
+    from roboco.services.task import get_task_service
+
+    rows = await get_task_service(db).search_tasks(q, limit=limit)
+    return [
+        {
+            "id": str(row.id),
+            "title": row.title,
+            "status": str(row.status),
+            "team": str(row.team) if row.team else None,
+            "priority": row.priority,
+        }
+        for row in rows
+    ]
 
 
 @router.get("/tasks/{task_id}")

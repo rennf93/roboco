@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
@@ -114,3 +115,40 @@ def test_content_type_for_role_none_for_sectionless_roles() -> None:
     assert content_type_for_role("head_marketing") is None
     assert content_type_for_role("ceo") is None
     assert content_type_for_role("prompter") is None
+
+
+def test_sections_carry_written_at_stamp() -> None:
+    """Every persisted section carries an ISO written_at — traces without
+    timestamps were unusable for reconstructing WHEN a note landed (CEO
+    reMarkable item, 2026-07-02)."""
+    t = _task()
+    apply_structured_note(
+        t,
+        "developer",
+        {
+            "summary": (
+                "Built the greeting module end to end; single additive file "
+                "on the task branch with the PR open against the base."
+            )
+        },
+    )
+    stored = (t.notes_structured or {})["developer"]
+    assert "written_at" in stored, stored
+    # Parseable, timezone-aware ISO-8601.
+    parsed = datetime.fromisoformat(stored["written_at"])
+    assert parsed.tzinfo is not None
+
+
+def test_written_at_refreshes_on_rewrite() -> None:
+    t = _task()
+    payload = {
+        "summary": (
+            "First pass of the notes section, long enough to validate "
+            "against the dev section's minimum content length."
+        )
+    }
+    apply_structured_note(t, "developer", payload)
+    first = (t.notes_structured or {})["developer"]["written_at"]
+    apply_structured_note(t, "developer", payload)
+    second = (t.notes_structured or {})["developer"]["written_at"]
+    assert second >= first

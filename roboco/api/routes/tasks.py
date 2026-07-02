@@ -662,6 +662,7 @@ async def list_tasks_summary(
     agent: CurrentAgentContext,
     team: Team | None = None,
     status: TaskStatus | None = None,
+    q: Annotated[str | None, Query(max_length=200)] = None,
     limit: Annotated[int, Query(ge=1, le=1000)] = 500,
 ) -> list[TaskSummaryResponse]:
     """List tasks as trimmed summaries for panel list views.
@@ -669,7 +670,9 @@ async def list_tasks_summary(
     Same filters and view permissions as the full list, ~50x lighter per
     task: no description/plan/progress/commits/notes. The panel task tree
     needs the whole set at once, so the default limit is higher than the
-    full route's.
+    full route's. ``q`` searches title, description, and id prefix
+    server-side — summaries carry no description, so the search must
+    happen here, not in the browser.
     """
     service = get_task_service(db)
     permissions = get_permission_service()
@@ -680,6 +683,12 @@ async def list_tasks_summary(
             effective_team = agent.team
         else:
             return []
+
+    if q:
+        tasks = await service.search_tasks(
+            q, team=effective_team, status=status, limit=limit
+        )
+        return task_list_to_summary_response(tasks)
 
     if effective_team and status:
         tasks = await service.list_by_team(effective_team, status, limit)
