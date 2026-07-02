@@ -5014,6 +5014,24 @@ class TaskService(BaseService):
             return await self.escalate_to_ceo(task_id, "main_pm")
         return None
 
+    async def open_pr_ref(self, task: TaskTable) -> WorkSessionTable | None:
+        """The task's work session iff its PR is recorded still open.
+
+        Backs the admin-override open-PR refusal: completing a task whose PR
+        is open strands its commits unmerged. Only ``pr_status == "open"``
+        counts — merged is safe, closed was a deliberate discard, and a
+        missing session/status is unknowable here.
+        """
+        if not task.work_session_id:
+            return None
+        result = await self.session.execute(
+            select(WorkSessionTable).where(WorkSessionTable.id == task.work_session_id)
+        )
+        ws = result.scalar_one_or_none()
+        if ws is not None and ws.pr_status == "open":
+            return ws
+        return None
+
     async def _assert_pr_merged_for_complete(self, task: TaskTable) -> bool:
         """True if the task's PR is merged (or no PR gate applies).
 
