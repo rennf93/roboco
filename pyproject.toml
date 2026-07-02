@@ -160,7 +160,10 @@ select = [
 # tool layer; we accept the >5 kwarg signatures here for the same reason
 # they're accepted in `roboco/mcp/**`.
 "roboco/services/gateway/**/*.py" = ["PLC0415", "PLR0913"]
-"roboco/api/routes/*.py" = ["PLC0415"]
+# Route signatures ARE the HTTP contract — each FastAPI query/path/body
+# param must be a discrete typed argument for OpenAPI + validation, so the
+# >5-arg rule doesn't fit them (same rationale as roboco/mcp/**).
+"roboco/api/routes/*.py" = ["PLC0415", "PLR0913"]
 # deps.py is the DI wiring hub; it defers a few service imports to call time
 # to avoid import cycles with the modules it wires (same rationale as above).
 "roboco/api/deps.py" = ["PLC0415"]

@@ -3642,3 +3642,48 @@ async def test_pm_merge_auto_completes_without_double_completion(
     # complete_task_for_agent must NOT have been called: the task was already
     # auto-completed by _auto_complete_on_merge inside merge_pr_for_task.
     complete_for_agent_spy.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_summary_search_matches_title_description_and_id(
+    task_client: dict,
+) -> None:
+    """The task list search covers title, description (details/keywords),
+    and id prefix — server-side, because summaries deliberately exclude
+    descriptions (CEO reMarkable item: task search bar)."""
+    client = task_client["client"]
+    hit_title = _seed_task(task_client, title="Rework the greeting banner")
+    hit_desc = _seed_task(
+        task_client,
+        title="Unrelated title",
+        description="Contains the zanzibar keyword deep in the details.",
+    )
+    miss = _seed_task(task_client, title="Nothing to see here")
+    await task_client["db"].flush()
+
+    by_title = await client.get("/api/tasks/summary?q=greeting", headers=_HDR)
+    assert by_title.status_code == HTTPStatus.OK
+    ids = {t["id"] for t in by_title.json()}
+    assert str(hit_title.id) in ids and str(miss.id) not in ids
+
+    by_desc = await client.get("/api/tasks/summary?q=zanzibar", headers=_HDR)
+    ids = {t["id"] for t in by_desc.json()}
+    assert str(hit_desc.id) in ids and str(hit_title.id) not in ids
+
+    prefix = str(hit_title.id)[:8]
+    by_id = await client.get(f"/api/tasks/summary?q={prefix}", headers=_HDR)
+    ids = {t["id"] for t in by_id.json()}
+    assert str(hit_title.id) in ids
+
+
+@pytest.mark.asyncio
+async def test_summary_search_respects_team_filter(task_client: dict) -> None:
+    client = task_client["client"]
+    hit = _seed_task(task_client, title="Backend greeting search hit")
+    await task_client["db"].flush()
+
+    resp = await client.get(
+        "/api/tasks/summary?q=greeting&team=frontend", headers=_HDR
+    )
+    assert resp.status_code == HTTPStatus.OK
+    assert str(hit.id) not in {t["id"] for t in resp.json()}
