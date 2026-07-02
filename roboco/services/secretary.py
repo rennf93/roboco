@@ -20,7 +20,7 @@ from sqlalchemy import select
 
 from roboco.db.tables import SecretaryDirectiveTable
 from roboco.foundation.identity import AGENTS
-from roboco.models.base import TaskStatus
+from roboco.models.base import Complexity, TaskNature, TaskStatus, Team
 from roboco.models.secretary import GATED_KINDS, DirectiveKind, DirectiveStatus
 from roboco.services.base import (
     BaseService,
@@ -31,13 +31,27 @@ from roboco.services.base import (
 from roboco.services.company_goals import get_company_goals_service
 from roboco.services.messaging import get_messaging_service
 from roboco.services.pitch import get_pitch_service
+from roboco.services.repositories.query_helpers import get_agent_by_slug
 from roboco.services.task import get_task_service
-from roboco.utils.converters import require_uuid
+from roboco.utils.converters import InvalidIdentifierError, require_uuid
 
 if TYPE_CHECKING:
     from uuid import UUID
 
     from sqlalchemy.ext.asyncio import AsyncSession
+
+    from roboco.db.tables import TaskTable
+    from roboco.services.task import TaskService
+
+# Sentinel distinguishing "assigned_to not present in the edit payload" from
+# an explicit ``None`` (unassign) — a plain ``None`` default would conflate
+# the two and silently skip a deliberate unassign.
+_UNSET: Any = object()
+
+# Full-detail read is bounded: a long-running task's progress history could
+# otherwise blow up the payload. Mirrors the spirit of other list caps in the
+# codebase (e.g. get_subtasks' [:500]).
+_MAX_PROGRESS_UPDATES = 50
 
 _CEO_ID = AGENTS["ceo"].uuid
 _ANNOUNCE_CHANNEL = "announcements"
@@ -77,7 +91,16 @@ class SecretaryService(BaseService):
         }
 
     async def read_task(self, task_id: UUID) -> dict[str, Any]:
-        task = await get_task_service(self.session).get(task_id)
+        """Full-detail task read — the Secretary's FULL task access.
+
+        Beyond identity/status/description, carries everything the panel's
+        full ``TaskResponse`` has that this previously omitted: acceptance
+        criteria, plan, notes (dev/qa/auditor/pr-reviewer/doc/quick-context),
+        and the PR/branch reference. ``progress_updates`` is bounded to the
+        most recent entries (see ``_MAX_PROGRESS_UPDATES``) so a long-running
+        task's history can't blow up the payload.
+        """
+        task: TaskTable | None = await get_task_service(self.session).get(task_id)
         if task is None:
             raise NotFoundError("task", str(task_id))
         return {
@@ -87,6 +110,25 @@ class SecretaryService(BaseService):
             "team": str(task.team) if task.team else None,
             "assigned_to": str(task.assigned_to) if task.assigned_to else None,
             "description": task.description,
+            "acceptance_criteria": list(task.acceptance_criteria or []),
+            "priority": task.priority,
+            "estimated_complexity": (
+                str(task.estimated_complexity) if task.estimated_complexity else None
+            ),
+            "nature": str(task.nature) if task.nature else None,
+            "plan": task.plan,
+            "progress_updates": list(task.progress_updates or [])[
+                -_MAX_PROGRESS_UPDATES:
+            ],
+            "dev_notes": task.dev_notes,
+            "qa_notes": task.qa_notes,
+            "auditor_notes": task.auditor_notes,
+            "pr_reviewer_notes": task.pr_reviewer_notes,
+            "doc_notes": task.doc_notes,
+            "quick_context": task.quick_context,
+            "branch_name": task.branch_name,
+            "pr_number": task.pr_number,
+            "pr_url": task.pr_url,
         }
 
     # ------------------------------------------------------------------ #
@@ -226,12 +268,36 @@ class SecretaryService(BaseService):
             return "pitch approved and provisioned"
         return await self._control_task(payload)
 
-    # Content fields the Secretary may edit on CEO confirmation. Status,
-    # ownership, and git fields never ride an edit — they have their own
-    # audited paths (override, reassign, the git workflow).
+    # Content fields the Secretary may edit on CEO confirmation — the FULL
+    # surface (Secretary FULL task access). Status is never set here — it has
+    # its own audited path (the "start"/"cancel"/"override" actions below);
+    # git fields (branch/PR) are never editable — they follow the git
+    # workflow. ``assigned_to`` rides the edit too but is handled separately
+    # (see ``_edit_task``) since it needs claim-aware reassignment, not a
+    # plain field set.
     _EDITABLE_TASK_FIELDS: ClassVar[frozenset[str]] = frozenset(
-        {"title", "description", "acceptance_criteria", "priority"}
+        {
+            "title",
+            "description",
+            "acceptance_criteria",
+            "priority",
+            "team",
+            "estimated_complexity",
+            "nature",
+            "assigned_to",
+        }
     )
+
+    # Enum-typed content fields need coercion from the raw JSON string before
+    # they reach TaskService.update() (a generic setattr passthrough with no
+    # type coercion of its own).
+    _ENUM_TASK_FIELDS: ClassVar[dict[str, Any]] = {
+        "team": Team,
+        "estimated_complexity": Complexity,
+        "nature": TaskNature,
+    }
+
+    _ASSIGNMENT_FIELD = "assigned_to"
 
     async def _control_task(self, payload: dict[str, Any]) -> str:
         task_svc = get_task_service(self.session)
@@ -239,16 +305,7 @@ class SecretaryService(BaseService):
         action = str(payload["action"])
         notes = str(payload.get("notes", "via Secretary on CEO command"))
         if action == "edit":
-            fields = dict(payload.get("fields") or {})
-            illegal = set(fields) - self._EDITABLE_TASK_FIELDS
-            if not fields or illegal:
-                raise ValidationError(
-                    "edit accepts only "
-                    f"{sorted(self._EDITABLE_TASK_FIELDS)}; got "
-                    f"{sorted(fields) or 'nothing'}"
-                )
-            await task_svc.update(task_id, **fields)
-            return f"task fields updated: {', '.join(sorted(fields))}"
+            return await self._edit_task(task_svc, task_id, payload)
         if action == "start":
             await task_svc.approve_and_start(task_id, notes)
             return "task started"
@@ -264,6 +321,84 @@ class SecretaryService(BaseService):
             )
             return f"task set to {new_status.value}"
         raise ValidationError(f"unknown task action: {action!r}")
+
+    async def _edit_task(
+        self, task_svc: TaskService, task_id: UUID, payload: dict[str, Any]
+    ) -> str:
+        """Apply the Secretary's edit — content fields + optional reassign.
+
+        ``assigned_to`` is popped out and routed through claim-aware
+        reassignment (``_reassign_task``) rather than a plain field set;
+        every other allowlisted field goes through ``TaskService.update``
+        after enum coercion.
+        """
+        fields = dict(payload.get("fields") or {})
+        illegal = set(fields) - self._EDITABLE_TASK_FIELDS
+        if not fields or illegal:
+            raise ValidationError(
+                "edit accepts only "
+                f"{sorted(self._EDITABLE_TASK_FIELDS)}; got "
+                f"{sorted(fields) or 'nothing'}"
+            )
+        reassign_to = fields.pop(self._ASSIGNMENT_FIELD, _UNSET)
+        for field, enum_cls in self._ENUM_TASK_FIELDS.items():
+            if field in fields:
+                fields[field] = enum_cls(str(fields[field]))
+
+        results: list[str] = []
+        if fields:
+            await task_svc.update(task_id, **fields)
+            results.append(f"fields updated: {', '.join(sorted(fields))}")
+        if reassign_to is not _UNSET:
+            new_assignee = await self._resolve_assignee(reassign_to)
+            await self._reassign_task(task_svc, task_id, new_assignee)
+            results.append(
+                f"reassigned to {reassign_to}"
+                if new_assignee is not None
+                else "unassigned"
+            )
+        return "; ".join(results)
+
+    async def _reassign_task(
+        self, task_svc: TaskService, task_id: UUID, new_assignee: UUID | None
+    ) -> None:
+        """Route reassignment through the task service's claim-aware paths.
+
+        An active claim (``claimed``/``in_progress``) reseeds the heartbeat
+        via ``reassign_active_claim`` so the new assignee isn't immediately
+        stale to the reaper; everything else (review-state handoffs, or an
+        explicit unassign) goes through the general ``reassign`` — never a
+        naive ``setattr`` on ``assigned_to``.
+        """
+        if new_assignee is not None:
+            task = await task_svc.get(task_id)
+            if task is not None and task.status in (
+                TaskStatus.CLAIMED,
+                TaskStatus.IN_PROGRESS,
+            ):
+                reassigned = await task_svc.reassign_active_claim(task_id, new_assignee)
+                if reassigned is not None:
+                    return
+        await task_svc.reassign(task_id, new_assignee)
+
+    async def _resolve_assignee(self, raw: Any) -> UUID | None:
+        """Resolve an edit's ``assigned_to`` value to an agent UUID.
+
+        Accepts ``None`` (explicit unassign), a UUID string, or an agent slug
+        (e.g. ``"be-dev-1"``) — the same slug convention the REST PATCH path
+        resolves for the CEO's chat, which refers to agents by name.
+        """
+        if raw is None:
+            return None
+        candidate = str(raw)
+        try:
+            return require_uuid(candidate)
+        except InvalidIdentifierError:
+            pass
+        agent_row = await get_agent_by_slug(self.session, candidate)
+        if agent_row is None:
+            raise ValidationError(f"no agent with slug or UUID {candidate!r}")
+        return require_uuid(agent_row.id)
 
     async def _notify_ceo_pending(self, row: SecretaryDirectiveTable) -> None:
         from roboco.services.notification import NotificationService

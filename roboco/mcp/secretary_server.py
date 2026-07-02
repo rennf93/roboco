@@ -42,7 +42,8 @@ async def read_company_state() -> str:
 
 @mcp.tool()
 async def read_task(task_id: str) -> str:
-    """Read one task's detail by its id."""
+    """Read one task's full detail by its id — content, notes, plan,
+    progress, and PR reference (Secretary FULL task access)."""
     return json.dumps(await _do_read_task(task_id))
 
 
@@ -52,7 +53,10 @@ async def submit_directive(kind: str, payload: dict[str, Any]) -> str:
 
     'kind' is one of: relay_message (payload: channel, text), update_charter
     (payload: charter), control_task (payload: task_id, action[start|cancel|
-    override], status?), approve_pitch (payload: pitch_id, notes?), announce
+    override|edit], status? for override, fields? for edit — edit accepts
+    title/description/acceptance_criteria/priority/team/estimated_complexity/
+    nature/assigned_to; assigned_to may be a UUID or an agent slug like
+    "be-dev-1"), approve_pitch (payload: pitch_id, notes?), announce
     (payload: text). High-impact kinds (charter, control_task, approve_pitch,
     announce) are queued for the CEO's explicit confirmation; relay_message runs
     directly.
