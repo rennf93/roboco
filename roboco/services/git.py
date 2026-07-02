@@ -4035,6 +4035,24 @@ class GitService(BaseService):
         unmerged = [line for line in cherry.stdout.splitlines() if line.startswith("+")]
         if not unmerged:
             return None
+        # Squash-merge relief: cherry can't patch-match N child commits against
+        # the one squashed commit, but every commit (incl. the squash) carries
+        # the [taskid8] prefix — a marker commit on the parent proves the child
+        # landed (live false positive 2026-07-02: 3 squash-merged children).
+        marker = await self._run_git(
+            workspace,
+            [
+                "log",
+                f"origin/{parent_branch}",
+                "--grep",
+                rf"\[{str(child.id)[:8]}\]",
+                "--oneline",
+                "-1",
+            ],
+            check=False,
+        )
+        if marker.returncode == 0 and marker.stdout.strip():
+            return None
         return {
             "task_id": str(child.id)[:8],
             "title": str(getattr(child, "title", ""))[:80],
