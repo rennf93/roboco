@@ -65,7 +65,9 @@ export function CeoApprovalQueue({ className }: CeoApprovalQueueProps) {
   const { data: startTasks } = useQuery({
     queryKey: ["tasks", "awaiting-approve-start"],
     queryFn: async () => {
-      const pending = await tasksApi.list({ status: TaskStatus.PENDING });
+      // Full-fat fetch: this card renders quick_context, which the trimmed
+      // summary list deliberately omits. The PENDING set is small.
+      const pending = await tasksApi.listFull({ status: TaskStatus.PENDING });
       return pending.filter(
         (t) => t.board_review_complete === true && t.team !== Team.MAIN_PM,
       );

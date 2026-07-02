@@ -55,6 +55,8 @@ interface TaskSummaryWire {
   pr_url: string | null;
   pr_created: boolean;
   docs_complete: boolean;
+  completed_at: string | null;
+  board_review_complete: boolean;
   description_snippet: string | null;
 }
 
@@ -70,7 +72,6 @@ const summaryToTask = (s: TaskSummaryWire): Task => ({
   blocker_ids: [],
   claimed_at: null,
   started_at: null,
-  completed_at: null,
   target_date: null,
   pm_approvals: {},
   plan: null,
@@ -110,6 +111,28 @@ export const tasksApi = {
     const url = "/tasks/summary?" + params.toString();
     const { data } = await api.get<TaskSummaryWire[]>(url);
     return data.map(summaryToTask);
+  },
+
+  // Full-fat list for consumers that render fields beyond the summary
+  // (the CEO approval queue shows quick_context). Hits the heavy /tasks
+  // route — keep the filter narrow and the limit small.
+  listFull: async (filters?: TaskFilters): Promise<Task[]> => {
+    if (isMockMode()) {
+      let tasks = [...mockTasks];
+      if (filters?.status) {
+        tasks = tasks.filter((t) => t.status === filters.status);
+      }
+      if (filters?.team) {
+        tasks = tasks.filter((t) => t.team === filters.team);
+      }
+      return tasks;
+    }
+    const params = new URLSearchParams();
+    if (filters?.status) params.append("status", filters.status);
+    if (filters?.team) params.append("team", filters.team);
+    params.append("limit", String(filters?.limit ?? 100));
+    const { data } = await api.get<Task[]>("/tasks?" + params.toString());
+    return data;
   },
 
   // Get single task

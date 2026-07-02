@@ -411,6 +411,10 @@ class TaskSummaryResponse(BaseModel):
     pr_url: str | None = None
     pr_created: bool = False
     docs_complete: bool = False
+    # Client-side velocity metrics filter on completion time; the CEO
+    # approval queue gates its button on board_review_complete.
+    completed_at: datetime | None = None
+    board_review_complete: bool = False
     description_snippet: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
@@ -444,6 +448,8 @@ def task_to_summary_response(task: "TaskTable") -> TaskSummaryResponse:
         pr_url=getattr(task, "pr_url", None),
         pr_created=task.pr_created,
         docs_complete=task.docs_complete,
+        completed_at=task.completed_at,
+        board_review_complete=task.board_review_complete,
         description_snippet=snippet,
     )
 

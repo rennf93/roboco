@@ -56,6 +56,8 @@ def _stub_task(**overrides: Any) -> TaskTable:
         "docs_complete": False,
         "created_at": datetime.now(UTC),
         "updated_at": datetime.now(UTC),
+        "completed_at": datetime.now(UTC),
+        "board_review_complete": True,
         "estimated_complexity": Complexity.MEDIUM,
     }
     base.update(overrides)
@@ -75,6 +77,10 @@ def test_summary_carries_every_list_view_field() -> None:
     )  # git badge
     assert s.branch_name == "feature/backend/x"
     assert s.project_id == t.project_id and s.product_id is None
+    # velocity metrics filter on completion time; the CEO approval queue
+    # gates on board_review_complete — both burned as gaps on 2026-07-02
+    assert s.completed_at == t.completed_at
+    assert s.board_review_complete is True
 
 
 def test_summary_excludes_fat_fields_and_truncates_snippet() -> None:
