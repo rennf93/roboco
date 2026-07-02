@@ -78,7 +78,10 @@ export function SubtasksList({ task }: SubtasksListProps) {
                 {completionPercent}% complete
               </span>
             )}
-            <Link href={`/tasks?parent=${task.id}&team=${task.team}`}>
+            <Link
+              href={`/tasks?parent=${task.id}&team=${task.team}`}
+              prefetch={false}
+            >
               <Button size="sm" variant="ghost">
                 <Plus className="h-4 w-4 mr-1" />
                 Add
@@ -118,6 +121,7 @@ export function SubtasksList({ task }: SubtasksListProps) {
             {/* Subtask list */}
             {subtasks.map((subtask) => (
               <Link
+                prefetch={false}
                 key={subtask.id}
                 href={`/tasks/${subtask.id}`}
                 className="block"

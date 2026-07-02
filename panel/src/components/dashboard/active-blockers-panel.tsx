@@ -66,7 +66,7 @@ export function ActiveBlockersPanel({
         ) : (
           <div className="space-y-3">
             {blockedTasks.map((task) => (
-              <Link key={task.id} href={"/tasks/" + task.id}>
+              <Link key={task.id} href={"/tasks/" + task.id} prefetch={false}>
                 <div className="flex items-start gap-3 p-3 rounded-lg border border-red-200 bg-red-50 hover:bg-red-100 dark:border-red-900 dark:bg-red-950 dark:hover:bg-red-900 transition-colors">
                   <span className="text-lg">\uD83D\uDD34</span>
                   <div className="flex-1 min-w-0">
@@ -91,7 +91,7 @@ export function ActiveBlockersPanel({
           </div>
         )}
         <div className="mt-4 pt-3 border-t">
-          <Link href="/tasks?status=blocked">
+          <Link href="/tasks?status=blocked" prefetch={false}>
             <Button variant="ghost" size="sm" className="w-full">
               View All Blocked
               <ArrowRight className="h-4 w-4 ml-2" />

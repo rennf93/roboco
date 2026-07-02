@@ -30,6 +30,7 @@ export function AgentStatusCards({ agent }: AgentStatusCardsProps) {
         <CardContent>
           {agent.task_id ? (
             <Link
+              prefetch={false}
               href={"/tasks/" + agent.task_id}
               className="text-blue-500 hover:underline"
             >

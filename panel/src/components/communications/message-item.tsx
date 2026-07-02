@@ -56,7 +56,7 @@ export function MessageItem({ message }: MessageItemProps) {
         )}
         {/* Related Task */}
         {message.task_id && (
-          <Link href={"/tasks/" + message.task_id}>
+          <Link href={"/tasks/" + message.task_id} prefetch={false}>
             <Badge variant="outline" className="text-xs mt-2 hover:bg-muted">
               <Link2 className="h-3 w-3 mr-1" />
               Task #{message.task_id.slice(0, 8)}

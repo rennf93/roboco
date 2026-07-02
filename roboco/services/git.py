@@ -4035,6 +4035,24 @@ class GitService(BaseService):
         unmerged = [line for line in cherry.stdout.splitlines() if line.startswith("+")]
         if not unmerged:
             return None
+        # Squash-merge relief: cherry can't patch-match N child commits against
+        # the one squashed commit, but every commit (incl. the squash) carries
+        # the [taskid8] prefix — a marker commit on the parent proves the child
+        # landed (live false positive 2026-07-02: 3 squash-merged children).
+        marker = await self._run_git(
+            workspace,
+            [
+                "log",
+                f"origin/{parent_branch}",
+                "--grep",
+                rf"\[{str(child.id)[:8]}\]",
+                "--oneline",
+                "-1",
+            ],
+            check=False,
+        )
+        if marker.returncode == 0 and marker.stdout.strip():
+            return None
         return {
             "task_id": str(child.id)[:8],
             "title": str(getattr(child, "title", ""))[:80],
@@ -4341,10 +4359,26 @@ class GitService(BaseService):
         await self._run_git(
             workspace, ["fetch", "origin", branch_name], check=False, token=token
         )
-        if await self._ref_exists(workspace, branch_name):
+        origin_ref = f"origin/{branch_name}"
+        local_exists = await self._ref_exists(workspace, branch_name)
+        origin_exists = await self._ref_exists(workspace, origin_ref)
+        if local_exists and origin_exists:
+            # An assembled branch advances on ORIGIN when child PRs merge on
+            # GitHub, while the inspecting clone's local ref stays parked — a
+            # diff off the stale local ref re-flags work that already landed
+            # (live 2026-07-02: two false pr_fails on the S6 cell PR). Prefer
+            # origin when the local ref is strictly behind it; a local ref
+            # that is ahead (unpushed) or diverged keeps priority.
+            behind = await self._run_git(
+                workspace,
+                ["merge-base", "--is-ancestor", branch_name, origin_ref],
+                check=False,
+            )
+            return origin_ref if behind.returncode == 0 else branch_name
+        if local_exists:
             return branch_name
-        if await self._ref_exists(workspace, f"origin/{branch_name}"):
-            return f"origin/{branch_name}"
+        if origin_exists:
+            return origin_ref
         return branch_name
 
     async def diff(

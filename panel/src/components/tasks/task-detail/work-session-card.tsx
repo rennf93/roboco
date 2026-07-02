@@ -231,7 +231,7 @@ export function WorkSessionCard({ taskId }: WorkSessionCardProps) {
 
         {/* View Full Session Link */}
         <div className="flex justify-end pt-2">
-          <Link href={`/work-sessions/${session.id}`}>
+          <Link href={`/work-sessions/${session.id}`} prefetch={false}>
             <Button variant="outline" size="sm" className="gap-2">
               <ExternalLink className="h-3 w-3" />
               View Details

@@ -60,7 +60,7 @@ export default function JournalEntryPage({ params }: JournalEntryPageProps) {
   if (error || !entry) {
     return (
       <div className="space-y-6">
-        <Link href="/journals">
+        <Link href="/journals" prefetch={false}>
           <Button variant="ghost" size="sm">
             <ArrowLeft className="h-4 w-4 mr-2" />
             Back to Journals
@@ -81,7 +81,7 @@ export default function JournalEntryPage({ params }: JournalEntryPageProps) {
                   <RefreshCw className="h-4 w-4 mr-2" />
                   Retry
                 </Button>
-                <Link href="/journals">
+                <Link href="/journals" prefetch={false}>
                   <Button>View All Journals</Button>
                 </Link>
               </div>
@@ -97,7 +97,7 @@ export default function JournalEntryPage({ params }: JournalEntryPageProps) {
       {/* Header */}
       <div className="flex items-center justify-between border-b pb-4">
         <div className="flex items-center gap-4">
-          <Link href="/journals">
+          <Link href="/journals" prefetch={false}>
             <Button variant="ghost" size="icon">
               <ArrowLeft className="h-5 w-5" />
             </Button>
@@ -143,7 +143,7 @@ export default function JournalEntryPage({ params }: JournalEntryPageProps) {
                 <Link2 className="h-4 w-4" />
                 <span>Related Task</span>
               </div>
-              <Link href={`/tasks/${entry.task_id}`}>
+              <Link href={`/tasks/${entry.task_id}`} prefetch={false}>
                 <Badge
                   variant="outline"
                   className="hover:bg-muted cursor-pointer"

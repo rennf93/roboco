@@ -507,6 +507,7 @@ export function TaskMetadata({ task }: TaskMetadataProps) {
           </div>
           {task.project_id && project ? (
             <Link
+              prefetch={false}
               href={`/projects`}
               className="font-medium text-blue-600 hover:underline dark:text-blue-400"
             >

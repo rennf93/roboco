@@ -105,7 +105,7 @@ export function KanbanCard({
       <CardContent className="p-3">
         <div className="flex items-start gap-2">
           <div className="flex-1 min-w-0 overflow-hidden">
-            <Link href={"/tasks/" + task.id} className="block">
+            <Link href={"/tasks/" + task.id} className="block" prefetch={false}>
               <p className="font-medium text-sm line-clamp-2 hover:underline break-words">
                 <span
                   className="font-mono text-muted-foreground"

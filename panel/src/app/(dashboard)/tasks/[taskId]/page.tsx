@@ -414,7 +414,7 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
   if (error || !task) {
     return (
       <div className="space-y-6">
-        <Link href="/tasks">
+        <Link href="/tasks" prefetch={false}>
           <Button variant="ghost" size="sm">
             <ArrowLeft className="h-4 w-4 mr-2" />
             Back to Tasks
@@ -435,7 +435,7 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
                   <RefreshCw className="h-4 w-4 mr-2" />
                   Retry
                 </Button>
-                <Link href="/tasks">
+                <Link href="/tasks" prefetch={false}>
                   <Button>View All Tasks</Button>
                 </Link>
               </div>

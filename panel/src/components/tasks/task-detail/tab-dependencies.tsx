@@ -155,7 +155,11 @@ function DependencyList({
                   className={`flex items-center gap-2 p-3 rounded-lg ${itemBorderClass} ${itemBgClass} transition-colors`}
                 >
                   <Link2 className="h-4 w-4 text-muted-foreground shrink-0" />
-                  <Link href={`/tasks/${depId}`} className="flex-1">
+                  <Link
+                    href={`/tasks/${depId}`}
+                    className="flex-1"
+                    prefetch={false}
+                  >
                     <span className="font-mono text-sm hover:underline">
                       {depId.slice(0, 8)}...
                     </span>
@@ -406,6 +410,7 @@ export function TabDependencies({ task }: TabDependenciesProps) {
             >
               <Link2 className="h-4 w-4 text-muted-foreground" />
               <Link
+                prefetch={false}
                 href={`/tasks/${task.parent_task_id}`}
                 className="flex-1"
                 onClick={(e) => e.stopPropagation()}

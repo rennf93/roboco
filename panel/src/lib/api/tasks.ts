@@ -31,8 +31,66 @@ export interface BoardReviewEntry {
   timestamp: string | null;
 }
 
+// Wire shape of GET /tasks/summary (backend TaskSummaryResponse) — exactly
+// the fields list views render; everything fat stays on GET /tasks/{id}.
+interface TaskSummaryWire {
+  id: string;
+  title: string;
+  status: TaskStatus;
+  priority: number;
+  team: Team;
+  assigned_to: string | null;
+  created_at: string;
+  updated_at: string | null;
+  estimated_complexity: Complexity;
+  nature: TaskNature;
+  task_type: TaskType;
+  sequence: number;
+  parent_task_id: string | null;
+  batch_id: string | null;
+  project_id: string | null;
+  product_id: string | null;
+  branch_name: string | null;
+  pr_number: number | null;
+  pr_url: string | null;
+  pr_created: boolean;
+  docs_complete: boolean;
+  completed_at: string | null;
+  board_review_complete: boolean;
+  description_snippet: string | null;
+}
+
+// Normalize a summary into the Task shape so list consumers keep their
+// types. Defaulted fields are never rendered by list views (verified in the
+// 2026-07-02 audit); anything needing them must fetch the full task.
+const summaryToTask = (s: TaskSummaryWire): Task => ({
+  ...s,
+  description: s.description_snippet ?? "",
+  acceptance_criteria: [],
+  created_by: "",
+  dependency_ids: [],
+  blocker_ids: [],
+  claimed_at: null,
+  started_at: null,
+  target_date: null,
+  pm_approvals: {},
+  plan: null,
+  checkpoints: [],
+  progress_updates: [],
+  commits: [],
+  dev_notes: null,
+  qa_notes: null,
+  auditor_notes: null,
+  quick_context: null,
+  self_verified: false,
+  qa_verified: null,
+  sessions: [],
+});
+
 export const tasksApi = {
-  // List tasks with optional filters
+  // List tasks with optional filters — served by the trimmed summary route
+  // (~50x lighter than the full TaskResponse list that measured 2MB and made
+  // every page slow, 2026-07-02). Detail views fetch the full task via get().
   list: async (filters?: TaskFilters): Promise<Task[]> => {
     if (isMockMode()) {
       let tasks = [...mockTasks];
@@ -49,10 +107,31 @@ export const tasksApi = {
     if (filters?.status) params.append("status", filters.status);
     if (filters?.team) params.append("team", filters.team);
     if (filters?.limit) params.append("limit", String(filters.limit));
-    if (filters?.offset) params.append("offset", String(filters.offset));
 
-    const url = "/tasks?" + params.toString();
-    const { data } = await api.get<Task[]>(url);
+    const url = "/tasks/summary?" + params.toString();
+    const { data } = await api.get<TaskSummaryWire[]>(url);
+    return data.map(summaryToTask);
+  },
+
+  // Full-fat list for consumers that render fields beyond the summary
+  // (the CEO approval queue shows quick_context). Hits the heavy /tasks
+  // route — keep the filter narrow and the limit small.
+  listFull: async (filters?: TaskFilters): Promise<Task[]> => {
+    if (isMockMode()) {
+      let tasks = [...mockTasks];
+      if (filters?.status) {
+        tasks = tasks.filter((t) => t.status === filters.status);
+      }
+      if (filters?.team) {
+        tasks = tasks.filter((t) => t.team === filters.team);
+      }
+      return tasks;
+    }
+    const params = new URLSearchParams();
+    if (filters?.status) params.append("status", filters.status);
+    if (filters?.team) params.append("team", filters.team);
+    params.append("limit", String(filters?.limit ?? 100));
+    const { data } = await api.get<Task[]>("/tasks?" + params.toString());
     return data;
   },
 

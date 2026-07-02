@@ -204,6 +204,7 @@ function SessionList({ channelId, groupId }: SessionListProps) {
       <div className="p-2 space-y-2">
         {sessions.map((session) => (
           <Link
+            prefetch={false}
             key={session.id}
             href={`/communications/${session.id}?channel=${channelId}&group=${groupId}`}
             className="block p-3 rounded-lg border bg-card hover:bg-muted/50 hover:border-primary/50 transition-all"

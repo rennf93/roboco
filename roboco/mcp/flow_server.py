@@ -816,6 +816,10 @@ def delegate(
     acceptance_criteria: StrList,
     estimated_complexity: str = "medium",
     covers_parent_criteria: StrList | None = None,
+    intends_to_touch: StrList | None = None,
+    adds_migration: bool = False,
+    touches_shared: bool = False,
+    depends_on: StrList | None = None,
 ) -> dict[str, Any]:
     """PM: create a subtask of parent_task_id.
 
@@ -835,6 +839,14 @@ def delegate(
             EVERY parent criterion is claimed by a subtask and satisfied before
             the parent rolls up — split the parent's criteria across subtasks so
             their union covers all of them.
+        intends_to_touch: Collision surface — file paths/globs this subtask
+            will modify. REQUIRED for task_type="code": the sibling collision
+            DAG can only sequence what is declared.
+        adds_migration: True if the subtask adds a DB migration (migration
+            adders are chained serially).
+        touches_shared: True if the subtask edits a shared surface.
+        depends_on: Task UUIDs this subtask must wait for — wired verbatim as
+            dependency edges (use for ordering the surface rules would miss).
     """
     return _post(
         _role_path("delegate"),
@@ -849,6 +861,10 @@ def delegate(
             "acceptance_criteria": acceptance_criteria,
             "estimated_complexity": estimated_complexity,
             "covers_parent_criteria": covers_parent_criteria,
+            "intends_to_touch": intends_to_touch,
+            "adds_migration": adds_migration,
+            "touches_shared": touches_shared,
+            "depends_on": depends_on,
         },
     )
 

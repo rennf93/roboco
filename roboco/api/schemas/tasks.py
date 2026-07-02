@@ -382,7 +382,13 @@ class TaskResponse(BaseModel):
 
 
 class TaskSummaryResponse(BaseModel):
-    """Lightweight task response for list views."""
+    """Lightweight task response for list views.
+
+    Carries exactly what the panel's list surfaces render — the task tree
+    (parent/sequence), kanban card (type/snippet), and git badge (pr/branch)
+    — and none of the fat columns (description, plan, progress_updates,
+    commits, notes). Full payloads stay on /tasks/{id}.
+    """
 
     id: UUID
     title: str
@@ -394,8 +400,65 @@ class TaskSummaryResponse(BaseModel):
     updated_at: datetime | None
     estimated_complexity: Complexity
     nature: TaskNature
+    task_type: TaskType
+    sequence: int
+    parent_task_id: UUID | None = None
+    batch_id: UUID | None = None
+    project_id: UUID | None = None
+    product_id: UUID | None = None
+    branch_name: str | None = None
+    pr_number: int | None = None
+    pr_url: str | None = None
+    pr_created: bool = False
+    docs_complete: bool = False
+    # Client-side velocity metrics filter on completion time; the CEO
+    # approval queue gates its button on board_review_complete.
+    completed_at: datetime | None = None
+    board_review_complete: bool = False
+    description_snippet: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+_SUMMARY_SNIPPET_LEN = 200
+
+
+def task_to_summary_response(task: "TaskTable") -> TaskSummaryResponse:
+    """Trimmed list-view conversion — no fat JSON columns serialized."""
+    snippet = (task.description or "")[:_SUMMARY_SNIPPET_LEN] or None
+    return TaskSummaryResponse(
+        id=require_uuid(task.id),
+        title=task.title,
+        status=task.status,
+        priority=task.priority,
+        team=task.team,
+        assigned_to=to_python_uuid(task.assigned_to),
+        created_at=task.created_at,
+        updated_at=task.updated_at,
+        estimated_complexity=task.estimated_complexity,
+        nature=task.nature,
+        task_type=task.task_type,
+        sequence=task.sequence,
+        parent_task_id=to_python_uuid(task.parent_task_id),
+        batch_id=to_python_uuid(task.batch_id),
+        project_id=to_python_uuid(task.project_id),
+        product_id=to_python_uuid(task.product_id),
+        branch_name=getattr(task, "branch_name", None),
+        pr_number=getattr(task, "pr_number", None),
+        pr_url=getattr(task, "pr_url", None),
+        pr_created=task.pr_created,
+        docs_complete=task.docs_complete,
+        completed_at=task.completed_at,
+        board_review_complete=task.board_review_complete,
+        description_snippet=snippet,
+    )
+
+
+def task_list_to_summary_response(
+    tasks: list["TaskTable"],
+) -> list[TaskSummaryResponse]:
+    """Convert list of TaskTable to trimmed summaries."""
+    return [task_to_summary_response(t) for t in tasks]
 
 
 class ProgressRequest(BaseModel):

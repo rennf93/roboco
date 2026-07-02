@@ -460,7 +460,7 @@ export function TaskHeader({ task, onAction }: TaskHeaderProps) {
             title truncates, so a long title never pushes the controls or the
             Actions menu out of place. */}
         <div className="flex items-start gap-3 min-w-0 flex-1">
-          <Link href="/tasks">
+          <Link href="/tasks" prefetch={false}>
             <Button variant="ghost" size="icon" className="shrink-0">
               <ArrowLeft className="h-5 w-5" />
             </Button>

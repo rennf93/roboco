@@ -1,4 +1,4 @@
-"""RoboCo HTTP security layer — fastapi-guard 7.2.0 / guard-core 3.3.0.
+"""RoboCo HTTP security layer — fastapi-guard 7.2.2 / guard-core 3.3.0.
 
 A ``SecurityMiddleware`` + per-route decorator layer, gated by
 ``settings.guard_enabled`` (default off). Importing this module is always safe:

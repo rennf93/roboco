@@ -29,7 +29,7 @@ export function CommunicationsView() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Link href="/communications">
+          <Link href="/communications" prefetch={false}>
             <Button variant="outline">
               <ExternalLink className="h-4 w-4 mr-2" />
               Full View
@@ -80,6 +80,7 @@ export function CommunicationsView() {
                       </Badge>
                     </div>
                     <Link
+                      prefetch={false}
                       href={`/communications?channel=${selectedChannel.id}`}
                     >
                       <Button variant="outline" size="sm">
@@ -118,6 +119,7 @@ export function CommunicationsView() {
                       Open the channel to view sessions and send messages
                     </p>
                     <Link
+                      prefetch={false}
                       href={`/communications?channel=${selectedChannel.id}`}
                     >
                       <Button>View Sessions</Button>

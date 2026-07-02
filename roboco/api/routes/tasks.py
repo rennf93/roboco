@@ -38,11 +38,13 @@ from roboco.api.schemas.tasks import (
     TaskCountResponse,
     TaskResponse,
     TaskSessionLinkResponse,
+    TaskSummaryResponse,
     TaskUpdate,
     TeamTasksQuery,
     ValidTransitionsResponse,
     enrich_task_with_context,
     task_list_to_response,
+    task_list_to_summary_response,
     task_to_response,
     transform_update_data,
 )
@@ -619,11 +621,51 @@ async def list_tasks(
     elif effective_team:
         tasks = await service.list_by_team(effective_team, limit=limit)
     elif status:
-        tasks = await service.list_by_status(status)
+        # list_by_status has no limit param — slice so the status-only
+        # branch can't return the whole table (it silently skipped the
+        # declared limit until 2026-07-02).
+        tasks = (await service.list_by_status(status))[:limit]
     else:
         tasks = await service.list_all(limit)
 
     return task_list_to_response(tasks)
+
+
+@router.get("/summary", response_model=list[TaskSummaryResponse])
+async def list_tasks_summary(
+    db: DbSession,
+    agent: CurrentAgentContext,
+    team: Team | None = None,
+    status: TaskStatus | None = None,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 500,
+) -> list[TaskSummaryResponse]:
+    """List tasks as trimmed summaries for panel list views.
+
+    Same filters and view permissions as the full list, ~50x lighter per
+    task: no description/plan/progress/commits/notes. The panel task tree
+    needs the whole set at once, so the default limit is higher than the
+    full route's.
+    """
+    service = get_task_service(db)
+    permissions = get_permission_service()
+
+    effective_team = team
+    if not permissions.can_perform_task_action(agent, TaskAction.VIEW_ALL):
+        if agent.team:
+            effective_team = agent.team
+        else:
+            return []
+
+    if effective_team and status:
+        tasks = await service.list_by_team(effective_team, status, limit)
+    elif effective_team:
+        tasks = await service.list_by_team(effective_team, limit=limit)
+    elif status:
+        tasks = (await service.list_by_status(status))[:limit]
+    else:
+        tasks = await service.list_all(limit)
+
+    return task_list_to_summary_response(tasks)
 
 
 @router.get("/my", response_model=list[TaskResponse])
@@ -631,10 +673,11 @@ async def get_my_tasks(
     db: DbSession,
     agent: CurrentAgentContext,
     status: TaskStatus | None = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 200,
 ) -> list[TaskResponse]:
     """Get tasks assigned to the current agent."""
     service = get_task_service(db)
-    tasks = await service.list_by_assignee(agent.agent_id, status)
+    tasks = (await service.list_by_assignee(agent.agent_id, status))[:limit]
     return task_list_to_response(tasks)
 
 
@@ -644,6 +687,7 @@ async def get_pending_tasks(
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
     team: Team | None = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 200,
 ) -> list[TaskResponse]:
     """Get pending tasks available to claim."""
     service = get_task_service(db)
@@ -652,7 +696,7 @@ async def get_pending_tasks(
     can_view_all = permissions.can_perform_task_action(agent, TaskAction.VIEW_ALL)
     effective_team = team if can_view_all else agent.team
 
-    tasks = await service.list_pending(effective_team)
+    tasks = (await service.list_pending(effective_team))[:limit]
     return task_list_to_response(tasks)
 
 
@@ -662,6 +706,7 @@ async def get_blocked_tasks(
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
     team: Team | None = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 200,
 ) -> list[TaskResponse]:
     """Get blocked tasks."""
     service = get_task_service(db)
@@ -670,7 +715,7 @@ async def get_blocked_tasks(
     can_view_all = permissions.can_perform_task_action(agent, TaskAction.VIEW_ALL)
     effective_team = team if can_view_all else agent.team
 
-    tasks = await service.list_blocked(effective_team)
+    tasks = (await service.list_blocked(effective_team))[:limit]
     return task_list_to_response(tasks)
 
 
@@ -680,6 +725,7 @@ async def get_awaiting_qa_tasks(
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
     team: Team | None = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 200,
 ) -> list[TaskResponse]:
     """Get tasks awaiting QA review."""
     service = get_task_service(db)
@@ -688,7 +734,7 @@ async def get_awaiting_qa_tasks(
     can_view_all = permissions.can_perform_task_action(agent, TaskAction.VIEW_ALL)
     effective_team = team if can_view_all else agent.team
 
-    tasks = await service.list_awaiting_qa(effective_team)
+    tasks = (await service.list_awaiting_qa(effective_team))[:limit]
     return task_list_to_response(tasks)
 
 
@@ -698,6 +744,7 @@ async def get_awaiting_docs_tasks(
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
     team: Team | None = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 200,
 ) -> list[TaskResponse]:
     """Get tasks awaiting documentation."""
     service = get_task_service(db)
@@ -706,7 +753,7 @@ async def get_awaiting_docs_tasks(
     can_view_all = permissions.can_perform_task_action(agent, TaskAction.VIEW_ALL)
     effective_team = team if can_view_all else agent.team
 
-    tasks = await service.list_awaiting_docs(effective_team)
+    tasks = (await service.list_awaiting_docs(effective_team))[:limit]
     return task_list_to_response(tasks)
 
 
@@ -783,6 +830,7 @@ async def get_awaiting_pm_review_tasks(
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
     team: Team | None = None,
+    limit: Annotated[int, Query(ge=1, le=500)] = 200,
 ) -> list[TaskResponse]:
     """Get tasks awaiting PM review."""
     service = get_task_service(db)
@@ -791,7 +839,7 @@ async def get_awaiting_pm_review_tasks(
     can_view_all = permissions.can_perform_task_action(agent, TaskAction.VIEW_ALL)
     effective_team = team if can_view_all else agent.team
 
-    tasks = await service.list_awaiting_pm_review(effective_team)
+    tasks = (await service.list_awaiting_pm_review(effective_team))[:limit]
     return task_list_to_response(tasks)
 
 
@@ -818,7 +866,7 @@ async def get_awaiting_ceo_approval_tasks(
         )
 
     service = get_task_service(db)
-    tasks = await service.list_awaiting_ceo_approval()
+    tasks = (await service.list_awaiting_ceo_approval())[:200]
     return task_list_to_response(tasks)
 
 
@@ -845,7 +893,7 @@ async def get_external_pr_reviews(
             detail="Only PMs and management can view the PR-review queue",
         )
     service = get_task_service(db)
-    tasks = await service.list_external_pr_reviews()
+    tasks = (await service.list_external_pr_reviews())[:200]
     return task_list_to_response(tasks)
 
 
@@ -1138,7 +1186,7 @@ async def get_subtasks(
 ) -> list[TaskResponse]:
     """Get subtasks of a task."""
     service = get_task_service(db)
-    tasks = await service.get_subtasks(task_id)
+    tasks = (await service.get_subtasks(task_id))[:500]
     return task_list_to_response(tasks)
 
 
@@ -1149,7 +1197,7 @@ async def get_descendants(
 ) -> list[TaskResponse]:
     """Get ALL descendants of a task (recursive - children, grandchildren, etc.)."""
     service = get_task_service(db)
-    tasks = await service.get_all_descendants(task_id)
+    tasks = (await service.get_all_descendants(task_id))[:500]
     return task_list_to_response(tasks)
 
 

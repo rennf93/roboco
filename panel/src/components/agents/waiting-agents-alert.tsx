@@ -36,7 +36,9 @@ export function WaitingAgentsAlert({ waitingAgents }: WaitingAgentsAlertProps) {
                 </span>
               </div>
               <Button variant="outline" size="sm" asChild>
-                <Link href={"/agents/" + agent.agent_id}>Resolve</Link>
+                <Link href={"/agents/" + agent.agent_id} prefetch={false}>
+                  Resolve
+                </Link>
               </Button>
             </div>
           ))}

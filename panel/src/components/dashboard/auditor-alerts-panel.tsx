@@ -98,7 +98,7 @@ export function AuditorAlertsPanel({
           </div>
         )}
         <div className="mt-4 pt-3 border-t">
-          <Link href="/auditor">
+          <Link href="/auditor" prefetch={false}>
             <Button variant="ghost" size="sm" className="w-full">
               View All Flags
               <ArrowRight className="h-4 w-4 ml-2" />

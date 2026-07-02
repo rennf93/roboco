@@ -599,7 +599,9 @@ GATEWAY_ENABLED_ROLES: frozenset[str] = frozenset(
 )
 
 
-def _build_manifest_for_agent(agent_id: str, model: str) -> Path | None:
+def _build_manifest_for_agent(
+    agent_id: str, model: str, workspace_path: str | None = None
+) -> Path | None:
     """Write a SpawnManifest for developer-role agents; return the host path.
 
     Returns ``None`` for roles outside ``GATEWAY_ENABLED_ROLES`` so callers
@@ -608,6 +610,12 @@ def _build_manifest_for_agent(agent_id: str, model: str) -> Path | None:
     Args:
         agent_id: Agent slug (e.g. ``be-dev-1``).
         model:    Resolved model name passed to ``SpawnInputs.agent_model``.
+        workspace_path: The task-resolved workspace (project clone or per-task
+            worktree) — the SAME path the container ``-w`` uses. Without it
+            the manifest falls back to the agent's roboco-project workspace,
+            which is WRONG for any other project's task (live 2026-07-02:
+            be-dev-2's manifest pointed at /data/workspaces/roboco while the
+            task lived in guard-core-saas-backend).
 
     Returns:
         Absolute host path to the written JSON file, or ``None``.
@@ -631,14 +639,18 @@ def _build_manifest_for_agent(agent_id: str, model: str) -> Path | None:
     raw_uuid = AGENT_UUIDS.get(agent_id)
     agent_uuid = UUID(raw_uuid) if raw_uuid else __import__("uuid").uuid4()
 
-    workspace_path = Path(settings.workspaces_root) / "roboco" / team / agent_id
+    resolved_workspace = (
+        Path(workspace_path)
+        if workspace_path
+        else Path(settings.workspaces_root) / "roboco" / team / agent_id
+    )
 
     manifest = build_for_role(
         SpawnInputs(
             agent_id=agent_uuid,
             role=role,
             team=team,
-            workspace_path=workspace_path,
+            workspace_path=resolved_workspace,
             agent_model=model,
         )
     )
@@ -2601,7 +2613,13 @@ class AgentOrchestrator:
         # Spawn manifest + gateway flag — developer role only in Phase 1.
         # _build_manifest_for_agent writes the JSON file to the host and
         # returns the path; other roles get None and the gateway flag stays off.
-        manifest_host_path = _build_manifest_for_agent(config.agent_id, subagent_model)
+        # workspace_path mirrors the container -w (same resolver) so the
+        # manifest never claims a different directory than the shell.
+        manifest_host_path = _build_manifest_for_agent(
+            config.agent_id,
+            subagent_model,
+            workspace_path=AgentOrchestrator._resolve_workspace_cwd(config),
+        )
         if manifest_host_path:
             cmd.extend(
                 [
@@ -2622,6 +2640,27 @@ class AgentOrchestrator:
     _ROLES_WITH_CELL_WORKSPACE: ClassVar[frozenset[str]] = frozenset({"documenter"})
 
     @staticmethod
+    def _resolve_workspace_cwd(config: AgentConfig) -> str | None:
+        """The task-resolved workspace path for this spawn, or None.
+
+        Single source of truth consumed by BOTH the container ``-w`` and the
+        spawn manifest's ``workspace_path`` — they must agree, or the agent's
+        prompt claims one directory while its shell sits in another (live
+        2026-07-02: manifest said the roboco workspace for a guard-core task).
+        """
+        role = get_agent_role(config.agent_id) or "developer"
+        team = get_agent_team(config.agent_id) or ""
+        project = _resolve_project_slug_from_git_context(config.git_context)
+        if role in AgentOrchestrator._ROLES_WITH_AGENT_WORKSPACE:
+            # Per-task worktree when the task has a branch (F123), else the
+            # clone root. _agent_cwd_path is the SAME formula the Edit/Write
+            # allowlist is built from, so -w and the allowlist match exactly.
+            return _agent_cwd_path(project, team, config.agent_id, config.git_context)
+        if role in AgentOrchestrator._ROLES_WITH_CELL_WORKSPACE:
+            return _cell_workspace_path(project, team)
+        return None
+
+    @staticmethod
     def _append_workspace_cwd(cmd: list[str], config: AgentConfig) -> None:
         """Set the container -w to the agent or cell workspace by role."""
         # Pre-gateway parity: set the container's cwd
@@ -2630,25 +2669,13 @@ class AgentOrchestrator:
         # the workspace clone. Without this, container WORKDIR (/app from the
         # Dockerfile) shadows the workspace and every file op fails.
         #
-        # Mirror the workspace-path selection in _get_role_permissions exactly:
+        # Workspace selection lives in _resolve_workspace_cwd:
         # - developer / product_owner / head_marketing: per-agent workspace
         # - documenter: cell workspace
         # - qa / cell_pm / main_pm / auditor: no write workspace → omit -w
-        role = get_agent_role(config.agent_id) or "developer"
-        team = get_agent_team(config.agent_id) or ""
-        project = _resolve_project_slug_from_git_context(config.git_context)
-        if role in AgentOrchestrator._ROLES_WITH_AGENT_WORKSPACE:
-            # Per-task worktree when the task has a branch (F123), else the
-            # clone root. _agent_cwd_path is the SAME formula the Edit/Write
-            # allowlist is built from, so -w and the allowlist match exactly.
-            cmd.extend(
-                [
-                    "-w",
-                    _agent_cwd_path(project, team, config.agent_id, config.git_context),
-                ]
-            )
-        elif role in AgentOrchestrator._ROLES_WITH_CELL_WORKSPACE:
-            cmd.extend(["-w", _cell_workspace_path(project, team)])
+        workspace = AgentOrchestrator._resolve_workspace_cwd(config)
+        if workspace is not None:
+            cmd.extend(["-w", workspace])
 
     @staticmethod
     def _append_agent_auth_env(cmd: list[str], config: AgentConfig) -> None:
@@ -9791,6 +9818,58 @@ Start now: evidence(task_id="{task_id}")
     # Use foundation's default; keep the local name for back-compat.
     _PM_RESPAWN_MAX_UNPRODUCTIVE = _AGENT_LOOP_BUDGET.pm_respawn_max_unproductive
     _PM_RESPAWN_MAX_TRACING_RESETS = _AGENT_LOOP_BUDGET.pm_respawn_max_tracing_resets
+    _PM_RESPAWN_MAX_REVISIT_RESETS = _AGENT_LOOP_BUDGET.pm_respawn_max_revisit_resets
+
+    def _respawn_status_change_resets(
+        self,
+        key: tuple[str, Any],
+        record: dict[str, Any],
+        current_status: Any,
+        now: datetime,
+    ) -> bool:
+        """Handle a status CHANGE; True when it resets the strike counter.
+
+        A status never seen on this (agent, task) is genuine forward progress
+        and fully resets, exactly as before. A REVISITED status — the A<->B
+        oscillation (blocked <-> in_progress) that changes status on every
+        spawn while advancing nothing (2026-07-02: a dev looped 2h/8 spawns
+        without tripping the gate) — gets a bounded reset budget mirroring
+        tracing_resets, after which strikes accrue. seen_statuses is
+        in-memory only (not a tracker column): after a restart it rebuilds
+        from observed statuses, which can only under-gate briefly — never
+        over-gate.
+        """
+        agent_slug, task_id = key
+        seen = record.get("seen_statuses") or [record.get("last_status")]
+        if current_status not in seen:
+            self._pm_respawn_tracker[key] = {
+                "count": 1,
+                "last_status": current_status,
+                "last_check": now,
+                "seen_statuses": [*seen, current_status],
+            }
+            self._schedule_respawn_persist(
+                agent_slug, str(task_id), self._pm_respawn_tracker[key]
+            )
+            return True
+        record["last_status"] = current_status
+        revisits = record.get("revisit_resets", 0)
+        if revisits < self._PM_RESPAWN_MAX_REVISIT_RESETS:
+            record["revisit_resets"] = revisits + 1
+            record["count"] = 1
+            record["last_check"] = now
+            record["notified"] = False
+            self._schedule_respawn_persist(agent_slug, str(task_id), record)
+            return True
+        logger.warning(
+            "PM respawn status ping-pong budget exhausted — "
+            "revisited statuses no longer reset the strike counter",
+            agent_id=agent_slug,
+            task_id=str(task_id),
+            task_status=current_status,
+            revisit_resets=revisits,
+        )
+        return False
 
     async def _pm_respawn_should_gate(
         self, agent_slug: str, task: dict[str, Any]
@@ -9827,15 +9906,20 @@ Start now: evidence(task_id="{task_id}")
         current_status = task.get("status")
         record = self._pm_respawn_tracker.get(key)
         now = datetime.now(UTC)
-        if record is None or record.get("last_status") != current_status:
+        if record is None:
             self._pm_respawn_tracker[key] = {
                 "count": 1,
                 "last_status": current_status,
                 "last_check": now,
+                "seen_statuses": [current_status],
             }
             self._schedule_respawn_persist(
                 agent_slug, str(task_id), self._pm_respawn_tracker[key]
             )
+            return False
+        if record.get("last_status") != current_status and (
+            self._respawn_status_change_resets(key, record, current_status, now)
+        ):
             return False
         # Same status as last spawn — could be a stuck loop OR a
         # rule-following retry. A tracing_gap normally means the agent is
@@ -10884,20 +10968,16 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 # QA already running, they'll pick up on scan
                 continue
 
-            # Respawn circuit breaker — before claiming, so a wedged QA task
-            # doesn't churn claims while the gate is open.
+            # Respawn circuit breaker — same progress-aware gate as every
+            # other task-keyed spawn path.
             if await self._pm_respawn_should_gate(agent_id, task):
                 continue
-            # Claim the task for QA agent BEFORE spawning
-            if not await self._claim_task_for_agent(client, task["id"], agent_id):
-                logger.warning(
-                    "Failed to claim awaiting_qa task for QA",
-                    task_id=task["id"],
-                    agent_id=agent_id,
-                )
-                continue
-
-            # Spawn QA agent with task assignment
+            # NO pre-claim (matches _spawn_assigned_qa and the external-PR
+            # reviewer dispatch): the transitioning claim moved the task to
+            # 'claimed' before the agent existed, stranding the QA whose own
+            # claim_review/pass_review demand awaiting_qa (live 2026-07-02,
+            # ba7b751c). The agent claims itself via claim_review; the
+            # _is_agent_active guard prevents a double-spawn across ticks.
             await self.spawn_agent(
                 agent_id=agent_id,
                 task_id=task["id"],
