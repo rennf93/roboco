@@ -1724,9 +1724,17 @@ class WorkspaceService:
         never touches the read clone.
         """
         timeout = settings.workspace_dep_install_timeout_seconds
+        # Scrub the inherited venv pin: under `uv run` the orchestrator's
+        # process tree carries VIRTUAL_ENV=<its own venv>, and a uv-based
+        # dep_update_command would target THAT venv instead of the throwaway
+        # clone's. Same hazard _uv_subprocess_env guards for installs.
+        probe_env = dict(os.environ)
+        probe_env.pop("VIRTUAL_ENV", None)
+        probe_env.pop("UV_PROJECT_ENVIRONMENT", None)
         upgrade = subprocess.run(
             shlex.split(command),
             cwd=str(clone_dir),
+            env=probe_env,
             capture_output=True,
             text=True,
             timeout=timeout,
