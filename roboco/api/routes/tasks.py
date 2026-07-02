@@ -637,7 +637,7 @@ async def list_tasks_summary(
     agent: CurrentAgentContext,
     team: Team | None = None,
     status: TaskStatus | None = None,
-    limit: int = Query(500, ge=1, le=1000),
+    limit: Annotated[int, Query(ge=1, le=1000)] = 500,
 ) -> list[TaskSummaryResponse]:
     """List tasks as trimmed summaries for panel list views.
 
@@ -673,7 +673,7 @@ async def get_my_tasks(
     db: DbSession,
     agent: CurrentAgentContext,
     status: TaskStatus | None = None,
-    limit: int = Query(200, ge=1, le=500),
+    limit: Annotated[int, Query(ge=1, le=500)] = 200,
 ) -> list[TaskResponse]:
     """Get tasks assigned to the current agent."""
     service = get_task_service(db)
@@ -687,7 +687,7 @@ async def get_pending_tasks(
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
     team: Team | None = None,
-    limit: int = Query(200, ge=1, le=500),
+    limit: Annotated[int, Query(ge=1, le=500)] = 200,
 ) -> list[TaskResponse]:
     """Get pending tasks available to claim."""
     service = get_task_service(db)
@@ -706,7 +706,7 @@ async def get_blocked_tasks(
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
     team: Team | None = None,
-    limit: int = Query(200, ge=1, le=500),
+    limit: Annotated[int, Query(ge=1, le=500)] = 200,
 ) -> list[TaskResponse]:
     """Get blocked tasks."""
     service = get_task_service(db)
@@ -725,7 +725,7 @@ async def get_awaiting_qa_tasks(
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
     team: Team | None = None,
-    limit: int = Query(200, ge=1, le=500),
+    limit: Annotated[int, Query(ge=1, le=500)] = 200,
 ) -> list[TaskResponse]:
     """Get tasks awaiting QA review."""
     service = get_task_service(db)
@@ -744,7 +744,7 @@ async def get_awaiting_docs_tasks(
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
     team: Team | None = None,
-    limit: int = Query(200, ge=1, le=500),
+    limit: Annotated[int, Query(ge=1, le=500)] = 200,
 ) -> list[TaskResponse]:
     """Get tasks awaiting documentation."""
     service = get_task_service(db)
@@ -830,7 +830,7 @@ async def get_awaiting_pm_review_tasks(
     agent: CurrentAgentContext,
     permissions: PermissionServiceDep,
     team: Team | None = None,
-    limit: int = Query(200, ge=1, le=500),
+    limit: Annotated[int, Query(ge=1, le=500)] = 200,
 ) -> list[TaskResponse]:
     """Get tasks awaiting PM review."""
     service = get_task_service(db)
