@@ -2,6 +2,19 @@
 PYTHON_VERSIONS = 3.10 3.11 3.12 3.13 3.14
 DEFAULT_PYTHON = 3.10
 
+# Every `uv run` implicitly re-syncs the venv (rebuilding the roboco package
+# after any source edit). Two uv processes doing that concurrently — a
+# background `make quality` plus any foreground `uv run` — race on one
+# .venv and tear site-packages apart (recurring rich/pip/bandit ImportError
+# corruption). Recipes therefore never sync implicitly; targets that need a
+# fresh env depend on the explicit `sync` below, which runs once, up front.
+export UV_NO_SYNC := 1
+
+.PHONY: sync
+sync:
+	@echo "==> uv sync --extra dev"
+	@uv sync --extra dev
+
 # Install dependencies
 .PHONY: install
 install:
@@ -245,7 +258,7 @@ security: bandit pip-audit
 
 # Run every quality gate. Fails on any red. Use this as the merge gate.
 .PHONY: quality
-quality:
+quality: sync
 	@echo "==> ruff format --check"
 	@uv run ruff format --check .
 	@echo "==> ruff check"
@@ -283,7 +296,7 @@ quality:
 	@echo "All quality gates passed."
 
 .PHONY: quality-fast
-quality-fast:
+quality-fast: sync
 	@uv run ruff format --check .
 	@uv run ruff check .
 	@uv run mypy roboco/ tests/
@@ -294,7 +307,7 @@ quality-fast:
 # pre-submit gate (run at i_am_done) executes it in the dev's workspace and
 # catches lint/type/complexity at the desk. The test suite stays on CI.
 .PHONY: gate
-gate:
+gate: sync
 	@uv run ruff format --check .
 	@uv run ruff check .
 	@uv run mypy roboco/ tests/
