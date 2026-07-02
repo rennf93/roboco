@@ -174,6 +174,33 @@ def dispatcher_assign(stack: E2EStack, task_id: Any, agent_id: Any) -> None:
     stack.run_db(_run)
 
 
+def set_branch_name(stack: E2EStack, task_id: Any, branch_name: str) -> None:
+    """Directly set a task's ``branch_name`` — a data field, not a lifecycle
+    transition (mirrors ``dispatcher_assign``'s style: standing in for a
+    system-side effect the real claim path would otherwise perform)."""
+    from roboco.db.tables import TaskTable
+    from sqlalchemy import select
+
+    async def _run(session: AsyncSession) -> None:
+        row = (
+            await session.execute(select(TaskTable).where(TaskTable.id == task_id))
+        ).scalar_one()
+        row.branch_name = branch_name
+
+    stack.run_db(_run)
+
+
+def wire_dependency(stack: E2EStack, dependent_id: Any, depends_on_id: Any) -> None:
+    """Wire a real dependency edge the same way production sequencing does
+    (``TaskService.add_dependency``) — not a direct status write."""
+    from roboco.services.task import get_task_service
+
+    async def _run(session: AsyncSession) -> None:
+        await get_task_service(session).add_dependency(dependent_id, depends_on_id)
+
+    stack.run_db(_run)
+
+
 def origin_branch(stack: E2EStack, name: str, start: str = "master") -> None:
     """Create + push a branch in the shared origin via the admin clone."""
     from tests.e2e_smoke.harness import _git
@@ -521,6 +548,65 @@ def seed_hierarchy(
             "the merge-chain scenario has a real change to assemble upward."
         ),
         acceptance_criteria=["hello.txt exists at the repo root"],
+        project_id=project_id,
+        created_by=company.cell_pm_id,
+        parent_task_id=cell_id,
+        assigned_to=company.dev_id,
+    )
+    return {
+        "root_id": root_id,
+        "root_branch": root_branch,
+        "cell_id": cell_id,
+        "cell_branch": cell_branch,
+        "child_id": child_id,
+    }
+
+
+def seed_cell_and_dev(
+    stack: E2EStack,
+    company: Company,
+    project_id: Any,
+    root: dict[str, Any],
+    *,
+    filename: str,
+) -> dict[str, Any]:
+    """Cell (cell-PM) → dev child under an ALREADY-EXISTING root, seeded
+    mid-flight — the cell/child half of :func:`seed_hierarchy`, generalized
+    for a caller that owns its own root (e.g. a MegaTask root-subtask whose
+    root is claimed/seeded separately from this cell). ``root`` carries
+    ``root_id`` / ``root_branch`` (the shape :func:`seed_hierarchy` returns)."""
+    from roboco.models.base import TaskStatus, TaskType
+
+    root_id, root_branch = root["root_id"], root["root_branch"]
+    cell_id = uuid4()
+    cell_branch = f"{root_branch}--{str(cell_id)[:8]}"
+    origin_branch(stack, cell_branch, start=root_branch)
+    seed_task(
+        stack,
+        id=cell_id,
+        title=f"Backend slice: {filename}",
+        description=(
+            "Cell task assembling the backend slice of the feature; one dev "
+            "leaf writes the file, the cell PM assembles and submits."
+        ),
+        acceptance_criteria=[f"{filename} exists at the repo root"],
+        task_type=TaskType.PLANNING,
+        project_id=project_id,
+        created_by=company.main_pm_id,
+        assigned_to=company.cell_pm_id,
+        parent_task_id=root_id,
+        status=TaskStatus.IN_PROGRESS,
+        branch_name=cell_branch,
+        active_claimant_id=company.cell_pm_id,
+    )
+    child_id = seed_task(
+        stack,
+        title=f"Write {filename}",
+        description=(
+            f"Create {filename} with a friendly greeting at the repo root so "
+            "the scenario has a real change to assemble upward."
+        ),
+        acceptance_criteria=[f"{filename} exists at the repo root"],
         project_id=project_id,
         created_by=company.cell_pm_id,
         parent_task_id=cell_id,

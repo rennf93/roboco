@@ -595,3 +595,10 @@ Slices touched: orchestrator (1), tests (1, 2), taskservice + api-routes-schemas
 ## Delta 2026-07-02 (late night) — e2e scenario 3 (branch `feat/wave-1`)
 
 `tests/e2e_smoke/test_root_ceo_chain.py`: 3a pr_fail→needs_revision→`i_will_plan` re-entry (route demands approach≥150 + sub_tasks even on re-claim — pydantic fires before the gateway short-circuit)→real fix commit (`origin_commit` helper)→resubmit→pass→merge; 3b submit_root→gate→complete-escalates→REAL `approve-and-merge` (tasks router now mounted in the harness app; CEO row seeded)→hello.txt on origin master. Seed corrections that ARE the documentation: delivery roots are team=main_pm + planning-typed (backend-team roots get closure-routed to the cell PM; code-typed roots hit the main_pm+code impossibility guard). Fake GitHub `get_pr` now recomputes head.sha live (the unchanged-PR gate reads it via the REST API, not local refs). Latent fix en route: dep-update probe env scrub (VIRTUAL_ENV). uv-rot root cause: shared ~/.cache/uv with long-lived uvx MCP servers — per-repo UV_CACHE_DIR pinned.
+
+---
+## Delta 2026-07-03 — wave 2 begins (branch `feat/wave-2`)
+
+1. **Five dead comms panel components deleted** (−422 lines; audit-verified zero consumers; MessageComposer/MessageTypeBadge stay).
+2. **e2e scenario 4 (MegaTask umbrella)** — `tests/e2e_smoke/test_megatask_umbrella.py` + arcs helpers (`wire_dependency` via the real sequencing edge, `seed_cell_and_dev`, `set_branch_name`). Proves: sequencing hold (`unmet_dependency` on RS2's i_will_plan), serial root merges to master, umbrella branchless close via ceo-approve (never approve-and-merge).
+3. **PRODUCT FIX: batch root-subtask completion wall** — `_main_pm_complete_guard` (_impl.py ~6708) + `escalate_to_ceo` (task.py ~5321) refused ALL parented tasks; both now consult `is_batch_root_subtask`. Live root-subtasks previously closed only via CEO god-mode. Regression tests in test_choreographer_pm.py + test_task_service_transitions.py. First product bug found BY the harness (subagent-built, Sonnet 5, reviewed).
