@@ -1,7 +1,16 @@
-# Builds the MkDocs site and deploys it with GitHub's official Pages Actions
-# flow (build once -> upload artifact -> deploy). This avoids the gh-pages
-# branch entirely, so there is no force-push race and the custom domain set in
-# Settings persists across deploys.
+# Docs-site split Phase 1 (docs/internal/specs/2026-07-03-docs-site-split.md):
+# docs.roboco.tech (the roboco-website repo) is now the canonical user-facing
+# docs site, so this workflow no longer builds MkDocs. It deploys the
+# already-generated, already-committed `docs-redirects/` directory — one
+# meta-refresh + rel=canonical stub per URL this repo's Pages site used to
+# publish, pointing at the docs.roboco.tech equivalent — with GitHub's
+# official Pages Actions flow (upload artifact -> deploy). No force-push
+# race, and the custom domain set in Settings persists across deploys.
+#
+# `docs-redirects/` was generated once by scripts/gen_docs_redirects.py while
+# mkdocs.yml still listed every published page; that script is not re-run
+# here. Regenerating it (e.g. to add a redirect) means re-running the script
+# against a restored copy of the old nav and committing the new output.
 #
 # One-time setup: Settings -> Pages -> Source = "GitHub Actions".
 name: docs
@@ -10,8 +19,7 @@ on:
   push:
     branches: [master]
     paths:
-      - "docs/**"
-      - "mkdocs.yml"
+      - "docs-redirects/**"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
@@ -30,16 +38,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-      - name: Build the site (strict)
-        run: |
-          uv sync --extra docs
-          uv run mkdocs build --strict
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v5
         with:
-          path: site
+          path: docs-redirects
 
   deploy:
     needs: build
