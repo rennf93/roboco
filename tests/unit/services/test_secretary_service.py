@@ -34,6 +34,7 @@ def _patch(monkeypatch: pytest.MonkeyPatch) -> dict[str, MagicMock]:
     task = MagicMock()
     task.approve_and_start = AsyncMock()
     task.admin_set_status = AsyncMock()
+    task.update = AsyncMock()
     monkeypatch.setattr(sec_module, "get_task_service", lambda _s: task)
     notifier = MagicMock()
     notifier.send_ack_notification = AsyncMock()
@@ -171,3 +172,55 @@ async def test_bad_task_action_fails_directive(
     monkeypatch.setattr(svc, "get_directive", AsyncMock(return_value=row))
     out = await svc.confirm_directive(row.id, uuid4())
     assert out.status == DirectiveStatus.FAILED.value
+
+
+@pytest.mark.asyncio
+async def test_confirm_control_task_edit_updates_allowlisted_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Secretary can MODIFY a task's content fields on CEO confirmation
+    (reMarkable item) — restricted to the safe allowlist."""
+    svcs = _patch(monkeypatch)
+    svc = SecretaryService(_session())
+    tid = uuid4()
+    row = _pending(
+        DirectiveKind.CONTROL_TASK,
+        {
+            "task_id": str(tid),
+            "action": "edit",
+            "fields": {
+                "title": "Sharper title",
+                "priority": 1,
+                "description": "Clarified description from the CEO chat.",
+            },
+        },
+    )
+    monkeypatch.setattr(svc, "get_directive", AsyncMock(return_value=row))
+    out = await svc.confirm_directive(row.id, uuid4())
+    assert out.status == DirectiveStatus.EXECUTED.value
+    svcs["task"].update.assert_awaited_once()
+    _, kwargs = svcs["task"].update.await_args
+    assert kwargs["title"] == "Sharper title"
+    assert kwargs["priority"] == 1
+
+
+@pytest.mark.asyncio
+async def test_control_task_edit_rejects_non_allowlisted_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Status/ownership/git fields never ride an edit — those have their own
+    audited paths (override, reassign)."""
+    svcs = _patch(monkeypatch)
+    svc = SecretaryService(_session())
+    row = _pending(
+        DirectiveKind.CONTROL_TASK,
+        {
+            "task_id": str(uuid4()),
+            "action": "edit",
+            "fields": {"status": "completed"},
+        },
+    )
+    monkeypatch.setattr(svc, "get_directive", AsyncMock(return_value=row))
+    out = await svc.confirm_directive(row.id, uuid4())
+    assert out.status == DirectiveStatus.FAILED.value
+    svcs["task"].update.assert_not_awaited()

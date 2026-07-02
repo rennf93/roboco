@@ -14,7 +14,7 @@ holds CEO authority itself; this service mediates it.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from sqlalchemy import select
 
@@ -226,11 +226,29 @@ class SecretaryService(BaseService):
             return "pitch approved and provisioned"
         return await self._control_task(payload)
 
+    # Content fields the Secretary may edit on CEO confirmation. Status,
+    # ownership, and git fields never ride an edit — they have their own
+    # audited paths (override, reassign, the git workflow).
+    _EDITABLE_TASK_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {"title", "description", "acceptance_criteria", "priority"}
+    )
+
     async def _control_task(self, payload: dict[str, Any]) -> str:
         task_svc = get_task_service(self.session)
         task_id = require_uuid(payload["task_id"])
         action = str(payload["action"])
         notes = str(payload.get("notes", "via Secretary on CEO command"))
+        if action == "edit":
+            fields = dict(payload.get("fields") or {})
+            illegal = set(fields) - self._EDITABLE_TASK_FIELDS
+            if not fields or illegal:
+                raise ValidationError(
+                    "edit accepts only "
+                    f"{sorted(self._EDITABLE_TASK_FIELDS)}; got "
+                    f"{sorted(fields) or 'nothing'}"
+                )
+            await task_svc.update(task_id, **fields)
+            return f"task fields updated: {', '.join(sorted(fields))}"
         if action == "start":
             await task_svc.approve_and_start(task_id, notes)
             return "task started"

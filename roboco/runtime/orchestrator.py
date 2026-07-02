@@ -10252,6 +10252,28 @@ Start now: evidence(task_id="{task_id}")
         "main_pm": ("main_pm", "submit_root"),
     }
 
+    def _auto_submit_target(
+        self, task: dict[str, Any], pm_slug: str
+    ) -> tuple[str, str, str, str] | None:
+        """(role, route, verb, pm_uuid) when this parent is auto-submittable.
+
+        None when the flag is off, the parent is branchless coordination (a
+        MegaTask umbrella assembles no PR), the role has no submit verb, or
+        no PM identity can be resolved.
+        """
+        role = get_agent_role(pm_slug) or ""
+        pair = self._AUTO_SUBMIT_VERB_BY_ROLE.get(role)
+        pm_uuid = str(task.get("assigned_to") or AGENT_UUIDS.get(pm_slug) or "")
+        if (
+            not settings.pr_gate_auto_submit_enabled
+            or not task.get("branch_name")
+            or not task.get("project_id")
+            or pair is None
+            or not pm_uuid
+        ):
+            return None
+        return (role, pair[0], pair[1], pm_uuid)
+
     async def _try_auto_submit(
         self, client: httpx.AsyncClient, task: dict[str, Any], pm_slug: str
     ) -> bool:
@@ -10267,18 +10289,10 @@ Start now: evidence(task_id="{task_id}")
         PM turn is then genuinely needed), or a transport error — and the
         caller falls back to the classic PM closure spawn.
         """
-        role = get_agent_role(pm_slug) or ""
-        pair = self._AUTO_SUBMIT_VERB_BY_ROLE.get(role)
-        pm_uuid = str(task.get("assigned_to") or AGENT_UUIDS.get(pm_slug) or "")
-        if (
-            not settings.pr_gate_auto_submit_enabled
-            or not task.get("branch_name")
-            or not task.get("project_id")
-            or pair is None
-            or not pm_uuid
-        ):
+        target = self._auto_submit_target(task, pm_slug)
+        if target is None:
             return False
-        role_path, verb = pair
+        role, role_path, verb, pm_uuid = target
         task_id = str(task.get("id"))
         notes = (
             "Auto-submitted for gate review: every child task is terminal and "
@@ -10323,6 +10337,34 @@ Start now: evidence(task_id="{task_id}")
         self._mark_task_handled(task_id)
         return True
 
+    async def _closure_handled_without_pm(
+        self,
+        client: httpx.AsyncClient,
+        task: dict[str, Any],
+        task_id: str,
+        pm_id: str,
+    ) -> bool:
+        """Recover the parent's status, then try the submit turn cut.
+
+        The parent auto-paused when its PM idled (by design) — resume it
+        before anything else so whoever acts next (the auto-submit or the
+        spawned PM) lands on an actionable in_progress parent; an errant
+        `blocked` at closure is recovered symmetrically. Then the turn cut:
+        an assembled parent whose children are all terminal is submitted to
+        the PR gate system-side (True => the PM spawn is skipped); parents
+        past the gate (awaiting_pm_review — the merge turn) always spawn.
+        """
+        parent_status = task.get("status")
+        if parent_status == "paused":
+            await self._auto_resume_paused_parent(client, task_id)
+        elif parent_status == "blocked":
+            await self._auto_recover_blocked_parent(client, task_id)
+        return parent_status in (
+            "claimed",
+            "in_progress",
+            "paused",
+        ) and await self._try_auto_submit(client, task, pm_id)
+
     async def _maybe_spawn_pm_closure(
         self, client: httpx.AsyncClient, task: dict[str, Any]
     ) -> None:
@@ -10364,21 +10406,7 @@ Start now: evidence(task_id="{task_id}")
         # A parent that is `blocked` at closure (all descendants
         # terminal) is an errant/stale block — recover it symmetrically so
         # the chain can't wedge forever waiting for a PM to manually unblock.
-        parent_status = task.get("status")
-        if parent_status == "paused":
-            await self._auto_resume_paused_parent(client, task_id)
-        elif parent_status == "blocked":
-            await self._auto_recover_blocked_parent(client, task_id)
-
-        # The turn cut: an assembled parent whose children are all terminal
-        # is submitted to the PR gate system-side; the PM spawn only happens
-        # when the gate refuses (a rework/judgment turn) or for parents past
-        # the gate (awaiting_pm_review — the merge turn).
-        if parent_status in (
-            "claimed",
-            "in_progress",
-            "paused",
-        ) and await self._try_auto_submit(client, task, pm_id):
+        if await self._closure_handled_without_pm(client, task, task_id, pm_id):
             return
 
         prompt = self._build_pm_closure_prompt(task, descendants)

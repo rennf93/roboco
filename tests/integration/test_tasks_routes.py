@@ -3682,8 +3682,6 @@ async def test_summary_search_respects_team_filter(task_client: dict) -> None:
     hit = _seed_task(task_client, title="Backend greeting search hit")
     await task_client["db"].flush()
 
-    resp = await client.get(
-        "/api/tasks/summary?q=greeting&team=frontend", headers=_HDR
-    )
+    resp = await client.get("/api/tasks/summary?q=greeting&team=frontend", headers=_HDR)
     assert resp.status_code == HTTPStatus.OK
     assert str(hit.id) not in {t["id"] for t in resp.json()}

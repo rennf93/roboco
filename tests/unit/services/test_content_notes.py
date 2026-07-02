@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
@@ -120,8 +121,6 @@ def test_sections_carry_written_at_stamp() -> None:
     """Every persisted section carries an ISO written_at — traces without
     timestamps were unusable for reconstructing WHEN a note landed (CEO
     reMarkable item, 2026-07-02)."""
-    from datetime import datetime
-
     t = _task()
     apply_structured_note(
         t,
