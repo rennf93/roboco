@@ -14,6 +14,18 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
+# Free-text caps for LLM-facing briefing/handoff payloads. Full texts stay
+# readable through their dedicated verbs (notify_get) and the panel/API.
+_MENTION_EXCERPT_CAP = 280
+_NOTIFICATION_BODY_CAP = 500
+_HANDOFF_CONTENT_CAP = 800
+_NORTH_STAR_CAP = 600
+
+
+def _clip(text: str | None, cap: int) -> str:
+    """None-safe prefix clip for nullable text columns."""
+    return (text or "")[:cap]
+
 
 class EvidenceRepo:
     def __init__(self, db_session: AsyncSession) -> None:
@@ -44,7 +56,9 @@ class EvidenceRepo:
         if not any((north_star, objectives, constraints, operating_policy)):
             return None
         return {
-            "north_star": north_star,
+            # north_star is free Text — cap it for the briefing (the full
+            # charter stays available via the company-goals API/panel).
+            "north_star": north_star[:_NORTH_STAR_CAP],
             "objectives": objectives[:BRIEFING_LIST_CAP],
             "constraints": constraints[:BRIEFING_LIST_CAP],
             "operating_policy": operating_policy,
@@ -133,7 +147,7 @@ class EvidenceRepo:
                 "notification_id": str(row.id),
                 "from_agent": str(row.from_agent) if row.from_agent else None,
                 "subject": row.subject,
-                "excerpt": (row.body or "")[:280],
+                "excerpt": _clip(row.body, _MENTION_EXCERPT_CAP),
                 "task_id": (str(row.related_task_id) if row.related_task_id else None),
                 "timestamp": row.timestamp.isoformat() if row.timestamp else None,
             }
@@ -177,7 +191,9 @@ class EvidenceRepo:
                 "type": str(row.type),
                 "priority": str(row.priority),
                 "subject": row.subject,
-                "body": row.body,
+                # Briefing carries an excerpt; the full body stays readable
+                # via notify_get / notify_list.
+                "body": _clip(row.body, _NOTIFICATION_BODY_CAP),
                 "from_agent": str(row.from_agent) if row.from_agent else None,
                 "task_id": str(row.related_task_id) if row.related_task_id else None,
                 "timestamp": row.timestamp.isoformat() if row.timestamp else None,
@@ -314,7 +330,10 @@ class EvidenceRepo:
                 "author_role": str(row.role),
                 "type": str(row.type),
                 "title": row.title,
-                "content": row.content,
+                # Cap per-entry content: distilled handoff lessons (≤120 words)
+                # stay whole; a raw multi-page journal entry can't flood the
+                # handoff/evidence payload it is embedded in.
+                "content": _clip(row.content, _HANDOFF_CONTENT_CAP),
                 "timestamp": row.timestamp.isoformat() if row.timestamp else None,
             }
             for row in result.all()

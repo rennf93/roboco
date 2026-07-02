@@ -342,9 +342,12 @@ class UsageService(BaseService):
         """Return spawn-churn signals for the period.
 
         A spawn is "unproductive" when it produced no output tokens — the system
-        prompt + briefing were loaded for zero delivered work. Also surfaces the
-        current respawn-tracker strikes (wedged agent/task pairs the circuit
-        breaker is counting) and whether the overseer was already alerted.
+        prompt + briefing were loaded for zero delivered work. Scoped to
+        Anthropic (claude) sessions only: non-Anthropic transcripts (Ollama,
+        Grok relays) don't reliably populate ``tokens_output``, so counting
+        them reports phantom waste. Also surfaces the current respawn-tracker
+        strikes (wedged agent/task pairs the circuit breaker is counting) and
+        whether the overseer was already alerted.
         """
         start_dt, _ = _parse_period(period)
 
@@ -365,6 +368,7 @@ class UsageService(BaseService):
             .where(
                 AgentSpawnSessionTable.started_at >= start_dt,
                 AgentSpawnSessionTable.ended_at.isnot(None),
+                AgentSpawnSessionTable.model.ilike("%claude%"),
             )
             .group_by(AgentSpawnSessionTable.role)
             .order_by(func.count().desc())
@@ -413,6 +417,7 @@ class UsageService(BaseService):
             else 0.0,
             "by_role": roles,
             "respawn_strikes": strikes,
+            "basis": "anthropic_sessions",
             "period": period,
         }
 

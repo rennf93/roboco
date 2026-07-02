@@ -24,7 +24,7 @@ handoff logic run unmodified.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import patch
 from uuid import UUID
 
@@ -141,6 +141,9 @@ def _make_orch() -> AgentOrchestrator:
     orch._instances = {}
     orch._board_dispatched = set()
     orch._board_review_ceo_notified = set()
+    # The board dispatch path consults the respawn circuit breaker now.
+    cast("Any", orch)._pm_respawn_tracker = {}
+    cast("Any", orch)._schedule_respawn_persist = lambda *_a, **_k: None
     return orch
 
 

@@ -34,6 +34,11 @@ class DraftSurface:
     adds_migration: bool
     touches_shared: bool
     project_id: str | None = None
+    # Explicitly declared prerequisites (batch indices) — the CEO's / PM's
+    # "Depends on" list. Authoritative: analyze() unions these with the
+    # derived collision edges, so a declared ordering can never be dropped
+    # just because the surfaces happen not to overlap.
+    declared_depends_on: tuple[int, ...] = ()
 
 
 @dataclass

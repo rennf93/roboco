@@ -42,6 +42,20 @@ _WRITER_ROLES = ("developer", "documenter", "product_owner", "head_marketing")
 _NON_WRITER_ROLES = ("qa", "cell_pm", "main_pm", "auditor")
 
 
+def test_generated_settings_cap_bash_output() -> None:
+    """Agent settings carry an explicit Bash-output cap — a gate/test dump
+    enters context once and is re-read at cache-read price every later turn."""
+    orch = _orch()
+    path = orch._generate_agent_settings(
+        agent_id="be-dev-1",
+        role="developer",
+        workspace_path=_WS,
+        cell_workspace_path=_CELL,
+    )
+    settings = json.loads(Path(path).read_text())
+    assert settings["env"]["BASH_MAX_OUTPUT_LENGTH"] == "20000"
+
+
 def test_generated_settings_base_deny_has_no_global_write_edit() -> None:
     """The settings file a developer is spawned with must NOT globally
     deny Write/Edit (that shadowed the workspace allow → unusable)."""

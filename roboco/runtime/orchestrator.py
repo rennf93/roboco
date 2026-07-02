@@ -18,6 +18,7 @@ import json
 import os
 import shutil
 import tempfile
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -955,6 +956,8 @@ class AgentOrchestrator:
         # is in a loop — without this gate the orchestrator re-spawns every
         # tick forever (seen in production on 2026-04-22).
         self._pm_respawn_tracker: dict[tuple[str, str], dict[str, Any]] = {}
+        # Dispatcher heartbeat throttle (see _emit_dispatcher_heartbeat).
+        self._last_dispatch_heartbeat: datetime | None = None
         # Serializes the fire-and-forget respawn-tracker upserts so same-key
         # persists COMMIT in schedule (logical) order — not whatever order their
         # DB transactions resolve in. A respawn loop fires count 1->2->3->4 in
@@ -973,6 +976,15 @@ class AgentOrchestrator:
         # delegate, or complete, so a respawn cannot advance the task and would
         # just loop. Tracks (agent_slug, task_id) already dispatched.
         self._board_dispatched: set[tuple[str, str]] = set()
+        # Cross-tick damper for notification-triggered spawns (escalation /
+        # approval / audit / a2a). Those dispatchers carry no task_id, so the
+        # readiness gate and the PM respawn breaker never see them — without
+        # this, an unacknowledged notification respawns its recipient every
+        # dispatch tick, unbounded. One spawn per (agent, notification) per
+        # cooldown window; the notification stays pending, so the next window
+        # retries if it is still unacked. In-memory by design (a restart just
+        # allows one immediate retry — a tick damper, not durable state).
+        self._notification_spawn_at: dict[tuple[str, str], float] = {}
         # Cluster C5: a board review is a two-reviewer gate — BOTH the Product
         # Owner and the Head of Marketing must review a board/coordination task
         # before it is handed to the CEO for Approve & Start. Once both have
@@ -1611,6 +1623,13 @@ class AgentOrchestrator:
                 "defaultMode": "bypassPermissions",
                 "allow": base_allow + role_config["allow"],
                 "deny": base_deny + role_config["deny"],
+            },
+            # Explicit Bash-output cap: a gate/test dump enters the session
+            # context once and is re-read at cache-read price on every later
+            # turn. 20K chars (~5K tokens) keeps failures diagnosable without
+            # relying on the CLI's default ceiling.
+            "env": {
+                "BASH_MAX_OUTPUT_LENGTH": "20000",
             },
             "hooks": {
                 # Start SDK server on session start (for A2A communication)
@@ -3676,6 +3695,38 @@ class AgentOrchestrator:
         """True if a prior dispatcher already handled this task this tick."""
         return bool(task_id and task_id in self._tick_handled_tasks)
 
+    _NOTIFICATION_COOLDOWN_PRUNE_AT = 512
+
+    def _notification_spawn_cooled(
+        self, agent_slug: str, notification_id: str | None
+    ) -> bool:
+        """True when this (agent, notification) spawned within the cooldown.
+
+        Returns False — and stamps the pair — when a spawn is allowed. A
+        notification with no id is never damped (fail-open: better one extra
+        spawn than a silently dropped escalation).
+        """
+        if not notification_id:
+            return False
+        # Lazy init keeps the damper working on partially-constructed
+        # instances (tests build the orchestrator via __new__).
+        store: dict[tuple[str, str], float] = self.__dict__.setdefault(
+            "_notification_spawn_at", {}
+        )
+        key = (agent_slug, str(notification_id))
+        now = time.monotonic()
+        cooldown = settings.notification_spawn_cooldown_seconds
+        last = store.get(key)
+        if last is not None and (now - last) < cooldown:
+            return True
+        store[key] = now
+        if len(store) > self._NOTIFICATION_COOLDOWN_PRUNE_AT:
+            cutoff = now - cooldown
+            self._notification_spawn_at = {
+                k: v for k, v in store.items() if v >= cutoff
+            }
+        return False
+
     def _is_parallel_phase_claim(
         self, task: dict[str, Any], dev_uuid: str | None
     ) -> bool:
@@ -3709,6 +3760,10 @@ class AgentOrchestrator:
         if not dev_uuid or task.get("pr_created") or task.get("pr_number"):
             return
         dev_slug = self._resolve_agent_slug(dev_uuid)
+        if dev_slug and await self._pm_respawn_should_gate(dev_slug, task):
+            # Respawn circuit breaker — the PR-half respawn loops exactly like
+            # the doc half when the dev can never finish (progress resets it).
+            return
         if not dev_slug or self._is_agent_active(dev_slug):
             return
         await self.spawn_agent(
@@ -9035,6 +9090,31 @@ Start now: evidence(task_id="{task_id}")
         """
         self._dispatch_wake.set()
 
+    # Heartbeat cadence: one dispatcher.alive audit row per window. 300s keeps
+    # audit_log growth trivial (~288 rows/day) while making a dead loop visible
+    # within minutes (the 2026-07-01 outage was 4h25m of undetectable silence).
+    _DISPATCH_HEARTBEAT_SECONDS = 300
+
+    async def _emit_dispatcher_heartbeat(self) -> None:
+        """Periodic dispatcher.alive audit row — a dead loop becomes detectable.
+
+        The dispatch loop can die silently (task cancelled, unhandled exit) and
+        its stdout dies with the container; audit_log survives both. Absence of
+        a fresh heartbeat row = loop dead, distinguishable from "no work".
+        """
+        now = datetime.now(UTC)
+        last = getattr(self, "_last_dispatch_heartbeat", None)
+        if last is not None and (now - last).total_seconds() < (
+            self._DISPATCH_HEARTBEAT_SECONDS
+        ):
+            return
+        self._last_dispatch_heartbeat = now
+        self._fire_audit(
+            event_type="dispatcher.alive",
+            agent_slug="orchestrator",
+            details={"interval_seconds": self._DISPATCH_HEARTBEAT_SECONDS},
+        )
+
     async def _dispatcher_loop(self) -> None:
         """
         Main dispatcher loop - periodically checks for work and spawns agents.
@@ -9064,6 +9144,7 @@ Start now: evidence(task_id="{task_id}")
                 self._dispatch_wake.clear()
                 await self._refresh_grok_auth()
                 await self._dispatch_all_work()
+                await self._emit_dispatcher_heartbeat()
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -9952,6 +10033,9 @@ Start now: evidence(task_id="{task_id}")
         key = (board_slug, task_id)
         if key in self._board_dispatched:
             return
+        # Respawn circuit breaker — parity with every other task-keyed path.
+        if await self._pm_respawn_should_gate(board_slug, task):
+            return
         self._board_dispatched.add(key)
         logger.info(
             "Spawning board agent for review",
@@ -10213,6 +10297,10 @@ Start now: evidence(task_id="{task_id}")
             if not agent_slug or self._is_agent_active(agent_slug):
                 continue
             if get_agent_role(agent_slug) not in ("cell_pm", "main_pm"):
+                continue
+            # Respawn circuit breaker — a revision the PM can never land must
+            # stop respawning the coordinator (progress resets the strikes).
+            if await self._pm_respawn_should_gate(agent_slug, task):
                 continue
             await self.spawn_agent(
                 agent_id=agent_slug,
@@ -10611,6 +10699,10 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         # just not dispatched this tick.
         if await self._blocked_by_earlier_lane_sibling(task):
             return
+        # Respawn circuit breaker — a dev leaf that respawns without the task
+        # advancing (wedged workspace, unclaimable state) stops after strikes.
+        if await self._pm_respawn_should_gate(agent_slug, task):
+            return
         validation_issue = await self._validate_task_for_spawn(client, task, agent_slug)
         if validation_issue:
             logger.warning(
@@ -10751,6 +10843,10 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             return False
         if self._is_agent_active(assigned_slug):
             return True
+        # Respawn circuit breaker — same progress-aware gate as every other
+        # task-keyed spawn path; notifies the CEO once it trips.
+        if await self._pm_respawn_should_gate(assigned_slug, task):
+            return True
         await self.spawn_agent(
             agent_id=assigned_slug,
             task_id=task["id"],
@@ -10788,6 +10884,10 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 # QA already running, they'll pick up on scan
                 continue
 
+            # Respawn circuit breaker — before claiming, so a wedged QA task
+            # doesn't churn claims while the gate is open.
+            if await self._pm_respawn_should_gate(agent_id, task):
+                continue
             # Claim the task for QA agent BEFORE spawning
             if not await self._claim_task_for_agent(client, task["id"], agent_id):
                 logger.warning(
@@ -10827,6 +10927,9 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 continue
             if task.get("assigned_to"):
                 continue
+            # Respawn circuit breaker — parity with the in-path gate dispatcher.
+            if await self._pm_respawn_should_gate(reviewer, task):
+                continue
             await self.spawn_agent(
                 agent_id=reviewer,
                 task_id=task["id"],
@@ -10856,6 +10959,10 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             else:
                 reviewer = "pr-reviewer-1"
             if not reviewer or reviewer in spawned or self._is_agent_active(reviewer):
+                continue
+            # Respawn circuit breaker — a gate task that keeps re-surfacing
+            # without advancing must stop respawning the reviewer.
+            if await self._pm_respawn_should_gate(reviewer, task):
                 continue
             spawned.add(reviewer)
             await self.spawn_agent(
@@ -10905,6 +11012,11 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         """
         agent_id = self._select_agent_for_cell(team, "doc")
         if not agent_id or self._is_agent_active(agent_id):
+            return
+
+        # Respawn circuit breaker — before claiming, so a wedged doc task
+        # doesn't churn claims while the gate is open.
+        if await self._pm_respawn_should_gate(agent_id, task):
             return
 
         if not await self._claim_task_for_agent(client, task["id"], agent_id):
@@ -10971,6 +11083,10 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         if self._is_agent_active(assigned_slug):
             return True
         if assigned_slug and "doc" in assigned_slug:
+            # Respawn circuit breaker — the fe-doc 26-respawn loop ran on this
+            # exact path unguarded; the gate notifies the CEO once it trips.
+            if await self._pm_respawn_should_gate(assigned_slug, task):
+                return True
             await self.spawn_agent(
                 agent_id=assigned_slug,
                 task_id=task["id"],
@@ -11416,6 +11532,8 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 if self._is_agent_active(agent_slug):
                     continue
 
+                if self._notification_spawn_cooled(agent_slug, notif.get("id")):
+                    continue
                 await self.spawn_agent(
                     agent_id=agent_slug,
                     initial_prompt=self._build_escalation_prompt(notif),
@@ -11444,6 +11562,8 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 if self._is_agent_active(agent_slug):
                     continue
 
+                if self._notification_spawn_cooled(agent_slug, notif.get("id")):
+                    continue
                 await self.spawn_agent(
                     agent_id=agent_slug,
                     initial_prompt=self._build_approval_prompt(notif),
@@ -11466,6 +11586,8 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             # Resolve UUIDs to slugs and check if auditor is a target
             target_slugs = [self._resolve_agent_slug(str(t)) for t in targets]
             if "auditor" in target_slugs and not self._is_agent_active("auditor"):
+                if self._notification_spawn_cooled("auditor", alert.get("id")):
+                    continue
                 await self.spawn_agent(
                     agent_id="auditor",
                     initial_prompt=self._build_audit_prompt(alert),
@@ -11744,6 +11866,8 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                     continue
 
                 # Agent is offline - spawn them with A2A context
+                if self._notification_spawn_cooled(agent_slug, notif.get("id")):
+                    continue
                 await self.spawn_agent(
                     agent_id=agent_slug,
                     initial_prompt=self._build_a2a_prompt(notif),

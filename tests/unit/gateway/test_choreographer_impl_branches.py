@@ -570,6 +570,7 @@ async def test_delegate_parent_not_found() -> None:
             task_type="code",
             nature="technical",
             acceptance_criteria=["GET /v1/foo returns 200 with body"],
+            intends_to_touch=["backend/api/routers/foo.py"],
         ),
     )
     body = env.as_dict()
@@ -607,6 +608,7 @@ async def test_delegate_unknown_role_rejected() -> None:
             task_type="code",
             nature="technical",
             acceptance_criteria=["GET /v1/foo returns 200 with body"],
+            intends_to_touch=["backend/api/routers/foo.py"],
         ),
     )
     body = env.as_dict()
@@ -653,6 +655,7 @@ async def test_delegate_parent_no_project_rejected() -> None:
             task_type="code",
             nature="technical",
             acceptance_criteria=["GET /v1/foo returns 200 with body"],
+            intends_to_touch=["backend/api/routers/foo.py"],
         ),
     )
     body = env.as_dict()

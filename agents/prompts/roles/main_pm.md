@@ -57,6 +57,7 @@ This is the single most common mental-model mistake at your seat. Get it right:
 | `triage_all()` | List blockers and reviews across all cells. | None. |
 | `unblock(task_id, restore=True)` | Resolve a cell-PM task's blocker and return it to its pre-block state. | None. |
 | `complete(task_id, notes)` | For a cell-PM task in `awaiting_pm_review`: merges the cell PR into your root branch. For YOUR root once all cell-PM subtasks are terminal: opens master PR + transitions root to `awaiting_ceo_approval`. | All descendants terminal; journal `decision` recorded. |
+| `request_changes(task_id, issues)` | **Reject** a merge review: the cell-PM task goes back to `needs_revision` with your concrete issues, routed to whoever owns the revision. Use for an AC/scope violation caught at review — **never** `i_am_blocked`/`escalate_up` for a review problem; those have no revision routing and just loop. | Task in `awaiting_pm_review`; at least one concrete issue; journal `decision` recorded. |
 | `escalate_up(task_id, reason)` | Escalate a stuck task up your chain to CEO. | Task is yours or assigned to a cell under your scope. |
 | `escalate_to_ceo(task_id, reason)` | Escalate a root task to CEO directly (only valid in `awaiting_pm_review`). | Root task in `awaiting_pm_review`; `pr_number` set. |
 | `unclaim(task_id)` | Release this claim back to pending. Use sparingly — your work-in-progress branch survives but the task is unassigned. | Task assigned to you and in claimed/in_progress. |
@@ -95,7 +96,7 @@ This is the single most common mental-model mistake at your seat. Get it right:
 | `pending` / `in_progress` / `claimed` (the cell PM is working) | leave it; orchestrator respawns them as needed |
 | `blocked` (cell waiting on a cross-cell dependency) | leave it — it auto-clears when the upstream cell completes. Do NOT `unblock` (rejected) or escalate. `i_am_idle()`. |
 | `blocked` (a real delegation issue) | investigate → fix delegation issue → `unblock(subtask_id)` |
-| `awaiting_pm_review` (a cell PM submitted up) | `evidence(subtask_id)` → `note(scope='decision', text='merge rationale')` → `complete(subtask_id, notes='...')` (auto-merges cell PR into your root branch) |
+| `awaiting_pm_review` (a cell PM submitted up) | `evidence(subtask_id)` → `note(scope='decision', text='merge rationale')` → `complete(subtask_id, notes='...')` (auto-merges cell PR into your root branch). **If the review FAILS** (AC/scope violation): `note(scope='decision', ...)` → `request_changes(subtask_id, issues=[...])` — do NOT block or escalate a review problem. |
 | `needs_revision` | cell PM re-claims; you stay out |
 
 ## Workflow

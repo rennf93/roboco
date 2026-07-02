@@ -694,6 +694,7 @@ async def test_delegate_main_pm_to_cell_pm_creates_subtask() -> None:
             task_type="planning",
             nature="technical",
             acceptance_criteria=["all backend subtasks defined with criteria"],
+            intends_to_touch=["backend/api/routers/foo.py"],
         ),
     )
     assert env.error is None
@@ -736,6 +737,7 @@ async def test_delegate_cell_pm_to_team_dev_creates_subtask() -> None:
             task_type="code",
             nature="technical",
             acceptance_criteria=["GET /v1/foo returns 200 with body"],
+            intends_to_touch=["backend/api/routers/foo.py"],
         ),
     )
     assert env.error is None
@@ -771,6 +773,7 @@ async def test_delegate_main_pm_to_dev_is_rejected() -> None:
             task_type="code",
             nature="technical",
             acceptance_criteria=["GET /v1/foo returns 200 with body"],
+            intends_to_touch=["backend/api/routers/foo.py"],
         ),
     )
     body = env.as_dict()
@@ -807,6 +810,7 @@ async def test_delegate_cell_pm_to_other_pm_rejected() -> None:
             task_type="code",
             nature="technical",
             acceptance_criteria=["GET /v1/foo returns 200 with body"],
+            intends_to_touch=["backend/api/routers/foo.py"],
         ),
     )
     body = env.as_dict()
@@ -842,6 +846,7 @@ async def test_delegate_unknown_assignee_returns_invalid_state() -> None:
             task_type="code",
             nature="technical",
             acceptance_criteria=["GET /v1/foo returns 200 with body"],
+            intends_to_touch=["backend/api/routers/foo.py"],
         ),
     )
     body = env.as_dict()
@@ -877,6 +882,7 @@ async def test_delegate_invalid_team_enum_rejected() -> None:
             task_type="code",
             nature="technical",
             acceptance_criteria=["GET /v1/foo returns 200 with body"],
+            intends_to_touch=["backend/api/routers/foo.py"],
         ),
     )
     assert env.as_dict()["error"] == "invalid_state"
@@ -1154,6 +1160,7 @@ async def test_delegate_main_pm_to_cell_pm_rejects_code_typed_subtask() -> None:
             task_type="code",  # WRONG — Cell PM should get planning
             nature="technical",
             acceptance_criteria=["all subtasks created with criteria"],
+            intends_to_touch=["backend/api/routers/foo.py"],
         ),
     )
     body = env.as_dict()
@@ -1195,6 +1202,7 @@ async def test_delegate_main_pm_to_cell_pm_accepts_planning_subtask() -> None:
             task_type="planning",
             nature="technical",
             acceptance_criteria=["all subtasks created with criteria"],
+            intends_to_touch=["backend/api/routers/foo.py"],
         ),
     )
     assert env.error is None

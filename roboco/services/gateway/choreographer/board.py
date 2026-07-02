@@ -43,7 +43,9 @@ class BoardMixin(_Base):
                     f"review and call escalate_to_ceo(task_id='{t.id}', reason=...)"
                     " or i_am_idle"
                 ),
-                context_briefing=await self._briefing_for(board_agent_id, t.id),
+                context_briefing=await self._briefing_for(
+                    board_agent_id, t.id, full=True
+                ),
             )
         return Envelope.ok(
             status="idle",
@@ -64,7 +66,9 @@ class BoardMixin(_Base):
                     "log a reflect-note observing the anomaly via "
                     f"note(scope='reflect', task_id='{t.id}', text='...')"
                 ),
-                context_briefing=await self._briefing_for(auditor_agent_id, t.id),
+                context_briefing=await self._briefing_for(
+                    auditor_agent_id, t.id, full=True
+                ),
             )
         return Envelope.ok(
             status="idle",

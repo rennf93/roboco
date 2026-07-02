@@ -10,6 +10,7 @@ other verb will be rejected with a Decision telling you the right one.
 - **i_am_idle**: Signal you have no active work. PMs auto-pause owned in_progress tasks.
 - **i_will_plan**: PM mirror of i_will_work_on for parent tasks. Claim, plan, transition to in_progress; from there delegate subtasks.
 - **reassign**: Hand a claimed/in_progress task to another developer in your own cell. The branch is keyed to the task (not the agent), so it is preserved — the new developer continues the work-in-progress. No status change.
+- **request_changes**: Reject the merge review with concrete issues. Transitions awaiting_pm_review -> needs_revision, routed back like a QA fail (original developer for a leaf, revision PM for an assembled task). Use this for an AC/scope violation caught at merge review — never i_am_blocked/escalate, which have no revision routing.
 - **resume**: Resume a paused task you own. paused -> in_progress.
 - **submit_up**: Cell PM opens the cell→root PR and moves the cell task into the PR-review gate (awaiting_pr_review). The cell reviewer reviews the assembled diff; after pr_pass the same Cell PM completes it.
 - **triage**: List actionable tasks in your scope.

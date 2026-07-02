@@ -10,6 +10,7 @@ other verb will be rejected with a Decision telling you the right one.
 - **give_me_work**: Return your most-actionable task or signal idle.
 - **i_am_idle**: Signal you have no active work. PMs auto-pause owned in_progress tasks.
 - **i_will_plan**: PM mirror of i_will_work_on for parent tasks. Claim, plan, transition to in_progress; from there delegate subtasks.
+- **request_changes**: Reject the merge review with concrete issues. Transitions awaiting_pm_review -> needs_revision, routed back like a QA fail (original developer for a leaf, revision PM for an assembled task). Use this for an AC/scope violation caught at merge review — never i_am_blocked/escalate, which have no revision routing.
 - **resume**: Resume a paused task you own. paused -> in_progress.
 - **submit_root**: Main PM opens the root→master PR and moves the root task to awaiting_pr_review for the main reviewer (the root analogue of the cell PM's submit_up). After pr_pass, call complete to escalate to the CEO. For branch-bearing roots (a Main-PM root-subtask assembles the cells' merged work); branchless coordination roots skip the gate and complete directly. The gate is branch-keyed, not task_type-keyed — a Main-PM root is planning-typed, never code.
 - **triage**: List actionable tasks in your scope.

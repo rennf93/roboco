@@ -30,6 +30,12 @@ _TIMEOUT = 15
 
 mcp = FastMCP("roboco-git-readonly")
 
+# Char cap for diff text returned into the agent's context (~5K tokens). Kept
+# local (not imported from the gateway) so this MCP stays dependency-light in
+# the agent container. The HTTP route itself stays uncapped — the panel's diff
+# viewer reads it whole.
+_DIFF_CAP_CHARS = 20_000
+
 
 def _get(path: str, params: dict[str, Any]) -> dict[str, Any]:
     """GET against the orchestrator with the agent's identity headers."""
@@ -40,6 +46,20 @@ def _get(path: str, params: dict[str, Any]) -> dict[str, Any]:
         response.raise_for_status()
         result: dict[str, Any] = response.json()
         return result
+
+
+def _cap_diff(result: dict[str, Any]) -> dict[str, Any]:
+    """Truncate an oversized diff for context embedding; annotate the cut."""
+    diff = result.get("diff")
+    if isinstance(diff, str) and len(diff) > _DIFF_CAP_CHARS:
+        omitted = len(diff) - _DIFF_CAP_CHARS
+        result["diff"] = (
+            diff[:_DIFF_CAP_CHARS]
+            + f"\n… [diff truncated: {omitted} chars omitted — scope with"
+            " file_path to read a single file's diff in full]"
+        )
+        result["diff_truncated"] = True
+    return result
 
 
 @mcp.tool()
@@ -96,7 +116,7 @@ def roboco_git_diff(
     params: dict[str, Any] = {"project_slug": project_slug, "staged": staged}
     if file_path is not None:
         params["file_path"] = file_path
-    return _get("/api/git/diff", params)
+    return _cap_diff(_get("/api/git/diff", params))
 
 
 @mcp.tool()

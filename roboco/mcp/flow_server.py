@@ -736,6 +736,15 @@ def complete(task_id: str, notes: str) -> dict[str, Any]:
     return _post(_role_path("complete"), {"task_id": task_id, "notes": notes})
 
 
+def request_changes(task_id: str, issues: StrList) -> dict[str, Any]:
+    """PM: reject the merge review with concrete issues → needs_revision.
+
+    Use for an AC/scope violation caught at awaiting_pm_review — never
+    i_am_blocked/escalate, which have no revision routing.
+    """
+    return _post(_role_path("request_changes"), {"task_id": task_id, "issues": issues})
+
+
 def escalate_up(task_id: str, reason: str) -> dict[str, Any]:
     """PM/Doc/Dev: escalate to your role's escalation target."""
     return _post(_role_path("escalate_up"), {"task_id": task_id, "reason": reason})
@@ -911,6 +920,7 @@ _TOOLS: dict[str, Any] = {
     "triage_all": triage_all,
     "unblock": unblock,
     "complete": complete,
+    "request_changes": request_changes,
     "escalate_up": escalate_up,
     "i_will_plan": i_will_plan,
     "delegate": delegate,

@@ -16,6 +16,7 @@ from roboco.api.schemas.v1.flow import (
     GiveMeWorkRequest,
     IAmIdleRequest,
     IWillPlanRequest,
+    RequestChangesRequest,
     ResumeRequest,
     SubmitRootRequest,
     TriageRequest,
@@ -171,6 +172,20 @@ async def complete(
     choreographer: _ChoreographerDep,
 ) -> dict:
     env = await choreographer.main_pm_complete(x_agent_id, body.task_id, body.notes)
+    return envelope_to_response(env, request)
+
+
+@router.post("/request_changes")
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
+async def request_changes(
+    request: Request,
+    body: RequestChangesRequest,
+    x_agent_id: _AgentIdHeader,
+    choreographer: _ChoreographerDep,
+) -> dict:
+    env = await choreographer.request_changes(x_agent_id, body.task_id, body.issues)
     return envelope_to_response(env, request)
 
 

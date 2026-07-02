@@ -252,9 +252,18 @@ def _pop_null_clears(updates: dict[str, Any]) -> dict[str, None]:
 
 
 def _apply_null_clears(task: Any, null_clears: dict[str, None]) -> None:
-    """Set *null_clears* fields to None on the ORM task object."""
+    """Set *null_clears* fields to None on the ORM task object.
+
+    Unassigning implies releasing the claim: a cleared assigned_to with a
+    surviving claimed_by/active_claimant_id keeps routing the task to the
+    stale claimant while the next agent's content writes bounce.
+    """
     for field in null_clears:
         setattr(task, field, None)
+    if "assigned_to" in null_clears:
+        task.claimed_by = None
+        task.claimed_at = None
+        task.active_claimant_id = None
 
 
 def _reassert_batch_shape(task: Any) -> None:

@@ -19,7 +19,7 @@ The Choreographer is the server-side composition layer that turns agent intent-v
 | `ChoreographerDeps` | dataclass | `_impl.py:207` | Dependency injection container (task, work_session, git, a2a, journal, audit, evidence_repo, messaging, product, orchestrator, stream_bus). |
 | `_COORDINATOR_ROLES` | ClassVar | `_impl.py:914` | `{main_pm, cell_pm}` — exempt from `already_active`/`paused` claim guards + advisory lock. |
 | `give_me_work` | async verb | `_impl.py:766` | Picks next task for agent + builds briefing (institutional memory injected here). |
-| `_briefing_for` | async helper | `_impl.py:814` | Builds `context_briefing` (handoff, evidence, memory, AC coverage). |
+| `_briefing_for` | async helper | `_impl.py:820` | Builds `context_briefing`. Claim-scoped: `full=True` (context-acquisition verbs only — give_me_work/claims/plan/resume/triage) carries the heavy sections via `_heavy_briefing_sections` (company_goals, recent_team_activity, blockers, task_handoff, institutional_memory); every other verb gets slim signals-only (unread a2a/mentions/notifications + metadata gaps). AC coverage stays independent of `full`. |
 | `_run_claim_guards` | async helper | `_impl.py:916` | already_active / paused / unmet_dependency (with re-check race narrowing) + `_lane_claim_guard`; `skip_dev_guards=False` param skips dev-only guards for pr_reviewer gate claims (claim_gate_review). |
 | `_lane_claim_guard` | async helper | `_impl.py:977` | Out-of-order-start barrier: refuse code leaf behind an earlier open same-assignee sibling. Fail-closed on lookup error. |
 | `_claim_plan_start_gate` | async helper | `_impl.py:1179` | spec gate → advisory claim lock (non-PM) → behavioral guards. |

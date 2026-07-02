@@ -782,7 +782,9 @@ class Choreographer:
                 status=str(t.status),
                 task_id=str(t.id),
                 next=self._claim_verb_hint(role, t),
-                context_briefing=await self._briefing_for(agent_id, t.id, task=t),
+                context_briefing=await self._briefing_for(
+                    agent_id, t.id, task=t, full=True
+                ),
             ).with_introspection(task=t, role=role)
         assigned = await self._drop_dependency_held(
             await self._deps.task.list_assigned_for_agent(agent_id)
@@ -793,7 +795,9 @@ class Choreographer:
                 status=str(t.status),
                 task_id=str(t.id),
                 next=self._claim_verb_hint(role, t),
-                context_briefing=await self._briefing_for(agent_id, t.id, task=t),
+                context_briefing=await self._briefing_for(
+                    agent_id, t.id, task=t, full=True
+                ),
             ).with_introspection(task=t, role=role)
         paused = await self._deps.task.list_paused_for_agent(agent_id)
         if paused:
@@ -802,7 +806,9 @@ class Choreographer:
                 status=str(t.status),
                 task_id=str(t.id),
                 next=f"call resume(task_id='{t.id}') to continue paused work",
-                context_briefing=await self._briefing_for(agent_id, t.id, task=t),
+                context_briefing=await self._briefing_for(
+                    agent_id, t.id, task=t, full=True
+                ),
             ).with_introspection(task=t, role=role)
         return Envelope.ok(
             status="idle",
@@ -818,8 +824,18 @@ class Choreographer:
         *,
         task: Any | None = None,
         include_ac_coverage: bool = False,
+        full: bool = False,
     ) -> dict[str, Any]:
         """Assemble context_briefing for agent_id, optionally scoped to task_id.
+
+        ``full`` gates the heavy, verb-invariant sections (company_goals,
+        recent_team_activity, blockers_in_my_lane, task_handoff,
+        institutional_memory). Only context-acquisition verbs (give_me_work /
+        claim / plan / resume / triage) pass ``full=True``; every other verb —
+        progress, transition and rejection envelopes included — gets the slim
+        signals-only briefing (unread a2a/mentions/notifications + metadata
+        gaps). The agent already holds the heavy context from its claim, and
+        every extra copy is re-read at cache-read price on all later turns.
 
         ``task`` is the already-loaded row (every claim / give_me_work / done
         path holds it). The prior-work handoff is built only when it is passed —
@@ -831,15 +847,12 @@ class Choreographer:
         parent criterion, what is still unclaimed and can pass
         ``covers_parent_criteria`` on delegate. Off everywhere else so a leaf's
         own criteria never surface as bogus "unclaimed" noise to a developer.
+        It is functional (not bulk), so it stays independent of ``full``.
         """
         repo = self._deps.evidence_repo
-        task_handoff: dict[str, Any] | None = None
-        if task_id is not None and task is not None:
-            # Push the prior-work digest so a freshly spawned / respawned agent
-            # resumes from the previous worker's PR + commits + journal rather
-            # than re-exploring the codebase cold on every lifecycle hand-off.
-            handoff_highlights = await repo.journal_highlights_for_task(task_id)
-            task_handoff = build_task_handoff(task, handoff_highlights)
+        heavy = (
+            await self._heavy_briefing_sections(agent_id, task_id, task) if full else {}
+        )
         inputs = BriefingInputs(
             unread_a2a=await repo.list_unread_a2a(agent_id),
             unread_mentions=await repo.list_unread_mentions(agent_id),
@@ -847,13 +860,13 @@ class Choreographer:
             task_metadata_gaps=(
                 await repo.task_metadata_gaps(task_id) if task_id else []
             ),
-            recent_team_activity=await repo.recent_team_activity(agent_id),
-            blockers_in_my_lane=await repo.blockers_in_lane(agent_id),
-            task_handoff=task_handoff,
-            company_goals=await repo.company_goals(),
+            recent_team_activity=heavy.get("recent_team_activity", []),
+            blockers_in_my_lane=heavy.get("blockers_in_my_lane", []),
+            task_handoff=heavy.get("task_handoff"),
+            company_goals=heavy.get("company_goals"),
         )
         briefing = build_context_briefing(inputs)
-        memory = await self._institutional_memory(agent_id, task)
+        memory = heavy.get("institutional_memory", [])
         if memory:
             # "What the company already knows about work like this" — distilled
             # lessons + approved playbooks, pushed so the agent never has to ask.
@@ -873,6 +886,31 @@ class Choreographer:
                     ],
                 }
         return briefing
+
+    async def _heavy_briefing_sections(
+        self, agent_id: UUID, task_id: UUID | None, task: Any | None
+    ) -> dict[str, Any]:
+        """The full-briefing-only sections (see ``_briefing_for``'s docstring).
+
+        The prior-work handoff is built only when the loaded ``task`` row is
+        passed — no extra fetch — so task-scoped error paths that carry only an
+        id simply omit the digest rather than pay a redundant read for it.
+        """
+        repo = self._deps.evidence_repo
+        task_handoff: dict[str, Any] | None = None
+        if task_id is not None and task is not None:
+            # Push the prior-work digest so a freshly spawned / respawned agent
+            # resumes from the previous worker's PR + commits + journal rather
+            # than re-exploring the codebase cold on every lifecycle hand-off.
+            handoff_highlights = await repo.journal_highlights_for_task(task_id)
+            task_handoff = build_task_handoff(task, handoff_highlights)
+        return {
+            "recent_team_activity": await repo.recent_team_activity(agent_id),
+            "blockers_in_my_lane": await repo.blockers_in_lane(agent_id),
+            "task_handoff": task_handoff,
+            "company_goals": await repo.company_goals(),
+            "institutional_memory": await self._institutional_memory(agent_id, task),
+        }
 
     async def _institutional_memory(
         self, agent_id: UUID, task: Any | None
@@ -1370,7 +1408,7 @@ class Choreographer:
             )
         agent = await self.task.agent_for(agent_id)
         role_str = str(agent.role) if agent is not None else "developer"
-        briefing = await self._briefing_for(agent_id, task_id, task=t)
+        briefing = await self._briefing_for(agent_id, task_id, task=t, full=True)
         try:
             role = spec_module.Role(role_str)
         except ValueError:
@@ -2159,6 +2197,119 @@ class Choreographer:
                 ),
                 context_briefing=ctx.briefing,
             )
+        return None
+
+    async def _assembled_submit_guards(
+        self, t: Any, task_id: UUID, verb: str
+    ) -> Envelope | None:
+        """Assembly integrity (#11) then behind-base auto-sync (B2) for the
+        assembled PM submits. Base resolution fails open (a malformed parent
+        ref must not strand the submit — the merge layer keeps its checks)."""
+        guard = await self._assembly_integrity_guard(t, verb=verb)
+        if guard is not None:
+            return guard
+        try:
+            base_branch = await resolve_parent_branch(t, self.task)
+        except Exception as exc:
+            logger.warning(
+                "assembled_freshen_base_skip",
+                task_id=str(task_id),
+                error=str(exc),
+            )
+            base_branch = ""
+        return await self._freshen_assembled_branch(
+            t, base_branch=base_branch, verb=verb
+        )
+
+    async def _assembly_integrity_guard(self, t: Any, *, verb: str) -> Envelope | None:
+        """Refuse the assembled submit when a completed child's work is missing.
+
+        Live incident #11: a completed revert subtask's commit never landed on
+        the assembled cell branch, so the review gate re-flagged the exact
+        violation the revert fixed. Patch-equivalence check (rebase-safe);
+        fail-open on git errors — the review gate remains the backstop.
+        """
+        if not getattr(t, "branch_name", None):
+            return None
+        try:
+            missing = list(await self.git.unmerged_child_commits(t) or [])
+        except Exception as exc:
+            logger.warning("assembly_integrity_skip", task_id=str(t.id), error=str(exc))
+            return None
+        if not missing:
+            return None
+        listing = "; ".join(
+            f"{m['title']} ({m['task_id']}, {m['unmerged']} commit(s))" for m in missing
+        )
+        return Envelope.invalid_state(
+            message=(
+                f"{verb} refused: completed subtask work is MISSING from the "
+                f"assembled branch — {listing}"
+            ),
+            remediate=(
+                "merge each listed child's branch into the assembled branch "
+                "(their completion recorded a merge that is not reflected on "
+                "origin), then re-submit. Submitting now re-reviews a diff "
+                "that silently drops finished work."
+            ),
+            context_briefing={},
+        )
+
+    async def _freshen_assembled_branch(
+        self, t: Any, *, base_branch: str, verb: str
+    ) -> Envelope | None:
+        """Behind-base auto-sync for the assembled PM submits (B2).
+
+        Re-submitting a cell/root head whose base moved re-reviews stale work
+        and ping-pongs needs_revision ↔ awaiting_pr_review (live 2026-07-02).
+        Every child is terminal at submit time, so rebasing the assembled
+        branch onto its base is safe; ``sync_task_branch`` pushes only the
+        HEAD branch (master/main are never written). Fail-open on probe/sync
+        errors — the PR/merge layer keeps its own behind checks — but a rebase
+        CONFLICT is a hard reject naming the files, so the PM routes a
+        conflict-resolution revision instead of re-submitting blind.
+        """
+        if not getattr(t, "branch_name", None) or not base_branch:
+            return None
+        try:
+            behind, _ahead = await self.git.is_behind_base(t, base_branch=base_branch)
+        except Exception as exc:
+            logger.warning("assembled_freshen_skip", task_id=str(t.id), error=str(exc))
+            return None
+        if behind <= 0:
+            return None
+        try:
+            result = await self.git.sync_task_branch(t, base_branch=base_branch)
+        except Exception as exc:
+            logger.warning(
+                "assembled_freshen_sync_failed", task_id=str(t.id), error=str(exc)
+            )
+            return None
+        if result.get("status") == "conflicts":
+            files = ", ".join(result.get("files") or []) or "unknown files"
+            return Envelope.invalid_state(
+                message=(
+                    f"{verb} refused: the assembled branch was {behind} "
+                    f"commit(s) behind its base '{base_branch}' and the "
+                    f"auto-rebase hit conflicts in: {files}"
+                ),
+                remediate=(
+                    "the base moved under this branch and the conflict needs a "
+                    "human-quality merge: delegate a conflict-resolution "
+                    "revision for the listed files, then re-submit. Do NOT "
+                    "re-submit unchanged — the review gate will fail the same "
+                    "stale diff again."
+                ),
+                context_briefing={},
+            )
+        logger.info(
+            "assembled_branch_freshened",
+            task_id=str(t.id),
+            verb=verb,
+            base_branch=base_branch,
+            behind=behind,
+            status=result.get("status"),
+        )
         return None
 
     async def _behind_base_gate(self, ctx: _IAmDoneContext) -> Envelope | None:
@@ -3275,8 +3426,12 @@ class Choreographer:
                 Envelope.invalid_state(
                     message=f"cannot unclaim from status {t.status}",
                     remediate=(
-                        "only a task assigned to you in pending / claimed / "
-                        "in_progress can be unclaimed"
+                        "docs already complete? call i_documented(files=[...], "
+                        "notes='verified existing docs') — that is the exit "
+                        "from awaiting_documentation"
+                        if str(t.status) == "awaiting_documentation"
+                        else "only a task assigned to you in pending / claimed"
+                        " / in_progress can be unclaimed"
                     ),
                     context_briefing=briefing,
                 ).with_introspection(task=t, role=role_str),
@@ -3449,7 +3604,7 @@ class Choreographer:
         atomic chain wrapped in a savepoint.
         """
         t = await self.task.get(task_id)
-        briefing = await self._briefing_for(agent_id, task_id, task=t)
+        briefing = await self._briefing_for(agent_id, task_id, task=t, full=True)
         if t is None:
             return await self._emit_rejection(
                 Envelope.not_found(message=f"task {task_id} not found"),
@@ -4114,7 +4269,7 @@ class Choreographer:
         agent = await self.task.agent_for(pm_agent_id)
         role_str = str(agent.role) if agent is not None else "cell_pm"
         briefing = await self._briefing_for(
-            pm_agent_id, task_id, task=t, include_ac_coverage=True
+            pm_agent_id, task_id, task=t, include_ac_coverage=True, full=True
         )
         try:
             role = spec_module.Role(role_str)
@@ -4941,6 +5096,10 @@ class Choreographer:
             "nature": inputs.nature,
             "estimated_complexity": inputs.estimated_complexity,
             "acceptance_criteria": inputs.acceptance_criteria,
+            # Collision surface — required for code subtasks (TASK_AT_DELEGATE):
+            # the sibling collision DAG can only order what is declared, and a
+            # no-surface code sibling silently runs parallel to everything.
+            "intends_to_touch": inputs.intends_to_touch,
         }
         # Auto-fill (spec §5.2.1 (a)) — never overwrites explicit values.
         # team-from-slug is harmless when the caller already supplied team;
@@ -4951,7 +5110,7 @@ class Choreographer:
         completeness_input = SimpleNamespace(
             **{k: v for k, v in payload.items() if not k.startswith("__")}
         )
-        result = tc.check(tc.TASK_AT_CREATE, completeness_input)
+        result = tc.check(tc.TASK_AT_DELEGATE, completeness_input)
         if result.passed:
             return None
         return Envelope.incomplete_input(
@@ -5450,6 +5609,9 @@ class Choreographer:
         # head-sha comparison runs (mirroring submit_root).
         if guard is None:
             guard = await self._submit_up_unchanged_pr_guard(t, briefing)
+        if guard is None:
+            # Assembly integrity (#11) + behind-base auto-sync (B2).
+            guard = await self._assembled_submit_guards(t, task_id, "submit_up")
         if guard is not None:
             guard.with_introspection(task=t, role=role_str)
             return await self._emit_rejection(
@@ -5640,7 +5802,9 @@ class Choreographer:
                 status=str(t.status),
                 task_id=str(t.id),
                 next=self._pm_next_hint(str(t.status), t.id),
-                context_briefing=await self._briefing_for(pm_agent_id, t.id, task=t),
+                context_briefing=await self._briefing_for(
+                    pm_agent_id, t.id, task=t, full=True
+                ),
             )
         assigned = await self.task.list_assigned_for_agent(pm_agent_id)
         if assigned:
@@ -5650,7 +5814,9 @@ class Choreographer:
                 status=str(t.status),
                 task_id=str(t.id),
                 next=self._pm_next_hint(str(t.status), t.id),
-                context_briefing=await self._briefing_for(pm_agent_id, t.id, task=t),
+                context_briefing=await self._briefing_for(
+                    pm_agent_id, t.id, task=t, full=True
+                ),
             )
         return Envelope.ok(
             status="idle",
@@ -5685,7 +5851,9 @@ class Choreographer:
                 status=str(t.status),
                 task_id=str(t.id),
                 next=f"investigate the block, then unblock(task_id='{t.id}')",
-                context_briefing=await self._briefing_for(pm_agent_id, t.id, task=t),
+                context_briefing=await self._briefing_for(
+                    pm_agent_id, t.id, task=t, full=True
+                ),
             )
         awaiting = await self.task.list_awaiting_pm_review_for_team(pm.team)
         if awaiting:
@@ -5694,7 +5862,9 @@ class Choreographer:
                 status=str(t.status),
                 task_id=str(t.id),
                 next=f"review and complete(task_id='{t.id}')",
-                context_briefing=await self._briefing_for(pm_agent_id, t.id, task=t),
+                context_briefing=await self._briefing_for(
+                    pm_agent_id, t.id, task=t, full=True
+                ),
             )
         return Envelope.ok(
             status="idle",
@@ -5715,7 +5885,9 @@ class Choreographer:
                     f"escalation/cross-cell help required: investigate, then "
                     f"unblock(task_id='{t.id}') or escalate_up()"
                 ),
-                context_briefing=await self._briefing_for(pm_agent_id, t.id, task=t),
+                context_briefing=await self._briefing_for(
+                    pm_agent_id, t.id, task=t, full=True
+                ),
             )
         awaiting = await self.task.list_awaiting_main_pm_all()
         if awaiting:
@@ -5724,7 +5896,9 @@ class Choreographer:
                 status=str(t.status),
                 task_id=str(t.id),
                 next=f"complete(task_id='{t.id}') opens master PR + escalates to CEO",
-                context_briefing=await self._briefing_for(pm_agent_id, t.id, task=t),
+                context_briefing=await self._briefing_for(
+                    pm_agent_id, t.id, task=t, full=True
+                ),
             )
         return Envelope.ok(
             status="idle",
@@ -6378,6 +6552,9 @@ class Choreographer:
         # relies on the reviewer to re-fail if the diff is still bad.
         if guard is None:
             guard = await self._submit_root_unchanged_pr_guard(t, briefing)
+        if guard is None:
+            # Assembly integrity (#11) + behind-base auto-sync (B2).
+            guard = await self._assembled_submit_guards(t, task_id, "submit_root")
         if guard is not None:
             guard.with_introspection(task=t, role=role_str)
             return await self._emit_rejection(
@@ -6728,6 +6905,139 @@ class Choreographer:
             return await self.cell_pm_complete(agent_id, task_id, notes)
         # role_str == "main_pm" — spec._PM_ROLES has only these two members.
         return await self.main_pm_complete(agent_id, task_id, notes)
+
+    async def request_changes(
+        self, pm_agent_id: UUID, task_id: UUID, issues: list[str]
+    ) -> Envelope:
+        """PM rejects the merge review with concrete issues; → needs_revision.
+
+        The merge-level reject at awaiting_pm_review (the PM's only other
+        verbs there are complete/escalate — an AC violation caught at merge
+        review used to loop block→escalate). Spec gate enforces role + source
+        status; the composed ``request_changes`` atomic routes the revision
+        like a QA fail, then the verb body a2a-delivers the issues to the new
+        owner so the reject reason is never stranded.
+        """
+        t = await self.task.get(task_id)
+        briefing = await self._briefing_for(pm_agent_id, task_id, task=t)
+        if t is None:
+            return await self._emit_rejection(
+                Envelope.not_found(message=f"task {task_id} not found"),
+                agent_id=pm_agent_id,
+                task_id=task_id,
+                verb="request_changes",
+            )
+        agent = await self.task.agent_for(pm_agent_id)
+        role_str = str(agent.role) if agent is not None else "cell_pm"
+        if not issues:
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message="request_changes requires at least one issue",
+                    remediate="pass issues=['<concrete actionable issue>', ...]",
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
+                agent_id=pm_agent_id,
+                task_id=task_id,
+                verb="request_changes",
+            )
+        notes = "Issues:\n" + "\n".join(f"- {issue}" for issue in issues)
+        rejection, spec_gate = await self._request_changes_spec_gate(
+            pm_agent_id, task_id, t, agent, role_str, notes, issues
+        )
+        if rejection is not None:
+            return rejection
+        _role, spec_ctx = spec_gate
+        runner = self._verb_runner()
+        try:
+            t = await runner.run_intent("request_changes", t, agent, spec_ctx)
+        except Exception as exc:
+            return await self._emit_rejection(
+                Envelope.invalid_state(
+                    message=f"verb runner failed: {exc}",
+                    remediate="re-fetch the task and retry; if persistent, escalate",
+                    context_briefing=briefing,
+                ).with_introspection(task=t, role=role_str),
+                agent_id=pm_agent_id,
+                task_id=task_id,
+                verb="request_changes",
+            )
+        # Close the signal loop — the reject reason must reach whoever owns
+        # the revision (mirrors fail_review / the pr_fail loop-closer).
+        if t.assigned_to is not None and t.assigned_to != pm_agent_id:
+            await self.a2a.send(
+                from_agent=pm_agent_id,
+                to_agent=t.assigned_to,
+                skill="code_review",
+                task_id=task_id,
+                body=f"PM merge review needs changes. {notes}",
+            )
+        return Envelope.ok(
+            status=str(t.status),
+            task_id=str(task_id),
+            next=spec_module._INTENT_VERBS["request_changes"].next_hint(t),
+            context_briefing=briefing,
+        ).with_introspection(task=t, role=role_str)
+
+    async def _request_changes_spec_gate(
+        self,
+        pm_agent_id: UUID,
+        task_id: UUID,
+        t: Any,
+        agent: Any,
+        role_str: str,
+        notes: str,
+        issues: list[str],
+    ) -> tuple[Envelope | None, Any]:
+        """Role + spec + free-text gates for request_changes.
+
+        Returns ``(rejection, None)`` or ``(None, (role, spec_ctx))``.
+        """
+        try:
+            role = spec_module.Role(role_str)
+        except ValueError:
+            return (
+                await self._emit_rejection(
+                    Envelope.not_authorized(
+                        message=f"unknown role '{role_str}'",
+                        remediate="role is not declared in the lifecycle spec",
+                        context_briefing=await self._briefing_for(pm_agent_id, task_id),
+                    ).with_introspection(task=t, role=role_str),
+                    agent_id=pm_agent_id,
+                    task_id=task_id,
+                    verb="request_changes",
+                ),
+                None,
+            )
+        spec_ctx = spec_module.Context(
+            actor_id=pm_agent_id,
+            actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            original_developer_slug=_extract_original_developer(t),
+            notes=notes,
+            issues=tuple(issues),
+        )
+        decision = spec_module.can_invoke_intent(role, "request_changes", t, spec_ctx)
+        if not decision.allowed:
+            briefing = await self._briefing_for(pm_agent_id, task_id, task=t)
+            return (
+                await self._emit_rejection(
+                    Envelope.from_decision(
+                        decision, briefing=briefing
+                    ).with_introspection(task=t, role=role_str),
+                    agent_id=pm_agent_id,
+                    task_id=task_id,
+                    verb="request_changes",
+                ),
+                None,
+            )
+        if soup := await self._guard_free_text(
+            checks=(("issues", issues, 8),),
+            task=t,
+            agent_id=pm_agent_id,
+            role_str=role_str,
+            verb="request_changes",
+        ):
+            return (soup, None)
+        return (None, (role, spec_ctx))
 
     async def escalate_up(
         self, pm_agent_id: UUID, task_id: UUID, reason: str

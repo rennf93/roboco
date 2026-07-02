@@ -186,6 +186,20 @@ class VerbRunner:
             agent.id, task.id, ctx.notes or "", list(ctx.issues)
         )
 
+    async def _do_request_changes(
+        self, task: Any, agent: Any, ctx: spec.Context
+    ) -> Any:
+        # Forward the actor's real role — cell_pm and main_pm both own this
+        # verb and the audit row must attribute the reject to the reviewer.
+        agent_role = str(agent.role) if agent is not None else "cell_pm"
+        return await self.task_service.request_changes(
+            agent.id,
+            task.id,
+            ctx.notes or "",
+            list(ctx.issues),
+            agent_role=agent_role,
+        )
+
     async def _do_escalate_to_ceo(
         self, task: Any, agent: Any, ctx: spec.Context
     ) -> Any:
@@ -243,6 +257,7 @@ class VerbRunner:
             "submit_for_review": cls._do_submit_for_review,
             "pr_pass": cls._do_pr_pass,
             "pr_fail": cls._do_pr_fail,
+            "request_changes": cls._do_request_changes,
             "escalate_to_ceo": cls._do_escalate_to_ceo,
             "block": cls._do_block,
             "unblock": cls._do_unblock,

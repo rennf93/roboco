@@ -13,11 +13,11 @@ constraints = [{ name = "pyjwt", specifier = ">=2.13.0" }]
 
 [[package]]
 name = "aiohappyeyeballs"
-version = "2.6.2"
+version = "2.7.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/33/c6/61a2d7b7572279226bb2e7f61d7a19ca7c90da0329c93fa0d560cbf288d8/aiohappyeyeballs-2.6.2.tar.gz", hash = "sha256:e202810ee718bd01fc6ef49e8ea53d023d5cb6b581076d7925aa499fa55dbe64", size = 22591, upload-time = "2026-05-20T15:12:24.631Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ce/f4/eec0465c2f67b2664688d0240b3212d5196fd89e741df67ddb81f8d35658/aiohappyeyeballs-2.7.1.tar.gz", hash = "sha256:065665c041c42a5938ed220bdcd7230f22527fbec085e1853d2402c8a3615d9d", size = 24757, upload-time = "2026-07-01T17:11:55.501Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5f/fc/a7bf5b6e4e617b45f90f2d9d2a68519c249c81dd4fc2658c7a2a61c4f4b7/aiohappyeyeballs-2.6.2-py3-none-any.whl", hash = "sha256:4708045e2d7a6c6bdf8aafa8ed39649eaf926a4543b54560659129e3365953c4", size = 15062, upload-time = "2026-05-20T15:12:23.328Z" },
+    { url = "https://files.pythonhosted.org/packages/71/43/1947f06babed6b3f1d7f38b0c767f52df66bfb2bc10b468c4a7de9eceff2/aiohappyeyeballs-2.7.1-py3-none-any.whl", hash = "sha256:9243213661e29250eb41368e5daa826fc017156c3b8a11440826b2e3ed376472", size = 15038, upload-time = "2026-07-01T17:11:54.055Z" },
 ]
 
 [[package]]
@@ -147,7 +147,7 @@ wheels = [
 
 [[package]]
 name = "anthropic"
-version = "0.115.0"
+version = "0.115.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -159,9 +159,9 @@ dependencies = [
     { name = "sniffio" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/01/52/b9022707a25fd263b8ff5e11f480dcc9cd6da0a380c486e5be053c01d995/anthropic-0.115.0.tar.gz", hash = "sha256:6bb25184441d51544f8bc9877a7efbddd9bc4a6207cce898536d84b233310f4a", size = 949136, upload-time = "2026-06-30T19:47:33.848Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/99/e2/e27b1e70b1ddcda72362d6a26c9c699a46173d48a6c7ba966e8cc97a6c4d/anthropic-0.115.1.tar.gz", hash = "sha256:040287319abb909acf1cc49d83c0405dc0b1121ef257034b02c2b54151cf2446", size = 949185, upload-time = "2026-07-01T21:54:19.05Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/69/89/cd08c2fb41f10fc902593579cb81717ce0ce5489fdf9dcb8e04ea9825fb2/anthropic-0.115.0-py3-none-any.whl", hash = "sha256:aa4bbea9272fa1cced6749728f18d0af9d7934b7268779e84d6f5a246f4b998d", size = 960664, upload-time = "2026-06-30T19:47:32.341Z" },
+    { url = "https://files.pythonhosted.org/packages/85/3c/501c58a8f8c68811079e218a25d8672fe4fb9a650a4655e499e24d9375e9/anthropic-0.115.1-py3-none-any.whl", hash = "sha256:685fa94964c1b9428f6a76e42d0dbae49aa2016f5ad386a96becac04c5e80ef9", size = 957006, upload-time = "2026-07-01T21:54:17.392Z" },
 ]
 
 [[package]]
@@ -819,19 +819,19 @@ wheels = [
 
 [[package]]
 name = "faker"
-version = "40.27.0"
+version = "40.28.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "tzdata", marker = "sys_platform == 'win32'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1a/7b/c62c98764137c949be240ad83f763b6f96cf76055952a3e2835359acc3af/faker-40.27.0.tar.gz", hash = "sha256:f697cf07f461474ad7d511164c21f45317e69f1d531d25f3e0f872b639e346a1", size = 2018361, upload-time = "2026-06-30T18:05:17.775Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/cc/2d/3ead106cef42eab305e15f9c089dcc68a40387d5ce04af18585af4ebbb44/faker-40.28.1.tar.gz", hash = "sha256:2a63fb51abab8790636d4030a094cf942404cbccc9c288d1cad70e2e3e9ecd58", size = 2022717, upload-time = "2026-07-01T22:23:43.763Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c6/b2/788aae329da3d7e4f08f8e1a82e82243c3376c0f3f49b75ae29eea40b371/faker-40.27.0-py3-none-any.whl", hash = "sha256:6099bd6d7bc79041b46c28e100815e2558952bcf384b76ce6c71c8bdca744256", size = 2057897, upload-time = "2026-06-30T18:05:15.555Z" },
+    { url = "https://files.pythonhosted.org/packages/92/a6/6111b9f13c1564b0e2f5dbeeb611fd00dc731e6add2336f62b798598c73d/faker-40.28.1-py3-none-any.whl", hash = "sha256:e8d3f5c469100a553d246dce7937c291308068a5ec6c9c3a228d7878b50720be", size = 2061052, upload-time = "2026-07-01T22:23:41.946Z" },
 ]
 
 [[package]]
 name = "fastapi"
-version = "0.138.2"
+version = "0.139.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "annotated-doc" },
@@ -840,14 +840,14 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "typing-inspection" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/0c/a9/9f8f7e00195c29836e9bf58bbbaf579e29878b8a67851efff93d9b6d4eb7/fastapi-0.138.2.tar.gz", hash = "sha256:6432359d067a432134620e7c5e4c6e5063e7f37815bbbbf20acef14b0d2e3fc8", size = 420423, upload-time = "2026-06-29T12:44:12.556Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d3/af/a5f50ccfa659ec1802cb4ca842c23f06d906a8cc9aef6016a2caeea3d4ed/fastapi-0.139.0.tar.gz", hash = "sha256:99ab7b2d92223c76d6cf10757ab3f89d45b38267fc20b2a136cf02f6beac3145", size = 423016, upload-time = "2026-07-01T16:35:33.436Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f2/b3/38be2c074bdd0c986340db1d72d7b2321b805b1c5a68069aa00b5d31fd02/fastapi-0.138.2-py3-none-any.whl", hash = "sha256:db90c1ffb5517fba5d4a9f80e866daa008747e646310c9ce155c8c535f9d1615", size = 129271, upload-time = "2026-06-29T12:44:13.905Z" },
+    { url = "https://files.pythonhosted.org/packages/9e/7c/8e3c6ad324ea5cb36604fc3f968554887891c316d9dfde57761611d907ad/fastapi-0.139.0-py3-none-any.whl", hash = "sha256:cf15e1e9e667ddb0ad63811e60bd11390d1aac838ca4a7a23f421807b2308189", size = 130339, upload-time = "2026-07-01T16:35:32.19Z" },
 ]
 
 [[package]]
 name = "fastapi-guard"
-version = "7.2.1"
+version = "7.2.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "fastapi" },
@@ -855,9 +855,9 @@ dependencies = [
     { name = "starlette" },
     { name = "uvicorn" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1d/6e/9f8b062c06c41cd38c12bc5b713bb26a4b6bb0482b681d72d147b99864a9/fastapi_guard-7.2.1.tar.gz", hash = "sha256:14773d799930452579270baa9026a86b8ee9e032a5815c7396a562186c573111", size = 34230, upload-time = "2026-07-01T08:12:10.388Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ec/93/0314334d4b74b86964e7ecd47257ec197ec4fc7f5db15eda2cad18af3580/fastapi_guard-7.2.2.tar.gz", hash = "sha256:b4819194570d9fe87beea92bbd47b1fbb6e20fbcedf5b3bce15df5ef61198a53", size = 34742, upload-time = "2026-07-01T11:01:18.653Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/de/90/cc88a2eac2b7ae04eb72ccf447c59004685ee1db409f7af0b407db099059/fastapi_guard-7.2.1-py3-none-any.whl", hash = "sha256:d45e8de2959da1031c18ac5e0f9937f3fc6a102c07b522aada02b880fcac2804", size = 14046, upload-time = "2026-07-01T08:12:09.187Z" },
+    { url = "https://files.pythonhosted.org/packages/92/ea/8a13c80117a11ddc02f150e8dda23ff6b31621b9f4c0f2a204db8b3da1ab/fastapi_guard-7.2.2-py3-none-any.whl", hash = "sha256:5cb3f48aab6d269d88a34bd2a90554f243d77838ce8790afa62de403aa7289dc", size = 14137, upload-time = "2026-07-01T11:01:17.456Z" },
 ]
 
 [[package]]
@@ -1057,7 +1057,7 @@ wheels = [
 
 [[package]]
 name = "guard-core"
-version = "3.3.0"
+version = "3.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -1068,9 +1068,9 @@ dependencies = [
     { name = "requests" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/52/88/f9796b0af9c0b4f99c51a7d1ccd9c71c3f795da9fa3dbda020d162697122/guard_core-3.3.0.tar.gz", hash = "sha256:ad68023f81abf36b0e64847d4c34d241f81475bc44537b26ed6d2a38e7fff98a", size = 182752, upload-time = "2026-07-01T03:40:04.716Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/48/bb/97ce44ba282bcb60bdca1950b0499708477af81c700b3cb44a082590d662/guard_core-3.4.0.tar.gz", hash = "sha256:11fda317276881f1f9ff9753bb9dcd78a47633f493a465c0fec4e1dfd5be29a6", size = 185595, upload-time = "2026-07-02T02:11:28.446Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/91/4c/0b313865c38a284ac50c4207e9d9451c947141d6c6f27363fe48d6b588e5/guard_core-3.3.0-py3-none-any.whl", hash = "sha256:c0884c68debf64c82ac216a46eaa5a8ff0a72132e714a43b3b4c7145e9ae8b65", size = 233150, upload-time = "2026-07-01T03:40:03.245Z" },
+    { url = "https://files.pythonhosted.org/packages/e0/21/c9642468c439e4bab9f7e85ace789009347b1afea594d33457dd9f93cbf5/guard_core-3.4.0-py3-none-any.whl", hash = "sha256:f791e4a6f3db51bb1a21776ca7eff1494223e0507412e8ae95a0862891505884", size = 234930, upload-time = "2026-07-02T02:11:27.03Z" },
 ]
 
 [[package]]

@@ -173,7 +173,10 @@ async def propose_batch(drafts: list[dict[str, Any]], title: str = "") -> str:
     across the scoped repos. ``drafts`` is a list where each item has the same
     fields as a single draft PLUS a collision surface — ``intends_to_touch[]``
     (files/dirs it will modify), ``adds_migration`` (adds a DB migration?),
-    ``touches_shared`` (edits a widely shared component?). The system sequences
+    ``touches_shared`` (edits a widely shared component?), and ``depends_on[]``
+    (batch indices of drafts this one must wait for — copy the CEO's declared
+    sequencing VERBATIM; declared edges are authoritative and never inferred
+    away). The system sequences
     them into conflict-free waves; over-declaring a surface is safer than
     under-declaring. ``title`` names the MegaTask. Each draft targets its repos
     via the per-cell ``project_id`` on its ``the_work[]`` entries (a multi-cell

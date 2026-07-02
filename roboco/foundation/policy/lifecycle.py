@@ -324,6 +324,15 @@ _STATUS_TRANSITIONS: tuple[StatusTransition, ...] = (
         "complete",
         frozenset({Role.CELL_PM, Role.MAIN_PM}),
     ),
+    # PM merge-level reject: a PM that catches an AC/scope violation at merge
+    # review sends the work back with concrete issues — previously its only
+    # verbs here were complete/escalate, so it looped block→escalate instead.
+    StatusTransition(
+        Status.AWAITING_PM_REVIEW,
+        Status.NEEDS_REVISION,
+        "request_changes",
+        frozenset({Role.CELL_PM, Role.MAIN_PM}),
+    ),
     StatusTransition(
         Status.AWAITING_PM_REVIEW,
         Status.AWAITING_CEO_APPROVAL,
@@ -604,6 +613,16 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
         allowed_roles=_PM_ROLES,
         source_statuses=frozenset({Status.AWAITING_PM_REVIEW}),
         target_status=Status.COMPLETED,
+        allowed_task_types=None,
+        preconditions=(),
+        self_review_block=False,
+        needs_team_match=True,
+    ),
+    "request_changes": ActionSpec(
+        name="request_changes",
+        allowed_roles=_PM_ROLES,
+        source_statuses=frozenset({Status.AWAITING_PM_REVIEW}),
+        target_status=Status.NEEDS_REVISION,
         allowed_task_types=None,
         preconditions=(),
         self_review_block=False,
@@ -1436,6 +1455,21 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         side_effects=(),
         next_hint=_next_hint_pm_complete,
     ),
+    "request_changes": IntentSpec(
+        name="request_changes",
+        allowed_roles=_PM_ROLES,
+        description=(
+            "Reject the merge review with concrete issues. Transitions"
+            " awaiting_pm_review -> needs_revision, routed back like a QA fail"
+            " (original developer for a leaf, revision PM for an assembled"
+            " task). Use this for an AC/scope violation caught at merge review"
+            " — never i_am_blocked/escalate, which have no revision routing."
+        ),
+        composes=("request_changes",),
+        extra_preconditions=(),
+        side_effects=(),
+        next_hint=_next_hint_idle,
+    ),
     "escalate_up": IntentSpec(
         name="escalate_up",
         allowed_roles=_PM_ROLES,
@@ -1561,6 +1595,30 @@ def can_claim(role: Role, task: Any) -> Decision:
     return can_invoke_action(role, "claim", task)
 
 
+def _invalid_source_remediate(
+    status: Status, action: str, spec_action: ActionSpec
+) -> str:
+    """Directed recovery hint for a wrong-source-status rejection.
+
+    Doc-stage bail special case: awaiting_documentation has exactly one exit
+    — i_documented. A documenter on a revision pass whose docs already exist
+    must re-affirm them, not bail; the generic hint fed the live 26-respawn
+    fe-doc loop (2026-07-02).
+    """
+    if status is Status.AWAITING_DOCUMENTATION and action == "block":
+        return (
+            "awaiting_documentation has one exit: i_documented. If the "
+            "docs for this task already exist and are accurate (a "
+            "revision pass), call i_documented(files=[...], "
+            "notes='verified existing docs are complete and accurate') "
+            "to re-affirm them — do NOT retry i_am_blocked/unclaim."
+        )
+    return (
+        f"call give_me_work() to find a task in"
+        f" {sorted(s.value for s in spec_action.source_statuses)}"
+    )
+
+
 def _check_role_status_type(
     role: Role, action: str, spec_action: ActionSpec, task: Any
 ) -> Decision | None:
@@ -1582,10 +1640,7 @@ def _check_role_status_type(
                 f"task is in '{status.value}', '{action}' requires:"
                 f" {sorted(s.value for s in spec_action.source_statuses)}"
             ),
-            remediate=(
-                f"call give_me_work() to find a task in"
-                f" {sorted(s.value for s in spec_action.source_statuses)}"
-            ),
+            remediate=_invalid_source_remediate(status, action, spec_action),
         )
     if (
         spec_action.allowed_task_types is not None

@@ -21,6 +21,7 @@ Optimal Brain Tools:
 - roboco_validate_action: Validate action against standards
 """
 
+import os
 from typing import Any
 
 from fastapi import status as http_status
@@ -61,6 +62,27 @@ def normalize_index_types(index_types: list[str] | None) -> list[str] | None:
     if index_types is None:
         return None
     return [_INDEX_TYPE_ALIASES.get(t, t) for t in index_types]
+
+
+# Per-item free-text cap for search/mentor results embedded in agent context
+# (observed p90 payloads of ~37KB; results are for finding, not full reading).
+_RESULT_CONTENT_CAP = 800
+
+
+def _cap_result_content(
+    items: list[Any], *, cap: int = _RESULT_CONTENT_CAP, limit: int | None = None
+) -> list[Any]:
+    """Cap each dict item's `content` text (and optionally the item count)."""
+    capped = items[:limit] if limit is not None else list(items)
+    out: list[Any] = []
+    for item in capped:
+        trimmed = item
+        if isinstance(item, dict):
+            content = item.get("content")
+            if isinstance(content, str) and len(content) > cap:
+                trimmed = {**item, "content": content[:cap] + "…"}
+        out.append(trimmed)
+    return out
 
 
 def _register_search_tools(mcp: FastMCP, client: ApiClient) -> None:
@@ -118,7 +140,7 @@ def _register_search_tools(mcp: FastMCP, client: ApiClient) -> None:
             "status": "success",
             "query": query,
             "total": total,
-            "results": result.get("results", []),
+            "results": _cap_result_content(result.get("results", [])),
         }
         if total == 0:
             response["hint"] = (
@@ -178,7 +200,7 @@ def _register_search_tools(mcp: FastMCP, client: ApiClient) -> None:
             "status": "success",
             "query": query,
             "answer": answer,
-            "citations": result.get("citations", []),
+            "citations": _cap_result_content(result.get("citations", []), limit=8),
             "context_used": context_used,
         }
         # Guide to mentor for better results
@@ -426,7 +448,7 @@ def _register_mentor_tools(mcp: FastMCP, client: ApiClient) -> None:
         return {
             "status": "success",
             "answer": result.get("answer", ""),
-            "sources": result.get("sources", []),
+            "sources": _cap_result_content(result.get("sources", []), limit=8),
             "conversation_id": result.get("conversation_id", ""),
             "suggested_followups": result.get("suggested_followups", []),
         }
@@ -471,7 +493,7 @@ def _register_error_tools(mcp: FastMCP, client: ApiClient) -> None:
             "status": "success",
             "error_message": error_message,
             "solutions_found": solutions_found,
-            "results": result.get("results", []),
+            "results": _cap_result_content(result.get("results", [])),
         }
         if solutions_found == 0:
             response["hint"] = (
@@ -864,7 +886,7 @@ def _register_learning_tools(mcp: FastMCP, client: ApiClient) -> None:
             "status": "success",
             "query": query,
             "total": total,
-            "results": result.get("results", []),
+            "results": _cap_result_content(result.get("results", [])),
         }
         if total == 0:
             response["hint"] = (
@@ -1065,26 +1087,59 @@ def _register_proactive_tools(mcp: FastMCP, client: ApiClient) -> None:
         }
 
 
+# Role-scoped tool groups, mirroring the manifest scoping flow/do already do.
+# Every registered schema rides in each turn's context, so a role only carries
+# the groups its duties use. A group absent from this map registers for every
+# role; an unknown/unset role registers everything (fail-open to the previous
+# behaviour) — except index management, which is destructive operator tooling
+# (clear/reindex) and registers only under ROBOCO_ALLOW_FULL_TOOLSET.
+_GROUP_ROLES: dict[str, frozenset[str]] = {
+    "error": frozenset({"developer", "qa"}),
+    "standards": frozenset({"developer", "qa", "documenter", "pr_reviewer"}),
+    "decision": frozenset(
+        {"cell_pm", "main_pm", "product_owner", "head_marketing", "auditor"}
+    ),
+    "indexing": frozenset({"documenter"}),
+}
+
+
+def _role_wants(group: str, role: str) -> bool:
+    """True when `role` should carry `group`'s tool schemas."""
+    allowed = _GROUP_ROLES.get(group)
+    if allowed is None:
+        return True
+    if not role:
+        return True
+    return role in allowed
+
+
 def create_optimal_mcp_server(agent_id: str) -> FastMCP:
-    """Create an Optimal MCP server for a specific agent."""
+    """Create an Optimal MCP server for a specific agent, scoped to its role."""
     mcp = FastMCP(f"roboco-optimal-{agent_id}", json_response=True)
     client = ApiClient(agent_id)
+    role = os.environ.get("ROBOCO_AGENT_ROLE", "")
+    full_toolset = bool(os.environ.get("ROBOCO_ALLOW_FULL_TOOLSET"))
 
-    # Register core tool groups
+    # Universal groups — every role reasons with search/mentor/learnings.
     _register_search_tools(mcp, client)
-    _register_indexing_tools(mcp, client)
     _register_utility_tools(mcp, client)
-
-    # Register Optimal Brain tools
     _register_mentor_tools(mcp, client)
-    _register_error_tools(mcp, client)
-    _register_decision_tools(mcp, client)
-    _register_standards_tools(mcp, client)
     _register_learning_tools(mcp, client)
     _register_proactive_tools(mcp, client)
 
-    # Register index management tools
-    _register_index_management_tools(mcp, client)
+    # Duty-scoped groups.
+    if full_toolset or _role_wants("indexing", role):
+        _register_indexing_tools(mcp, client)
+    if full_toolset or _role_wants("error", role):
+        _register_error_tools(mcp, client)
+    if full_toolset or _role_wants("decision", role):
+        _register_decision_tools(mcp, client)
+    if full_toolset or _role_wants("standards", role):
+        _register_standards_tools(mcp, client)
+
+    # Destructive index management (clear/reindex) — dev/test escape hatch only.
+    if full_toolset:
+        _register_index_management_tools(mcp, client)
 
     return mcp
 

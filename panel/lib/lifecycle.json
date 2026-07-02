@@ -312,6 +312,19 @@
     {
       "allowed_roles": [
         "cell_pm",
+        "main_pm"
+      ],
+      "composes": [
+        "request_changes"
+      ],
+      "description": "Reject the merge review with concrete issues. Transitions awaiting_pm_review -> needs_revision, routed back like a QA fail (original developer for a leaf, revision PM for an assembled task). Use this for an AC/scope violation caught at merge review \u2014 never i_am_blocked/escalate, which have no revision routing.",
+      "name": "request_changes",
+      "pre_side_effects": [],
+      "side_effects": []
+    },
+    {
+      "allowed_roles": [
+        "cell_pm",
         "developer",
         "documenter",
         "main_pm",
@@ -503,6 +516,15 @@
       ],
       "source": "awaiting_pm_review",
       "target": "completed"
+    },
+    {
+      "action": "request_changes",
+      "roles": [
+        "cell_pm",
+        "main_pm"
+      ],
+      "source": "awaiting_pm_review",
+      "target": "needs_revision"
     },
     {
       "action": "pr_pass",
