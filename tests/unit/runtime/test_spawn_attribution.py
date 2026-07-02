@@ -22,14 +22,19 @@ from roboco.runtime.orchestrator import AgentConfig, AgentOrchestrator, AgentSta
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
-def _make_orchestrator(captured: list[dict[str, Any]]) -> AgentOrchestrator:
+def _make_orchestrator(
+    monkeypatch: pytest.MonkeyPatch,
+    captured: list[dict[str, Any]],
+    container_result: Any,
+) -> AgentOrchestrator:
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
     orch._instances = {}
     orch._lock = asyncio.Lock()
     orch._bg_tasks = set()
     orch._running = True
-    orch._fire_audit = lambda **kw: captured.append(kw)  # type: ignore[method-assign]
-    orch._record_spawn_session = AsyncMock(return_value=None)
+    monkeypatch.setattr(orch, "_fire_audit", lambda **kw: captured.append(kw))
+    monkeypatch.setattr(orch, "_record_spawn_session", AsyncMock(return_value=None))
+    monkeypatch.setattr(orch, "_spawn_container", container_result)
     return orch
 
 
@@ -47,11 +52,14 @@ def _config_and_instance() -> tuple[AgentConfig, AgentInstance]:
 
 
 @pytest.mark.asyncio
-async def test_launch_spawn_audit_carries_spawned_by() -> None:
+async def test_launch_spawn_audit_carries_spawned_by(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """``agent.spawned`` details must name the dispatcher that launched it."""
     captured: list[dict[str, Any]] = []
-    orch = _make_orchestrator(captured)
-    orch._spawn_container = AsyncMock(return_value="c0ffee" * 11)
+    orch = _make_orchestrator(
+        monkeypatch, captured, AsyncMock(return_value="c0ffee" * 11)
+    )
     config, instance = _config_and_instance()
 
     await orch._launch_spawn(
@@ -64,12 +72,15 @@ async def test_launch_spawn_audit_carries_spawned_by() -> None:
 
 
 @pytest.mark.asyncio
-async def test_spawn_failed_audit_carries_spawned_by() -> None:
+async def test_spawn_failed_audit_carries_spawned_by(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A failed launch must attribute the spawner too — a rogue dispatcher
     that keeps crashing containers is exactly the live-debug case."""
     captured: list[dict[str, Any]] = []
-    orch = _make_orchestrator(captured)
-    orch._spawn_container = AsyncMock(side_effect=RuntimeError("boom"))
+    orch = _make_orchestrator(
+        monkeypatch, captured, AsyncMock(side_effect=RuntimeError("boom"))
+    )
     config, instance = _config_and_instance()
 
     with pytest.raises(RuntimeError):
@@ -83,11 +94,14 @@ async def test_spawn_failed_audit_carries_spawned_by() -> None:
 
 
 @pytest.mark.asyncio
-async def test_launch_spawn_without_attribution_stamps_unspecified() -> None:
+async def test_launch_spawn_without_attribution_stamps_unspecified(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The field is always present so audit queries never KeyError."""
     captured: list[dict[str, Any]] = []
-    orch = _make_orchestrator(captured)
-    orch._spawn_container = AsyncMock(return_value="c0ffee" * 11)
+    orch = _make_orchestrator(
+        monkeypatch, captured, AsyncMock(return_value="c0ffee" * 11)
+    )
     config, instance = _config_and_instance()
 
     await orch._launch_spawn("task-1", config, instance, None, None)
