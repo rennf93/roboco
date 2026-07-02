@@ -162,6 +162,11 @@ def _is_propose_batch(name: str) -> bool:
     return name == "propose_batch" or name.endswith("__propose_batch")
 
 
+def _is_search_past_tasks(name: str) -> bool:
+    """True for the intake ``search_past_tasks`` tool, however namespaced."""
+    return name == "search_past_tasks" or name.endswith("__search_past_tasks")
+
+
 def _batch_from_tool_input(tool_input: Any) -> dict[str, Any] | None:
     """Pull a MegaTask batch out of a ``propose_batch`` tool call's input.
 
@@ -419,6 +424,7 @@ def build_intake_options(
     *,
     system_prompt: str,
     cwd: str,
+    session_id: str,
     model: str | None = None,
 ) -> Any:  # pragma: no cover - thin SDK construction
     """Build locked-down ``ClaudeAgentOptions`` for the intake session.
@@ -429,10 +435,14 @@ def build_intake_options(
     - ``strict_mcp_config=True`` + ``setting_sources=[]`` → ignore the host's
       ``~/.claude.json`` / ``settings.json``; use ONLY the MCP server below.
     - ``permission_mode="dontAsk"`` (NOT ``bypassPermissions``) + a ``can_use_tool``
-      gate → a hard allowlist (Read/Grep/Glob/Task + ``propose_draft``), no prompts.
+      gate → a hard allowlist (Read/Grep/Glob/Task + ``propose_draft`` +
+      ``propose_batch`` + ``search_past_tasks``), no prompts.
 
     Draft emission: the agent calls the ``propose_draft`` MCP tool, which the
     driver turns into a ``draft`` event — deterministic, not a fragile text fence.
+    ``search_past_tasks`` shares its HTTP + formatting logic with the grok-CLI
+    path via ``roboco.mcp.intake_server`` (``query_past_tasks`` /
+    ``format_search_results``) — one implementation, both runtimes.
 
     NOTE: ``setting_sources=[]`` must be validated against the mounted-``~/.claude``
     auth on the next smoke; if auth breaks, narrow it instead of removing it.
@@ -490,8 +500,27 @@ def build_intake_options(
             ]
         }
 
+    @tool(
+        "search_past_tasks",
+        "Search past tasks by title/description/id-prefix. Use this "
+        "mid-conversation to check whether something like this has been built "
+        "before, or to find a predecessor to cite in a new draft's description "
+        "('follows up <short-id>'). Returns up to 10 compact results: short id, "
+        "title, status, team, date.",
+        {"query": str, "limit": int},
+    )
+    async def _search_past_tasks(args: dict[str, Any]) -> dict[str, Any]:
+        from roboco.mcp.intake_server import format_search_results, query_past_tasks
+
+        result = await query_past_tasks(
+            session_id, str(args.get("query", "")), limit=int(args.get("limit", 8) or 8)
+        )
+        return {"content": [{"type": "text", "text": format_search_results(result)}]}
+
     server = create_sdk_mcp_server(
-        name="intake", version="1.0.0", tools=[_propose_draft, _propose_batch]
+        name="intake",
+        version="1.0.0",
+        tools=[_propose_draft, _propose_batch, _search_past_tasks],
     )
 
     async def _gate(tool_name: str, _input: dict[str, Any], _ctx: Any) -> Any:
@@ -499,6 +528,7 @@ def build_intake_options(
             tool_name in _INTAKE_BASE_TOOLS
             or _is_propose_draft(tool_name)
             or _is_propose_batch(tool_name)
+            or _is_search_past_tasks(tool_name)
         ):
             return PermissionResultAllow()
         # The intake's job is to ask questions, so it reaches for AskUserQuestion
@@ -527,9 +557,10 @@ def build_intake_options(
         return PermissionResultDeny(
             message=(
                 f"{tool_name} is not available to the intake agent. Your only tools "
-                "are Read, Grep, Glob, Task, propose_draft, and propose_batch (for a "
-                "MegaTask). Ask the human inline; when the spec is ready, call "
-                "propose_draft (one task) or propose_batch (several)."
+                "are Read, Grep, Glob, Task, propose_draft, propose_batch (for a "
+                "MegaTask), and search_past_tasks. Ask the human inline; when the "
+                "spec is ready, call propose_draft (one task) or propose_batch "
+                "(several)."
             )
         )
 
@@ -541,6 +572,7 @@ def build_intake_options(
             *_INTAKE_BASE_TOOLS,
             "mcp__intake__propose_draft",
             "mcp__intake__propose_batch",
+            "mcp__intake__search_past_tasks",
         ],
         model=model,
         include_partial_messages=True,  # live token streaming

@@ -14,7 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from roboco.runtime.orchestrator import (
@@ -264,6 +264,118 @@ class TestIntakeScopeSlugs:
 
 
 # ---------------------------------------------------------------------------
+# _resolve_history_digest_projects — the prompter-memory ambient's project scope
+# (covers all three intake scopes, unlike the conventions ambient resolver).
+# ---------------------------------------------------------------------------
+
+
+class TestResolveHistoryDigestProjects:
+    @pytest.mark.asyncio
+    async def test_project_slug_branch_resolves_single_project(self) -> None:
+        class _FakeProjectSvc:
+            async def get_by_slug(self, slug: str) -> Any:
+                return SimpleNamespace(slug=slug, id=uuid4())
+
+        with patch(
+            "roboco.services.project.get_project_service",
+            lambda _db: _FakeProjectSvc(),
+        ):
+            projects = await AgentOrchestrator._resolve_history_digest_projects(
+                object(), project_slug="roboco", product_id=None, project_ids=None
+            )
+        assert [p.slug for p in projects] == ["roboco"]
+
+    @pytest.mark.asyncio
+    async def test_project_slug_missing_returns_empty(self) -> None:
+        class _FakeProjectSvc:
+            async def get_by_slug(self, _slug: str) -> Any:
+                return None
+
+        with patch(
+            "roboco.services.project.get_project_service",
+            lambda _db: _FakeProjectSvc(),
+        ):
+            projects = await AgentOrchestrator._resolve_history_digest_projects(
+                object(), project_slug="ghost", product_id=None, project_ids=None
+            )
+        assert projects == []
+
+    @pytest.mark.asyncio
+    async def test_product_id_branch_delegates_to_ambient_product_projects(
+        self,
+    ) -> None:
+        sentinel = [SimpleNamespace(slug="p1", id=uuid4())]
+
+        async def _fake_product_projects(_db: Any, product_id: str) -> list[Any]:
+            assert product_id == "prod-1"
+            return sentinel
+
+        with patch.object(
+            AgentOrchestrator, "_ambient_product_projects", _fake_product_projects
+        ):
+            projects = await AgentOrchestrator._resolve_history_digest_projects(
+                object(), project_slug=None, product_id="prod-1", project_ids=None
+            )
+        assert projects is sentinel
+
+    @pytest.mark.asyncio
+    async def test_project_ids_branch_preserves_order_and_skips_missing(
+        self,
+    ) -> None:
+        good1 = "11111111-1111-1111-1111-111111111111"
+        missing = "22222222-2222-2222-2222-222222222222"
+        good2 = "33333333-3333-3333-3333-333333333333"
+
+        class _FakeProjectSvc:
+            async def get(self, pid: Any) -> Any:
+                if str(pid) == missing:
+                    return None
+                return SimpleNamespace(slug=f"proj-{str(pid)[0]}", id=pid)
+
+        with patch(
+            "roboco.services.project.get_project_service",
+            lambda _db: _FakeProjectSvc(),
+        ):
+            projects = await AgentOrchestrator._resolve_history_digest_projects(
+                object(),
+                project_slug=None,
+                product_id=None,
+                project_ids=[good1, missing, good2],
+            )
+        # Order preserved; the unresolvable id is skipped, not raised — this is
+        # a best-effort ambient resolver, not the hard clone-scope resolver.
+        assert [p.slug for p in projects] == ["proj-1", "proj-3"]
+
+    @pytest.mark.asyncio
+    async def test_no_scope_given_returns_empty(self) -> None:
+        projects = await AgentOrchestrator._resolve_history_digest_projects(
+            object(), project_slug=None, product_id=None, project_ids=None
+        )
+        assert projects == []
+
+
+# ---------------------------------------------------------------------------
+# _resolve_history_digest_ambient — best-effort: any failure returns None.
+# ---------------------------------------------------------------------------
+
+
+class TestResolveHistoryDigestAmbient:
+    @pytest.mark.asyncio
+    async def test_failure_returns_none_not_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        orch = _make_minimal_orchestrator()
+
+        def _boom() -> Any:
+            raise RuntimeError("db unavailable")
+
+        monkeypatch.setattr("roboco.db.base.get_session_factory", _boom)
+
+        result = await orch._resolve_history_digest_ambient("roboco")
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
 # spawn_intake_session / reap_intake_session — orchestration (docker mocked).
 # ---------------------------------------------------------------------------
 
@@ -388,6 +500,63 @@ class TestSpawnIntakeSession:
 
         await orch.spawn_intake_session("sess-2", project_slug="roboco")
         assert stopped == [INTAKE_AGENT_ID]  # the old one was reaped first
+
+    @pytest.mark.asyncio
+    async def test_spawn_merges_conventions_and_history_ambient(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The composed prompt's ambient is the conventions + history-digest
+        blocks joined with compose_prompt's own layer separator."""
+        orch = _make_minimal_orchestrator()
+        run_calls: list[list[str]] = []
+        _wire_spawn_mocks(monkeypatch, orch, run_calls)
+
+        async def _conventions(*_a: Any, **_k: Any) -> str | None:
+            return "CONVENTIONS BLOCK"
+
+        async def _history(*_a: Any, **_k: Any) -> str | None:
+            return "HISTORY BLOCK"
+
+        monkeypatch.setattr(orch, "_resolve_conventions_ambient", _conventions)
+        monkeypatch.setattr(orch, "_resolve_history_digest_ambient", _history)
+
+        captured: dict[str, Any] = {}
+
+        def _spy_prompt(*_args: Any, **kwargs: Any) -> Path:
+            captured["ambient"] = kwargs.get("ambient")
+            return Path("/tmp/intake-1-prompt.md")
+
+        monkeypatch.setattr(orch, "_generate_composed_prompt", _spy_prompt)
+
+        await orch.spawn_intake_session("sess-merge", project_slug="roboco")
+
+        assert captured["ambient"] == "CONVENTIONS BLOCK\n\n---\n\nHISTORY BLOCK"
+
+    @pytest.mark.asyncio
+    async def test_spawn_ambient_none_when_both_resolvers_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        orch = _make_minimal_orchestrator()
+        run_calls: list[list[str]] = []
+        _wire_spawn_mocks(monkeypatch, orch, run_calls)
+
+        async def _none(*_a: Any, **_k: Any) -> str | None:
+            return None
+
+        monkeypatch.setattr(orch, "_resolve_conventions_ambient", _none)
+        monkeypatch.setattr(orch, "_resolve_history_digest_ambient", _none)
+
+        captured: dict[str, Any] = {}
+
+        def _spy_prompt(*_args: Any, **kwargs: Any) -> Path:
+            captured["ambient"] = kwargs.get("ambient")
+            return Path("/tmp/intake-1-prompt.md")
+
+        monkeypatch.setattr(orch, "_generate_composed_prompt", _spy_prompt)
+
+        await orch.spawn_intake_session("sess-no-ambient", project_slug="roboco")
+
+        assert captured["ambient"] is None
 
     @pytest.mark.asyncio
     async def test_initial_message_is_scheduled(

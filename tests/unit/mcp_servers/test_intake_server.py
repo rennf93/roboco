@@ -316,3 +316,166 @@ async def test_propose_draft_reports_relay_failure(
     msg = await intake_server.propose_draft({"title": "X"})
     assert "Could not submit the draft" in msg
     assert "http_503" in msg
+
+
+# ---------------------------------------------------------------------------
+# search_past_tasks — the intake's mid-conversation "have we done this before?"
+# tool (grok-CLI path).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_query_past_tasks_success_sends_q_and_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ROBOCO_API_URL", "http://orch:8000")
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["params"] = dict(request.url.params)
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "id": "abcdef12-3456-7890-abcd-ef1234567890",
+                    "title": "Fix login bug",
+                    "status": "completed",
+                    "team": "backend",
+                    "date": "2026-01-01",
+                }
+            ],
+        )
+
+    async with _client(handler) as client:
+        result = await intake_server.query_past_tasks(
+            "sess-1", "login", limit=5, client=client
+        )
+
+    assert seen["url"].startswith(
+        "http://orch:8000/api/prompter/live/sess-1/search-tasks"
+    )
+    assert seen["params"]["q"] == "login"
+    assert seen["params"]["limit"] == "5"
+    assert result["results"][0]["title"] == "Fix login bug"
+
+
+@pytest.mark.asyncio
+async def test_query_past_tasks_too_short_query_never_calls_http() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("must not call the relay for a too-short query")
+
+    async with _client(handler) as client:
+        result = await intake_server.query_past_tasks("sess-1", "a", client=client)
+
+    assert result == {"error": "query_too_short", "results": []}
+
+
+@pytest.mark.asyncio
+async def test_query_past_tasks_http_error_shape() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503)
+
+    async with _client(handler) as client:
+        result = await intake_server.query_past_tasks("sess-1", "login", client=client)
+
+    assert result["error"] == "http_503"
+    assert result["results"] == []
+
+
+@pytest.mark.asyncio
+async def test_query_past_tasks_request_failure() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("boom")
+
+    async with _client(handler) as client:
+        result = await intake_server.query_past_tasks("sess-1", "login", client=client)
+
+    assert result["error"] == "request_failed"
+    assert "boom" in result["detail"]
+    assert result["results"] == []
+
+
+@pytest.mark.asyncio
+async def test_query_past_tasks_clamps_limit_above_max() -> None:
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["limit"] = dict(request.url.params)["limit"]
+        return httpx.Response(200, json=[])
+
+    async with _client(handler) as client:
+        await intake_server.query_past_tasks(
+            "sess-1", "login", limit=999, client=client
+        )
+
+    assert seen["limit"] == "10"
+
+
+@pytest.mark.asyncio
+async def test_query_past_tasks_clamps_limit_below_min() -> None:
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["limit"] = dict(request.url.params)["limit"]
+        return httpx.Response(200, json=[])
+
+    async with _client(handler) as client:
+        await intake_server.query_past_tasks("sess-1", "login", limit=0, client=client)
+
+    assert seen["limit"] == "1"
+
+
+def test_format_search_results_error_dict() -> None:
+    msg = intake_server.format_search_results({"error": "http_503", "results": []})
+    assert "Could not search past tasks" in msg
+    assert "http_503" in msg
+
+
+def test_format_search_results_empty_list() -> None:
+    msg = intake_server.format_search_results({"results": []})
+    assert "No past tasks matched" in msg
+
+
+def test_format_search_results_renders_lines() -> None:
+    result = {
+        "results": [
+            {
+                "id": "abcdef1234567890",
+                "title": "Fix login bug",
+                "status": "completed",
+                "team": "backend",
+                "date": "2026-01-01",
+            }
+        ]
+    }
+    msg = intake_server.format_search_results(result)
+    assert "`abcdef12`" in msg  # short id truncated to 8 chars
+    assert "Fix login bug" in msg
+    assert "completed" in msg
+    assert "backend" in msg
+    assert "2026-01-01" in msg
+
+
+@pytest.mark.asyncio
+async def test_search_past_tasks_requires_a_live_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ROBOCO_PROMPTER_SESSION_ID", raising=False)
+    msg = await intake_server.search_past_tasks("login")
+    assert "No live session id" in msg
+
+
+@pytest.mark.asyncio
+async def test_search_past_tasks_success_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ROBOCO_PROMPTER_SESSION_ID", "sess-1")
+    stub_result = {
+        "results": [{"id": "x", "title": "T", "status": "s", "team": "t", "date": "d"}]
+    }
+
+    async def _stub(_session_id: str, _query: str, **_kwargs: Any) -> dict[str, Any]:
+        return stub_result
+
+    monkeypatch.setattr(intake_server, "query_past_tasks", _stub)
+    msg = await intake_server.search_past_tasks("login")
+    assert msg == intake_server.format_search_results(stub_result)

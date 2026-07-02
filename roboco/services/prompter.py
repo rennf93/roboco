@@ -41,6 +41,8 @@ from roboco.models.task import TaskCreateRequest
 from roboco.services.base import NotFoundError, ServiceError, ValidationError
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = structlog.get_logger()
@@ -1154,6 +1156,126 @@ def _compose_umbrella_draft(
         "estimated_complexity": Complexity.HIGH.value,
         "priority": 1,
     }
+
+
+# ---------------------------------------------------------------------------
+# Prompter memory v1 — informational task-history digest + compact search rows.
+# The sequencing analyzer still owns ordering; this is context only.
+# ---------------------------------------------------------------------------
+
+_HISTORY_DIGEST_PER_PROJECT_LIMIT = 15
+_HISTORY_TITLE_EXCERPT_CAP = 70
+_HISTORY_DIGEST_TOTAL_CAP = 4000
+
+
+def _task_activity_date(task: TaskTable) -> datetime:
+    """The most relevant date for a task's history line: when it finished,
+    else when it last moved, else when it was created."""
+    return task.completed_at or task.updated_at or task.created_at
+
+
+def _enum_value(value: Any) -> str:
+    """String value of an enum-or-plain-string field (defensive for both a
+    real DB row and a pure-Python test double)."""
+    return str(getattr(value, "value", value))
+
+
+def _title_excerpt(title: str, cap: int = _HISTORY_TITLE_EXCERPT_CAP) -> str:
+    """Trim a title to ``cap`` chars with an ellipsis — a digest line is a
+    pointer, not the full record."""
+    text = title.strip()
+    if len(text) <= cap:
+        return text
+    return text[: cap - 1].rstrip() + "…"
+
+
+def _history_line(task: TaskTable) -> str:
+    """One compact history line: short-id, title, status, date."""
+    short_id = str(task.id)[:8]
+    status = _enum_value(task.status)
+    date = _task_activity_date(task).date().isoformat()
+    return f"- `{short_id}` {_title_excerpt(task.title)} ({status}, {date})"
+
+
+def build_history_digest(
+    tasks: list[TaskTable], *, limit: int = _HISTORY_DIGEST_PER_PROJECT_LIMIT
+) -> str:
+    """Render a chronological digest of recent tasks, capped at ``limit`` lines.
+
+    ``tasks`` must already be ordered most-recent-activity-first (the DB
+    query's job — see ``TaskService.list_recent_for_project``). This takes the
+    top ``limit`` and reverses them to oldest-first for display: a history
+    reads as a timeline, not a reverse-chronological feed. Empty input -> "".
+    """
+    recent = tasks[:limit]
+    chronological = list(reversed(recent))
+    return "\n".join(_history_line(t) for t in chronological)
+
+
+async def project_history_digest(
+    session: AsyncSession,
+    project: Any,
+    *,
+    limit: int = _HISTORY_DIGEST_PER_PROJECT_LIMIT,
+) -> str | None:
+    """This project's rendered history digest, or None if it has no tasks."""
+    from roboco.services.task import get_task_service
+
+    tasks = await get_task_service(session).list_recent_for_project(
+        project.id, limit=limit
+    )
+    if not tasks:
+        return None
+    return build_history_digest(tasks, limit=limit)
+
+
+async def history_digest_layer(
+    session: AsyncSession, projects: list[Any]
+) -> str | None:
+    """Render the task-history-digest ambient block for the in-scope project(s).
+
+    Mirrors ``conventions_ambient_layer``'s shape: one block per project
+    (headed by its slug when there is more than one — the MegaTask case),
+    joined under a single heading, bounded to a total cap. Returns None when
+    there are no in-scope projects or none of them have any tasks, so a
+    brand-new project / board-level spawn injects nothing (no empty-header
+    noise).
+    """
+    if not projects:
+        return None
+    blocks: list[str] = []
+    for project in projects:
+        digest = await project_history_digest(session, project)
+        if not digest:
+            continue
+        header = (
+            f"### Recent tasks — `{project.slug}`"
+            if len(projects) > 1
+            else "### Recent tasks"
+        )
+        blocks.append(f"{header}\n{digest}")
+    if not blocks:
+        return None
+    text = "## Task History\n\n" + "\n\n".join(blocks)
+    if len(text) > _HISTORY_DIGEST_TOTAL_CAP:
+        text = text[: _HISTORY_DIGEST_TOTAL_CAP - 1].rstrip() + "…"
+    return text
+
+
+def compact_task_rows(tasks: list[TaskTable]) -> list[dict[str, Any]]:
+    """Bounded compact rows for the intake's ``search_past_tasks`` tool: id,
+    title, status, team, date. Mirrors the Secretary's ``/tasks?q=`` compact
+    shape (id/title/status/team) plus the activity date the digest computes."""
+    return [
+        {
+            "id": str(t.id),
+            "title": t.title,
+            "status": _enum_value(t.status),
+            "team": _enum_value(t.team) if t.team else None,
+            "date": _task_activity_date(t).date().isoformat(),
+        }
+        for t in tasks
+    ]
 
 
 # ---------------------------------------------------------------------------
