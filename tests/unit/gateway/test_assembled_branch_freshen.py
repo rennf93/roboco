@@ -114,9 +114,7 @@ async def test_freshen_skips_branchless_and_missing_base() -> None:
     c = Choreographer(_make_deps(git=git))
     branchless = MagicMock(id=uuid4(), branch_name=None, team="frontend")
     assert (
-        await c._freshen_assembled_branch(
-            branchless, base_branch="x", verb="submit_up"
-        )
+        await c._freshen_assembled_branch(branchless, base_branch="x", verb="submit_up")
         is None
     )
     assert (

@@ -59,9 +59,7 @@ class SequencingService:
         return SequencePlan(edges=edges, waves=waves, warnings=warnings)
 
     # --- rule 0: declared dependencies ---------------------------------------
-    def _declared_edges(
-        self, surfaces: list[DraftSurface]
-    ) -> list[tuple[int, int]]:
+    def _declared_edges(self, surfaces: list[DraftSurface]) -> list[tuple[int, int]]:
         """The CEO's / PM's explicit "Depends on" lists, verbatim.
 
         Authoritative — unioned with the derived rules so a declared ordering

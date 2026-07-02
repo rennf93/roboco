@@ -455,9 +455,7 @@ def test_declared_union_with_derived_dedupes() -> None:
     # must not duplicate the edge.
     s = [
         DraftSurface(0, 1, ["svc/threats.py"], False, False),
-        DraftSurface(
-            1, 2, ["svc/threats.py"], False, False, declared_depends_on=(0,)
-        ),
+        DraftSurface(1, 2, ["svc/threats.py"], False, False, declared_depends_on=(0,)),
     ]
     plan = SequencingService().analyze(s, _backend, {"backend": 2})
     assert plan.edges.count((0, 1)) == 1

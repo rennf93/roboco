@@ -486,8 +486,7 @@ class PrompterService:
             except (TypeError, ValueError) as exc:
                 raise ValidationError(
                     message=(
-                        f"draft {idx}: depends_on entry {item!r} is not a "
-                        "batch index"
+                        f"draft {idx}: depends_on entry {item!r} is not a batch index"
                     ),
                     field="drafts",
                 ) from exc

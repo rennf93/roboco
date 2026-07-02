@@ -3984,9 +3984,7 @@ class GitService(BaseService):
         if project is None:
             return []
         workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
-        workspace = await self.get_workspace(
-            project.slug, agent_id=workspace_agent_id
-        )
+        workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
         git_token = await self._get_project_token_or_raise(project.slug)
         refs = [str(task.branch_name)] + [str(c.branch_name) for c in candidates]
         await self._run_git(
@@ -4014,9 +4012,7 @@ class GitService(BaseService):
             if cherry.returncode != 0:
                 continue
             unmerged = [
-                line
-                for line in cherry.stdout.splitlines()
-                if line.startswith("+")
+                line for line in cherry.stdout.splitlines() if line.startswith("+")
             ]
             if unmerged:
                 missing.append(

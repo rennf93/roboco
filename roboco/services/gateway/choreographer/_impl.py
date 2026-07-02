@@ -2199,9 +2199,7 @@ class Choreographer:
             )
         return None
 
-    async def _assembly_integrity_guard(
-        self, t: Any, *, verb: str
-    ) -> Envelope | None:
+    async def _assembly_integrity_guard(self, t: Any, *, verb: str) -> Envelope | None:
         """Refuse the assembled submit when a completed child's work is missing.
 
         Live incident #11: a completed revert subtask's commit never landed on
@@ -2214,15 +2212,12 @@ class Choreographer:
         try:
             missing = list(await self.git.unmerged_child_commits(t) or [])
         except Exception as exc:
-            logger.warning(
-                "assembly_integrity_skip", task_id=str(t.id), error=str(exc)
-            )
+            logger.warning("assembly_integrity_skip", task_id=str(t.id), error=str(exc))
             return None
         if not missing:
             return None
         listing = "; ".join(
-            f"{m['title']} ({m['task_id']}, {m['unmerged']} commit(s))"
-            for m in missing
+            f"{m['title']} ({m['task_id']}, {m['unmerged']} commit(s))" for m in missing
         )
         return Envelope.invalid_state(
             message=(
@@ -2255,13 +2250,9 @@ class Choreographer:
         if not getattr(t, "branch_name", None) or not base_branch:
             return None
         try:
-            behind, _ahead = await self.git.is_behind_base(
-                t, base_branch=base_branch
-            )
+            behind, _ahead = await self.git.is_behind_base(t, base_branch=base_branch)
         except Exception as exc:
-            logger.warning(
-                "assembled_freshen_skip", task_id=str(t.id), error=str(exc)
-            )
+            logger.warning("assembled_freshen_skip", task_id=str(t.id), error=str(exc))
             return None
         if behind <= 0:
             return None
