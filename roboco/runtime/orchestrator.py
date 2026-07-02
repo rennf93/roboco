@@ -9818,6 +9818,58 @@ Start now: evidence(task_id="{task_id}")
     # Use foundation's default; keep the local name for back-compat.
     _PM_RESPAWN_MAX_UNPRODUCTIVE = _AGENT_LOOP_BUDGET.pm_respawn_max_unproductive
     _PM_RESPAWN_MAX_TRACING_RESETS = _AGENT_LOOP_BUDGET.pm_respawn_max_tracing_resets
+    _PM_RESPAWN_MAX_REVISIT_RESETS = _AGENT_LOOP_BUDGET.pm_respawn_max_revisit_resets
+
+    def _respawn_status_change_resets(
+        self,
+        key: tuple[str, Any],
+        record: dict[str, Any],
+        current_status: Any,
+        now: datetime,
+    ) -> bool:
+        """Handle a status CHANGE; True when it resets the strike counter.
+
+        A status never seen on this (agent, task) is genuine forward progress
+        and fully resets, exactly as before. A REVISITED status — the A<->B
+        oscillation (blocked <-> in_progress) that changes status on every
+        spawn while advancing nothing (2026-07-02: a dev looped 2h/8 spawns
+        without tripping the gate) — gets a bounded reset budget mirroring
+        tracing_resets, after which strikes accrue. seen_statuses is
+        in-memory only (not a tracker column): after a restart it rebuilds
+        from observed statuses, which can only under-gate briefly — never
+        over-gate.
+        """
+        agent_slug, task_id = key
+        seen = record.get("seen_statuses") or [record.get("last_status")]
+        if current_status not in seen:
+            self._pm_respawn_tracker[key] = {
+                "count": 1,
+                "last_status": current_status,
+                "last_check": now,
+                "seen_statuses": [*seen, current_status],
+            }
+            self._schedule_respawn_persist(
+                agent_slug, str(task_id), self._pm_respawn_tracker[key]
+            )
+            return True
+        record["last_status"] = current_status
+        revisits = record.get("revisit_resets", 0)
+        if revisits < self._PM_RESPAWN_MAX_REVISIT_RESETS:
+            record["revisit_resets"] = revisits + 1
+            record["count"] = 1
+            record["last_check"] = now
+            record["notified"] = False
+            self._schedule_respawn_persist(agent_slug, str(task_id), record)
+            return True
+        logger.warning(
+            "PM respawn status ping-pong budget exhausted — "
+            "revisited statuses no longer reset the strike counter",
+            agent_id=agent_slug,
+            task_id=str(task_id),
+            task_status=current_status,
+            revisit_resets=revisits,
+        )
+        return False
 
     async def _pm_respawn_should_gate(
         self, agent_slug: str, task: dict[str, Any]
@@ -9854,15 +9906,20 @@ Start now: evidence(task_id="{task_id}")
         current_status = task.get("status")
         record = self._pm_respawn_tracker.get(key)
         now = datetime.now(UTC)
-        if record is None or record.get("last_status") != current_status:
+        if record is None:
             self._pm_respawn_tracker[key] = {
                 "count": 1,
                 "last_status": current_status,
                 "last_check": now,
+                "seen_statuses": [current_status],
             }
             self._schedule_respawn_persist(
                 agent_slug, str(task_id), self._pm_respawn_tracker[key]
             )
+            return False
+        if record.get("last_status") != current_status and (
+            self._respawn_status_change_resets(key, record, current_status, now)
+        ):
             return False
         # Same status as last spawn — could be a stuck loop OR a
         # rule-following retry. A tracing_gap normally means the agent is

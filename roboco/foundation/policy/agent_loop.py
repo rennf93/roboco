@@ -42,6 +42,13 @@ class BudgetPolicy:
     # unblock journal-decision gate). After this many consecutive resets the
     # gap stops counting as progress and strikes accrue, so the loop gate fires.
     pm_respawn_max_tracing_resets: int = 3
+    # A status CHANGE normally resets the unproductive counter (forward
+    # progress). That reset is also bounded for REVISITED statuses: an
+    # A<->B oscillation (blocked <-> in_progress) changes status on every
+    # spawn yet advances nothing — 2026-07-02 a dev looped for two hours
+    # (8 spawns) without ever tripping the gate. A status never seen before
+    # on this (agent, task) still always fully resets.
+    pm_respawn_max_revisit_resets: int = 2
     verb_retry_max_per_minute: int = 3  # default cap for verbs not in VERB_RETRY_LIMITS
 
 
