@@ -86,6 +86,47 @@ function prReviewCardBg(task: Task): string {
   );
 }
 
+// Mirror-column -> structured-section key (the write-time source of truth).
+const FIELD_TO_SECTION: Record<NoteField, string> = {
+  quick_context: "resumption",
+  dev_notes: "developer",
+  qa_notes: "qa",
+  auditor_notes: "auditor",
+  pr_reviewer_notes: "pr_review",
+  doc_notes: "doc",
+};
+
+// When the section was last written (apply_structured_note stamps it).
+function writtenAt(task: Task, field: NoteField): string | null {
+  const sections = task.notes_structured as
+    | Record<string, { written_at?: string }>
+    | null
+    | undefined;
+  const stamp = sections?.[FIELD_TO_SECTION[field]]?.written_at;
+  if (!stamp) return null;
+  const date = new Date(stamp);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function WrittenAtStamp({ task, field }: { task: Task; field: NoteField }) {
+  const stamp = writtenAt(task, field);
+  if (!stamp) return null;
+  return (
+    <span
+      className="text-xs font-normal text-muted-foreground ml-2"
+      data-testid={`written-at-${field}`}
+    >
+      {stamp}
+    </span>
+  );
+}
+
 interface NoteCardProps {
   task: Task;
   field: NoteField;
@@ -193,6 +234,7 @@ function EditableNoteCard({
             {icon}
             {title}
             {badge}
+            <WrittenAtStamp task={task} field={field} />
           </CardTitle>
           {isEditing ? (
             <div className="flex items-center gap-2">

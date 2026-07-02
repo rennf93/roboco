@@ -13,6 +13,7 @@ they are derived, never authored directly.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from roboco.foundation.policy.content import ContentModel, validate_content
@@ -65,7 +66,12 @@ def apply_structured_note(
     model = validate_content(content_type, payload)
 
     structured = dict(task.notes_structured or {})
-    structured[content_type] = model.model_dump(mode="json")
+    section = model.model_dump(mode="json")
+    # Trace timestamp: sections are overwrite-in-place, so without a stamp
+    # there is no way to reconstruct WHEN a note landed. Stored beside the
+    # model fields (not on the model — schemas stay author-facing).
+    section["written_at"] = datetime.now(UTC).isoformat()
+    structured[content_type] = section
     task.notes_structured = structured  # reassign so the JSON column flags dirty
 
     column = _MIRROR_COLUMN.get(content_type)
