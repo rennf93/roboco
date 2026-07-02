@@ -132,7 +132,12 @@ def build_secretary_options(
     async def _t_read_state(_args: dict[str, Any]) -> dict[str, Any]:
         return _text_result(await _do_read_state())
 
-    @tool("read_task", "Read one task's detail by its id.", {"task_id": str})
+    @tool(
+        "read_task",
+        "Read one task's full detail by its id — content, notes, plan, "
+        "progress, and PR reference (Secretary FULL task access).",
+        {"task_id": str},
+    )
     async def _t_read_task(args: dict[str, Any]) -> dict[str, Any]:
         return _text_result(await _do_read_task(str(args["task_id"])))
 
@@ -140,8 +145,11 @@ def build_secretary_options(
         "submit_directive",
         "Act on the CEO's command. 'kind' is one of: relay_message "
         "(payload: channel, text), update_charter (payload: charter), "
-        "control_task (payload: task_id, action[start|cancel|override], "
-        "status?), approve_pitch (payload: pitch_id, notes?), announce "
+        "control_task (payload: task_id, action[start|cancel|override|edit], "
+        "status? for override, fields? for edit — edit accepts title/"
+        "description/acceptance_criteria/priority/team/estimated_complexity/"
+        "nature/assigned_to; assigned_to may be a UUID or an agent slug like "
+        '"be-dev-1"), approve_pitch (payload: pitch_id, notes?), announce '
         "(payload: text). High-impact kinds (charter, control_task, "
         "approve_pitch, announce) are queued for the CEO's explicit "
         "confirmation; relay_message runs directly.",

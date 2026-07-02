@@ -6,6 +6,7 @@ import { a2aApi, type AdminReplyRequest } from "@/lib/api/a2a";
 export const a2aLiveKeys = {
   all: ["a2a-live"] as const,
   conversations: ["a2a-live", "conversations"] as const,
+  pairs: ["a2a-live", "pairs"] as const,
   messages: (conversationId: string) =>
     ["a2a-live", "messages", conversationId] as const,
 };
@@ -16,6 +17,17 @@ export function useA2AConversations(limit?: number) {
   return useQuery({
     queryKey: [...a2aLiveKeys.conversations, limit ?? 50],
     queryFn: () => a2aApi.listAdminConversations(limit),
+    staleTime: 30_000,
+  });
+}
+
+// Switchboard pair cards (the org-chart view) — every allowed agent pair
+// joined with its representative conversation stats. Refreshed by WS
+// `a2a.message` invalidation, same as the conversation list.
+export function useA2AAdminPairs() {
+  return useQuery({
+    queryKey: a2aLiveKeys.pairs,
+    queryFn: () => a2aApi.listAdminPairs(),
     staleTime: 30_000,
   });
 }

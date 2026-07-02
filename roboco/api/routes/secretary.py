@@ -76,7 +76,8 @@ async def search_tasks(
 async def read_task(
     task_id: UUID, db: DbSession, agent: CurrentAgentContext
 ) -> dict[str, object]:
-    """Read one task's detail (Secretary or CEO)."""
+    """Read one task's full detail — content, notes, plan, progress, PR ref
+    (Secretary or CEO). Secretary FULL task access."""
     _require(agent, _SECRETARY_OR_CEO)
     try:
         return await get_secretary_service(db).read_task(task_id)

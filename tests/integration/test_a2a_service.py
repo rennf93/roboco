@@ -12,6 +12,7 @@ from uuid import uuid4 as _u
 
 import pytest
 import pytest_asyncio
+from roboco.agents_config import A2A_ALLOWED_PAIRS
 from roboco.db.tables import (
     A2AConversationTable,
     A2AMessageTable,
@@ -635,6 +636,86 @@ async def test_get_conversation_admin_returns_none_for_unknown(
 ) -> None:
     svc = a2a_setup["svc"]
     assert await svc.get_conversation_admin(uuid4()) is None
+
+
+# ---------------------------------------------------------------------------
+# list_admin_pairs — the A2A switchboard's static-matrix + DB join
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_admin_pairs_bounded_by_static_matrix(a2a_setup: dict) -> None:
+    """With no conversations at all, every pair from the static matrix is
+    still returned (conversation-less), sized exactly to the matrix."""
+    svc = a2a_setup["svc"]
+    pairs = await svc.list_admin_pairs()
+
+    assert len(pairs) == len(A2A_ALLOWED_PAIRS)
+    assert all(p.conversation_id is None for p in pairs)
+    assert all(p.message_count == 0 for p in pairs)
+    assert all(p.last_message_at is None for p in pairs)
+
+
+@pytest.mark.asyncio
+async def test_list_admin_pairs_joins_representative_conversation(
+    a2a_setup: dict,
+) -> None:
+    svc = a2a_setup["svc"]
+    conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
+    await svc.send_chat_message(UUID(conv.id), "be-dev-1", "hello")
+
+    pairs = await svc.list_admin_pairs()
+
+    match = next(p for p in pairs if {p.agent_a, p.agent_b} == {"be-dev-1", "be-qa"})
+    assert match.conversation_id == conv.id
+    assert match.message_count == 1
+    assert match.last_message_at is not None
+    assert match.group_key == "cell-backend"
+    assert match.role_a == "developer"
+    assert match.role_b == "qa"
+
+
+@pytest.mark.asyncio
+async def test_list_admin_pairs_picks_most_recently_updated_conversation(
+    a2a_setup: dict,
+) -> None:
+    """A pair with two conversations (distinct topics) surfaces the more
+    recently active one as its representative conversation."""
+    svc = a2a_setup["svc"]
+    db = a2a_setup["db"]
+    conv_old = await svc.get_or_create_conversation("be-dev-1", "be-qa", topic="t1")
+    conv_new = await svc.get_or_create_conversation("be-dev-1", "be-qa", topic="t2")
+
+    now = datetime.now(UTC)
+    row_old = await db.get(A2AConversationTable, UUID(conv_old.id))
+    row_new = await db.get(A2AConversationTable, UUID(conv_new.id))
+    assert row_old is not None
+    assert row_new is not None
+    row_old.updated_at = now - timedelta(minutes=10)
+    row_new.updated_at = now
+    await db.flush()
+
+    pairs = await svc.list_admin_pairs()
+
+    match = next(p for p in pairs if {p.agent_a, p.agent_b} == {"be-dev-1", "be-qa"})
+    assert match.conversation_id == conv_new.id
+
+
+@pytest.mark.asyncio
+async def test_list_admin_pairs_excludes_disallowed_pairs(a2a_setup: dict) -> None:
+    """A conversation row between two agents the matrix does NOT allow (dev
+    A2A is same-cell only — this should never legitimately exist, but the
+    join must be robust against it) never surfaces as a pair card: the
+    service iterates the static matrix, not "any conversation row"."""
+    svc = a2a_setup["svc"]
+    db = a2a_setup["db"]
+    stray = A2AConversationTable(agent_a="be-dev-1", agent_b="fe-dev-1")
+    db.add(stray)
+    await db.flush()
+
+    pairs = await svc.list_admin_pairs()
+
+    assert not any({p.agent_a, p.agent_b} == {"be-dev-1", "fe-dev-1"} for p in pairs)
 
 
 # ---------------------------------------------------------------------------

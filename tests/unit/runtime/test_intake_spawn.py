@@ -17,6 +17,7 @@ from unittest.mock import patch
 from uuid import UUID, uuid4
 
 import pytest
+from roboco.config import settings
 from roboco.runtime.orchestrator import (
     INTAKE_AGENT_ID,
     AgentInstance,
@@ -265,7 +266,7 @@ class TestIntakeScopeSlugs:
 
 # ---------------------------------------------------------------------------
 # _resolve_history_digest_projects — the prompter-memory ambient's project scope
-# (covers all three intake scopes, unlike the conventions ambient resolver).
+# (covers all three intake scopes: project_slug, product_id, project_ids).
 # ---------------------------------------------------------------------------
 
 
@@ -373,6 +374,284 @@ class TestResolveHistoryDigestAmbient:
 
         result = await orch._resolve_history_digest_ambient("roboco")
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# _resolve_ambient_projects — the conventions ambient's project scope. Mirrors
+# _resolve_history_digest_projects's shape, including the MegaTask project_ids
+# scope (the pre-existing gap: this resolver used to stop at project_slug /
+# product_id / task_id and never saw a MegaTask's explicit project_ids).
+# ---------------------------------------------------------------------------
+
+
+class TestResolveAmbientProjects:
+    @pytest.mark.asyncio
+    async def test_project_slug_branch_resolves_single_project(self) -> None:
+        orch = _make_minimal_orchestrator()
+
+        class _FakeProjectSvc:
+            async def get_by_slug(self, slug: str) -> Any:
+                return SimpleNamespace(slug=slug, id=uuid4())
+
+        with patch(
+            "roboco.services.project.get_project_service",
+            lambda _db: _FakeProjectSvc(),
+        ):
+            projects = await orch._resolve_ambient_projects(
+                object(),
+                project_slug="roboco",
+                task_id=None,
+                product_id=None,
+            )
+        assert [p.slug for p in projects] == ["roboco"]
+
+    @pytest.mark.asyncio
+    async def test_project_slug_missing_returns_empty(self) -> None:
+        orch = _make_minimal_orchestrator()
+
+        class _FakeProjectSvc:
+            async def get_by_slug(self, _slug: str) -> Any:
+                return None
+
+        with patch(
+            "roboco.services.project.get_project_service",
+            lambda _db: _FakeProjectSvc(),
+        ):
+            projects = await orch._resolve_ambient_projects(
+                object(),
+                project_slug="ghost",
+                task_id=None,
+                product_id=None,
+            )
+        assert projects == []
+
+    @pytest.mark.asyncio
+    async def test_product_id_branch_delegates_to_ambient_product_projects(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        orch = _make_minimal_orchestrator()
+        sentinel = [SimpleNamespace(slug="p1", id=uuid4())]
+
+        async def _fake_product_projects(_db: Any, product_id: str) -> list[Any]:
+            assert product_id == "prod-1"
+            return sentinel
+
+        # Patched on the instance (not the class): _ambient_product_projects is
+        # a staticmethod, so accessing it via `self.` never binds `self` — but a
+        # plain function patched onto the *class* would, since it's no longer
+        # wrapped in `staticmethod`. Patching the instance attribute sidesteps
+        # the descriptor lookup entirely.
+        monkeypatch.setattr(orch, "_ambient_product_projects", _fake_product_projects)
+        projects = await orch._resolve_ambient_projects(
+            object(),
+            project_slug=None,
+            task_id=None,
+            product_id="prod-1",
+        )
+        assert projects is sentinel
+
+    @pytest.mark.asyncio
+    async def test_project_ids_branch_preserves_order_and_skips_missing(
+        self,
+    ) -> None:
+        """The MegaTask scope: an explicit project_ids list must resolve into
+        projects (order preserved, unresolvable ids skipped) — this is the gap
+        fix, mirroring the history digest resolver's own project_ids branch."""
+        orch = _make_minimal_orchestrator()
+        good1 = "11111111-1111-1111-1111-111111111111"
+        missing = "22222222-2222-2222-2222-222222222222"
+        good2 = "33333333-3333-3333-3333-333333333333"
+
+        class _FakeProjectSvc:
+            async def get(self, pid: Any) -> Any:
+                if str(pid) == missing:
+                    return None
+                return SimpleNamespace(slug=f"proj-{str(pid)[0]}", id=pid)
+
+        with patch(
+            "roboco.services.project.get_project_service",
+            lambda _db: _FakeProjectSvc(),
+        ):
+            projects = await orch._resolve_ambient_projects(
+                object(),
+                project_slug=None,
+                task_id=None,
+                product_id=None,
+                project_ids=[good1, missing, good2],
+            )
+        assert [p.slug for p in projects] == ["proj-1", "proj-3"]
+
+    @pytest.mark.asyncio
+    async def test_project_ids_takes_priority_over_other_scopes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A MegaTask spawn passes project_slug/product_id as None in practice,
+        but the resolver must still prefer the explicit project_ids set over a
+        stray product_id/task_id if both were somehow present."""
+        orch = _make_minimal_orchestrator()
+        pid = "11111111-1111-1111-1111-111111111111"
+
+        class _FakeProjectSvc:
+            async def get(self, _pid: Any) -> Any:
+                return SimpleNamespace(slug="from-ids", id=_pid)
+
+        async def _fail_product_projects(*_a: Any, **_k: Any) -> list[Any]:
+            raise AssertionError("product_id branch must not run")
+
+        monkeypatch.setattr(orch, "_ambient_product_projects", _fail_product_projects)
+        with patch(
+            "roboco.services.project.get_project_service",
+            lambda _db: _FakeProjectSvc(),
+        ):
+            projects = await orch._resolve_ambient_projects(
+                object(),
+                project_slug=None,
+                task_id=None,
+                product_id="prod-should-be-ignored",
+                project_ids=[pid],
+            )
+        assert [p.slug for p in projects] == ["from-ids"]
+
+    @pytest.mark.asyncio
+    async def test_no_scope_given_returns_empty(self) -> None:
+        orch = _make_minimal_orchestrator()
+        projects = await orch._resolve_ambient_projects(
+            object(),
+            project_slug=None,
+            task_id=None,
+            product_id=None,
+        )
+        assert projects == []
+
+
+# ---------------------------------------------------------------------------
+# _resolve_conventions_ambient — flag-gated + best-effort, now MegaTask-aware.
+# ---------------------------------------------------------------------------
+
+
+class TestResolveConventionsAmbient:
+    @pytest.mark.asyncio
+    async def test_flag_off_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        orch = _make_minimal_orchestrator()
+        monkeypatch.setattr(settings, "conventions_enabled", False)
+
+        result = await orch._resolve_conventions_ambient(
+            "roboco", project_ids=["11111111-1111-1111-1111-111111111111"]
+        )
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_failure_returns_none_not_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        orch = _make_minimal_orchestrator()
+        monkeypatch.setattr(settings, "conventions_enabled", True)
+
+        def _boom() -> Any:
+            raise RuntimeError("db unavailable")
+
+        monkeypatch.setattr("roboco.db.base.get_session_factory", _boom)
+
+        result = await orch._resolve_conventions_ambient(
+            None, project_ids=["11111111-1111-1111-1111-111111111111"]
+        )
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_project_ids_scope_reaches_conventions_layer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The MegaTask project_ids scope must flow all the way through to
+        conventions_ambient_layer — the actual gap this fix closes."""
+        orch = _make_minimal_orchestrator()
+        monkeypatch.setattr(settings, "conventions_enabled", True)
+
+        class _FakeFactory:
+            def __call__(self) -> Any:
+                return self
+
+            async def __aenter__(self) -> Any:
+                return "fake-db"
+
+            async def __aexit__(self, *_a: Any) -> None:
+                return None
+
+        monkeypatch.setattr("roboco.db.base.get_session_factory", _FakeFactory)
+
+        sentinel_projects = [SimpleNamespace(slug="proj-1")]
+        captured: dict[str, Any] = {}
+
+        async def _fake_resolve_projects(_self: Any, _db: Any, **kwargs: Any) -> Any:
+            captured["kwargs"] = kwargs
+            return sentinel_projects
+
+        async def _fake_layer(_db: Any, projects: Any) -> str:
+            captured["projects"] = projects
+            return "RENDERED BLOCK"
+
+        monkeypatch.setattr(
+            AgentOrchestrator, "_resolve_ambient_projects", _fake_resolve_projects
+        )
+        monkeypatch.setattr(
+            "roboco.agents.factories._base.conventions_ambient_layer", _fake_layer
+        )
+
+        result = await orch._resolve_conventions_ambient(
+            None, project_ids=["11111111-1111-1111-1111-111111111111"]
+        )
+        assert result == "RENDERED BLOCK"
+        assert captured["kwargs"]["project_ids"] == [
+            "11111111-1111-1111-1111-111111111111"
+        ]
+        assert captured["projects"] is sentinel_projects
+
+
+# ---------------------------------------------------------------------------
+# _resolve_intake_ambient — must forward project_ids to BOTH sub-resolvers.
+# Regression test for the gap: it used to thread project_ids only to the
+# history-digest resolver, leaving a MegaTask intake with no conventions block.
+# ---------------------------------------------------------------------------
+
+
+class TestResolveIntakeAmbientThreadsProjectIds:
+    @pytest.mark.asyncio
+    async def test_project_ids_forwarded_to_conventions_and_history(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        orch = _make_minimal_orchestrator()
+        conventions_calls: list[dict[str, Any]] = []
+        history_calls: list[dict[str, Any]] = []
+
+        async def _conventions(_slug: Any, **kwargs: Any) -> str | None:
+            conventions_calls.append(kwargs)
+            return "CONVENTIONS"
+
+        async def _history(_slug: Any, **kwargs: Any) -> str | None:
+            history_calls.append(kwargs)
+            return "HISTORY"
+
+        monkeypatch.setattr(orch, "_resolve_conventions_ambient", _conventions)
+        monkeypatch.setattr(orch, "_resolve_history_digest_ambient", _history)
+
+        result = await orch._resolve_intake_ambient(
+            None,
+            product_id=None,
+            project_ids=["11111111-1111-1111-1111-111111111111"],
+        )
+
+        assert result == "CONVENTIONS\n\n---\n\nHISTORY"
+        assert conventions_calls == [
+            {
+                "product_id": None,
+                "project_ids": ["11111111-1111-1111-1111-111111111111"],
+            }
+        ]
+        assert history_calls == [
+            {
+                "product_id": None,
+                "project_ids": ["11111111-1111-1111-1111-111111111111"],
+            }
+        ]
 
 
 # ---------------------------------------------------------------------------

@@ -234,6 +234,73 @@ _PRIVILEGED_UPDATE_FIELDS: frozenset[str] = frozenset(
     }
 )
 
+# The CEO's "PM lighter" scope: cell_pm/main_pm may PATCH this content-only
+# slice — the same allowlist the Secretary's edit directive originally had
+# (before it grew to Secretary FULL). No status changes, no structural/
+# ownership fields (_PRIVILEGED_UPDATE_FIELDS), no git fields — those stay on
+# the lifecycle-verb surface (delegate/reassign/complete/...).
+_PM_LIGHTER_UPDATE_FIELDS: frozenset[str] = frozenset(
+    {"title", "description", "acceptance_criteria", "priority"}
+)
+
+# Roles that get the lighter slice above instead of the full ASSIGN-holding
+# admin bypass. TaskAction.ASSIGN is not team-scoped (see
+# can_perform_task_action), so a cell_pm would otherwise ride the same
+# unrestricted bypass CEO/Board/Auditor get, on any team's task — the
+# own-team restriction below is enforced independently of that permission.
+_PM_LIGHTER_ROLES: frozenset[AgentRole] = frozenset(
+    {AgentRole.CELL_PM, AgentRole.MAIN_PM}
+)
+
+
+def _pm_editor_scope(
+    agent: AgentContext, task: TaskTable, *, has_higher_perms: bool
+) -> bool:
+    """Return True if ``agent`` gets the "PM lighter" content-only slice.
+
+    Raises 403 outright for a cell PM outside its own team — ASSIGN itself
+    is not team-scoped (see ``can_perform_task_action``), so without this
+    check a cross-team cell PM would fall through to the wider CEO/Board/
+    Auditor admin bypass on ``has_higher_perms`` alone.
+    """
+    is_pm_editor = has_higher_perms and agent.role in _PM_LIGHTER_ROLES
+    if is_pm_editor and agent.role == AgentRole.CELL_PM and agent.team != task.team:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Cell PM may only update tasks belonging to their own team "
+                f"({agent.team}); this task is on {task.team}."
+            ),
+        )
+    return is_pm_editor
+
+
+def _enforce_pm_lighter_fields(
+    updates: dict[str, Any],
+    null_clears: dict[str, Any],
+    new_status: TaskStatus | None,
+) -> None:
+    """Refuse anything past the content-only allowlist for a PM-lighter editor.
+
+    "No status changes beyond what they already have" — status rides the
+    lifecycle verbs, never this PATCH surface, for cell_pm/main_pm.
+    """
+    disallowed = (updates.keys() | null_clears.keys()) - _PM_LIGHTER_UPDATE_FIELDS
+    if not disallowed and new_status is None:
+        return
+    reasons = []
+    if disallowed:
+        reasons.append(f"disallowed fields {sorted(disallowed)}")
+    if new_status is not None:
+        reasons.append("status changes are not part of the PM PATCH surface")
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=(
+            f"PM roles may only edit {sorted(_PM_LIGHTER_UPDATE_FIELDS)} via "
+            "PATCH; " + "; ".join(reasons)
+        ),
+    )
+
 
 def _translate_error(e: ServiceError) -> HTTPException:
     """Service errors → HTTP status. Kept at route layer; everything else moves."""
@@ -1110,6 +1177,11 @@ async def update_task(
         agent, TaskAction.ASSIGN, task.team
     )
 
+    # PM roles (cell_pm/main_pm) ride the ASSIGN-holding bypass above like
+    # CEO/Board/Auditor, but get the narrower "PM lighter" content-only slice
+    # instead of unrestricted admin access (see _pm_editor_scope).
+    is_pm_editor = _pm_editor_scope(agent, task, has_higher_perms=has_higher_perms)
+
     if not ((can_update_own and is_owner) or has_higher_perms):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -1135,6 +1207,12 @@ async def update_task(
     # None values (not-None guard), so null-clear intent is re-applied directly
     # on the ORM object after the update returns.
     null_clears = _pop_null_clears(updates)
+
+    # PM-lighter: restrict to the content-only allowlist, and refuse a status
+    # change outright — "no status changes beyond what they already have"
+    # (the lifecycle verbs), not a new capability riding this PATCH surface.
+    if is_pm_editor:
+        _enforce_pm_lighter_fields(updates, null_clears, new_status)
 
     # A bare task owner (UPDATE_OWN) may edit dev-facing fields only. The
     # structural / ownership fields are gated to ASSIGN/PM; an owner PATCHing

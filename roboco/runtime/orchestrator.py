@@ -2959,15 +2959,17 @@ class AgentOrchestrator:
         project_slug: str | None,
         task_id: str | None = None,
         product_id: str | None = None,
+        project_ids: list[str] | None = None,
     ) -> str | None:
         """Resolve the architectural-standard ambient block for the spawn.
 
-        Covers a delivery role's single project (via ``project_slug``) AND a
-        PO / Intake working a product, whose per-cell projects are resolved from
-        the task's ``product_id`` or a directly-supplied ``product_id``.
-        Best-effort + flag-gated: returns None (no ambient layer) when the
-        subsystem is off, no project is in scope, or anything fails — a prompt
-        compose must never be blocked by conventions resolution.
+        Covers a delivery role's single project (via ``project_slug``), a PO /
+        Intake working a product (per-cell projects resolved from the task's
+        ``product_id`` or a directly-supplied ``product_id``), AND a MegaTask
+        intake's explicit ``project_ids`` scope. Best-effort + flag-gated:
+        returns None (no ambient layer) when the subsystem is off, no project is
+        in scope, or anything fails — a prompt compose must never be blocked by
+        conventions resolution.
         """
         from roboco.config import settings
 
@@ -2984,6 +2986,7 @@ class AgentOrchestrator:
                     project_slug=project_slug,
                     task_id=task_id,
                     product_id=product_id,
+                    project_ids=project_ids,
                 )
                 return await conventions_ambient_layer(db, projects)
         except Exception as exc:
@@ -3001,9 +3004,12 @@ class AgentOrchestrator:
         project_slug: str | None,
         task_id: str | None,
         product_id: str | None,
+        project_ids: list[str] | None = None,
     ) -> list[Any]:
-        """The in-scope projects for the ambient block (single repo, product, or
-        ad-hoc cell map)."""
+        """The in-scope projects for the ambient block: single repo, product,
+        an explicit MegaTask ``project_ids`` set, or an ad-hoc cell map."""
+        if project_ids:
+            return await self._projects_by_ids(db, project_ids)
         if product_id is not None:
             return await self._ambient_product_projects(db, product_id)
         if task_id is not None:
@@ -3016,6 +3022,23 @@ class AgentOrchestrator:
             project = await get_project_service(db).get_by_slug(project_slug)
             return [project] if project is not None else []
         return []
+
+    @staticmethod
+    async def _projects_by_ids(db: Any, project_ids: list[str]) -> list[Any]:
+        """Resolve an explicit id list to project rows, in order, skipping any
+        that don't resolve — best-effort ambient resolution, not the hard
+        clone-scope resolver (which fails loud on a missing id)."""
+        from uuid import UUID
+
+        from roboco.services.project import get_project_service
+
+        project_svc = get_project_service(db)
+        out = []
+        for pid in project_ids:
+            p = await project_svc.get(UUID(pid))
+            if p is not None:
+                out.append(p)
+        return out
 
     @staticmethod
     async def _ambient_projects_for_task(db: Any, task_id: str) -> list[Any]:
@@ -3068,11 +3091,10 @@ class AgentOrchestrator:
     ) -> str | None:
         """Resolve the prompter's task-history-digest ambient block for this scope.
 
-        Unlike the conventions ambient resolver, this covers all three intake
-        scopes including ``project_ids`` (a MegaTask) — the digest is meant to
-        span every project the intake agent is reading. Best-effort: returns None
-        on any failure or empty scope so history resolution can never block a
-        spawn.
+        Covers all three intake scopes including ``project_ids`` (a MegaTask) —
+        the digest is meant to span every project the intake agent is reading.
+        Best-effort: returns None on any failure or empty scope so history
+        resolution can never block a spawn.
         """
         try:
             from roboco.db.base import get_session_factory
@@ -3106,17 +3128,7 @@ class AgentOrchestrator:
         """The in-scope ProjectTable rows for the history digest — single repo,
         product (all cell projects), or an explicit MegaTask project_ids set."""
         if project_ids:
-            from uuid import UUID
-
-            from roboco.services.project import get_project_service
-
-            project_svc = get_project_service(db)
-            out = []
-            for pid in project_ids:
-                p = await project_svc.get(UUID(pid))
-                if p is not None:
-                    out.append(p)
-            return out
+            return await AgentOrchestrator._projects_by_ids(db, project_ids)
         if product_id is not None:
             return await AgentOrchestrator._ambient_product_projects(db, product_id)
         if project_slug:
@@ -3136,7 +3148,7 @@ class AgentOrchestrator:
         """The intake spawn's full ambient block: conventions + history digest,
         joined with ``compose_prompt``'s own layer separator."""
         conventions_ambient = await self._resolve_conventions_ambient(
-            project_slug, product_id=product_id
+            project_slug, product_id=product_id, project_ids=project_ids
         )
         history_ambient = await self._resolve_history_digest_ambient(
             project_slug, product_id=product_id, project_ids=project_ids

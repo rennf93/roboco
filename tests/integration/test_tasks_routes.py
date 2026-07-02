@@ -102,11 +102,30 @@ async def task_client(
             "agent": main_pm,
             "project": project,
             "db": db_session,
+            "app": app,
         }
     app.dependency_overrides.clear()
 
 
 _HDR = {"X-Agent-ID": str(uuid4()), "X-Agent-Role": "main_pm"}
+
+
+def _as_ceo(setup: dict) -> None:
+    """Re-override this client's agent identity to CEO for the rest of the
+    test — the general PATCH admin surface (status overrides, structural
+    fields, force hatches, ...) is CEO/Board/Auditor-only now that
+    cell_pm/main_pm get the narrower "PM lighter" content-only slice (see
+    test_tasks_route_pm_lighter_patch.py). ``task_client``'s default agent
+    stays main_pm so the many other tests that specifically exercise
+    PM-role behavior (or "not CEO" refusals) are unaffected.
+    """
+
+    async def _override_ceo() -> AgentContext:
+        return AgentContext(
+            agent_id=cast("UUID", setup["agent"].id), role=AgentRole.CEO, team=None
+        )
+
+    setup["app"].dependency_overrides[get_agent_context] = _override_ceo
 
 
 def _seed_task(
@@ -278,6 +297,7 @@ async def test_update_task_status_override_recovers_blocked(task_client: dict) -
     override, so an operator can recover a task wedged in ``blocked`` (which
     ``/complete`` refuses) instead of the status being silently dropped. The
     ``force`` flag acknowledges the bypass past the lifecycle gate (#13)."""
+    _as_ceo(task_client)
     client = task_client["client"]
     task = _seed_task(task_client, status=TaskStatus.BLOCKED)
     await task_client["db"].flush()
@@ -297,6 +317,7 @@ async def test_update_task_status_override_refused_without_force(
     """#13: pasting over the lifecycle gate into a terminal/final hatch state
     (completed / awaiting_qa / awaiting_pm_review) without ``force`` is refused
     with 400 — the bypass must be an explicit, acknowledged forced override."""
+    _as_ceo(task_client)
     client = task_client["client"]
     task = _seed_task(task_client, status=TaskStatus.IN_PROGRESS)
     await task_client["db"].flush()
@@ -316,6 +337,7 @@ async def test_update_task_status_override_non_hatch_needs_no_force(
 ) -> None:
     """#13: a non-terminal recovery override (blocked -> pending) does NOT require
     ``force`` — only the terminal/final hatch states do."""
+    _as_ceo(task_client)
     client = task_client["client"]
     task = _seed_task(task_client, status=TaskStatus.BLOCKED)
     await task_client["db"].flush()
@@ -336,6 +358,7 @@ async def test_update_task_override_gate_states_require_force(
     """The hatch set covers the CEO gate and the terminal cancel too (not just
     completed/awaiting_qa/awaiting_pm_review): a privileged PATCH into either
     without ``force`` is refused 400."""
+    _as_ceo(task_client)
     client = task_client["client"]
     task = _seed_task(task_client, status=TaskStatus.IN_PROGRESS)
     await task_client["db"].flush()
@@ -353,6 +376,7 @@ async def test_update_task_override_gate_states_require_force(
 async def test_update_task_override_gate_states_with_force_succeeds(
     task_client: dict, hatch: str
 ) -> None:
+    _as_ceo(task_client)
     client = task_client["client"]
     task = _seed_task(task_client, status=TaskStatus.IN_PROGRESS)
     await task_client["db"].flush()
@@ -370,6 +394,7 @@ async def test_update_task_resurrect_terminal_requires_force(task_client: dict) 
     """Resurrecting a COMPLETED task back to in_progress is a bypass of the merge
     decision; the target (in_progress) is not itself a hatch state, so the
     target-only gate would miss it — the source-terminal check requires force."""
+    _as_ceo(task_client)
     client = task_client["client"]
     task = _seed_task(task_client, status=TaskStatus.COMPLETED)
     await task_client["db"].flush()
@@ -416,6 +441,7 @@ async def test_admin_complete_with_open_pr_names_the_pr(task_client: dict) -> No
     """Admin status→completed on a task whose PR is still OPEN strands its
     commits (bit the CEO twice live, 2026-07-02). The refusal must name the
     PR and the stranding — not just the generic lifecycle-gate text."""
+    _as_ceo(task_client)
     client = task_client["client"]
     task = _seed_task(task_client, status=TaskStatus.AWAITING_CEO_APPROVAL)
     await task_client["db"].flush()
@@ -438,6 +464,7 @@ async def test_admin_complete_with_open_pr_force_still_escapes(
 ) -> None:
     """``force`` remains the deliberate, audited escape — an operator who
     KNOWS the PR should be stranded can still complete."""
+    _as_ceo(task_client)
     client = task_client["client"]
     task = _seed_task(task_client, status=TaskStatus.AWAITING_CEO_APPROVAL)
     await task_client["db"].flush()
@@ -457,6 +484,7 @@ async def test_admin_complete_with_merged_pr_gets_generic_gate_only(
 ) -> None:
     """A merged PR strands nothing — the refusal stays the generic hatch
     text (no PR callout), and force completes as before."""
+    _as_ceo(task_client)
     client = task_client["client"]
     task = _seed_task(task_client, status=TaskStatus.AWAITING_CEO_APPROVAL)
     await task_client["db"].flush()
@@ -3163,6 +3191,7 @@ async def test_get_sessions_for_task_not_found(task_client: dict) -> None:
 @pytest.mark.asyncio
 async def test_patch_nature_persists(task_client: dict) -> None:
     """PATCH with nature=non_technical persists; GET returns updated value."""
+    _as_ceo(task_client)
     task = _seed_task(task_client, nature=TaskNature.TECHNICAL)
     await task_client["db"].flush()
     response = await task_client["client"].patch(
@@ -3178,6 +3207,7 @@ async def test_patch_nature_persists(task_client: dict) -> None:
 @pytest.mark.asyncio
 async def test_patch_task_type_persists(task_client: dict) -> None:
     """PATCH with task_type=research persists; GET returns updated value."""
+    _as_ceo(task_client)
     task = _seed_task(task_client, task_type=TaskType.CODE)
     await task_client["db"].flush()
     response = await task_client["client"].patch(
@@ -3193,6 +3223,7 @@ async def test_patch_task_type_persists(task_client: dict) -> None:
 @pytest.mark.asyncio
 async def test_patch_project_id_persists(task_client: dict) -> None:
     """PATCH with project_id=<valid-uuid> persists; GET returns updated value."""
+    _as_ceo(task_client)
     task = _seed_task(task_client)
     # Create a second project to switch to
     second_project = ProjectTable(
@@ -3250,6 +3281,7 @@ async def test_patch_title_only_changes_title(task_client: dict) -> None:
 @pytest.mark.asyncio
 async def test_patch_assigned_to_slug_resolves_to_uuid(task_client: dict) -> None:
     """PATCH assigned_to with agent slug resolves to agent UUID."""
+    _as_ceo(task_client)
     dev = await _seed_agent(task_client)
     task = _seed_task(task_client)
     await task_client["db"].flush()
@@ -3267,6 +3299,7 @@ async def test_patch_assigned_to_slug_resolves_to_uuid(task_client: dict) -> Non
 @pytest.mark.asyncio
 async def test_patch_assigned_to_null_unassigns(task_client: dict) -> None:
     """PATCH assigned_to: null sets assigned_to to null (unassign)."""
+    _as_ceo(task_client)
     dev = await _seed_agent(task_client)
     task = _seed_task(task_client, assigned_to=dev.id)
     await task_client["db"].flush()

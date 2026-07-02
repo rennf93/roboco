@@ -1,17 +1,21 @@
 "use client";
 
-import { Suspense, useCallback, useEffect } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   a2aLiveKeys,
+  useA2AAdminPairs,
   useA2AConversations,
   useA2AMessages,
 } from "@/hooks/use-a2a-live";
 import { useA2ALiveStream } from "@/hooks/use-websocket";
 import { A2AConversationList } from "@/components/a2a/a2a-conversation-list";
+import { A2ASwitchboard } from "@/components/a2a/a2a-switchboard";
 import { A2ATranscript } from "@/components/a2a/a2a-transcript";
 import { A2AReplyComposer } from "@/components/a2a/a2a-reply-composer";
+import { latestPulseTimestamps } from "@/components/a2a/a2a-switchboard-utils";
+import type { AdminPairSummary } from "@/lib/api/a2a";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -20,8 +24,21 @@ import { OfflineState } from "@/components/ui/offline-state";
 import { getAgentDisplayName } from "@/lib/agent-utils";
 import { lastSenderOf } from "@/components/a2a/a2a-utils";
 import { cn } from "@/lib/utils";
-import { MessagesSquare, Radio, RefreshCw } from "lucide-react";
+import {
+  LayoutGrid,
+  List as ListIcon,
+  MessagesSquare,
+  Radio,
+  RefreshCw,
+} from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
+
+type A2AView = "switchboard" | "list";
+
+interface PeekedPair {
+  agent_a: string;
+  agent_b: string;
+}
 
 function EmptyPanel({
   icon: Icon,
@@ -47,12 +64,25 @@ function A2APageContent() {
 
   const selectedId = searchParams.get("conversation");
 
+  // Desktop default is the switchboard (org-chart pair cards); the classic
+  // list stays one click away as the mobile/compact fallback.
+  const [view, setView] = useState<A2AView>("switchboard");
+  // A pair with no conversation yet, clicked from the switchboard — there is
+  // nothing to select via `?conversation=`, so it's tracked separately and
+  // shown as an explicit "no A2A yet" state in the drill-in panel.
+  const [peekedPair, setPeekedPair] = useState<PeekedPair | null>(null);
+
   const {
     data: conversationData,
     isLoading: loadingConversations,
     error,
     refetch: refetchConversations,
-  } = useA2AConversations();
+  } = useA2AConversations(100);
+  const {
+    data: pairsData,
+    isLoading: loadingPairs,
+    refetch: refetchPairs,
+  } = useA2AAdminPairs();
   const {
     data: messagesData,
     isLoading: loadingMessages,
@@ -63,10 +93,11 @@ function A2APageContent() {
   // `a2a.message` frame. Invalidate-on-frame (the session-detail idiom) — the
   // frame's excerpt is capped by design, so REST stays the source of truth and
   // react-query refetches the affected queries.
-  const { lastMessage, isConnected } = useA2ALiveStream();
+  const { lastMessage, a2aMessages, isConnected } = useA2ALiveStream();
   useEffect(() => {
     if (lastMessage?.type !== "a2a.message") return;
     queryClient.invalidateQueries({ queryKey: a2aLiveKeys.conversations });
+    queryClient.invalidateQueries({ queryKey: a2aLiveKeys.pairs });
     if (selectedId && lastMessage.conversation_id === selectedId) {
       queryClient.invalidateQueries({
         queryKey: a2aLiveKeys.messages(selectedId),
@@ -74,8 +105,17 @@ function A2APageContent() {
     }
   }, [lastMessage, queryClient, selectedId]);
 
+  const pairs = useMemo(() => pairsData?.items ?? [], [pairsData]);
+  // Activity = A2A only: derived purely from a2a.message frames, never from
+  // verb/flow traffic on the same /ws/system stream.
+  const pulses = useMemo(
+    () => latestPulseTimestamps(a2aMessages, pairs),
+    [a2aMessages, pairs],
+  );
+
   const handleSelect = useCallback(
     (id: string) => {
+      setPeekedPair(null);
       const params = new URLSearchParams(searchParams.toString());
       params.set("conversation", id);
       router.push(`/a2a?${params.toString()}`);
@@ -83,8 +123,26 @@ function A2APageContent() {
     [router, searchParams],
   );
 
+  const handleOpenPair = useCallback(
+    (pair: AdminPairSummary) => {
+      if (pair.conversation_id) {
+        handleSelect(pair.conversation_id);
+        return;
+      }
+      // Never-talked pair: nothing to select, clear any prior selection and
+      // show the pair's own empty state instead.
+      setPeekedPair({ agent_a: pair.agent_a, agent_b: pair.agent_b });
+      const params = new URLSearchParams(searchParams.toString());
+      params.delete("conversation");
+      const qs = params.toString();
+      router.push(qs ? `/a2a?${qs}` : "/a2a");
+    },
+    [handleSelect, router, searchParams],
+  );
+
   const handleRefresh = () => {
     refetchConversations();
+    refetchPairs();
     if (selectedId) refetchMessages();
   };
 
@@ -137,20 +195,56 @@ function A2APageContent() {
         />
       ) : (
         <div className="grid grid-cols-12 gap-4 lg:gap-6 lg:flex-1 lg:min-h-0">
-          {/* Panel 1: Conversations */}
+          {/* Panel 1: Switchboard (default) / classic conversation list */}
           <Card className="col-span-12 lg:col-span-4 flex flex-col overflow-hidden">
             <CardContent className="p-3 flex flex-col h-full">
               <div className="flex items-center gap-2 mb-3 pb-2 border-b">
                 <Radio className="h-4 w-4 text-muted-foreground" />
-                <span className="text-sm font-medium">Conversations</span>
+                <span className="text-sm font-medium">
+                  {view === "switchboard" ? "Switchboard" : "Conversations"}
+                </span>
+                <div className="ml-auto flex items-center gap-1">
+                  <Button
+                    type="button"
+                    variant={view === "switchboard" ? "secondary" : "ghost"}
+                    size="sm"
+                    className="h-7 px-2"
+                    aria-pressed={view === "switchboard"}
+                    onClick={() => setView("switchboard")}
+                    title="Switchboard: org-chart pair cards"
+                  >
+                    <LayoutGrid className="h-3.5 w-3.5" />
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={view === "list" ? "secondary" : "ghost"}
+                    size="sm"
+                    className="h-7 px-2"
+                    aria-pressed={view === "list"}
+                    onClick={() => setView("list")}
+                    title="Classic conversation list"
+                  >
+                    <ListIcon className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
               </div>
               <div className="flex-1 overflow-hidden -mx-3">
-                <A2AConversationList
-                  conversations={conversations}
-                  selectedId={selectedId}
-                  onSelect={handleSelect}
-                  isLoading={loadingConversations}
-                />
+                {view === "switchboard" ? (
+                  <A2ASwitchboard
+                    pairs={pairs}
+                    pulses={pulses}
+                    selectedConversationId={selectedId}
+                    isLoading={loadingPairs}
+                    onOpenPair={handleOpenPair}
+                  />
+                ) : (
+                  <A2AConversationList
+                    conversations={conversations}
+                    selectedId={selectedId}
+                    onSelect={handleSelect}
+                    isLoading={loadingConversations}
+                  />
+                )}
               </div>
             </CardContent>
           </Card>
@@ -211,6 +305,17 @@ function A2APageContent() {
                     )}
                   </div>
                 </>
+              ) : peekedPair ? (
+                <div className="h-full flex items-center justify-center text-muted-foreground">
+                  <div className="text-center p-4 max-w-xs">
+                    <MessagesSquare className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                    <p className="text-sm">
+                      {getAgentDisplayName(peekedPair.agent_a)} and{" "}
+                      {getAgentDisplayName(peekedPair.agent_b)} haven&apos;t
+                      A2A&apos;d each other yet.
+                    </p>
+                  </div>
+                </div>
               ) : (
                 <EmptyPanel
                   icon={MessagesSquare}
