@@ -86,12 +86,23 @@ export function useCeoScorecard(days = 30) {
   });
 }
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Only real member ids may fetch a scorecard: an agent UUID or the "ceo"
+ * alias. The static fallback roster carries placeholder ids ("1".."22")
+ * while agent definitions load — fetching those fired 22 guaranteed-422
+ * requests per cycle and queued the whole metrics page behind them. */
+export function isScorecardMemberId(agentId: string): boolean {
+  return agentId === "ceo" || UUID_RE.test(agentId);
+}
+
 /** Per-member rollup scorecard (+ live in-flight overlay). */
 export function useMemberScorecard(agentId: string, days = 30) {
   return useQuery<MemberScorecard>({
     queryKey: observabilityKeys.memberScorecard(agentId, days),
     queryFn: () => observabilityApi.getMemberScorecard(agentId, days),
-    enabled: Boolean(agentId),
+    enabled: isScorecardMemberId(agentId),
     refetchInterval: 60_000,
   });
 }
