@@ -429,7 +429,7 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
         allowed_task_types=None,
         preconditions=(),
         self_review_block=False,
-        needs_team_match=False,
+        needs_team_match=True,
     ),
     # claim's source_statuses is the UNION across all roles — see CLAIM_RULES
     # for per-role authority. Both tables are authoritative; a validator
@@ -494,7 +494,7 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
         allowed_task_types=None,
         preconditions=(),
         self_review_block=False,
-        needs_team_match=False,
+        needs_team_match=True,
     ),
     "pause": ActionSpec(
         name="pause",
@@ -514,7 +514,7 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
         allowed_task_types=None,
         preconditions=(),
         self_review_block=False,
-        needs_team_match=False,
+        needs_team_match=True,
     ),
     "submit_verification": ActionSpec(
         name="submit_verification",
@@ -1767,7 +1767,7 @@ def can_invoke_action(
     # service layer, so a consumer trusting the spec gate alone let a backend
     # dev claim a frontend task). When the caller supplies the agent's team via
     # Context, enforce it here; absent, defer to the service layer.
-    rejection = _check_team_match(spec_action, task, ctx)
+    rejection = _check_team_match(spec_action, task, ctx, role)
     if rejection is not None:
         return rejection
     if action == "claim":
@@ -1777,17 +1777,38 @@ def can_invoke_action(
     return Decision.allow()
 
 
+# Org-wide actors act across cells by design: the Main PM absorbs every
+# cell's escalations, the board PR reviewer gates root PRs on the main_pm
+# team, and CEO / board decisions are global. Cell-scoped roles (developer,
+# qa, documenter, cell_pm) are the ones a dispatch misroute can weaponize —
+# live 2026-07-02 a frontend cell PM blocked, escalated, and briefly held a
+# backend task through exactly this gap.
+_ORG_WIDE_ROLES: frozenset[Role] = frozenset(
+    {
+        Role.MAIN_PM,
+        Role.CEO,
+        Role.PRODUCT_OWNER,
+        Role.HEAD_MARKETING,
+        Role.AUDITOR,
+        Role.PR_REVIEWER,
+    }
+)
+
+
 def _check_team_match(
-    spec_action: ActionSpec, task: Any, ctx: Context
+    spec_action: ActionSpec, task: Any, ctx: Context, role: Role | None = None
 ) -> Decision | None:
     """Reject a cross-team action when the caller's team is known.
 
     ``needs_team_match`` was enforced only at the service layer, so a consumer
     trusting the spec gate alone let a backend dev claim a frontend task. When
     the caller supplies the agent's team via Context, enforce it here; absent,
-    defer to the service layer (backward compatible).
+    defer to the service layer (backward compatible). Org-wide roles
+    (``_ORG_WIDE_ROLES``) are exempt.
     """
     if not spec_action.needs_team_match:
+        return None
+    if role is not None and role in _ORG_WIDE_ROLES:
         return None
     agent_team = getattr(ctx, "agent_team", None)
     if agent_team is None:
