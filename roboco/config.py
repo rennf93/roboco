@@ -950,14 +950,10 @@ class Settings(BaseSettings):
     )
 
     # Gateway coordination thresholds
-    # Single source of truth for "claim heartbeat is stale": consumed both by
-    # `trigger_filter` (deciding whether to QUEUE a fresh spawn) and by
-    # `_reap_stale_claims` (deciding whether to RELEASE the claim back to
-    # pending). Keeping them on one field guarantees both layers agree on
-    # the same tick — the reaper runs first, releases the row, and the
-    # queued spawn finds an unclaimed task. Splitting them into two fields
-    # opens a window where trigger_filter queues duplicate spawns against a
-    # claim the reaper hasn't yet released — pure dispatcher churn.
+    # Single source of truth for "claim heartbeat is stale", consumed via
+    # `claimant_lock.is_stale` wherever a claim's freshness gates an action
+    # (e.g. `_reap_stale_claims` deciding whether to RELEASE the claim back
+    # to pending). One field keeps every consumer on the same tick.
     claim_stale_seconds: int = Field(
         default=180,
         ge=60,
@@ -986,9 +982,9 @@ class Settings(BaseSettings):
     # retrying — LLM inference + retry loops routinely exceed 3 min
     # between verb successes. 600s is large enough to accommodate that
     # without letting a genuinely-stuck container linger.
-    # Distinct from claim_stale_seconds (which drives trigger_filter
-    # spawn queueing); keeping them separate avoids a window where a
-    # higher reap threshold would also delay spawn-queue decisions.
+    # Distinct from claim_stale_seconds (the general claim-freshness
+    # threshold); keeping them separate lets the reaper run on a longer
+    # window than other claim-staleness consumers.
     stale_claim_reap_seconds: int = Field(
         default=600,
         ge=60,
@@ -1085,16 +1081,6 @@ class Settings(BaseSettings):
             "Recency window (seconds) for PM journal:decision to satisfy "
             "gating verbs; override via ROBOCO_PM_DECISION_WINDOW_SECONDS"
         ),
-    )
-    spawn_cooldown_seconds: int = Field(
-        default=60,
-        ge=1,
-        description="Per-task spawn rate cooldown (seconds)",
-    )
-    role_spawn_rate_per_minute: int = Field(
-        default=6,
-        ge=1,
-        description="Per-role spawn rate limit (per minute)",
     )
 
     # Tracing-gate thresholds

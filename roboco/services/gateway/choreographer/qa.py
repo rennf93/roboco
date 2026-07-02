@@ -44,6 +44,7 @@ from roboco.foundation.policy import lifecycle as spec_module
 from roboco.foundation.policy import tracing as _tr
 from roboco.foundation.policy.content import ContentValidationError, markers
 from roboco.services.content_notes import apply_structured_note
+from roboco.services.gateway.choreographer._protocol import actor_context_fields
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import build_evidence_for_task
 
@@ -648,10 +649,11 @@ class QAMixin(_Base):
             return gate_rejection
 
         briefing = await self._briefing_for(qa_agent_id, task_id)
+        actor_slug, agent_team = actor_context_fields(agent)
         spec_ctx = spec_module.Context(
             actor_id=qa_agent_id,
-            actor_slug=getattr(agent, "slug", None) if agent is not None else None,
-            agent_team=str(agent.team) if agent is not None and agent.team else None,
+            actor_slug=actor_slug,
+            agent_team=agent_team,
             original_developer_slug=_extract_original_developer(t),
             notes=notes,
             issues=tuple(issues),

@@ -121,6 +121,12 @@ def _enable(monkeypatch: pytest.MonkeyPatch, **overrides: object) -> None:
         monkeypatch.setattr(cfg, key, value)
     # Keep notification a no-op (its own session/IO is out of scope here).
     monkeypatch.setattr(NotificationService, "send_ack_notification", AsyncMock())
+    # Point the notify-dedupe at an unreachable Redis: _already_notified fails
+    # open and _mark_notified swallows, so these tests neither read from nor
+    # leak `self_heal:notified:*` keys (2h TTL) into a developer's live Redis.
+    # (redis_url is a computed property — patch its inputs.)
+    monkeypatch.setattr(cfg, "redis_host", "127.0.0.1")
+    monkeypatch.setattr(cfg, "redis_port", 1)
 
 
 @pytest.mark.asyncio

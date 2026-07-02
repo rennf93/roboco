@@ -22,6 +22,16 @@ Behaviour:
     collection time when no Postgres is reachable on `localhost:5432`. Set
     `ROBOCO_TEST_DB_HOST`, `ROBOCO_TEST_DB_PORT`, `ROBOCO_TEST_DB_USER`, or
     `ROBOCO_TEST_DB_PASSWORD` to override.
+
+Redis isolation:
+    No test uses a real Redis, so `_no_live_redis` (autouse) points the
+    computed `settings.redis_url` at an unreachable port for every test.
+    Three test families were caught writing real keys into whatever Redis
+    listens on localhost:6379 (self-heal notify-dedupe, the rate-limit
+    tracker's NO-TTL "provider rate-limited" blob, notification
+    purpose-dedupe) — order/state poison for anything reading the real
+    instance. Every production Redis path is fail-open by design, so an
+    unreachable port keeps behavior identical to "no redis available".
 """
 
 from __future__ import annotations
@@ -36,6 +46,7 @@ from uuid import UUID, uuid4
 import asyncpg
 import pytest
 import pytest_asyncio
+from roboco.config import settings as _settings
 from roboco.db import tables as roboco_tables
 from roboco.db.base import Base
 from roboco.db.tables import (
@@ -65,6 +76,18 @@ from sqlalchemy.ext.asyncio import (
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+
+
+@pytest.fixture(autouse=True)
+def _no_live_redis(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep every test off the real localhost Redis (see module docstring).
+
+    ``settings.redis_url`` is a computed property, so its inputs are patched.
+    Port 1 refuses instantly — fail-open code paths behave exactly as with no
+    Redis, and nothing can read or write live keys.
+    """
+    monkeypatch.setattr(_settings, "redis_host", "127.0.0.1")
+    monkeypatch.setattr(_settings, "redis_port", 1)
 
 
 # ---------------------------------------------------------------------------

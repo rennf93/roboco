@@ -138,6 +138,7 @@ async def main(
                 await orchestrator.spawn_agent(
                     agent_id=agent_id,
                     initial_prompt=startup_prompt,
+                    spawned_by="bootstrap",
                 )
             except Exception as e:
                 logger.error("Failed to spawn agent", agent_id=agent_id, error=str(e))

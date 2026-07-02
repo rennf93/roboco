@@ -132,3 +132,16 @@ class ChoreographerHelpers:
         task: Any | None = None,
     ) -> Envelope:
         raise NotImplementedError
+
+
+def actor_context_fields(agent: Any) -> tuple[str | None, str | None]:
+    """``(actor_slug, agent_team)`` for a spec ``Context``, None-agent safe.
+
+    Every verb builds its policy Context with the same two conditional
+    kwargs; inlining them pushed nine verbs over the xenon B threshold when
+    the team-match sweep added ``agent_team`` to all 27 sites.
+    """
+    if agent is None:
+        return None, None
+    team = getattr(agent, "team", None)
+    return getattr(agent, "slug", None), str(team) if team else None

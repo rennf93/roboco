@@ -22,7 +22,7 @@ from roboco.api.routes.tasks import (
 from roboco.api.routes.tasks import (
     router as tasks_router,
 )
-from roboco.db.tables import AgentTable, ProjectTable, TaskTable
+from roboco.db.tables import AgentTable, ProjectTable, TaskTable, WorkSessionTable
 from roboco.exceptions import GitError, TaskLifecycleError
 from roboco.foundation.policy.lifecycle import STATUS_GRAPH
 from roboco.foundation.policy.lifecycle import Status as LifecycleStatus
@@ -387,6 +387,93 @@ async def test_update_task_resurrect_terminal_requires_force(task_client: dict) 
     )
     assert with_force.status_code == HTTPStatus.OK
     assert with_force.json()["status"] == "in_progress"
+
+
+async def _seed_open_pr_session(setup: dict, task: TaskTable, pr_status: str) -> None:
+    """Attach a work session with the given PR state to ``task``."""
+    ws = WorkSessionTable(
+        id=uuid4(),
+        project_id=setup["project"].id,
+        task_id=task.id,
+        agent_id=setup["agent"].id,
+        branch_name="feature/backend/ABC12345",
+        base_branch="master",
+        target_branch="master",
+        pr_number=123,
+        pr_url="https://example.com/r/pull/123",
+        pr_status=pr_status,
+    )
+    setup["db"].add(ws)
+    await setup["db"].flush()
+    task.work_session_id = ws.id
+    task.pr_number = 123
+    task.pr_url = ws.pr_url
+    await setup["db"].flush()
+
+
+@pytest.mark.asyncio
+async def test_admin_complete_with_open_pr_names_the_pr(task_client: dict) -> None:
+    """Admin status→completed on a task whose PR is still OPEN strands its
+    commits (bit the CEO twice live, 2026-07-02). The refusal must name the
+    PR and the stranding — not just the generic lifecycle-gate text."""
+    client = task_client["client"]
+    task = _seed_task(task_client, status=TaskStatus.AWAITING_CEO_APPROVAL)
+    await task_client["db"].flush()
+    await _seed_open_pr_session(task_client, task, "open")
+    response = await client.patch(
+        f"/api/tasks/{task.id}",
+        json={"status": "completed"},
+        headers=_HDR,
+    )
+    assert response.status_code == HTTPStatus.BAD_REQUEST
+    detail = response.json()["detail"]
+    assert "#123" in detail
+    assert "open" in detail.lower()
+    assert "force" in detail
+
+
+@pytest.mark.asyncio
+async def test_admin_complete_with_open_pr_force_still_escapes(
+    task_client: dict,
+) -> None:
+    """``force`` remains the deliberate, audited escape — an operator who
+    KNOWS the PR should be stranded can still complete."""
+    client = task_client["client"]
+    task = _seed_task(task_client, status=TaskStatus.AWAITING_CEO_APPROVAL)
+    await task_client["db"].flush()
+    await _seed_open_pr_session(task_client, task, "open")
+    response = await client.patch(
+        f"/api/tasks/{task.id}",
+        json={"status": "completed", "force": True},
+        headers=_HDR,
+    )
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_admin_complete_with_merged_pr_gets_generic_gate_only(
+    task_client: dict,
+) -> None:
+    """A merged PR strands nothing — the refusal stays the generic hatch
+    text (no PR callout), and force completes as before."""
+    client = task_client["client"]
+    task = _seed_task(task_client, status=TaskStatus.AWAITING_CEO_APPROVAL)
+    await task_client["db"].flush()
+    await _seed_open_pr_session(task_client, task, "merged")
+    no_force = await client.patch(
+        f"/api/tasks/{task.id}",
+        json={"status": "completed"},
+        headers=_HDR,
+    )
+    assert no_force.status_code == HTTPStatus.BAD_REQUEST
+    assert "#123" not in no_force.json()["detail"]
+    with_force = await client.patch(
+        f"/api/tasks/{task.id}",
+        json={"status": "completed", "force": True},
+        headers=_HDR,
+    )
+    assert with_force.status_code == HTTPStatus.OK
 
 
 @pytest.mark.asyncio

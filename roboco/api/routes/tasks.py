@@ -126,6 +126,30 @@ class _StatusOverride:
     agent: AgentContext
 
 
+async def _refuse_unforced_complete_with_open_pr(req: _StatusOverride) -> None:
+    """Admin-complete must merge-or-refuse.
+
+    Completing a task whose PR is still OPEN strands its commits unmerged
+    (bit the CEO twice live, 2026-07-02). Checked before the generic hatch
+    text so the refusal names the PR and the consequence instead of a vague
+    gate message; ``force`` stays the deliberate, audited escape.
+    """
+    if req.new_status != TaskStatus.COMPLETED or req.force:
+        return
+    open_ws = await req.service.open_pr_ref(req.task)
+    if open_ws is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Task still has OPEN PR #{open_ws.pr_number}"
+                f" ({open_ws.pr_url}); completing it now would strand"
+                " those commits unmerged. Merge the PR first (or approve"
+                " via POST /api/tasks/{id}/ceo-approve), or pass"
+                ' "force": true to strand it deliberately.'
+            ),
+        )
+
+
 async def _apply_forced_status_override(req: _StatusOverride) -> TaskTable:
     """Apply an audited admin status override, gating the lifecycle bypass.
 
@@ -141,6 +165,7 @@ async def _apply_forced_status_override(req: _StatusOverride) -> TaskTable:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only privileged roles may override task status.",
         )
+    await _refuse_unforced_complete_with_open_pr(req)
     if req.new_status in _HATCH_OVERRIDE_STATES and not req.force:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

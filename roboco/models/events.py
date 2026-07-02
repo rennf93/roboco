@@ -182,6 +182,8 @@ class OrchestratorAccessProtocol(Protocol):
         self,
         agent_id: str,
         initial_prompt: str | None = None,
+        *,
+        spawned_by: str | None = None,
     ) -> Any: ...
 
 
