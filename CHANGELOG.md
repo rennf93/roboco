@@ -51,6 +51,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **MegaTask intakes get their architectural-conventions block.** `_resolve_intake_ambient` threaded the multi-project `project_ids` scope to the history digest but not to the conventions resolver, so a MegaTask intake saw no conventions ambient even with the flag on. Both sub-resolvers now share one id→project resolution path and cover all three scopes; regression test pins the threading to both.
+
 - **MegaTask root-subtasks can complete through the Main-PM path.** `_main_pm_complete_guard` and `TaskService.escalate_to_ceo` refused ANY parented task as "not a root" — but a batch root-subtask is parented (the umbrella) BY DESIGN while carrying its own project/branch/PR. Both sites now consult `is_batch_root_subtask` (the single-source identity predicate the other exemption sites already use), so `complete` → CEO escalation works for batch roots while plain subtasks stay refused. Found by e2e scenario 4 on its first run; live root-subtasks previously needed CEO god-mode to close.
 
 - **Every `agent.spawned` audit row names its dispatcher.** A rogue spawner could not be identified live — the audit row carried container/model but not which of the ~27 dispatch loops launched it. `spawn_agent` now takes `spawned_by`, stamps it into the `agent.spawned` / `agent.spawn_failed` details (`"unspecified"` when absent so audit queries never miss the field), every call site passes its loop name, and a whole-package AST sweep test fails any future caller that omits it.
