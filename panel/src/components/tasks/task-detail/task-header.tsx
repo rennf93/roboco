@@ -389,11 +389,23 @@ export function TaskHeader({ task, onAction }: TaskHeaderProps) {
         });
         break;
       case TaskStatus.AWAITING_CEO_APPROVAL:
+        // The proven approval path: CeoApproveDialog -> POST /ceo-approve
+        // (notes >= 20 chars). Works for every gated task, including the
+        // branchless MegaTask umbrella, which has no PR to merge.
         actions.push({
-          label: "Approve & Merge",
-          action: "approve-and-merge",
+          label: "Approve & Complete",
+          action: "ceo-approve",
           icon: <ThumbsUp className="h-4 w-4 mr-2" />,
         });
+        // One-click merge+complete only makes sense when a PR exists;
+        // on an umbrella it 400s NO_PR — the CEO's approve just failed.
+        if (task.pr_number) {
+          actions.push({
+            label: "Approve & Merge",
+            action: "approve-and-merge",
+            icon: <GitMerge className="h-4 w-4 mr-2" />,
+          });
+        }
         actions.push({
           label: "Request Changes",
           action: "ceo-reject",
