@@ -429,3 +429,60 @@ def test_by_osmosis_skips_empty_predecessor_group() -> None:
 
 def test_by_osmosis_no_edges_when_no_predecessor_groups() -> None:
     assert by_osmosis_tail_dev_tasks(True, []) == []
+
+
+# ---------------------------------------------------------------------------
+# Declared dependencies (B1b — the CEO's "Depends on" lists become real edges)
+# ---------------------------------------------------------------------------
+# Live break (S6, 2026-07-01): the draft declared depends-on S1+R2+R3 but only
+# the analyzer's file-overlap edges were wired, so S6 started 90s after
+# still-running R3. Declared edges are authoritative; derived edges remain the
+# safety net — analyze() takes the union.
+
+
+def test_declared_dependency_creates_edge_between_disjoint_surfaces() -> None:
+    s = [
+        DraftSurface(0, 1, ["a/x.py"], False, False),
+        DraftSurface(1, 1, ["b/y.py"], False, False, declared_depends_on=(0,)),
+    ]
+    plan = SequencingService().analyze(s, _backend, {"backend": 2})
+    assert (0, 1) in plan.edges
+    assert _wave_of(plan.waves, 0) < _wave_of(plan.waves, 1)
+
+
+def test_declared_union_with_derived_dedupes() -> None:
+    # Overlap already derives (0, 1) (idx 0 more important); declaring it too
+    # must not duplicate the edge.
+    s = [
+        DraftSurface(0, 1, ["svc/threats.py"], False, False),
+        DraftSurface(
+            1, 2, ["svc/threats.py"], False, False, declared_depends_on=(0,)
+        ),
+    ]
+    plan = SequencingService().analyze(s, _backend, {"backend": 2})
+    assert plan.edges.count((0, 1)) == 1
+
+
+def test_declared_out_of_range_rejected() -> None:
+    s = [
+        DraftSurface(0, 1, ["a/x.py"], False, False, declared_depends_on=(7,)),
+    ]
+    with pytest.raises(SequencingError):
+        SequencingService().analyze(s, _backend, {"backend": 2})
+
+
+def test_declared_self_dependency_rejected() -> None:
+    s = [
+        DraftSurface(0, 1, ["a/x.py"], False, False, declared_depends_on=(0,)),
+    ]
+    with pytest.raises(SequencingError):
+        SequencingService().analyze(s, _backend, {"backend": 2})
+
+
+def test_declared_cycle_rejected() -> None:
+    s = [
+        DraftSurface(0, 1, ["a/x.py"], False, False, declared_depends_on=(1,)),
+        DraftSurface(1, 1, ["b/y.py"], False, False, declared_depends_on=(0,)),
+    ]
+    with pytest.raises(SequencingError):
+        SequencingService().analyze(s, _backend, {"backend": 2})

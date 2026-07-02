@@ -225,6 +225,7 @@ async def test_delegate_passes_when_payload_complete() -> None:
             task_type="code",
             nature="technical",
             acceptance_criteria=["GET /v1/foo returns 200 with body"],
+            intends_to_touch=["backend/api/routers/foo.py"],
         ),
     )
     assert env.error is None, env.as_dict()
@@ -232,3 +233,71 @@ async def test_delegate_passes_when_payload_complete() -> None:
     # Verify nature threaded through to TaskCreateRequest.
     req = task_svc.create_subtask.call_args.args[0]
     assert str(req.nature) == "technical" or req.nature.value == "technical"
+
+
+@pytest.mark.asyncio
+async def test_delegate_code_without_collision_surface_is_incomplete() -> None:
+    """A code delegation with NO intends_to_touch is rejected at the boundary.
+
+    Live break (f3e1afc5, 2026-07-02): two code siblings delegated to two devs
+    with no surface — the collision analyzer treats a no-surface sibling as
+    parallel to everything, so the declared sequence was decorative and seq#1
+    started before seq#0 on a base missing its prerequisite.
+    """
+    pm_id = uuid4()
+    parent = _parent_in_progress(pm_id)
+    task_svc = AsyncMock()
+    task_svc.get.return_value = parent
+    task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
+    task_svc.get_subtasks.return_value = []
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.delegate(
+        pm_id,
+        parent.id,
+        DelegateInputs(
+            title="Implement endpoint",
+            description="Add /v1/foo endpoint with passing tests please",
+            assigned_to="be-dev-1",
+            team="backend",
+            task_type="code",
+            nature="technical",
+            acceptance_criteria=["GET /v1/foo returns 200 with body"],
+        ),
+    )
+    body = env.as_dict()
+    assert body["error"] == "incomplete_input"
+    assert "intends_to_touch" in body.get("missing", [])
+    task_svc.create_subtask.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delegate_non_code_needs_no_collision_surface() -> None:
+    """Research/design/documentation delegations stay surface-free."""
+    pm_id = uuid4()
+    parent = _parent_in_progress(pm_id)
+    new_task = MagicMock(id=uuid4())
+    task_svc = AsyncMock()
+    task_svc.get.return_value = parent
+    task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
+    task_svc.get_subtasks.return_value = []
+    task_svc.create_subtask.return_value = new_task
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.delegate(
+        pm_id,
+        parent.id,
+        DelegateInputs(
+            title="Research retry semantics",
+            description="Survey retry/backoff libraries and summarize tradeoffs",
+            assigned_to="be-dev-1",
+            team="backend",
+            task_type="research",
+            nature="technical",
+            acceptance_criteria=["Summary doc lists at least 3 options"],
+        ),
+    )
+    assert env.error is None, env.as_dict()
+    task_svc.create_subtask.assert_awaited_once()

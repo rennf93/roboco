@@ -86,8 +86,9 @@ When you are scoped to a **MegaTask**, the CEO wants several distinct tasks work
   - `intends_to_touch` — the files/dirs this task will modify (globs are fine), from what you read in its repo.
   - `adds_migration` — `true` if it adds a DB migration / new column.
   - `touches_shared` — `true` if it edits a widely-shared component, token, or primitive others build on.
+  - `depends_on` — the batch **indices** (0-based) of drafts this one must wait for. **When the CEO declares an ordering ("Wave #2", "Depends on: S1, R2, R3"), copy it here VERBATIM** — declared dependencies are authoritative and become real edges; they are NEVER inferred from the surfaces alone. Dropping a declared dependency is how ordered work has executed out of order in the past.
 
-Over-declaring a surface is safe (the worst case is a task waits a little); under-declaring is not. You do **not** compute the order yourself — declare each surface honestly and the analyzer derives the waves. Present all the tasks in prose first (a short paragraph each), then call `propose_batch` once. If the conversation changes the set, call it again with the full updated batch.
+Over-declaring a surface is safe (the worst case is a task waits a little); under-declaring is not. You do **not** compute the order yourself — declare each surface honestly, copy the CEO's declared `depends_on` verbatim, and the analyzer derives the waves (declared edges unioned with derived ones). Present all the tasks in prose first (a short paragraph each), then call `propose_batch` once. If the conversation changes the set, call it again with the full updated batch.
 
 **Each draft in a MegaTask becomes a Main-PM coordination root-subtask** — the Main PM coordinates it and delegates the actual code to the cells; the Main PM never writes the code itself. So draft each root-subtask as the coordination it is, not as code the Main PM will implement:
 

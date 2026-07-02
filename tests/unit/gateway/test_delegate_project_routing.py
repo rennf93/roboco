@@ -62,6 +62,7 @@ def _inputs(**kw: Any) -> DelegateInputs:
         "task_type": "code",
         "nature": "technical",
         "acceptance_criteria": ["GET /v1/foo returns 200 with body"],
+        "intends_to_touch": ["backend/api/routers/foo.py"],
     }
     base.update(kw)
     return DelegateInputs(**base)

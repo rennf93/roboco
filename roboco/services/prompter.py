@@ -469,6 +469,30 @@ class PrompterService:
         )
         return UUID(str(task.id))
 
+    @staticmethod
+    def _coerce_declared_deps(raw: Any, idx: int) -> tuple[int, ...]:
+        """Coerce a draft's ``depends_on`` into batch indices.
+
+        The LLM may emit ints or numeric strings; anything non-numeric is a
+        malformed batch the CEO can fix (surfaced as a ValidationError, same
+        rejection path as a cyclic graph).
+        """
+        if not raw:
+            return ()
+        deps: list[int] = []
+        for item in raw if isinstance(raw, (list, tuple)) else [raw]:
+            try:
+                deps.append(int(str(item).strip()))
+            except (TypeError, ValueError) as exc:
+                raise ValidationError(
+                    message=(
+                        f"draft {idx}: depends_on entry {item!r} is not a "
+                        "batch index"
+                    ),
+                    field="drafts",
+                ) from exc
+        return tuple(deps)
+
     def _sequence_drafts(self, drafts: list[dict[str, Any]]) -> SequencePlan:
         """Build each draft's collision surface and sequence them into waves.
 
@@ -487,6 +511,11 @@ class PrompterService:
                 adds_migration=bool(d.get("adds_migration")),
                 touches_shared=bool(d.get("touches_shared")),
                 project_id=str(d["project_id"]) if d.get("project_id") else None,
+                # The CEO's declared "Depends on" list — authoritative; the
+                # analyzer unions it with the derived collision edges (B1b).
+                declared_depends_on=self._coerce_declared_deps(
+                    d.get("depends_on"), idx
+                ),
             )
             for idx, d in enumerate(drafts)
         ]

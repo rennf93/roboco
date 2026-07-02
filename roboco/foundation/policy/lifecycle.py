@@ -1610,16 +1610,29 @@ def _check_role_status_type(
         )
     status = Status(getattr(task, "status", ""))
     if status not in spec_action.source_statuses:
+        remediate = (
+            f"call give_me_work() to find a task in"
+            f" {sorted(s.value for s in spec_action.source_statuses)}"
+        )
+        # Doc-stage bail: awaiting_documentation has exactly one exit —
+        # i_documented. A documenter on a revision pass whose docs already
+        # exist must re-affirm them, not bail; the generic remediate above
+        # fed the live 26-respawn fe-doc loop (2026-07-02).
+        if status is Status.AWAITING_DOCUMENTATION and action == "block":
+            remediate = (
+                "awaiting_documentation has one exit: i_documented. If the "
+                "docs for this task already exist and are accurate (a "
+                "revision pass), call i_documented(files=[...], "
+                "notes='verified existing docs are complete and accurate') "
+                "to re-affirm them — do NOT retry i_am_blocked/unclaim."
+            )
         return Decision.reject(
             kind="invalid_state",
             message=(
                 f"task is in '{status.value}', '{action}' requires:"
                 f" {sorted(s.value for s in spec_action.source_statuses)}"
             ),
-            remediate=(
-                f"call give_me_work() to find a task in"
-                f" {sorted(s.value for s in spec_action.source_statuses)}"
-            ),
+            remediate=remediate,
         )
     if (
         spec_action.allowed_task_types is not None

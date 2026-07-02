@@ -49,13 +49,41 @@ class SequencingService:
     ) -> SequencePlan:
         """Compute the dependency edges + execution waves for a batch."""
         edges = self._dedupe(
-            self._file_overlap_edges(surfaces)
+            self._declared_edges(surfaces)
+            + self._file_overlap_edges(surfaces)
             + self._migration_chain_edges(surfaces)
             + self._shared_last_edges(surfaces)
         )
         waves = self._toposort(edges, len(surfaces))
         warnings = self._contention_warnings(waves, cell_of, cell_capacity)
         return SequencePlan(edges=edges, waves=waves, warnings=warnings)
+
+    # --- rule 0: declared dependencies ---------------------------------------
+    def _declared_edges(
+        self, surfaces: list[DraftSurface]
+    ) -> list[tuple[int, int]]:
+        """The CEO's / PM's explicit "Depends on" lists, verbatim.
+
+        Authoritative — unioned with the derived rules so a declared ordering
+        can never be dropped because the surfaces don't overlap (the live S6
+        break). A self- or out-of-range reference is a malformed batch, not a
+        silently-droppable edge.
+        """
+        edges: list[tuple[int, int]] = []
+        n = len(surfaces)
+        for s in surfaces:
+            for dep in s.declared_depends_on:
+                if dep == s.idx:
+                    raise SequencingError(
+                        f"draft {s.idx} declares a dependency on itself"
+                    )
+                if dep < 0 or dep >= n:
+                    raise SequencingError(
+                        f"draft {s.idx} declares dependency on index {dep}, "
+                        f"but the batch has only {n} drafts (0..{n - 1})"
+                    )
+                edges.append((dep, s.idx))
+        return edges
 
     # --- rule 1: file overlap ------------------------------------------------
     def _file_overlap_edges(

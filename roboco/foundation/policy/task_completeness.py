@@ -37,6 +37,9 @@ class FieldRequirement:
     rule: FieldRule
     value: int | None = None
     hint: str = ""
+    # Conditional requirement: enforced only when the payload's `when[0]`
+    # field normalizes (enum .value, lowercase) to `when[1]`. None = always.
+    when: tuple[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -140,6 +143,32 @@ TASK_AT_CREATE: CompletenessSpec = CompletenessSpec(
 )
 
 
+_HINT_INTENDS_TO_TOUCH = (
+    "non-empty list[str] of path globs this code subtask will modify (e.g. "
+    "['frontend/src/components/behavioral-*.tsx']). The sibling collision "
+    "analyzer turns overlapping surfaces into real dependency edges — a code "
+    "subtask with NO surface is treated as parallel to every sibling, which "
+    "is how ordered work ends up running out of order on divergent branches."
+)
+
+
+# Delegation adds the collision surface requirement for CODE subtasks: the
+# sibling collision DAG can only order what is declared. REST/manual creation
+# (TASK_AT_CREATE) is unchanged — roots have no siblings at creation.
+TASK_AT_DELEGATE: CompletenessSpec = CompletenessSpec(
+    name="task_at_delegate",
+    requires=(
+        *TASK_AT_CREATE.requires,
+        FieldRequirement(
+            "intends_to_touch",
+            FieldRule.NON_EMPTY_LIST,
+            hint=_HINT_INTENDS_TO_TOUCH,
+            when=("task_type", "code"),
+        ),
+    ),
+)
+
+
 def _check_explicitly_declared(value: Any) -> tuple[bool, str | None]:
     if value is None:
         return False, "field is None / missing"
@@ -209,6 +238,11 @@ def check(spec: CompletenessSpec, task: Any) -> CompletenessResult:
     field_hints: dict[str, str] = {}
 
     for req in spec.requires:
+        if req.when is not None:
+            gate_raw = getattr(task, req.when[0], None)
+            gate_val = str(getattr(gate_raw, "value", gate_raw)).strip().lower()
+            if gate_val != req.when[1]:
+                continue
         value = getattr(task, req.field, None)
 
         # Field-level rule check.

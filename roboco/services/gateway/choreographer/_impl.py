@@ -2199,6 +2199,67 @@ class Choreographer:
             )
         return None
 
+    async def _freshen_assembled_branch(
+        self, t: Any, *, base_branch: str, verb: str
+    ) -> Envelope | None:
+        """Behind-base auto-sync for the assembled PM submits (B2).
+
+        Re-submitting a cell/root head whose base moved re-reviews stale work
+        and ping-pongs needs_revision ↔ awaiting_pr_review (live 2026-07-02).
+        Every child is terminal at submit time, so rebasing the assembled
+        branch onto its base is safe; ``sync_task_branch`` pushes only the
+        HEAD branch (master/main are never written). Fail-open on probe/sync
+        errors — the PR/merge layer keeps its own behind checks — but a rebase
+        CONFLICT is a hard reject naming the files, so the PM routes a
+        conflict-resolution revision instead of re-submitting blind.
+        """
+        if not getattr(t, "branch_name", None) or not base_branch:
+            return None
+        try:
+            behind, _ahead = await self.git.is_behind_base(
+                t, base_branch=base_branch
+            )
+        except Exception as exc:
+            logger.warning(
+                "assembled_freshen_skip", task_id=str(t.id), error=str(exc)
+            )
+            return None
+        if behind <= 0:
+            return None
+        try:
+            result = await self.git.sync_task_branch(t, base_branch=base_branch)
+        except Exception as exc:
+            logger.warning(
+                "assembled_freshen_sync_failed", task_id=str(t.id), error=str(exc)
+            )
+            return None
+        if result.get("status") == "conflicts":
+            files = ", ".join(result.get("files") or []) or "unknown files"
+            return Envelope.invalid_state(
+                message=(
+                    f"{verb} refused: the assembled branch was {behind} "
+                    f"commit(s) behind its base '{base_branch}' and the "
+                    f"auto-rebase hit conflicts in: {files}"
+                ),
+                remediate=(
+                    "the base moved under this branch and the conflict needs a "
+                    "human-quality merge: delegate a conflict-resolution "
+                    "revision for the listed files, then re-submit. Do NOT "
+                    "re-submit unchanged — the review gate will fail the same "
+                    "stale diff again."
+                ),
+                context_briefing={},
+            )
+        logger.info(
+            "assembled_branch_freshened",
+            task_id=str(t.id),
+            verb=verb,
+            base_branch=base_branch,
+            behind=behind,
+            status=result.get("status"),
+        )
+        return None
+
     async def _behind_base_gate(self, ctx: _IAmDoneContext) -> Envelope | None:
         """Refuse i_am_done when the task branch has fallen behind its base.
 
@@ -3313,8 +3374,12 @@ class Choreographer:
                 Envelope.invalid_state(
                     message=f"cannot unclaim from status {t.status}",
                     remediate=(
-                        "only a task assigned to you in pending / claimed / "
-                        "in_progress can be unclaimed"
+                        "docs already complete? call i_documented(files=[...], "
+                        "notes='verified existing docs') — that is the exit "
+                        "from awaiting_documentation"
+                        if str(t.status) == "awaiting_documentation"
+                        else "only a task assigned to you in pending / claimed"
+                        " / in_progress can be unclaimed"
                     ),
                     context_briefing=briefing,
                 ).with_introspection(task=t, role=role_str),
@@ -4979,6 +5044,10 @@ class Choreographer:
             "nature": inputs.nature,
             "estimated_complexity": inputs.estimated_complexity,
             "acceptance_criteria": inputs.acceptance_criteria,
+            # Collision surface — required for code subtasks (TASK_AT_DELEGATE):
+            # the sibling collision DAG can only order what is declared, and a
+            # no-surface code sibling silently runs parallel to everything.
+            "intends_to_touch": inputs.intends_to_touch,
         }
         # Auto-fill (spec §5.2.1 (a)) — never overwrites explicit values.
         # team-from-slug is harmless when the caller already supplied team;
@@ -4989,7 +5058,7 @@ class Choreographer:
         completeness_input = SimpleNamespace(
             **{k: v for k, v in payload.items() if not k.startswith("__")}
         )
-        result = tc.check(tc.TASK_AT_CREATE, completeness_input)
+        result = tc.check(tc.TASK_AT_DELEGATE, completeness_input)
         if result.passed:
             return None
         return Envelope.incomplete_input(
@@ -5488,6 +5557,14 @@ class Choreographer:
         # head-sha comparison runs (mirroring submit_root).
         if guard is None:
             guard = await self._submit_up_unchanged_pr_guard(t, briefing)
+        if guard is None:
+            # Behind-base auto-sync (B2): re-submitting a cell head whose ROOT
+            # base moved re-reviews stale work and ping-pongs the gate. All
+            # children are terminal here, so rebasing the cell branch is safe.
+            base_branch = await resolve_parent_branch(t, self.task)
+            guard = await self._freshen_assembled_branch(
+                t, base_branch=base_branch, verb="submit_up"
+            )
         if guard is not None:
             guard.with_introspection(task=t, role=role_str)
             return await self._emit_rejection(
@@ -6428,6 +6505,15 @@ class Choreographer:
         # relies on the reviewer to re-fail if the diff is still bad.
         if guard is None:
             guard = await self._submit_root_unchanged_pr_guard(t, briefing)
+        if guard is None:
+            # Behind-base auto-sync (B2): the root branch must carry current
+            # master before entering the root→master gate — re-reviewing a
+            # stale root ping-pongs pr_fail↔needs_revision. Cells are terminal
+            # here, so rebasing the root branch is safe.
+            base_branch = await resolve_parent_branch(t, self.task)
+            guard = await self._freshen_assembled_branch(
+                t, base_branch=base_branch, verb="submit_root"
+            )
         if guard is not None:
             guard.with_introspection(task=t, role=role_str)
             return await self._emit_rejection(

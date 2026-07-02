@@ -3758,6 +3758,10 @@ class AgentOrchestrator:
         if not dev_uuid or task.get("pr_created") or task.get("pr_number"):
             return
         dev_slug = self._resolve_agent_slug(dev_uuid)
+        if dev_slug and await self._pm_respawn_should_gate(dev_slug, task):
+            # Respawn circuit breaker — the PR-half respawn loops exactly like
+            # the doc half when the dev can never finish (progress resets it).
+            return
         if not dev_slug or self._is_agent_active(dev_slug):
             return
         await self.spawn_agent(
@@ -10001,6 +10005,9 @@ Start now: evidence(task_id="{task_id}")
         key = (board_slug, task_id)
         if key in self._board_dispatched:
             return
+        # Respawn circuit breaker — parity with every other task-keyed path.
+        if await self._pm_respawn_should_gate(board_slug, task):
+            return
         self._board_dispatched.add(key)
         logger.info(
             "Spawning board agent for review",
@@ -10262,6 +10269,10 @@ Start now: evidence(task_id="{task_id}")
             if not agent_slug or self._is_agent_active(agent_slug):
                 continue
             if get_agent_role(agent_slug) not in ("cell_pm", "main_pm"):
+                continue
+            # Respawn circuit breaker — a revision the PM can never land must
+            # stop respawning the coordinator (progress resets the strikes).
+            if await self._pm_respawn_should_gate(agent_slug, task):
                 continue
             await self.spawn_agent(
                 agent_id=agent_slug,
@@ -10660,6 +10671,10 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         # just not dispatched this tick.
         if await self._blocked_by_earlier_lane_sibling(task):
             return
+        # Respawn circuit breaker — a dev leaf that respawns without the task
+        # advancing (wedged workspace, unclaimable state) stops after strikes.
+        if await self._pm_respawn_should_gate(agent_slug, task):
+            return
         validation_issue = await self._validate_task_for_spawn(client, task, agent_slug)
         if validation_issue:
             logger.warning(
@@ -10800,6 +10815,10 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             return False
         if self._is_agent_active(assigned_slug):
             return True
+        # Respawn circuit breaker — same progress-aware gate as every other
+        # task-keyed spawn path; notifies the CEO once it trips.
+        if await self._pm_respawn_should_gate(assigned_slug, task):
+            return True
         await self.spawn_agent(
             agent_id=assigned_slug,
             task_id=task["id"],
@@ -10837,6 +10856,10 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 # QA already running, they'll pick up on scan
                 continue
 
+            # Respawn circuit breaker — before claiming, so a wedged QA task
+            # doesn't churn claims while the gate is open.
+            if await self._pm_respawn_should_gate(agent_id, task):
+                continue
             # Claim the task for QA agent BEFORE spawning
             if not await self._claim_task_for_agent(client, task["id"], agent_id):
                 logger.warning(
@@ -10876,6 +10899,9 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 continue
             if task.get("assigned_to"):
                 continue
+            # Respawn circuit breaker — parity with the in-path gate dispatcher.
+            if await self._pm_respawn_should_gate(reviewer, task):
+                continue
             await self.spawn_agent(
                 agent_id=reviewer,
                 task_id=task["id"],
@@ -10905,6 +10931,10 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             else:
                 reviewer = "pr-reviewer-1"
             if not reviewer or reviewer in spawned or self._is_agent_active(reviewer):
+                continue
+            # Respawn circuit breaker — a gate task that keeps re-surfacing
+            # without advancing must stop respawning the reviewer.
+            if await self._pm_respawn_should_gate(reviewer, task):
                 continue
             spawned.add(reviewer)
             await self.spawn_agent(
@@ -10954,6 +10984,11 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         """
         agent_id = self._select_agent_for_cell(team, "doc")
         if not agent_id or self._is_agent_active(agent_id):
+            return
+
+        # Respawn circuit breaker — before claiming, so a wedged doc task
+        # doesn't churn claims while the gate is open.
+        if await self._pm_respawn_should_gate(agent_id, task):
             return
 
         if not await self._claim_task_for_agent(client, task["id"], agent_id):
@@ -11020,6 +11055,10 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         if self._is_agent_active(assigned_slug):
             return True
         if assigned_slug and "doc" in assigned_slug:
+            # Respawn circuit breaker — the fe-doc 26-respawn loop ran on this
+            # exact path unguarded; the gate notifies the CEO once it trips.
+            if await self._pm_respawn_should_gate(assigned_slug, task):
+                return True
             await self.spawn_agent(
                 agent_id=assigned_slug,
                 task_id=task["id"],

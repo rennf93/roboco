@@ -687,6 +687,39 @@ def test_preview_batch_computes_waves_without_creating() -> None:
     assert isinstance(result["warnings"], list)
 
 
+def test_preview_batch_honours_declared_depends_on() -> None:
+    """B1b: a draft's declared depends_on becomes a real edge even when the
+    collision surfaces are disjoint (the live S6 break: declared waves were
+    dropped because the intends_to_touch globs didn't overlap)."""
+    service = get_prompter_service()
+    drafts: list[dict[str, Any]] = [
+        {"title": "A", "intends_to_touch": ["a.py"]},
+        {"title": "B", "intends_to_touch": ["b.py"], "depends_on": [0]},
+    ]
+    result = service.preview_batch(drafts)
+    assert result["waves"] == [[0], [1]]
+
+
+def test_preview_batch_coerces_string_declared_indices() -> None:
+    """The LLM sometimes emits depends_on indices as strings ("0")."""
+    service = get_prompter_service()
+    drafts: list[dict[str, Any]] = [
+        {"title": "A", "intends_to_touch": ["a.py"]},
+        {"title": "B", "intends_to_touch": ["b.py"], "depends_on": ["0"]},
+    ]
+    result = service.preview_batch(drafts)
+    assert result["waves"] == [[0], [1]]
+
+
+def test_preview_batch_rejects_out_of_range_declared_dep() -> None:
+    service = get_prompter_service()
+    drafts: list[dict[str, Any]] = [
+        {"title": "A", "intends_to_touch": ["a.py"], "depends_on": [9]},
+    ]
+    with pytest.raises(ValidationError):
+        service.preview_batch(drafts)
+
+
 def test_preview_batch_rejects_empty() -> None:
     service = get_prompter_service()
     with pytest.raises(ValidationError):

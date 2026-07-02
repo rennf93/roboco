@@ -20,7 +20,10 @@ from roboco.runtime.orchestrator import AgentOrchestrator
 
 
 def _new_orchestrator() -> AgentOrchestrator:
-    return AgentOrchestrator.__new__(AgentOrchestrator)
+    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    orch._pm_respawn_tracker = {}
+    orch._schedule_respawn_persist = lambda *_a, **_k: None
+    return orch
 
 
 def _sibling(

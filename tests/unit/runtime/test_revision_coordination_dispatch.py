@@ -21,6 +21,8 @@ def _orch(
 ) -> tuple[AgentOrchestrator, AsyncMock]:
     """A bare orchestrator with its dispatch helpers mocked; returns (orch, spawn)."""
     orch = object.__new__(AgentOrchestrator)
+    orch._pm_respawn_tracker = {}
+    orch._schedule_respawn_persist = lambda *_a, **_k: None
     spawn = AsyncMock()
     object.__setattr__(orch, "_fetch_tasks", AsyncMock(return_value=tasks))
     object.__setattr__(
