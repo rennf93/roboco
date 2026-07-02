@@ -168,7 +168,10 @@ select = [
 # PTH119: _grok_usage_json sanitizes the agent id with os.path.basename — the
 # path-injection sanitizer CodeQL's query models; the pathlib equivalent
 # (Path(...).name) is not recognized by that query, so we keep os.path here.
-"roboco/runtime/orchestrator.py" = ["PTH119"]
+# PLR0913: spawn_agent / _launch_spawn carry the spawn contract (task, model,
+# git context, spawner attribution) — a bundle dataclass would just relocate
+# the same six fields behind one hop at the fleet's hottest call surface.
+"roboco/runtime/orchestrator.py" = ["PTH119", "PLR0913"]
 # The intake driver/entrypoint lazily import the heavy `claude-agent-sdk` (and
 # uvicorn) so the modules import without those installed and don't pay the cost
 # until a live container runs them — same rationale as the dirs above.

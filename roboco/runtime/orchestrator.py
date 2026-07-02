@@ -1981,6 +1981,7 @@ class AgentOrchestrator:
                 task_id=task_id,
                 initial_prompt=initial_prompt,
                 git_context=git_context,
+                spawned_by=context_label,
             )
         except Exception as e:
             logger.error(
@@ -2211,11 +2212,17 @@ class AgentOrchestrator:
         instance: AgentInstance,
         initial_prompt: str | None,
         agent_settings_path: Path | None,
+        *,
+        spawned_by: str | None = None,
     ) -> AgentInstance:
         """Launch the container and emit spawn audit events.
 
         `agent_id` was dropped as a redundant parameter — `config.agent_id`
         is the same value and was always the caller's source.
+
+        ``spawned_by`` names the dispatch loop that requested the spawn; it is
+        stamped into the spawned/spawn_failed audit details so a rogue spawner
+        is identifiable from the audit log alone.
         """
         agent_slug = config.agent_id
         try:
@@ -2242,6 +2249,7 @@ class AgentOrchestrator:
                 details={
                     "container_id": container_id[:12],
                     "model": config.model,
+                    "spawned_by": spawned_by or "unspecified",
                 },
             )
 
@@ -2264,7 +2272,10 @@ class AgentOrchestrator:
                 event_type="agent.spawn_failed",
                 agent_slug=agent_slug,
                 task_id=task_id,
-                details={"error": str(e)},
+                details={
+                    "error": str(e),
+                    "spawned_by": spawned_by or "unspecified",
+                },
                 severity="error",
             )
             raise
@@ -2339,6 +2350,8 @@ class AgentOrchestrator:
         task_id: str | None = None,
         model: str | None = None,
         git_context: SpawnGitContext | None = None,
+        *,
+        spawned_by: str | None = None,
     ) -> AgentInstance:
         """
         Spawn a Claude Code container for an agent.
@@ -2349,6 +2362,8 @@ class AgentOrchestrator:
             task_id: Optional task ID being worked on
             model: Override model selection
             git_context: Optional git context (project_slug, branch_name)
+            spawned_by: Name of the dispatch loop / entry point requesting
+                the spawn — stamped into the agent.spawned audit details
 
         Returns:
             AgentInstance handle
@@ -2456,6 +2471,7 @@ class AgentOrchestrator:
             instance,
             initial_prompt,
             agent_settings_path,
+            spawned_by=spawned_by,
         )
 
     def _resolve_host_paths(
@@ -3798,6 +3814,7 @@ class AgentOrchestrator:
             task_id=task["id"],
             initial_prompt=self._build_dev_prompt(task),
             git_context=self._task_git_context(task),
+            spawned_by="_respawn_dev_for_pr_half",
         )
 
     # =========================================================================
@@ -6319,6 +6336,7 @@ class AgentOrchestrator:
                 initial_prompt=resume_prompt,
                 task_id=record.task_id,
                 git_context=prior_git_context,
+                spawned_by="resolve_wait",
             )
         except Exception:
             # Spawn failed (e.g. readiness refused → task auto-blocked). Tear
@@ -6946,6 +6964,7 @@ Start by:
                 agent_id=agent_id,
                 task_id=instance.current_task_id,
                 git_context=(instance.config.git_context if instance.config else None),
+                spawned_by="_crash_retry_or_escalate",
             )
         elif instance.error_count == max_retries:
             # Exactly at the threshold — escalate once to humans so a
@@ -10069,6 +10088,7 @@ Start now: evidence(task_id="{task_id}")
             task_id=task["id"],
             initial_prompt=pm_prompt,
             git_context=self._task_git_context(task),
+            spawned_by="_handle_pm_assigned_task",
         )
 
     async def _handle_board_assigned_task(
@@ -10131,6 +10151,7 @@ Start now: evidence(task_id="{task_id}")
             task_id=task["id"],
             initial_prompt=self._build_board_prompt(task),
             git_context=self._task_git_context(task),
+            spawned_by="_dispatch_board_reviewer",
         )
 
     def _board_review_complete(self, task_id: str) -> bool:
@@ -10312,6 +10333,7 @@ Start now: evidence(task_id="{task_id}")
                 task_id=task["id"],
                 initial_prompt=prompt,
                 git_context=self._task_git_context(task),
+                spawned_by="_route_unassigned_pm_task",
             )
 
     async def _dispatch_pm_work(self, client: httpx.AsyncClient) -> None:
@@ -10391,6 +10413,7 @@ Start now: evidence(task_id="{task_id}")
                 task_id=task["id"],
                 initial_prompt=self._get_prompt_for_agent(agent_slug, task),
                 git_context=self._task_git_context(task),
+                spawned_by="_dispatch_revision_coordination_roots",
             )
 
     @staticmethod
@@ -10521,6 +10544,7 @@ Start now: evidence(task_id="{task_id}")
             task_id=task_id,
             initial_prompt=prompt,
             git_context=self._task_git_context(task),
+            spawned_by="_maybe_spawn_pm_closure",
         )
 
     async def _dispatch_pm_closure_work(self, client: httpx.AsyncClient) -> None:
@@ -10766,6 +10790,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             task_id=task["id"],
             initial_prompt=self._build_dev_prompt(task),
             git_context=self._task_git_context(task),
+            spawned_by="_respawn_dev_if_inactive",
         )
 
     async def _spawn_pending_dev(
@@ -10801,6 +10826,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             task_id=task["id"],
             initial_prompt=self._get_prompt_for_agent(agent_slug, task),
             git_context=self._task_git_context(task),
+            spawned_by="_spawn_pending_dev",
         )
 
     @staticmethod
@@ -10936,6 +10962,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             task_id=task["id"],
             initial_prompt=self._build_qa_prompt(task),
             git_context=self._task_git_context(task),
+            spawned_by="_spawn_assigned_qa",
         )
         return True
 
@@ -10983,6 +11010,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 task_id=task["id"],
                 initial_prompt=self._build_qa_prompt(task),
                 git_context=self._task_git_context(task),
+                spawned_by="_dispatch_qa_work",
             )
             # Only spawn one QA at a time per cell
             break
@@ -11015,6 +11043,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 task_id=task["id"],
                 initial_prompt=self._build_pr_review_prompt(task),
                 git_context=self._task_git_context(task),
+                spawned_by="_dispatch_pr_review_work",
             )
             break
 
@@ -11050,6 +11079,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 task_id=task["id"],
                 initial_prompt=self._build_pr_gate_prompt(task),
                 git_context=self._task_git_context(task),
+                spawned_by="_dispatch_pr_gate_work",
             )
 
     async def _dispatch_doc_work(self, client: httpx.AsyncClient) -> None:
@@ -11112,6 +11142,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             task_id=task["id"],
             initial_prompt=self._build_doc_prompt(task),
             git_context=self._task_git_context(task),
+            spawned_by="_auto_assign_doc",
         )
 
     async def _doc_dispatch_one(
@@ -11172,6 +11203,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 task_id=task["id"],
                 initial_prompt=self._build_doc_prompt(task),
                 git_context=self._task_git_context(task),
+                spawned_by="_respawn_doc_if_assigned",
             )
         return True
 
@@ -11337,6 +11369,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                     task_id=task["id"],
                     initial_prompt=self._build_pm_review_prompt(task),
                     git_context=self._task_git_context(task),
+                    spawned_by="_dispatch_pm_review_work",
                 )
                 continue
 
@@ -11365,6 +11398,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 task_id=task["id"],
                 initial_prompt=self._build_pm_review_prompt(task),
                 git_context=self._task_git_context(task),
+                spawned_by="_dispatch_pm_review_work",
             )
             break
 
@@ -11391,6 +11425,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 task_id=task["id"],
                 initial_prompt=self._build_marketing_prompt(task),
                 git_context=self._task_git_context(task),
+                spawned_by="_dispatch_marketing_work",
             )
             break
 
@@ -11470,6 +11505,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 task_id=task["id"],
                 initial_prompt=self._build_pm_blocker_prompt(task),
                 git_context=self._task_git_context(task),
+                spawned_by="_dispatch_blocker_work",
             )
             break
 
@@ -11550,6 +11586,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 task_id=str(task_id),
                 initial_prompt=self._get_prompt_for_agent(agent_slug, task),
                 git_context=self._task_git_context(task),
+                spawned_by="_dispatch_claimed_without_agent",
             )
             break
 
@@ -11617,6 +11654,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 await self.spawn_agent(
                     agent_id=agent_slug,
                     initial_prompt=self._build_escalation_prompt(notif),
+                    spawned_by="_dispatch_escalation_work",
                 )
                 break
 
@@ -11647,6 +11685,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 await self.spawn_agent(
                     agent_id=agent_slug,
                     initial_prompt=self._build_approval_prompt(notif),
+                    spawned_by="_dispatch_approval_work",
                 )
                 break
 
@@ -11671,6 +11710,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 await self.spawn_agent(
                     agent_id="auditor",
                     initial_prompt=self._build_audit_prompt(alert),
+                    spawned_by="_dispatch_audit_work",
                 )
                 return
 
@@ -11951,6 +11991,7 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 await self.spawn_agent(
                     agent_id=agent_slug,
                     initial_prompt=self._build_a2a_prompt(notif),
+                    spawned_by="_dispatch_a2a_work",
                 )
                 break
 

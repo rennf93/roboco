@@ -352,7 +352,9 @@ async def handle_auditor_spawn(event: Event) -> None:
     )
 
     try:
-        await _context.orchestrator.spawn_agent(agent_id="auditor")
+        await _context.orchestrator.spawn_agent(
+            agent_id="auditor", spawned_by="event.auditor_spawn"
+        )
     except Exception as exc:
         # Auditor spawn failure must NOT block the underlying event from
         # being processed. Log the warning and return cleanly.

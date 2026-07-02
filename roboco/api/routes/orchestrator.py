@@ -213,6 +213,7 @@ async def spawn_agent(
             initial_prompt=data.initial_prompt if data else None,
             task_id=data.task_id if data else None,
             model=data.model if data else None,
+            spawned_by="api.orchestrator.spawn",
         )
     except FileNotFoundError as e:
         raise HTTPException(

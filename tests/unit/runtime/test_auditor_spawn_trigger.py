@@ -60,7 +60,7 @@ async def test_auditor_spawns_on_task_blocked() -> None:
 
     await handle_auditor_spawn(event)
 
-    spawn.assert_awaited_once_with(agent_id="auditor")
+    spawn.assert_awaited_once_with(agent_id="auditor", spawned_by="event.auditor_spawn")
 
 
 @pytest.mark.asyncio
@@ -75,7 +75,7 @@ async def test_auditor_spawns_on_task_cancelled() -> None:
 
     await handle_auditor_spawn(event)
 
-    spawn.assert_awaited_once_with(agent_id="auditor")
+    spawn.assert_awaited_once_with(agent_id="auditor", spawned_by="event.auditor_spawn")
 
 
 @pytest.mark.asyncio
@@ -90,7 +90,7 @@ async def test_auditor_spawns_on_task_escalated_to_ceo() -> None:
 
     await handle_auditor_spawn(event)
 
-    spawn.assert_awaited_once_with(agent_id="auditor")
+    spawn.assert_awaited_once_with(agent_id="auditor", spawned_by="event.auditor_spawn")
 
 
 @pytest.mark.asyncio
@@ -118,7 +118,7 @@ async def test_auditor_spawn_failure_does_not_propagate() -> None:
     # Must not raise
     await handle_auditor_spawn(event)
 
-    spawn.assert_awaited_once_with(agent_id="auditor")
+    spawn.assert_awaited_once_with(agent_id="auditor", spawned_by="event.auditor_spawn")
 
 
 # ---------------------------------------------------------------------------
