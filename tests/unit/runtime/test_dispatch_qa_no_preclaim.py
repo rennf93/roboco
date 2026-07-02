@@ -47,5 +47,7 @@ async def test_unassigned_qa_dispatch_spawns_without_preclaim() -> None:
 
     claim.assert_not_awaited()
     spawn.assert_awaited_once()
-    assert spawn.await_args.kwargs["task_id"] == task["id"]
-    assert spawn.await_args.kwargs["agent_id"] == "be-qa"
+    spawn_call = spawn.await_args
+    assert spawn_call is not None
+    assert spawn_call.kwargs["task_id"] == task["id"]
+    assert spawn_call.kwargs["agent_id"] == "be-qa"
