@@ -24,6 +24,7 @@ from roboco.foundation.policy import lifecycle as spec_module
 from roboco.foundation.policy.batch import is_batch_umbrella
 from roboco.foundation.policy.content import markers
 from roboco.foundation.policy.content.validators import reject_trivial
+from roboco.services.gateway.choreographer._protocol import actor_context_fields
 from roboco.services.gateway.choreographer._verb_runner import VerbRunner
 from roboco.services.gateway.claim_guards import (
     already_active_guard,
@@ -1877,10 +1878,11 @@ class Choreographer:
                     context_briefing=briefing,
                 ),
             )
+        actor_slug, agent_team = actor_context_fields(agent)
         spec_ctx = spec_module.Context(
             actor_id=agent_id,
-            actor_slug=getattr(agent, "slug", None) if agent is not None else None,
-            agent_team=str(agent.team) if agent is not None and agent.team else None,
+            actor_slug=actor_slug,
+            agent_team=agent_team,
             original_developer_slug=_extract_original_developer(t),
             notes=notes,
         )
@@ -3389,10 +3391,11 @@ class Choreographer:
                 task_id=task_id,
                 verb="unclaim",
             )
+        actor_slug, agent_team = actor_context_fields(agent)
         spec_ctx = spec_module.Context(
             actor_id=agent_id,
-            actor_slug=getattr(agent, "slug", None) if agent is not None else None,
-            agent_team=str(agent.team) if agent is not None and agent.team else None,
+            actor_slug=actor_slug,
+            agent_team=agent_team,
             original_developer_slug=_extract_original_developer(t),
         )
         decision = spec_module.can_invoke_intent(role, "unclaim", t, spec_ctx)
@@ -3633,10 +3636,11 @@ class Choreographer:
                 task_id=task_id,
                 verb="resume",
             )
+        actor_slug, agent_team = actor_context_fields(agent)
         spec_ctx = spec_module.Context(
             actor_id=agent_id,
-            actor_slug=getattr(agent, "slug", None) if agent is not None else None,
-            agent_team=str(agent.team) if agent is not None and agent.team else None,
+            actor_slug=actor_slug,
+            agent_team=agent_team,
             original_developer_slug=_extract_original_developer(t),
         )
         decision = spec_module.can_invoke_intent(role, "resume", t, spec_ctx)
@@ -5594,10 +5598,11 @@ class Choreographer:
                 task_id=task_id,
                 verb="submit_up",
             )
+        actor_slug, agent_team = actor_context_fields(agent)
         spec_ctx = spec_module.Context(
             actor_id=pm_agent_id,
-            actor_slug=getattr(agent, "slug", None) if agent is not None else None,
-            agent_team=str(agent.team) if agent is not None and agent.team else None,
+            actor_slug=actor_slug,
+            agent_team=agent_team,
             original_developer_slug=_extract_original_developer(t),
             notes=notes,
         )
@@ -6530,10 +6535,11 @@ class Choreographer:
                 verb="submit_root",
             )
         role = spec_module.Role(role_str)
+        actor_slug, agent_team = actor_context_fields(agent)
         spec_ctx = spec_module.Context(
             actor_id=main_pm_agent_id,
-            actor_slug=getattr(agent, "slug", None) if agent is not None else None,
-            agent_team=str(agent.team) if agent is not None and agent.team else None,
+            actor_slug=actor_slug,
+            agent_team=agent_team,
             notes=notes,
         )
         soup = self._free_text_soup(checks=(("notes", notes, 10),))
@@ -6882,10 +6888,11 @@ class Choreographer:
                 task_id=task_id,
                 verb="complete",
             )
+        actor_slug, agent_team = actor_context_fields(agent)
         spec_ctx = spec_module.Context(
             actor_id=agent_id,
-            actor_slug=getattr(agent, "slug", None) if agent is not None else None,
-            agent_team=str(agent.team) if agent is not None and agent.team else None,
+            actor_slug=actor_slug,
+            agent_team=agent_team,
             original_developer_slug=_extract_original_developer(t),
         )
         if soup := await self._guard_free_text(
@@ -7092,10 +7099,11 @@ class Choreographer:
                 task_id=task_id,
                 verb="escalate_up",
             )
+        actor_slug, agent_team = actor_context_fields(me)
         spec_ctx = spec_module.Context(
             actor_id=pm_agent_id,
-            actor_slug=getattr(me, "slug", None) if me is not None else None,
-            agent_team=str(me.team) if me is not None and me.team else None,
+            actor_slug=actor_slug,
+            agent_team=agent_team,
             original_developer_slug=_extract_original_developer(t),
             notes=reason,
         )
@@ -7263,10 +7271,11 @@ class Choreographer:
                 task_id=task_id,
                 verb="escalate_to_ceo",
             )
+        actor_slug, agent_team = actor_context_fields(me)
         spec_ctx = spec_module.Context(
             actor_id=agent_id,
-            actor_slug=getattr(me, "slug", None) if me is not None else None,
-            agent_team=str(me.team) if me is not None and me.team else None,
+            actor_slug=actor_slug,
+            agent_team=agent_team,
             original_developer_slug=_extract_original_developer(t),
             notes=reason,
         )
