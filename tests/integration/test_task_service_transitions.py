@@ -1368,6 +1368,27 @@ async def test_escalate_to_ceo_returns_none_for_subtask(
 
 
 @pytest.mark.asyncio
+async def test_escalate_to_ceo_allows_batch_root_subtask(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """A MegaTask root-subtask IS parented (the umbrella) yet carries its own
+    project/branch/PR and behaves as a root for git/CEO purposes — unlike a
+    plain subtask, it must NOT be refused by the parent-task-only check."""
+    svc = task_setup["svc"]
+    umbrella = await svc.create(_req(task_setup))
+    sub = await svc.create(_req(task_setup, parent_task_id=umbrella.id))
+    sub.status = TaskStatus.AWAITING_PM_REVIEW
+    sub.batch_id = uuid4()
+    sub.pr_number = 7
+    await db_session.flush()
+    escalated = await svc.escalate_to_ceo(
+        sub.id, agent_role="main_pm", notes="root-subtask ready for CEO sign-off"
+    )
+    assert escalated is not None
+    assert escalated.status == TaskStatus.AWAITING_CEO_APPROVAL
+
+
+@pytest.mark.asyncio
 async def test_escalate_to_ceo_returns_none_when_no_pr(
     task_setup: dict, db_session: AsyncSession
 ) -> None:

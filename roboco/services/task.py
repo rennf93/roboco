@@ -37,6 +37,7 @@ from roboco.enforcement import (
 )
 from roboco.events import Event, EventType, get_event_bus
 from roboco.foundation.policy.batch import (
+    is_batch_root_subtask,
     is_batch_umbrella,
     is_branchless_coordination,
     is_valid_batch_shape,
@@ -5320,8 +5321,14 @@ class TaskService(BaseService):
             )
             return None
 
-        # Only parent tasks can be escalated to CEO (not subtasks)
-        if task.parent_task_id:
+        # Only parent (root) tasks can be escalated to CEO (not subtasks) —
+        # EXCEPT a MegaTask root-subtask, which IS parented (the umbrella) yet
+        # carries its own project/branch/PR and behaves as a root for
+        # git/CEO purposes (is_batch_root_subtask). A plain subtask (no
+        # batch_id) is still refused.
+        if task.parent_task_id and not is_batch_root_subtask(
+            batch_id=task.batch_id, parent_task_id=task.parent_task_id
+        ):
             self.log.warning(
                 "Cannot escalate subtask to CEO - only parent tasks allowed",
                 task_id=str(task_id),

@@ -21,7 +21,7 @@ import structlog
 
 from roboco.exceptions import MergeConflictError
 from roboco.foundation.policy import lifecycle as spec_module
-from roboco.foundation.policy.batch import is_batch_umbrella
+from roboco.foundation.policy.batch import is_batch_root_subtask, is_batch_umbrella
 from roboco.foundation.policy.content import markers
 from roboco.foundation.policy.content.validators import reject_trivial
 from roboco.services.gateway.choreographer._protocol import actor_context_fields
@@ -6708,7 +6708,14 @@ class Choreographer:
                     main_pm_agent_id, root_task_id
                 ),
             )
-        if t.parent_task_id is not None:
+        # A MegaTask root-subtask IS parented (the umbrella) yet carries its
+        # own project/branch/PR and behaves as a root for git/CEO purposes
+        # (is_batch_root_subtask) — only a genuine non-root subtask is refused
+        # here; the umbrella's exemption elsewhere (is_batch_umbrella) is a
+        # different, non-overlapping shape (batch_id set, no parent).
+        if t.parent_task_id is not None and not is_batch_root_subtask(
+            batch_id=t.batch_id, parent_task_id=t.parent_task_id
+        ):
             return Envelope.invalid_state(
                 message=(
                     "main_pm complete only operates on root tasks (no parent_task_id)"

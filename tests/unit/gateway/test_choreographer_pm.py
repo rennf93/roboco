@@ -704,6 +704,7 @@ async def test_main_pm_complete_rejects_non_root_task() -> None:
         status="awaiting_pm_review",
         assigned_to=main_pm_id,
         parent_task_id=uuid4(),  # has parent -> not a root task
+        batch_id=None,  # a plain subtask, NOT a MegaTask root-subtask
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = t
@@ -714,6 +715,46 @@ async def test_main_pm_complete_rejects_non_root_task() -> None:
     body = env.as_dict()
     assert body["error"] == "invalid_state"
     assert "root tasks" in body["message"]
+
+
+@pytest.mark.asyncio
+async def test_main_pm_complete_allows_batch_root_subtask() -> None:
+    """A MegaTask root-subtask IS parented (the umbrella) yet carries its own
+    project/branch/PR and behaves as a root for git/CEO purposes — the
+    parent_task_id refusal above must NOT fire for it (is_batch_root_subtask)."""
+    main_pm_id = uuid4()
+    root_task_id = uuid4()
+    t = MagicMock(
+        id=root_task_id,
+        status="awaiting_pm_review",
+        assigned_to=main_pm_id,
+        pr_number=42,
+        branch_name="feature/main_pm/rootsub1",
+        parent_task_id=uuid4(),  # the umbrella
+        batch_id=uuid4(),  # batch_id + parent_task_id -> is_batch_root_subtask
+        team="main_pm",
+    )
+    after = MagicMock(**{**t.__dict__, "status": "awaiting_ceo_approval"})
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.escalate_to_ceo.return_value = after
+    task_svc.all_subtasks_terminal.return_value = True
+    task_svc.uncovered_parent_acceptance_criteria.return_value = []
+    git_svc = AsyncMock()
+    git_svc.pr_target.return_value = "master"
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
+    journal_svc.has_reflect_for_task.return_value = True
+    deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.main_pm_complete(
+        main_pm_id, root_task_id, notes="root-subtask reviewed and ready"
+    )
+    assert env.error is None, env.as_dict()
+    assert env.status == "awaiting_ceo_approval"
+    task_svc.escalate_to_ceo.assert_awaited_once()
 
 
 @pytest.mark.asyncio
