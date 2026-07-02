@@ -15,7 +15,12 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from roboco.agents_config import ALL_AGENTS, get_agent_skills, get_agent_team
+from roboco.agents_config import (
+    A2A_ALLOWED_PAIRS,
+    ALL_AGENTS,
+    get_agent_skills,
+    get_agent_team,
+)
 from roboco.config import settings
 from roboco.db.tables import (
     A2AConversationTable,
@@ -26,6 +31,7 @@ from roboco.db.tables import (
 from roboco.enforcement import A2AAccessDeniedError, validate_a2a_access
 from roboco.events import Event, EventType, get_event_bus
 from roboco.models.a2a import (
+    A2AAdminPairSummary,
     A2AArtifact,
     A2AChatMessage,
     A2AConversation,
@@ -1090,6 +1096,52 @@ class A2AService:
                 )
             )
 
+        return summaries
+
+    async def list_admin_pairs(self) -> list[A2AAdminPairSummary]:
+        """CEO switchboard: every allowed agent pair (static matrix, see
+        ``agents_config.A2A_ALLOWED_PAIRS``) joined with its representative
+        conversation when one exists.
+
+        One bulk query over the bounded static pair count — never N+1. When a
+        pair has more than one conversation (distinct topics), the most
+        recently updated one is treated as "the" conversation for that pair.
+        """
+        from sqlalchemy import tuple_
+
+        canonical_keys = [(p.agent_a, p.agent_b) for p in A2A_ALLOWED_PAIRS]
+        conv_by_pair: dict[tuple[str, str], A2AConversationTable] = {}
+        if canonical_keys:
+            result = await self.session.execute(
+                select(A2AConversationTable).where(
+                    tuple_(
+                        A2AConversationTable.agent_a, A2AConversationTable.agent_b
+                    ).in_(canonical_keys)
+                )
+            )
+            for conv in result.scalars().all():
+                key = (conv.agent_a, conv.agent_b)
+                current = conv_by_pair.get(key)
+                if current is None or conv.updated_at > current.updated_at:
+                    conv_by_pair[key] = conv
+
+        summaries: list[A2AAdminPairSummary] = []
+        for p in A2A_ALLOWED_PAIRS:
+            rep = conv_by_pair.get((p.agent_a, p.agent_b))
+            summaries.append(
+                A2AAdminPairSummary(
+                    agent_a=p.agent_a,
+                    role_a=p.role_a,
+                    team_a=p.team_a,
+                    agent_b=p.agent_b,
+                    role_b=p.role_b,
+                    team_b=p.team_b,
+                    group_key=p.group_key,
+                    conversation_id=str(rep.id) if rep else None,
+                    last_message_at=rep.last_message_at if rep else None,
+                    message_count=rep.message_count if rep else 0,
+                )
+            )
         return summaries
 
     async def close_conversation(

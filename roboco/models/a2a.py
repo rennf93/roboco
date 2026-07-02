@@ -615,3 +615,23 @@ class A2APair(RobocoBase):
     )
     total_unread: int = Field(default=0, description="Total unread across all convos")
     last_activity: datetime | None = None
+
+
+class A2AAdminPairSummary(RobocoBase):
+    """One CEO-visible org-chart pair for the A2A switchboard.
+
+    Joins the static allowed-pair matrix (roboco.agents_config.A2A_ALLOWED_PAIRS
+    — role/team/group_key) with the pair's representative conversation stats
+    when one exists.
+    """
+
+    agent_a: str
+    role_a: str
+    team_a: str
+    agent_b: str
+    role_b: str
+    team_b: str
+    group_key: str
+    conversation_id: str | None = None
+    last_message_at: datetime | None = None
+    message_count: int = 0

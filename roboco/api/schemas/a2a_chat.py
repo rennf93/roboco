@@ -194,3 +194,30 @@ class AdminReplyRequest(BaseModel):
     to_agent: str = Field(..., description="Which participant to address")
     content: str = Field(..., min_length=1, max_length=10000)
     skill: str | None = None
+
+
+# =============================================================================
+# SWITCHBOARD SCHEMAS (CEO-only) — org-chart pair cards
+# =============================================================================
+
+
+class AdminPairResponse(BaseModel):
+    """One agent pair for the CEO's A2A switchboard (org-chart pair cards)."""
+
+    agent_a: str
+    role_a: str
+    team_a: str
+    agent_b: str
+    role_b: str
+    team_b: str
+    group_key: str
+    conversation_id: UUID | None
+    last_message_at: datetime | None
+    message_count: int
+
+
+class AdminPairListResponse(BaseModel):
+    """List of switchboard pairs."""
+
+    items: list[AdminPairResponse]
+    total: int

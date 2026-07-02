@@ -35,6 +35,8 @@ from roboco.api.routes.v1._role_dep import require_any_authenticated_agent
 from roboco.api.schemas.a2a_chat import (
     AdminConversationListResponse,
     AdminConversationSummaryResponse,
+    AdminPairListResponse,
+    AdminPairResponse,
     AdminReplyRequest,
     ConversationCloseRequest,
     ConversationCreateRequest,
@@ -972,6 +974,44 @@ async def list_admin_conversations(
             for c in conversations
         ],
         total=len(conversations),
+    )
+
+
+@router.get("/chat/admin/pairs")
+async def list_admin_pairs(
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> AdminPairListResponse:
+    """CEO-only: the org-chart switchboard.
+
+    Every agent pair allowed to A2A directly per the static
+    ``agents_config.can_a2a_direct`` matrix (>=1 direction), joined with each
+    pair's representative conversation stats when one exists — the pair
+    cards the panel groups into sections (each cell, the PM chain, board).
+    """
+    _require_ceo(agent)
+    service = A2AService(db)
+    pairs = await service.list_admin_pairs()
+
+    return AdminPairListResponse(
+        items=[
+            AdminPairResponse(
+                agent_a=p.agent_a,
+                role_a=p.role_a,
+                team_a=p.team_a,
+                agent_b=p.agent_b,
+                role_b=p.role_b,
+                team_b=p.team_b,
+                group_key=p.group_key,
+                conversation_id=(
+                    require_uuid(p.conversation_id) if p.conversation_id else None
+                ),
+                last_message_at=p.last_message_at,
+                message_count=p.message_count,
+            )
+            for p in pairs
+        ],
+        total=len(pairs),
     )
 
 

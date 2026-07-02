@@ -1,21 +1,28 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
-import type { AdminConversationSummary, A2AChatMessage } from "@/lib/api/a2a";
+import { render, screen, fireEvent } from "@testing-library/react";
+import type {
+  AdminConversationSummary,
+  AdminPairSummary,
+  A2AChatMessage,
+} from "@/lib/api/a2a";
 
 const {
   useA2AConversations,
   useA2AMessages,
+  useA2AAdminPairs,
   useA2ALiveStream,
   invalidateQueries,
   a2aLiveKeys,
 } = vi.hoisted(() => ({
   useA2AConversations: vi.fn(),
   useA2AMessages: vi.fn(),
+  useA2AAdminPairs: vi.fn(),
   useA2ALiveStream: vi.fn(),
   invalidateQueries: vi.fn(),
   a2aLiveKeys: {
     all: ["a2a-live"] as const,
     conversations: ["a2a-live", "conversations"] as const,
+    pairs: ["a2a-live", "pairs"] as const,
     messages: (conversationId: string) =>
       ["a2a-live", "messages", conversationId] as const,
   },
@@ -30,6 +37,7 @@ vi.mock("@/hooks/use-a2a-live", () => ({
   a2aLiveKeys,
   useA2AConversations,
   useA2AMessages,
+  useA2AAdminPairs,
   useReplyAsCeo: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
@@ -74,6 +82,22 @@ function buildConversation(
   };
 }
 
+function buildPair(overrides: Partial<AdminPairSummary> = {}): AdminPairSummary {
+  return {
+    agent_a: "be-dev-1",
+    role_a: "developer",
+    team_a: "backend",
+    agent_b: "be-qa",
+    role_b: "qa",
+    team_b: "backend",
+    group_key: "cell-backend",
+    conversation_id: "conv-1",
+    last_message_at: "2026-07-02T09:00:00Z",
+    message_count: 2,
+    ...overrides,
+  };
+}
+
 function buildMessage(): A2AChatMessage {
   return {
     id: "m1",
@@ -103,8 +127,14 @@ describe("A2APage", () => {
       isLoading: false,
       refetch: vi.fn(),
     });
+    useA2AAdminPairs.mockReturnValue({
+      data: { items: [], total: 0 },
+      isLoading: false,
+      refetch: vi.fn(),
+    });
     useA2ALiveStream.mockReturnValue({
       lastMessage: null,
+      a2aMessages: [],
       isConnected: true,
     });
   });
@@ -150,7 +180,7 @@ describe("A2APage", () => {
     ).toBeInTheDocument();
   });
 
-  it("invalidates conversations + selected messages on a matching a2a.message frame", () => {
+  it("invalidates conversations + pairs + selected messages on a matching a2a.message frame", () => {
     useA2ALiveStream.mockReturnValue({
       lastMessage: {
         type: "a2a.message",
@@ -161,6 +191,7 @@ describe("A2APage", () => {
         body_excerpt: "capped",
         timestamp: "2026-07-02T10:00:00Z",
       },
+      a2aMessages: [],
       isConnected: true,
     });
     render(<A2APage />);
@@ -168,26 +199,61 @@ describe("A2APage", () => {
       queryKey: a2aLiveKeys.conversations,
     });
     expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: a2aLiveKeys.pairs,
+    });
+    expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: a2aLiveKeys.messages("conv-1"),
     });
   });
 
-  it("only invalidates the conversation list for frames of other conversations", () => {
+  it("only invalidates the conversation + pair lists for frames of other conversations", () => {
     useA2ALiveStream.mockReturnValue({
       lastMessage: {
         type: "a2a.message",
         conversation_id: "conv-other",
         timestamp: "2026-07-02T10:00:00Z",
       },
+      a2aMessages: [],
       isConnected: false,
     });
     render(<A2APage />);
     expect(invalidateQueries).toHaveBeenCalledWith({
       queryKey: a2aLiveKeys.conversations,
     });
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: a2aLiveKeys.pairs,
+    });
     expect(invalidateQueries).not.toHaveBeenCalledWith({
       queryKey: a2aLiveKeys.messages("conv-1"),
     });
     expect(screen.getByText("Offline")).toBeInTheDocument();
+  });
+
+  it("shows the switchboard by default with pair cards grouped into sections", () => {
+    useA2AAdminPairs.mockReturnValue({
+      data: { items: [buildPair()], total: 1 },
+      isLoading: false,
+      refetch: vi.fn(),
+    });
+    render(<A2APage />);
+    expect(screen.getByText("Switchboard")).toBeInTheDocument();
+    expect(screen.getByText(/Backend Cell/)).toBeInTheDocument();
+  });
+
+  it("toggles to the classic conversation list and back", () => {
+    useA2AAdminPairs.mockReturnValue({
+      data: { items: [buildPair()], total: 1 },
+      isLoading: false,
+      refetch: vi.fn(),
+    });
+    render(<A2APage />);
+    expect(screen.getByText("Switchboard")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTitle("Classic conversation list"));
+    expect(screen.getByText("Conversations")).toBeInTheDocument();
+    expect(screen.queryByText(/Backend Cell/)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTitle("Switchboard: org-chart pair cards"));
+    expect(screen.getByText("Switchboard")).toBeInTheDocument();
   });
 });

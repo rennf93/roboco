@@ -19,7 +19,7 @@ from roboco.api.routes.a2a import wellknown_router
 from roboco.db.tables import AgentTable, ProjectTable, TaskTable
 from roboco.enforcement import A2AAccessDeniedError
 from roboco.models import AgentRole, AgentStatus, Team
-from roboco.models.a2a import A2ATask, A2ATaskState, A2ATaskStatus
+from roboco.models.a2a import A2AAdminPairSummary, A2ATask, A2ATaskState, A2ATaskStatus
 from roboco.models.base import (
     TaskNature,
     TaskStatus,
@@ -35,6 +35,8 @@ if TYPE_CHECKING:
 
 _PAGE_TOKEN_OFFSET = 20
 _MIN_STREAM_CHUNKS = 2
+_EXPECTED_PAIR_LIST_TOTAL = 2
+_EXPECTED_PAIR_MESSAGE_COUNT = 4
 
 
 @pytest_asyncio.fixture
@@ -1065,6 +1067,71 @@ async def test_admin_list_conversations_as_ceo(a2a_route_client: dict) -> None:
     assert body["total"] == 1
     assert body["items"][0]["agent_a"] == "be-dev-1"
     assert body["items"][0]["agent_b"] == "fe-dev-1"
+
+
+@pytest.mark.asyncio
+async def test_admin_list_pairs_forbidden_for_non_ceo(a2a_route_client: dict) -> None:
+    client = a2a_route_client["client"]
+    response = await client.get("/api/a2a/chat/admin/pairs", headers=_HDR)
+    assert response.status_code == HTTPStatus.FORBIDDEN
+
+
+@pytest.mark.asyncio
+async def test_admin_list_pairs_as_ceo(a2a_route_client: dict) -> None:
+    """CEO gets the switchboard's pair cards — the static matrix joined with
+    each pair's representative conversation stats."""
+    app = a2a_route_client["app"]
+    dev = a2a_route_client["dev"]
+    client = a2a_route_client["client"]
+    _set_ceo_context(app, dev)
+
+    conv_id = uuid4()
+    pair_with_history = A2AAdminPairSummary(
+        agent_a="be-dev-1",
+        role_a="developer",
+        team_a="backend",
+        agent_b="be-qa",
+        role_b="qa",
+        team_b="backend",
+        group_key="cell-backend",
+        conversation_id=str(conv_id),
+        last_message_at=datetime.now(UTC),
+        message_count=4,
+    )
+    pair_never_talked = A2AAdminPairSummary(
+        agent_a="auditor",
+        role_a="auditor",
+        team_a="board",
+        agent_b="product-owner",
+        role_b="product_owner",
+        team_b="board",
+        group_key="board",
+        conversation_id=None,
+        last_message_at=None,
+        message_count=0,
+    )
+    with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
+        instance = AsyncMock()
+        instance.list_admin_pairs = AsyncMock(
+            return_value=[pair_with_history, pair_never_talked]
+        )
+        mock_service_cls.return_value = instance
+        response = await client.get("/api/a2a/chat/admin/pairs", headers=_HDR)
+
+    assert response.status_code == HTTPStatus.OK
+    instance.list_admin_pairs.assert_awaited_once_with()
+    body = response.json()
+    assert body["total"] == _EXPECTED_PAIR_LIST_TOTAL
+    first = body["items"][0]
+    assert first["agent_a"] == "be-dev-1"
+    assert first["agent_b"] == "be-qa"
+    assert first["group_key"] == "cell-backend"
+    assert first["conversation_id"] == str(conv_id)
+    assert first["message_count"] == _EXPECTED_PAIR_MESSAGE_COUNT
+    second = body["items"][1]
+    assert second["group_key"] == "board"
+    assert second["conversation_id"] is None
+    assert second["message_count"] == 0
 
 
 @pytest.mark.asyncio

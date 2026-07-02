@@ -28,6 +28,7 @@ different purposes. MCP is coarse-grained (tool-level), API is fine-grained
 import hashlib
 import hmac
 import os
+from dataclasses import dataclass
 from typing import Final
 
 from roboco.foundation import identity as _foundation
@@ -716,3 +717,110 @@ def get_a2a_route_hint(from_agent: str, to_agent: str) -> str:
         return f"Route: {from_agent}→{cell_pm}→main-pm→board"
 
     return "Use escalate_up() for proper escalation."
+
+
+# =============================================================================
+# A2A SWITCHBOARD — ALLOWED AGENT PAIRS (CEO admin view)
+# =============================================================================
+# Static, stateless derivation from can_a2a_direct(): every unordered pair of
+# real (non-human, non-sentinel) agents where at least one direction is
+# permitted. This is the org-chart the CEO's A2A switchboard renders as pair
+# cards — computed once at import time, since the matrix never changes at
+# runtime. The route/service layer joins this list against live DB
+# conversation data per request.
+
+
+@dataclass(frozen=True)
+class A2AAllowedPair:
+    """One CEO-visible pair of agents allowed to A2A directly (>=1 direction).
+
+    ``agent_a`` < ``agent_b`` lexically — the same canonical ordering
+    A2AConversationTable and A2AService._canonical_pair use.
+    """
+
+    agent_a: str
+    agent_b: str
+    role_a: str
+    team_a: str
+    role_b: str
+    team_b: str
+    group_key: str
+
+
+# Slugs eligible for the switchboard: excludes the system sentinel and the
+# human-only roles (CEO, prompter, secretary) — none of those are real A2A
+# participants in the org chart the CEO is browsing.
+_SWITCHBOARD_SLUGS: Final[list[str]] = sorted(
+    slug
+    for slug, row in _foundation.AGENTS.items()
+    if slug != "system" and not _foundation.is_human_only_role(row.role)
+)
+
+_BOARD_ROLE_VALUES: Final[frozenset[str]] = frozenset(
+    r.value for r in _foundation.BOARD_ROLES
+)
+_CELL_TEAM_VALUES: Final[frozenset[str]] = frozenset(
+    t.value for t in _foundation.CELL_TEAMS
+)
+
+
+def _a2a_group_key(role_a: str, team_a: str, role_b: str, team_b: str) -> str:
+    """Classify a pair into a stable section for the panel switchboard.
+
+    - ``cell-<team>``: both agents share a delivery-cell team — each cell's
+      own section (dev/qa/doc/pm/pr-reviewer talking within their cell).
+    - ``pm-chain``: the coordination spine — cell_pm<->main_pm, or
+      main_pm<->a board role (mirrors ESCALATION_CHAIN: cell_pm -> main-pm
+      -> board).
+    - ``board``: pure board-to-board pairs (product_owner/head_marketing/
+      auditor).
+    - ``cross``: everything else — chiefly a PR reviewer's lateral reach
+      outside its own cell/pm (delivering a gate verdict to another cell's
+      PM or to main-pm), which isn't part of the escalation spine.
+    """
+    roles = {role_a, role_b}
+    if team_a == team_b and team_a in _CELL_TEAM_VALUES:
+        return f"cell-{team_a}"
+    if roles == {"cell_pm", "main_pm"}:
+        return "pm-chain"
+    if "main_pm" in roles and (
+        role_a in _BOARD_ROLE_VALUES or role_b in _BOARD_ROLE_VALUES
+    ):
+        return "pm-chain"
+    if role_a in _BOARD_ROLE_VALUES and role_b in _BOARD_ROLE_VALUES:
+        return "board"
+    return "cross"
+
+
+def _compute_a2a_allowed_pairs() -> tuple[A2AAllowedPair, ...]:
+    """Enumerate every unordered pair with >=1 allowed A2A direction."""
+    pairs: list[A2AAllowedPair] = []
+    for i, a in enumerate(_SWITCHBOARD_SLUGS):
+        row_a = _foundation.AGENTS[a]
+        for b in _SWITCHBOARD_SLUGS[i + 1 :]:
+            row_b = _foundation.AGENTS[b]
+            allowed_ab, _ = can_a2a_direct(a, b)
+            allowed_ba, _ = can_a2a_direct(b, a)
+            if not (allowed_ab or allowed_ba):
+                continue
+            pairs.append(
+                A2AAllowedPair(
+                    agent_a=a,
+                    agent_b=b,
+                    role_a=row_a.role.value,
+                    team_a=row_a.team.value,
+                    role_b=row_b.role.value,
+                    team_b=row_b.team.value,
+                    group_key=_a2a_group_key(
+                        row_a.role.value,
+                        row_a.team.value,
+                        row_b.role.value,
+                        row_b.team.value,
+                    ),
+                )
+            )
+    return tuple(pairs)
+
+
+# Computed once at module load — see module docstring above.
+A2A_ALLOWED_PAIRS: Final[tuple[A2AAllowedPair, ...]] = _compute_a2a_allowed_pairs()

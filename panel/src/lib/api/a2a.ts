@@ -103,6 +103,29 @@ export interface AdminConversationListResponse {
   total: number;
 }
 
+/**
+ * One pair card for the CEO's A2A switchboard (org-chart view) — the static
+ * can_a2a_direct matrix joined with the pair's representative conversation
+ * stats when one exists.
+ */
+export interface AdminPairSummary {
+  agent_a: string;
+  role_a: string;
+  team_a: string;
+  agent_b: string;
+  role_b: string;
+  team_b: string;
+  group_key: string;
+  conversation_id: string | null;
+  last_message_at: string | null;
+  message_count: number;
+}
+
+export interface AdminPairListResponse {
+  items: AdminPairSummary[];
+  total: number;
+}
+
 export interface AdminMessageListResponse {
   items: A2AChatMessage[];
   total: number;
@@ -318,6 +341,49 @@ export const a2aApi = {
     const { data } = await api.get<AdminMessageListResponse>(
       `/a2a/chat/admin/conversations/${conversationId}/messages`,
       { params: { limit } },
+    );
+    return data;
+  },
+
+  /**
+   * List the org-chart switchboard's pair cards (CEO-only): every agent pair
+   * allowed to A2A directly, joined with each pair's representative
+   * conversation stats when one exists.
+   */
+  listAdminPairs: async (): Promise<AdminPairListResponse> => {
+    if (isMockMode()) {
+      return {
+        items: [
+          {
+            agent_a: "be-dev-1",
+            role_a: "developer",
+            team_a: "backend",
+            agent_b: "be-qa",
+            role_b: "qa",
+            team_b: "backend",
+            group_key: "cell-backend",
+            conversation_id: "mock-conversation-1",
+            last_message_at: new Date().toISOString(),
+            message_count: 3,
+          },
+          {
+            agent_a: "auditor",
+            role_a: "auditor",
+            team_a: "board",
+            agent_b: "product-owner",
+            role_b: "product_owner",
+            team_b: "board",
+            group_key: "board",
+            conversation_id: null,
+            last_message_at: null,
+            message_count: 0,
+          },
+        ],
+        total: 2,
+      };
+    }
+    const { data } = await api.get<AdminPairListResponse>(
+      "/a2a/chat/admin/pairs",
     );
     return data;
   },

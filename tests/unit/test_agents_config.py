@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import TYPE_CHECKING
 
 from roboco.agents_config import (
+    A2A_ALLOWED_PAIRS,
     can_a2a_direct,
     can_assign_tasks,
     can_cancel_tasks,
@@ -27,6 +29,7 @@ from roboco.agents_config import (
     issue_panel_token,
     verify_agent_token,
 )
+from roboco.foundation import identity as foundation
 from roboco.seeds.initial_data import CEO_AGENT_ID
 
 if TYPE_CHECKING:
@@ -441,3 +444,85 @@ def test_get_a2a_route_hint_unknown_from_agent_falls_through() -> None:
     """from_agent with no team falls through to escalate fallback (line 774)."""
     hint = get_a2a_route_hint("ghost", "be-dev-1")
     assert "escalate" in hint.lower()
+
+
+# ---------------------------------------------------------------------------
+# A2A_ALLOWED_PAIRS — the switchboard's static org-chart pair matrix
+# ---------------------------------------------------------------------------
+
+_EXPECTED_PAIR_COUNT = 70
+_EXPECTED_GROUP_COUNTS = {
+    "board": 3,
+    "cell-backend": 15,
+    "cell-frontend": 15,
+    "cell-ux_ui": 15,
+    "cross": 16,
+    "pm-chain": 6,
+}
+
+
+def test_a2a_allowed_pairs_total_count() -> None:
+    assert len(A2A_ALLOWED_PAIRS) == _EXPECTED_PAIR_COUNT
+
+
+def test_a2a_allowed_pairs_canonical_lexical_order() -> None:
+    """agent_a < agent_b always — matches A2AConversationTable's canonical
+    ordering, so the service's DB join keys line up."""
+    for p in A2A_ALLOWED_PAIRS:
+        assert p.agent_a < p.agent_b
+
+
+def test_a2a_allowed_pairs_no_duplicates() -> None:
+    keys = [(p.agent_a, p.agent_b) for p in A2A_ALLOWED_PAIRS]
+    assert len(keys) == len(set(keys))
+
+
+def test_a2a_allowed_pairs_excludes_human_only_and_sentinel_roles() -> None:
+    """CEO, the intake interviewer, the secretary, and the system sentinel
+    are not real A2A participants in the org chart."""
+    slugs = {p.agent_a for p in A2A_ALLOWED_PAIRS} | {
+        p.agent_b for p in A2A_ALLOWED_PAIRS
+    }
+    for excluded in ("ceo", "intake-1", "secretary-1", "system"):
+        assert excluded not in slugs
+
+
+def test_a2a_allowed_pairs_group_key_counts() -> None:
+    counts = Counter(p.group_key for p in A2A_ALLOWED_PAIRS)
+    assert dict(counts) == _EXPECTED_GROUP_COUNTS
+
+
+def test_a2a_allowed_pairs_contains_same_cell_pair() -> None:
+    assert any(
+        {p.agent_a, p.agent_b} == {"be-dev-1", "be-qa"} for p in A2A_ALLOWED_PAIRS
+    )
+
+
+def test_a2a_allowed_pairs_contains_pm_chain_pair() -> None:
+    assert any(
+        {p.agent_a, p.agent_b} == {"be-pm", "main-pm"} for p in A2A_ALLOWED_PAIRS
+    )
+
+
+def test_a2a_allowed_pairs_contains_board_pair() -> None:
+    assert any(
+        {p.agent_a, p.agent_b} == {"auditor", "product-owner"}
+        for p in A2A_ALLOWED_PAIRS
+    )
+
+
+def test_a2a_allowed_pairs_reflects_can_a2a_direct_matrix() -> None:
+    """Every listed pair allows >=1 direction per the live matrix — catches
+    drift if can_a2a_direct changes without regenerating the static list."""
+    for p in A2A_ALLOWED_PAIRS:
+        allowed_ab, _ = can_a2a_direct(p.agent_a, p.agent_b)
+        allowed_ba, _ = can_a2a_direct(p.agent_b, p.agent_a)
+        assert allowed_ab or allowed_ba
+
+
+def test_a2a_allowed_pairs_role_team_fields_match_registry() -> None:
+    for p in A2A_ALLOWED_PAIRS:
+        assert p.role_a == foundation.AGENTS[p.agent_a].role.value
+        assert p.team_a == foundation.AGENTS[p.agent_a].team.value
+        assert p.role_b == foundation.AGENTS[p.agent_b].role.value
+        assert p.team_b == foundation.AGENTS[p.agent_b].team.value
