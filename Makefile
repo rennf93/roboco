@@ -295,6 +295,15 @@ quality: sync
 	@echo ""
 	@echo "All quality gates passed."
 
+# Scripted-agent lifecycle smoke: the REAL MCP flow/do tools driven through
+# the REAL gateway/gates against an in-process API + ephemeral test Postgres +
+# local git origin (gh shimmed). No LLM. Excluded from `quality` (env-gated);
+# CI runs it as its own job.
+.PHONY: e2e-smoke
+e2e-smoke: sync
+	@echo "==> e2e lifecycle smoke (scripted agents, real gates)"
+	@ROBOCO_E2E_SMOKE=1 uv run pytest tests/e2e_smoke -q --no-cov
+
 .PHONY: quality-fast
 quality-fast: sync
 	@uv run ruff format --check .

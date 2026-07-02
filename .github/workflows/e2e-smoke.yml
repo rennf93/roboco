@@ -1,0 +1,82 @@
+name: E2E Smoke
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'roboco/**'
+      - 'alembic/**'
+      - 'tests/**'
+      - 'Makefile'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/e2e-smoke.yml'
+  pull_request:
+    branches:
+      - master
+    paths:
+      - 'roboco/**'
+      - 'alembic/**'
+      - 'tests/**'
+      - 'Makefile'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/e2e-smoke.yml'
+  workflow_dispatch:
+
+jobs:
+  e2e-smoke:
+    name: e2e lifecycle smoke (scripted agents)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: roboco
+          POSTGRES_PASSWORD: roboco
+          POSTGRES_DB: roboco
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U roboco"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      ROBOCO_DATABASE_HOST: localhost
+      ROBOCO_DATABASE_PORT: '5432'
+      ROBOCO_DATABASE_USER: roboco
+      ROBOCO_DATABASE_PASSWORD: roboco
+      ROBOCO_DATABASE_NAME: roboco
+      ROBOCO_ENCRYPTION_KEY: 'yp3Awiv0zmxpRa6Gi9Y9hJbi4pZ2FXHRNr4EI6-Gx9U='
+      ROBOCO_TEST_DB_HOST: localhost
+      ROBOCO_TEST_DB_PORT: '5432'
+      ROBOCO_TEST_DB_USER: roboco
+      ROBOCO_TEST_DB_PASSWORD: roboco
+      ROBOCO_TEST_DB_ADMIN_DB: postgres
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Configure git identity for the scripted agents
+        run: |
+          git config --global user.name "roboco-e2e"
+          git config --global user.email "e2e@roboco.local"
+
+      - name: Run the lifecycle smoke
+        run: make e2e-smoke
