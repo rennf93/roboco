@@ -2199,6 +2199,28 @@ class Choreographer:
             )
         return None
 
+    async def _assembled_submit_guards(
+        self, t: Any, task_id: UUID, verb: str
+    ) -> Envelope | None:
+        """Assembly integrity (#11) then behind-base auto-sync (B2) for the
+        assembled PM submits. Base resolution fails open (a malformed parent
+        ref must not strand the submit — the merge layer keeps its checks)."""
+        guard = await self._assembly_integrity_guard(t, verb=verb)
+        if guard is not None:
+            return guard
+        try:
+            base_branch = await resolve_parent_branch(t, self.task)
+        except Exception as exc:
+            logger.warning(
+                "assembled_freshen_base_skip",
+                task_id=str(task_id),
+                error=str(exc),
+            )
+            base_branch = ""
+        return await self._freshen_assembled_branch(
+            t, base_branch=base_branch, verb=verb
+        )
+
     async def _assembly_integrity_guard(self, t: Any, *, verb: str) -> Envelope | None:
         """Refuse the assembled submit when a completed child's work is missing.
 
@@ -5588,25 +5610,8 @@ class Choreographer:
         if guard is None:
             guard = await self._submit_up_unchanged_pr_guard(t, briefing)
         if guard is None:
-            # Assembly integrity (#11): every completed child's work must be
-            # in the assembled branch before it is reviewed.
-            guard = await self._assembly_integrity_guard(t, verb="submit_up")
-        if guard is None:
-            # Behind-base auto-sync (B2): re-submitting a cell head whose ROOT
-            # base moved re-reviews stale work and ping-pongs the gate. All
-            # children are terminal here, so rebasing the cell branch is safe.
-            try:
-                base_branch = await resolve_parent_branch(t, self.task)
-            except Exception as exc:
-                logger.warning(
-                    "assembled_freshen_base_skip",
-                    task_id=str(task_id),
-                    error=str(exc),
-                )
-                base_branch = ""
-            guard = await self._freshen_assembled_branch(
-                t, base_branch=base_branch, verb="submit_up"
-            )
+            # Assembly integrity (#11) + behind-base auto-sync (B2).
+            guard = await self._assembled_submit_guards(t, task_id, "submit_up")
         if guard is not None:
             guard.with_introspection(task=t, role=role_str)
             return await self._emit_rejection(
@@ -6548,26 +6553,8 @@ class Choreographer:
         if guard is None:
             guard = await self._submit_root_unchanged_pr_guard(t, briefing)
         if guard is None:
-            # Assembly integrity (#11): every completed cell's work must be
-            # in the root branch before it is reviewed.
-            guard = await self._assembly_integrity_guard(t, verb="submit_root")
-        if guard is None:
-            # Behind-base auto-sync (B2): the root branch must carry current
-            # master before entering the root→master gate — re-reviewing a
-            # stale root ping-pongs pr_fail↔needs_revision. Cells are terminal
-            # here, so rebasing the root branch is safe.
-            try:
-                base_branch = await resolve_parent_branch(t, self.task)
-            except Exception as exc:
-                logger.warning(
-                    "assembled_freshen_base_skip",
-                    task_id=str(task_id),
-                    error=str(exc),
-                )
-                base_branch = ""
-            guard = await self._freshen_assembled_branch(
-                t, base_branch=base_branch, verb="submit_root"
-            )
+            # Assembly integrity (#11) + behind-base auto-sync (B2).
+            guard = await self._assembled_submit_guards(t, task_id, "submit_root")
         if guard is not None:
             guard.with_introspection(task=t, role=role_str)
             return await self._emit_rejection(

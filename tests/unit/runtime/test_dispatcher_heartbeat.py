@@ -17,6 +17,8 @@ from uuid import uuid4  # noqa: F401 - parity with sibling harnesses
 import pytest
 from roboco.runtime.orchestrator import AgentOrchestrator
 
+_TWO_HEARTBEATS = 2
+
 
 def _orch() -> AgentOrchestrator:
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
@@ -51,4 +53,4 @@ async def test_heartbeat_re_emits_after_window() -> None:
         seconds=400
     )
     await orch._emit_dispatcher_heartbeat()
-    assert cast("Any", orch)._fire_audit.call_count == 2
+    assert cast("Any", orch)._fire_audit.call_count == _TWO_HEARTBEATS

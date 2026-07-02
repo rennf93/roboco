@@ -28,8 +28,8 @@ from roboco.runtime.orchestrator import AgentOrchestrator
 
 def _make_orch() -> AgentOrchestrator:
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
-    orch._pm_respawn_tracker = {}
-    orch._schedule_respawn_persist = lambda *_a, **_k: None
+    cast("Any", orch)._pm_respawn_tracker = {}
+    cast("Any", orch)._schedule_respawn_persist = lambda *_a, **_k: None
     orch._instances = {}
     orch._board_dispatched = set()
     orch._board_review_ceo_notified = set()

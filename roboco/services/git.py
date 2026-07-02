@@ -97,6 +97,18 @@ def _commit_git_timeout() -> int:
     return settings.git_commit_timeout_seconds
 
 
+def _completed_branchful_children(children: list[Any]) -> list[Any]:
+    """Children whose completed work can be integrity-checked: completed,
+    branch-bearing, with recorded commits."""
+    return [
+        c
+        for c in children
+        if str(getattr(c, "status", "")) in ("completed", "TaskStatus.COMPLETED")
+        and getattr(c, "branch_name", None)
+        and getattr(c, "commits", None)
+    ]
+
+
 def _network_git_timeout() -> int:
     """Budget for git ops that talk to origin (fetch / pull / push).
 
@@ -3971,13 +3983,7 @@ class GitService(BaseService):
             return []
         task_service = get_task_service(self.session)
         children = await task_service.get_subtasks(require_uuid(task.id))
-        candidates = [
-            c
-            for c in children
-            if str(getattr(c, "status", "")) in ("completed", "TaskStatus.COMPLETED")
-            and getattr(c, "branch_name", None)
-            and getattr(c, "commits", None)
-        ]
+        candidates = _completed_branchful_children(children)
         if not candidates:
             return []
         project = await self._project_for_task(task)
@@ -3996,33 +4002,44 @@ class GitService(BaseService):
         )
         missing: list[dict[str, Any]] = []
         for child in candidates:
-            child_ref = f"origin/{child.branch_name}"
-            ref_ok = await self._run_git(
-                workspace,
-                ["rev-parse", "--verify", "--quiet", child_ref],
-                check=False,
+            entry = await self._cherry_unmerged_entry(
+                workspace, str(task.branch_name), child
             )
-            if ref_ok.returncode != 0:
-                continue  # branch pruned after merge — nothing to compare
-            cherry = await self._run_git(
-                workspace,
-                ["cherry", f"origin/{task.branch_name}", child_ref],
-                check=False,
-            )
-            if cherry.returncode != 0:
-                continue
-            unmerged = [
-                line for line in cherry.stdout.splitlines() if line.startswith("+")
-            ]
-            if unmerged:
-                missing.append(
-                    {
-                        "task_id": str(child.id)[:8],
-                        "title": str(getattr(child, "title", ""))[:80],
-                        "unmerged": len(unmerged),
-                    }
-                )
+            if entry is not None:
+                missing.append(entry)
         return missing
+
+    async def _cherry_unmerged_entry(
+        self, workspace: Path, parent_branch: str, child: Any
+    ) -> dict[str, Any] | None:
+        """One child's unmerged-commit entry, or None (merged / unprobeable).
+
+        A child branch pruned from origin after merge, or any git error,
+        contributes nothing — best-effort per child.
+        """
+        child_ref = f"origin/{child.branch_name}"
+        ref_ok = await self._run_git(
+            workspace,
+            ["rev-parse", "--verify", "--quiet", child_ref],
+            check=False,
+        )
+        if ref_ok.returncode != 0:
+            return None  # branch pruned after merge — nothing to compare
+        cherry = await self._run_git(
+            workspace,
+            ["cherry", f"origin/{parent_branch}", child_ref],
+            check=False,
+        )
+        if cherry.returncode != 0:
+            return None
+        unmerged = [line for line in cherry.stdout.splitlines() if line.startswith("+")]
+        if not unmerged:
+            return None
+        return {
+            "task_id": str(child.id)[:8],
+            "title": str(getattr(child, "title", ""))[:80],
+            "unmerged": len(unmerged),
+        }
 
     async def is_behind_base(
         self,

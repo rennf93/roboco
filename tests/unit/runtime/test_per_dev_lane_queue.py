@@ -21,8 +21,8 @@ from roboco.runtime.orchestrator import AgentOrchestrator
 
 def _new_orchestrator() -> AgentOrchestrator:
     orch = AgentOrchestrator.__new__(AgentOrchestrator)
-    orch._pm_respawn_tracker = {}
-    orch._schedule_respawn_persist = lambda *_a, **_k: None
+    cast("Any", orch)._pm_respawn_tracker = {}
+    cast("Any", orch)._schedule_respawn_persist = lambda *_a, **_k: None
     return orch
 
 
