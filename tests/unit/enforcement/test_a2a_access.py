@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from roboco.agents_config import can_a2a_direct
 from roboco.enforcement.a2a_access import (
     A2AAccessDeniedError,
     get_a2a_allowed_targets,
@@ -50,3 +51,46 @@ def test_get_a2a_allowed_targets_excludes_self() -> None:
     targets = get_a2a_allowed_targets("be-dev-1", ["be-dev-1", "be-qa"])
     # Self should be filtered.
     assert "be-dev-1" not in targets or "be-qa" in targets
+
+
+# ---------------------------------------------------------------------------
+# CEO-initiated A2A — the one asymmetric rule: CEO may send, nobody may
+# target CEO (the block above must still hold).
+# ---------------------------------------------------------------------------
+
+
+def test_validate_a2a_access_ceo_to_agent_allowed() -> None:
+    result = validate_a2a_access("ceo", "be-dev-1")
+    assert result is True
+
+
+def test_can_a2a_direct_ceo_to_main_pm() -> None:
+    assert can_a2a_direct("ceo", "main-pm") == (True, None)
+
+
+def test_can_a2a_direct_ceo_to_board_member() -> None:
+    """Board members are normally unreachable via direct A2A for everyone
+    else (routed through main-pm) — CEO is exempt from that restriction."""
+    assert can_a2a_direct("ceo", "product-owner") == (True, None)
+
+
+def test_validate_a2a_to_ceo_still_denied_with_ceo_send_rule() -> None:
+    """Regression: allowing CEO-initiated A2A must not loosen the inbound
+    block — nobody may target the CEO."""
+    with pytest.raises(A2AAccessDeniedError):
+        validate_a2a_access("be-dev-1", "ceo")
+
+
+def test_get_a2a_allowed_targets_ceo_includes_all_roles() -> None:
+    targets = get_a2a_allowed_targets("ceo", ["be-dev-1", "be-qa", "main-pm"])
+    assert set(targets) == {"be-dev-1", "be-qa", "main-pm"}
+
+
+def test_can_a2a_direct_to_ceo_message_explains_reply_only() -> None:
+    """An agent can never INITIATE with the CEO (only reply inside a
+    conversation the CEO opened) — the matrix denial message must say so,
+    not point at the old blanket 'use notify()' framing."""
+    allowed, reason = can_a2a_direct("be-dev-1", "ceo")
+    assert allowed is False
+    assert reason is not None
+    assert "reply" in reason.lower()

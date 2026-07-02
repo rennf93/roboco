@@ -6311,6 +6311,29 @@ class TaskService(BaseService):
     # QUERIES
     # =========================================================================
 
+    async def list_recent_for_project(
+        self, project_id: UUID, limit: int = 15
+    ) -> list[TaskTable]:
+        """Recent tasks for a project, most-recently-active first.
+
+        Backs the prompter's history digest: the intake agent gets a compact
+        chronological view of what's already been built/attempted in this repo.
+        "Recent" = highest of completed_at / updated_at / created_at, so a
+        just-touched-but-not-completed task still surfaces ahead of an old
+        completed one.
+        """
+        activity = func.coalesce(
+            TaskTable.completed_at, TaskTable.updated_at, TaskTable.created_at
+        )
+        stmt = (
+            select(TaskTable)
+            .where(TaskTable.project_id == project_id)
+            .order_by(activity.desc())
+            .limit(limit)
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     async def search_tasks(
         self,
         q: str,

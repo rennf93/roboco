@@ -44,6 +44,18 @@ export interface NotificationMessage {
   timestamp?: string;
 }
 
+export interface A2ASystemMessage {
+  type: "connected" | "a2a.message";
+  conversation_id?: string;
+  message_id?: string;
+  task_id?: string;
+  from_agent?: string;
+  to_agent?: string;
+  skill?: string | null;
+  body_excerpt?: string;
+  timestamp?: string;
+}
+
 export interface SessionMessage {
   type: "connected" | "message.new";
   message_id?: string;
@@ -289,6 +301,38 @@ export function useNotificationStream() {
     state,
     lastMessage,
     notifications,
+    allMessages: messages,
+    clearMessages,
+    isConnected,
+    isConnecting,
+  };
+}
+
+/**
+ * Subscribe to live A2A traffic on the operator stream (`/ws/system`).
+ *
+ * The bridge publishes an `a2a.message` frame for every persisted
+ * agent<->agent chat message. Frames carry a capped `body_excerpt` only —
+ * consumers invalidate their REST queries for full bodies (the A2A live view
+ * idiom), never render the excerpt as the message.
+ */
+export function useA2ALiveStream() {
+  const {
+    state,
+    lastMessage,
+    messages,
+    clearMessages,
+    isConnected,
+    isConnecting,
+  } = useWebSocket<A2ASystemMessage>("/system", undefined, true);
+
+  // Filter to A2A frames (the system stream also carries rate-limit/usage).
+  const a2aMessages = messages.filter((m) => m.type === "a2a.message");
+
+  return {
+    state,
+    lastMessage,
+    a2aMessages,
     allMessages: messages,
     clearMessages,
     isConnected,

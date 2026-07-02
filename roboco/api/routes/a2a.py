@@ -17,6 +17,7 @@ Endpoints:
 import asyncio
 import contextlib
 from collections.abc import AsyncGenerator
+from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -27,10 +28,14 @@ from roboco.api.deps import (
     CurrentAgentContext,
     CurrentAgentSlug,
     DbSession,
+    require_ceo_role,
     require_pm_or_above,
 )
 from roboco.api.routes.v1._role_dep import require_any_authenticated_agent
 from roboco.api.schemas.a2a_chat import (
+    AdminConversationListResponse,
+    AdminConversationSummaryResponse,
+    AdminReplyRequest,
     ConversationCloseRequest,
     ConversationCreateRequest,
     ConversationListResponse,
@@ -48,6 +53,7 @@ from roboco.api.schemas.a2a_chat import (
 from roboco.db.base import get_session_factory
 from roboco.enforcement import A2AAccessDeniedError
 from roboco.models.a2a import (
+    A2AConversation,
     A2AConversationStatus,
     A2ATask,
     AgentCard,
@@ -823,6 +829,15 @@ async def send_chat_message(
                 "requires_response": data.requires_response,
             },
         )
+    except A2AAccessDeniedError as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "A2A_ACCESS_DENIED",
+                "message": e.message,
+                "route_hint": e.route_hint,
+            },
+        ) from None
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -888,4 +903,184 @@ async def get_task_conversations(
             for c in conversations
         ],
         total=len(conversations),
+    )
+
+
+# =============================================================================
+# ADMIN / LIVE VIEW ENDPOINTS (CEO-only)
+# =============================================================================
+# The CEO's org-wide A2A live view: unlike the participant-scoped endpoints
+# above, these read across every conversation regardless of who's a party to
+# it, and let the CEO chime into an existing thread as itself.
+
+
+def _require_ceo(agent: CurrentAgentContext) -> None:
+    require_ceo_role(agent.role, action="view or reply to the A2A live view")
+
+
+def _resolve_reply_target(conv: A2AConversation, to_agent: str) -> None:
+    """Validate the CEO's reply target against the pairwise conversation.
+
+    Raises the appropriate 400 HTTPException — kept out of the route handler
+    to keep its cyclomatic complexity low. A2A conversations are strictly
+    pairwise (no N-party thread), so the CEO must address one of the two
+    real participants; A2A is also scoped to a task by construction
+    (A2AService.send requires task_id), so an untethered conversation can't
+    be replied into via this path.
+    """
+    if to_agent not in (conv.agent_a, conv.agent_b):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"{to_agent} is not a participant in this conversation "
+                f"(participants: {conv.agent_a}, {conv.agent_b})"
+            ),
+        )
+    if conv.task_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Conversation has no linked task_id — A2A requires one",
+        )
+
+
+@router.get("/chat/admin/conversations")
+async def list_admin_conversations(
+    db: DbSession,
+    agent: CurrentAgentContext,
+    limit: int = Query(50, ge=1, le=100),
+) -> AdminConversationListResponse:
+    """CEO-only: list conversations across every agent pair, most-recent-first."""
+    _require_ceo(agent)
+    service = A2AService(db)
+    conversations = await service.list_conversations_admin(limit)
+
+    return AdminConversationListResponse(
+        items=[
+            AdminConversationSummaryResponse(
+                id=require_uuid(c.id),
+                agent_a=c.agent_a,
+                agent_b=c.agent_b,
+                topic=c.topic,
+                task_id=require_uuid(c.task_id) if c.task_id else None,
+                status=c.status,
+                message_count=c.message_count,
+                last_message_at=c.last_message_at,
+                last_message_preview=c.last_message_preview,
+                created_at=c.created_at,
+                updated_at=c.updated_at,
+            )
+            for c in conversations
+        ],
+        total=len(conversations),
+    )
+
+
+@router.get("/chat/admin/conversations/{conversation_id}/messages")
+async def list_admin_chat_messages(
+    conversation_id: str,
+    db: DbSession,
+    agent: CurrentAgentContext,
+    limit: int = Query(100, ge=1, le=500),
+    before: datetime | None = None,
+) -> MessageListResponse:
+    """CEO-only: read any conversation's transcript, participant or not."""
+    _require_ceo(agent)
+    service = A2AService(db)
+
+    messages = await service.get_messages_admin(
+        conversation_id=require_uuid(conversation_id),
+        limit=limit + 1,  # +1 to detect has_more
+        before=before,
+    )
+
+    has_more = len(messages) > limit
+    if has_more:
+        messages = messages[:limit]
+
+    return MessageListResponse(
+        items=[
+            MessageResponse(
+                id=require_uuid(m.id),
+                conversation_id=require_uuid(m.conversation_id),
+                from_agent=m.from_agent,
+                content=m.content,
+                message_kind=m.message_kind,
+                response_to_id=(
+                    require_uuid(m.response_to_id) if m.response_to_id else None
+                ),
+                requires_response=m.requires_response,
+                read_at=m.read_at,
+                created_at=m.created_at,
+                edited_at=m.edited_at,
+            )
+            for m in messages
+        ],
+        total=len(messages),
+        has_more=has_more,
+    )
+
+
+@router.post(
+    "/chat/admin/conversations/{conversation_id}/reply",
+    status_code=status.HTTP_201_CREATED,
+)
+@guard_deco.rate_limit(requests=60, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(prompt_injection_validator)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.honeypot_detection(["email", "phone", "website"])
+@guard_deco.suspicious_detection(enabled=True)
+async def reply_as_ceo(
+    conversation_id: str,
+    db: DbSession,
+    agent: CurrentAgentContext,
+    data: AdminReplyRequest,
+) -> MessageResponse:
+    """CEO-only: chime into an existing A2A conversation as itself.
+
+    The CEO addresses one of the conversation's two real participants (A2A
+    conversations are strictly pairwise) on the conversation's linked task.
+    """
+    _require_ceo(agent)
+    service = A2AService(db)
+
+    conv = await service.get_conversation_admin(require_uuid(conversation_id))
+    if conv is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Conversation not found: {conversation_id}",
+        )
+    _resolve_reply_target(conv, data.to_agent)
+
+    try:
+        msg = await service.send(
+            from_agent=agent.agent_id,
+            to_agent=data.to_agent,
+            task_id=require_uuid(conv.task_id),
+            body=data.content,
+            skill=data.skill,
+        )
+    except A2AAccessDeniedError as e:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={
+                "error": "A2A_ACCESS_DENIED",
+                "message": e.message,
+                "route_hint": e.route_hint,
+            },
+        ) from None
+
+    await db.commit()
+
+    return MessageResponse(
+        id=require_uuid(msg.id),
+        conversation_id=require_uuid(msg.conversation_id),
+        from_agent=msg.from_agent,
+        content=msg.content,
+        message_kind=msg.message_kind,
+        response_to_id=require_uuid(msg.response_to_id) if msg.response_to_id else None,
+        requires_response=msg.requires_response,
+        read_at=msg.read_at,
+        created_at=msg.created_at,
+        edited_at=msg.edited_at,
     )

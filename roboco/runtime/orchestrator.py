@@ -3060,6 +3060,94 @@ class AgentOrchestrator:
         resolved = [await project_service.get(pid) for pid in ids]
         return [p for p in resolved if p is not None]
 
+    async def _resolve_history_digest_ambient(
+        self,
+        project_slug: str | None,
+        product_id: str | None = None,
+        project_ids: list[str] | None = None,
+    ) -> str | None:
+        """Resolve the prompter's task-history-digest ambient block for this scope.
+
+        Unlike the conventions ambient resolver, this covers all three intake
+        scopes including ``project_ids`` (a MegaTask) — the digest is meant to
+        span every project the intake agent is reading. Best-effort: returns None
+        on any failure or empty scope so history resolution can never block a
+        spawn.
+        """
+        try:
+            from roboco.db.base import get_session_factory
+            from roboco.services.prompter import history_digest_layer
+
+            factory = get_session_factory()
+            async with factory() as db:
+                projects = await self._resolve_history_digest_projects(
+                    db,
+                    project_slug=project_slug,
+                    product_id=product_id,
+                    project_ids=project_ids,
+                )
+                return await history_digest_layer(db, projects)
+        except Exception as exc:
+            logger.warning(
+                "History digest ambient resolution failed (non-fatal)",
+                project_slug=project_slug,
+                error=str(exc),
+            )
+            return None
+
+    @staticmethod
+    async def _resolve_history_digest_projects(
+        db: Any,
+        *,
+        project_slug: str | None,
+        product_id: str | None,
+        project_ids: list[str] | None,
+    ) -> list[Any]:
+        """The in-scope ProjectTable rows for the history digest — single repo,
+        product (all cell projects), or an explicit MegaTask project_ids set."""
+        if project_ids:
+            from uuid import UUID
+
+            from roboco.services.project import get_project_service
+
+            project_svc = get_project_service(db)
+            out = []
+            for pid in project_ids:
+                p = await project_svc.get(UUID(pid))
+                if p is not None:
+                    out.append(p)
+            return out
+        if product_id is not None:
+            return await AgentOrchestrator._ambient_product_projects(db, product_id)
+        if project_slug:
+            from roboco.services.project import get_project_service
+
+            project = await get_project_service(db).get_by_slug(project_slug)
+            return [project] if project is not None else []
+        return []
+
+    async def _resolve_intake_ambient(
+        self,
+        project_slug: str | None,
+        *,
+        product_id: str | None,
+        project_ids: list[str] | None,
+    ) -> str | None:
+        """The intake spawn's full ambient block: conventions + history digest,
+        joined with ``compose_prompt``'s own layer separator."""
+        conventions_ambient = await self._resolve_conventions_ambient(
+            project_slug, product_id=product_id
+        )
+        history_ambient = await self._resolve_history_digest_ambient(
+            project_slug, product_id=product_id, project_ids=project_ids
+        )
+        return (
+            "\n\n---\n\n".join(
+                part for part in (conventions_ambient, history_ambient) if part
+            )
+            or None
+        )
+
     async def _readiness_gate(self, agent_id: str, task_id: str | None) -> str | None:
         """Return a reason string if the spawn must be refused, else None.
 
@@ -3740,8 +3828,8 @@ class AgentOrchestrator:
                 project_slug, product_id, project_ids
             )
 
-            ambient = await self._resolve_conventions_ambient(
-                project_slug, product_id=product_id
+            ambient = await self._resolve_intake_ambient(
+                project_slug, product_id=product_id, project_ids=project_ids
             )
             prompt_path = self._generate_composed_prompt(
                 INTAKE_AGENT_ID, ambient=ambient

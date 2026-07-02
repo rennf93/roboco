@@ -8,10 +8,11 @@ start/stop routes against a fake orchestrator.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from http import HTTPStatus
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import httpx
@@ -460,3 +461,67 @@ async def test_preview_batch_returns_waves_and_does_not_reap(
     assert resp.status_code == HTTPStatus.OK
     assert resp.json() == {"waves": [[0, 1]], "warnings": []}
     assert orch.reaped == []  # preview creates nothing and leaves the chat alive
+
+
+# ---------------------------------------------------------------------------
+# search-tasks — the intake's mid-conversation "have we done this before?" tool.
+# ---------------------------------------------------------------------------
+
+
+def _row(title: str = "Fix login bug") -> MagicMock:
+    row = MagicMock()
+    row.id = uuid4()
+    row.title = title
+    row.status = "completed"
+    row.team = "backend"
+    row.completed_at = datetime.now(UTC)
+    row.updated_at = None
+    row.created_at = datetime.now(UTC)
+    return row
+
+
+@pytest.mark.asyncio
+async def test_search_tasks_returns_compact_rows_for_alive_session(
+    live_client: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, registry = live_client["client"], live_client["registry"]
+    registry.open("s1", "intake-1")
+
+    task_svc = MagicMock()
+    task_svc.search_tasks = AsyncMock(return_value=[_row()])
+    monkeypatch.setattr("roboco.services.task.get_task_service", lambda _db: task_svc)
+
+    resp = await client.get("/api/prompter/live/s1/search-tasks", params={"q": "login"})
+
+    assert resp.status_code == HTTPStatus.OK
+    body = resp.json()
+    assert len(body) == 1
+    assert set(body[0].keys()) == {"id", "title", "status", "team", "date"}
+    assert body[0]["title"] == "Fix login bug"
+    task_svc.search_tasks.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_search_tasks_unknown_session_404(live_client: dict) -> None:
+    resp = await live_client["client"].get(
+        "/api/prompter/live/nope/search-tasks", params={"q": "login"}
+    )
+    assert resp.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_search_tasks_query_too_short_422(live_client: dict) -> None:
+    live_client["registry"].open("s1", "intake-1")
+    resp = await live_client["client"].get(
+        "/api/prompter/live/s1/search-tasks", params={"q": "a"}
+    )
+    assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+
+
+@pytest.mark.asyncio
+async def test_search_tasks_limit_above_max_422(live_client: dict) -> None:
+    live_client["registry"].open("s1", "intake-1")
+    resp = await live_client["client"].get(
+        "/api/prompter/live/s1/search-tasks", params={"q": "login", "limit": 11}
+    )
+    assert resp.status_code == HTTPStatus.UNPROCESSABLE_ENTITY

@@ -23,6 +23,7 @@ import {
   Cpu,
   Sparkles,
   Building2,
+  Radio,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -50,6 +51,7 @@ export const navItems = [
 
   // History
   { title: "Communications", href: "/communications", icon: MessageSquare },
+  { title: "A2A Live", href: "/a2a", icon: Radio },
   { title: "Journals", href: "/journals", icon: BookOpen },
 
   // System

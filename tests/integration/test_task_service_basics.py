@@ -8,8 +8,9 @@ existing v1-flow integration tests.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
-from uuid import uuid4
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any, cast
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -235,6 +236,88 @@ async def test_get_active_count_for_agent(task_setup: dict) -> None:
     svc = task_setup["svc"]
     count = await svc.get_active_count(task_setup["agent_id"])
     assert isinstance(count, int)
+
+
+# ---------------------------------------------------------------------------
+# list_recent_for_project — the prompter's history digest source
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_recent_for_project_orders_most_recent_activity_first(
+    task_setup: dict,
+) -> None:
+    svc = task_setup["svc"]
+    db = task_setup["db"]
+    now = datetime.now(UTC)
+
+    oldest = await svc.create(_req(task_setup, title="oldest"))
+    middle = await svc.create(_req(task_setup, title="middle"))
+    newest = await svc.create(_req(task_setup, title="newest"))
+
+    # Distinct activity dates: oldest only has created_at far in the past;
+    # middle was touched (updated_at) more recently; newest actually completed
+    # (completed_at wins over updated_at/created_at).
+    oldest.created_at = now - timedelta(days=10)
+    oldest.updated_at = None
+    middle.created_at = now - timedelta(days=9)
+    middle.updated_at = now - timedelta(days=5)
+    newest.created_at = now - timedelta(days=8)
+    newest.updated_at = now - timedelta(days=7)
+    newest.completed_at = now - timedelta(days=1)
+    await db.flush()
+
+    rows = await svc.list_recent_for_project(task_setup["project_id"])
+    ids = [t.id for t in rows]
+    assert ids.index(newest.id) < ids.index(middle.id) < ids.index(oldest.id)
+
+
+@pytest.mark.asyncio
+async def test_list_recent_for_project_respects_limit(task_setup: dict) -> None:
+    svc = task_setup["svc"]
+    db = task_setup["db"]
+    now = datetime.now(UTC)
+
+    tasks = [await svc.create(_req(task_setup, title=f"t{i}")) for i in range(3)]
+    for i, t in enumerate(tasks):
+        t.created_at = now - timedelta(days=10 - i)  # t0 oldest, t2 newest
+        t.updated_at = None
+    await db.flush()
+
+    query_limit = 2
+    rows = await svc.list_recent_for_project(
+        task_setup["project_id"], limit=query_limit
+    )
+    assert len(rows) == query_limit
+    ids = [t.id for t in rows]
+    assert ids == [tasks[2].id, tasks[1].id]
+
+
+@pytest.mark.asyncio
+async def test_list_recent_for_project_scoped_to_project(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    svc = task_setup["svc"]
+    in_scope = await svc.create(_req(task_setup, title="in-scope"))
+
+    other_project = ProjectTable(
+        id=uuid4(),
+        name="Other-Proj",
+        slug=f"other-proj-{uuid4().hex[:8]}",
+        git_url="https://example.com/other.git",
+        assigned_cell=Team.BACKEND,
+        created_by=task_setup["agent_id"],
+    )
+    db_session.add(other_project)
+    await db_session.flush()
+    other_req = _req(task_setup, title="other-project-task")
+    other_req.project_id = cast("UUID", other_project.id)
+    out_of_scope = await svc.create(other_req)
+
+    rows = await svc.list_recent_for_project(task_setup["project_id"])
+    ids = {t.id for t in rows}
+    assert in_scope.id in ids
+    assert out_of_scope.id not in ids
 
 
 # ---------------------------------------------------------------------------

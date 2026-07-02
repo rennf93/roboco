@@ -29,6 +29,11 @@ from mcp.server.fastmcp import FastMCP
 
 _TIMEOUT = 15.0
 
+_SEARCH_QUERY_MIN_LEN = 2
+_SEARCH_QUERY_MAX_LEN = 200
+_SEARCH_DEFAULT_LIMIT = 8
+_SEARCH_MAX_LIMIT = 10
+
 mcp = FastMCP("roboco-intake")
 
 
@@ -98,6 +103,75 @@ async def post_batch(
         {"kind": "batch", "text": "", "tool": "propose_batch", "data": batch},
         client=client,
     )
+
+
+async def query_past_tasks(
+    session_id: str,
+    query: str,
+    *,
+    limit: int = _SEARCH_DEFAULT_LIMIT,
+    client: httpx.AsyncClient | None = None,
+) -> dict[str, Any]:
+    """GET the bounded compact task-search results; never raises.
+
+    Module-level so it is unit-testable AND shared with the Claude SDK
+    driver's in-process tool (``intake_driver.py`` imports this directly) —
+    the HTTP + bounding logic for ``search_past_tasks`` lives in exactly one
+    place, used by both runtimes.
+    """
+    q = (query or "").strip()[:_SEARCH_QUERY_MAX_LEN]
+    if len(q) < _SEARCH_QUERY_MIN_LEN:
+        return {"error": "query_too_short", "results": []}
+    bounded_limit = min(max(int(limit), 1), _SEARCH_MAX_LIMIT)
+    owns = client is None
+    http = client or httpx.AsyncClient(timeout=_TIMEOUT)
+    url = f"{_api_base()}/api/prompter/live/{session_id}/search-tasks"
+    try:
+        resp = await http.get(url, params={"q": q, "limit": bounded_limit})
+    except httpx.HTTPError as exc:
+        return {"error": "request_failed", "detail": str(exc), "results": []}
+    finally:
+        if owns:
+            await http.aclose()
+    if not resp.is_success:
+        try:
+            body = resp.json()
+        except (ValueError, json.JSONDecodeError):
+            body = None
+        return {"error": f"http_{resp.status_code}", "detail": body, "results": []}
+    return {"results": resp.json()}
+
+
+def format_search_results(result: dict[str, Any]) -> str:
+    """Render ``query_past_tasks``'s result dict as a compact, human/LLM-
+    readable list. Pure — shared by both runtimes' tool wrappers."""
+    if "error" in result:
+        detail = result.get("detail") or result["error"]
+        return f"Could not search past tasks: {detail}"
+    results = result.get("results") or []
+    if not results:
+        return "No past tasks matched that search."
+    lines = [
+        f"- `{r['id'][:8]}` {r['title']} ({r['status']}, {r['team']}, {r['date']})"
+        for r in results
+    ]
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def search_past_tasks(query: str, limit: int = _SEARCH_DEFAULT_LIMIT) -> str:
+    """Search past tasks by title/description/id-prefix.
+
+    Use this mid-conversation to check "have we done something like this
+    before?" or find a predecessor to cite in a new draft's description
+    ("follows up <short-id>"). Returns up to ``limit`` (max 10) compact
+    results: short id, title, status, team, date.
+    """
+    session_id = os.environ.get("ROBOCO_PROMPTER_SESSION_ID", "")
+    if not session_id:
+        return "No live session id (ROBOCO_PROMPTER_SESSION_ID) — cannot search."
+    result = await query_past_tasks(session_id, query, limit=limit)
+    return format_search_results(result)
 
 
 @mcp.tool()

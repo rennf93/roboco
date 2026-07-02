@@ -17,10 +17,10 @@ Phase 5.
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sse_starlette import EventSourceResponse
 
 from roboco.api.deps import (
@@ -366,3 +366,35 @@ async def re_interview(
 async def relay_event(session_id: str, event: AgentEvent) -> dict[str, bool]:
     """Relay one agent event from the container onto the session's stream."""
     return {"pushed": get_live_registry().push(session_id, event.model_dump())}
+
+
+_SEARCH_TASKS_DEFAULT_LIMIT = 8
+_SEARCH_TASKS_MAX_LIMIT = 10
+
+
+@router.get("/live/{session_id}/search-tasks")
+async def search_past_tasks(
+    session_id: str,
+    db: DbSession,
+    q: Annotated[str, Query(min_length=2, max_length=200)],
+    limit: Annotated[int, Query(ge=1, le=_SEARCH_TASKS_MAX_LIMIT)] = (
+        _SEARCH_TASKS_DEFAULT_LIMIT
+    ),
+) -> list[dict[str, Any]]:
+    """Bounded compact task search for the intake agent's ``search_past_tasks``
+    tool — "have we done something like this before?" mid-conversation.
+
+    Session-scoped as a trust boundary (the intake container has no agent
+    identity, matching ``/events``): a dead/unknown session is rejected so
+    only a live intake container can query.
+    """
+    if not get_live_registry().is_alive(session_id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No live intake session {session_id}",
+        )
+    from roboco.services.prompter import compact_task_rows
+    from roboco.services.task import get_task_service
+
+    rows = await get_task_service(db).search_tasks(q, limit=limit)
+    return compact_task_rows(rows)

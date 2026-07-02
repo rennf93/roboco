@@ -587,6 +587,24 @@ class A2AConversationSummary(RobocoBase):
     )
 
 
+class A2AConversationAdminSummary(RobocoBase):
+    """Conversation summary for the CEO's cross-agent live view (no single-
+    participant perspective — unlike A2AConversationSummary, this carries
+    both slugs rather than one "other_agent")."""
+
+    id: str
+    agent_a: str
+    agent_b: str
+    topic: str | None = None
+    task_id: str | None = None
+    status: A2AConversationStatus
+    message_count: int
+    last_message_at: datetime | None
+    last_message_preview: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
 class A2APair(RobocoBase):
     """Unique agent pair for frontend display."""
 

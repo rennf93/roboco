@@ -206,6 +206,32 @@ async def _handle_usage_event(event: Event) -> None:
     )
 
 
+async def _handle_a2a_message_event(event: Event) -> None:
+    """Forward an A2A_MESSAGE_SENT event to operator /ws/system clients as an
+    `a2a.message` frame — the CEO's live view of every agent-to-agent chat.
+    Carries only the excerpt the service already capped; the full body stays
+    readable via the admin REST endpoints.
+    """
+    data = event.data
+    await manager.broadcast_system(
+        {
+            "type": "a2a.message",
+            "conversation_id": data.get("conversation_id"),
+            "message_id": data.get("message_id"),
+            "task_id": data.get("task_id"),
+            "from_agent": data.get("from_agent"),
+            "to_agent": data.get("to_agent"),
+            "skill": data.get("skill"),
+            "body_excerpt": data.get("body_excerpt", ""),
+            "timestamp": data.get("timestamp"),
+        }
+    )
+    logger.debug(
+        "A2A message forwarded to system WebSocket",
+        message_id=data.get("message_id"),
+    )
+
+
 def register_websocket_bridge_handlers() -> None:
     """
     Register event handlers that forward events to WebSocket clients.
@@ -239,6 +265,9 @@ def register_websocket_bridge_handlers() -> None:
 
     # Message delivery -> channel + session WebSocket streams (live chat)
     bus.subscribe(EventType.MESSAGE_SENT, _handle_message_event)
+
+    # A2A live chat -> operator system WebSocket (CEO live view)
+    bus.subscribe(EventType.A2A_MESSAGE_SENT, _handle_a2a_message_event)
 
     logger.info("WebSocket bridge handlers registered")
 

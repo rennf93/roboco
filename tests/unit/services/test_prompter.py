@@ -8,10 +8,15 @@ conftest fixtures.
 
 from __future__ import annotations
 
-from typing import Any, cast
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID, uuid4
 
 import pytest
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 from roboco.db.tables import (
     AgentTable,
     ProductTable,
@@ -28,15 +33,23 @@ from roboco.models.base import (
     Team,
 )
 from roboco.seeds.initial_data import AGENT_UUIDS
+from roboco.services import prompter as prompter_module
 from roboco.services.base import ServiceError, ValidationError
 from roboco.services.prompter import (
+    _HISTORY_DIGEST_PER_PROJECT_LIMIT,
+    _HISTORY_TITLE_EXCERPT_CAP,
     PrompterService,
     _cell_teams,
     _clean_list,
     _draft_cell_map,
+    _task_activity_date,
+    _title_excerpt,
+    build_history_digest,
+    compact_task_rows,
     compose_description,
     derive_scale,
     get_prompter_service,
+    history_digest_layer,
     parse_readiness,
 )
 
@@ -1052,3 +1065,216 @@ async def test_create_task_from_draft_does_not_mutate_caller_draft(
     assert draft["the_work"][0]["items"] == original_items
     # ...and the top-level acceptance_criteria was NOT replaced.
     assert draft["acceptance_criteria"] == ["done"]
+
+
+# =============================================================================
+# Prompter memory v1 — history digest + compact search rows (pure, no DB)
+# =============================================================================
+
+
+def _task(title: str, **overrides: Any) -> TaskTable:
+    """An unattached TaskTable instance — plain attribute assignment, no session.
+
+    Defaults to a completed backend task with no dates; pass ``completed_at`` /
+    ``updated_at`` / ``created_at`` / ``status`` / ``team`` to override.
+    """
+    fields: dict[str, Any] = {
+        "id": uuid4(),
+        "title": title,
+        "status": TaskStatus.COMPLETED,
+        "team": Team.BACKEND,
+        "completed_at": None,
+        "updated_at": None,
+        "created_at": None,
+    }
+    fields.update(overrides)
+    return TaskTable(**fields)
+
+
+def test_task_activity_date_prefers_completed_at() -> None:
+    now = datetime.now(UTC)
+    task = _task(
+        "t",
+        completed_at=now,
+        updated_at=now - timedelta(days=1),
+        created_at=now - timedelta(days=2),
+    )
+    assert _task_activity_date(task) == now
+
+
+def test_task_activity_date_falls_back_to_updated_at() -> None:
+    now = datetime.now(UTC)
+    task = _task(
+        "t", completed_at=None, updated_at=now, created_at=now - timedelta(days=1)
+    )
+    assert _task_activity_date(task) == now
+
+
+def test_task_activity_date_falls_back_to_created_at() -> None:
+    now = datetime.now(UTC)
+    task = _task("t", completed_at=None, updated_at=None, created_at=now)
+    assert _task_activity_date(task) == now
+
+
+def test_title_excerpt_leaves_short_titles_untouched() -> None:
+    assert _title_excerpt("Fix login bug") == "Fix login bug"
+
+
+def test_title_excerpt_truncates_long_titles_with_ellipsis() -> None:
+    long_title = "A" * 100
+    excerpt = _title_excerpt(long_title)
+    assert len(excerpt) == _HISTORY_TITLE_EXCERPT_CAP
+    assert excerpt.endswith("…")
+
+
+def test_build_history_digest_empty_is_blank() -> None:
+    assert build_history_digest([]) == ""
+
+
+def test_build_history_digest_caps_at_limit_keeps_most_recent() -> None:
+    now = datetime.now(UTC)
+    # t0 oldest ... t19 newest.
+    ascending = [
+        _task(f"t{i}", created_at=now + timedelta(days=i), updated_at=None)
+        for i in range(20)
+    ]
+    # Mimic the DB's most-recent-first ordering.
+    most_recent_first = list(reversed(ascending))
+
+    digest = build_history_digest(most_recent_first)
+
+    lines = digest.splitlines()
+    assert len(lines) == _HISTORY_DIGEST_PER_PROJECT_LIMIT
+    for i in range(5):  # the 5 oldest are excluded
+        assert f"`{str(ascending[i].id)[:8]}`" not in digest
+    for i in range(5, 20):  # the 15 most recent are present
+        assert f"`{str(ascending[i].id)[:8]}`" in digest
+
+
+def test_build_history_digest_renders_oldest_first() -> None:
+    now = datetime.now(UTC)
+    a = _task("Task A", created_at=now - timedelta(days=2), updated_at=None)
+    b = _task("Task B", created_at=now - timedelta(days=1), updated_at=None)
+    c = _task("Task C", created_at=now, updated_at=None)
+
+    # DB order is most-recent-first: C, B, A.
+    digest = build_history_digest([c, b, a])
+
+    idx_a = digest.index("Task A")
+    idx_b = digest.index("Task B")
+    idx_c = digest.index("Task C")
+    assert idx_a < idx_b < idx_c
+
+
+def test_compact_task_rows_shape() -> None:
+    now = datetime.now(UTC)
+    task = _task(
+        "Fix login bug",
+        status=TaskStatus.COMPLETED,
+        team=Team.BACKEND,
+        completed_at=now,
+    )
+    rows = compact_task_rows([task])
+    assert len(rows) == 1
+    row = rows[0]
+    assert set(row.keys()) == {"id", "title", "status", "team", "date"}
+    assert row["id"] == str(task.id)
+    assert row["title"] == "Fix login bug"
+    assert row["status"] == "completed"
+    assert row["team"] == "backend"
+    assert row["date"] == now.date().isoformat()
+
+
+def test_compact_task_rows_preserves_none_team() -> None:
+    task = _task("No team", team=None, created_at=datetime.now(UTC))
+    rows = compact_task_rows([task])
+    assert rows[0]["team"] is None
+
+
+# -----------------------------------------------------------------------------
+# history_digest_layer — ambient-block assembly (project_history_digest stubbed)
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_history_digest_layer_empty_projects_returns_none() -> None:
+    assert await history_digest_layer(cast("AsyncSession", object()), []) is None
+
+
+@pytest.mark.asyncio
+async def test_history_digest_layer_single_project_has_no_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _fake(_session: Any, _project: Any, *, _limit: int = 15) -> str | None:
+        return "- `abc12345` Some task (completed, 2026-01-01)"
+
+    monkeypatch.setattr(prompter_module, "project_history_digest", _fake)
+    project = SimpleNamespace(slug="roboco", id=uuid4())
+
+    text = await history_digest_layer(cast("AsyncSession", object()), [project])
+
+    assert text is not None
+    assert text.startswith("## Task History\n\n### Recent tasks\n")
+    assert "### Recent tasks —" not in text
+
+
+@pytest.mark.asyncio
+async def test_history_digest_layer_multi_project_headers_by_slug(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    projects = [
+        SimpleNamespace(slug="backend-svc", id=uuid4()),
+        SimpleNamespace(slug="frontend-app", id=uuid4()),
+    ]
+
+    async def _fake(_session: Any, project: Any, *, _limit: int = 15) -> str | None:
+        return f"- `deadbeef` Task for {project.slug} (completed, 2026-01-01)"
+
+    monkeypatch.setattr(prompter_module, "project_history_digest", _fake)
+
+    text = await history_digest_layer(cast("AsyncSession", object()), projects)
+
+    assert text is not None
+    assert "### Recent tasks — `backend-svc`" in text
+    assert "### Recent tasks — `frontend-app`" in text
+
+
+@pytest.mark.asyncio
+async def test_history_digest_layer_skips_projects_with_no_tasks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    has_tasks = SimpleNamespace(slug="has-tasks", id=uuid4())
+    no_tasks = SimpleNamespace(slug="empty-proj", id=uuid4())
+
+    async def _fake(_session: Any, project: Any, *, _limit: int = 15) -> str | None:
+        return (
+            "- `deadbeef` A task (completed, 2026-01-01)"
+            if project is has_tasks
+            else None
+        )
+
+    monkeypatch.setattr(prompter_module, "project_history_digest", _fake)
+
+    text = await history_digest_layer(
+        cast("AsyncSession", object()), [has_tasks, no_tasks]
+    )
+
+    assert text is not None
+    assert "has-tasks" in text
+    assert "empty-proj" not in text
+
+
+@pytest.mark.asyncio
+async def test_history_digest_layer_all_empty_returns_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _fake(_session: Any, _project: Any, *, _limit: int = 15) -> str | None:
+        return None
+
+    monkeypatch.setattr(prompter_module, "project_history_digest", _fake)
+    projects = [
+        SimpleNamespace(slug="a", id=uuid4()),
+        SimpleNamespace(slug="b", id=uuid4()),
+    ]
+
+    assert await history_digest_layer(cast("AsyncSession", object()), projects) is None

@@ -124,6 +124,7 @@ async def main() -> None:  # pragma: no cover - needs the live container + SDK
     options = build_intake_options(
         system_prompt=system_prompt,
         cwd=cwd,
+        session_id=session_id,
         model=model,
     )
 

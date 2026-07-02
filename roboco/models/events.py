@@ -50,6 +50,9 @@ class EventType(StrEnum):
     # /ws/channels/{id} and /ws/sessions/{id} subscribers via the bridge.
     MESSAGE_SENT = "message.sent"
 
+    # A2A chat message persisted — operator live view
+    A2A_MESSAGE_SENT = "a2a.message_sent"
+
     # Handoff events
     HANDOFF_CREATED = "handoff.created"
     HANDOFF_ACCEPTED = "handoff.accepted"

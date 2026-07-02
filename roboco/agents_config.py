@@ -648,9 +648,23 @@ def can_a2a_direct(from_agent: str, to_agent: str) -> tuple[bool, str | None]:
     from_team = get_agent_team(from_agent)
     to_team = get_agent_team(to_agent)
 
-    # CEO is human - cannot A2A, use notifications
+    # The CEO (human, via the panel) may chime into any agent's A2A thread —
+    # the one asymmetric rule in this matrix: CEO may send, nobody may
+    # target CEO.
+    if from_role == "ceo":
+        return True, None
+
+    # CEO is human - agents can never INITIATE with the CEO. The only path in
+    # is a reply inside a conversation the CEO itself opened (enforced
+    # statefully in A2AService.send_chat_message's reply budget — this
+    # matrix stays stateless, so it blocks conversation *creation*
+    # unconditionally as defense-in-depth).
     if to_role == "ceo":
-        return False, "CEO is human. Use notify() instead of A2A."
+        return (
+            False,
+            "CEO is human. You may only reply inside a conversation the "
+            "CEO opened — use notify() otherwise.",
+        )
 
     # Board → board/main-pm (not CEO, not cells directly)
     if from_role in ("product_owner", "head_marketing", "auditor"):
