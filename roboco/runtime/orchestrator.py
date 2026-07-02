@@ -599,7 +599,9 @@ GATEWAY_ENABLED_ROLES: frozenset[str] = frozenset(
 )
 
 
-def _build_manifest_for_agent(agent_id: str, model: str) -> Path | None:
+def _build_manifest_for_agent(
+    agent_id: str, model: str, workspace_path: str | None = None
+) -> Path | None:
     """Write a SpawnManifest for developer-role agents; return the host path.
 
     Returns ``None`` for roles outside ``GATEWAY_ENABLED_ROLES`` so callers
@@ -608,6 +610,12 @@ def _build_manifest_for_agent(agent_id: str, model: str) -> Path | None:
     Args:
         agent_id: Agent slug (e.g. ``be-dev-1``).
         model:    Resolved model name passed to ``SpawnInputs.agent_model``.
+        workspace_path: The task-resolved workspace (project clone or per-task
+            worktree) — the SAME path the container ``-w`` uses. Without it
+            the manifest falls back to the agent's roboco-project workspace,
+            which is WRONG for any other project's task (live 2026-07-02:
+            be-dev-2's manifest pointed at /data/workspaces/roboco while the
+            task lived in guard-core-saas-backend).
 
     Returns:
         Absolute host path to the written JSON file, or ``None``.
@@ -631,14 +639,18 @@ def _build_manifest_for_agent(agent_id: str, model: str) -> Path | None:
     raw_uuid = AGENT_UUIDS.get(agent_id)
     agent_uuid = UUID(raw_uuid) if raw_uuid else __import__("uuid").uuid4()
 
-    workspace_path = Path(settings.workspaces_root) / "roboco" / team / agent_id
+    resolved_workspace = (
+        Path(workspace_path)
+        if workspace_path
+        else Path(settings.workspaces_root) / "roboco" / team / agent_id
+    )
 
     manifest = build_for_role(
         SpawnInputs(
             agent_id=agent_uuid,
             role=role,
             team=team,
-            workspace_path=workspace_path,
+            workspace_path=resolved_workspace,
             agent_model=model,
         )
     )
@@ -2601,7 +2613,13 @@ class AgentOrchestrator:
         # Spawn manifest + gateway flag — developer role only in Phase 1.
         # _build_manifest_for_agent writes the JSON file to the host and
         # returns the path; other roles get None and the gateway flag stays off.
-        manifest_host_path = _build_manifest_for_agent(config.agent_id, subagent_model)
+        # workspace_path mirrors the container -w (same resolver) so the
+        # manifest never claims a different directory than the shell.
+        manifest_host_path = _build_manifest_for_agent(
+            config.agent_id,
+            subagent_model,
+            workspace_path=AgentOrchestrator._resolve_workspace_cwd(config),
+        )
         if manifest_host_path:
             cmd.extend(
                 [
@@ -2622,6 +2640,27 @@ class AgentOrchestrator:
     _ROLES_WITH_CELL_WORKSPACE: ClassVar[frozenset[str]] = frozenset({"documenter"})
 
     @staticmethod
+    def _resolve_workspace_cwd(config: AgentConfig) -> str | None:
+        """The task-resolved workspace path for this spawn, or None.
+
+        Single source of truth consumed by BOTH the container ``-w`` and the
+        spawn manifest's ``workspace_path`` — they must agree, or the agent's
+        prompt claims one directory while its shell sits in another (live
+        2026-07-02: manifest said the roboco workspace for a guard-core task).
+        """
+        role = get_agent_role(config.agent_id) or "developer"
+        team = get_agent_team(config.agent_id) or ""
+        project = _resolve_project_slug_from_git_context(config.git_context)
+        if role in AgentOrchestrator._ROLES_WITH_AGENT_WORKSPACE:
+            # Per-task worktree when the task has a branch (F123), else the
+            # clone root. _agent_cwd_path is the SAME formula the Edit/Write
+            # allowlist is built from, so -w and the allowlist match exactly.
+            return _agent_cwd_path(project, team, config.agent_id, config.git_context)
+        if role in AgentOrchestrator._ROLES_WITH_CELL_WORKSPACE:
+            return _cell_workspace_path(project, team)
+        return None
+
+    @staticmethod
     def _append_workspace_cwd(cmd: list[str], config: AgentConfig) -> None:
         """Set the container -w to the agent or cell workspace by role."""
         # Pre-gateway parity: set the container's cwd
@@ -2630,25 +2669,13 @@ class AgentOrchestrator:
         # the workspace clone. Without this, container WORKDIR (/app from the
         # Dockerfile) shadows the workspace and every file op fails.
         #
-        # Mirror the workspace-path selection in _get_role_permissions exactly:
+        # Workspace selection lives in _resolve_workspace_cwd:
         # - developer / product_owner / head_marketing: per-agent workspace
         # - documenter: cell workspace
         # - qa / cell_pm / main_pm / auditor: no write workspace → omit -w
-        role = get_agent_role(config.agent_id) or "developer"
-        team = get_agent_team(config.agent_id) or ""
-        project = _resolve_project_slug_from_git_context(config.git_context)
-        if role in AgentOrchestrator._ROLES_WITH_AGENT_WORKSPACE:
-            # Per-task worktree when the task has a branch (F123), else the
-            # clone root. _agent_cwd_path is the SAME formula the Edit/Write
-            # allowlist is built from, so -w and the allowlist match exactly.
-            cmd.extend(
-                [
-                    "-w",
-                    _agent_cwd_path(project, team, config.agent_id, config.git_context),
-                ]
-            )
-        elif role in AgentOrchestrator._ROLES_WITH_CELL_WORKSPACE:
-            cmd.extend(["-w", _cell_workspace_path(project, team)])
+        workspace = AgentOrchestrator._resolve_workspace_cwd(config)
+        if workspace is not None:
+            cmd.extend(["-w", workspace])
 
     @staticmethod
     def _append_agent_auth_env(cmd: list[str], config: AgentConfig) -> None:

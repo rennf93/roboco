@@ -221,3 +221,40 @@ class TestBuildManifestForAgent:
         assert result is not None
         assert nested.exists()
         assert result.exists()
+
+
+class TestManifestWorkspacePath:
+    """workspace_path must be the TASK-resolved workspace, not the roboco default.
+
+    Live 2026-07-02: be-dev-2's manifest said /data/workspaces/roboco/... while
+    its task lived in guard-core-saas-backend — an agent trusting the manifest
+    hunts for its files in the wrong repository.
+    """
+
+    def test_workspace_override_reaches_manifest(self, tmp_path: Path) -> None:
+        worktree = (
+            "/data/workspaces/guard-core-saas-backend/backend/be-dev-1"
+            "/.worktrees/abc12345"
+        )
+        with patch("roboco.runtime.orchestrator.settings") as mock_settings:
+            mock_settings.manifest_host_dir = str(tmp_path)
+            mock_settings.workspaces_root = str(tmp_path / "workspaces")
+
+            result = _build_manifest_for_agent(
+                "be-dev-1", "claude-sonnet-5", workspace_path=worktree
+            )
+
+        assert result is not None
+        data = json.loads(result.read_text())
+        assert data["workspace_path"] == worktree
+
+    def test_no_override_keeps_roboco_default(self, tmp_path: Path) -> None:
+        with patch("roboco.runtime.orchestrator.settings") as mock_settings:
+            mock_settings.manifest_host_dir = str(tmp_path)
+            mock_settings.workspaces_root = str(tmp_path / "workspaces")
+
+            result = _build_manifest_for_agent("be-dev-1", "claude-sonnet-5")
+
+        assert result is not None
+        data = json.loads(result.read_text())
+        assert data["workspace_path"].endswith("workspaces/roboco/backend/be-dev-1")
