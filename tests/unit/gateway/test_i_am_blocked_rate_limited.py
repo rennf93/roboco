@@ -18,9 +18,27 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+import pytest
+from roboco.config import settings as cfg
 from roboco.models.events import EventType
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 from structlog.testing import capture_logs
+
+
+@pytest.fixture(autouse=True)
+def _unreachable_redis(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point the tracker at an unreachable Redis for every test here.
+
+    The real RateLimitStateTracker otherwise wrote a NO-TTL "anthropic
+    rate-limited" state blob into a developer's live localhost Redis on
+    every run — order/state-dependent poison for anything reading the real
+    tracker. activate() failing is fine: the parking handler catches and
+    logs it, and these tests assert orchestrator parking, not the write.
+    (redis_url is a computed property — patch its inputs.)
+    """
+    monkeypatch.setattr(cfg, "redis_host", "127.0.0.1")
+    monkeypatch.setattr(cfg, "redis_port", 1)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
