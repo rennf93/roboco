@@ -956,6 +956,8 @@ class AgentOrchestrator:
         # is in a loop — without this gate the orchestrator re-spawns every
         # tick forever (seen in production on 2026-04-22).
         self._pm_respawn_tracker: dict[tuple[str, str], dict[str, Any]] = {}
+        # Dispatcher heartbeat throttle (see _emit_dispatcher_heartbeat).
+        self._last_dispatch_heartbeat: datetime | None = None
         # Serializes the fire-and-forget respawn-tracker upserts so same-key
         # persists COMMIT in schedule (logical) order — not whatever order their
         # DB transactions resolve in. A respawn loop fires count 1->2->3->4 in
@@ -9088,6 +9090,31 @@ Start now: evidence(task_id="{task_id}")
         """
         self._dispatch_wake.set()
 
+    # Heartbeat cadence: one dispatcher.alive audit row per window. 300s keeps
+    # audit_log growth trivial (~288 rows/day) while making a dead loop visible
+    # within minutes (the 2026-07-01 outage was 4h25m of undetectable silence).
+    _DISPATCH_HEARTBEAT_SECONDS = 300
+
+    async def _emit_dispatcher_heartbeat(self) -> None:
+        """Periodic dispatcher.alive audit row — a dead loop becomes detectable.
+
+        The dispatch loop can die silently (task cancelled, unhandled exit) and
+        its stdout dies with the container; audit_log survives both. Absence of
+        a fresh heartbeat row = loop dead, distinguishable from "no work".
+        """
+        now = datetime.now(UTC)
+        last = getattr(self, "_last_dispatch_heartbeat", None)
+        if last is not None and (now - last).total_seconds() < (
+            self._DISPATCH_HEARTBEAT_SECONDS
+        ):
+            return
+        self._last_dispatch_heartbeat = now
+        self._fire_audit(
+            event_type="dispatcher.alive",
+            agent_slug="orchestrator",
+            details={"interval_seconds": self._DISPATCH_HEARTBEAT_SECONDS},
+        )
+
     async def _dispatcher_loop(self) -> None:
         """
         Main dispatcher loop - periodically checks for work and spawns agents.
@@ -9117,6 +9144,7 @@ Start now: evidence(task_id="{task_id}")
                 self._dispatch_wake.clear()
                 await self._refresh_grok_auth()
                 await self._dispatch_all_work()
+                await self._emit_dispatcher_heartbeat()
             except asyncio.CancelledError:
                 break
             except Exception as e:

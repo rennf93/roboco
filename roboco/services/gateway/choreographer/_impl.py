@@ -2199,6 +2199,45 @@ class Choreographer:
             )
         return None
 
+    async def _assembly_integrity_guard(
+        self, t: Any, *, verb: str
+    ) -> Envelope | None:
+        """Refuse the assembled submit when a completed child's work is missing.
+
+        Live incident #11: a completed revert subtask's commit never landed on
+        the assembled cell branch, so the review gate re-flagged the exact
+        violation the revert fixed. Patch-equivalence check (rebase-safe);
+        fail-open on git errors — the review gate remains the backstop.
+        """
+        if not getattr(t, "branch_name", None):
+            return None
+        try:
+            missing = list(await self.git.unmerged_child_commits(t) or [])
+        except Exception as exc:
+            logger.warning(
+                "assembly_integrity_skip", task_id=str(t.id), error=str(exc)
+            )
+            return None
+        if not missing:
+            return None
+        listing = "; ".join(
+            f"{m['title']} ({m['task_id']}, {m['unmerged']} commit(s))"
+            for m in missing
+        )
+        return Envelope.invalid_state(
+            message=(
+                f"{verb} refused: completed subtask work is MISSING from the "
+                f"assembled branch — {listing}"
+            ),
+            remediate=(
+                "merge each listed child's branch into the assembled branch "
+                "(their completion recorded a merge that is not reflected on "
+                "origin), then re-submit. Submitting now re-reviews a diff "
+                "that silently drops finished work."
+            ),
+            context_briefing={},
+        )
+
     async def _freshen_assembled_branch(
         self, t: Any, *, base_branch: str, verb: str
     ) -> Envelope | None:
@@ -5558,10 +5597,22 @@ class Choreographer:
         if guard is None:
             guard = await self._submit_up_unchanged_pr_guard(t, briefing)
         if guard is None:
+            # Assembly integrity (#11): every completed child's work must be
+            # in the assembled branch before it is reviewed.
+            guard = await self._assembly_integrity_guard(t, verb="submit_up")
+        if guard is None:
             # Behind-base auto-sync (B2): re-submitting a cell head whose ROOT
             # base moved re-reviews stale work and ping-pongs the gate. All
             # children are terminal here, so rebasing the cell branch is safe.
-            base_branch = await resolve_parent_branch(t, self.task)
+            try:
+                base_branch = await resolve_parent_branch(t, self.task)
+            except Exception as exc:
+                logger.warning(
+                    "assembled_freshen_base_skip",
+                    task_id=str(task_id),
+                    error=str(exc),
+                )
+                base_branch = ""
             guard = await self._freshen_assembled_branch(
                 t, base_branch=base_branch, verb="submit_up"
             )
@@ -6506,11 +6557,23 @@ class Choreographer:
         if guard is None:
             guard = await self._submit_root_unchanged_pr_guard(t, briefing)
         if guard is None:
+            # Assembly integrity (#11): every completed cell's work must be
+            # in the root branch before it is reviewed.
+            guard = await self._assembly_integrity_guard(t, verb="submit_root")
+        if guard is None:
             # Behind-base auto-sync (B2): the root branch must carry current
             # master before entering the root→master gate — re-reviewing a
             # stale root ping-pongs pr_fail↔needs_revision. Cells are terminal
             # here, so rebasing the root branch is safe.
-            base_branch = await resolve_parent_branch(t, self.task)
+            try:
+                base_branch = await resolve_parent_branch(t, self.task)
+            except Exception as exc:
+                logger.warning(
+                    "assembled_freshen_base_skip",
+                    task_id=str(task_id),
+                    error=str(exc),
+                )
+                base_branch = ""
             guard = await self._freshen_assembled_branch(
                 t, base_branch=base_branch, verb="submit_root"
             )
