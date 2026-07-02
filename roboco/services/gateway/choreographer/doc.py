@@ -125,6 +125,7 @@ class DocMixin(_Base):
         spec_ctx = spec_module.Context(
             actor_id=doc_agent_id,
             actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            agent_team=str(agent.team) if agent is not None and agent.team else None,
             original_developer_slug=_extract_original_developer(t),
         )
         decision = spec_module.can_invoke_intent(role, "claim_doc_task", t, spec_ctx)
@@ -374,10 +375,21 @@ class DocMixin(_Base):
                 task_id=task_id,
                 verb="i_documented",
             )
-            return rejection, agent, role_str, spec_module.Context(), briefing
+            return (
+                rejection,
+                agent,
+                role_str,
+                spec_module.Context(
+                    agent_team=str(agent.team)
+                    if agent is not None and agent.team
+                    else None
+                ),
+                briefing,
+            )
         spec_ctx = spec_module.Context(
             actor_id=doc_agent_id,
             actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            agent_team=str(agent.team) if agent is not None and agent.team else None,
             original_developer_slug=_extract_original_developer(owned_task),
             notes=notes,
             files=tuple(files),

@@ -79,6 +79,7 @@ async def test_i_will_plan_claims_starts_and_sets_plan() -> None:
         status="pending",
         plan=None,
         assigned_to=None,
+        team="backend",
         task_type="planning",
         parent_task_id=None,
         sequence=0,
@@ -164,6 +165,7 @@ async def test_i_will_plan_blocks_when_journal_decision_at_claim_missing() -> No
         status="pending",
         plan=None,
         assigned_to=None,
+        team="backend",
         task_type="planning",
         parent_task_id=None,
         sequence=0,
@@ -715,6 +717,7 @@ async def test_delegate_cell_pm_to_team_dev_creates_subtask() -> None:
         project_id=project_id,
         status="in_progress",
         assigned_to=cell_pm_id,
+        team="backend",
         quick_context="Decomposition planned; cells implement their slice next.",
     )
     new_task = MagicMock(id=uuid4())
@@ -862,6 +865,7 @@ async def test_delegate_invalid_team_enum_rejected() -> None:
         project_id=uuid4(),
         status="in_progress",
         assigned_to=pm_id,
+        team="backend",
         quick_context="Decomposition planned; cells implement their slice next.",
     )
     task_svc = AsyncMock()
@@ -1013,7 +1017,7 @@ async def test_submit_up_blocks_without_journal_decision() -> None:
 async def test_submit_up_short_notes_rejected() -> None:
     pm_id = uuid4()
     task_id = uuid4()
-    t = MagicMock(id=task_id, status="in_progress", assigned_to=pm_id)
+    t = MagicMock(id=task_id, status="in_progress", assigned_to=pm_id, team="backend")
     task_svc = AsyncMock()
     task_svc.get.return_value = t
     task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")

@@ -235,7 +235,7 @@ async def test_submit_up_blocks_when_subtask_pending() -> None:
     sub = MagicMock(id=sub_id, status="paused", title="Paused subtask")
     task_svc = AsyncMock()
     task_svc.get.return_value = t
-    task_svc.agent_for.return_value = MagicMock(role="cell_pm")
+    task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
     task_svc.all_subtasks_terminal.return_value = False
     task_svc.get_subtasks.return_value = [sub]
     journal_svc = AsyncMock()

@@ -48,6 +48,7 @@ def _parent(pm_id: Any, product_id: Any = None, project_id: Any = None) -> Magic
         product_id=product_id,
         status="in_progress",
         assigned_to=pm_id,
+        team="backend",
         # delegate obligates the PM's quick_context resumption section.
         quick_context="Decomposition planned; cells implement their slice next.",
     )

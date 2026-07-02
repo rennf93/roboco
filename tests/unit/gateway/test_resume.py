@@ -59,7 +59,7 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
 async def test_resume_transitions_paused_to_in_progress() -> None:
     aid = uuid4()
     tid = uuid4()
-    t = MagicMock(id=tid, status="paused", assigned_to=aid)
+    t = MagicMock(id=tid, status="paused", assigned_to=aid, team="backend")
     task_svc = AsyncMock()
     task_svc.get.return_value = t
     task_svc.agent_for.return_value = MagicMock(
@@ -108,7 +108,7 @@ async def test_resume_rejects_when_not_claimant() -> None:
     aid = uuid4()
     other = uuid4()
     tid = uuid4()
-    t = MagicMock(id=tid, status="paused", assigned_to=other)
+    t = MagicMock(id=tid, status="paused", assigned_to=other, team="backend")
     task_svc = AsyncMock()
     task_svc.get.return_value = t
     task_svc.agent_for.return_value = MagicMock(
@@ -177,7 +177,7 @@ async def test_resume_success_writes_heartbeat() -> None:
     """Heartbeat fires on success — agent is back to active work."""
     aid = uuid4()
     tid = uuid4()
-    t = MagicMock(id=tid, status="paused", assigned_to=aid)
+    t = MagicMock(id=tid, status="paused", assigned_to=aid, team="backend")
     task_svc = AsyncMock()
     task_svc.get.return_value = t
     task_svc.agent_for.return_value = MagicMock(

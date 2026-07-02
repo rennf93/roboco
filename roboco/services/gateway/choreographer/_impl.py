@@ -1437,6 +1437,7 @@ class Choreographer:
             plan=effective_plan,
             actor_id=agent_id,
             actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            agent_team=str(agent.team) if agent is not None and agent.team else None,
             original_developer_slug=_extract_original_developer(t),
         )
         ctx = _ClaimPlanStartContext(
@@ -1680,6 +1681,7 @@ class Choreographer:
         spec_ctx = spec_module.Context(
             actor_id=agent_id,
             actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            agent_team=str(agent.team) if agent is not None and agent.team else None,
             original_developer_slug=_extract_original_developer(t),
         )
         if rejection := self._open_pr_preflight_rejection(
@@ -1878,6 +1880,7 @@ class Choreographer:
         spec_ctx = spec_module.Context(
             actor_id=agent_id,
             actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            agent_team=str(agent.team) if agent is not None and agent.team else None,
             original_developer_slug=_extract_original_developer(t),
             notes=notes,
         )
@@ -3295,6 +3298,7 @@ class Choreographer:
         spec_ctx = spec_module.Context(
             actor_id=agent_id,
             actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            agent_team=str(agent.team) if agent is not None and agent.team else None,
             original_developer_slug=_extract_original_developer(t),
             notes=reason,
         )
@@ -3388,6 +3392,7 @@ class Choreographer:
         spec_ctx = spec_module.Context(
             actor_id=agent_id,
             actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            agent_team=str(agent.team) if agent is not None and agent.team else None,
             original_developer_slug=_extract_original_developer(t),
         )
         decision = spec_module.can_invoke_intent(role, "unclaim", t, spec_ctx)
@@ -3543,6 +3548,7 @@ class Choreographer:
         spec_ctx = spec_module.Context(
             actor_id=agent_id,
             actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            agent_team=str(agent.team) if agent is not None and agent.team else None,
             original_developer_slug=_extract_original_developer(t),
         )
         decision = spec_module.can_invoke_intent(role, "reassign", t, spec_ctx)
@@ -3630,6 +3636,7 @@ class Choreographer:
         spec_ctx = spec_module.Context(
             actor_id=agent_id,
             actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            agent_team=str(agent.team) if agent is not None and agent.team else None,
             original_developer_slug=_extract_original_developer(t),
         )
         decision = spec_module.can_invoke_intent(role, "resume", t, spec_ctx)
@@ -3799,6 +3806,7 @@ class Choreographer:
         spec_ctx = spec_module.Context(
             actor_id=agent_id,
             actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            agent_team=str(agent.team) if agent is not None and agent.team else None,
         )
         decision = spec_module.can_invoke_intent(role, "sync_branch", t, spec_ctx)
         if not decision.allowed:
@@ -4293,6 +4301,7 @@ class Choreographer:
             plan=effective_plan,
             actor_id=pm_agent_id,
             actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            agent_team=str(agent.team) if agent is not None and agent.team else None,
             original_developer_slug=_extract_original_developer(t),
         )
         ctx = _ClaimPlanStartContext(
@@ -4393,6 +4402,7 @@ class Choreographer:
         spec_ctx = spec_module.Context(
             actor_id=pm_agent_id,
             actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            agent_team=str(agent.team) if agent is not None and agent.team else None,
             original_developer_slug=_extract_original_developer(parent),
         )
         soup = self._free_text_soup(
@@ -5587,6 +5597,7 @@ class Choreographer:
         spec_ctx = spec_module.Context(
             actor_id=pm_agent_id,
             actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            agent_team=str(agent.team) if agent is not None and agent.team else None,
             original_developer_slug=_extract_original_developer(t),
             notes=notes,
         )
@@ -6522,6 +6533,7 @@ class Choreographer:
         spec_ctx = spec_module.Context(
             actor_id=main_pm_agent_id,
             actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            agent_team=str(agent.team) if agent is not None and agent.team else None,
             notes=notes,
         )
         soup = self._free_text_soup(checks=(("notes", notes, 10),))
@@ -6873,6 +6885,7 @@ class Choreographer:
         spec_ctx = spec_module.Context(
             actor_id=agent_id,
             actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            agent_team=str(agent.team) if agent is not None and agent.team else None,
             original_developer_slug=_extract_original_developer(t),
         )
         if soup := await self._guard_free_text(
@@ -7011,6 +7024,7 @@ class Choreographer:
         spec_ctx = spec_module.Context(
             actor_id=pm_agent_id,
             actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            agent_team=str(agent.team) if agent is not None and agent.team else None,
             original_developer_slug=_extract_original_developer(t),
             notes=notes,
             issues=tuple(issues),
@@ -7081,6 +7095,7 @@ class Choreographer:
         spec_ctx = spec_module.Context(
             actor_id=pm_agent_id,
             actor_slug=getattr(me, "slug", None) if me is not None else None,
+            agent_team=str(me.team) if me is not None and me.team else None,
             original_developer_slug=_extract_original_developer(t),
             notes=reason,
         )
@@ -7251,6 +7266,7 @@ class Choreographer:
         spec_ctx = spec_module.Context(
             actor_id=agent_id,
             actor_slug=getattr(me, "slug", None) if me is not None else None,
+            agent_team=str(me.team) if me is not None and me.team else None,
             original_developer_slug=_extract_original_developer(t),
             notes=reason,
         )

@@ -109,6 +109,7 @@ async def test_delegate_blocks_when_parent_assigned_to_other_agent() -> None:
         project_id=uuid4(),
         status="in_progress",
         assigned_to=other_pm_id,
+        team="backend",
         quick_context="Decomposition planned; cells implement their slice next.",
     )
     task_svc = AsyncMock()
@@ -134,6 +135,7 @@ async def test_delegate_allows_when_parent_in_progress_and_owned() -> None:
         project_id=uuid4(),
         status="in_progress",
         assigned_to=pm_id,
+        team="backend",
         quick_context="Decomposition planned; cells implement their slice next.",
     )
     new_task = MagicMock(id=uuid4())
@@ -162,6 +164,7 @@ async def test_delegate_blocks_when_subtask_cap_exceeded() -> None:
         project_id=uuid4(),
         status="in_progress",
         assigned_to=pm_id,
+        team="backend",
         quick_context="Decomposition planned; cells implement their slice next.",
     )
     too_many = [MagicMock(id=uuid4()) for _ in range(13)]
@@ -189,6 +192,7 @@ async def test_delegate_allows_when_subtask_cap_within_soft_zone() -> None:
         project_id=uuid4(),
         status="in_progress",
         assigned_to=pm_id,
+        team="backend",
         quick_context="Decomposition planned; cells implement their slice next.",
     )
     many = [MagicMock(id=uuid4()) for _ in range(10)]
@@ -217,6 +221,7 @@ async def test_delegate_allows_at_zero_subtasks() -> None:
         project_id=uuid4(),
         status="in_progress",
         assigned_to=pm_id,
+        team="backend",
         quick_context="Decomposition planned; cells implement their slice next.",
     )
     new_task = MagicMock(id=uuid4())
@@ -243,6 +248,7 @@ async def test_delegate_blocks_at_exact_cap_plus_one() -> None:
         project_id=uuid4(),
         status="in_progress",
         assigned_to=pm_id,
+        team="backend",
         quick_context="Decomposition planned; cells implement their slice next.",
     )
     # Already 12 children — adding the 13th must be blocked.
@@ -272,6 +278,7 @@ async def test_delegate_blocks_when_parent_quick_context_empty() -> None:
         project_id=uuid4(),
         status="in_progress",
         assigned_to=pm_id,
+        team="backend",
         quick_context="",
     )
     task_svc = AsyncMock()
@@ -304,6 +311,7 @@ async def test_delegate_past_max_depth_returns_invalid_state_not_500() -> None:
         project_id=uuid4(),
         status="in_progress",
         assigned_to=pm_id,
+        team="backend",
         quick_context="Decomposition planned; cells implement their slice next.",
     )
     depth_msg = (

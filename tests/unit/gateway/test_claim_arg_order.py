@@ -277,6 +277,7 @@ async def test_i_will_plan_calls_claim_and_start_with_task_id_first() -> None:
         status="pending",
         plan=None,
         assigned_to=None,
+        team="backend",
         task_type="planning",
         parent_task_id=None,
         sequence=0,

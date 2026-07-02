@@ -60,6 +60,7 @@ def _parent(pm_id: object) -> MagicMock:
         product_id=None,
         status="in_progress",
         assigned_to=pm_id,
+        team="backend",
         # delegate obligates the PM's quick_context resumption section.
         quick_context="Decomposition planned; cells implement their slice next.",
     )

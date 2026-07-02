@@ -757,7 +757,7 @@ async def test_complete_dispatches_cell_pm() -> None:
     after = MagicMock(**{**t.__dict__, "status": "completed"})
     task_svc = AsyncMock()
     task_svc.get.return_value = t
-    task_svc.agent_for.return_value = MagicMock(role="cell_pm")
+    task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
     task_svc.all_subtasks_terminal.return_value = True
     task_svc.cell_pm_complete.return_value = after
     git_svc = AsyncMock()

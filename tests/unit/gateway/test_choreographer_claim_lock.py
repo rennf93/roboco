@@ -85,6 +85,7 @@ def _dev_task_svc(agent_id: object, task_id: object) -> AsyncMock:
         status="pending",
         plan=None,
         assigned_to=None,
+        team="backend",
         parent_task_id=None,
         sequence=0,
         task_type="code",

@@ -632,6 +632,7 @@ async def test_delegate_parent_no_project_rejected() -> None:
     parent = MagicMock(
         status="in_progress",
         assigned_to=pm_id,
+        team="backend",
         project_id=None,
         product_id=None,
         title="p",

@@ -71,6 +71,7 @@ class PRGateMixin(_Base):
         spec_ctx = spec_module.Context(
             actor_id=reviewer_agent_id,
             actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            agent_team=str(agent.team) if agent is not None and agent.team else None,
         )
         decision = spec_module.can_invoke_intent(role, "claim_gate_review", t, spec_ctx)
         if not decision.allowed:
@@ -207,6 +208,7 @@ class PRGateMixin(_Base):
         spec_ctx = spec_module.Context(
             actor_id=reviewer_agent_id,
             actor_slug=str(reviewer_agent_id),
+            agent_team=str(agent.team) if agent is not None and agent.team else None,
             original_developer_slug=markers.get_original_developer(t),
             notes=notes,
             issues=issues,

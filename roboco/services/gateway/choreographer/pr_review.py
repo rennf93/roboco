@@ -74,6 +74,7 @@ class PRReviewerMixin(_Base):
         spec_ctx = spec_module.Context(
             actor_id=reviewer_agent_id,
             actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            agent_team=str(agent.team) if agent is not None and agent.team else None,
         )
         decision = spec_module.can_invoke_intent(role, "claim_pr_review", t, spec_ctx)
         if not decision.allowed:
@@ -328,6 +329,7 @@ class PRReviewerMixin(_Base):
         spec_ctx = spec_module.Context(
             actor_id=reviewer_agent_id,
             actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            agent_team=str(agent.team) if agent is not None and agent.team else None,
             notes=body,
         )
         decision = spec_module.can_invoke_intent(role, "post_pr_review", t, spec_ctx)
