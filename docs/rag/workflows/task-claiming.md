@@ -44,6 +44,7 @@ Exactly one active WorkSession exists per task at a time (enforced in the servic
 ## Claiming Rules
 
 - **One at a time (workers only)**: Developers, QA, and documenters can't hold multiple in-progress tasks at once. A **blocked** task still counts as active — a blocked dev cannot `claim` a second task; unblock or `unclaim` first. **PM coordinators are exempt** — a Main / Cell PM plans and delegates many roots in parallel, so it may hold several at once; only a real upstream **sequence dependency** (an unfinished task it depends on) holds one of its roots back.
+- **Team match**: cell-scoped roles (developer, QA, documenter, cell PM) are rejected `not_authorized` on another team's tasks — claim, resume, unblock, and activate are all team-matched. The `remediate` hint says it: call `give_me_work()` to find a task in your own team. Org-wide roles (Main PM, Board, CEO, PR reviewer) are exempt.
 - **Self-review prevention**: QA cannot `claim_review` tasks they developed
 - **Self-documentation prevention**: Documenter cannot claim tasks they developed
 - **Branch requirement**: Branch auto-created on `i_will_work_on`
@@ -75,7 +76,7 @@ unclaim(task_id)
 ```
 pending → claimed (Developer via i_will_work_on / PM)
 needs_revision → claimed (Developer via i_will_work_on)
-awaiting_qa → claimed (QA via claim_review)
+awaiting_qa → awaiting_qa (QA via claim_review — claim recorded, status stays put so pass/fail match)
 awaiting_documentation → claimed (Documenter via claim_doc_task)
 ```
 

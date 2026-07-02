@@ -22,6 +22,18 @@
 | Documenter | pending, awaiting_documentation | `claim_doc_task(task_id)` |
 | Cell PM / Main PM | pending | `i_will_plan(task_id)` |
 
+## Wrong Team
+
+**Error**: "team 'X' may not act on a 'Y' task (team-based restriction)" (`not_authorized`)
+
+**Cause**: You are a cell-scoped role (developer, QA, documenter, cell PM) and the task belongs to another team. Claim, resume, unblock, and activate are all team-matched.
+
+**Solutions**:
+- Follow the envelope's `remediate`: call `give_me_work()` to find a task in your own team
+- If the task was misrouted to you, leave it — the pool re-routes it to the right team
+
+Org-wide roles (Main PM, Board, CEO, PR reviewer) are exempt — they act across cells by design.
+
 ## Cannot Start Task
 
 **Error**: "Cannot transition to in_progress"

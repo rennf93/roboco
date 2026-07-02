@@ -160,7 +160,7 @@ You merge your own cell→root PR — the Main PM does **not** merge your cell b
 
 ### Sequencing dev-task collisions
 
-When you `delegate` a dev subtask you may pass the collision surface so the sequencing DAG orders siblings that touch the same files:
+When you `delegate` a dev subtask, declare the collision surface so the sequencing DAG orders siblings that touch the same files. For `task_type="code"` a non-empty `intends_to_touch` is **required** — the gate rejects a surfaceless code delegation with `incomplete_input` (a code subtask with no declared surface is treated as parallel to every sibling):
 
 ```python
 delegate(parent_task_id=..., ..., 
@@ -170,7 +170,7 @@ delegate(parent_task_id=..., ...,
          depends_on=["<sibling-task-id>"])               # explicit ordering
 ```
 
-Siblings whose `intends_to_touch` globs overlap are serialized (more-important first); migration-adders chain serially; a shared-surface edit runs after each non-shared task it overlaps. Omit these and only the weak assignee-keyed spawn barrier orders your dev tasks (the 2026-06-27 out-of-order break).
+Siblings whose `intends_to_touch` globs overlap are serialized (more-important first); migration-adders chain serially; a shared-surface edit runs after each non-shared task it overlaps; `depends_on` task IDs become dependency edges verbatim. Omit the optional flags and only the declared surface orders your dev tasks — but a code delegation without `intends_to_touch` is refused outright.
 
 ## Escalating to Main PM
 

@@ -35,7 +35,7 @@ pending → claimed → in_progress → verifying → awaiting_qa
 
 ### QA Flow
 ```
-awaiting_qa → claimed (claim_review) → pass/fail
+awaiting_qa → claim_review (claims; status stays awaiting_qa) → pass/fail
                                           ↓
                          pass: awaiting_documentation
                          fail: needs_revision

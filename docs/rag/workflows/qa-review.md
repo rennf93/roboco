@@ -40,6 +40,8 @@ note(text="Verified AC #1 (429 on 101st req), #2 (TTL match), #3 "
 
 There is no `roboco_task_claim / _start / _qa_pass / _qa_fail` and no `roboco_git_checkout`. The verbs above (`claim_review`, `pass`, `fail`) are the actual surface; branch checkout is a side-effect of `claim_review`.
 
+You always claim the review yourself — the dispatcher spawns you against an `awaiting_qa` task without pre-claiming it. `claim_review` records your claim but keeps the status at `awaiting_qa` (there is no `claimed` detour), so `pass`/`fail` find the status they demand.
+
 ## Review Checklist
 
 Before deciding:
