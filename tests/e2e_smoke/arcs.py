@@ -26,6 +26,7 @@ class Company:
     cell_pm_id: Any
     main_pm_id: Any
     pr_reviewer_id: Any
+    ceo_id: Any
 
 
 _COMPANY_CACHE: dict[str, Company] = {}
@@ -65,7 +66,9 @@ def seed_company(stack: E2EStack) -> Company:
         cell_pm = agent("be-pm", AgentRole.CELL_PM, Team.BACKEND)
         main_pm = agent("main-pm", AgentRole.MAIN_PM, None)
         reviewer = agent("pr-reviewer-1", AgentRole.PR_REVIEWER, None)
+        ceo = agent("ceo", AgentRole.CEO, None)
         await session.flush()
+        out.ceo_id = ceo.id
         out.dev_id = dev.id
         out.qa_id = qa.id
         out.doc_id = doc.id
@@ -179,6 +182,22 @@ def origin_branch(stack: E2EStack, name: str, start: str = "master") -> None:
     _git(admin, "fetch", "origin", "--prune")
     _git(admin, "checkout", "-B", name, f"origin/{start}")
     _git(admin, "push", "origin", name)
+
+
+def origin_commit(
+    stack: E2EStack, branch: str, path: str, content: str, message: str
+) -> None:
+    """Land a commit on a branch in the origin via the admin clone —
+    stands in for dev work advancing a branch between scripted turns."""
+    from tests.e2e_smoke.harness import _git
+
+    admin = stack.github.admin_clone
+    _git(admin, "fetch", "origin", "--prune")
+    _git(admin, "checkout", "-B", branch, f"origin/{branch}")
+    (admin / path).write_text(content)
+    _git(admin, "add", path)
+    _git(admin, "commit", "-m", message)
+    _git(admin, "push", "origin", branch)
 
 
 def origin_file(stack: E2EStack, branch: str, path: str) -> str | None:
@@ -447,7 +466,8 @@ def seed_hierarchy(
     Branch names follow the real convention (the task-short-id chain); the
     PM planning/delegation lane is a later scenario's subject.
     """
-    from roboco.models.base import TaskStatus
+    from roboco.models import Team
+    from roboco.models.base import TaskStatus, TaskType
 
     root_id = uuid4()
     cell_id = uuid4()
@@ -464,6 +484,10 @@ def seed_hierarchy(
             "the backend cell for the smoke harness merge-chain scenarios."
         ),
         acceptance_criteria=["the greeting feature lands on the root branch"],
+        task_type=TaskType.PLANNING,
+        # A delivery root belongs to the Main PM's lane — team routing
+        # (closure, revision, reassignment) keys on this.
+        team=Team.MAIN_PM,
         project_id=project_id,
         created_by=company.main_pm_id,
         assigned_to=company.main_pm_id,
@@ -480,6 +504,7 @@ def seed_hierarchy(
             "one dev leaf writes the file, the cell PM assembles and submits."
         ),
         acceptance_criteria=["hello.txt exists at the repo root"],
+        task_type=TaskType.PLANNING,
         project_id=project_id,
         created_by=company.main_pm_id,
         assigned_to=company.cell_pm_id,

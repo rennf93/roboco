@@ -590,3 +590,8 @@ Slices touched: worksession-git (3), orchestrator (1), deployment-tooling (2, 4)
 5. **Secretary task writes** — `control_task` action `edit` (allowlist title/description/acceptance_criteria/priority, `_EDITABLE_TASK_FIELDS`) + `GET /secretary/tasks?q=` name→id resolver (Secretary/CEO). PM-side expansion deliberately deferred (CEO: "PMs not that much").
 
 Slices touched: orchestrator (1), tests (1, 2), taskservice + api-routes-schemas (3, 4, 5), panel (3, 4), secretary (5).
+
+---
+## Delta 2026-07-02 (late night) — e2e scenario 3 (branch `feat/wave-1`)
+
+`tests/e2e_smoke/test_root_ceo_chain.py`: 3a pr_fail→needs_revision→`i_will_plan` re-entry (route demands approach≥150 + sub_tasks even on re-claim — pydantic fires before the gateway short-circuit)→real fix commit (`origin_commit` helper)→resubmit→pass→merge; 3b submit_root→gate→complete-escalates→REAL `approve-and-merge` (tasks router now mounted in the harness app; CEO row seeded)→hello.txt on origin master. Seed corrections that ARE the documentation: delivery roots are team=main_pm + planning-typed (backend-team roots get closure-routed to the cell PM; code-typed roots hit the main_pm+code impossibility guard). Fake GitHub `get_pr` now recomputes head.sha live (the unchanged-PR gate reads it via the REST API, not local refs). Latent fix en route: dep-update probe env scrub (VIRTUAL_ENV). uv-rot root cause: shared ~/.cache/uv with long-lived uvx MCP servers — per-repo UV_CACHE_DIR pinned.

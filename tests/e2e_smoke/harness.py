@@ -159,6 +159,9 @@ def _fake_github_router(gh: _FakeGitHub) -> APIRouter:
         pr = gh.prs.get(number)
         if pr is None:
             return JSONResponse({"message": "Not Found"}, status_code=404)
+        # Real GitHub recomputes head.sha as the branch advances; a stale
+        # creation-time snapshot broke the unchanged-PR gate's semantics.
+        pr["head"]["sha"] = gh._sha_of(pr["head"]["ref"])
         return JSONResponse(pr)
 
     @r.get("/repos/{owner}/{repo}/pulls")
@@ -302,6 +305,7 @@ def _make_admin_clone(root: Path, origin: Path) -> Path:
 def _build_app(gh: _FakeGitHub) -> FastAPI:
     from roboco.api.middleware import setup_middleware
     from roboco.api.routes.health import router as health_router
+    from roboco.api.routes.tasks import router as tasks_router
     from roboco.api.routes.v1 import do as do_module
     from roboco.api.routes.v1 import flow_auditor as fa
     from roboco.api.routes.v1 import flow_board as fb
@@ -318,6 +322,9 @@ def _build_app(gh: _FakeGitHub) -> FastAPI:
     for module in (fd, fq, fdoc, fcp, fmp, fb, fa, fpr):
         app.include_router(module.router)
     app.include_router(do_module.router)
+    # The REST task surface — scenario 3 drives the real CEO
+    # approve-and-merge endpoint (the human gate) through it.
+    app.include_router(tasks_router, prefix="/api/tasks")
     app.include_router(_fake_github_router(gh))
     return app
 
