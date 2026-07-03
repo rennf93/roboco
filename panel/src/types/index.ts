@@ -1133,6 +1133,7 @@ export interface Project {
   ci_watch_workflow: string | null;
   dep_update_command: string | null;
   dep_update_paths: string[] | null;
+  sandbox_services: string[] | null;
   // Runtime state
   workspace_path: string | null;
   last_synced_at: string | null;
@@ -1180,6 +1181,7 @@ export interface ProjectUpdate {
   ci_watch_workflow?: string;
   dep_update_command?: string;
   dep_update_paths?: string[];
+  sandbox_services?: string[];
 }
 
 export interface ProjectSummary {

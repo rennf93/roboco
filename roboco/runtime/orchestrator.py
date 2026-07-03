@@ -63,9 +63,11 @@ from roboco.models.runtime import (
     AgentInstance,
     OrchestratorAgentConfig,
     OrchestratorAgentState,
+    SandboxInfo,
     SpawnGitContext,
     WaitingRecord,
 )
+from roboco.runtime.sandbox import SandboxProvisioner
 from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.task import (
     PR_REVIEW_SOURCES,
@@ -714,6 +716,11 @@ class AgentOrchestrator:
         self.dispatcher_interval = dispatcher_interval
 
         self._instances: dict[str, AgentInstance] = {}
+        # Sandboxed per-agent-spawn DB/Redis provisioner. Network is threaded
+        # through explicitly (rather than the provisioner importing
+        # AGENT_NETWORK itself) so a future network-isolation change only
+        # has to flip this constant here — sandboxes ride along.
+        self._sandbox = SandboxProvisioner(network=AGENT_NETWORK)
         # Gateway-health grace tracker: agent slug -> first time its gateway was
         # seen broken. Tolerates a transient probe miss before the reaper recovers
         # a broken-but-alive agent (see _maybe_recover_broken_gateway).
@@ -892,6 +899,11 @@ class AgentOrchestrator:
         # no over-reap). Inert when nothing is running. Must run before the
         # dispatcher/reaper loops launch below.
         await self._readopt_running_agents()
+
+        # Orphan sandbox sweep: a sandbox whose owning agent container didn't
+        # survive the restart (or a prior crash mid-teardown) is removed here
+        # rather than lingering until its next reaper-tick sweep.
+        await self._sandbox_janitor_sweep()
 
         # Note: Per-agent settings are now generated at spawn time
         # via _generate_agent_settings() - no shared settings needed
@@ -1855,6 +1867,13 @@ class AgentOrchestrator:
             git_context, project_slug, team, agent_id, task_id
         )
 
+        # Provision this spawn's sandbox DB/Redis (flag + per-project opt-in),
+        # before `docker run` so its connection info can be injected as env.
+        # Fail-loud on a provisioning failure (see _maybe_provision_sandbox).
+        sandbox_info = await self._maybe_provision_sandbox(
+            agent_id, project_slug, task_id
+        )
+
         agent_settings_path = self._generate_agent_settings(
             agent_id, canonical_role, cwd_path, cell_workspace_path
         )
@@ -1877,6 +1896,7 @@ class AgentOrchestrator:
             provider_type=route.provider_type.value,
             provider_base_url=route.base_url,
             provider_auth_token=route.auth_token,
+            sandbox_info=sandbox_info,
         )
         instance = AgentInstance(
             agent_id=agent_id,
@@ -1975,6 +1995,53 @@ class AgentOrchestrator:
             raise AgentReadinessError(
                 f"worktree ensure failed (transient) for {agent_id}"
                 f" (task={task_id}): {e}; will retry next tick"
+            ) from e
+
+    async def _maybe_provision_sandbox(
+        self, agent_id: str, project_slug: str, task_id: str | None
+    ) -> SandboxInfo | None:
+        """Provision this spawn's sandbox DB/Redis, or None if not opted in.
+
+        Off (flag or project) => None, byte-for-byte identical to today (the
+        legacy `_append_gate_env` prod-creds injection stays active). The
+        project lookup itself is best-effort (a DB hiccup here degrades to
+        "no sandbox" rather than blocking every spawn on a transient error —
+        `_ensure_worktree_before_spawn` already fails loud on a genuine DB
+        outage). Once a project has opted in, an actual provisioning failure
+        (container won't start / never becomes ready) IS fail-loud: an agent
+        whose gate can't run must never spawn.
+        """
+        if not settings.sandbox_db_enabled:
+            return None
+        from roboco.db.base import get_db_context
+        from roboco.services.project import get_project_service
+
+        try:
+            async with get_db_context() as db:
+                project = await get_project_service(db).get_by_slug(project_slug)
+        except Exception as e:
+            logger.warning(
+                "sandbox project lookup failed; skipping sandbox provisioning",
+                agent_id=agent_id,
+                project_slug=project_slug,
+                error=str(e),
+            )
+            return None
+        services = list(project.sandbox_services or []) if project else []
+        if not services:
+            return None
+        try:
+            return await self._sandbox.provision(agent_id, services)
+        except Exception as e:
+            logger.error(
+                "sandbox provisioning failed; refusing spawn",
+                agent_id=agent_id,
+                task_id=task_id,
+                services=services,
+                error=str(e),
+            )
+            raise AgentReadinessError(
+                f"sandbox provisioning failed for {agent_id} (task={task_id}): {e}"
             ) from e
 
     async def _launch_spawn(
@@ -2532,6 +2599,49 @@ class AgentOrchestrator:
         )
 
     @staticmethod
+    def _append_sandbox_env(cmd: list[str], config: AgentConfig) -> None:
+        """Inject sandbox DB/Redis env, in place of the prod-creds gate env.
+
+        Called INSTEAD OF `_append_gate_env` whenever a sandbox was
+        provisioned for this spawn (`config.sandbox_info` set) — sandbox
+        replaces, never coexists with, the production gate-env injection.
+        Reuses the `ROBOCO_TEST_DB_*` names so a project's conftest already
+        following that convention needs no change; `ROBOCO_TEST_REDIS_*` is
+        new.
+        """
+        info = config.sandbox_info
+        if info is None:
+            return
+        if info.postgres is not None:
+            pg = info.postgres
+            cmd.extend(
+                [
+                    "-e",
+                    f"ROBOCO_TEST_DB_HOST={pg.host}",
+                    "-e",
+                    f"ROBOCO_TEST_DB_PORT={pg.port}",
+                    "-e",
+                    f"ROBOCO_TEST_DB_USER={pg.user}",
+                    "-e",
+                    f"ROBOCO_TEST_DB_PASSWORD={pg.password}",
+                    "-e",
+                    f"ROBOCO_TEST_DB_ADMIN_DB={pg.database}",
+                ]
+            )
+        if info.redis is not None:
+            rd = info.redis
+            cmd.extend(
+                [
+                    "-e",
+                    f"ROBOCO_TEST_REDIS_HOST={rd.host}",
+                    "-e",
+                    f"ROBOCO_TEST_REDIS_PORT={rd.port}",
+                    "-e",
+                    f"ROBOCO_TEST_REDIS_PASSWORD={rd.password}",
+                ]
+            )
+
+    @staticmethod
     def _default_spawn_prompt() -> str:
         """Fallback prompt when the caller provided none."""
         return (
@@ -2679,7 +2789,10 @@ class AgentOrchestrator:
             return result.instance_id
 
         container_name = f"roboco-agent-{config.agent_id}"
-        await self._remove_container(container_name)
+        # teardown_sandbox=False: this spawn's sandbox was provisioned moments
+        # ago in _build_agent_config — the stale-clear must not destroy it.
+        # Stale sandboxes from a prior crash are cleared by provision() itself.
+        await self._remove_container(container_name, teardown_sandbox=False)
 
         if not config.mcp_config_path:
             raise RuntimeError("MCP config path not set")
@@ -2688,7 +2801,10 @@ class AgentOrchestrator:
         cmd = self._build_mount_args(container_name, config, hosts)
         self._append_agent_auth_env(cmd, config)
         self._append_git_context_env(cmd, config)
-        self._append_gate_env(cmd)
+        if config.sandbox_info is not None:
+            self._append_sandbox_env(cmd, config)
+        else:
+            self._append_gate_env(cmd)
         self._append_image_and_claude_args(cmd, config, initial_prompt)
 
         proc = await asyncio.create_subprocess_exec(
@@ -2703,13 +2819,18 @@ class AgentOrchestrator:
 
         return stdout.decode().strip()
 
-    async def _remove_container(self, container_name: str) -> None:
+    async def _remove_container(
+        self, container_name: str, *, teardown_sandbox: bool = True
+    ) -> None:
         """Remove a container if it exists, dumping its logs to disk first.
 
         Docker deletes the container's json-file log when we `docker rm`, so
         before removal we copy the current log to /data/logs/agents/{slug}/
         with a timestamp. That gives us persistent history across respawns
         without needing an entrypoint wrapper inside the agent image.
+
+        ``teardown_sandbox=False`` is passed only by the pre-spawn stale-clear,
+        whose spawn has already provisioned the sandbox it is about to use.
         """
         # Check the container actually exists before trying to dump logs;
         # _remove_container is routinely called pre-spawn to clear stale
@@ -2763,6 +2884,15 @@ class AgentOrchestrator:
             stderr=asyncio.subprocess.DEVNULL,
         )
         await proc.wait()
+
+        # Sandbox lifetime tracks the agent container 1:1 — every removal
+        # path (stop_agent, reaper kills) routes through here. Gated on the
+        # flag: teardown is idempotent but not free (up to 4 extra docker
+        # calls), so skip it when the feature was never on. Never raises
+        # (SandboxProvisioner.teardown contract).
+        if teardown_sandbox and settings.sandbox_db_enabled:
+            slug = container_name.removeprefix("roboco-agent-")
+            await self._sandbox.teardown(slug)
 
     async def _generate_mcp_config(
         self,
@@ -9192,6 +9322,19 @@ Start now: evidence(task_id="{task_id}")
             svc = TaskService(db)
             await self._reap_with_service(svc)
             await db.commit()
+        await self._sandbox_janitor_sweep()
+
+    async def _sandbox_janitor_sweep(self) -> None:
+        """Best-effort: remove sandbox containers whose owner agent is gone.
+
+        Cheap (a couple of docker calls) and error-isolated — the provisioner
+        itself never raises out of ``janitor_sweep``, so a hiccup here never
+        blocks the reaper tick it rides alongside.
+        """
+        if not settings.sandbox_db_enabled:
+            return
+        with contextlib.suppress(Exception):
+            await self._sandbox.janitor_sweep()
 
     def _assignee_has_active_instance(self, task: Any) -> bool:
         """True if the task's assignee currently holds a live (ACTIVE) container.

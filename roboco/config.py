@@ -729,6 +729,22 @@ class Settings(BaseSettings):
         description="Cosine-similarity floor for injected memory; below it, none.",
     )
 
+    # Sandboxed per-agent-spawn DB/Redis — orchestrator-provisioned throwaway
+    # Postgres/Redis sibling containers so a dev agent's gate runs against an
+    # isolated DB instead of RoboCo's own production Postgres. Default-off;
+    # even when on, a project only participates with its `sandbox_services`
+    # column set. Replaces (never coexists with) the legacy `_append_gate_env`
+    # prod-creds injection for an opted-in project's spawns.
+    sandbox_db_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for the sandboxed per-agent test DB/Redis. OFF by "
+            "default; when off, spawning behaves exactly as today (the legacy "
+            "prod-creds gate-env injection, gated by toolchain_match_enabled). "
+            "Only opted-in projects (sandbox_services column set) participate."
+        ),
+    )
+
     # ==========================================================================
     # Workspaces (Multi-Agent Git)
     # ==========================================================================

@@ -38,6 +38,34 @@ class SpawnGitContext:
     task_short_id: str | None = None
 
 
+@dataclass(frozen=True)
+class PostgresSandbox:
+    """Connection info for a per-spawn throwaway Postgres sandbox container."""
+
+    host: str
+    port: int
+    user: str
+    password: str
+    database: str
+
+
+@dataclass(frozen=True)
+class RedisSandbox:
+    """Connection info for a per-spawn throwaway Redis sandbox container."""
+
+    host: str
+    port: int
+    password: str
+
+
+@dataclass(frozen=True)
+class SandboxInfo:
+    """Sandbox container(s) provisioned for one agent spawn (services opted-in)."""
+
+    postgres: PostgresSandbox | None = None
+    redis: RedisSandbox | None = None
+
+
 @dataclass
 class OrchestratorAgentConfig:
     """Configuration for an agent in the orchestrator."""
@@ -64,6 +92,10 @@ class OrchestratorAgentConfig:
     provider_type: str = "anthropic"
     provider_base_url: str | None = None
     provider_auth_token: str | None = None
+    # Set when a sandbox DB/Redis was provisioned for this spawn
+    # (sandbox_db_enabled + the project's sandbox_services). Its presence
+    # suppresses the legacy `_append_gate_env` prod-creds injection.
+    sandbox_info: SandboxInfo | None = None
 
 
 @dataclass

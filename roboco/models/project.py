@@ -10,7 +10,7 @@ from datetime import datetime
 from enum import StrEnum
 from uuid import UUID, uuid4
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from roboco.models.base import RobocoBase, Team, TimestampMixin
 
@@ -23,6 +23,25 @@ class BranchReason(StrEnum):
     CHORE = "chore"
     DOCS = "docs"
     HOTFIX = "hotfix"
+
+
+# Sandboxed per-agent-spawn DB/Redis opt-in — the services a project may
+# request. Single source of truth for both the pydantic validators below and
+# the orchestrator-side provisioner (roboco/runtime/sandbox.py).
+VALID_SANDBOX_SERVICES: frozenset[str] = frozenset({"postgres", "redis"})
+
+
+def _normalize_sandbox_services(value: list[str] | None) -> list[str] | None:
+    """Reject an unknown service; normalize order + de-dupe a valid list."""
+    if value is None:
+        return None
+    unknown = sorted(set(value) - VALID_SANDBOX_SERVICES)
+    if unknown:
+        raise ValueError(
+            f"unknown sandbox service(s) {unknown}; valid: "
+            f"{sorted(VALID_SANDBOX_SERVICES)}"
+        )
+    return [s for s in ("postgres", "redis") if s in value]
 
 
 class Project(TimestampMixin):
@@ -119,6 +138,20 @@ class Project(TimestampMixin):
         description="Lockfile globs to inspect (null → infer uv.lock/pnpm-lock.yaml)",
     )
 
+    # Sandboxed per-agent-spawn DB/Redis opt-in
+    sandbox_services: list[str] | None = Field(
+        default=None,
+        description=(
+            "Throwaway sandbox services this project's agent spawns provision "
+            "(subset of 'postgres', 'redis'); null/empty = no sandbox."
+        ),
+    )
+
+    @field_validator("sandbox_services")
+    @classmethod
+    def _check_sandbox_services(cls, v: list[str] | None) -> list[str] | None:
+        return _normalize_sandbox_services(v)
+
     # Metadata
     created_by: UUID = Field(..., description="PM who registered the project")
     is_active: bool = Field(default=True, description="Whether project is active")
@@ -176,3 +209,9 @@ class ProjectUpdate(RobocoBase):
     ci_watch_workflow: str | None = None
     dep_update_command: str | None = None
     dep_update_paths: list[str] | None = None
+    sandbox_services: list[str] | None = None
+
+    @field_validator("sandbox_services")
+    @classmethod
+    def _check_sandbox_services(cls, v: list[str] | None) -> list[str] | None:
+        return _normalize_sandbox_services(v)

@@ -525,6 +525,13 @@ class ProjectTable(Base):
         ARRAY(String), nullable=True
     )
 
+    # Sandboxed per-agent-spawn DB/Redis opt-in. A project participates only
+    # when sandbox_services is set (e.g. ["postgres", "redis"]); values are
+    # validated by the Project pydantic model before reaching here.
+    sandbox_services: Mapped[list[str] | None] = mapped_column(
+        ARRAY(String), nullable=True
+    )
+
     # Access Control
     assigned_cell: Mapped[Team] = mapped_column(_str_enum(Team), nullable=False)
     allowed_agents: Mapped[list[PyUUID] | None] = mapped_column(
