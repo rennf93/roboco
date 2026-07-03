@@ -15,20 +15,25 @@ The Next.js 16 control panel (`panel/`, package `roboco-panel` v0.14.0) is the s
 | `panel/src/app/(dashboard)/tasks/page.tsx` + `tasks/[taskId]/page.tsx` | Task list + task detail (tabbed) |
 | `panel/src/app/(dashboard)/kanban/page.tsx` | Operator kanban (dev/qa/pm/pr-review views) |
 | `panel/src/app/(dashboard)/prompter/page.tsx` | Intake chat (single + MegaTask batch scope) |
+| `panel/src/app/(dashboard)/a2a/page.tsx` | A2A Live: org-wide switchboard/list + transcript + CEO reply composer, live via `/ws/system` `a2a.message` frames |
 | `panel/src/app/(dashboard)/settings/page.tsx` + `settings/ai-providers/page.tsx` | Settings: feature flags, AI routing, transcript retention, self-hosted |
 | `panel/src/app/(dashboard)/{agents,projects,products,business,journals,communications,git,knowledge-base,auditor,work-sessions,notifications}/page.tsx` | Per-domain pages |
+| `panel/src/app/(auth)/login/page.tsx` | Cloud-auth login form (email/password → `useLogin` → `/auth/login`); only reachable/relevant once `proxy.ts` starts gating the `(dashboard)` group |
+| `panel/src/proxy.ts` | Next 16's rename of `middleware.ts`: probes `/auth/status` (docker-internal orchestrator URL, fails open to "off" on any error/timeout) and redirects to `/login` when cloud auth is on and no session cookie is present |
 | `panel/src/app/(dashboard)/communications/[sessionId]/page.tsx` | Per-session chat view: live transcript (useSessionStream on `/ws/sessions/{id}`), closed-session read-only notice, redirect toast on stale-send |
-| `panel/src/components/dashboard/` | Overview cards: command-center, key-metrics, release-proposal, playbook-review-queue, ceo-approval-queue, pr-review-queue, usage-overview, team-health, active-blockers, auditor-alerts, strategy-signals, quick-actions, recent-activity |
+| `panel/src/components/dashboard/` | Overview cards: command-center, key-metrics, release-proposal, playbook-review-queue, ceo-approval-queue, pr-review-queue, usage-overview, team-health, active-blockers, auditor-alerts, strategy-signals, quick-actions, recent-activity, `x-post-queue.tsx`, `roadmap-review-queue.tsx` |
 | `panel/src/components/metrics/` | delivery-tab, usage-time-series-chart, agent/team-usage-chart, model-usage-donut, sessions-table |
 | `panel/src/components/kanban/{core,shared,views}/` | core: kanban-board/column/card + bypass-preconditions; views: dev/qa/pm/pr-review kanban |
 | `panel/src/components/prompter/` | intake-form, chat-messages, chat-composer, draft-proposal-card, batch-review-card, success-card, board-review-sent-card |
+| `panel/src/components/a2a/` | a2a-switchboard (org-chart pair cards, 45s pulse fade) + a2a-switchboard-utils (pairKey/grouping/pulse), a2a-pair-card, a2a-conversation-list (classic fallback), a2a-transcript, a2a-reply-composer (CEO chime-in), a2a-utils |
 | `panel/src/components/tasks/` + `tasks/task-detail/` | task-table, create/edit-task-dialog, task-filters, acceptance-criteria-editor, dependency-selector, task-detail tabs (overview/plan/progress/commits/sessions/notes/dependencies) |
-| `panel/src/components/settings/` | feature-flags-card, ai-routing-card, transcript-retention-card, self-hosted-section |
+| `panel/src/components/settings/` | feature-flags-card, ai-routing-card, transcript-retention-card, self-hosted-section, `x-credentials-card.tsx` (write-only OAuth 1.0a secrets, mounted in `settings/page.tsx`) |
 | `panel/src/components/conventions/conventions-tab.tsx` | Per-project architecture map + health (in edit-project dialog) |
 | `panel/src/components/projects/`, `agents/`, `business/`, `auditor/`, `knowledge-base/`, `communications/`, `git/`, `journals/`, `work-sessions/`, `notifications/`, `rate-limit/`, `layout/`, `ui/` | Per-domain component groups; `ui/` = Radix-based primitives (dialog, table, tabs, select, switch, required-notes-dialog, sonner toaster, markdown) |
 | `panel/src/hooks/use-websocket.ts` | Shared `useWebSocket<T>(path, handlers?, isSystem?)` hook (auto-reconnect, heartbeat) |
 | `panel/src/hooks/use-{tasks,agents,projects,products,usage,prompter,secretary,dashboard,git,journals,channels,notifications,knowledge-base,observability,work-sessions,providers,rate-limit-{sync,websocket}}.ts` | TanStack Query + zustand data hooks |
-| `panel/src/lib/api/*.ts` | Per-domain axios clients (`client.ts` shared instance; `release.ts`, `playbooks.ts`, `prompter-live.ts`, `tasks.ts`, `settings.ts`, `usage.ts`, `cockpit.ts`, `a2a.ts`, …) |
+| `panel/src/hooks/use-a2a-live.ts` | `useA2AConversations` / `useA2AAdminPairs` / `useA2AMessages` (TanStack Query over `a2aApi`) + `useReplyAsCeo` mutation; `a2aLiveKeys` query-key namespace |
+| `panel/src/lib/api/*.ts` | Per-domain axios clients (`client.ts` shared instance; `release.ts`, `playbooks.ts`, `prompter-live.ts`, `tasks.ts`, `settings.ts`, `usage.ts`, `cockpit.ts`, `a2a.ts`, `auth.ts` (status/login/logout), `x.ts` (post queue + credentials), `roadmap.ts` (cycles + item approve/reject), …) |
 | `panel/src/lib/websocket/connection.ts` | `WebSocketConnection` class + `getWebSocketUrl` |
 | `panel/src/store/{rate-limit-store,notifications-store,usage-store,ui-store}.ts` + `lib/stores/` | zustand stores (`lib/stores/` now exports `scroll-restoration-store` only; `ui-store` is sole-canonical under `src/store/`) |
 | `panel/src/types/` | Shared TS types (index, rate-limits, git) |
@@ -46,8 +51,11 @@ The Next.js 16 control panel (`panel/`, package `roboco-panel` v0.14.0) is the s
 | Playbook Review Queue | `components/dashboard/playbook-review-queue.tsx` | Auditor/CEO approve/reject drafted playbooks; hidden when no drafts |
 | CEO Approval Queue | `components/dashboard/ceo-approval-queue.tsx` | Tasks in `awaiting_ceo_approval` awaiting CEO verdict |
 | PR Review Queue | `components/dashboard/pr-review-queue.tsx` | Inbound external/fork PRs + in-path gate PRs for the reviewer |
+| X Post Queue | `components/dashboard/x-post-queue.tsx` | CEO edit/approve (posts to X)/reject on held release-post + mention-reply drafts; hidden when empty |
+| Roadmap Review Queue | `components/dashboard/roadmap-review-queue.tsx` | CEO per-item approve (materializes BACKLOG task)/reject on the Product Owner's held roadmap cycle; hidden until authored |
 | Feature Flags | `components/settings/feature-flags-card.tsx` | Toggles persisted to settings store; takes effect on next backend restart |
 | Intake / MegaTask | `app/(dashboard)/prompter/page.tsx` + `components/prompter/*` | Live SSE chat with spawned Claude/Grok intake agent; single-project, product, or multi-project (`project_ids`) MegaTask → `propose_batch` → `confirm-batch` |
+| A2A Live (switchboard + reply) | `app/(dashboard)/a2a/page.tsx` + `components/a2a/*` | CEO watches every agent-to-agent conversation live: default org-chart switchboard (pair cards grouped by cell/PM-chain/board, pulsing on fresh `a2a.message` frames) or the classic conversation list; drill-in shows the transcript + a reply composer that lets the CEO chime into the thread as itself (task-linked conversations only) |
 | Project Settings / Conventions | `components/projects/edit-project-dialog.tsx` + `components/conventions/conventions-tab.tsx` | Per-project `.roboco/conventions.yml` map + health; Save / Restore via PR |
 | Usage Dashboard | `components/dashboard/usage-overview-panel.tsx` + `hooks/use-usage.ts` | Token/cost totals; live WS snapshot with HTTP-polling fallback |
 | Kanban | `components/kanban/{core,views}/*` | dnd-kit drag board; dev/qa/pm/pr-review views; drag routes through admin status-override with bypass-precondition prompt |
@@ -63,20 +71,32 @@ The Next.js 16 control panel (`panel/`, package `roboco-panel` v0.14.0) is the s
 | `WebSocketConnection` | class | `lib/websocket/connection.ts` | Low-level WS lifecycle; `getWebSocketUrl` builds `/ws/<path>` |
 | `api` (axios instance) | const | `lib/api/client.ts` | Shared client; baseURL `API_URL`, injects `X-Agent-ID/Role=CEO`, rate-limit retry (3) |
 | `releaseApi` | module | `lib/api/release.ts` | `getProposal/approve/reject`; 404→null, non-404 rethrow |
+| `authApi` | module | `lib/api/auth.ts` | `status/login/logout`; `status` always available (public probe), `login` posts an OAuth2 form body (FastAPI Users cookie route, not JSON) |
+| `useLogin`/`useAuthStatus`/`useLogout` | hooks | `hooks/use-auth.ts` | TanStack Query wrappers over `authApi`; login page + `proxy.ts`-gated flows |
+| `xApi` | module | `lib/api/x.ts` | `listPosts/approve/reject/getCredentialsStatus/setCredentials`; credentials are write-only (never returned) |
+| `roadmapApi` | module | `lib/api/roadmap.ts` | `listCycles/approveItem/rejectItem` |
 | `prompterLiveApi` | module | `lib/api/prompter-live.ts` | `start/streamUrl/messages/confirm/confirmBatch`; EventSource SSE |
 | `usePrompter` | hook | `hooks/use-prompter.ts` | Intake state machine: SSE refs, draft/batch extraction, turn lifecycle |
 | `useRateLimitWebsocket` | hook | `hooks/use-rate-limit-websocket.ts` | Single `/ws/system` subscriber; dispatches RATE_LIMIT_* + USAGE_SNAPSHOT; clears usage on disconnect |
+| `useA2ALiveStream` | hook | `hooks/use-websocket.ts` | Second `/ws/system` consumer (same shared connection): filters `a2a.message` frames, exposes `lastMessage`/`a2aMessages`/`isConnected` for the A2A page's invalidate-on-frame + switchboard pulses |
+| `useA2AAdminPairs` / `useA2AConversations` / `useA2AMessages` | hooks | `hooks/use-a2a-live.ts` | TanStack Query wrappers over `a2aApi.listAdminPairs/listAdminConversations/listAdminMessages`; 30s `staleTime`, invalidated by `a2a.message` frames |
+| `useReplyAsCeo` | hook | `hooks/use-a2a-live.ts` | Mutation wrapping `a2aApi.replyAsCeo`; invalidates the conversation list + the watched transcript's messages on success |
+| `A2ASwitchboard` / `A2APairCard` | comp | `components/a2a/a2a-switchboard.tsx` + `a2a-pair-card.tsx` | Org-chart pair cards grouped into sections (cell/PM-chain/board/cross-team) via `groupPairsBySection`; each card pulses for `PAIR_PULSE_FADE_MS` (45s) after a matching live frame |
+| `A2AReplyComposer` | comp | `components/a2a/a2a-reply-composer.tsx` | CEO chime-in box on a selected conversation; disabled when the conversation has no linked task (A2A sends require one) |
 | `useUsageStore` | store | `store/usage-store.ts` | zustand: live usage snapshot, wsState, polling fallback |
 | `skippedPreconditions` | fn | `components/kanban/core/bypass-preconditions.ts` | Lists material lifecycle preconditions a drag would skip (PR/docs/subtasks-terminal) |
 | `KanbanBoard` | comp | `components/kanban/core/kanban-board.tsx` | dnd-kit board; routes drag→`useUpdateTask` (admin override) or in-band lifecycle verb; notes dialog for pass-qa/fail-qa/complete |
 | `ReleaseProposalCard` | comp | `components/dashboard/release-proposal-card.tsx` | Approve/reject-with-changes dialog; ≥10 char reject reason |
 | `PlaybookReviewQueue` | comp | `components/dashboard/playbook-review-queue.tsx` | Approve/reject-with-reason (≥4 char) drafts |
+| `XPostQueue` | comp | `components/dashboard/x-post-queue.tsx` | Editable draft body + 280-char counter; approve (posts), reject-with-reason (≥4 char); hidden when empty |
+| `RoadmapReviewQueue` | comp | `components/dashboard/roadmap-review-queue.tsx` | Per-item approve/reject within a held cycle card; reject requires ≥4 char reason |
+| `XCredentialsCard` | comp | `components/settings/x-credentials-card.tsx` | Write-only entry of the 4 OAuth 1.0a secrets; set-all-4 or clear-all-4 |
 | `RequiredNotesDialog` | comp | `components/ui/required-notes-dialog.tsx` | Reusable notes-gated confirm; submit disabled on empty/whitespace |
 | `CommandCenter` | comp | `components/dashboard/command-center.tsx` | Overview page body; composes all dashboard cards |
 | `DeliveryTabContent` | comp | `components/metrics/delivery-tab.tsx` | Cycle-time/bottleneck/rework/scorecard panels |
 
 ## Data Flow
-Browser → nginx :3000 → (panel Next.js server for pages; `/api/*` and `/ws/*` proxied to `orchestrator:8000`). All client calls use relative URLs: `API_URL="/api"` (axios `baseURL`) and `WS_URL="/ws"` (`getWebSocketUrl`) — no CORS because the browser sees one origin. The shared axios client injects `X-Agent-ID=<CEO_AGENT_ID>` + `X-Agent-Role=CEO_ROLE` headers for API authorization. Live events flow: orchestrator `StreamEventBus` → `websocket_bridge` → per-resource `/ws/{agents,channels,sessions,notifications,system}` sockets → panel `useWebSocket` hooks → zustand stores / TanStack Query cache. Usage snapshots (`USAGE_SNAPSHOT`) and rate-limit lifecycle (`RATE_LIMIT_HIT/LIFTED`) arrive on the single shared `/ws/system` stream mounted in providers; on any non-`connected` state the usage store clears its snapshot so the panel falls back to HTTP-polling summary until a fresh frame lands.
+Browser → nginx :3000 → (panel Next.js server for pages; `/api/*` and `/ws/*` proxied to `orchestrator:8000`). All client calls use relative URLs: `API_URL="/api"` (axios `baseURL`) and `WS_URL="/ws"` (`getWebSocketUrl`) — no CORS because the browser sees one origin. When cloud auth is armed (`ROBOCO_CLOUD_AUTH_ENABLED`), every navigation to a `(dashboard)` route first runs `proxy.ts` (Next 16's rename of `middleware.ts`), which probes `/auth/status` directly against the docker-internal orchestrator URL (not through nginx) and redirects to `/login` when no `roboco_session` cookie is present; a probe failure/timeout fails OPEN to "cloud auth off" so a slow/unreachable backend never blocks navigation. The login page (`(auth)/login/page.tsx`) posts credentials via `authApi.login` (OAuth2 form body, FastAPI Users' cookie route) and the session cookie rides back on the response. The shared axios client injects `X-Agent-ID=<CEO_AGENT_ID>` + `X-Agent-Role=CEO_ROLE` headers for API authorization. Live events flow: orchestrator `StreamEventBus` → `websocket_bridge` → per-resource `/ws/{agents,channels,sessions,notifications,system}` sockets → panel `useWebSocket` hooks → zustand stores / TanStack Query cache. Usage snapshots (`USAGE_SNAPSHOT`) and rate-limit lifecycle (`RATE_LIMIT_HIT/LIFTED`) arrive on the single shared `/ws/system` stream mounted in providers; on any non-`connected` state the usage store clears its snapshot so the panel falls back to HTTP-polling summary until a fresh frame lands. The A2A page's `useA2ALiveStream` is a second, independent consumer of that same shared `/ws/system` connection (not a new socket): every persisted A2A message publishes an `a2a.message` frame, which the page uses purely to invalidate-on-frame (REST via `a2aApi` stays the source of truth for full message bodies, since the frame's excerpt is capped) and to drive the switchboard's 45s pulse fade on the matching pair card.
 
 ## Mermaid
 ```mermaid
@@ -88,6 +108,7 @@ graph TD
   Routes --> Tasks["tasks + tasks/[id]"]
   Routes --> Kanban["kanban (dev/qa/pm/pr-review)"]
   Routes --> Prompter["prompter (single + MegaTask)"]
+  Routes --> A2ALive["a2a (switchboard + reply)"]
   Routes --> Settings["settings + ai-providers"]
   Routes --> Domain["agents/projects/products/business/journals/communications/git/kb/auditor/work-sessions/notifications"]
   Overview --> Dash["components/dashboard/*"]
@@ -95,6 +116,8 @@ graph TD
   Dash --> Playbook["PlaybookReviewQueue"]
   Dash --> Ceo["CEOApprovalQueue"]
   Dash --> Pr["PRReviewQueue"]
+  Dash --> XQ["XPostQueue"]
+  Dash --> Rd["RoadmapReviewQueue"]
   Dash --> Usage["UsageOverviewPanel"]
   Metrics --> MComp["components/metrics/*"]
   Kanban --> KCore["kanban/core (board + bypass)"]
@@ -110,6 +133,7 @@ graph TD
 panel/ (Next.js 16, package roboco-panel v0.14.0)
 ├── src/app/
 │   ├── layout.tsx                          (root layout: providers, theme, fonts)
+│   ├── (auth)/login/page.tsx               (cloud-auth login form; gated by proxy.ts)
 │   └── (dashboard)/
 │       ├── layout.tsx                      (dashboard shell: sidebar + header + connection status)
 │       ├── overview/page.tsx               (→ <CommandCenter/>)
@@ -117,19 +141,21 @@ panel/ (Next.js 16, package roboco-panel v0.14.0)
 │       ├── tasks/page.tsx + tasks/[taskId]/page.tsx
 │       ├── kanban/page.tsx                 (dev/qa/pm/pr-review views)
 │       ├── prompter/page.tsx               (intake chat: single + MegaTask batch)
+│       ├── a2a/page.tsx                    (A2A Live: switchboard/list + transcript + CEO reply)
 │       ├── settings/page.tsx + settings/ai-providers/page.tsx
 │       ├── {agents,projects,products,business,journals,communications,git,knowledge-base,auditor,work-sessions,notifications}/page.tsx
 │       └── communications/[sessionId]/page.tsx  (per-session chat view; live via useSessionStream)
 ├── src/components/
-│   ├── dashboard/                          (command-center, key-metrics, release-proposal, playbook-review-queue, ceo-approval-queue, pr-review-queue, usage-overview, team-health, active-blockers, auditor-alerts, strategy-signals, quick-actions, recent-activity)
+│   ├── dashboard/                          (command-center, key-metrics, release-proposal, playbook-review-queue, ceo-approval-queue, pr-review-queue, x-post-queue, roadmap-review-queue, usage-overview, team-health, active-blockers, auditor-alerts, strategy-signals, quick-actions, recent-activity)
 │   ├── metrics/                            (delivery-tab, usage-time-series-chart, agent/team-usage-chart, model-usage-donut, sessions-table)
 │   ├── kanban/
 │   │   ├── core/                           (kanban-board/column/card + bypass-preconditions)
 │   │   ├── shared/
 │   │   └── views/                          (dev/qa/pm/pr-review kanban)
 │   ├── prompter/                           (intake-form, chat-messages, chat-composer, draft-proposal-card, batch-review-card, success-card, board-review-sent-card)
+│   ├── a2a/                                (a2a-switchboard + a2a-switchboard-utils, a2a-pair-card, a2a-conversation-list, a2a-transcript, a2a-reply-composer, a2a-utils)
 │   ├── tasks/ + tasks/task-detail/         (task-table, create/edit-task-dialog, task-filters, acceptance-criteria-editor, dependency-selector; detail tabs: overview/plan/progress/commits/sessions/notes/dependencies)
-│   ├── settings/                           (feature-flags-card, ai-routing-card, transcript-retention-card, self-hosted-section)
+│   ├── settings/                           (feature-flags-card, ai-routing-card, transcript-retention-card, self-hosted-section, x-credentials-card)
 │   ├── conventions/conventions-tab.tsx     (per-project architecture map + health)
 │   ├── projects/ agents/ business/ auditor/ knowledge-base/ communications/ git/ journals/ work-sessions/ notifications/ rate-limit/ layout/
 │   └── ui/                                 (Radix-based primitives: dialog, table, tabs, select, switch, required-notes-dialog, sonner toaster, markdown)
@@ -137,10 +163,11 @@ panel/ (Next.js 16, package roboco-panel v0.14.0)
 │   ├── use-websocket.ts                    (shared useWebSocket<T>: auto-reconnect, heartbeat)
 │   └── use-{tasks,agents,projects,products,usage,prompter,secretary,dashboard,git,journals,channels,notifications,knowledge-base,observability,work-sessions,providers,rate-limit-{sync,websocket}}.ts
 ├── src/lib/
-│   ├── api/*.ts                            (per-domain axios clients; client.ts shared instance; release, playbooks, prompter-live, tasks, settings, usage, cockpit, a2a, …)
+│   ├── api/*.ts                            (per-domain axios clients; client.ts shared instance; release, playbooks, prompter-live, tasks, settings, usage, cockpit, a2a, auth, x, roadmap, …)
 │   ├── websocket/connection.ts             (WebSocketConnection + getWebSocketUrl)
 │   ├── stores/                             (scroll-restoration-store only; ui-store is sole-canonical in src/store/)
 │   └── {constants,utils,agent-definitions,agent-utils,repo-url,mock-data}.ts
+├── src/proxy.ts                            (Next 16 rename of middleware.ts: gates (dashboard) behind cloud auth)
 ├── src/store/                              (rate-limit-store, notifications-store, usage-store, ui-store)
 ├── src/types/                              (shared TS types: index, rate-limits, git)
 ├── vitest.config.ts + src/test/setup.ts    (Vitest + jsdom; coverage via @vitest/coverage-v8)
@@ -177,6 +204,12 @@ panel/ (Next.js 16, package roboco-panel v0.14.0)
 - `dep_update_enabled` — dependency-update bot
 - `release_manager_enabled` — gated release manager
 - `org_memory_enabled` — organizational memory loop
+- `sandbox_db_enabled` — sandboxed per-agent test DB/Redis
+- `x_engine_enabled` — X (Twitter) engine (release-post + mention-reply drafts, all CEO-held)
+- `roadmap_engine_enabled` — board roadmap engine (weekly Product-Owner-authored cycle)
+- `routing_strict` — fail-closed model routing (refuse to silently downgrade to the legacy Anthropic path on a disabled provider)
+
+Deliberately **not** on this card (compose/env-coupled, unsafe for a runtime toggle): `ROBOCO_CLOUD_AUTH_ENABLED` and `ROBOCO_DB_NETWORK_ISOLATED`.
 
 ## Gotchas
 - **Relative URLs only** (`/api`, `/ws`); overriding `NEXT_PUBLIC_API_URL`/`NEXT_PUBLIC_WS_URL` to an absolute URL reintroduces CORS — leave defaults.
@@ -187,6 +220,12 @@ panel/ (Next.js 16, package roboco-panel v0.14.0)
 - **MegaTask intake card** historically had crash/disappears bugs (list[str] nest, depth ValueError→500); confirm-batch path is the multi-project branch (`project_ids`).
 - **Kanban drag = admin status-override** which bypasses the in-band lifecycle validator; `skippedPreconditions` only warns on what the panel can detect (PR/docs/subtasks-terminal) — precision over recall, an empty list does NOT mean the move is safe, only that nothing detectable is skipped.
 - ~~`ui-store` exists under both `store/ui-store.ts` and `lib/stores/ui-store.ts`~~ — **FIXED** (536bbb64): `lib/stores/ui-store.ts` was removed and replaced with `scroll-restoration-store.ts`; `store/ui-store.ts` is now the sole canonical location.
+- **`proxy.ts` is Next.js 16's renamed `middleware.ts`** — same file-convention contract (default export + `config.matcher`), just relocated/renamed terminology (it never ran in true Edge middleware). A reader searching the repo for `middleware.ts` will find nothing; the gate lives at `src/proxy.ts`.
+- **`proxy.ts` fails OPEN, not closed** — a slow/unreachable orchestrator on the `/auth/status` probe (1500ms timeout) is treated as "cloud auth off," so the dashboard stays reachable rather than the CEO getting locked out by a transient backend hiccup. This is the deliberately safe default (off is what every deploy starts on) but means a genuinely-armed deployment with a flaky orchestrator could intermittently skip the login gate.
+- **X Post Queue / Roadmap Review Queue hide when empty**, mirroring the release-proposal + playbook queues — a CEO who doesn't see the card has no signal that the underlying engine is even armed; both need `refetchInterval: 30000` to surface a newly-originated draft/cycle without a manual refresh.
+- **A2A page activity is A2A-only by design**: `latestPulseTimestamps` (switchboard-utils) derives pulses purely from `a2a.message` frames on `/ws/system`, never from the verb/flow traffic sharing that same stream — a CEO ruling, not an oversight, so don't "fix" the switchboard to also light up on ordinary gateway verbs.
+- **A2A reply composer is read-only on a task-less conversation**: the backend's `reply_as_ceo` route 400s exactly when the watched conversation has no `task_id` (A2A sends always ride the gateway `send` path, which requires one) — the panel pre-empts that bounce with an explanatory message instead of letting the POST fail. Conversation `status` does NOT gate the composer; the CEO's reply lands in its own direct thread with the participant, not into the watched conversation.
+- **Switchboard "peeked pair" state**: a pair with `conversation_id: null` (never talked) has nothing to select via `?conversation=`, so `page.tsx` tracks it separately (`peekedPair`) and renders its own empty state — don't conflate this with the ordinary `selectedId` empty-state path when touching the drill-in panel.
 
 ## Drift from CLAUDE.md
 - CLAUDE.md says panel lives at `roboco/panel/` inside this repo — confirmed (no longer a separate `roboco-panel` project). No drift.
@@ -208,6 +247,9 @@ panel/ (Next.js 16, package roboco-panel v0.14.0)
 > - `2da72f3f` chat: closed-session guard + reply_to validation — `communications/[sessionId]/page.tsx` renders read-only notice for closed sessions; stale-send toasts rather than silently vanishing.
 > - `5cb4e85f` secretary: stuck-spinner + mid-reply + reload hardening (`use-secretary.ts`, `secretary-tab.tsx`); adds `use-secretary.test.tsx`.
 > - `a1127daf` chat: `linkTask`/`unlinkTask` corrected to real backend routes; phantom `updateTaskLink` removed from `sessions.ts`.
+> - `da563487` Wave 2: A2A live view (#297) — new `app/(dashboard)/a2a/page.tsx` (classic list view + transcript + `A2AReplyComposer`), `hooks/use-a2a-live.ts`, `lib/api/a2a.ts` admin client, `useA2ALiveStream` added to `use-websocket.ts`. Backend pairs with `EventType.A2A_MESSAGE_SENT` + `websocket_bridge._handle_a2a_message_event`.
+> - `876e19b3` A2A switchboard (#298) — `page.tsx` gains the switchboard/list view toggle (default switchboard) + `peekedPair` state; new `components/a2a/{a2a-switchboard,a2a-switchboard-utils,a2a-pair-card}.tsx`; `useA2AAdminPairs` added to `use-a2a-live.ts`.
+> - `a7147702` feat(panel): full mobile responsiveness pass — touches the A2A page's single-visible-pane layout (`h-dvh`, back affordance) among other routes.
 
 ## Regression Risks
 

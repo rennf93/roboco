@@ -6,7 +6,7 @@ Environment-based settings using Pydantic Settings.
 
 from functools import lru_cache
 
-from pydantic import Field, computed_field
+from pydantic import Field, computed_field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     # ==========================================================================
     # Application
     # ==========================================================================
-    app_version: str = "0.16.0"
+    app_version: str = "0.17.0"
     debug: bool = False
     environment: str = Field(
         default="development", pattern="^(development|staging|production)$"
@@ -340,6 +340,64 @@ class Settings(BaseSettings):
         default="",
         description="Fernet encryption key for secrets.",
     )
+
+    # ==========================================================================
+    # Cloud auth (FastAPI Users) — DEFAULT OFF
+    # ==========================================================================
+    # Lets the panel/API be safely exposed beyond localhost without changing the
+    # CEO's local no-login flow while off. Off: get_agent_context behaves
+    # byte-for-byte as today (header-trust). On: a valid session cookie for the
+    # single seeded CEO login authenticates; a spoofed CEO header without a
+    # valid session or agent HMAC token is rejected. Not armed by any compose
+    # file by default — arm only behind TLS (cookies are secure-only).
+    cloud_auth_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for cloud auth. OFF by default; when off, "
+            "get_agent_context and the WS panel-token gate behave byte-for-byte "
+            "as today. On, no registration router is mounted — exactly one "
+            "user, seeded from cloud_auth_email/cloud_auth_password."
+        ),
+    )
+    cloud_auth_email: str | None = Field(
+        default=None,
+        description="Email for the single seeded CEO login user.",
+    )
+    cloud_auth_password: str | None = Field(
+        default=None,
+        description=(
+            "Password for the single seeded CEO login user. Hashed at startup "
+            "and never stored in plain text."
+        ),
+    )
+    cloud_auth_secret: str | None = Field(
+        default=None,
+        description=(
+            "Session-signing secret for the login cookie's JWT. Required when "
+            "cloud_auth_enabled is true (startup fails loud if unset). Generate "
+            "with: python -c 'import secrets; print(secrets.token_hex(32))'"
+        ),
+    )
+    cloud_auth_cookie_max_age: int = Field(
+        default=2592000,
+        ge=60,
+        description=(
+            "Session cookie lifetime in seconds (default 30 days). Sliding: "
+            "every authenticated request re-mints + re-sets the cookie, so an "
+            "active session never expires — only genuine inactivity past this "
+            "window logs out."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_cloud_auth(self) -> "Settings":
+        """Fail loud at startup rather than silently minting unsigned sessions."""
+        if self.cloud_auth_enabled and not self.cloud_auth_secret:
+            raise ValueError(
+                "ROBOCO_CLOUD_AUTH_SECRET is required when "
+                "ROBOCO_CLOUD_AUTH_ENABLED=true."
+            )
+        return self
 
     # ==========================================================================
     # GitHub repository provisioning (pitch -> approve -> auto-provision)
@@ -729,6 +787,131 @@ class Settings(BaseSettings):
         description="Cosine-similarity floor for injected memory; below it, none.",
     )
 
+    # Sandboxed per-agent-spawn DB/Redis — orchestrator-provisioned throwaway
+    # Postgres/Redis sibling containers so a dev agent's gate runs against an
+    # isolated DB instead of RoboCo's own production Postgres. Default-off;
+    # even when on, a project only participates with its `sandbox_services`
+    # column set. Replaces (never coexists with) the legacy `_append_gate_env`
+    # prod-creds injection for an opted-in project's spawns.
+    sandbox_db_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for the sandboxed per-agent test DB/Redis. OFF by "
+            "default; when off, spawning behaves exactly as today (the legacy "
+            "prod-creds gate-env injection, gated by toolchain_match_enabled). "
+            "Only opted-in projects (sandbox_services column set) participate."
+        ),
+    )
+
+    # X (Twitter) account — HoM drafts release posts + mention replies, ALL
+    # held for per-post CEO approval (mirrors the release-manager CEO gate).
+    # Default-off; even when on, posting requires CEO-supplied credentials AND
+    # an explicit per-post CEO approval in the panel — nothing auto-posts.
+    x_engine_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for the X (Twitter) engine. OFF by default; when "
+            "off no draft is originated and no X API call is ever made. Even "
+            "when on, posting requires stored credentials AND an explicit "
+            "per-post CEO approval — nothing auto-posts."
+        ),
+    )
+    x_replies_enabled: bool = Field(
+        default=False,
+        description=(
+            "Sub-switch for the mention-reply half of the X engine. OFF by "
+            "default: even with x_engine_enabled on, the engine only drafts "
+            "release-announcement posts — it does not poll mentions or draft "
+            "replies. Reading mentions needs a paid X API tier, so replies are "
+            "a deliberate opt-in on top of release posting."
+        ),
+    )
+    x_mentions_interval_seconds: int = Field(
+        default=1800,
+        ge=60,
+        description="Seconds between mentions-poll passes.",
+    )
+    x_mentions_max_per_cycle: int = Field(
+        default=5,
+        ge=1,
+        description=(
+            "Max held reply proposals the mentions poll may originate in one cycle."
+        ),
+    )
+    x_mentions_min_engagement: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Minimum like+reply+retweet count for a mention to count as "
+            "'meaningful' (the engagement floor half of the mention filter)."
+        ),
+    )
+    x_max_open_posts: int = Field(
+        default=10,
+        ge=1,
+        description=(
+            "Rolling cap on concurrently-open held X posts/replies (both "
+            "sources combined); the engine originates nothing more past it."
+        ),
+    )
+    x_account_user_id: str = Field(
+        default="",
+        description=(
+            "Numeric X user id of the account's own account. Empty resolves it "
+            "once per mentions cycle via GET /2/users/me (one extra call)."
+        ),
+    )
+    x_request_timeout_seconds: float = Field(
+        default=15.0,
+        gt=0,
+        description="Per-request timeout for outbound X API HTTP calls.",
+    )
+
+    # Board roadmap engine — weekly, the Product Owner explores the company's
+    # projects and proposes a themed cycle of roadmap items; the CEO approves
+    # each item individually into the backlog. Default-off; even when on
+    # nothing auto-starts (approved items land in BACKLOG for normal PM
+    # activation).
+    roadmap_engine_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for the board roadmap engine. OFF by default; "
+            "when off no exploration cycle is originated and the Product "
+            "Owner is never spawned for this. Even when on, nothing "
+            "auto-starts — approved items land in BACKLOG for normal PM "
+            "activation."
+        ),
+    )
+    roadmap_interval_seconds: int = Field(
+        default=604800,
+        ge=300,
+        description="Seconds between roadmap-exploration cycles (default weekly).",
+    )
+    roadmap_min_items_per_cycle: int = Field(
+        default=3,
+        ge=1,
+        description="Minimum roadmap item drafts a themed cycle must propose.",
+    )
+    roadmap_max_items_per_cycle: int = Field(
+        default=7,
+        ge=1,
+        description="Maximum roadmap item drafts a themed cycle may propose.",
+    )
+
+    # Set by the compose file that carries the roboco_data topology
+    # (postgres/redis on a data-only network agents never join). NOT a panel
+    # feature flag: it must travel with the compose networks: stanzas, and a
+    # runtime toggle cannot change network membership.
+    db_network_isolated: bool = Field(
+        default=False,
+        description=(
+            "True when the deployment's compose topology isolates "
+            "postgres/redis from agent containers (roboco_data network). "
+            "Suppresses the legacy prod-creds gate-env injection, which "
+            "would hand agents credentials for an unreachable host."
+        ),
+    )
+
     # ==========================================================================
     # Workspaces (Multi-Agent Git)
     # ==========================================================================
@@ -800,7 +983,7 @@ class Settings(BaseSettings):
     agent_image_tag: str = Field(
         default="",
         description=(
-            "Tag for pre-built agent images (e.g. 'latest' or '0.16.0'). Empty "
+            "Tag for pre-built agent images (e.g. 'latest' or '0.17.0'). Empty "
             "leaves the tag implicit (':latest'); only meaningful with "
             "agent_image_registry set."
         ),

@@ -22,7 +22,10 @@ import structlog
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 
 from roboco.agents_config import CEO_AGENT_ID, verify_agent_token
+from roboco.api.auth.backend import SESSION_COOKIE_NAME
+from roboco.api.auth.session import resolve_session_user
 from roboco.api.deps import _auth_required
+from roboco.config import settings
 from roboco.db.base import get_db
 from roboco.services.repositories import resolve_agent_uuid
 
@@ -59,19 +62,32 @@ class _ClientConnection:
 
 
 async def _require_panel_token(websocket: WebSocket) -> bool:
-    """Bind a per-agent WS upgrade to the panel/CEO HMAC token.
+    """Bind a per-agent WS upgrade to the panel/CEO HMAC token (dual-path).
 
     /ws/* streams are operator-only (the panel is the sole WS client; agents
     use MCP verbs). nginx injects the CEO panel token as ``X-Agent-Token``.
     In strict mode (``ROBOCO_AGENT_AUTH_REQUIRED=true``) the token is required
     + verified against the CEO identity; a presented-but-forged token is
     rejected even in dev mode. Returns True to proceed, False to close.
+
+    When ``settings.cloud_auth_enabled``, the HMAC token still works exactly
+    as above; absent one, a valid cloud-auth session cookie (Starlette's
+    WebSocket exposes cookies parsed from the upgrade request's Cookie
+    header) is accepted instead. Off => unchanged.
     """
     token = websocket.headers.get("x-agent-token")
-    if _auth_required() and not token:
-        return False
-    # A missing token in dev mode proceeds; a presented token must verify.
-    return not (token and not verify_agent_token(token, CEO_AGENT_ID, "ceo", ""))
+    if not settings.cloud_auth_enabled:
+        if _auth_required() and not token:
+            return False
+        # A missing token in dev mode proceeds; a presented token must verify.
+        return not (token and not verify_agent_token(token, CEO_AGENT_ID, "ceo", ""))
+
+    if token:
+        return verify_agent_token(token, CEO_AGENT_ID, "ceo", "")
+    cookie_value = websocket.cookies.get(SESSION_COOKIE_NAME)
+    async for db in get_db():
+        return await resolve_session_user(cookie_value, db) is not None
+    return False
 
 
 # =============================================================================

@@ -11,6 +11,7 @@ import {
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useIsMobile } from "@/hooks/use-is-mobile";
 import type { TeamUsageRow } from "@/types";
 
 interface TeamUsageChartProps {
@@ -24,6 +25,7 @@ function fmtK(n: number): string {
 }
 
 export function TeamUsageChart({ data, isLoading }: TeamUsageChartProps) {
+  const isMobile = useIsMobile();
   const chartData = [...(data ?? [])]
     .sort((a, b) => b.total_tokens - a.total_tokens)
     .map((row) => ({
@@ -43,12 +45,20 @@ export function TeamUsageChart({ data, isLoading }: TeamUsageChartProps) {
           <ResponsiveContainer width="100%" height={208}>
             <BarChart
               data={chartData}
-              margin={{ top: 4, right: 8, left: 0, bottom: 8 }}
+              margin={{
+                top: 4,
+                right: 8,
+                left: 0,
+                bottom: isMobile ? 24 : 8,
+              }}
             >
               <CartesianGrid strokeDasharray="3 3" className="opacity-20" />
               <XAxis
                 dataKey="name"
-                tick={{ fontSize: 11 }}
+                tick={{ fontSize: isMobile ? 9 : 11 }}
+                angle={isMobile ? -45 : 0}
+                textAnchor={isMobile ? "end" : "middle"}
+                interval={0}
                 axisLine={false}
                 tickLine={false}
               />

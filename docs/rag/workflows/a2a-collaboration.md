@@ -28,6 +28,10 @@ dm(
 
 Cross-cell `dm` is **denied by policy**. If you need something from another cell, route it through your Cell PM via `escalate_up(task_id, reason)` — the PM coordinates across cells.
 
+## Messaging the CEO
+
+`dm(recipient="ceo", ...)` follows a different rule than same-cell DM: you can never *open* a CEO conversation (only reply inside one the CEO already started), and once it's open you get at most one reply per CEO message before you must wait for the CEO to post again. See `docs/rag/tools/a2a-tools.md` for the full contract and the exact refusal messages.
+
 ## Channel Posts
 
 ```python

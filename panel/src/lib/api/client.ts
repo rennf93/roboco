@@ -20,6 +20,10 @@ const api: AxiosInstance = axios.create({
     "Content-Type": "application/json",
   },
   timeout: 60000, // Increased to 60s for long operations like reindexing
+  // Rides the cloud-auth session cookie. Harmless when cloud auth is off
+  // (same-origin requests already carry cookies regardless), and required
+  // for a cross-origin dev setup that talks to the backend directly.
+  withCredentials: true,
 });
 
 // Request interceptor to add auth headers and logging
@@ -41,6 +45,29 @@ api.interceptors.request.use(
     return Promise.reject(error);
   },
 );
+
+// A 401 only means "log in" when cloud auth is actually on. In header-trust /
+// secure mode (cloud auth off) a 401 is a misconfigured agent token, not a
+// missing session — bouncing to /login would dead-end on a page whose backend
+// route isn't mounted. Probe the public status endpoint (a bare fetch so it
+// doesn't re-enter this interceptor) and only redirect when cloud auth is on.
+async function redirectToLoginIfCloudAuth(): Promise<void> {
+  if (typeof window === "undefined" || window.location.pathname === "/login") {
+    return;
+  }
+  try {
+    const res = await fetch(`${API_URL}/auth/status`, {
+      credentials: "include",
+    });
+    if (!res.ok) return;
+    const data = (await res.json()) as { cloud_auth_enabled?: boolean };
+    if (data.cloud_auth_enabled) {
+      window.location.href = "/login";
+    }
+  } catch {
+    // Can't confirm cloud auth is on -> don't dead-end the user on /login.
+  }
+}
 
 // Response interceptor for comprehensive error handling
 api.interceptors.response.use(
@@ -128,6 +155,7 @@ api.interceptors.response.use(
       );
     } else if (status === 401) {
       console.error("[API] Unauthorized - check API authentication headers");
+      void redirectToLoginIfCloudAuth();
     } else if (status === 403) {
       console.error(
         "[API] Forbidden - insufficient permissions for this action",

@@ -7,7 +7,9 @@ Repository for managing indexed documents in the knowledge base.
 import hashlib
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import cast, delete, func
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from roboco.db.tables import IndexedDocumentTable
 from roboco.services.repositories.base import BaseRepository
@@ -41,47 +43,53 @@ class IndexedDocumentRepository(BaseRepository[IndexedDocumentTable]):
         if not documents:
             return 0
 
-        count = 0
+        # Dedupe within the batch (last wins) — index_type is constant here, so
+        # source_hash is the key; ON CONFLICT DO UPDATE can't touch the same row
+        # twice in one statement.
+        by_hash: dict[str, dict[str, Any]] = {}
         for doc_info in documents:
             source = doc_info["source"]
-            title = doc_info.get("title")
             preview = doc_info.get("preview")
-            metadata = doc_info.get("metadata")
-
             source_hash = hashlib.sha256(source.encode()).hexdigest()
+            by_hash[source_hash] = {
+                "index_type": index_type,
+                "source": source,
+                "source_hash": source_hash,
+                "title": doc_info.get("title"),
+                "preview": preview[:500] if preview else None,
+                "extra_data": doc_info.get("metadata") or {},
+            }
+        rows = list(by_hash.values())
 
-            existing = await self.session.execute(
-                select(IndexedDocumentTable).where(
-                    IndexedDocumentTable.index_type == index_type,
-                    IndexedDocumentTable.source_hash == source_hash,
-                )
-            )
-            doc = existing.scalar_one_or_none()
-
-            if doc:
-                # Update existing
-                if title:
-                    doc.title = title
-                if preview:
-                    doc.preview = preview[:500]
-                if metadata:
-                    doc.extra_data = {**(doc.extra_data or {}), **metadata}
-            else:
-                # Insert new
-                doc = IndexedDocumentTable(
-                    index_type=index_type,
-                    source=source,
-                    source_hash=source_hash,
-                    title=title,
-                    preview=preview[:500] if preview else None,
-                    extra_data=metadata or {},
-                )
-                self.session.add(doc)
-
-            count += 1
-
-        await self.session.flush()
-        return count
+        # Atomic upsert. The prior check-then-insert raced under concurrent
+        # indexing: two callers both saw no row and both inserted -> the second
+        # violated uq_indexed_doc_source, poisoning its transaction (and, in CI,
+        # segfaulting on the failed-connection checkin).
+        stmt = pg_insert(IndexedDocumentTable).values(rows)
+        stmt = stmt.on_conflict_do_update(
+            constraint="uq_indexed_doc_source",
+            set_={
+                # keep the existing value when the new one is empty (matches the
+                # old `if title:` / `if preview:` guards)
+                "title": func.coalesce(stmt.excluded.title, IndexedDocumentTable.title),
+                "preview": func.coalesce(
+                    stmt.excluded.preview, IndexedDocumentTable.preview
+                ),
+                # merge metadata (existing || new, new wins) via jsonb concat
+                "extra_data": cast(
+                    cast(IndexedDocumentTable.extra_data, JSONB).op("||")(
+                        cast(stmt.excluded.extra_data, JSONB)
+                    ),
+                    IndexedDocumentTable.extra_data.type,
+                ),
+            },
+        )
+        await self.session.execute(stmt)
+        # The Core upsert bypasses the ORM identity map, so any row already
+        # loaded in this session is now stale — expire so a same-session read
+        # reflects the merged DB row, not the cached object.
+        self.session.expire_all()
+        return len(rows)
 
     async def get_by_index_type(
         self,

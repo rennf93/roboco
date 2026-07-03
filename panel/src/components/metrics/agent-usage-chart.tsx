@@ -11,6 +11,7 @@ import {
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useIsMobile } from "@/hooks/use-is-mobile";
 import type { AgentUsageRow } from "@/types";
 
 interface AgentUsageChartProps {
@@ -24,9 +25,12 @@ function fmtK(n: number): string {
 }
 
 export function AgentUsageChart({ data, isLoading }: AgentUsageChartProps) {
+  const isMobile = useIsMobile();
+  // Fewer bars on a phone — 10 labels at ~30deg rotation still overlap below
+  // ~400px, so cap the label density instead of shrinking text further.
   const chartData = [...(data ?? [])]
     .sort((a, b) => b.total_tokens - a.total_tokens)
-    .slice(0, 10)
+    .slice(0, isMobile ? 6 : 10)
     .map((row) => ({
       name: row.agent_slug,
       Tokens: row.total_tokens,
@@ -49,9 +53,10 @@ export function AgentUsageChart({ data, isLoading }: AgentUsageChartProps) {
               <CartesianGrid strokeDasharray="3 3" className="opacity-20" />
               <XAxis
                 dataKey="name"
-                tick={{ fontSize: 10 }}
-                angle={-30}
+                tick={{ fontSize: isMobile ? 9 : 10 }}
+                angle={isMobile ? -45 : -30}
                 textAnchor="end"
+                interval={0}
                 axisLine={false}
                 tickLine={false}
               />

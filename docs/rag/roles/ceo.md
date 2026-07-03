@@ -35,6 +35,15 @@ When a Main PM or Board member escalates a major task via `escalate_to_ceo`, it 
 
 Both are panel actions; the agent that escalated simply idles until the CEO decides.
 
+### X posts and roadmap items (panel-only, not gateway verbs)
+
+Two more CEO-only approval queues, both plain REST endpoints on the orchestrator (not lifecycle transitions, not agent-callable verbs):
+
+- **X (Twitter) posts** — `GET/POST /api/x/posts{,/{id}/approve,/reject}`. Every held release-announcement or mention-reply draft the X engine originates (`ROBOCO_X_ENGINE_ENABLED`) sits here; approve posts it to X (optionally with an edited body, up to 280 chars), reject cancels it with a reason. Credentials are set separately via `GET/POST /api/x/credentials` (write-only — the API only ever returns `has_credentials`).
+- **Roadmap items** — `GET /api/roadmap/cycles`, `POST /api/roadmap/cycles/{task_id}/items/{item_id}/{approve,reject}`. Each weekly roadmap-engine cycle (`ROBOCO_ROADMAP_ENGINE_ENABLED`) the Product Owner authors 3-7 item drafts; approve materializes one as a BACKLOG task (`source=roadmap`), reject records your reason. Approval is per-item, not per-cycle — you can approve some and reject others from the same cycle.
+
+Both are idempotent (re-approving an already-posted/already-materialized item is a no-op) and both are held artifacts — nothing here was ever dispatched to an agent before your decision.
+
 ## Escalation
 
 The CEO is the final escalation target:

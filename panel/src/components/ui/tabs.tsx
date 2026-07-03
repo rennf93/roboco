@@ -26,7 +26,13 @@ function TabsList({
     <TabsPrimitive.List
       data-slot="tabs-list"
       className={cn(
-        "bg-muted text-muted-foreground inline-flex h-9 w-fit items-center justify-center rounded-lg p-[3px]",
+        // max-w-full + overflow-x-auto: a TabsList wider than its container
+        // (many tabs on a narrow viewport) scrolls horizontally in place
+        // instead of overflowing the page. Snap + hidden scrollbar make the
+        // scroll read as a deliberate swipeable strip, not a layout bug.
+        // justify-center-SAFE: plain center + overflow clips the first tab
+        // unreachably off the left edge; safe alignment falls back to start.
+        "bg-muted text-muted-foreground inline-flex h-9 w-fit max-w-full items-center justify-center-safe rounded-lg p-[3px] overflow-x-auto snap-x [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [&>[data-slot=tabs-trigger]]:snap-start",
         className,
       )}
       {...props}

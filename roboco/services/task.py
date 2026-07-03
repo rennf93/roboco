@@ -555,6 +555,26 @@ DEP_UPDATE_SOURCE = "dep_update"
 # (confirmed_by_human=False) and acted on by the release routes + executor.
 RELEASE_MANAGER_SOURCE = "release_manager"
 
+# Source tags for the X (Twitter) engine's held posts: a drafted release
+# announcement (x_post) or a drafted mention reply (x_reply). Like
+# release_manager these are NEVER dispatched — held for the CEO
+# (confirmed_by_human=False) and acted on only by the x routes + post service.
+X_POST_SOURCE = "x_post"
+X_REPLY_SOURCE = "x_reply"
+X_SOURCES = (X_POST_SOURCE, X_REPLY_SOURCE)
+
+# Source tag for a board roadmap exploration cycle: a PENDING task the roadmap
+# engine opens for the Product Owner to author a themed cycle of roadmap item
+# drafts (the ``propose_roadmap`` content verb). Unlike RELEASE_MANAGER_SOURCE
+# / X_SOURCES it IS dispatched — one-shot PO spawn, mirrors a board review —
+# but it never rides the delivery lifecycle; items materialize into BACKLOG
+# only via the CEO's per-item approve (source=ROADMAP_ITEM_SOURCE below).
+ROADMAP_SOURCE = "board_roadmap"
+
+# Source tag stamped on a task MATERIALIZED from an approved roadmap item
+# (distinct from ROADMAP_SOURCE, which tags the held exploration cycle itself).
+ROADMAP_ITEM_SOURCE = "roadmap"
+
 
 def extract_self_heal_fingerprint(task: Any) -> str | None:
     """The self-heal dedupe fingerprint from a task's markers, or None.
@@ -1370,6 +1390,33 @@ class TaskService(BaseService):
                 TaskTable.source == RELEASE_MANAGER_SOURCE,
                 TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
             )
+        )
+        return list(result.scalars().all())
+
+    async def list_open_x_posts(self) -> list[TaskTable]:
+        """Non-terminal X post/reply proposals (both sources) — the open-cap +
+        panel-queue basis. Ordered oldest-first so the queue reads chronologically."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source.in_(X_SOURCES),
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_roadmap_cycles(self) -> list[TaskTable]:
+        """Non-terminal board-roadmap exploration tasks — the one-open-cycle
+        dedup + panel-queue basis. Includes a cycle before AND after the
+        Product Owner authors it (``propose_roadmap``); ordered oldest-first."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == ROADMAP_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
         )
         return list(result.scalars().all())
 
@@ -7712,6 +7759,9 @@ class TaskService(BaseService):
         CEO opens the gate. The hold is scoped to self-heal: ordinary delegated
         subtasks default to ``confirmed_by_human=False`` (the PM delegated them,
         which is itself the authorization to start) and MUST still be offered.
+        The same hold covers ``x_post``/``x_reply`` — CEO-gated X drafts owned
+        by the Secretary, who has no ``give_me_work`` verb, but held here too
+        for the same belt-and-suspenders reason.
 
         Ordered by sequence asc, then priority asc, then created_at asc so
         earlier-sequence tasks win.
@@ -7722,7 +7772,9 @@ class TaskService(BaseService):
                 TaskTable.assigned_to == agent_id,
                 TaskTable.status == TaskStatus.PENDING,
                 or_(
-                    TaskTable.source != SELF_HEAL_SOURCE,
+                    TaskTable.source.notin_(
+                        (SELF_HEAL_SOURCE, X_POST_SOURCE, X_REPLY_SOURCE)
+                    ),
                     TaskTable.confirmed_by_human.is_(True),
                 ),
             )

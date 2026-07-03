@@ -11,6 +11,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  ResponsiveTable,
+  ResponsiveTableCardList,
+  ResponsiveTableCard,
+  ResponsiveTableCardRow,
+} from "@/components/ui/responsive-table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ExternalLink, Pencil, GitBranch, Key, KeyRound } from "lucide-react";
 import type { ProjectSummary, Team } from "@/types";
@@ -97,22 +103,96 @@ export function ProjectTable({ projects, isLoading }: ProjectTableProps) {
 
   return (
     <>
-      <div className="border rounded-lg">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Project</TableHead>
-              <TableHead>Cell</TableHead>
-              <TableHead>Token</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead className="w-[100px]">Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
+      <ResponsiveTable
+        table={
+          <div className="border rounded-lg">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Project</TableHead>
+                  <TableHead>Cell</TableHead>
+                  <TableHead>Token</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="w-[100px]">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {projects.map((project) => (
+                  <TableRow key={project.id}>
+                    <TableCell>
+                      <div>
+                        <Button
+                          onClick={() => setEditingProjectId(project.id)}
+                          variant="link"
+                          className="h-auto p-0 font-medium text-foreground"
+                        >
+                          {project.name}
+                        </Button>
+                        <p className="text-xs text-muted-foreground font-mono">
+                          {project.slug}
+                        </p>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <Badge className={teamColors[project.assigned_cell]}>
+                        {teamLabels[project.assigned_cell]}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      {getTokenBadge(project.has_git_token)}
+                    </TableCell>
+                    <TableCell>
+                      {project.is_active ? (
+                        <Badge className="bg-green-500/10 text-green-500">
+                          Active
+                        </Badge>
+                      ) : (
+                        <Badge
+                          variant="outline"
+                          className="text-muted-foreground"
+                        >
+                          Inactive
+                        </Badge>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => setEditingProjectId(project.id)}
+                          title="Edit project"
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          asChild
+                          title="View repository"
+                        >
+                          <a
+                            href={getExternalUrl(project)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >
+                            <ExternalLink className="h-4 w-4" />
+                          </a>
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        }
+        cards={
+          <ResponsiveTableCardList>
             {projects.map((project) => (
-              <TableRow key={project.id}>
-                <TableCell>
-                  <div>
+              <ResponsiveTableCard key={project.id}>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
                     <Button
                       onClick={() => setEditingProjectId(project.id)}
                       variant="link"
@@ -124,26 +204,7 @@ export function ProjectTable({ projects, isLoading }: ProjectTableProps) {
                       {project.slug}
                     </p>
                   </div>
-                </TableCell>
-                <TableCell>
-                  <Badge className={teamColors[project.assigned_cell]}>
-                    {teamLabels[project.assigned_cell]}
-                  </Badge>
-                </TableCell>
-                <TableCell>{getTokenBadge(project.has_git_token)}</TableCell>
-                <TableCell>
-                  {project.is_active ? (
-                    <Badge className="bg-green-500/10 text-green-500">
-                      Active
-                    </Badge>
-                  ) : (
-                    <Badge variant="outline" className="text-muted-foreground">
-                      Inactive
-                    </Badge>
-                  )}
-                </TableCell>
-                <TableCell>
-                  <div className="flex items-center gap-1">
+                  <div className="flex shrink-0 items-center gap-1">
                     <Button
                       variant="ghost"
                       size="icon"
@@ -167,12 +228,36 @@ export function ProjectTable({ projects, isLoading }: ProjectTableProps) {
                       </a>
                     </Button>
                   </div>
-                </TableCell>
-              </TableRow>
+                </div>
+                <div className="mt-3 divide-y">
+                  <ResponsiveTableCardRow label="Cell">
+                    <Badge className={teamColors[project.assigned_cell]}>
+                      {teamLabels[project.assigned_cell]}
+                    </Badge>
+                  </ResponsiveTableCardRow>
+                  <ResponsiveTableCardRow label="Token">
+                    {getTokenBadge(project.has_git_token)}
+                  </ResponsiveTableCardRow>
+                  <ResponsiveTableCardRow label="Status">
+                    {project.is_active ? (
+                      <Badge className="bg-green-500/10 text-green-500">
+                        Active
+                      </Badge>
+                    ) : (
+                      <Badge
+                        variant="outline"
+                        className="text-muted-foreground"
+                      >
+                        Inactive
+                      </Badge>
+                    )}
+                  </ResponsiveTableCardRow>
+                </div>
+              </ResponsiveTableCard>
             ))}
-          </TableBody>
-        </Table>
-      </div>
+          </ResponsiveTableCardList>
+        }
+      />
 
       {/* Edit Project Dialog */}
       {editingProjectId && (

@@ -52,7 +52,13 @@ export function MessageComposer({
   };
 
   return (
-    <form onSubmit={handleSubmit} className="border-t p-4">
+    // paddingBottom includes the safe-area inset so the composer clears the
+    // home indicator on notched phones instead of sitting flush under it.
+    <form
+      onSubmit={handleSubmit}
+      className="border-t p-4"
+      style={{ paddingBottom: "max(1rem, env(safe-area-inset-bottom))" }}
+    >
       <div className="flex items-end gap-2">
         <div className="flex-1">
           <Textarea

@@ -451,7 +451,11 @@ clean:
 # Security
 .PHONY: panel-token
 panel-token:
-	@SECRET="$$(grep -E '^ROBOCO_AGENT_AUTH_SECRET=' .env 2>/dev/null | head -1 | cut -d= -f2-)"; \
+	@# Strip surrounding quotes from the .env value: docker-compose/pydantic
+	@# unquote it, so the token must be signed with the UNQUOTED secret or it
+	@# won't verify against the orchestrator (a quoted .env value silently
+	@# produced a mismatched token before this).
+	@SECRET="$$(grep -E '^ROBOCO_AGENT_AUTH_SECRET=' .env 2>/dev/null | head -1 | cut -d= -f2- | sed -e 's/^"//' -e 's/"$$//' -e "s/^'//" -e "s/'$$//")"; \
 	ROBOCO_AGENT_AUTH_SECRET="$${SECRET:-$$ROBOCO_AGENT_AUTH_SECRET}" \
 	uv run python -c "import sys; from roboco.agents_config import issue_panel_token; tok = issue_panel_token(); print(tok) if tok != 'UNSIGNED' else sys.exit('ERROR: ROBOCO_AGENT_AUTH_SECRET not set (in .env or environment) - the panel token would be unsigned')"
 

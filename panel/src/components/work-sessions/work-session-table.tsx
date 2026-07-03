@@ -12,6 +12,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  ResponsiveTable,
+  ResponsiveTableCardList,
+  ResponsiveTableCard,
+  ResponsiveTableCardRow,
+} from "@/components/ui/responsive-table";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   GitBranch,
@@ -84,69 +90,132 @@ export function WorkSessionTable({
   }
 
   return (
-    <div className="border rounded-lg">
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>Branch</TableHead>
-            <TableHead>Task</TableHead>
-            <TableHead>Status</TableHead>
-            <TableHead>PR</TableHead>
-            <TableHead>Started</TableHead>
-            <TableHead className="w-[80px]">Actions</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
+    <ResponsiveTable
+      table={
+        <div className="border rounded-lg">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Branch</TableHead>
+                <TableHead>Task</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>PR</TableHead>
+                <TableHead>Started</TableHead>
+                <TableHead className="w-[80px]">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {sessions.map((session) => (
+                <TableRow key={session.id}>
+                  <TableCell>
+                    <div className="flex items-center gap-2">
+                      <GitBranch className="h-4 w-4 text-muted-foreground" />
+                      <Link
+                        prefetch={false}
+                        href={`/work-sessions/${session.id}`}
+                        className="font-medium hover:underline font-mono text-sm"
+                      >
+                        {session.branch_name}
+                      </Link>
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <Link
+                      prefetch={false}
+                      href={`/tasks/${session.task_id}`}
+                      className="text-sm text-muted-foreground hover:text-foreground hover:underline"
+                    >
+                      {session.task_id.slice(0, 8)}...
+                    </Link>
+                  </TableCell>
+                  <TableCell>{getStatusBadge(session.status)}</TableCell>
+                  <TableCell>
+                    {session.has_pr ? (
+                      <Badge className="bg-purple-500/10 text-purple-500">
+                        <GitPullRequest className="h-3 w-3 mr-1" />
+                        PR Open
+                      </Badge>
+                    ) : (
+                      <span className="text-sm text-muted-foreground">
+                        No PR
+                      </span>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-sm text-muted-foreground">
+                    {formatDistanceToNow(new Date(session.started_at), {
+                      addSuffix: true,
+                    })}
+                  </TableCell>
+                  <TableCell>
+                    <Link
+                      href={`/work-sessions/${session.id}`}
+                      prefetch={false}
+                    >
+                      <Button variant="ghost" size="icon">
+                        <ExternalLink className="h-4 w-4" />
+                      </Button>
+                    </Link>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      }
+      cards={
+        <ResponsiveTableCardList>
           {sessions.map((session) => (
-            <TableRow key={session.id}>
-              <TableCell>
-                <div className="flex items-center gap-2">
-                  <GitBranch className="h-4 w-4 text-muted-foreground" />
+            <ResponsiveTableCard key={session.id}>
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex min-w-0 items-center gap-2">
+                  <GitBranch className="h-4 w-4 shrink-0 text-muted-foreground" />
                   <Link
                     prefetch={false}
                     href={`/work-sessions/${session.id}`}
-                    className="font-medium hover:underline font-mono text-sm"
+                    className="truncate font-mono text-sm font-medium hover:underline"
                   >
                     {session.branch_name}
                   </Link>
                 </div>
-              </TableCell>
-              <TableCell>
-                <Link
-                  prefetch={false}
-                  href={`/tasks/${session.task_id}`}
-                  className="text-sm text-muted-foreground hover:text-foreground hover:underline"
-                >
-                  {session.task_id.slice(0, 8)}...
-                </Link>
-              </TableCell>
-              <TableCell>{getStatusBadge(session.status)}</TableCell>
-              <TableCell>
-                {session.has_pr ? (
-                  <Badge className="bg-purple-500/10 text-purple-500">
-                    <GitPullRequest className="h-3 w-3 mr-1" />
-                    PR Open
-                  </Badge>
-                ) : (
-                  <span className="text-sm text-muted-foreground">No PR</span>
-                )}
-              </TableCell>
-              <TableCell className="text-sm text-muted-foreground">
-                {formatDistanceToNow(new Date(session.started_at), {
-                  addSuffix: true,
-                })}
-              </TableCell>
-              <TableCell>
                 <Link href={`/work-sessions/${session.id}`} prefetch={false}>
-                  <Button variant="ghost" size="icon">
+                  <Button variant="ghost" size="icon" className="shrink-0">
                     <ExternalLink className="h-4 w-4" />
                   </Button>
                 </Link>
-              </TableCell>
-            </TableRow>
+              </div>
+              <div className="mt-3 divide-y">
+                <ResponsiveTableCardRow label="Task">
+                  <Link
+                    prefetch={false}
+                    href={`/tasks/${session.task_id}`}
+                    className="text-muted-foreground hover:text-foreground hover:underline"
+                  >
+                    {session.task_id.slice(0, 8)}...
+                  </Link>
+                </ResponsiveTableCardRow>
+                <ResponsiveTableCardRow label="Status">
+                  {getStatusBadge(session.status)}
+                </ResponsiveTableCardRow>
+                <ResponsiveTableCardRow label="PR">
+                  {session.has_pr ? (
+                    <Badge className="bg-purple-500/10 text-purple-500">
+                      <GitPullRequest className="h-3 w-3 mr-1" />
+                      PR Open
+                    </Badge>
+                  ) : (
+                    <span className="text-muted-foreground">No PR</span>
+                  )}
+                </ResponsiveTableCardRow>
+                <ResponsiveTableCardRow label="Started">
+                  {formatDistanceToNow(new Date(session.started_at), {
+                    addSuffix: true,
+                  })}
+                </ResponsiveTableCardRow>
+              </div>
+            </ResponsiveTableCard>
           ))}
-        </TableBody>
-      </Table>
-    </div>
+        </ResponsiveTableCardList>
+      }
+    />
   );
 }

@@ -22,6 +22,13 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  ResponsiveTable,
+  ResponsiveTableCardList,
+  ResponsiveTableCard,
+  ResponsiveTableCardRow,
+  ResponsiveTableCardEmpty,
+} from "@/components/ui/responsive-table";
 import { TaskStatusBadge } from "./task-status-badge";
 import { TaskActions } from "./task-actions";
 import { GitStatusBadge } from "./git-status-badge";
@@ -196,6 +203,19 @@ function TaskTableEmpty() {
         <div className="text-muted-foreground">No tasks found</div>
       </TableCell>
     </TableRow>
+  );
+}
+
+function TaskCardSkeletons() {
+  return (
+    <ResponsiveTableCardList className="p-3">
+      {Array.from({ length: 5 }).map((_, i) => (
+        <ResponsiveTableCard key={i} className="space-y-2">
+          <Skeleton className="h-4 w-3/4" />
+          <Skeleton className="h-4 w-1/2" />
+        </ResponsiveTableCard>
+      ))}
+    </ResponsiveTableCardList>
   );
 }
 
@@ -455,207 +475,335 @@ export function TaskTable({
           </div>
         )}
 
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <SortableHeader
-                label="Title"
-                field="title"
-                sortConfig={sortConfig}
-                onSort={handleSort}
-              />
-              <SortableHeader
-                label="Status"
-                field="status"
-                sortConfig={sortConfig}
-                onSort={handleSort}
-                className="whitespace-nowrap"
-              />
-              <TableHead className="whitespace-nowrap">Git</TableHead>
-              <SortableHeader
-                label="Team"
-                field="team"
-                sortConfig={sortConfig}
-                onSort={handleSort}
-                className="whitespace-nowrap"
-              />
-              <TableHead className="whitespace-nowrap">
-                Project / Product
-              </TableHead>
-              <SortableHeader
-                label="Priority"
-                field="priority"
-                sortConfig={sortConfig}
-                onSort={handleSort}
-                className="whitespace-nowrap"
-              />
-              <SortableHeader
-                label="Assigned To"
-                field="assigned_to"
-                sortConfig={sortConfig}
-                onSort={handleSort}
-                className="whitespace-nowrap"
-              />
-              <SortableHeader
-                label="Created"
-                field="created_at"
-                sortConfig={sortConfig}
-                onSort={handleSort}
-                className="whitespace-nowrap"
-              />
-              <TableHead className="w-10"></TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {isLoading ? (
-              <TaskTableSkeleton />
-            ) : paginatedTasks.length === 0 ? (
-              <TaskTableEmpty />
-            ) : (
-              paginatedTasks.map((node) => {
-                const task = node.task;
-                const hasChildren = node.children.length > 0;
-                const isExpanded = expandedIds.has(task.id);
-                const childCount = childrenMap.get(task.id)?.length || 0;
+        <ResponsiveTable
+          table={
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <SortableHeader
+                    label="Title"
+                    field="title"
+                    sortConfig={sortConfig}
+                    onSort={handleSort}
+                  />
+                  <SortableHeader
+                    label="Status"
+                    field="status"
+                    sortConfig={sortConfig}
+                    onSort={handleSort}
+                    className="whitespace-nowrap"
+                  />
+                  <TableHead className="whitespace-nowrap">Git</TableHead>
+                  <SortableHeader
+                    label="Team"
+                    field="team"
+                    sortConfig={sortConfig}
+                    onSort={handleSort}
+                    className="whitespace-nowrap"
+                  />
+                  <TableHead className="whitespace-nowrap">
+                    Project / Product
+                  </TableHead>
+                  <SortableHeader
+                    label="Priority"
+                    field="priority"
+                    sortConfig={sortConfig}
+                    onSort={handleSort}
+                    className="whitespace-nowrap"
+                  />
+                  <SortableHeader
+                    label="Assigned To"
+                    field="assigned_to"
+                    sortConfig={sortConfig}
+                    onSort={handleSort}
+                    className="whitespace-nowrap"
+                  />
+                  <SortableHeader
+                    label="Created"
+                    field="created_at"
+                    sortConfig={sortConfig}
+                    onSort={handleSort}
+                    className="whitespace-nowrap"
+                  />
+                  <TableHead className="w-10"></TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {isLoading ? (
+                  <TaskTableSkeleton />
+                ) : paginatedTasks.length === 0 ? (
+                  <TaskTableEmpty />
+                ) : (
+                  paginatedTasks.map((node) => {
+                    const task = node.task;
+                    const hasChildren = node.children.length > 0;
+                    const isExpanded = expandedIds.has(task.id);
+                    const childCount = childrenMap.get(task.id)?.length || 0;
 
-                const handleRowClick = (e: React.MouseEvent) => {
-                  // Don't toggle if clicking on interactive elements
-                  const target = e.target as HTMLElement;
-                  if (
-                    target.closest("a") ||
-                    target.closest("button") ||
-                    target.closest('[role="button"]') ||
-                    target.closest("[data-no-expand]")
-                  ) {
-                    return;
-                  }
-                  if (hasChildren) {
-                    toggleExpand(task.id);
-                  }
-                };
+                    const handleRowClick = (e: React.MouseEvent) => {
+                      // Don't toggle if clicking on interactive elements
+                      const target = e.target as HTMLElement;
+                      if (
+                        target.closest("a") ||
+                        target.closest("button") ||
+                        target.closest('[role="button"]') ||
+                        target.closest("[data-no-expand]")
+                      ) {
+                        return;
+                      }
+                      if (hasChildren) {
+                        toggleExpand(task.id);
+                      }
+                    };
 
-                return (
-                  <TableRow
-                    key={task.id}
-                    className={cn(
-                      "hover:bg-muted/50",
-                      node.depth > 0 && "bg-muted/20",
-                      hasChildren && "cursor-pointer",
-                    )}
-                    onClick={handleRowClick}
-                  >
-                    <TableCell className="max-w-[22rem]">
-                      <div
-                        className="flex items-center gap-1 min-w-0"
-                        style={{ paddingLeft: `${node.depth * 1.5}rem` }}
-                      >
-                        {hasChildren ? (
-                          <Button
-                            onClick={() => toggleExpand(task.id)}
-                            variant="ghost"
-                            size="icon-sm"
-                            className="p-0.5 h-5 w-5 shrink-0"
-                          >
-                            {isExpanded ? (
-                              <ChevronDown className="h-4 w-4" />
-                            ) : (
-                              <ChevronRightIcon className="h-4 w-4" />
-                            )}
-                          </Button>
-                        ) : (
-                          <span className="w-5 shrink-0" />
+                    return (
+                      <TableRow
+                        key={task.id}
+                        className={cn(
+                          "hover:bg-muted/50",
+                          node.depth > 0 && "bg-muted/20",
+                          hasChildren && "cursor-pointer",
                         )}
-                        <Link
-                          prefetch={false}
-                          href={"/tasks/" + task.id}
-                          className="block hover:underline min-w-0"
-                        >
-                          <div className="font-medium flex items-center gap-2 min-w-0">
-                            <span className="truncate" title={task.title}>
-                              {task.title}
-                            </span>
-                            {task.batch_id && !task.parent_task_id && (
-                              <Badge
-                                variant="outline"
-                                className="text-xs shrink-0 border-primary/50 text-primary"
-                              >
-                                MegaTask
-                              </Badge>
-                            )}
-                            {childCount > 0 && (
-                              <Badge
-                                variant="secondary"
-                                className="text-xs shrink-0"
-                              >
-                                {childCount} subtask
-                                {childCount !== 1 ? "s" : ""}
-                              </Badge>
-                            )}
-                          </div>
-                        </Link>
-                      </div>
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap">
-                      <TaskStatusBadge status={task.status} />
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap">
-                      <GitStatusBadge
-                        task={task}
-                        repoUrl={
-                          task.project_id
-                            ? projectGitUrls[task.project_id]
-                            : undefined
-                        }
-                      />
-                    </TableCell>
-                    <TableCell className="capitalize whitespace-nowrap">
-                      {task.team.replace(/_/g, " ")}
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap text-sm">
-                      {task.project_id && projectNames[task.project_id] ? (
-                        <span>{projectNames[task.project_id]}</span>
-                      ) : task.product_id && productNames[task.product_id] ? (
-                        <span className="text-muted-foreground">
-                          {productNames[task.product_id]}{" "}
-                          <span className="text-xs">(product)</span>
-                        </span>
-                      ) : (
-                        <span className="text-muted-foreground">—</span>
-                      )}
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap">
-                      <Badge
-                        className={
-                          (priorityColors[task.priority] ?? priorityColors[2]) +
-                          " text-xs"
-                        }
+                        onClick={handleRowClick}
                       >
-                        {priorityLabels[task.priority] ?? "P2 - Medium"}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="whitespace-nowrap">
-                      <Badge variant="outline">
-                        {getAgentDisplayName(task.assigned_to)}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-muted-foreground text-sm whitespace-nowrap">
-                      {formatDistanceToNow(new Date(task.created_at), {
-                        addSuffix: true,
-                      })}
-                    </TableCell>
-                    <TableCell>
-                      <TaskActions task={task} />
-                    </TableCell>
-                  </TableRow>
-                );
-              })
-            )}
-          </TableBody>
-        </Table>
+                        <TableCell className="max-w-[22rem]">
+                          <div
+                            className="flex items-center gap-1 min-w-0"
+                            style={{ paddingLeft: `${node.depth * 1.5}rem` }}
+                          >
+                            {hasChildren ? (
+                              <Button
+                                onClick={() => toggleExpand(task.id)}
+                                variant="ghost"
+                                size="icon-sm"
+                                className="p-0.5 h-5 w-5 shrink-0"
+                              >
+                                {isExpanded ? (
+                                  <ChevronDown className="h-4 w-4" />
+                                ) : (
+                                  <ChevronRightIcon className="h-4 w-4" />
+                                )}
+                              </Button>
+                            ) : (
+                              <span className="w-5 shrink-0" />
+                            )}
+                            <Link
+                              prefetch={false}
+                              href={"/tasks/" + task.id}
+                              className="block hover:underline min-w-0"
+                            >
+                              <div className="font-medium flex items-center gap-2 min-w-0">
+                                <span className="truncate" title={task.title}>
+                                  {task.title}
+                                </span>
+                                {task.batch_id && !task.parent_task_id && (
+                                  <Badge
+                                    variant="outline"
+                                    className="text-xs shrink-0 border-primary/50 text-primary"
+                                  >
+                                    MegaTask
+                                  </Badge>
+                                )}
+                                {childCount > 0 && (
+                                  <Badge
+                                    variant="secondary"
+                                    className="text-xs shrink-0"
+                                  >
+                                    {childCount} subtask
+                                    {childCount !== 1 ? "s" : ""}
+                                  </Badge>
+                                )}
+                              </div>
+                            </Link>
+                          </div>
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap">
+                          <TaskStatusBadge status={task.status} />
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap">
+                          <GitStatusBadge
+                            task={task}
+                            repoUrl={
+                              task.project_id
+                                ? projectGitUrls[task.project_id]
+                                : undefined
+                            }
+                          />
+                        </TableCell>
+                        <TableCell className="capitalize whitespace-nowrap">
+                          {task.team.replace(/_/g, " ")}
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap text-sm">
+                          {task.project_id && projectNames[task.project_id] ? (
+                            <span>{projectNames[task.project_id]}</span>
+                          ) : task.product_id &&
+                            productNames[task.product_id] ? (
+                            <span className="text-muted-foreground">
+                              {productNames[task.product_id]}{" "}
+                              <span className="text-xs">(product)</span>
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap">
+                          <Badge
+                            className={
+                              (priorityColors[task.priority] ??
+                                priorityColors[2]) + " text-xs"
+                            }
+                          >
+                            {priorityLabels[task.priority] ?? "P2 - Medium"}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap">
+                          <Badge variant="outline">
+                            {getAgentDisplayName(task.assigned_to)}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-muted-foreground text-sm whitespace-nowrap">
+                          {formatDistanceToNow(new Date(task.created_at), {
+                            addSuffix: true,
+                          })}
+                        </TableCell>
+                        <TableCell>
+                          <TaskActions task={task} />
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })
+                )}
+              </TableBody>
+            </Table>
+          }
+          cards={
+            isLoading ? (
+              <TaskCardSkeletons />
+            ) : paginatedTasks.length === 0 ? (
+              <ResponsiveTableCardEmpty className="m-3">
+                No tasks found
+              </ResponsiveTableCardEmpty>
+            ) : (
+              <ResponsiveTableCardList className="p-3">
+                {paginatedTasks.map((node) => {
+                  const task = node.task;
+                  const hasChildren = node.children.length > 0;
+                  const isExpanded = expandedIds.has(task.id);
+                  const childCount = childrenMap.get(task.id)?.length || 0;
+
+                  return (
+                    <ResponsiveTableCard
+                      key={task.id}
+                      style={{ marginLeft: `${node.depth * 1}rem` }}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5">
+                            {hasChildren && (
+                              <Button
+                                onClick={() => toggleExpand(task.id)}
+                                variant="ghost"
+                                size="icon-sm"
+                                className="h-5 w-5 shrink-0 p-0.5"
+                                aria-label={isExpanded ? "Collapse" : "Expand"}
+                              >
+                                {isExpanded ? (
+                                  <ChevronDown className="h-4 w-4" />
+                                ) : (
+                                  <ChevronRightIcon className="h-4 w-4" />
+                                )}
+                              </Button>
+                            )}
+                            <Link
+                              prefetch={false}
+                              href={"/tasks/" + task.id}
+                              className="min-w-0 truncate font-medium hover:underline"
+                              title={task.title}
+                            >
+                              {task.title}
+                            </Link>
+                          </div>
+                          {(task.batch_id && !task.parent_task_id) ||
+                          childCount > 0 ? (
+                            <div className="mt-1 flex flex-wrap gap-1">
+                              {task.batch_id && !task.parent_task_id && (
+                                <Badge
+                                  variant="outline"
+                                  className="border-primary/50 text-xs text-primary"
+                                >
+                                  MegaTask
+                                </Badge>
+                              )}
+                              {childCount > 0 && (
+                                <Badge variant="secondary" className="text-xs">
+                                  {childCount} subtask
+                                  {childCount !== 1 ? "s" : ""}
+                                </Badge>
+                              )}
+                            </div>
+                          ) : null}
+                        </div>
+                        <TaskActions task={task} />
+                      </div>
+
+                      <div className="mt-3 divide-y">
+                        <ResponsiveTableCardRow label="Status">
+                          <TaskStatusBadge status={task.status} />
+                        </ResponsiveTableCardRow>
+                        <ResponsiveTableCardRow label="Git">
+                          <GitStatusBadge
+                            task={task}
+                            repoUrl={
+                              task.project_id
+                                ? projectGitUrls[task.project_id]
+                                : undefined
+                            }
+                          />
+                        </ResponsiveTableCardRow>
+                        <ResponsiveTableCardRow label="Team">
+                          <span className="capitalize">
+                            {task.team.replace(/_/g, " ")}
+                          </span>
+                        </ResponsiveTableCardRow>
+                        <ResponsiveTableCardRow label="Project">
+                          {task.project_id && projectNames[task.project_id]
+                            ? projectNames[task.project_id]
+                            : task.product_id && productNames[task.product_id]
+                              ? `${productNames[task.product_id]} (product)`
+                              : "—"}
+                        </ResponsiveTableCardRow>
+                        <ResponsiveTableCardRow label="Priority">
+                          <Badge
+                            className={
+                              (priorityColors[task.priority] ??
+                                priorityColors[2]) + " text-xs"
+                            }
+                          >
+                            {priorityLabels[task.priority] ?? "P2 - Medium"}
+                          </Badge>
+                        </ResponsiveTableCardRow>
+                        <ResponsiveTableCardRow label="Assigned">
+                          <Badge variant="outline">
+                            {getAgentDisplayName(task.assigned_to)}
+                          </Badge>
+                        </ResponsiveTableCardRow>
+                        <ResponsiveTableCardRow label="Created">
+                          {formatDistanceToNow(new Date(task.created_at), {
+                            addSuffix: true,
+                          })}
+                        </ResponsiveTableCardRow>
+                      </div>
+                    </ResponsiveTableCard>
+                  );
+                })}
+              </ResponsiveTableCardList>
+            )
+          }
+        />
 
         {/* Pagination Controls */}
         {!isLoading && tasks && tasks.length > 0 && (
-          <div className="flex items-center justify-end gap-4 px-4 py-3 border-t">
+          <div className="flex flex-wrap items-center justify-end gap-4 px-4 py-3 border-t">
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <span>Rows:</span>
               <Select

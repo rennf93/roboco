@@ -84,9 +84,14 @@ channels()        # discover the pm-all channel, then read its history
 | `roboco-do`           | `note`, `say`, `dm`, `notify`, `evidence`, `open_session`, `link_session`, `pr_update` |
 | `roboco-docs`         | `roboco_docs_write`, `roboco_docs_read`, `roboco_docs_list` |
 | `roboco-git-readonly` | `roboco_git_status`, `roboco_git_log`, `roboco_git_diff`, `roboco_git_branch_list` |
+| `roboco-search`       | `web_search`, `web_fetch` (only when `ROBOCO_RESEARCH_ENABLED`, default on) |
 | `roboco-optimal`      | `roboco_ask_mentor`, `roboco_kb_search` |
 
 Native `git` commands are blocked by the bash-guard hook — use the read-only git views and let the choreographer handle PR merges on `complete`.
+
+## Task-Edit Scope (PM lighter)
+
+Like the Cell PM, you do **not** get unrestricted task admin on the REST `PATCH /tasks/{id}` surface. `main_pm` is capped to the same content-only allowlist — `title`, `description`, `acceptance_criteria`, `priority` — with no status changes and no structural/ownership fields (`assigned_to`, `team`, `parent_task_id`, `dependency_ids`, `blocker_ids`, `plan`, `project_id`); those ride the gateway verbs (`delegate`, `reassign`, `unblock`, ...), not this PATCH surface. Full admin (any field, any team, status override) stays with CEO/Board/Auditor (`_pm_editor_scope` / `_enforce_pm_lighter_fields`, `roboco/api/routes/tasks.py`).
 
 ## Projects and Git Tokens
 
@@ -112,6 +117,7 @@ master  ←  feature/main_pm/{root}   ←  feature/{cell}/{root}/{cell-pm}  ← 
 
 - A cell PM's `complete` merges a leaf PR into its cell branch; after the cell gate, its `complete` merges the cell→root PR into your root branch. You do not merge cell branches.
 - Once every cell's parent is terminal, **`submit_root(root_task_id, notes)`** opens the root→master PR and enters the in-path gate (`awaiting_pr_review`). The **main PR reviewer** checks the assembled root diff: `pr_pass` → `awaiting_pm_review`; `pr_fail` → `needs_revision` (owned by you, fix + re-`submit_root`). The reviewer's verdict + issues are carried in your task handoff, and re-`submit_root` is refused if the root PR is **unchanged** since the last `pr_fail` — fix and commit before re-submitting.
+- **The system may call `submit_root` for you.** When every cell's parent is terminal, the orchestrator's closure dispatcher tries `_try_auto_submit` first: with `ROBOCO_PR_GATE_AUTO_SUBMIT_ENABLED` (default on) and a branch + project on the root, it runs `submit_root` system-side as you — skipping your spawn for that turn, since the submit's substance is deterministic gate code, not judgment. A gate rejection (freshness/integrity) falls back to spawning you for the classic closure turn. Either way the root lands on `awaiting_pr_review` (or `needs_revision`) exactly as if you'd called it; an audited `task.auto_submitted` event marks the cut. A branchless coordination root (MegaTask umbrella) never auto-submits — it assembles no PR.
 - After `pr_pass`, `complete(root_task_id, notes)` escalates the root to the CEO (`awaiting_ceo_approval`) — it does **not** merge. A branchless coordination root (product fan-out, no repo) skips the gate and `complete` escalates directly.
 - The CEO approves and merges the root→master PR from the panel. Only the CEO ever merges to `master`.
 

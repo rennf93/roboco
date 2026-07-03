@@ -55,6 +55,7 @@ from roboco.foundation.identity import (
 )
 from roboco.foundation.policy.agent_loop import DEFAULT_BUDGET as _AGENT_LOOP_BUDGET
 from roboco.foundation.policy.batch import is_branchless_coordination
+from roboco.foundation.policy.content import markers as _markers
 from roboco.models import AgentRole, Team
 from roboco.models.runtime import (
     MODEL_MAP,
@@ -63,14 +64,18 @@ from roboco.models.runtime import (
     AgentInstance,
     OrchestratorAgentConfig,
     OrchestratorAgentState,
+    SandboxInfo,
     SpawnGitContext,
     WaitingRecord,
 )
+from roboco.runtime.sandbox import SandboxProvisioner
 from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.task import (
     PR_REVIEW_SOURCES,
     RELEASE_MANAGER_SOURCE,
+    ROADMAP_SOURCE,
     SELF_HEAL_SOURCE,
+    X_SOURCES,
 )
 
 logger = structlog.get_logger()
@@ -691,6 +696,26 @@ class _SpawnAbortedDuringShutdown(Exception):
     """
 
 
+def _is_held_ceo_source(task: dict[str, Any]) -> bool:
+    """True for sources the PM dispatcher must never route as delivery work.
+
+    External-PR review (owned by the PR dispatcher), release proposals and X
+    posts/replies (CEO-HELD, acted on only by their own routes), and a
+    self-heal fix task until the CEO's approve_and_start flips
+    ``confirmed_by_human``. Module-level (not a method) so the dispatcher's
+    unit tests, which drive it with a wholesale-mocked ``self``, exercise the
+    real skip logic rather than an auto-mocked stub.
+    """
+    source = task.get("source")
+    if source in PR_REVIEW_SOURCES:
+        return True
+    if source == RELEASE_MANAGER_SOURCE:
+        return True
+    if source in X_SOURCES:
+        return True
+    return source == SELF_HEAL_SOURCE and not task.get("confirmed_by_human")
+
+
 class AgentOrchestrator:
     """
     Manages Claude Code containers for all agents.
@@ -714,6 +739,11 @@ class AgentOrchestrator:
         self.dispatcher_interval = dispatcher_interval
 
         self._instances: dict[str, AgentInstance] = {}
+        # Sandboxed per-agent-spawn DB/Redis provisioner. Network is threaded
+        # through explicitly (rather than the provisioner importing
+        # AGENT_NETWORK itself) so a future network-isolation change only
+        # has to flip this constant here — sandboxes ride along.
+        self._sandbox = SandboxProvisioner(network=AGENT_NETWORK)
         # Gateway-health grace tracker: agent slug -> first time its gateway was
         # seen broken. Tolerates a transient probe miss before the reaper recovers
         # a broken-but-alive agent (see _maybe_recover_broken_gateway).
@@ -738,6 +768,8 @@ class AgentOrchestrator:
         self._ci_watch_task: asyncio.Task | None = None
         self._dep_update_task: asyncio.Task | None = None
         self._release_manager_task: asyncio.Task | None = None
+        self._x_mentions_task: asyncio.Task | None = None
+        self._roadmap_engine_task: asyncio.Task | None = None
         # Provider registry: maps a ModelProvider to a dedicated AgentProvider
         # backend. Only providers needing a non-Claude-Code runtime are
         # registered (currently GROK, which speaks the OpenAI protocol). Agents
@@ -893,6 +925,11 @@ class AgentOrchestrator:
         # dispatcher/reaper loops launch below.
         await self._readopt_running_agents()
 
+        # Orphan sandbox sweep: a sandbox whose owning agent container didn't
+        # survive the restart (or a prior crash mid-teardown) is removed here
+        # rather than lingering until its next reaper-tick sweep.
+        await self._sandbox_janitor_sweep()
+
         # Note: Per-agent settings are now generated at spawn time
         # via _generate_agent_settings() - no shared settings needed
 
@@ -907,6 +944,8 @@ class AgentOrchestrator:
         self._ci_watch_task = asyncio.create_task(self._ci_watch_loop())
         self._dep_update_task = asyncio.create_task(self._dep_update_loop())
         self._release_manager_task = asyncio.create_task(self._release_manager_loop())
+        self._x_mentions_task = asyncio.create_task(self._x_mentions_poll_loop())
+        self._roadmap_engine_task = asyncio.create_task(self._roadmap_engine_loop())
 
         logger.info(
             "Orchestrator started",
@@ -1001,6 +1040,8 @@ class AgentOrchestrator:
             self._ci_watch_task,
             self._dep_update_task,
             self._release_manager_task,
+            self._x_mentions_task,
+            self._roadmap_engine_task,
         ):
             await self._cancel_background_task(task)
 
@@ -1855,6 +1896,13 @@ class AgentOrchestrator:
             git_context, project_slug, team, agent_id, task_id
         )
 
+        # Provision this spawn's sandbox DB/Redis (flag + per-project opt-in),
+        # before `docker run` so its connection info can be injected as env.
+        # Fail-loud on a provisioning failure (see _maybe_provision_sandbox).
+        sandbox_info = await self._maybe_provision_sandbox(
+            agent_id, project_slug, task_id
+        )
+
         agent_settings_path = self._generate_agent_settings(
             agent_id, canonical_role, cwd_path, cell_workspace_path
         )
@@ -1877,6 +1925,7 @@ class AgentOrchestrator:
             provider_type=route.provider_type.value,
             provider_base_url=route.base_url,
             provider_auth_token=route.auth_token,
+            sandbox_info=sandbox_info,
         )
         instance = AgentInstance(
             agent_id=agent_id,
@@ -1975,6 +2024,53 @@ class AgentOrchestrator:
             raise AgentReadinessError(
                 f"worktree ensure failed (transient) for {agent_id}"
                 f" (task={task_id}): {e}; will retry next tick"
+            ) from e
+
+    async def _maybe_provision_sandbox(
+        self, agent_id: str, project_slug: str, task_id: str | None
+    ) -> SandboxInfo | None:
+        """Provision this spawn's sandbox DB/Redis, or None if not opted in.
+
+        Off (flag or project) => None, byte-for-byte identical to today (the
+        legacy `_append_gate_env` prod-creds injection stays active). The
+        project lookup itself is best-effort (a DB hiccup here degrades to
+        "no sandbox" rather than blocking every spawn on a transient error —
+        `_ensure_worktree_before_spawn` already fails loud on a genuine DB
+        outage). Once a project has opted in, an actual provisioning failure
+        (container won't start / never becomes ready) IS fail-loud: an agent
+        whose gate can't run must never spawn.
+        """
+        if not settings.sandbox_db_enabled:
+            return None
+        from roboco.db.base import get_db_context
+        from roboco.services.project import get_project_service
+
+        try:
+            async with get_db_context() as db:
+                project = await get_project_service(db).get_by_slug(project_slug)
+        except Exception as e:
+            logger.warning(
+                "sandbox project lookup failed; skipping sandbox provisioning",
+                agent_id=agent_id,
+                project_slug=project_slug,
+                error=str(e),
+            )
+            return None
+        services = list(project.sandbox_services or []) if project else []
+        if not services:
+            return None
+        try:
+            return await self._sandbox.provision(agent_id, services)
+        except Exception as e:
+            logger.error(
+                "sandbox provisioning failed; refusing spawn",
+                agent_id=agent_id,
+                task_id=task_id,
+                services=services,
+                error=str(e),
+            )
+            raise AgentReadinessError(
+                f"sandbox provisioning failed for {agent_id} (task={task_id}): {e}"
             ) from e
 
     async def _launch_spawn(
@@ -2513,7 +2609,15 @@ class AgentOrchestrator:
         feeds the test harness and never changes live behaviour. Gated on the
         same faithful-gate flag as interpreter matching — both exist to make an
         agent's self-gate trustworthy.
+
+        Under DB network isolation (postgres/redis on the data-only compose
+        network) agents cannot reach these hosts at all, so the injection is
+        suppressed entirely: creds that dead-end in a connect timeout are
+        worse than none (the conftest reachability check skips cleanly on a
+        fast refusal). DB-needing projects opt into `sandbox_services` instead.
         """
+        if settings.db_network_isolated:
+            return
         if not settings.toolchain_match_enabled:
             return
         cmd.extend(
@@ -2530,6 +2634,49 @@ class AgentOrchestrator:
                 "ROBOCO_TEST_DB_ADMIN_DB=postgres",
             ]
         )
+
+    @staticmethod
+    def _append_sandbox_env(cmd: list[str], config: AgentConfig) -> None:
+        """Inject sandbox DB/Redis env, in place of the prod-creds gate env.
+
+        Called INSTEAD OF `_append_gate_env` whenever a sandbox was
+        provisioned for this spawn (`config.sandbox_info` set) — sandbox
+        replaces, never coexists with, the production gate-env injection.
+        Reuses the `ROBOCO_TEST_DB_*` names so a project's conftest already
+        following that convention needs no change; `ROBOCO_TEST_REDIS_*` is
+        new.
+        """
+        info = config.sandbox_info
+        if info is None:
+            return
+        if info.postgres is not None:
+            pg = info.postgres
+            cmd.extend(
+                [
+                    "-e",
+                    f"ROBOCO_TEST_DB_HOST={pg.host}",
+                    "-e",
+                    f"ROBOCO_TEST_DB_PORT={pg.port}",
+                    "-e",
+                    f"ROBOCO_TEST_DB_USER={pg.user}",
+                    "-e",
+                    f"ROBOCO_TEST_DB_PASSWORD={pg.password}",
+                    "-e",
+                    f"ROBOCO_TEST_DB_ADMIN_DB={pg.database}",
+                ]
+            )
+        if info.redis is not None:
+            rd = info.redis
+            cmd.extend(
+                [
+                    "-e",
+                    f"ROBOCO_TEST_REDIS_HOST={rd.host}",
+                    "-e",
+                    f"ROBOCO_TEST_REDIS_PORT={rd.port}",
+                    "-e",
+                    f"ROBOCO_TEST_REDIS_PASSWORD={rd.password}",
+                ]
+            )
 
     @staticmethod
     def _default_spawn_prompt() -> str:
@@ -2679,7 +2826,10 @@ class AgentOrchestrator:
             return result.instance_id
 
         container_name = f"roboco-agent-{config.agent_id}"
-        await self._remove_container(container_name)
+        # teardown_sandbox=False: this spawn's sandbox was provisioned moments
+        # ago in _build_agent_config — the stale-clear must not destroy it.
+        # Stale sandboxes from a prior crash are cleared by provision() itself.
+        await self._remove_container(container_name, teardown_sandbox=False)
 
         if not config.mcp_config_path:
             raise RuntimeError("MCP config path not set")
@@ -2688,7 +2838,10 @@ class AgentOrchestrator:
         cmd = self._build_mount_args(container_name, config, hosts)
         self._append_agent_auth_env(cmd, config)
         self._append_git_context_env(cmd, config)
-        self._append_gate_env(cmd)
+        if config.sandbox_info is not None:
+            self._append_sandbox_env(cmd, config)
+        else:
+            self._append_gate_env(cmd)
         self._append_image_and_claude_args(cmd, config, initial_prompt)
 
         proc = await asyncio.create_subprocess_exec(
@@ -2703,13 +2856,18 @@ class AgentOrchestrator:
 
         return stdout.decode().strip()
 
-    async def _remove_container(self, container_name: str) -> None:
+    async def _remove_container(
+        self, container_name: str, *, teardown_sandbox: bool = True
+    ) -> None:
         """Remove a container if it exists, dumping its logs to disk first.
 
         Docker deletes the container's json-file log when we `docker rm`, so
         before removal we copy the current log to /data/logs/agents/{slug}/
         with a timestamp. That gives us persistent history across respawns
         without needing an entrypoint wrapper inside the agent image.
+
+        ``teardown_sandbox=False`` is passed only by the pre-spawn stale-clear,
+        whose spawn has already provisioned the sandbox it is about to use.
         """
         # Check the container actually exists before trying to dump logs;
         # _remove_container is routinely called pre-spawn to clear stale
@@ -2763,6 +2921,15 @@ class AgentOrchestrator:
             stderr=asyncio.subprocess.DEVNULL,
         )
         await proc.wait()
+
+        # Sandbox lifetime tracks the agent container 1:1 — every removal
+        # path (stop_agent, reaper kills) routes through here. Gated on the
+        # flag: teardown is idempotent but not free (up to 4 extra docker
+        # calls), so skip it when the feature was never on. Never raises
+        # (SandboxProvisioner.teardown contract).
+        if teardown_sandbox and settings.sandbox_db_enabled:
+            slug = container_name.removeprefix("roboco-agent-")
+            await self._sandbox.teardown(slug)
 
     async def _generate_mcp_config(
         self,
@@ -7261,6 +7428,68 @@ Start by:
             await get_release_manager_engine(db).run_cycle()
             await db.commit()
 
+    async def _x_mentions_poll_loop(self) -> None:
+        """X engine: poll mentions on an interval, hold meaningful ones as draft
+        replies.
+
+        Gated by ``x_replies_enabled`` (default off) on top of the engine
+        master switch — release posting does not need this loop (those drafts
+        are originated event-driven from the release-proposal approve hook), so
+        a standard X deployment posts about releases without ever polling
+        mentions. It never posts or replies — every draft is held for the CEO.
+        """
+        if not (settings.x_engine_enabled and settings.x_replies_enabled):
+            return
+        interval = settings.x_mentions_interval_seconds
+        while self._running:
+            try:
+                await asyncio.sleep(interval)
+                await self._run_x_mentions_cycle()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("x-mentions poll cycle failed")
+
+    async def _run_x_mentions_cycle(self) -> None:
+        """One mentions-poll pass: run the engine, commit. Testable w/o the sleep."""
+        from roboco.db import get_db_context
+        from roboco.services.x_engine import get_x_engine
+
+        async with get_db_context() as db:
+            await get_x_engine(db).run_cycle()
+            await db.commit()
+
+    async def _roadmap_engine_loop(self) -> None:
+        """Board roadmap engine: on an interval, open ONE held exploration cycle.
+
+        Dormant by default — returns immediately unless ``roadmap_engine_enabled``,
+        so a standard deployment originates nothing. The engine itself only opens
+        the held exploration task; the Product Owner authors the themed cycle
+        (``propose_roadmap``) once the board dispatcher spawns it, and approved
+        items land in BACKLOG only via the CEO's per-item approve — this loop
+        never starts anything.
+        """
+        if not settings.roadmap_engine_enabled:
+            return
+        interval = settings.roadmap_interval_seconds
+        while self._running:
+            try:
+                await asyncio.sleep(interval)
+                await self._run_roadmap_engine_cycle()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("roadmap-engine cycle failed")
+
+    async def _run_roadmap_engine_cycle(self) -> None:
+        """One roadmap-engine pass: run the engine, commit. Testable w/o the sleep."""
+        from roboco.db import get_db_context
+        from roboco.services.roadmap_engine import get_roadmap_engine
+
+        async with get_db_context() as db:
+            await get_roadmap_engine(db).run_cycle()
+            await db.commit()
+
     async def _load_dep_update_set(self, db: Any) -> list[Any]:
         """Projects with a ``dep_update_command`` + a git_url, one per
         (repo, command).
@@ -9192,6 +9421,19 @@ Start now: evidence(task_id="{task_id}")
             svc = TaskService(db)
             await self._reap_with_service(svc)
             await db.commit()
+        await self._sandbox_janitor_sweep()
+
+    async def _sandbox_janitor_sweep(self) -> None:
+        """Best-effort: remove sandbox containers whose owner agent is gone.
+
+        Cheap (a couple of docker calls) and error-isolated — the provisioner
+        itself never raises out of ``janitor_sweep``, so a hiccup here never
+        blocks the reaper tick it rides alongside.
+        """
+        if not settings.sandbox_db_enabled:
+            return
+        with contextlib.suppress(Exception):
+            await self._sandbox.janitor_sweep()
 
     def _assignee_has_active_instance(self, task: Any) -> bool:
         """True if the task's assignee currently holds a live (ACTIVE) container.
@@ -10039,6 +10281,42 @@ Start now: evidence(task_id="{task_id}")
             spawned_by="_dispatch_board_reviewer",
         )
 
+    async def _dispatch_roadmap_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Product-Owner spawn to author a themed roadmap cycle.
+
+        Unlike ``_handle_board_assigned_task`` (the two-reviewer board-review
+        gate), a roadmap cycle is Product-Owner-solo in v1 (see the roadmap
+        spec's non-goals — HoM co-authoring is out of scope), so this bypasses
+        the review-pair machinery and its board-review-complete/Approve & Start
+        handoff entirely: HoM is never spawned for this task, and no CEO
+        "Approve & Start" notification fires. ``propose_roadmap`` (not this
+        dispatcher) marks the cycle authored (a ``roadmap_cycle`` marker); this
+        only ever spawns once per task while that marker is absent, reusing the
+        same one-shot ``_board_dispatched`` tracker + respawn breaker every
+        other board dispatch uses.
+        """
+        task_id = str(task.get("id"))
+        markers_dict = task.get("orchestration_markers") or {}
+        if markers_dict.get(_markers.ROADMAP_CYCLE) is not None:
+            return  # already authored — the CEO roadmap queue owns the rest
+        po_slug = "product-owner"
+        if self._is_agent_active(po_slug):
+            return
+        key = (po_slug, task_id)
+        if key in self._board_dispatched:
+            return
+        if await self._pm_respawn_should_gate(po_slug, task):
+            return
+        self._board_dispatched.add(key)
+        logger.info("Spawning Product Owner for roadmap exploration", task_id=task_id)
+        await self.spawn_agent(
+            agent_id=po_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_roadmap_prompt(task),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_roadmap_exploration",
+        )
+
     def _board_review_complete(self, task_id: str) -> bool:
         """True once EVERY board reviewer has reviewed and gone idle.
 
@@ -10237,26 +10515,20 @@ Start now: evidence(task_id="{task_id}")
         for task in tasks:
             if self._is_task_handled_this_tick(task.get("id")):
                 continue
-            # External-PR review tasks are owned by _dispatch_pr_review_work; the
-            # PM hierarchy never routes or spawns them.
-            if task.get("source") in PR_REVIEW_SOURCES:
-                continue
-            # Release proposals are HELD for the CEO — never delivery work. They
-            # are acted on by the release routes + executor, never dispatched.
-            if task.get("source") == RELEASE_MANAGER_SOURCE:
-                continue
-            # A self-heal fix task is HELD for the CEO's Approve-&-Start
-            # (confirmed_by_human=False at origination). It must NOT dispatch
-            # autonomously — the CEO's approve_and_start flips
-            # confirmed_by_human True, after which it flows through the
-            # assigned-PM path below like any other PM task.
-            if task.get("source") == SELF_HEAL_SOURCE and not task.get(
-                "confirmed_by_human"
-            ):
+            # CEO-HELD / externally-owned sources are never PM delivery work
+            # (external-PR review, release proposals, X posts/replies, and a
+            # not-yet-confirmed self-heal fix task) — see _is_held_ceo_source.
+            if _is_held_ceo_source(task):
                 continue
             assigned_to = task.get("assigned_to")
             if assigned_to:
-                if self._resolve_agent_slug(assigned_to) in self._BOARD_AGENTS:
+                if task.get("source") == ROADMAP_SOURCE:
+                    # PO-solo (v1) — bypasses the two-reviewer board-review gate;
+                    # never rides _handle_board_assigned_task (that would also
+                    # spawn Head of Marketing and fire the Approve & Start
+                    # handoff, both wrong for a roadmap cycle).
+                    await self._dispatch_roadmap_exploration(task)
+                elif self._resolve_agent_slug(assigned_to) in self._BOARD_AGENTS:
                     await self._handle_board_assigned_task(task, assigned_to)
                 else:
                     await self._handle_pm_assigned_task(task, assigned_to)
@@ -10754,6 +11026,15 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 continue
             # Release proposals are CEO-gated artifacts, never dev work.
             if task.get("source") == RELEASE_MANAGER_SOURCE:
+                continue
+            # X posts/replies are CEO-gated artifacts, never dev work.
+            if task.get("source") in X_SOURCES:
+                continue
+            # A board roadmap exploration cycle is Board work (the PO's
+            # one-shot dispatch owns it via _dispatch_pm_work) — never dev work.
+            # Also team-gated away by _dev_dispatch_one (team=board), so this is
+            # belt-and-suspenders parity with the other held-artifact sources.
+            if task.get("source") == ROADMAP_SOURCE:
                 continue
             # A self-heal fix task held for the CEO's Approve-&-Start is not dev
             # work yet — it must not route to its assigned_to as a dev before
@@ -12349,6 +12630,46 @@ delegate — those verbs are not yours. Your deliverable is a recorded review.
 
 Do NOT attempt to claim, plan, complete, or delegate — the gateway will reject
 those, and a substantive recorded note IS your job here.
+"""
+
+    def _build_roadmap_prompt(self, task: dict[str, Any]) -> str:
+        """Prompt for the Product Owner's one-shot roadmap-exploration cycle.
+
+        Unlike the two-reviewer board-review prompt, this is PO-solo (v1 —
+        see the roadmap spec's non-goals): explore, author ONE themed cycle,
+        then idle. No claim/plan/delegate/complete — those verbs aren't the
+        Product Owner's."""
+        task_id = task.get("id", "unknown")
+        min_items = settings.roadmap_min_items_per_cycle
+        max_items = settings.roadmap_max_items_per_cycle
+        return f"""\
+You are the Product Owner. It's time for your periodic roadmap exploration.
+
+TASK: {task_id}
+
+Explore the company's projects and propose ONE themed cycle of roadmap items
+for the CEO to review — you author this alone. The Head of Marketing is not
+involved in this cycle.
+
+== WHAT TO DO ==
+
+1. triage() — see your board-level context.
+2. Explore: read the company charter, recent releases, metrics, and each
+   project's current state (read-only git). Check the knowledge base for open
+   threads. Optionally run web research for market/competitive signal.
+3. Pick ONE theme/goal for this cycle — a one-line focus that ties the items
+   together (e.g. "close onboarding friction" or "harden the payments path").
+4. propose_roadmap(cycle_goal="<the theme>", items=[...])
+     — call this EXACTLY ONCE with {min_items}-{max_items} item drafts. Each
+       item is an object with: title, description, acceptance_criteria (list
+       of strings), project_slug, team ('backend'|'frontend'|'ux_ui'),
+       priority (1-4, default 2), rationale (why this, why now).
+5. i_am_idle() — once proposed. The CEO reviews and approves/rejects each
+   item individually in the roadmap queue; an approved item lands in BACKLOG
+   for normal PM activation — nothing here auto-starts.
+
+Do NOT claim, plan, delegate, or attempt to start any of the items yourself —
+that is not your job here, and the gateway will reject those verbs.
 """
 
     def _build_marketing_prompt(self, task: dict[str, Any]) -> str:

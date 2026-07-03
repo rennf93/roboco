@@ -206,7 +206,11 @@ async def get_git_log(
         # Get log with format. Don't raise if the branch doesn't exist in
         # this workspace yet — that's a normal race (branch created in a
         # different agent's clone, not yet fetched here). Return empty.
-        log_format = "%H|%h|%s|%an|%aI"
+        # \x1f (ASCII Unit Separator) field delimiter, not "|": a commit
+        # SUBJECT can contain "|" (e.g. "curl|sh"), which would shift the
+        # split and land the author+date in one field. 0x1F never appears in
+        # commit content.
+        log_format = "%H%x1f%h%x1f%s%x1f%an%x1f%aI"
         log_result = await git_service._run_git(
             workspace,
             ["log", f"--format={log_format}", f"-n{limit}", branch],
@@ -227,7 +231,7 @@ async def get_git_log(
     for line in log_result.stdout.strip().split("\n"):
         if not line:
             continue
-        parts = line.split("|", 4)
+        parts = line.split("\x1f")
         if len(parts) == _LOG_FORMAT_PARTS:
             commits.append(
                 CommitInfo(

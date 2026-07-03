@@ -10,6 +10,7 @@ import {
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useIsMobile } from "@/hooks/use-is-mobile";
 import type { ModelUsageSlice } from "@/types";
 
 // Design-system chart tokens — resolves to theme-aware palette
@@ -27,6 +28,7 @@ interface ModelUsageDonutProps {
 }
 
 export function ModelUsageDonut({ data, isLoading }: ModelUsageDonutProps) {
+  const isMobile = useIsMobile();
   const chartData = (data ?? []).map((s) => ({
     name: s.model,
     value: s.total_tokens,
@@ -49,8 +51,8 @@ export function ModelUsageDonut({ data, isLoading }: ModelUsageDonutProps) {
                 data={chartData}
                 cx="50%"
                 cy="50%"
-                innerRadius={52}
-                outerRadius={80}
+                innerRadius={isMobile ? 44 : 52}
+                outerRadius={isMobile ? 68 : 80}
                 dataKey="value"
                 paddingAngle={3}
               >
@@ -69,7 +71,7 @@ export function ModelUsageDonut({ data, isLoading }: ModelUsageDonutProps) {
                 ]}
                 contentStyle={{ fontSize: 12 }}
               />
-              <Legend wrapperStyle={{ fontSize: 11 }} />
+              <Legend wrapperStyle={{ fontSize: isMobile ? 9 : 11 }} />
             </PieChart>
           </ResponsiveContainer>
         )}

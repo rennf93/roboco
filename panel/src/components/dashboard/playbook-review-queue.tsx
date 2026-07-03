@@ -119,7 +119,7 @@ export function PlaybookReviewQueue({ className }: { className?: string }) {
               <pre className="mt-2 max-h-40 overflow-auto rounded bg-muted p-2 text-xs whitespace-pre-wrap">
                 {pb.procedure}
               </pre>
-              <div className="mt-3 flex items-center justify-end gap-2">
+              <div className="mt-3 flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-end">
                 <Button
                   variant="outline"
                   size="sm"

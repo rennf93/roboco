@@ -227,7 +227,7 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
             </p>
           )}
 
-          <div className="flex items-center justify-end gap-2 pt-1">
+          <div className="flex flex-col-reverse gap-2 pt-1 sm:flex-row sm:items-center sm:justify-end">
             <Button
               variant="outline"
               size="sm"

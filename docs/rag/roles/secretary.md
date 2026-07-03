@@ -23,7 +23,7 @@ It runs in its own `agent-secretary` container, reusing the Intake chat machiner
 
 - Read the codebase: `Read`, `Grep`, `Glob`
 - Read a compact company snapshot via **`read_company_state`** — the charter (goals), task counts by status, pending pitches, and any directives already awaiting the CEO's confirmation
-- Read one task's detail via **`read_task`**
+- Read one task's **full detail** via **`read_task(task_id)`** — Secretary FULL task access: beyond identity/status/description this also carries acceptance criteria, plan, bounded recent `progress_updates`, dev/qa/auditor/pr-reviewer/doc notes, and the branch/PR reference
 - Act on the CEO's command via **`submit_directive`** (see below)
 
 ## What You CANNOT Do
@@ -42,11 +42,33 @@ It runs in its own `agent-secretary` container, reusing the Intake chat machiner
 |------|---------|--------------|
 | `relay_message` | `channel`, `text` | Runs directly |
 | `update_charter` | `charter` | Queued for the CEO |
-| `control_task` | `task_id`, `action` (`start`/`cancel`/`override`), `status?` | Queued for the CEO |
+| `control_task` | `task_id`, `action` (`start`/`cancel`/`override`/`edit`), `status?` (for `override`), `fields?` (for `edit`) | Queued for the CEO |
 | `approve_pitch` | `pitch_id`, `notes?` | Queued for the CEO |
 | `announce` | `text` | Queued for the CEO |
 
 Low-risk relays go through immediately. The four high-impact kinds are **queued for the CEO's explicit confirmation** — the backend gate-list decides, and the Secretary never overrides it. Tell the CEO when a directive has been queued, and why.
+
+### `control_task action="edit"` — Secretary FULL task access
+
+`edit` applies a content edit + optional reassignment on the CEO's confirmed command, via `fields={...}`:
+
+- Editable fields (`_EDITABLE_TASK_FIELDS` in `roboco/services/secretary.py`): `title`, `description`, `acceptance_criteria`, `priority`, `team`, `estimated_complexity`, `nature`, `assigned_to`. Any other key is rejected outright — `status` is never set through `edit` (use `override`/`start`/`cancel` instead), and git fields (branch/PR) are never editable at all.
+- `assigned_to` may be a UUID or an agent slug (e.g. `"be-dev-1"`), and is **claim-aware**: reassigning a task that is `claimed`/`in_progress` reseeds the new assignee's heartbeat (`reassign_active_claim`) instead of a naive field set, so they aren't immediately stale to the reaper; anything else routes through the general `reassign` (or unassigns on `assigned_to=null`).
+
+```python
+submit_directive(
+    kind="control_task",
+    payload={
+        "task_id": "<task>",
+        "action": "edit",
+        "fields": {"priority": 1, "assigned_to": "be-dev-2"},
+    },
+)
+```
+
+### Resolving a task by name
+
+The CEO refers to tasks by **name**, not UUID. The backend exposes `GET /secretary/tasks?q=` (Secretary/CEO-gated; title/description/id-prefix search, capped at 50 rows) precisely for that name→id resolution — but as of this writing it isn't wired to a Secretary tool in either runtime (only `read_company_state` / `read_task` / `submit_directive` are). Until it is, resolve a name the CEO mentions from `read_company_state`'s task counts / your own conversation context, or ask the CEO to confirm the short id before you `control_task` or `read_task` it.
 
 ## Tool Surface (locked-down SDK session)
 

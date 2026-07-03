@@ -11,14 +11,21 @@ import os
 from typing import TYPE_CHECKING, Annotated, Any
 from uuid import UUID
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Cookie, Depends, Header, HTTPException, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.agents_config import CEO_AGENT_ID, verify_agent_token
+from roboco.api.auth.backend import (
+    SESSION_COOKIE_NAME,
+    cookie_transport,
+    get_jwt_strategy,
+)
+from roboco.api.auth.session import resolve_session_user
 from roboco.api.schemas.optimal import PaginationParams
+from roboco.config import settings
 from roboco.db.base import get_db
-from roboco.db.tables import AgentTable
+from roboco.db.tables import AgentTable, UserTable
 from roboco.foundation.identity import BOARD_ROLES, DEV_ROLES, PM_ROLES, Role
 from roboco.models import AgentRole, Team
 from roboco.runtime import AgentOrchestrator
@@ -330,23 +337,19 @@ def _coerce_agent_team(x_agent_team: str | None) -> Team | None:
     return None
 
 
-async def get_agent_context(
-    db: DbSession,
-    x_agent_id: Annotated[str | None, Header()] = None,
-    x_agent_role: Annotated[str | None, Header()] = None,
-    x_agent_team: Annotated[str | None, Header()] = None,
-    x_agent_token: Annotated[str | None, Header()] = None,
+async def _header_trust_agent_context(
+    db: AsyncSession,
+    x_agent_id: str | None,
+    x_agent_role: str | None,
+    x_agent_team: str | None,
+    x_agent_token: str | None,
 ) -> AgentContext:
-    """
-    Get the current agent context from request headers.
+    """The original get_agent_context body — today's header-trust behavior.
 
-    Headers:
-        X-Agent-ID: UUID or slug of the agent (e.g., "be-dev-1")
-        X-Agent-Role: Role (e.g., 'developer', 'cell_pm')
-        X-Agent-Team: (optional) Team (e.g., 'backend', 'frontend')
-        X-Agent-Token: (required when ROBOCO_AGENT_AUTH_REQUIRED=true)
-            HMAC of "agent_id:role:team" signed with
-            ROBOCO_AGENT_AUTH_SECRET. Orchestrator issues this at spawn.
+    This is the OFF-mode path (cloud_auth_enabled=False) verbatim, and is
+    also what a valid agent HMAC token or a non-CEO role delegates to when
+    cloud auth is on — the survival guarantee that off/agent behavior never
+    changes.
     """
     if not x_agent_id:
         raise HTTPException(
@@ -370,6 +373,119 @@ async def get_agent_context(
         role=role,
         team=team,
         slug=slug,
+    )
+
+
+async def _slide_session_cookie(response: Response, user: UserTable) -> None:
+    """Re-mint + re-set the session cookie — the sliding 30-day window.
+
+    Called on every request that authenticated via a valid session cookie, so
+    an in-use session's expiry keeps rolling forward; only genuine inactivity
+    past cloud_auth_cookie_max_age logs the CEO out.
+    """
+    token = await get_jwt_strategy().write_token(user)
+    cookie_transport._set_login_cookie(response, token)
+
+
+async def _cloud_auth_agent_context(
+    db: AsyncSession,
+    response: Response,
+    x_agent_id: str | None,
+    x_agent_role: str | None,
+    x_agent_team: str | None,
+    x_agent_token: str | None,
+    session_cookie: str | None,
+) -> AgentContext:
+    """Dual-path enforcement when ROBOCO_CLOUD_AUTH_ENABLED.
+
+    Cloud-auth mode kills header-trust entirely: a caller must present EITHER
+    a valid HMAC token (the agent fleet, and the orchestrator's `system`
+    self-PATCH — accepted exactly like today, delegated to the header-trust
+    path once verified) OR, for the human CEO, a valid session cookie. Any
+    agent-role claim WITHOUT a verifiable token is a spoof — real agents
+    always carry a signed token — and is rejected regardless of role, so the
+    LAN header-spoof hole on the published :8000 port is closed for every
+    privileged role, not just `ceo`.
+    """
+    if x_agent_token and x_agent_id and x_agent_role:
+        if not verify_agent_token(
+            x_agent_token, x_agent_id, x_agent_role, x_agent_team or ""
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=(
+                    "Invalid X-Agent-Token — signature mismatch. Header "
+                    "values do not match the token issued for this agent."
+                ),
+            )
+        return await _header_trust_agent_context(
+            db, x_agent_id, x_agent_role, x_agent_team, x_agent_token
+        )
+
+    # Past this point there is no valid token. A non-CEO agent-role claim
+    # here can only be an unauthenticated spoof (header-trust is dead in this
+    # mode); the sole remaining legitimate caller is the CEO with a session.
+    role_lower = (x_agent_role or "").strip().lower()
+    if role_lower and role_lower != Role.CEO:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Cloud auth is enabled — agent requests require a valid token.",
+        )
+
+    user = await resolve_session_user(session_cookie, db)
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=(
+                "Cloud auth is enabled — a valid session or agent token is required."
+            ),
+        )
+    await _slide_session_cookie(response, user)
+    return AgentContext(
+        agent_id=UUID(CEO_AGENT_ID),
+        role=AgentRole.CEO,
+        team=None,
+        slug="ceo",
+    )
+
+
+async def get_agent_context(
+    db: DbSession,
+    response: Response,
+    x_agent_id: Annotated[str | None, Header()] = None,
+    x_agent_role: Annotated[str | None, Header()] = None,
+    x_agent_team: Annotated[str | None, Header()] = None,
+    x_agent_token: Annotated[str | None, Header()] = None,
+    roboco_session: Annotated[str | None, Cookie(alias=SESSION_COOKIE_NAME)] = None,
+) -> AgentContext:
+    """
+    Get the current agent context from request headers (dual-path).
+
+    Headers:
+        X-Agent-ID: UUID or slug of the agent (e.g., "be-dev-1")
+        X-Agent-Role: Role (e.g., 'developer', 'cell_pm')
+        X-Agent-Team: (optional) Team (e.g., 'backend', 'frontend')
+        X-Agent-Token: (required when ROBOCO_AGENT_AUTH_REQUIRED=true)
+            HMAC of "agent_id:role:team" signed with
+            ROBOCO_AGENT_AUTH_SECRET. Orchestrator issues this at spawn.
+
+    When ``settings.cloud_auth_enabled`` is False (the default), this is
+    byte-for-byte the historical header-trust behavior. When True, a
+    spoofed CEO header without a valid HMAC token or session cookie is
+    rejected — see ``_cloud_auth_agent_context``.
+    """
+    if not settings.cloud_auth_enabled:
+        return await _header_trust_agent_context(
+            db, x_agent_id, x_agent_role, x_agent_team, x_agent_token
+        )
+    return await _cloud_auth_agent_context(
+        db,
+        response,
+        x_agent_id,
+        x_agent_role,
+        x_agent_team,
+        x_agent_token,
+        roboco_session,
     )
 
 

@@ -213,9 +213,9 @@ export function CeoApprovalQueue({ className }: CeoApprovalQueueProps) {
   const renderRow = (task: Task, kind: "start" | "approve") => (
     <div
       key={task.id}
-      className="flex items-start justify-between p-4 border rounded-lg hover:bg-muted/50 transition-colors"
+      className="flex flex-col gap-3 border rounded-lg p-4 transition-colors hover:bg-muted/50 sm:flex-row sm:items-start sm:justify-between"
     >
-      <div className="flex-1 min-w-0">
+      <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 mb-1">
           {getPriorityBadge(task.priority)}
           <Badge variant="outline">{task.team}</Badge>
@@ -233,7 +233,9 @@ export function CeoApprovalQueue({ className }: CeoApprovalQueueProps) {
           </p>
         )}
       </div>
-      <div className="flex items-center gap-2 ml-4 flex-shrink-0">
+      {/* Action cluster — stacks below the task text on narrow instead of
+          clipping against it (mirrors the dialog footer's flex-col sm:flex-row). */}
+      <div className="flex flex-wrap items-center gap-2 sm:ml-4 sm:shrink-0">
         <Link href={`/tasks/${task.id}`} prefetch={false}>
           <Button variant="ghost" size="sm">
             <FileText className="h-4 w-4" />

@@ -99,6 +99,8 @@ i_am_idle()
 
 The Board **cannot** claim, create, complete, or cancel tasks. Strategic decisions are escalated to the CEO.
 
+The Product Owner additionally has `propose_roadmap(cycle_goal, items)` — a **content tool** on `roboco-do`, not a flow verb, so it doesn't appear above. It authors the weekly board-roadmap-engine exploration cycle (a themed goal + 3-7 item drafts); the CEO approves or rejects each item individually into BACKLOG. See `docs/rag/roles/product-owner.md`.
+
 ## Auditor flow
 
 ```python

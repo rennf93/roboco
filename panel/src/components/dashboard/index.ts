@@ -12,6 +12,7 @@ export { HealthIndicator } from "./health-indicator";
 export { CeoApprovalQueue } from "./ceo-approval-queue";
 export { ReleaseProposalCard } from "./release-proposal-card";
 export { PlaybookReviewQueue } from "./playbook-review-queue";
+export { RoadmapReviewQueue } from "./roadmap-review-queue";
 export { StrategySignalsPanel } from "./strategy-signals-panel";
 export { UsageOverviewPanel } from "./usage-overview-panel";
 export { ScorecardOverviewPanel } from "./scorecard-overview-panel";

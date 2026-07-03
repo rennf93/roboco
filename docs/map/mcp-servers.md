@@ -14,7 +14,7 @@ The `roboco/mcp` package is the agent-side MCP gateway: a set of `FastMCP` serve
 | `roboco/mcp/utils.py` | Shared HTTP helpers: `_get_agent_headers`, `format_error_response`, `ApiResponse`, `ApiClient` (async httpx wrapper). Used by `optimal_server`, `docs_server`, `search_server`. | 383 |
 | `roboco/mcp/schemas/__init__.py` | Pydantic input models. After Phase-4 T9 deletions only `WriteDocInput` remains. | 35 |
 | `roboco/mcp/flow_server.py` | `roboco-flow` MCP server — intent verbs (lifecycle). Manifest-scoped registration, role-scoped path `/api/v1/flow/<route>/<verb>`, per-verb circuit breaker + 404-route synthesis. | 1028 |
-| `roboco/mcp/do_server.py` | `roboco-do` MCP server — content tools (commit, note, say, dm, notify, evidence, progress, sessions, playbook curation, pr_update). Manifest-scoped; fixed `/api/v1/do/<verb>` path; mirror circuit breaker. | 954 |
+| `roboco/mcp/do_server.py` | `roboco-do` MCP server — content tools (commit, note, pitch, propose_roadmap, say, dm, notify, evidence, progress, sessions, playbook curation, pr_update). Manifest-scoped; fixed `/api/v1/do/<verb>` path; mirror circuit breaker. | 976 |
 | `roboco/mcp/optimal_server.py` | `roboco-optimal` MCP server — RAG / KB / mentor / error / decision / standards / learnings / index-mgmt / proactive-context. Factory `create_optimal_mcp_server(agent_id)`; calls `/optimal/*`. | 1102 |
 | `roboco/mcp/docs_server.py` | `roboco-docs` MCP server — docs write/read/list/delete via `/docs/*`. Factory `create_docs_mcp_server(agent_id)`. RAG-based dedup on write. | 251 |
 | `roboco/mcp/git_readonly.py` | `roboco-git-readonly` MCP server — four read-only git views (status/log/diff/branch list) via `/api/git/*`. No breaker, no manifest. | 123 |
@@ -52,7 +52,7 @@ The `roboco/mcp` package is the agent-side MCP gateway: a set of `FastMCP` serve
 | `_load_manifest_flow_tools` | func | `flow_server.py:935` | Read `/app/tool-manifest.json` `flow_tools`; None if missing/unreadable. |
 | `_register_tools` (flow) | func | `flow_server.py:965` | Raise `RuntimeError` if manifest missing and `ROBOCO_ALLOW_FULL_TOOLSET` not set; if set, registers full tool set as dev/test escape hatch. |
 | `_REGISTERED_TOOLS` (flow) | var | `flow_server.py:1024` | Import-time registration side effect. |
-| `_TOOLS` (do) | dict | `do_server.py:842` | Tool name → impl map (19 content tools). |
+| `_TOOLS` (do) | dict | `do_server.py:863` | Tool name → impl map (21 content tools, incl. `propose_roadmap`). |
 | `_load_manifest_do_tools` | func | `do_server.py:866` | Read manifest `do_tools` list. |
 | `_register_tools` (do) | func | `do_server.py:896` | Manifest-scoped registration; raise `RuntimeError` if manifest missing (unless `ROBOCO_ALLOW_FULL_TOOLSET` set). |
 | `give_me_work` … `i_am_idle` | verb funcs | `flow_server.py:491–625` | Dev verbs. |
@@ -61,6 +61,7 @@ The `roboco/mcp` package is the agent-side MCP gateway: a set of `FastMCP` serve
 | `i_will_plan` / `delegate` / `submit_up` / `submit_root` | verb funcs | `flow_server.py:759–856` | PM coordination verbs. |
 | `note` | verb func | `do_server.py:428` | Journal entry + handoff section writer (top-level `done`/`next` strings — the meltdown-#1 fix). |
 | `commit` / `say` / `dm` / `notify` / `evidence` | verb funcs | `do_server.py:423–598` | Core content tools. |
+| `propose_roadmap` | verb func | `do_server.py:531` | Product Owner (board-roadmap-only, `_PRODUCT_OWNER_DO`): propose a themed roadmap cycle (goal + 3-7 item drafts) exactly once per exploration task. |
 | `draft_playbook` / `approve_playbook` / `reject_playbook` / `archive_playbook` | verb funcs | `do_server.py:600–644` | Playbook curation (delivery + Auditor). |
 | `progress` / `open_session` / `link_session` / `notify_list` / `notify_get` / `notify_ack` / `channels` / `pr_update` / `read_messages` | verb funcs | `do_server.py:646–840` | Wave-1 parity content tools. |
 | `create_optimal_mcp_server` | factory | `optimal_server.py:1068` | Build `roboco-optimal-{agent_id}` server; registers 8 tool groups. |
@@ -172,7 +173,7 @@ roboco/mcp/
 │   └── _load_manifest_flow_tools / _register_tools (fails loud if no manifest; ROBOCO_ALLOW_FULL_TOOLSET escape hatch)
 ├── do_server.py             # roboco-do (content tools)
 │   ├── mirror breaker machinery (_CIRCUIT_REJECTION_KINDS, _DICT_ERROR_CODE_MAP, _classify_*, _remediate_for_kind, _normalize_exception_envelope, _record_and_check_circuit)
-│   ├── commit, note (handoff done/next), pitch, say, dm, notify, evidence
+│   ├── commit, note (handoff done/next), pitch, propose_roadmap, say, dm, notify, evidence
 │   ├── progress, open_session, link_session, notify_list/get/ack, channels, pr_update, read_messages
 │   ├── draft_playbook, approve_playbook, reject_playbook, archive_playbook
 │   └── _TOOLS / _load_manifest_do_tools / _register_tools (fails loud; ROBOCO_ALLOW_FULL_TOOLSET escape hatch)
@@ -287,7 +288,7 @@ CLAUDE.md "MCP servers running per agent container" table lists 5 servers (`robo
 
 CLAUDE.md "roboco-optimal" row says the server exposes `roboco_ask_mentor`, `roboco_kb_search` only. The actual `optimal_server.py` registers **18** tools (search/rag/stats/index_code/index_docs/tokens_estimate/ask_mentor/search_error/record_error_solution/check_decision/record_decision/get_standards/validate_action/review_code/record_learning/search_learnings/clear_index/reindex_all/index_status/get_proactive_context). Understatement, not contradiction.
 
-CLAUDE.md "roboco-do" row lists `commit, note, say, dm, evidence` and (in the Agent Gateway section) `draft_playbook` for delivery roles + `approve_playbook`/`reject_playbook`/`archive_playbook` for the Auditor. The actual `do_server.py` `do_tools` registry also contains `pitch`, `progress`, `open_session`, `link_session`, `notify`, `notify_list`, `notify_get`, `notify_ack`, `channels`, `pr_update`, `read_messages` — none mentioned in CLAUDE.md. Understatement.
+CLAUDE.md "roboco-do" row lists `commit, note, say, dm, evidence` and (in the Agent Gateway section) `draft_playbook` for delivery roles + `approve_playbook`/`reject_playbook`/`archive_playbook` for the Auditor. The actual `do_server.py` `do_tools` registry also contains `pitch`, `propose_roadmap` (Product Owner only), `progress`, `open_session`, `link_session`, `notify`, `notify_list`, `notify_get`, `notify_ack`, `channels`, `pr_update`, `read_messages` — none mentioned in CLAUDE.md (`_TOOLS` is 21 entries, not the 5 named). Understatement.
 
 CLAUDE.md says the `note`/journal write "returns as soon as the entry is persisted; RAG indexing runs fire-and-forget." The MCP `note` tool itself is synchronous w.r.t. the orchestrator (a single POST); the fire-and-forget behavior is server-side, not visible in this slice — consistent, not drift.
 

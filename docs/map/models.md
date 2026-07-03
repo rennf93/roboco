@@ -63,7 +63,7 @@ The Pydantic/dataclass domain surface of RoboCo — the typed contract the API, 
 | `AgentPermissions` | Pydantic model | agent.py:45 | can_notify + channels_read/write |
 | `WorkSession` | Pydantic model | work_session.py:25 | Branch/PR/merge tracking for a (project, task, agent) work episode |
 | `WorkSessionStatus` | StrEnum | work_session.py:17 | active/completed/abandoned |
-| `Project` | Pydantic model | project.py:28 | Git repo config + CI/dep-update opt-ins + `assigned_cell` |
+| `Project` | Pydantic model | project.py:47 | Git repo config + CI/dep-update/`sandbox_services` opt-ins + `assigned_cell` |
 | `BranchReason` | StrEnum | project.py:18 | feature/bug/chore/docs/hotfix (branch-name prefixes) |
 | `Session` | Pydantic model | session.py:90 | Bounded message group (time/count/length); `scope` for context loading |
 | `SessionScope` | StrEnum | session.py:30 | initiative/cell/task |
@@ -227,7 +227,7 @@ models/
 
 ## Config Flags
 
-None — pure models, no flags. (The `Project` model *carries* opt-in fields `ci_watch_enabled`, `dep_update_command`, `dep_update_paths` that other layers gate on, and `llm_catalog` carries the "pure Ollama" defaults, but the models package itself reads no env / toggles nothing.)
+None — pure models, no flags. (The `Project` model *carries* opt-in fields `ci_watch_enabled`, `dep_update_command`, `dep_update_paths`, `sandbox_services` (project.py:142, validated against `VALID_SANDBOX_SERVICES` — sandboxed dev DB/Redis, gated by `ROBOCO_SANDBOX_DB_ENABLED` elsewhere) that other layers gate on, and `llm_catalog` carries the "pure Ollama" defaults, but the models package itself reads no env / toggles nothing.)
 
 ## Gotchas
 
@@ -252,6 +252,7 @@ None — pure models, no flags. (The `Project` model *carries* opt-in fields `ci
 - CLAUDE.md "A task has at most one active WorkSession" — enforced by DB partial-unique index (migration 047) + service layer, not by the `WorkSession` model itself (work_session.py has no such constraint). Consistent with CLAUDE.md's "enforced both at the service layer and by a DB partial-unique index".
 - The slice prompt named `AuditEvent` and `A2AEnvelope` as landmarks; the actual symbols are `AuditEventType` (audit.py:13, no `AuditEvent` class) and there is no `A2AEnvelope` in `a2a.py` (the gateway `Envelope` lives in `services/gateway/`, not here). Listed the real landmarks instead.
 - Otherwise: `TaskStatus` 15-state enum, `TaskType` 6 values, `NotificationType`/`ChannelType`/`JournalEntryType` all match CLAUDE.md verbatim.
+- v0.17.0 delta: the three new ORM tables backing cloud auth + the X engine (`UserTable`, `XCredentialsTable`, `XSeenMentionTable` — migrations 058/059) have **no Pydantic counterpart in this package** — cloud auth's `UserTable` is consumed directly by `fastapi_users`/`roboco.api.auth.*` and the X engine's two tables are read/written directly off the ORM row by `roboco.services.x_*`. They are documented as ORM `Key Symbols` in `db-migrations.md`, not here, consistent with this file's own Purpose statement ("these are not the ORM tables").
 
 ## Changes Since Baseline
 

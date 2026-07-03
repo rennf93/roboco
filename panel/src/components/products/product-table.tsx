@@ -11,6 +11,12 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  ResponsiveTable,
+  ResponsiveTableCardList,
+  ResponsiveTableCard,
+  ResponsiveTableCardRow,
+} from "@/components/ui/responsive-table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Boxes, Pencil } from "lucide-react";
 import type { ProductSummary } from "@/types";
@@ -46,20 +52,63 @@ export function ProductTable({ products, isLoading }: ProductTableProps) {
 
   return (
     <>
-      <div className="border rounded-lg">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Product</TableHead>
-              <TableHead>Cells Mapped</TableHead>
-              <TableHead className="w-[100px]">Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
+      <ResponsiveTable
+        table={
+          <div className="border rounded-lg">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Product</TableHead>
+                  <TableHead>Cells Mapped</TableHead>
+                  <TableHead className="w-[100px]">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {products.map((product) => (
+                  <TableRow key={product.id}>
+                    <TableCell>
+                      <div>
+                        <Button
+                          onClick={() => setEditingProductId(product.id)}
+                          variant="link"
+                          className="h-auto p-0 font-medium text-foreground"
+                        >
+                          {product.name}
+                        </Button>
+                        <p className="text-xs text-muted-foreground font-mono">
+                          {product.slug}
+                        </p>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <Badge className="bg-blue-500/10 text-blue-500">
+                        {product.cell_count} / 3
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => setEditingProductId(product.id)}
+                          title="Edit product"
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        }
+        cards={
+          <ResponsiveTableCardList>
             {products.map((product) => (
-              <TableRow key={product.id}>
-                <TableCell>
-                  <div>
+              <ResponsiveTableCard key={product.id}>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
                     <Button
                       onClick={() => setEditingProductId(product.id)}
                       variant="link"
@@ -71,29 +120,28 @@ export function ProductTable({ products, isLoading }: ProductTableProps) {
                       {product.slug}
                     </p>
                   </div>
-                </TableCell>
-                <TableCell>
-                  <Badge className="bg-blue-500/10 text-blue-500">
-                    {product.cell_count} / 3
-                  </Badge>
-                </TableCell>
-                <TableCell>
-                  <div className="flex items-center gap-1">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => setEditingProductId(product.id)}
-                      title="Edit product"
-                    >
-                      <Pencil className="h-4 w-4" />
-                    </Button>
-                  </div>
-                </TableCell>
-              </TableRow>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="shrink-0"
+                    onClick={() => setEditingProductId(product.id)}
+                    title="Edit product"
+                  >
+                    <Pencil className="h-4 w-4" />
+                  </Button>
+                </div>
+                <div className="mt-3 divide-y">
+                  <ResponsiveTableCardRow label="Cells Mapped">
+                    <Badge className="bg-blue-500/10 text-blue-500">
+                      {product.cell_count} / 3
+                    </Badge>
+                  </ResponsiveTableCardRow>
+                </div>
+              </ResponsiveTableCard>
             ))}
-          </TableBody>
-        </Table>
-      </div>
+          </ResponsiveTableCardList>
+        }
+      />
 
       {/* Edit Product Dialog */}
       {editingProductId && (

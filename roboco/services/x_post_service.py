@@ -1,0 +1,223 @@
+"""XPostService — the CEO's approve/reject glue over held X posts/replies.
+
+Mirrors ``ReleaseProposalService``: finds the open draft(s) the engine
+prepared, and on approval posts to X via ``x_client`` under a Redis
+single-flight lock (a plain SET NX — unlike the release mutex there is no long
+heartbeat to run since a single tweet POST completes in well under the lock
+TTL), then marks the task COMPLETED. A completed task is idempotent — a
+second approve is a no-op that returns the already-posted result. Rejecting
+records the reason and CANCELS the draft (unlike the release proposal there is
+no revision workflow here — the CEO edits inline and re-approves, or a fresh
+draft is originated on the next cycle/release).
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+from uuid import uuid4
+
+import redis.asyncio as redis
+
+from roboco.config import settings
+from roboco.foundation.policy.content import markers
+from roboco.models.base import TaskStatus
+from roboco.services.base import BaseService
+from roboco.services.task import X_SOURCES, get_task_service
+from roboco.services.x_client import MAX_TWEET_CHARS, build_x_client
+from roboco.services.x_credentials import get_x_credentials_service
+
+if TYPE_CHECKING:
+    from uuid import UUID
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from roboco.db.tables import TaskTable
+
+logger = logging.getLogger(__name__)
+
+_LOCK_PREFIX = "roboco:x_post:"
+_LOCK_TTL_SECONDS = 60  # a tweet POST completes in seconds; generous crash backstop
+_RELEASE_SCRIPT = """
+if redis.call("get", KEYS[1]) == ARGV[1] then
+    return redis.call("del", KEYS[1])
+else
+    return 0
+end
+"""
+
+
+class XPostBodyTooLongError(ValueError):
+    """The CEO's edited body exceeds the 280-char tweet limit."""
+
+
+@dataclass(frozen=True)
+class XPostExecuteResult:
+    """The outcome of an approve call.
+
+    `status` is one of: posted, already_posted, already_in_progress,
+    no_credentials, post_failed, redis_unavailable.
+    """
+
+    status: str
+    tweet_id: str | None
+    detail: str
+
+
+class XPostService(BaseService):
+    """List / approve / reject held X post + reply drafts."""
+
+    service_name = "x_post_service"
+
+    async def list_open_posts(self) -> list[TaskTable]:
+        """Every held X draft (both sources) awaiting the CEO."""
+        return await get_task_service(self.session).list_open_x_posts()
+
+    async def approve(
+        self, task_id: UUID, edited_body: str | None = None
+    ) -> XPostExecuteResult | None:
+        """Post the draft to X (optionally with the CEO's edited body).
+
+        Returns None when ``task_id`` is not an open X draft. Idempotent: a
+        task already COMPLETED returns ``already_posted`` with the stored
+        tweet id, without calling the client again.
+        """
+        task = await get_task_service(self.session).get(task_id)
+        if task is None or task.source not in X_SOURCES:
+            return None
+
+        if edited_body is not None:
+            trimmed = edited_body.strip()
+            if len(trimmed) > MAX_TWEET_CHARS:
+                raise XPostBodyTooLongError(
+                    f"edited body is {len(trimmed)} chars, over the "
+                    f"{MAX_TWEET_CHARS}-char tweet limit"
+                )
+            if trimmed:
+                markers.set_x_draft_body(task, trimmed)
+                await self.session.flush()
+
+        if task.status == TaskStatus.COMPLETED:
+            return XPostExecuteResult(
+                status="already_posted",
+                tweet_id=markers.get_x_posted_tweet_id(task),
+                detail="this draft was already posted",
+            )
+
+        lock_key = f"{_LOCK_PREFIX}{task_id}"
+        try:
+            token = await self._acquire_lock(lock_key)
+        except _LockUnavailable as exc:
+            logger.error("x-post lock unavailable (redis down): %s", exc)
+            return XPostExecuteResult(
+                status="redis_unavailable",
+                tweet_id=None,
+                detail="Redis is unavailable so the post mutex can't be acquired.",
+            )
+        if token is None:
+            return XPostExecuteResult(
+                status="already_in_progress",
+                tweet_id=None,
+                detail="A post is already in progress for this draft.",
+            )
+        try:
+            return await self._approve_locked(task_id, task)
+        finally:
+            await self._release_lock(lock_key, token)
+
+    async def _approve_locked(
+        self, task_id: UUID, task: TaskTable
+    ) -> XPostExecuteResult | None:
+        """The critical section under the held post lock.
+
+        Re-reads the committed state (expire forces a fresh SELECT): a
+        concurrent approve that won the lock first may have posted + committed
+        COMPLETED after the pre-lock read, so acting on the stale in-memory
+        row would double-post.
+        """
+        self.session.expire(task)
+        locked = await get_task_service(self.session).get(task_id)
+        if locked is None:
+            return None
+        if locked.status == TaskStatus.COMPLETED:
+            return XPostExecuteResult(
+                status="already_posted",
+                tweet_id=markers.get_x_posted_tweet_id(locked),
+                detail="this draft was already posted",
+            )
+        return await self._post(locked)
+
+    async def _post(self, task: TaskTable) -> XPostExecuteResult:
+        body = markers.get_x_draft_body(task) or task.description or ""
+        creds = await get_x_credentials_service(self.session).get_decrypted()
+        client = build_x_client(
+            creds,
+            account_user_id=settings.x_account_user_id,
+            timeout=settings.x_request_timeout_seconds,
+        )
+        if not client.configured:
+            return XPostExecuteResult(
+                status="no_credentials",
+                tweet_id=None,
+                detail="No X credentials are configured.",
+            )
+        result = await client.post_tweet(body)
+        if not result.posted:
+            return XPostExecuteResult(
+                status="post_failed", tweet_id=None, detail=result.detail
+            )
+        markers.set_x_posted_tweet_id(task, result.tweet_id or "")
+        task.status = TaskStatus.COMPLETED
+        # Commit while still holding the lock so COMPLETED is durable before
+        # release — otherwise a racing approve could acquire the lock the
+        # instant we drop it and double-post before the route-level commit.
+        await self.session.commit()
+        return XPostExecuteResult(
+            status="posted", tweet_id=result.tweet_id, detail=result.detail
+        )
+
+    async def reject(self, task_id: UUID, reason: str) -> TaskTable | None:
+        """Record the CEO's reason and cancel the draft (never posted)."""
+        task = await get_task_service(self.session).get(task_id)
+        if task is None or task.source not in X_SOURCES:
+            return None
+        markers.set_x_reject_reason(task, reason)
+        task.status = TaskStatus.CANCELLED
+        await self.session.flush()
+        return task
+
+    # ---- Redis single-flight lock (plain SET NX — no heartbeat needed) -----
+
+    async def _acquire_lock(self, lock_key: str) -> str | None:
+        token = uuid4().hex
+        try:
+            conn = redis.from_url(settings.redis_url)
+            try:
+                acquired = await conn.set(
+                    lock_key, token, nx=True, ex=_LOCK_TTL_SECONDS
+                )
+                return token if acquired else None
+            finally:
+                await conn.aclose()
+        except Exception as exc:
+            raise _LockUnavailable(str(exc)) from exc
+
+    async def _release_lock(self, lock_key: str, token: str) -> None:
+        try:
+            conn = redis.from_url(settings.redis_url)
+            try:
+                await conn.eval(_RELEASE_SCRIPT, 1, lock_key, token)
+            finally:
+                await conn.aclose()
+        except Exception as exc:
+            logger.warning("x-post lock release failed (redis): %s", exc)
+
+
+class _LockUnavailable(Exception):
+    """Redis is unreachable — distinct from "the lock is held" (fail-closed)."""
+
+
+def get_x_post_service(session: AsyncSession) -> XPostService:
+    """Construct an XPostService bound to ``session``."""
+    return XPostService(session)

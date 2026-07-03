@@ -269,6 +269,11 @@ Panel-tunable flags defined in `services/settings.py:46` `FEATURE_FLAGS` (stored
 | `dep_update_enabled` | Dependency-update bot | `ROBOCO_DEP_UPDATE_ENABLED` |
 | `release_manager_enabled` | Gated release manager | `ROBOCO_RELEASE_MANAGER_ENABLED` |
 | `org_memory_enabled` | Organizational memory loop | `ROBOCO_ORG_MEMORY_ENABLED` |
+| `sandbox_db_enabled` | Sandboxed per-agent test DB/Redis | `ROBOCO_SANDBOX_DB_ENABLED` |
+| `x_engine_enabled` | X (Twitter) engine | `ROBOCO_X_ENGINE_ENABLED` |
+| `roadmap_engine_enabled` | Board roadmap engine | `ROBOCO_ROADMAP_ENGINE_ENABLED` |
+
+Cloud auth (`ROBOCO_CLOUD_AUTH_ENABLED`) and DB network isolation (`ROBOCO_DB_NETWORK_ISOLATED`) are deliberately **not** in `FEATURE_FLAGS` — both are compose/env-coupled (cookie/TLS posture and the `networks:` topology respectively) and unsafe for a runtime toggle to flip mid-session; they stay pure env vars, not panel-tunable settings.
 
 Other settings read here: `transcript_retention_days` (int, ≥1; read by orchestrator at `runtime/orchestrator.py:5910`). Non-flag config consumed: `settings.redis_url` (`health`, `stream_bus`), `settings.encryption_key` (`crypto`).
 

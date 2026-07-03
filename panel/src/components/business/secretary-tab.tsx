@@ -239,7 +239,7 @@ export function SecretaryTab() {
   return (
     <div className="grid gap-6 lg:grid-cols-3">
       {/* Chat panel */}
-      <Card className="flex min-h-[60vh] flex-col lg:col-span-2">
+      <Card className="flex min-h-[60dvh] flex-col lg:col-span-2">
         <CardHeader className="flex-row items-center justify-between space-y-0 pb-3">
           <CardTitle>Chat</CardTitle>
           {sessionId && (

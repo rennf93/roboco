@@ -53,6 +53,33 @@ async def test_upsert_batch_updates_existing(
 
 
 @pytest.mark.asyncio
+async def test_upsert_batch_dedupes_within_batch_and_merges(
+    repo: IndexedDocumentRepository,
+) -> None:
+    # A batch containing the SAME source twice must not raise
+    # ("ON CONFLICT cannot affect row a second time") — the atomic upsert
+    # dedupes within the batch (last wins) and merges metadata.
+    count = await repo.upsert_batch(
+        "learnings",
+        [
+            {"source": "dup", "title": "First", "metadata": {"a": 1}},
+            {"source": "dup", "title": "Second", "metadata": {"b": 2}},
+        ],
+    )
+    assert count == 1
+    rows = await repo.get_by_index_type("learnings")
+    assert len(rows) == 1
+    assert rows[0].title == "Second"
+    # re-upsert the same source (the race scenario, sequentially): keeps the
+    # existing title on an empty new one, and merges metadata.
+    await repo.upsert_batch("learnings", [{"source": "dup", "metadata": {"c": 3}}])
+    rows = await repo.get_by_index_type("learnings")
+    assert len(rows) == 1
+    assert rows[0].title == "Second"
+    assert rows[0].extra_data == {"b": 2, "c": 3}
+
+
+@pytest.mark.asyncio
 async def test_get_by_index_type(repo: IndexedDocumentRepository) -> None:
     await repo.upsert_batch(
         "documentation",

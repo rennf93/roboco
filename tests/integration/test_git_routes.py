@@ -242,11 +242,14 @@ async def test_status_git_command_error_directly() -> None:
 
 @pytest.mark.asyncio
 async def test_log_with_branch_success(git_client: dict) -> None:
+    # Fields are \x1f-delimited (not "|"): the second commit's subject contains
+    # a literal "|" (e.g. "curl|sh") which used to shift the split and land the
+    # author+date in one field, 500-ing on datetime.fromisoformat.
     log_result = MagicMock()
     log_result.returncode = 0
     log_result.stdout = (
-        "abc123|abc|fix bug|me|2026-01-01T00:00:00Z\n"
-        "def456|def|other change|you|2026-01-01T00:00:01Z\n"
+        "abc123\x1fabc\x1ffix bug\x1fme\x1f2026-01-01T00:00:00Z\n"
+        "def456\x1fdef\x1fclose curl|sh RCE\x1fyou\x1f2026-01-01T00:00:01Z\n"
     )
     with patch("roboco.api.routes.git.get_git_service") as mock_get:
         svc = AsyncMock()
@@ -258,6 +261,9 @@ async def test_log_with_branch_success(git_client: dict) -> None:
             headers=_HDR,
         )
     assert response.status_code == HTTPStatus.OK
+    commits = response.json()["commits"]
+    assert [c["message"] for c in commits] == ["fix bug", "close curl|sh RCE"]
+    assert [c["author"] for c in commits] == ["me", "you"]
 
 
 @pytest.mark.asyncio

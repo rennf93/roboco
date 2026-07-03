@@ -46,7 +46,12 @@ export function ChatComposer({
   };
 
   return (
-    <div className="flex items-end gap-2 border-t bg-background px-4 py-3">
+    // pb includes the safe-area inset so the composer clears the home
+    // indicator on notched phones instead of sitting flush under it.
+    <div
+      className="flex items-end gap-2 border-t bg-background px-4 py-3"
+      style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}
+    >
       <Textarea
         ref={textareaRef}
         value={value}

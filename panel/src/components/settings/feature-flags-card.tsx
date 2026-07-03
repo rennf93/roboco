@@ -46,8 +46,16 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
     "Run the deterministic release-readiness sweep and propose a release for you to approve or reject — it never publishes without your approval, and the executor is fail-closed on a red gate.",
   org_memory_enabled:
     "Close the learn→reuse loop: distill a lesson at task completion, index journal reflections, and auto-inject similar past lessons + approved playbooks into an agent's briefing on claim.",
+  sandbox_db_enabled:
+    "Provision a throwaway Postgres/Redis sibling container per agent spawn (per-project opt-in) instead of injecting RoboCo's own production DB credentials into the agent's gate.",
   routing_strict:
     "Fail-closed model routing: refuse to silently downgrade an agent to the legacy Anthropic path when its configured provider is disabled (raise instead). Off => graceful degradation with a warning.",
+  x_engine_enabled:
+    "Draft release-announcement posts for the X (Twitter) account — every draft is held in a queue for you to edit, approve, or reject; nothing posts automatically, and it stays inert until you set credentials in the X card below.",
+  x_replies_enabled:
+    "Also poll X mentions and draft replies (still held for your approval — nothing auto-replies). Off by default: reading mentions needs a paid X API tier, so leave this off if you only want release posts.",
+  roadmap_engine_enabled:
+    "Weekly: the Product Owner explores the company's projects and proposes a themed cycle of 3-7 roadmap items — you approve or reject each one individually; approved items land in the backlog and nothing auto-starts.",
 };
 
 export function FeatureFlagsCard() {

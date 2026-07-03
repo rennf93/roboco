@@ -13,6 +13,12 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import {
+  ResponsiveTable,
+  ResponsiveTableCardList,
+  ResponsiveTableCard,
+  ResponsiveTableCardRow,
+} from "@/components/ui/responsive-table";
+import {
   useCycleTime,
   useBottlenecks,
   useRework,
@@ -185,29 +191,59 @@ function ReworkCard() {
               ))}
             </div>
             {(data?.by_agent ?? []).length > 0 && (
-              <table className="w-full text-xs">
-                <thead className="text-muted-foreground">
-                  <tr className="text-left">
-                    <th className="py-1 font-medium">Agent</th>
-                    <th className="py-1 font-medium text-right">Rate</th>
-                    <th className="py-1 font-medium text-right">QA fails</th>
-                    <th className="py-1 font-medium text-right">PR fails</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(data?.by_agent ?? []).slice(0, 8).map((a) => (
-                    <tr
-                      key={a.agent_slug}
-                      className="border-t border-border/50"
-                    >
-                      <td className="py-1">{a.agent_slug}</td>
-                      <td className="py-1 text-right">{pct(a.rate)}</td>
-                      <td className="py-1 text-right">{a.qa_fails}</td>
-                      <td className="py-1 text-right">{a.pr_fails}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <ResponsiveTable
+                table={
+                  <table className="w-full text-xs">
+                    <thead className="text-muted-foreground">
+                      <tr className="text-left">
+                        <th className="py-1 font-medium">Agent</th>
+                        <th className="py-1 font-medium text-right">Rate</th>
+                        <th className="py-1 font-medium text-right">
+                          QA fails
+                        </th>
+                        <th className="py-1 font-medium text-right">
+                          PR fails
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(data?.by_agent ?? []).slice(0, 8).map((a) => (
+                        <tr
+                          key={a.agent_slug}
+                          className="border-t border-border/50"
+                        >
+                          <td className="py-1">{a.agent_slug}</td>
+                          <td className="py-1 text-right">{pct(a.rate)}</td>
+                          <td className="py-1 text-right">{a.qa_fails}</td>
+                          <td className="py-1 text-right">{a.pr_fails}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                }
+                cards={
+                  <ResponsiveTableCardList>
+                    {(data?.by_agent ?? []).slice(0, 8).map((a) => (
+                      <ResponsiveTableCard key={a.agent_slug}>
+                        <span className="text-sm font-medium">
+                          {a.agent_slug}
+                        </span>
+                        <div className="mt-2 divide-y">
+                          <ResponsiveTableCardRow label="Rate">
+                            {pct(a.rate)}
+                          </ResponsiveTableCardRow>
+                          <ResponsiveTableCardRow label="QA fails">
+                            {a.qa_fails}
+                          </ResponsiveTableCardRow>
+                          <ResponsiveTableCardRow label="PR fails">
+                            {a.pr_fails}
+                          </ResponsiveTableCardRow>
+                        </div>
+                      </ResponsiveTableCard>
+                    ))}
+                  </ResponsiveTableCardList>
+                }
+              />
             )}
           </>
         )}

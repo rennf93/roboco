@@ -104,7 +104,7 @@ export function MentorChat({ onAsk, isLoading }: MentorChatProps) {
   // Empty state
   if (messages.length === 0 && !isLoading) {
     return (
-      <div className="flex flex-col h-[calc(100vh-280px)]">
+      <div className="flex flex-col h-[calc(100dvh-280px)]">
         {/* Empty state */}
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center max-w-md">
@@ -159,7 +159,7 @@ export function MentorChat({ onAsk, isLoading }: MentorChatProps) {
   }
 
   return (
-    <div className="flex flex-col h-[calc(100vh-280px)]">
+    <div className="flex flex-col h-[calc(100dvh-280px)]">
       {/* Header with New Chat */}
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">

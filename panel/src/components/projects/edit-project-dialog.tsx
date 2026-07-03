@@ -82,6 +82,13 @@ function EditProjectForm({
   const [depUpdatePaths, setDepUpdatePaths] = useState(
     (project.dep_update_paths || []).join(", "),
   );
+  const sandboxServices = project.sandbox_services || [];
+  const [sandboxPostgres, setSandboxPostgres] = useState(
+    sandboxServices.includes("postgres"),
+  );
+  const [sandboxRedis, setSandboxRedis] = useState(
+    sandboxServices.includes("redis"),
+  );
 
   // Token handling
   const [newToken, setNewToken] = useState("");
@@ -120,6 +127,10 @@ function EditProjectForm({
             .map((p) => p.trim())
             .filter(Boolean)
         : undefined,
+      sandbox_services: [
+        ...(sandboxPostgres ? ["postgres"] : []),
+        ...(sandboxRedis ? ["redis"] : []),
+      ],
     };
 
     // Handle token update
@@ -428,6 +439,37 @@ function EditProjectForm({
               <p className="text-xs text-muted-foreground">
                 Comma-separated lockfile paths to watch. Leave blank to infer
                 uv.lock / pnpm-lock.yaml.
+              </p>
+            </div>
+
+            <div className="grid gap-2">
+              <Label>Sandbox Services</Label>
+              <div className="flex items-center justify-between">
+                <Label
+                  htmlFor="sandbox_postgres"
+                  className="text-sm font-normal"
+                >
+                  PostgreSQL
+                </Label>
+                <Switch
+                  id="sandbox_postgres"
+                  checked={sandboxPostgres}
+                  onCheckedChange={setSandboxPostgres}
+                />
+              </div>
+              <div className="flex items-center justify-between">
+                <Label htmlFor="sandbox_redis" className="text-sm font-normal">
+                  Redis
+                </Label>
+                <Switch
+                  id="sandbox_redis"
+                  checked={sandboxRedis}
+                  onCheckedChange={setSandboxRedis}
+                />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Provision a throwaway sandbox DB/Redis per agent spawn for
+                this project instead of the production credentials.
               </p>
             </div>
           </>

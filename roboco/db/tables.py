@@ -5,7 +5,7 @@ ORM mappings for all RoboCo data models.
 """
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID as PyUUID
 from uuid import uuid4
 
@@ -522,6 +522,13 @@ class ProjectTable(Base):
     # the lockfile globs the probe inspects (null → infer uv.lock/pnpm-lock.yaml).
     dep_update_command: Mapped[str | None] = mapped_column(String(500), nullable=True)
     dep_update_paths: Mapped[list[str] | None] = mapped_column(
+        ARRAY(String), nullable=True
+    )
+
+    # Sandboxed per-agent-spawn DB/Redis opt-in. A project participates only
+    # when sandbox_services is set (e.g. ["postgres", "redis"]); values are
+    # validated by the Project pydantic model before reaching here.
+    sandbox_services: Mapped[list[str] | None] = mapped_column(
         ARRAY(String), nullable=True
     )
 
@@ -2585,4 +2592,95 @@ class ProjectConventionFindingTable(Base):
         default=lambda: datetime.now(UTC),
         nullable=False,
         index=True,
+    )
+
+
+# =============================================================================
+# CLOUD AUTH USERS TABLE (FastAPI Users schema)
+# =============================================================================
+
+
+class UserTable(Base):
+    """The single seeded CEO login user for cloud auth (default off).
+
+    Field set matches the FastAPI Users ``UserProtocol`` (structural typing —
+    no mixin inheritance needed): id/email/hashed_password/is_active/
+    is_superuser/is_verified. No registration router is mounted; the one row
+    is idempotently upserted at startup from cloud_auth_email/password
+    (``roboco.api.auth.seed.ensure_seed_user``).
+
+    The ``TYPE_CHECKING`` split (bare types vs. ``Mapped[...]``) mirrors
+    ``fastapi_users_db_sqlalchemy``'s own base table: mypy's structural
+    Protocol check needs the plain-type view to accept this class as a
+    ``UserProtocol``; the ``else`` branch is what SQLAlchemy actually builds
+    at runtime.
+    """
+
+    __tablename__ = "users"
+
+    if TYPE_CHECKING:
+        id: PyUUID
+        email: str
+        hashed_password: str
+        is_active: bool
+        is_superuser: bool
+        is_verified: bool
+    else:
+        id: Mapped[UUID] = mapped_column(
+            UUID(as_uuid=True), primary_key=True, default=uuid4
+        )
+        email: Mapped[str] = mapped_column(
+            String(320), unique=True, index=True, nullable=False
+        )
+        hashed_password: Mapped[str] = mapped_column(String(1024), nullable=False)
+        is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+        is_superuser: Mapped[bool] = mapped_column(
+            Boolean, default=False, nullable=False
+        )
+        is_verified: Mapped[bool] = mapped_column(
+            Boolean, default=False, nullable=False
+        )
+
+
+# =============================================================================
+# X (TWITTER) ACCOUNT TABLES
+# =============================================================================
+
+
+class XCredentialsTable(Base):
+    """Singleton row holding the Fernet-encrypted X OAuth 1.0a user-context
+    secrets (mirrors ``ProviderConfigTable``'s encrypted-token column). At most
+    one row ever exists; ``XCredentialsService`` upserts it. Never read by an
+    agent — decrypted only server-side, by ``x_client``."""
+
+    __tablename__ = "x_credentials"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    api_secret_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    access_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    access_token_secret_encrypted: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
+    )
+
+
+class XSeenMentionTable(Base):
+    """Dedup ledger for the mentions poll — one row per mention id the engine
+    has ever turned into a held reply proposal (or decided to skip). Never
+    pruned by task terminal state, so a rejected/completed proposal's mention
+    is never re-proposed on a later cycle."""
+
+    __tablename__ = "x_seen_mentions"
+
+    mention_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )

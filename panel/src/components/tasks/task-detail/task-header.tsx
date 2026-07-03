@@ -501,8 +501,10 @@ export function TaskHeader({ task, onAction }: TaskHeaderProps) {
 
             {/* Row 2: copyable task id + status + team + type. The dropdowns are
                 FIXED width so changing a selected value's label width can never
-                shift a neighbor; the id is read-only and copies the FULL uuid. */}
-            <div className="flex items-center gap-2 mt-1.5">
+                shift a neighbor; the id is read-only and copies the FULL uuid.
+                flex-wrap: on narrow viewports the id/status/team/type group
+                wraps to further rows instead of overflowing horizontally. */}
+            <div className="flex flex-wrap items-center gap-2 mt-1.5">
               <span
                 className="inline-flex h-7 shrink-0 items-center gap-1 rounded-md border bg-muted/40 px-2.5 font-mono text-sm text-muted-foreground"
                 title={task.id}

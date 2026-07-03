@@ -1,0 +1,64 @@
+"""Schemas for the X (Twitter) engine's CEO surface."""
+
+from __future__ import annotations
+
+from pydantic import BaseModel, Field
+
+from roboco.services.x_client import MAX_TWEET_CHARS
+
+
+class XMentionRefModel(BaseModel):
+    """The mention a held reply answers."""
+
+    id: str
+    author_id: str
+    text: str
+
+
+class XPostResponse(BaseModel):
+    """One held draft (release post or mention reply) awaiting the CEO."""
+
+    task_id: str
+    source: str  # "x_post" | "x_reply"
+    title: str
+    status: str
+    body: str
+    char_count: int
+    release_version: str | None = None
+    mention: XMentionRefModel | None = None
+    reject_reason: str | None = None
+
+
+class XPostApproveRequest(BaseModel):
+    """Approve a draft, optionally overwriting the body first."""
+
+    edited_body: str | None = Field(default=None, max_length=MAX_TWEET_CHARS)
+
+
+class XPostExecuteResponse(BaseModel):
+    """The outcome of an approve call."""
+
+    status: str
+    tweet_id: str | None = None
+    detail: str
+
+
+class XPostRejectRequest(BaseModel):
+    """The CEO's reason for declining a draft."""
+
+    reason: str = Field(min_length=4)
+
+
+class XCredentialsStatus(BaseModel):
+    """Whether the four OAuth 1.0a secrets are stored. Never the secrets themselves."""
+
+    has_credentials: bool
+
+
+class XCredentialsSetRequest(BaseModel):
+    """Set (or, if all four are empty, clear) the four OAuth 1.0a secrets."""
+
+    api_key: str = Field(default="")
+    api_secret: str = Field(default="")
+    access_token: str = Field(default="")
+    access_token_secret: str = Field(default="")

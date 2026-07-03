@@ -9,7 +9,14 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  ResponsiveTable,
+  ResponsiveTableCardList,
+  ResponsiveTableCard,
+  ResponsiveTableCardRow,
+} from "@/components/ui/responsive-table";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ChevronUp, ChevronDown } from "lucide-react";
@@ -120,63 +127,109 @@ export function SessionsTable({ data, isLoading }: SessionsTableProps) {
           </div>
         ) : (
           <>
-            <div className="overflow-x-auto">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    {COLUMNS.map((col) => (
-                      <TableHead
-                        key={col.key}
-                        className="cursor-pointer select-none text-xs whitespace-nowrap"
-                        onClick={() => toggleSort(col.key)}
-                      >
-                        {col.label}
-                        <SortIcon col={col.key} />
-                      </TableHead>
-                    ))}
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {visible.length === 0 ? (
-                    <TableRow>
-                      <TableCell
-                        colSpan={COLUMNS.length}
-                        className="text-center text-muted-foreground text-sm py-8"
-                      >
-                        No sessions recorded yet
-                      </TableCell>
-                    </TableRow>
-                  ) : (
-                    visible.map((s) => (
-                      <TableRow key={s.id}>
-                        <TableCell className="text-xs font-medium">
-                          {s.agent_slug}
-                        </TableCell>
-                        <TableCell className="text-xs">{s.model}</TableCell>
-                        <TableCell className="text-xs">
-                          {formatTime(s.started_at)}
-                        </TableCell>
-                        <TableCell className="text-xs">
-                          {fmtK(s.total_tokens)}
-                        </TableCell>
-                        <TableCell className="text-xs">
-                          {fmtK(s.tokens_input)}
-                        </TableCell>
-                        <TableCell className="text-xs">
-                          {fmtK(s.tokens_output)}
-                        </TableCell>
-                        <TableCell className="text-xs">
-                          {fmtK(s.tokens_cache)}
-                        </TableCell>
-                        <TableCell className="text-xs">
-                          ${s.cost.toFixed(4)}
-                        </TableCell>
+            <ResponsiveTable
+              table={
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        {COLUMNS.map((col) => (
+                          <TableHead
+                            key={col.key}
+                            className="cursor-pointer select-none text-xs whitespace-nowrap"
+                            onClick={() => toggleSort(col.key)}
+                          >
+                            {col.label}
+                            <SortIcon col={col.key} />
+                          </TableHead>
+                        ))}
                       </TableRow>
-                    ))
-                  )}
-                </TableBody>
-              </Table>
-            </div>
+                    </TableHeader>
+                    <TableBody>
+                      {visible.length === 0 ? (
+                        <TableRow>
+                          <TableCell
+                            colSpan={COLUMNS.length}
+                            className="text-center text-muted-foreground text-sm py-8"
+                          >
+                            No sessions recorded yet
+                          </TableCell>
+                        </TableRow>
+                      ) : (
+                        visible.map((s) => (
+                          <TableRow key={s.id}>
+                            <TableCell className="text-xs font-medium">
+                              {s.agent_slug}
+                            </TableCell>
+                            <TableCell className="text-xs">{s.model}</TableCell>
+                            <TableCell className="text-xs">
+                              {formatTime(s.started_at)}
+                            </TableCell>
+                            <TableCell className="text-xs">
+                              {fmtK(s.total_tokens)}
+                            </TableCell>
+                            <TableCell className="text-xs">
+                              {fmtK(s.tokens_input)}
+                            </TableCell>
+                            <TableCell className="text-xs">
+                              {fmtK(s.tokens_output)}
+                            </TableCell>
+                            <TableCell className="text-xs">
+                              {fmtK(s.tokens_cache)}
+                            </TableCell>
+                            <TableCell className="text-xs">
+                              ${s.cost.toFixed(4)}
+                            </TableCell>
+                          </TableRow>
+                        ))
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
+              }
+              cards={
+                visible.length === 0 ? (
+                  <p className="py-8 text-center text-sm text-muted-foreground">
+                    No sessions recorded yet
+                  </p>
+                ) : (
+                  <ResponsiveTableCardList>
+                    {visible.map((s) => (
+                      <ResponsiveTableCard key={s.id}>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="truncate text-sm font-medium">
+                            {s.agent_slug}
+                          </span>
+                          <Badge variant="outline" className="shrink-0 text-xs">
+                            {s.model}
+                          </Badge>
+                        </div>
+                        <div className="mt-3 divide-y">
+                          <ResponsiveTableCardRow label="Started">
+                            {formatTime(s.started_at)}
+                          </ResponsiveTableCardRow>
+                          <ResponsiveTableCardRow label="Total">
+                            {fmtK(s.total_tokens)}
+                          </ResponsiveTableCardRow>
+                          <ResponsiveTableCardRow label="Input">
+                            {fmtK(s.tokens_input)}
+                          </ResponsiveTableCardRow>
+                          <ResponsiveTableCardRow label="Output">
+                            {fmtK(s.tokens_output)}
+                          </ResponsiveTableCardRow>
+                          <ResponsiveTableCardRow label="Cache">
+                            {fmtK(s.tokens_cache)}
+                          </ResponsiveTableCardRow>
+                          <ResponsiveTableCardRow label="Cost">
+                            ${s.cost.toFixed(4)}
+                          </ResponsiveTableCardRow>
+                        </div>
+                      </ResponsiveTableCard>
+                    ))}
+                  </ResponsiveTableCardList>
+                )
+              }
+            />
 
             {/* Pagination */}
             <div className="flex items-center justify-between mt-3 pt-3 border-t text-sm">

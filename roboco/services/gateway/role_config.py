@@ -122,6 +122,14 @@ _BOARD_DO = (
     *_CHANNEL_DISCOVERY,
 )
 
+# Product Owner only (v1 — HoM stays a reviewer via the normal board gate when
+# an approved roadmap item later ships as real work; see the roadmap spec's
+# non-goals).
+_PRODUCT_OWNER_DO = (
+    *_BOARD_DO,
+    "propose_roadmap",
+)
+
 _AUDITOR_FLOW = spec.intents_for_role(spec.Role.AUDITOR)
 # Auditor reads, does not chat or escalate. notify_list/get for inbox visibility;
 # no ack (silent observer — wouldn't ack notifications). channels for read map.
@@ -207,7 +215,7 @@ ROLE_CONFIGS: dict[str, RoleConfig] = {
     "product_owner": RoleConfig(
         role="product_owner",
         flow_tools=_PRODUCT_OWNER_FLOW,
-        do_tools=_BOARD_DO,
+        do_tools=_PRODUCT_OWNER_DO,
         allows_write=False,
         allows_subagent=True,
         description="Product oversight; escalates strategic decisions to CEO.",

@@ -51,6 +51,8 @@ def _make_orchestrator() -> AgentOrchestrator:
         "_ci_watch_task",
         "_dep_update_task",
         "_release_manager_task",
+        "_x_mentions_task",
+        "_roadmap_engine_task",
     ):
         setattr(orch, attr, None)
     return orch
