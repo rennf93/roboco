@@ -25,7 +25,6 @@ from roboco.api.schemas.dashboard import (
     AuditorFlag,
     AuditorReport,
     CEOOverview,
-    ChannelFeed,
     CreateFlagRequest,
     CreateReportRequest,
     FlagSeverity,
@@ -121,7 +120,6 @@ __all__ = [
     "AuditorReport",
     "CEOOverview",
     "ChannelDetailResponse",
-    "ChannelFeed",
     # Channels
     "ChannelListResponse",
     "ChannelResponse",

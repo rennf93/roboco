@@ -18,8 +18,6 @@ from roboco.db.tables import (
     AgentTable,
     AuditLogTable,
     MemberPerformanceDailyTable,
-    MessageTable,
-    NotificationTable,
     TaskTable,
 )
 from roboco.foundation.policy.stage_effort import compute_stage_effort
@@ -48,7 +46,6 @@ from roboco.utils.converters import to_python_uuid
 
 # Constants
 DEFAULT_VELOCITY_DAYS = 7
-DEFAULT_COMM_HOURS = 24
 HOURS_PER_DAY = 24
 SECONDS_PER_HOUR = 3600
 
@@ -105,7 +102,6 @@ class MetricsService(BaseService):
     - Velocity metrics (completion rate, throughput)
     - Blocker tracking
     - Team and agent performance
-    - Communication volume
     """
 
     service_name: ClassVar[str] = "metrics"
@@ -421,74 +417,13 @@ class MetricsService(BaseService):
         )
         avg_hours = avg_result.scalar()
 
-        # Messages sent this week
-        messages_result = await self.session.execute(
-            select(func.count(MessageTable.id)).where(
-                and_(
-                    MessageTable.agent_id == agent_id,
-                    MessageTable.timestamp >= week_ago,
-                )
-            )
-        )
-        messages_sent = messages_result.scalar() or 0
-
         return AgentMetrics(
             agent_id=agent_id,
             agent_name=agent.name,
             tasks_completed_week=tasks_completed,
             current_task_id=to_python_uuid(agent.current_task_id),
             avg_completion_hours=_as_hours(avg_hours),
-            messages_sent_week=messages_sent,
         )
-
-    # =========================================================================
-    # COMMUNICATION METRICS
-    # =========================================================================
-
-    async def get_communication_volume(
-        self,
-        hours: int = 24,
-    ) -> dict[str, Any]:
-        """Get communication volume metrics."""
-        since = datetime.now(UTC) - timedelta(hours=hours)
-
-        # Total messages
-        total_result = await self.session.execute(
-            select(func.count(MessageTable.id)).where(MessageTable.timestamp >= since)
-        )
-        total_messages = total_result.scalar() or 0
-
-        # Messages by type
-        type_result = await self.session.execute(
-            select(MessageTable.type, func.count(MessageTable.id))
-            .where(MessageTable.timestamp >= since)
-            .group_by(MessageTable.type)
-        )
-        by_type = {row[0].value: row[1] for row in type_result.all()}
-
-        # Active channels
-        channel_result = await self.session.execute(
-            select(func.count(func.distinct(MessageTable.channel_id))).where(
-                MessageTable.timestamp >= since
-            )
-        )
-        active_channels = channel_result.scalar() or 0
-
-        # Notifications sent
-        notif_result = await self.session.execute(
-            select(func.count(NotificationTable.id)).where(
-                NotificationTable.timestamp >= since
-            )
-        )
-        notifications_sent = notif_result.scalar() or 0
-
-        return {
-            "period_hours": hours,
-            "total_messages": total_messages,
-            "messages_by_type": by_type,
-            "active_channels": active_channels,
-            "notifications_sent": notifications_sent,
-        }
 
     # =========================================================================
     # HEALTH STATUS

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
@@ -13,18 +13,11 @@ import pytest
 import pytest_asyncio
 from roboco.db.tables import (
     AgentTable,
-    ChannelTable,
-    GroupTable,
-    MessageTable,
     ProjectTable,
-    SessionTable,
     TaskTable,
 )
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import (
-    ChannelType,
-    MessageType,
-    SessionStatus,
     TaskNature,
     TaskStatus,
     TaskType,
@@ -203,34 +196,6 @@ def test_get_report_returns_none_for_missing(dash_setup: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Channel feeds
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_get_channel_feeds(db_session: AsyncSession, dash_setup: dict) -> None:
-    svc = dash_setup["svc"]
-    ch = ChannelTable(
-        id=uuid4(),
-        name="ch",
-        slug=f"ch-{uuid4().hex[:6]}",
-        type=ChannelType.CELL,
-    )
-    db_session.add(ch)
-    await db_session.flush()
-    feeds = await svc.get_channel_feeds()
-    assert any(f.id == ch.id for f in feeds)
-
-
-@pytest.mark.asyncio
-async def test_compute_channel_status_offline_when_no_activity(
-    dash_setup: dict,
-) -> None:
-    svc = dash_setup["svc"]
-    assert svc._compute_channel_status(None) == "offline"
-
-
-# ---------------------------------------------------------------------------
 # Audit queue
 # ---------------------------------------------------------------------------
 
@@ -334,32 +299,6 @@ def test_get_flags_resolved_true(dash_setup: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# _compute_channel_status — streaming/idle thresholds
-# ---------------------------------------------------------------------------
-
-
-def test_compute_channel_status_streaming(dash_setup: dict) -> None:
-    """Recent activity (<5min) → streaming."""
-    svc = dash_setup["svc"]
-    recent = datetime.now(UTC) - timedelta(minutes=2)
-    assert svc._compute_channel_status(recent) == "streaming"
-
-
-def test_compute_channel_status_idle(dash_setup: dict) -> None:
-    """Activity 5-30min ago → idle."""
-    svc = dash_setup["svc"]
-    moderate = datetime.now(UTC) - timedelta(minutes=15)
-    assert svc._compute_channel_status(moderate) == "idle"
-
-
-def test_compute_channel_status_offline(dash_setup: dict) -> None:
-    """Activity >30min ago → offline."""
-    svc = dash_setup["svc"]
-    stale = datetime.now(UTC) - timedelta(hours=2)
-    assert svc._compute_channel_status(stale) == "offline"
-
-
-# ---------------------------------------------------------------------------
 # Lazy MetricsService loader
 # ---------------------------------------------------------------------------
 
@@ -441,7 +380,7 @@ async def test_get_key_metrics_empty_team_metrics(
 
 
 # ---------------------------------------------------------------------------
-# get_auditor_metrics — surfaces velocity/blockers/communication
+# get_auditor_metrics — surfaces velocity/blockers
 # ---------------------------------------------------------------------------
 
 
@@ -455,15 +394,10 @@ async def test_get_auditor_metrics(dash_setup: dict) -> None:
     mock_metrics.get_blocker_metrics = AsyncMock(
         return_value=SimpleNamespace(active_blockers=1)
     )
-    mock_metrics.get_communication_volume = AsyncMock(
-        return_value={"total_messages": 100}
-    )
     svc._metrics = mock_metrics
     result = await svc.get_auditor_metrics()
     _COMPLETED = 5
     assert result["tasks_completed_24h"] == _COMPLETED
-    _COMM = 100
-    assert result["communication_volume"] == _COMM
 
 
 # ---------------------------------------------------------------------------
@@ -503,7 +437,7 @@ async def test_get_all_agent_status_includes_active_agent(dash_setup: dict) -> N
 
 
 # ---------------------------------------------------------------------------
-# get_recent_activity — messages + task updates
+# get_recent_activity — task updates
 # ---------------------------------------------------------------------------
 
 
@@ -521,51 +455,13 @@ async def test_get_recent_activity_returns_period_and_activity(
 
 
 @pytest.mark.asyncio
-async def test_get_recent_activity_includes_messages_and_tasks(
+async def test_get_recent_activity_includes_task_updates(
     dash_setup: dict, db_session: AsyncSession
 ) -> None:
-    """Seed a recent message + a recent task update; both appear in feed."""
+    """Seed a recent task update; it appears in the feed."""
     svc = dash_setup["svc"]
     aid = dash_setup["agent_id"]
     pid = dash_setup["project_id"]
-    # Seed channel/group/session for the message FK chain.
-    ch = ChannelTable(
-        id=_u(),
-        name="ch",
-        slug=f"ch-{_u().hex[:6]}",
-        type=ChannelType.CELL,
-        last_activity=datetime.now(UTC),
-    )
-    db_session.add(ch)
-    await db_session.flush()
-    grp = GroupTable(
-        id=_u(),
-        name="g",
-        channel_id=ch.id,
-        allowed_roles=[],
-        members=[],
-    )
-    db_session.add(grp)
-    await db_session.flush()
-    sess = SessionTable(
-        id=_u(),
-        group_id=grp.id,
-        status=SessionStatus.ACTIVE,
-        started_at=datetime.now(UTC),
-    )
-    db_session.add(sess)
-    await db_session.flush()
-    msg = MessageTable(
-        id=_u(),
-        agent_id=aid,
-        channel_id=ch.id,
-        group_id=grp.id,
-        session_id=sess.id,
-        type=MessageType.DIALOGUE,
-        content="hello",
-        content_length=5,
-    )
-    db_session.add(msg)
     task = TaskTable(
         id=_u(),
         title="rec",
@@ -584,7 +480,6 @@ async def test_get_recent_activity_includes_messages_and_tasks(
     await db_session.flush()
     out = await svc.get_recent_activity(hours=24, limit=10)
     types = {item["type"] for item in out["activity"]}
-    assert "message" in types
     assert "task_update" in types
 
 

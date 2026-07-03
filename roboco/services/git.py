@@ -636,29 +636,12 @@ class GitService(BaseService):
             )
         return self._parse_git_url(match.group("url"))
 
-    def _get_primary_session_id(self, task: TaskTable | None) -> str | None:
-        """Get primary session ID from task's session links.
+    def _get_primary_session_id(self, _task: TaskTable | None) -> str | None:
+        """Discussion sessions are retired; always None.
 
-        Guarded against MissingGreenlet: `task.session_links` is a lazy
-        relationship. If it hasn't been eager-loaded, touching it from this
-        sync helper inside an async request triggers an async IO call with
-        no greenlet context → `MissingGreenlet`, which breaks
-        POST /api/git/commit. Inspect loaded-state first and return
-        None when not loaded (callers treat None as "no primary session").
+        ``CommitContext.session_id`` is Optional and the commit template
+        renders the trailer only ``if set``, so None is safe.
         """
-        if not task:
-            return None
-
-        from sqlalchemy import inspect as sa_inspect
-
-        if "session_links" in sa_inspect(task).unloaded:
-            return None
-
-        if not task.session_links:
-            return None
-        for link in task.session_links:
-            if link.is_primary:
-                return str(link.session_id)
         return None
 
     def _parse_commit_stats(self, stat_output: str) -> tuple[int, int, int]:
@@ -1691,11 +1674,12 @@ class GitService(BaseService):
         return list(set(slugs))
 
     @staticmethod
-    def _primary_session_id(task: TaskTable) -> str | None:
-        """Session flagged is_primary on the root task's session_links."""
-        for link in task.session_links or []:
-            if link.is_primary:
-                return str(link.session_id)
+    def _primary_session_id(_task: TaskTable) -> str | None:
+        """Discussion sessions are retired; always None.
+
+        ``RootPRContext.primary_session_id`` is Optional and renders only
+        ``if set``, so None is safe.
+        """
         return None
 
     async def _build_root_pr_context(

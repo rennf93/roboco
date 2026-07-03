@@ -305,19 +305,6 @@ async def test_get_agent_metrics_returns_none_for_unknown(
 
 
 # ---------------------------------------------------------------------------
-# Communication volume
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_get_communication_volume_empty(metrics_setup: dict) -> None:
-    svc = metrics_setup["svc"]
-    cv = await svc.get_communication_volume(hours=24)
-    assert cv["total_messages"] == 0
-    assert cv["active_channels"] == 0
-
-
-# ---------------------------------------------------------------------------
 # Health status
 # ---------------------------------------------------------------------------
 

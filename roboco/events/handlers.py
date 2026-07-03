@@ -171,34 +171,6 @@ async def handle_task_status_change(event: Event) -> None:
 
 
 # =============================================================================
-# SESSION HANDLERS
-# =============================================================================
-
-
-async def handle_session_boundary(event: Event) -> None:
-    """
-    Handle session boundary events.
-
-    Triggers:
-    - Create new session when old one closes
-    - Log session metrics
-    """
-    session_id = event.data.get("session_id")
-    group_id = event.data.get("group_id")
-    reason = event.data.get("reason", "unknown")
-
-    logger.info(
-        "Session boundary reached",
-        session_id=session_id,
-        group_id=group_id,
-        reason=reason,
-    )
-
-    # Session creation is handled by the message API when needed
-    # Here we just log for metrics/monitoring
-
-
-# =============================================================================
 # HANDOFF HANDLERS
 # =============================================================================
 
@@ -385,10 +357,6 @@ def register_default_handlers(bus: Any = None) -> None:
     ]
     for event_type in task_events:
         bus.subscribe(event_type, handle_task_status_change)
-
-    # Session handlers
-    bus.subscribe(EventType.SESSION_CLOSED, handle_session_boundary)
-    bus.subscribe(EventType.SESSION_TIMEOUT, handle_session_boundary)
 
     # Handoff handlers
     bus.subscribe(EventType.HANDOFF_CREATED, handle_handoff_created)

@@ -12,11 +12,10 @@ from uuid import UUID, uuid4
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from roboco.db.tables import AgentTable, ChannelTable, MessageTable, TaskTable
+from roboco.db.tables import AgentTable, TaskTable
 from roboco.models.base import AgentStatus, TaskStatus, Team
 from roboco.models.dashboard import (
     AuditQueueItem,
-    ChannelFeedData,
     CreateFlagParams,
     DashboardStorage,
     FlagData,
@@ -25,7 +24,6 @@ from roboco.models.dashboard import (
 )
 from roboco.services.base import BaseService
 from roboco.services.metrics import MetricsService, get_metrics_service
-from roboco.utils.converters import require_uuid
 
 # =============================================================================
 # STORAGE MANAGEMENT
@@ -63,7 +61,6 @@ class DashboardService(BaseService):
     - Auditor flags (create, list, resolve)
     - Auditor reports (create, list, send)
     - CEO overview aggregations
-    - Channel status computations
     """
 
     service_name: ClassVar[str] = "dashboard"
@@ -197,44 +194,6 @@ class DashboardService(BaseService):
         return max(r.sent_at for r in sent_reports if r.sent_at)
 
     # =========================================================================
-    # CHANNEL STATUS
-    # =========================================================================
-
-    async def get_channel_feeds(self) -> list[ChannelFeedData]:
-        """Get live feed status for all channels."""
-        result = await self.session.execute(select(ChannelTable))
-        channels = result.scalars().all()
-
-        feeds = []
-        for channel in channels:
-            status = self._compute_channel_status(channel.last_activity)
-            feeds.append(
-                ChannelFeedData(
-                    id=require_uuid(channel.id),
-                    name=channel.name,
-                    status=status,
-                    last_activity=channel.last_activity,
-                    message_count_24h=channel.message_count,
-                )
-            )
-        return feeds
-
-    def _compute_channel_status(self, last_activity: datetime | None) -> str:
-        """Compute channel status based on last activity."""
-        if not last_activity:
-            return "offline"
-
-        minutes_ago = (datetime.now(UTC) - last_activity).total_seconds() / 60
-        streaming_threshold = 5
-        idle_threshold = 30
-
-        if minutes_ago < streaming_threshold:
-            return "streaming"
-        if minutes_ago < idle_threshold:
-            return "idle"
-        return "offline"
-
-    # =========================================================================
     # AUDIT QUEUE
     # =========================================================================
 
@@ -353,13 +312,11 @@ class DashboardService(BaseService):
         """Get metrics for auditor dashboard."""
         velocity = await self.metrics.get_velocity(7)
         blockers = await self.metrics.get_blocker_metrics()
-        comm = await self.metrics.get_communication_volume(24)
 
         return {
             "tasks_completed_24h": velocity.tasks_completed,
             "avg_completion_time": velocity.avg_completion_hours,
             "active_blockers": blockers.active_blockers,
-            "communication_volume": comm["total_messages"],
         }
 
     async def get_all_agent_status(self, team: Team | None = None) -> dict[str, Any]:
@@ -396,16 +353,8 @@ class DashboardService(BaseService):
         }
 
     async def get_recent_activity(self, *, hours: int, limit: int) -> dict[str, Any]:
-        """Return recent messages + task updates for the dashboard feed."""
+        """Return recent task updates for the dashboard feed."""
         since = datetime.now(UTC) - timedelta(hours=hours)
-
-        message_result = await self.session.execute(
-            select(MessageTable)
-            .where(MessageTable.timestamp >= since)
-            .order_by(MessageTable.timestamp.desc())
-            .limit(limit)
-        )
-        messages = message_result.scalars().all()
 
         task_result = await self.session.execute(
             select(TaskTable)
@@ -416,17 +365,6 @@ class DashboardService(BaseService):
         tasks = task_result.scalars().all()
 
         feed: list[dict[str, Any]] = []
-        for msg in messages:
-            feed.append(
-                {
-                    "type": "message",
-                    "timestamp": msg.timestamp.isoformat(),
-                    "agent_id": str(msg.agent_id),
-                    "channel_id": str(msg.channel_id),
-                    "content_preview": (msg.content[:100] if msg.content else ""),
-                    "message_type": msg.type.value,
-                }
-            )
         for task in tasks:
             feed.append(
                 {

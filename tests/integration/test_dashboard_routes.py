@@ -332,16 +332,6 @@ async def test_get_team_metrics(dashboard_client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_communication_metrics(
-    dashboard_client: AsyncClient,
-) -> None:
-    response = await dashboard_client.get(
-        "/api/dashboard/metrics/communication", headers=_HDR
-    )
-    assert response.status_code == HTTPStatus.OK
-
-
-@pytest.mark.asyncio
 async def test_get_health_metrics(dashboard_client: AsyncClient) -> None:
     response = await dashboard_client.get("/api/dashboard/metrics/health", headers=_HDR)
     assert response.status_code == HTTPStatus.OK

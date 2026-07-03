@@ -21,7 +21,6 @@ from roboco.events.handlers import (
     handle_handoff_created,
     handle_qa_result,
     handle_question_answered,
-    handle_session_boundary,
     handle_task_status_change,
     register_default_handlers,
     set_event_context,
@@ -160,20 +159,8 @@ async def test_handle_task_status_change_unknown_type_noop() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Session and handoff handlers
+# Handoff handlers
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_handle_session_boundary_logs_and_returns() -> None:
-    """Just exercises logging — no notification fanout in this handler."""
-    event = _make_event(
-        EventType.SESSION_CLOSED,
-        session_id=str(uuid4()),
-        group_id=str(uuid4()),
-        reason="timeout",
-    )
-    await handle_session_boundary(event)
 
 
 @pytest.mark.asyncio
