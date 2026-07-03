@@ -244,10 +244,10 @@ services:
       ROBOCO_ENVIRONMENT: production
       ROBOCO_CLAIM_STALE_SECONDS: "1800"
       ROBOCO_STALE_CLAIM_REAP_SECONDS: "1800"
-      # External-PR review (read-only: discover inbound external/fork PRs, post
-      # one change-request; never runs contributor code — the supersede stays
-      # CEO-triggered + human-confirm gated). Matches the build compose.
-      ROBOCO_EXTERNAL_PR_ENABLED: ${ROBOCO_EXTERNAL_PR_ENABLED:-true}
+      # Every optional feature ships OFF in this user-facing compose (the build
+      # compose arms them for the personal deploy). External-PR review included —
+      # arm it (and any other subsystem) via .env or Settings → Feature Flags.
+      ROBOCO_EXTERNAL_PR_ENABLED: ${ROBOCO_EXTERNAL_PR_ENABLED:-false}
       ROBOCO_EXTERNAL_PR_REQUIRE_HUMAN_CONFIRM: ${ROBOCO_EXTERNAL_PR_REQUIRE_HUMAN_CONFIRM:-true}
       # ROBOCO_EXTERNAL_PR_POLL_INTERVAL_SECONDS: "300"
       # ROBOCO_EXTERNAL_PR_AUTHOR_ALLOWLIST: '["corey"]'   # empty = every external PR

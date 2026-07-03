@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     # ==========================================================================
     # Application
     # ==========================================================================
-    app_version: str = "0.16.0"
+    app_version: str = "0.17.0"
     debug: bool = False
     environment: str = Field(
         default="development", pattern="^(development|staging|production)$"
@@ -973,7 +973,7 @@ class Settings(BaseSettings):
     agent_image_tag: str = Field(
         default="",
         description=(
-            "Tag for pre-built agent images (e.g. 'latest' or '0.16.0'). Empty "
+            "Tag for pre-built agent images (e.g. 'latest' or '0.17.0'). Empty "
             "leaves the tag implicit (':latest'); only meaningful with "
             "agent_image_registry set."
         ),
