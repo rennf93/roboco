@@ -164,8 +164,14 @@ fi
 # config`, `strings ~/.netrc`, etc. The token is scrubbed from .git/config
 # post-clone so the file is uninteresting, but a leaked PAT is unrecoverable
 # so belt + suspenders applies.
-if echo "$low" | grep -qE '(\.git/config|\.gitconfig|\.git-credentials|\.netrc|\.ssh/|id_rsa|id_ed25519|id_ecdsa|known_hosts)'; then
-    echo "Denied: command references a credential file or SSH key. Don't read git credentials — the PAT is injected subprocess-side by the MCP layer (commit / complete verbs) and never lands in these files." >&2
+#
+# .credentials.json / .claude.json: the host's Claude Code OAuth credential
+# store (~/.claude, ~/.claude.json) is bind-mounted read-write into every
+# agent container — the shared subscription auth every spawned agent uses.
+# No agent role's job ever needs to read its own harness's auth, so treat it
+# as a credential file like .netrc/.git-credentials above.
+if echo "$low" | grep -qE '(\.git/config|\.gitconfig|\.git-credentials|\.netrc|\.ssh/|id_rsa|id_ed25519|id_ecdsa|known_hosts|\.credentials\.json|\.claude\.json)'; then
+    echo "Denied: command references a credential file or SSH key. Don't read git credentials or the harness's Claude Code auth — the PAT is injected subprocess-side by the MCP layer (commit / complete verbs) and never lands in these files." >&2
     exit 2
 fi
 
@@ -177,6 +183,29 @@ fi
 
 if echo "$low" | grep -qE '(^|[[:space:];&|])(curl|wget|http|https)[[:space:]][^|]*(github\.com|api\.github\.com)'; then
     echo "Denied: direct GitHub HTTP calls bypass the PAT handler. Use the role-appropriate MCP verb: roboco-do commit (devs/docs), roboco-flow complete (PMs), or roboco-git-readonly status/log/diff/branch_list (any role)." >&2
+    exit 2
+fi
+
+# --- remote code execution: piping a fetched payload straight into a shell ---
+# `curl url | sh` (or bash/zsh/dash/ksh), `bash <(curl url)`, and
+# `eval "$(curl url)"` all execute untrusted remote content regardless of the
+# destination host — the github-specific and internal-host checks above only
+# gate specific DESTINATIONS, so `curl https://raw.githubusercontent.com/... |
+# bash` (not github.com itself) or any other external host was a blind spot.
+# Scoped to actual shells only (sh/bash/zsh/dash/ksh) — piping into a
+# non-executing consumer (`curl url | tar xz`, `curl url | jq`, `curl url -o
+# file`) is untouched and still allowed; there's no legitimate reason to feed
+# a shell interpreter's stdin from a network fetch.
+if echo "$low" | grep -qE '(curl|wget|httpie)\b[^|;&]*\|[[:space:]]*(sudo[[:space:]]+)?(sh|bash|zsh|dash|ksh)([[:space:]]|$)'; then
+    echo "Denied: piping a downloaded payload straight into a shell executes untrusted remote code. Download to a file and inspect it, or use your normal toolchain (uv / pnpm) to install a package." >&2
+    exit 2
+fi
+if echo "$low" | grep -qE '(^|[[:space:];&|])(sh|bash|zsh|dash|ksh|source|\.)[[:space:]]+<\([[:space:]]*(curl|wget)\b'; then
+    echo "Denied: process-substitution execution of a curl/wget payload runs untrusted remote code." >&2
+    exit 2
+fi
+if echo "$low" | grep -qE 'eval[[:space:]]+"?\$\([[:space:]]*(curl|wget)\b'; then
+    echo "Denied: eval of a curl/wget payload runs untrusted remote code." >&2
     exit 2
 fi
 
@@ -252,20 +281,20 @@ if echo "$low" | grep -qE '(^|[[:space:];&|])compgen[[:space:]]+-[[:alpha:]]*[ve
 fi
 
 # Sourcing credential-bearing files via `source` or `.` dot-sourcing.
-if echo "$low" | grep -qE '(^|[[:space:];&|])(source|\.)[[:space:]]+[^|;&]*(\.env|/etc/environment|/proc/[^[:space:]]*environ|\.profile|\.bashrc|\.zshrc|\.git/config|\.netrc)'; then
+if echo "$low" | grep -qE '(^|[[:space:];&|])(source|\.)[[:space:]]+[^|;&]*(\.env|/etc/environment|/proc/[^[:space:]]*environ|\.profile|\.bashrc|\.zshrc|\.git/config|\.netrc|\.credentials\.json|\.claude\.json)'; then
     echo "Denied: sourcing credential-bearing files exposes secrets in the current shell." >&2
     exit 2
 fi
 
 # Binary/encoding tools pointed at credential files — catches `base64 .env`,
 # `xxd ~/.netrc`, `strings .git/config`, `od -c .git-credentials`, etc.
-if echo "$low" | grep -qE '(^|[[:space:];&|])(base64|od|xxd|hexdump|strings|uuencode)[[:space:]]+[^|;&]*(\.env|\.git/config|\.gitconfig|\.git-credentials|\.netrc|\.ssh/|id_rsa|id_ed25519)'; then
+if echo "$low" | grep -qE '(^|[[:space:];&|])(base64|od|xxd|hexdump|strings|uuencode)[[:space:]]+[^|;&]*(\.env|\.git/config|\.gitconfig|\.git-credentials|\.netrc|\.ssh/|id_rsa|id_ed25519|\.credentials\.json|\.claude\.json)'; then
     echo "Denied: encoding/inspecting a credential file is still exfiltration." >&2
     exit 2
 fi
 
 # Interpreter one-liners reading credential paths.
-if echo "$low" | grep -qE '(^|[[:space:];&|])(python3?|perl|node|ruby|awk|sed)[[:space:]]+[^|;&]*-[ce][[:space:]]+[^|;&]*(\.env|\.git/config|\.gitconfig|\.git-credentials|\.netrc|/proc/[^[:space:]]*environ|id_rsa|id_ed25519)'; then
+if echo "$low" | grep -qE '(^|[[:space:];&|])(python3?|perl|node|ruby|awk|sed)[[:space:]]+[^|;&]*-[ce][[:space:]]+[^|;&]*(\.env|\.git/config|\.gitconfig|\.git-credentials|\.netrc|/proc/[^[:space:]]*environ|id_rsa|id_ed25519|\.credentials\.json|\.claude\.json)'; then
     echo "Denied: interpreter snippet reads a credential file. Ask orchestrator for the value you need." >&2
     exit 2
 fi
