@@ -857,6 +857,37 @@ class Settings(BaseSettings):
         description="Per-request timeout for outbound X API HTTP calls.",
     )
 
+    # Board roadmap engine — weekly, the Product Owner explores the company's
+    # projects and proposes a themed cycle of roadmap items; the CEO approves
+    # each item individually into the backlog. Default-off; even when on
+    # nothing auto-starts (approved items land in BACKLOG for normal PM
+    # activation).
+    roadmap_engine_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for the board roadmap engine. OFF by default; "
+            "when off no exploration cycle is originated and the Product "
+            "Owner is never spawned for this. Even when on, nothing "
+            "auto-starts — approved items land in BACKLOG for normal PM "
+            "activation."
+        ),
+    )
+    roadmap_interval_seconds: int = Field(
+        default=604800,
+        ge=300,
+        description="Seconds between roadmap-exploration cycles (default weekly).",
+    )
+    roadmap_min_items_per_cycle: int = Field(
+        default=3,
+        ge=1,
+        description="Minimum roadmap item drafts a themed cycle must propose.",
+    )
+    roadmap_max_items_per_cycle: int = Field(
+        default=7,
+        ge=1,
+        description="Maximum roadmap item drafts a themed cycle may propose.",
+    )
+
     # Set by the compose file that carries the roboco_data topology
     # (postgres/redis on a data-only network agents never join). NOT a panel
     # feature flag: it must travel with the compose networks: stanzas, and a

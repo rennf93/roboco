@@ -109,6 +109,25 @@ class PitchRequest(BaseModel):
     target_cells: list[str] = Field(..., min_length=1)
 
 
+class RoadmapItemInput(BaseModel):
+    """One roadmap item draft within a Product Owner's themed cycle."""
+
+    title: str = Field(..., min_length=1)
+    description: str = Field(..., min_length=1)
+    acceptance_criteria: list[str] = Field(..., min_length=1)
+    project_slug: str = Field(..., min_length=1)
+    team: str = Field(..., min_length=1)
+    priority: int = 2
+    rationale: str = Field(..., min_length=1)
+
+
+class ProposeRoadmapRequest(BaseModel):
+    """Product Owner's themed roadmap cycle: a goal + 3-7 item drafts."""
+
+    cycle_goal: str = Field(..., min_length=1)
+    items: list[RoadmapItemInput] = Field(..., min_length=1)
+
+
 class SayRequest(BaseModel):
     channel: str
     text: str = Field(..., min_length=1)

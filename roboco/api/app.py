@@ -40,6 +40,7 @@ from roboco.api.routes.prompter_live import router as prompter_live_router
 from roboco.api.routes.provider import router as provider_router
 from roboco.api.routes.release import router as release_router
 from roboco.api.routes.research import router as research_router
+from roboco.api.routes.roadmap import router as roadmap_router
 from roboco.api.routes.secretary import router as secretary_router
 from roboco.api.routes.secretary_live import router as secretary_live_router
 from roboco.api.routes.sessions import router as sessions_router
@@ -369,6 +370,14 @@ def create_app() -> FastAPI:
         x_router,
         prefix=f"{api_prefix}/x",
         tags=["X"],
+    )
+
+    # Board roadmap engine — the CEO approves/rejects items within a held
+    # roadmap cycle. Approving materializes a BACKLOG task; nothing auto-starts.
+    app.include_router(
+        roadmap_router,
+        prefix=f"{api_prefix}/roadmap",
+        tags=["Roadmap"],
     )
 
     # Pitches — Board proposals + CEO approve -> auto-provision origination path.

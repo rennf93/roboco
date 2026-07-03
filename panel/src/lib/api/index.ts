@@ -33,3 +33,5 @@ export type {
   XPostExecuteResult,
   XCredentialsStatus,
 } from "./x";
+export { roadmapApi } from "./roadmap";
+export type { RoadmapCycle, RoadmapItem, RoadmapItemActionResult } from "./roadmap";

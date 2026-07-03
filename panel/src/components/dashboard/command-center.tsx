@@ -17,6 +17,7 @@ import { PrReviewQueue } from "./pr-review-queue";
 import { ReleaseProposalCard } from "./release-proposal-card";
 import { PlaybookReviewQueue } from "./playbook-review-queue";
 import { XPostQueue } from "./x-post-queue";
+import { RoadmapReviewQueue } from "./roadmap-review-queue";
 import { StrategySignalsPanel } from "./strategy-signals-panel";
 import type { Activity } from "./activity-item";
 import { Button } from "@/components/ui/button";
@@ -122,6 +123,11 @@ export function CommandCenter() {
       {/* X post/reply queue (hidden when no drafts) */}
       <div className="order-4 md:order-none">
         <XPostQueue />
+      </div>
+
+      {/* Board roadmap queue (hidden when no cycle authored) */}
+      <div className="order-4 md:order-none">
+        <RoadmapReviewQueue />
       </div>
 
       {/* Blockers and Activity Row — activity brought up near the top on

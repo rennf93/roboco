@@ -63,6 +63,7 @@ FEATURE_FLAGS: tuple[tuple[str, str], ...] = (
     ("sandbox_db_enabled", "Sandboxed per-agent test DB/Redis"),
     ("routing_strict", "Strict model routing (fail-closed on a disabled provider)"),
     ("x_engine_enabled", "X (Twitter) engine"),
+    ("roadmap_engine_enabled", "Board roadmap engine"),
 )
 _FEATURE_FLAG_KEYS = tuple(key for key, _ in FEATURE_FLAGS)
 

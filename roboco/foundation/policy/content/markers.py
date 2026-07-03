@@ -39,6 +39,7 @@ X_RELEASE_VERSION = "x_release_version"
 X_MENTION_REF = "x_mention_ref"
 X_REJECT_REASON = "x_reject_reason"
 X_POSTED_TWEET_ID = "x_posted_tweet_id"
+ROADMAP_CYCLE = "roadmap_cycle"
 
 
 def get_marker(task: HasMarkers, key: str, default: Any = None) -> Any:
@@ -183,6 +184,22 @@ def get_x_posted_tweet_id(task: HasMarkers) -> str | None:
 
 def set_x_posted_tweet_id(task: HasMarkers, tweet_id: str) -> None:
     set_marker(task, X_POSTED_TWEET_ID, tweet_id)
+
+
+# --- board roadmap cycle ---------------------------------------------------
+# The themed cycle (goal + item drafts) the Product Owner authors via
+# ``propose_roadmap`` onto the exploration task the roadmap engine opened.
+# Each item carries its own status (proposed/approved/rejected) so the CEO's
+# per-item approve/reject lives entirely in this one payload — no extra table.
+
+
+def get_roadmap_cycle(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, ROADMAP_CYCLE)
+    return val if isinstance(val, dict) else None
+
+
+def set_roadmap_cycle(task: HasMarkers, payload: dict[str, Any]) -> None:
+    set_marker(task, ROADMAP_CYCLE, payload)
 
 
 # --- external PR head ------------------------------------------------------ #

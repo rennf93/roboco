@@ -528,6 +528,27 @@ def pitch(
     )
 
 
+def propose_roadmap(cycle_goal: str, items: list[dict[str, Any]]) -> dict[str, Any]:
+    """Product Owner: propose a themed roadmap cycle (3-7 item drafts).
+
+    Call this exactly ONCE per exploration cycle, after exploring the
+    charter, recent releases, metrics, and each project's state. The CEO
+    reviews and approves/rejects each item individually; approved items land
+    in the backlog (nothing auto-starts).
+
+    Args:
+        cycle_goal: One-line theme tying the cycle's items together.
+        items: 3-7 drafts, each a dict with: title, description,
+            acceptance_criteria (list[str]), project_slug, team
+            ('backend'|'frontend'|'ux_ui'), priority (int, default 2),
+            rationale (why this, why now).
+    """
+    return _post(
+        "/api/v1/do/propose_roadmap",
+        {"cycle_goal": cycle_goal, "items": items},
+    )
+
+
 def say(channel: str, text: str, task_id: str | None = None) -> dict[str, Any]:
     """Post to a channel. task_id auto-injected if you have an active task.
 
@@ -843,6 +864,7 @@ _TOOLS: dict[str, Any] = {
     "commit": commit,
     "note": note,
     "pitch": pitch,
+    "propose_roadmap": propose_roadmap,
     "say": say,
     "dm": dm,
     "notify": notify,

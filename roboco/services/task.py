@@ -563,6 +563,18 @@ X_POST_SOURCE = "x_post"
 X_REPLY_SOURCE = "x_reply"
 X_SOURCES = (X_POST_SOURCE, X_REPLY_SOURCE)
 
+# Source tag for a board roadmap exploration cycle: a PENDING task the roadmap
+# engine opens for the Product Owner to author a themed cycle of roadmap item
+# drafts (the ``propose_roadmap`` content verb). Unlike RELEASE_MANAGER_SOURCE
+# / X_SOURCES it IS dispatched — one-shot PO spawn, mirrors a board review —
+# but it never rides the delivery lifecycle; items materialize into BACKLOG
+# only via the CEO's per-item approve (source=ROADMAP_ITEM_SOURCE below).
+ROADMAP_SOURCE = "board_roadmap"
+
+# Source tag stamped on a task MATERIALIZED from an approved roadmap item
+# (distinct from ROADMAP_SOURCE, which tags the held exploration cycle itself).
+ROADMAP_ITEM_SOURCE = "roadmap"
+
 
 def extract_self_heal_fingerprint(task: Any) -> str | None:
     """The self-heal dedupe fingerprint from a task's markers, or None.
@@ -1388,6 +1400,20 @@ class TaskService(BaseService):
             select(TaskTable)
             .where(
                 TaskTable.source.in_(X_SOURCES),
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_roadmap_cycles(self) -> list[TaskTable]:
+        """Non-terminal board-roadmap exploration tasks — the one-open-cycle
+        dedup + panel-queue basis. Includes a cycle before AND after the
+        Product Owner authors it (``propose_roadmap``); ordered oldest-first."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == ROADMAP_SOURCE,
                 TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
             )
             .order_by(TaskTable.created_at)

@@ -68,6 +68,13 @@ _CELL_CAPACITY: dict[str, int] = {
 # single-repo batch, which is just an ordinary (multi-)task, not a MegaTask.
 _MIN_MEGATASK_PROJECTS = 2
 
+# Sources a draft may self-declare via its ``source`` key. Anything else falls
+# back to "prompter": drafts are LLM-authored, so an unbounded source would let
+# one impersonate a privileged origin (a held CEO-gated engine source, or
+# "release_manager", which would even wedge the real release engine's
+# one-open-proposal dedup).
+_ALLOWED_DRAFT_SOURCES = frozenset({"prompter", "roadmap"})
+
 # A draft whose per-cell map covers at least this many cells targets the ad-hoc
 # multi-cell shape (a root-subtask with a cell->project map, no single project).
 # Below it, a 1-cell map collapses to the single-project shape.
@@ -321,6 +328,14 @@ class PrompterService:
         plus the umbrella as parent. The collision descriptors
         (``intends_to_touch`` / ``adds_migration`` / ``touches_shared``) ride the
         draft through to the task so the analyzer's surface is persisted.
+
+        A ``source`` key on the draft overrides the default ``"prompter"``
+        origin tag — a non-intake caller materializing a draft from elsewhere
+        (e.g. an approved roadmap item) stamps its own source this way rather
+        than as a separate parameter. Only whitelisted values are honored:
+        intake drafts are LLM-authored, and an arbitrary source would let a
+        draft impersonate a privileged origin (``release_manager`` would even
+        block the real release engine's one-open-proposal dedup).
         """
         place = placement or BatchPlacement()
         # Coerce + recompose on a copy so the caller's draft is never mutated
@@ -410,7 +425,7 @@ class PrompterService:
             intends_to_touch=_clean_list(draft_data.get("intends_to_touch")) or None,
             adds_migration=bool(draft_data.get("adds_migration")),
             touches_shared=bool(draft_data.get("touches_shared")),
-            source="prompter",
+            source=self._draft_source(draft_data),
             confirmed_by_human=True,
         )
 
@@ -419,6 +434,12 @@ class PrompterService:
 
         task_service = get_task_service(self._session)
         return await task_service.create(req)
+
+    @staticmethod
+    def _draft_source(draft_data: dict[str, Any]) -> str:
+        """The draft's declared origin, whitelisted (see _ALLOWED_DRAFT_SOURCES)."""
+        declared = str(draft_data.get("source") or "prompter")
+        return declared if declared in _ALLOWED_DRAFT_SOURCES else "prompter"
 
     async def confirm_live_draft(
         self,

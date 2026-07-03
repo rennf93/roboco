@@ -55,6 +55,7 @@ from roboco.foundation.identity import (
 )
 from roboco.foundation.policy.agent_loop import DEFAULT_BUDGET as _AGENT_LOOP_BUDGET
 from roboco.foundation.policy.batch import is_branchless_coordination
+from roboco.foundation.policy.content import markers as _markers
 from roboco.models import AgentRole, Team
 from roboco.models.runtime import (
     MODEL_MAP,
@@ -72,6 +73,7 @@ from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.task import (
     PR_REVIEW_SOURCES,
     RELEASE_MANAGER_SOURCE,
+    ROADMAP_SOURCE,
     SELF_HEAL_SOURCE,
     X_SOURCES,
 )
@@ -747,6 +749,7 @@ class AgentOrchestrator:
         self._dep_update_task: asyncio.Task | None = None
         self._release_manager_task: asyncio.Task | None = None
         self._x_mentions_task: asyncio.Task | None = None
+        self._roadmap_engine_task: asyncio.Task | None = None
         # Provider registry: maps a ModelProvider to a dedicated AgentProvider
         # backend. Only providers needing a non-Claude-Code runtime are
         # registered (currently GROK, which speaks the OpenAI protocol). Agents
@@ -922,6 +925,7 @@ class AgentOrchestrator:
         self._dep_update_task = asyncio.create_task(self._dep_update_loop())
         self._release_manager_task = asyncio.create_task(self._release_manager_loop())
         self._x_mentions_task = asyncio.create_task(self._x_mentions_poll_loop())
+        self._roadmap_engine_task = asyncio.create_task(self._roadmap_engine_loop())
 
         logger.info(
             "Orchestrator started",
@@ -1017,6 +1021,7 @@ class AgentOrchestrator:
             self._dep_update_task,
             self._release_manager_task,
             self._x_mentions_task,
+            self._roadmap_engine_task,
         ):
             await self._cancel_background_task(task)
 
@@ -7434,6 +7439,37 @@ Start by:
             await get_x_engine(db).run_cycle()
             await db.commit()
 
+    async def _roadmap_engine_loop(self) -> None:
+        """Board roadmap engine: on an interval, open ONE held exploration cycle.
+
+        Dormant by default — returns immediately unless ``roadmap_engine_enabled``,
+        so a standard deployment originates nothing. The engine itself only opens
+        the held exploration task; the Product Owner authors the themed cycle
+        (``propose_roadmap``) once the board dispatcher spawns it, and approved
+        items land in BACKLOG only via the CEO's per-item approve — this loop
+        never starts anything.
+        """
+        if not settings.roadmap_engine_enabled:
+            return
+        interval = settings.roadmap_interval_seconds
+        while self._running:
+            try:
+                await asyncio.sleep(interval)
+                await self._run_roadmap_engine_cycle()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("roadmap-engine cycle failed")
+
+    async def _run_roadmap_engine_cycle(self) -> None:
+        """One roadmap-engine pass: run the engine, commit. Testable w/o the sleep."""
+        from roboco.db import get_db_context
+        from roboco.services.roadmap_engine import get_roadmap_engine
+
+        async with get_db_context() as db:
+            await get_roadmap_engine(db).run_cycle()
+            await db.commit()
+
     async def _load_dep_update_set(self, db: Any) -> list[Any]:
         """Projects with a ``dep_update_command`` + a git_url, one per
         (repo, command).
@@ -10225,6 +10261,42 @@ Start now: evidence(task_id="{task_id}")
             spawned_by="_dispatch_board_reviewer",
         )
 
+    async def _dispatch_roadmap_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Product-Owner spawn to author a themed roadmap cycle.
+
+        Unlike ``_handle_board_assigned_task`` (the two-reviewer board-review
+        gate), a roadmap cycle is Product-Owner-solo in v1 (see the roadmap
+        spec's non-goals — HoM co-authoring is out of scope), so this bypasses
+        the review-pair machinery and its board-review-complete/Approve & Start
+        handoff entirely: HoM is never spawned for this task, and no CEO
+        "Approve & Start" notification fires. ``propose_roadmap`` (not this
+        dispatcher) marks the cycle authored (a ``roadmap_cycle`` marker); this
+        only ever spawns once per task while that marker is absent, reusing the
+        same one-shot ``_board_dispatched`` tracker + respawn breaker every
+        other board dispatch uses.
+        """
+        task_id = str(task.get("id"))
+        markers_dict = task.get("orchestration_markers") or {}
+        if markers_dict.get(_markers.ROADMAP_CYCLE) is not None:
+            return  # already authored — the CEO roadmap queue owns the rest
+        po_slug = "product-owner"
+        if self._is_agent_active(po_slug):
+            return
+        key = (po_slug, task_id)
+        if key in self._board_dispatched:
+            return
+        if await self._pm_respawn_should_gate(po_slug, task):
+            return
+        self._board_dispatched.add(key)
+        logger.info("Spawning Product Owner for roadmap exploration", task_id=task_id)
+        await self.spawn_agent(
+            agent_id=po_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_roadmap_prompt(task),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_roadmap_exploration",
+        )
+
     def _board_review_complete(self, task_id: str) -> bool:
         """True once EVERY board reviewer has reviewed and gone idle.
 
@@ -10446,7 +10518,13 @@ Start now: evidence(task_id="{task_id}")
                 continue
             assigned_to = task.get("assigned_to")
             if assigned_to:
-                if self._resolve_agent_slug(assigned_to) in self._BOARD_AGENTS:
+                if task.get("source") == ROADMAP_SOURCE:
+                    # PO-solo (v1) — bypasses the two-reviewer board-review gate;
+                    # never rides _handle_board_assigned_task (that would also
+                    # spawn Head of Marketing and fire the Approve & Start
+                    # handoff, both wrong for a roadmap cycle).
+                    await self._dispatch_roadmap_exploration(task)
+                elif self._resolve_agent_slug(assigned_to) in self._BOARD_AGENTS:
                     await self._handle_board_assigned_task(task, assigned_to)
                 else:
                     await self._handle_pm_assigned_task(task, assigned_to)
@@ -10947,6 +11025,12 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 continue
             # X posts/replies are CEO-gated artifacts, never dev work.
             if task.get("source") in X_SOURCES:
+                continue
+            # A board roadmap exploration cycle is Board work (the PO's
+            # one-shot dispatch owns it via _dispatch_pm_work) — never dev work.
+            # Also team-gated away by _dev_dispatch_one (team=board), so this is
+            # belt-and-suspenders parity with the other held-artifact sources.
+            if task.get("source") == ROADMAP_SOURCE:
                 continue
             # A self-heal fix task held for the CEO's Approve-&-Start is not dev
             # work yet — it must not route to its assigned_to as a dev before
@@ -12542,6 +12626,46 @@ delegate — those verbs are not yours. Your deliverable is a recorded review.
 
 Do NOT attempt to claim, plan, complete, or delegate — the gateway will reject
 those, and a substantive recorded note IS your job here.
+"""
+
+    def _build_roadmap_prompt(self, task: dict[str, Any]) -> str:
+        """Prompt for the Product Owner's one-shot roadmap-exploration cycle.
+
+        Unlike the two-reviewer board-review prompt, this is PO-solo (v1 —
+        see the roadmap spec's non-goals): explore, author ONE themed cycle,
+        then idle. No claim/plan/delegate/complete — those verbs aren't the
+        Product Owner's."""
+        task_id = task.get("id", "unknown")
+        min_items = settings.roadmap_min_items_per_cycle
+        max_items = settings.roadmap_max_items_per_cycle
+        return f"""\
+You are the Product Owner. It's time for your periodic roadmap exploration.
+
+TASK: {task_id}
+
+Explore the company's projects and propose ONE themed cycle of roadmap items
+for the CEO to review — you author this alone. The Head of Marketing is not
+involved in this cycle.
+
+== WHAT TO DO ==
+
+1. triage() — see your board-level context.
+2. Explore: read the company charter, recent releases, metrics, and each
+   project's current state (read-only git). Check the knowledge base for open
+   threads. Optionally run web research for market/competitive signal.
+3. Pick ONE theme/goal for this cycle — a one-line focus that ties the items
+   together (e.g. "close onboarding friction" or "harden the payments path").
+4. propose_roadmap(cycle_goal="<the theme>", items=[...])
+     — call this EXACTLY ONCE with {min_items}-{max_items} item drafts. Each
+       item is an object with: title, description, acceptance_criteria (list
+       of strings), project_slug, team ('backend'|'frontend'|'ux_ui'),
+       priority (1-4, default 2), rationale (why this, why now).
+5. i_am_idle() — once proposed. The CEO reviews and approves/rejects each
+   item individually in the roadmap queue; an approved item lands in BACKLOG
+   for normal PM activation — nothing here auto-starts.
+
+Do NOT claim, plan, delegate, or attempt to start any of the items yourself —
+that is not your job here, and the gateway will reject those verbs.
 """
 
     def _build_marketing_prompt(self, task: dict[str, Any]) -> str:

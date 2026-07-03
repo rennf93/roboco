@@ -28,6 +28,7 @@ from roboco.api.schemas.v1.do import (
     OpenSessionRequest,
     PitchRequest,
     ProgressRequest,
+    ProposeRoadmapRequest,
     PRUpdateRequest,
     ReadMessagesRequest,
     RejectPlaybookRequest,
@@ -133,6 +134,26 @@ async def do_pitch(
         problem=body.problem,
         proposed_solution=body.proposed_solution,
         target_cells=body.target_cells,
+    )
+    return envelope_to_response(env, request)
+
+
+@router.post("/propose_roadmap")
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(secret_exfil_validator)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
+async def do_propose_roadmap(
+    request: Request,
+    body: ProposeRoadmapRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.propose_roadmap(
+        agent_id=x_agent_id,
+        cycle_goal=body.cycle_goal,
+        items=[item.model_dump() for item in body.items],
     )
     return envelope_to_response(env, request)
 

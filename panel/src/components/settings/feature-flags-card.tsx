@@ -52,6 +52,8 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
     "Fail-closed model routing: refuse to silently downgrade an agent to the legacy Anthropic path when its configured provider is disabled (raise instead). Off => graceful degradation with a warning.",
   x_engine_enabled:
     "Draft release-announcement and mention-reply posts for the X (Twitter) account — every draft is held in a queue for you to edit, approve, or reject; nothing posts automatically, and it stays inert until you set credentials in the X card below.",
+  roadmap_engine_enabled:
+    "Weekly: the Product Owner explores the company's projects and proposes a themed cycle of 3-7 roadmap items — you approve or reject each one individually; approved items land in the backlog and nothing auto-starts.",
 };
 
 export function FeatureFlagsCard() {

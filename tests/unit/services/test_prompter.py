@@ -1067,6 +1067,59 @@ async def test_create_task_from_draft_does_not_mutate_caller_draft(
     assert draft["acceptance_criteria"] == ["done"]
 
 
+@pytest.mark.asyncio
+async def test_create_task_from_draft_defaults_source_to_prompter(
+    db_session: Any,
+) -> None:
+    project_id, ceo_id = await _seed_project_and_ceo(db_session)
+    service = get_prompter_service(db=db_session)
+    draft = {
+        "title": "Default-source draft",
+        "acceptance_criteria": ["done"],
+        "project_id": str(project_id),
+    }
+    task = await service.create_task_from_draft(draft, ceo_id)
+    assert task.source == "prompter"
+
+
+@pytest.mark.asyncio
+async def test_create_task_from_draft_accepts_custom_source(
+    db_session: Any,
+) -> None:
+    """A non-intake caller (e.g. an approved roadmap item) stamps its own
+    source tag on the draft instead of the intake default."""
+    project_id, ceo_id = await _seed_project_and_ceo(db_session)
+    service = get_prompter_service(db=db_session)
+    draft = {
+        "title": "Roadmap-sourced draft",
+        "acceptance_criteria": ["done"],
+        "project_id": str(project_id),
+        "source": "roadmap",
+    }
+    task = await service.create_task_from_draft(draft, ceo_id)
+    assert task.source == "roadmap"
+    assert task.confirmed_by_human is True  # the CEO approval IS the confirmation
+
+
+@pytest.mark.asyncio
+async def test_create_task_from_draft_rejects_unwhitelisted_source(
+    db_session: Any,
+) -> None:
+    """An LLM-authored draft can't impersonate a privileged origin: a source
+    outside the whitelist falls back to 'prompter' (a 'release_manager' spoof
+    would otherwise wedge the release engine's one-open-proposal dedup)."""
+    project_id, ceo_id = await _seed_project_and_ceo(db_session)
+    service = get_prompter_service(db=db_session)
+    draft = {
+        "title": "Spoofed-source draft",
+        "acceptance_criteria": ["done"],
+        "project_id": str(project_id),
+        "source": "release_manager",
+    }
+    task = await service.create_task_from_draft(draft, ceo_id)
+    assert task.source == "prompter"
+
+
 # =============================================================================
 # Prompter memory v1 — history digest + compact search rows (pure, no DB)
 # =============================================================================

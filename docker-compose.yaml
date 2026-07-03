@@ -394,6 +394,10 @@ services:
       ROBOCO_RELEASE_MANAGER_ENABLED: ${ROBOCO_RELEASE_MANAGER_ENABLED:-true}
       ROBOCO_ORG_MEMORY_ENABLED: ${ROBOCO_ORG_MEMORY_ENABLED:-true}
       ROBOCO_X_ENGINE_ENABLED: ${ROBOCO_X_ENGINE_ENABLED:-true}
+      #   - Board roadmap engine: weekly, opens ONE held exploration task for
+      #     the Product Owner, who proposes a themed cycle of roadmap items;
+      #     the CEO approves each item individually into the backlog.
+      ROBOCO_ROADMAP_ENGINE_ENABLED: ${ROBOCO_ROADMAP_ENGINE_ENABLED:-true}
       # Sandboxed per-agent test DB/Redis: orchestrator-provisioned throwaway
       # sibling containers per spawn, replacing the prod-creds gate-env
       # injection for an opted-in project (its `sandbox_services` column set).

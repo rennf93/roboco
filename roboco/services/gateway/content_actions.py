@@ -21,7 +21,7 @@ import structlog
 from roboco.config import settings
 from roboco.exceptions import GitError
 from roboco.foundation.policy import communications as _comms
-from roboco.foundation.policy.content import ContentValidationError
+from roboco.foundation.policy.content import ContentValidationError, markers
 from roboco.foundation.policy.content.validators import reject_trivial
 from roboco.foundation.policy.journaling import Scope as _Scope
 from roboco.services.content_notes import content_type_for_role
@@ -303,6 +303,20 @@ _VALID_NOTIFY_PRIORITIES: frozenset[str] = frozenset(p.value for p in _comms.Pri
 # The Board roles that may author a pitch (a product proposal for CEO approval).
 _PITCH_ROLES: frozenset[str] = frozenset({"product_owner", "head_marketing"})
 
+# Roadmap cycles are PO-authored in v1 — HoM stays a reviewer via the normal
+# board gate when an approved item later ships as real work (see the roadmap
+# spec's non-goals).
+_ROADMAP_ROLES: frozenset[str] = frozenset({"product_owner"})
+
+# Text fields on a roadmap item draft, with their anti-soup minimum length.
+_ROADMAP_ITEM_TEXT_FIELDS: tuple[tuple[str, int], ...] = (
+    ("title", 5),
+    ("description", 15),
+    ("project_slug", 2),
+    ("team", 2),
+    ("rationale", 8),
+)
+
 # Playbook curation RBAC: delivery roles DRAFT; only the Auditor CURATES.
 _DRAFT_PLAYBOOK_ROLES: frozenset[str] = frozenset(
     {"developer", "qa", "documenter", "cell_pm", "main_pm"}
@@ -324,6 +338,33 @@ def _coerce_pitch_cells(target_cells: list[str]) -> list[Any]:
             raise ValueError(f"{c!r} is not a cell team")
         cells.append(team)
     return cells
+
+
+def _normalize_roadmap_item(idx: int, raw: dict[str, Any]) -> dict[str, Any]:
+    """Coerce a validated raw item dict into the stored marker shape.
+
+    ``id`` is server-assigned (index-based, stable within the cycle) — the PO
+    never sets it, so there's no collision/typo surface for the CEO's
+    per-item approve/reject to key on.
+    """
+    priority = raw.get("priority")
+    try:
+        priority = int(priority) if priority is not None else 2
+    except (TypeError, ValueError):
+        priority = 2
+    return {
+        "id": f"item-{idx}",
+        "title": str(raw["title"]).strip(),
+        "description": str(raw["description"]).strip(),
+        "acceptance_criteria": [str(c).strip() for c in raw["acceptance_criteria"]],
+        "project_slug": str(raw["project_slug"]).strip(),
+        "team": str(raw["team"]).strip(),
+        "priority": priority,
+        "rationale": str(raw["rationale"]).strip(),
+        "status": "proposed",
+        "reject_reason": None,
+        "materialized_task_id": None,
+    }
 
 
 class ContentActions:
@@ -1024,6 +1065,150 @@ class ContentActions:
             task_id=str(pitch.id),
             next="await the CEO's approval in the Pitches queue",
             context_briefing={},
+        )
+
+    @classmethod
+    def _reject_roadmap_item_fields(
+        cls, raw: dict[str, Any], idx: int
+    ) -> Envelope | None:
+        """Validate the text + acceptance-criteria fields of one item dict."""
+        for field, min_chars in _ROADMAP_ITEM_TEXT_FIELDS:
+            value = raw.get(field)
+            if not isinstance(value, str) or not value.strip():
+                return Envelope.invalid_state(
+                    message=f"item {idx} is missing '{field}'",
+                    remediate=f"provide a substantive '{field}' for item {idx}",
+                    context_briefing={},
+                )
+            if rej := cls._reject_soup(
+                value, field=f"item {idx} {field}", min_chars=min_chars
+            ):
+                return rej
+        ac = raw.get("acceptance_criteria")
+        if (
+            not isinstance(ac, list)
+            or not ac
+            or not all(isinstance(c, str) and c.strip() for c in ac)
+        ):
+            return Envelope.invalid_state(
+                message=f"item {idx} is missing acceptance_criteria",
+                remediate=(
+                    f"provide a non-empty list of acceptance criteria for item {idx}"
+                ),
+                context_briefing={},
+            )
+        return None
+
+    @staticmethod
+    def _reject_roadmap_item_team(raw: dict[str, Any], idx: int) -> Envelope | None:
+        """Validate the item's ``team`` is a known cell (backend/frontend/ux_ui)."""
+        from roboco.foundation.identity import CELL_TEAMS, Team
+
+        try:
+            team = Team(str(raw.get("team")))
+        except ValueError:
+            team = None
+        if team is None or team not in CELL_TEAMS:
+            return Envelope.invalid_state(
+                message=f"item {idx} has an unknown team {raw.get('team')!r}",
+                remediate="team must be one of: backend, frontend, ux_ui",
+                context_briefing={},
+            )
+        return None
+
+    @classmethod
+    def _reject_roadmap_item(cls, raw: Any, idx: int) -> Envelope | None:
+        """Validate one raw roadmap item dict; None when clean."""
+        if not isinstance(raw, dict):
+            return Envelope.invalid_state(
+                message=f"item {idx} is not an object",
+                remediate=(
+                    "each item must be an object with title/description/"
+                    "acceptance_criteria/project_slug/team/priority/rationale"
+                ),
+                context_briefing={},
+            )
+        if rej := cls._reject_roadmap_item_fields(raw, idx):
+            return rej
+        return cls._reject_roadmap_item_team(raw, idx)
+
+    async def propose_roadmap(
+        self,
+        *,
+        agent_id: UUID,
+        cycle_goal: str,
+        items: list[dict[str, Any]],
+    ) -> Envelope:
+        """Product Owner authors a themed roadmap cycle (goal + item drafts).
+
+        Persists the cycle onto the caller's open exploration task (markers)
+        — each item starts 'proposed', awaiting the CEO's per-item approve/
+        reject in the roadmap queue. One call per cycle: the exploration task
+        stays open (and this verb keeps refusing) until every item is
+        terminal.
+        """
+        role = await self._caller_role(agent_id)
+        if role not in _ROADMAP_ROLES:
+            return Envelope.not_authorized(
+                message=(
+                    f"role {role!r} cannot propose a roadmap cycle; only the "
+                    "Product Owner authors one"
+                ),
+                remediate="this verb is Product-Owner-only",
+                context_briefing={},
+            )
+        if rej := self._reject_soup(cycle_goal, field="cycle_goal", min_chars=8):
+            return rej
+        min_items = settings.roadmap_min_items_per_cycle
+        max_items = settings.roadmap_max_items_per_cycle
+        if not (min_items <= len(items) <= max_items):
+            return Envelope.invalid_state(
+                message=(
+                    f"a cycle needs {min_items}-{max_items} item drafts, "
+                    f"got {len(items)}"
+                ),
+                remediate=f"propose between {min_items} and {max_items} roadmap items",
+                context_briefing={},
+            )
+        normalized: list[dict[str, Any]] = []
+        for idx, raw in enumerate(items):
+            if rej := self._reject_roadmap_item(raw, idx):
+                return rej
+            normalized.append(_normalize_roadmap_item(idx, raw))
+
+        from roboco.services.task import get_task_service
+
+        task_svc = get_task_service(self.task.session)
+        cycles = await task_svc.list_open_roadmap_cycles()
+        task = next(
+            (
+                t
+                for t in cycles
+                if t.assigned_to == agent_id and markers.get_roadmap_cycle(t) is None
+            ),
+            None,
+        )
+        if task is None:
+            return Envelope.invalid_state(
+                message="no open roadmap exploration task assigned to you",
+                remediate=(
+                    "propose_roadmap only runs against an active exploration "
+                    "cycle spawned by the roadmap engine; wait for the next cycle"
+                ),
+                context_briefing={},
+            )
+        markers.set_roadmap_cycle(
+            task, {"goal": cycle_goal.strip(), "items": normalized}
+        )
+        await self.task.session.flush()
+        return Envelope.ok(
+            status="roadmap_proposed",
+            task_id=str(task.id),
+            next="i_am_idle() — the CEO reviews each item in the roadmap queue",
+            context_briefing={
+                "cycle_goal": cycle_goal.strip(),
+                "item_count": len(normalized),
+            },
         )
 
     async def say(
