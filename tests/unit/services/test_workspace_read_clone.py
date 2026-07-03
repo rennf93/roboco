@@ -53,6 +53,32 @@ def test_sync_read_clone_advances_to_a_post_clone_commit(tmp_path: Path) -> None
     assert (clone / "NEW.txt").is_file()
 
 
+def test_sync_read_clone_fetches_tags(tmp_path: Path) -> None:
+    """The read clone must carry tags: the release manager derives "commits
+    since last release" from the newest tag, and a tagless clone makes
+    ``git describe`` fail so it walks the entire history (the 729-commit bug)."""
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git(origin, "init", "-q", "-b", "master")
+    (origin / "README.md").write_text("v1\n")
+    _commit(origin, "first")
+
+    # The clone itself is tagless (--no-tags, as agent clones are) — the tag
+    # lands on origin and the read-clone refresh must pull it in.
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", "-q", "--no-tags", str(origin), str(clone))
+    assert _git(clone, "tag").stdout.strip() == ""
+
+    # -c tag.gpgsign=false: create a lightweight tag regardless of a global
+    # signing config that would otherwise force an annotated (signed) tag.
+    _git(origin, "-c", "tag.gpgsign=false", "tag", "v0.17.0")
+
+    WorkspaceService._sync_read_clone(clone, f"file://{origin}", "master", None)
+
+    assert "v0.17.0" in _git(clone, "tag").stdout.split()
+    assert _git(clone, "describe", "--tags", "--abbrev=0").stdout.strip() == "v0.17.0"
+
+
 def test_sync_read_clone_is_best_effort_on_unreachable_origin(tmp_path: Path) -> None:
     origin = tmp_path / "origin"
     origin.mkdir()

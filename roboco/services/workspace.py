@@ -1177,6 +1177,11 @@ class WorkspaceService:
             await self._clone_repo(
                 workspace, git_url, default_branch, git_token, agent=None
             )
+            # The clone is --no-tags (agent-clone default); the release manager
+            # reads tags off this clone, so pull them in via the tag-aware sync.
+            await asyncio.to_thread(
+                self._sync_read_clone, workspace, git_url, default_branch, git_token
+            )
             _read_clone_synced[str(workspace)] = _monotonic()
             return workspace
 
@@ -1225,7 +1230,10 @@ class WorkspaceService:
                 check=False,
             )
 
-        fetched = _git("fetch", "--no-tags", auth_url, default_branch)
+        # Fetch tags: the release manager reads this same clone and derives
+        # "commits since last release" from the newest tag — a tagless clone
+        # makes git describe fail and it walks the entire history.
+        fetched = _git("fetch", "--tags", auth_url, default_branch)
         if fetched.returncode != 0:
             logger.warning(
                 "conventions read-clone fetch failed",
@@ -1280,7 +1288,8 @@ class WorkspaceService:
             # {default_branch}`, so subsequent fetches silently ignore every
             # other branch. The symptom is QA doing `checkout origin/
             # feature/...` and seeing "not a commit" even though the branch
-            # is on GitHub. --no-tags keeps the clone light.
+            # is on GitHub. --no-tags keeps the clone light (the read clone
+            # pulls tags separately via _sync_read_clone).
             return subprocess.run(
                 [
                     "git",
