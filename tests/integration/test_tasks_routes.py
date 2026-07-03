@@ -3141,13 +3141,15 @@ async def test_activate_value_error_returns_400(task_client: dict) -> None:
     await task_client["db"].flush()
     with patch("roboco.api.routes.tasks.get_task_service") as mock_factory:
         instance = AsyncMock()
-        instance.activate = AsyncMock(side_effect=ValueError("no session linked"))
+        instance.activate = AsyncMock(
+            side_effect=ValueError("no project or product set")
+        )
         mock_factory.return_value = instance
         response = await task_client["client"].post(
             f"/api/tasks/{task.id}/activate", headers=_HDR
         )
     assert response.status_code == HTTPStatus.BAD_REQUEST
-    assert "no session" in response.json()["detail"].lower()
+    assert "no project or product" in response.json()["detail"].lower()
 
 
 @pytest.mark.asyncio
