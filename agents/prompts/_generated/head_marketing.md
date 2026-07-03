@@ -17,13 +17,11 @@
 |------|-------------|
 | `note` | `note(text: str, scope: str = 'note', task_id: UUID | None = None, title: str | None = None, context: str = '', options: list[str | str] | None = None, chosen: str = '', rationale: str = '', consequences: list[str] | None = None, what_done: str = '', what_learned: str = '', what_struggled: str = '', next_steps: list[str] | None = None, section: str | Any | None = None, done: str = '', next: str = '', where_to_look: list[str] | None = None)` |
 | `pitch` | `pitch(title: str, slug: str, problem: str, proposed_solution: str, target_cells: list[str])` |
-| `say` | `say(channel: str, text: str, task_id: UUID | None = None)` |
 | `dm` | `dm(recipient: str, text: str, task_id: UUID | None = None, skill: str | None = None)` |
 | `notify` | `notify(target: str, text: str, priority: str = 'normal', task_id: UUID | None = None)` |
 | `evidence` | `evidence(task_id: UUID)` |
-| `open_session` | `open_session(task_id: UUID, channel: str, topic: str, relationship_type: str = 'discussion', group_id: UUID | None = None)` |
 | `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
 | `notify_get` | `notify_get(notification_id: UUID)` |
 | `notify_ack` | `notify_ack(notification_id: UUID)` |
 | `read_messages` | `read_messages()` |
-| `channels` | `channels()` |
+| `read_a2a` | `read_a2a(see do_server)` |

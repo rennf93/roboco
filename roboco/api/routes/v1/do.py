@@ -14,25 +14,21 @@ from roboco.api.routes.v1._role_dep import (
 from roboco.api.schemas.v1.do import (
     ApprovePlaybookRequest,
     ArchivePlaybookRequest,
-    ChannelsRequest,
     CommitRequest,
     DmRequest,
     DraftPlaybookRequest,
     EvidenceRequest,
-    LinkSessionRequest,
     NoteRequest,
     NotifyAckRequest,
     NotifyGetRequest,
     NotifyListRequest,
     NotifyRequest,
-    OpenSessionRequest,
     PitchRequest,
     ProgressRequest,
     ProposeRoadmapRequest,
     PRUpdateRequest,
     ReadMessagesRequest,
     RejectPlaybookRequest,
-    SayRequest,
 )
 from roboco.security import (
     guard_deco,
@@ -158,28 +154,6 @@ async def do_propose_roadmap(
     return envelope_to_response(env, request)
 
 
-@router.post("/say")
-@guard_deco.rate_limit(requests=60, window=60)
-@guard_deco.max_request_size(size_bytes=65536)
-@guard_deco.custom_validation(prompt_injection_validator)
-@guard_deco.content_type_filter(["application/json"])
-@guard_deco.suspicious_detection(enabled=True)
-@guard_deco.behavior_analysis(_RUNAWAY_RULES)
-async def do_say(
-    request: Request,
-    body: SayRequest,
-    x_agent_id: _AgentIdHeader,
-    actions: _ContentActionsDep,
-) -> dict:
-    env = await actions.say(
-        agent_id=x_agent_id,
-        channel=body.channel,
-        text=body.text,
-        task_id=body.task_id,
-    )
-    return envelope_to_response(env, request)
-
-
 @router.post("/dm")
 @guard_deco.rate_limit(requests=60, window=60)
 @guard_deco.max_request_size(size_bytes=65536)
@@ -262,47 +236,6 @@ async def do_progress(
     return envelope_to_response(env, request)
 
 
-@router.post("/open_session")
-@guard_deco.rate_limit(requests=30, window=60)
-@guard_deco.content_type_filter(["application/json"])
-@guard_deco.behavior_analysis(_RUNAWAY_RULES)
-async def do_open_session(
-    request: Request,
-    body: OpenSessionRequest,
-    x_agent_id: _AgentIdHeader,
-    actions: _ContentActionsDep,
-) -> dict:
-    env = await actions.open_session(
-        agent_id=x_agent_id,
-        task_id=body.task_id,
-        channel=body.channel,
-        topic=body.topic,
-        relationship_type=body.relationship_type,
-        group_id=body.group_id,
-    )
-    return envelope_to_response(env, request)
-
-
-@router.post("/link_session")
-@guard_deco.rate_limit(requests=30, window=60)
-@guard_deco.content_type_filter(["application/json"])
-@guard_deco.behavior_analysis(_RUNAWAY_RULES)
-async def do_link_session(
-    request: Request,
-    body: LinkSessionRequest,
-    x_agent_id: _AgentIdHeader,
-    actions: _ContentActionsDep,
-) -> dict:
-    env = await actions.link_session(
-        agent_id=x_agent_id,
-        session_id=body.session_id,
-        task_id=body.task_id,
-        is_primary=body.is_primary,
-        relationship_type=body.relationship_type,
-    )
-    return envelope_to_response(env, request)
-
-
 @router.post("/notify_list")
 async def do_notify_list(
     request: Request,
@@ -369,17 +302,6 @@ async def do_read_a2a(
     actions: _ContentActionsDep,
 ) -> dict:
     env = await actions.read_a2a(agent_id=x_agent_id)
-    return envelope_to_response(env, request)
-
-
-@router.post("/channels")
-async def do_channels(
-    request: Request,
-    _body: ChannelsRequest,
-    x_agent_id: _AgentIdHeader,
-    actions: _ContentActionsDep,
-) -> dict:
-    env = await actions.channels(agent_id=x_agent_id)
     return envelope_to_response(env, request)
 
 

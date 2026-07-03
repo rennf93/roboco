@@ -21,4 +21,3 @@
 | `archive_playbook` | `archive_playbook(playbook_id: UUID)` |
 | `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
 | `notify_get` | `notify_get(notification_id: UUID)` |
-| `channels` | `channels()` |

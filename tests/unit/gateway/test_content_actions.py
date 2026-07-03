@@ -1,4 +1,4 @@
-"""Tests for ContentActions — commit, note, say, dm, evidence verbs."""
+"""Tests for ContentActions — commit, note, dm, evidence verbs."""
 
 from __future__ import annotations
 
@@ -32,7 +32,6 @@ def _make_deps(**overrides: AsyncMock) -> ContentActionsDeps:
         git.commit.return_value = {"sha": "abc12345"}
         git.diff.return_value = ""
 
-    messaging = overrides.get("messaging", AsyncMock())
     a2a = overrides.get("a2a", AsyncMock())
     journal = overrides.get("journal", AsyncMock())
     workspace = overrides.get("workspace", AsyncMock())
@@ -46,7 +45,6 @@ def _make_deps(**overrides: AsyncMock) -> ContentActionsDeps:
     return ContentActionsDeps(
         task=task,
         git=git,
-        messaging=messaging,
         a2a=a2a,
         journal=journal,
         workspace=workspace,
@@ -495,50 +493,6 @@ async def test_note_auto_fills_task_id_from_active_task() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_say_auto_injects_task_id_when_active_task_exists() -> None:
-    """Channel post auto-injects task_id from active task."""
-    agent_id = uuid4()
-    task_id = uuid4()
-    task_obj = MagicMock(id=task_id, status="in_progress")
-    task_svc = AsyncMock()
-    task_svc.get_active_task_for_agent.return_value = task_obj
-    task_svc.get_journal_context_task_for_agent.return_value = task_obj
-    messaging_svc = AsyncMock()
-
-    deps = _make_deps(task=task_svc, messaging=messaging_svc)
-    ca = ContentActions(deps)
-
-    env = await ca.say(
-        agent_id=agent_id, channel="backend-cell", text="Starting the auth refactor."
-    )
-    body = env.as_dict()
-
-    assert body["error"] is None
-    assert body["task_id"] == str(task_id)
-    call_kwargs = messaging_svc.post_to_channel.call_args.kwargs
-    assert call_kwargs["task_id"] == task_id
-
-
-@pytest.mark.asyncio
-async def test_say_succeeds_with_no_active_task_task_id_is_null() -> None:
-    """say without active task still succeeds; task_id in response is None."""
-    deps = _make_deps()
-    ca = ContentActions(deps)
-    agent_id = uuid4()
-
-    env = await ca.say(
-        agent_id=agent_id,
-        channel="all-hands",
-        text="Hello team, I am about to start work.",
-    )
-    body = env.as_dict()
-
-    assert body["error"] is None
-    assert body["task_id"] is None
-    deps.messaging.post_to_channel.assert_awaited_once()
-
-
 # ---------------------------------------------------------------------------
 # dm
 # ---------------------------------------------------------------------------
@@ -906,20 +860,6 @@ async def test_pitch_placeholder_title_rejected_before_role_check() -> None:
         problem="Users cannot reset their password without contacting support.",
         proposed_solution="Add a self-service password reset flow with email tokens.",
         target_cells=["backend"],
-    )
-
-    assert env.as_dict()["error"] == "invalid_state"
-    deps.task.agent_for.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_open_session_placeholder_topic_rejected() -> None:
-    """``open_session`` topic must be substantive, not 'tbd'."""
-    deps = _make_deps()
-    ca = ContentActions(deps)
-
-    env = await ca.open_session(
-        agent_id=uuid4(), task_id=uuid4(), channel="backend-cell", topic="tbd"
     )
 
     assert env.as_dict()["error"] == "invalid_state"

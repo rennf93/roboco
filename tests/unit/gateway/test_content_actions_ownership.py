@@ -1,6 +1,6 @@
 """Gate Set D: content-tool ownership guards in ContentActions.
 
-When a caller passes a ``task_id`` to commit / say / dm / note / evidence,
+When a caller passes a ``task_id`` to commit / dm / note / evidence,
 the gateway must verify ``task.assigned_to == caller_agent_id`` before
 allowing the side effect.
 
@@ -8,7 +8,7 @@ Pre-gateway equivalent: agents could only act on tasks they owned because
 the MCP handlers resolved task from session context. With the gateway
 exposing the task_id parameter, the ownership check must be explicit.
 
-Exception: ``say`` and ``dm`` without a task_id (channel-only / off-task
+Exception: ``dm`` without a task_id (channel-only / off-task
 A2A) are exempt — used for channel announcements.
 """
 
@@ -39,7 +39,6 @@ def _make_deps(**overrides: AsyncMock) -> ContentActionsDeps:
         git.commit.return_value = {"sha": "abc12345"}
         git.diff.return_value = ""
 
-    messaging = overrides.get("messaging", AsyncMock())
     a2a = overrides.get("a2a", AsyncMock())
     journal = overrides.get("journal", AsyncMock())
     workspace = overrides.get("workspace", AsyncMock())
@@ -52,7 +51,6 @@ def _make_deps(**overrides: AsyncMock) -> ContentActionsDeps:
     return ContentActionsDeps(
         task=task,
         git=git,
-        messaging=messaging,
         a2a=a2a,
         journal=journal,
         workspace=workspace,
@@ -180,74 +178,6 @@ async def test_note_without_task_id_skips_ownership_check() -> None:
 # ---------------------------------------------------------------------------
 # say — explicit task_id ownership (only when task_id provided)
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_say_with_task_id_blocks_when_not_assignee() -> None:
-    """say(task_id=X) where X is owned by someone else is rejected."""
-    agent_id = uuid4()
-    other_id = uuid4()
-    task_id = uuid4()
-    task_obj = MagicMock(id=task_id, status="in_progress", assigned_to=other_id)
-    task_svc = AsyncMock()
-    task_svc.get.return_value = task_obj
-    messaging_svc = AsyncMock()
-    deps = _make_deps(task=task_svc, messaging=messaging_svc)
-    ca = ContentActions(deps)
-
-    env = await ca.say(
-        agent_id=agent_id,
-        channel="backend-cell",
-        text="Posting on someone else's task",
-        task_id=task_id,
-    )
-    body = env.as_dict()
-    assert body["error"] == "not_authorized"
-    messaging_svc.post_to_channel.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_say_without_task_id_is_exempt() -> None:
-    """say() with NO task_id and no active task: channel announcement, allowed."""
-    agent_id = uuid4()
-    task_svc = AsyncMock()
-    task_svc.get_active_task_for_agent.return_value = None
-    messaging_svc = AsyncMock()
-    deps = _make_deps(task=task_svc, messaging=messaging_svc)
-    ca = ContentActions(deps)
-
-    env = await ca.say(
-        agent_id=agent_id, channel="all-hands", text="General announcement"
-    )
-    assert env.error is None
-    messaging_svc.post_to_channel.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_say_with_explicit_task_id_owned_by_caller_succeeds() -> None:
-    """say(task_id=X) when caller owns X: allowed."""
-    agent_id = uuid4()
-    task_id = uuid4()
-    task_obj = MagicMock(
-        id=task_id,
-        status="in_progress",
-        assigned_to=agent_id,
-        active_claimant_id=agent_id,
-    )
-    task_svc = AsyncMock()
-    task_svc.get.return_value = task_obj
-    messaging_svc = AsyncMock()
-    deps = _make_deps(task=task_svc, messaging=messaging_svc)
-    ca = ContentActions(deps)
-
-    env = await ca.say(
-        agent_id=agent_id,
-        channel="backend-cell",
-        text="Working on my task",
-        task_id=task_id,
-    )
-    assert env.error is None
-    messaging_svc.post_to_channel.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -562,36 +492,6 @@ async def test_note_reaped_assignee_cannot_post_to_former_task() -> None:
     assert body["error"] == "not_authorized", body
     assert "active claim" in body["message"], body
     journal_svc.write_entry.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_say_reaped_assignee_cannot_post_to_former_task() -> None:
-    """A reaped agent is rejected on say(task_id=X) too — same stale-window
-    divergence as note."""
-    agent_id = uuid4()
-    task_id = uuid4()
-    task_obj = MagicMock(
-        id=task_id,
-        status="in_progress",
-        assigned_to=agent_id,
-        active_claimant_id=None,
-    )
-    task_svc = AsyncMock()
-    task_svc.get.return_value = task_obj
-    messaging_svc = AsyncMock()
-    deps = _make_deps(task=task_svc, messaging=messaging_svc)
-    ca = ContentActions(deps)
-
-    env = await ca.say(
-        agent_id=agent_id,
-        channel="backend-cell",
-        text="Posting after my claim was reaped",
-        task_id=task_id,
-    )
-    body = env.as_dict()
-    assert body["error"] == "not_authorized", body
-    assert "active claim" in body["message"], body
-    messaging_svc.post_to_channel.assert_not_awaited()
 
 
 @pytest.mark.asyncio

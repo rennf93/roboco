@@ -126,50 +126,6 @@ async def test_note_garbage_scope_returns_invalid_state() -> None:
 
 
 @pytest.mark.asyncio
-async def test_say_with_explicit_task_id_returns_ok() -> None:
-    """POST /api/v1/do/say with task_id explicit returns 200 ok."""
-    mock_actions = MagicMock(spec=ContentActions)
-    mock_actions.say = AsyncMock(
-        return_value=_make_envelope(status="posted", task_id=_TASK_ID)
-    )
-    client = TestClient(_build_app(mock_actions))
-
-    resp = client.post(
-        "/api/v1/do/say",
-        json={"channel": "backend-cell", "text": "PR is ready", "task_id": _TASK_ID},
-        headers=_HEADERS,
-    )
-
-    assert resp.status_code == _HTTP_200
-    body = resp.json()
-    assert body["status"] == "posted"
-    mock_actions.say.assert_awaited_once()
-    assert str(mock_actions.say.call_args.kwargs["task_id"]) == _TASK_ID
-
-
-@pytest.mark.asyncio
-async def test_say_without_task_id_auto_injects() -> None:
-    """POST /api/v1/do/say with task_id null passes None; ContentActions injects."""
-    mock_actions = MagicMock(spec=ContentActions)
-    mock_actions.say = AsyncMock(
-        return_value=_make_envelope(status="posted", task_id=_TASK_ID)
-    )
-    client = TestClient(_build_app(mock_actions))
-
-    resp = client.post(
-        "/api/v1/do/say",
-        json={"channel": "backend-cell", "text": "stand-up update"},
-        headers=_HEADERS,
-    )
-
-    assert resp.status_code == _HTTP_200
-    # task_id was None in the request body — handler passes it through as None
-    call_kwargs = mock_actions.say.call_args.kwargs
-    assert call_kwargs["task_id"] is None
-    mock_actions.say.assert_awaited_once()
-
-
-@pytest.mark.asyncio
 async def test_dm_with_no_task_context_returns_invalid_state() -> None:
     """POST /api/v1/do/dm with no task context returns invalid_state envelope."""
     mock_actions = MagicMock(spec=ContentActions)

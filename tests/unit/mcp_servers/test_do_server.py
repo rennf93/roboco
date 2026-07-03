@@ -19,7 +19,7 @@ _DO_TEST_MANIFEST = {
     "team": "backend",
     "workspace_path": "/tmp/test",
     "flow_tools": [],
-    "do_tools": ["commit", "note", "say", "dm", "notify", "evidence"],
+    "do_tools": ["commit", "note", "dm", "notify", "evidence"],
     "read_tools": [],
     "write_tools": [],
     "bash_allowed": True,
@@ -87,24 +87,6 @@ def test_note_with_scope_reflect(do_module: Any) -> None:
 
     _args, kwargs = fake_client.post.call_args
     assert kwargs["json"]["scope"] == "reflect"
-
-
-def test_say_posts_channel_and_text(do_module: Any) -> None:
-    fake_client = MagicMock()
-    fake_client.__enter__.return_value = fake_client
-    fake_response = MagicMock()
-    fake_response.json.return_value = {"status": "posted"}
-    fake_client.post.return_value = fake_response
-
-    with patch("httpx.Client", return_value=fake_client):
-        do_module.say("backend-cell", "hello")
-
-    _args, kwargs = fake_client.post.call_args
-    assert kwargs["json"] == {
-        "channel": "backend-cell",
-        "text": "hello",
-        "task_id": None,
-    }
 
 
 def test_dm_posts_all_fields(do_module: Any) -> None:

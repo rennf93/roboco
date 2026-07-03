@@ -32,7 +32,6 @@ real tools live in their agent_sdk drivers, not role_config.
 |------|-------------|
 | `commit` | `commit(message: str, files: list[str] | None = None)` |
 | `note` | `note(text: str, scope: str = 'note', task_id: UUID | None = None, title: str | None = None, context: str = '', options: list[str | str] | None = None, chosen: str = '', rationale: str = '', consequences: list[str] | None = None, what_done: str = '', what_learned: str = '', what_struggled: str = '', next_steps: list[str] | None = None, section: str | Any | None = None, done: str = '', next: str = '', where_to_look: list[str] | None = None)` |
-| `say` | `say(channel: str, text: str, task_id: UUID | None = None)` |
 | `dm` | `dm(recipient: str, text: str, task_id: UUID | None = None, skill: str | None = None)` |
 | `evidence` | `evidence(task_id: UUID)` |
 | `progress` | `progress(task_id: UUID, message: str, plan_step: str | None = None, percentage: int | None = None)` |
@@ -42,7 +41,7 @@ real tools live in their agent_sdk drivers, not role_config.
 | `notify_get` | `notify_get(notification_id: UUID)` |
 | `notify_ack` | `notify_ack(notification_id: UUID)` |
 | `read_messages` | `read_messages()` |
-| `channels` | `channels()` |
+| `read_a2a` | `read_a2a(see do_server)` |
 
 ## qa
 
@@ -64,7 +63,6 @@ real tools live in their agent_sdk drivers, not role_config.
 | Tool | Body schema |
 |------|-------------|
 | `note` | `note(text: str, scope: str = 'note', task_id: UUID | None = None, title: str | None = None, context: str = '', options: list[str | str] | None = None, chosen: str = '', rationale: str = '', consequences: list[str] | None = None, what_done: str = '', what_learned: str = '', what_struggled: str = '', next_steps: list[str] | None = None, section: str | Any | None = None, done: str = '', next: str = '', where_to_look: list[str] | None = None)` |
-| `say` | `say(channel: str, text: str, task_id: UUID | None = None)` |
 | `dm` | `dm(recipient: str, text: str, task_id: UUID | None = None, skill: str | None = None)` |
 | `evidence` | `evidence(task_id: UUID)` |
 | `draft_playbook` | `draft_playbook(title: str, problem: str, procedure: str, tags: list[str] = PydanticUndefined, source_task_id: UUID | None = None)` |
@@ -72,7 +70,7 @@ real tools live in their agent_sdk drivers, not role_config.
 | `notify_get` | `notify_get(notification_id: UUID)` |
 | `notify_ack` | `notify_ack(notification_id: UUID)` |
 | `read_messages` | `read_messages()` |
-| `channels` | `channels()` |
+| `read_a2a` | `read_a2a(see do_server)` |
 
 ## documenter
 
@@ -94,7 +92,6 @@ real tools live in their agent_sdk drivers, not role_config.
 |------|-------------|
 | `commit` | `commit(message: str, files: list[str] | None = None)` |
 | `note` | `note(text: str, scope: str = 'note', task_id: UUID | None = None, title: str | None = None, context: str = '', options: list[str | str] | None = None, chosen: str = '', rationale: str = '', consequences: list[str] | None = None, what_done: str = '', what_learned: str = '', what_struggled: str = '', next_steps: list[str] | None = None, section: str | Any | None = None, done: str = '', next: str = '', where_to_look: list[str] | None = None)` |
-| `say` | `say(channel: str, text: str, task_id: UUID | None = None)` |
 | `dm` | `dm(recipient: str, text: str, task_id: UUID | None = None, skill: str | None = None)` |
 | `evidence` | `evidence(task_id: UUID)` |
 | `progress` | `progress(task_id: UUID, message: str, plan_step: str | None = None, percentage: int | None = None)` |
@@ -104,7 +101,7 @@ real tools live in their agent_sdk drivers, not role_config.
 | `notify_get` | `notify_get(notification_id: UUID)` |
 | `notify_ack` | `notify_ack(notification_id: UUID)` |
 | `read_messages` | `read_messages()` |
-| `channels` | `channels()` |
+| `read_a2a` | `read_a2a(see do_server)` |
 
 ## cell_pm
 
@@ -119,6 +116,7 @@ real tools live in their agent_sdk drivers, not role_config.
 | `i_am_idle` | `i_am_idle()` |
 | `i_will_plan` | `i_will_plan(task_id: UUID, plan: str, approach: str, sub_tasks: list[str | str] = PydanticUndefined, technical_considerations: list[str] = PydanticUndefined, risks: list[str | str] = PydanticUndefined, open_questions: list[str | str | bool] = PydanticUndefined)` |
 | `reassign` | `reassign(task_id: UUID, new_assignee: str)` |
+| `request_changes` | `request_changes(task_id: UUID, issues: list[str])` |
 | `resume` | `resume(task_id: UUID)` |
 | `submit_up` | `submit_up(task_id: UUID, notes: str)` |
 | `triage` | `triage()` |
@@ -130,19 +128,16 @@ real tools live in their agent_sdk drivers, not role_config.
 | Tool | Body schema |
 |------|-------------|
 | `note` | `note(text: str, scope: str = 'note', task_id: UUID | None = None, title: str | None = None, context: str = '', options: list[str | str] | None = None, chosen: str = '', rationale: str = '', consequences: list[str] | None = None, what_done: str = '', what_learned: str = '', what_struggled: str = '', next_steps: list[str] | None = None, section: str | Any | None = None, done: str = '', next: str = '', where_to_look: list[str] | None = None)` |
-| `say` | `say(channel: str, text: str, task_id: UUID | None = None)` |
 | `dm` | `dm(recipient: str, text: str, task_id: UUID | None = None, skill: str | None = None)` |
 | `notify` | `notify(target: str, text: str, priority: str = 'normal', task_id: UUID | None = None)` |
 | `evidence` | `evidence(task_id: UUID)` |
-| `open_session` | `open_session(task_id: UUID, channel: str, topic: str, relationship_type: str = 'discussion', group_id: UUID | None = None)` |
-| `link_session` | `link_session(session_id: UUID, task_id: UUID, is_primary: bool = False, relationship_type: str = 'discussion')` |
 | `pr_update` | `pr_update(see do_server)` |
 | `draft_playbook` | `draft_playbook(title: str, problem: str, procedure: str, tags: list[str] = PydanticUndefined, source_task_id: UUID | None = None)` |
 | `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
 | `notify_get` | `notify_get(notification_id: UUID)` |
 | `notify_ack` | `notify_ack(notification_id: UUID)` |
 | `read_messages` | `read_messages()` |
-| `channels` | `channels()` |
+| `read_a2a` | `read_a2a(see do_server)` |
 
 ## main_pm
 
@@ -157,6 +152,7 @@ real tools live in their agent_sdk drivers, not role_config.
 | `give_me_work` | `give_me_work()` |
 | `i_am_idle` | `i_am_idle()` |
 | `i_will_plan` | `i_will_plan(task_id: UUID, plan: str, approach: str, sub_tasks: list[str | str] = PydanticUndefined, technical_considerations: list[str] = PydanticUndefined, risks: list[str | str] = PydanticUndefined, open_questions: list[str | str | bool] = PydanticUndefined)` |
+| `request_changes` | `request_changes(task_id: UUID, issues: list[str])` |
 | `resume` | `resume(task_id: UUID)` |
 | `submit_root` | `submit_root(task_id: UUID, notes: str)` |
 | `triage` | `triage()` |
@@ -169,19 +165,16 @@ real tools live in their agent_sdk drivers, not role_config.
 | Tool | Body schema |
 |------|-------------|
 | `note` | `note(text: str, scope: str = 'note', task_id: UUID | None = None, title: str | None = None, context: str = '', options: list[str | str] | None = None, chosen: str = '', rationale: str = '', consequences: list[str] | None = None, what_done: str = '', what_learned: str = '', what_struggled: str = '', next_steps: list[str] | None = None, section: str | Any | None = None, done: str = '', next: str = '', where_to_look: list[str] | None = None)` |
-| `say` | `say(channel: str, text: str, task_id: UUID | None = None)` |
 | `dm` | `dm(recipient: str, text: str, task_id: UUID | None = None, skill: str | None = None)` |
 | `notify` | `notify(target: str, text: str, priority: str = 'normal', task_id: UUID | None = None)` |
 | `evidence` | `evidence(task_id: UUID)` |
-| `open_session` | `open_session(task_id: UUID, channel: str, topic: str, relationship_type: str = 'discussion', group_id: UUID | None = None)` |
-| `link_session` | `link_session(session_id: UUID, task_id: UUID, is_primary: bool = False, relationship_type: str = 'discussion')` |
 | `pr_update` | `pr_update(see do_server)` |
 | `draft_playbook` | `draft_playbook(title: str, problem: str, procedure: str, tags: list[str] = PydanticUndefined, source_task_id: UUID | None = None)` |
 | `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
 | `notify_get` | `notify_get(notification_id: UUID)` |
 | `notify_ack` | `notify_ack(notification_id: UUID)` |
 | `read_messages` | `read_messages()` |
-| `channels` | `channels()` |
+| `read_a2a` | `read_a2a(see do_server)` |
 
 ## product_owner
 
@@ -199,16 +192,15 @@ real tools live in their agent_sdk drivers, not role_config.
 |------|-------------|
 | `note` | `note(text: str, scope: str = 'note', task_id: UUID | None = None, title: str | None = None, context: str = '', options: list[str | str] | None = None, chosen: str = '', rationale: str = '', consequences: list[str] | None = None, what_done: str = '', what_learned: str = '', what_struggled: str = '', next_steps: list[str] | None = None, section: str | Any | None = None, done: str = '', next: str = '', where_to_look: list[str] | None = None)` |
 | `pitch` | `pitch(title: str, slug: str, problem: str, proposed_solution: str, target_cells: list[str])` |
-| `say` | `say(channel: str, text: str, task_id: UUID | None = None)` |
 | `dm` | `dm(recipient: str, text: str, task_id: UUID | None = None, skill: str | None = None)` |
 | `notify` | `notify(target: str, text: str, priority: str = 'normal', task_id: UUID | None = None)` |
 | `evidence` | `evidence(task_id: UUID)` |
-| `open_session` | `open_session(task_id: UUID, channel: str, topic: str, relationship_type: str = 'discussion', group_id: UUID | None = None)` |
 | `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
 | `notify_get` | `notify_get(notification_id: UUID)` |
 | `notify_ack` | `notify_ack(notification_id: UUID)` |
 | `read_messages` | `read_messages()` |
-| `channels` | `channels()` |
+| `read_a2a` | `read_a2a(see do_server)` |
+| `propose_roadmap` | `propose_roadmap(cycle_goal: str, items: list[RoadmapItemInput])` |
 
 ## head_marketing
 
@@ -226,16 +218,14 @@ real tools live in their agent_sdk drivers, not role_config.
 |------|-------------|
 | `note` | `note(text: str, scope: str = 'note', task_id: UUID | None = None, title: str | None = None, context: str = '', options: list[str | str] | None = None, chosen: str = '', rationale: str = '', consequences: list[str] | None = None, what_done: str = '', what_learned: str = '', what_struggled: str = '', next_steps: list[str] | None = None, section: str | Any | None = None, done: str = '', next: str = '', where_to_look: list[str] | None = None)` |
 | `pitch` | `pitch(title: str, slug: str, problem: str, proposed_solution: str, target_cells: list[str])` |
-| `say` | `say(channel: str, text: str, task_id: UUID | None = None)` |
 | `dm` | `dm(recipient: str, text: str, task_id: UUID | None = None, skill: str | None = None)` |
 | `notify` | `notify(target: str, text: str, priority: str = 'normal', task_id: UUID | None = None)` |
 | `evidence` | `evidence(task_id: UUID)` |
-| `open_session` | `open_session(task_id: UUID, channel: str, topic: str, relationship_type: str = 'discussion', group_id: UUID | None = None)` |
 | `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
 | `notify_get` | `notify_get(notification_id: UUID)` |
 | `notify_ack` | `notify_ack(notification_id: UUID)` |
 | `read_messages` | `read_messages()` |
-| `channels` | `channels()` |
+| `read_a2a` | `read_a2a(see do_server)` |
 
 ## auditor
 
@@ -257,7 +247,6 @@ real tools live in their agent_sdk drivers, not role_config.
 | `archive_playbook` | `archive_playbook(playbook_id: UUID)` |
 | `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
 | `notify_get` | `notify_get(notification_id: UUID)` |
-| `channels` | `channels()` |
 
 ## pr_reviewer
 
@@ -272,6 +261,7 @@ real tools live in their agent_sdk drivers, not role_config.
 | `post_pr_review` | `post_pr_review(task_id: UUID, body: str, event: str = 'REQUEST_CHANGES', findings: list[str | Any] = PydanticUndefined)` |
 | `pr_fail` | `pr_fail(task_id: UUID, issues: list[str])` |
 | `pr_pass` | `pr_pass(task_id: UUID, notes: str)` |
+| `unclaim` | `unclaim(task_id: UUID)` |
 
 ### Content (do) tools
 
@@ -281,5 +271,4 @@ real tools live in their agent_sdk drivers, not role_config.
 | `evidence` | `evidence(task_id: UUID)` |
 | `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
 | `notify_get` | `notify_get(notification_id: UUID)` |
-| `channels` | `channels()` |
 

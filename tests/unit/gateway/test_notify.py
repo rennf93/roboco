@@ -26,7 +26,6 @@ def _make_deps(**overrides: AsyncMock) -> ContentActionsDeps:
         task.agent_for.return_value = MagicMock(role="cell_pm")
 
     git = overrides.get("git", AsyncMock())
-    messaging = overrides.get("messaging", AsyncMock())
     a2a = overrides.get("a2a", AsyncMock())
     journal = overrides.get("journal", AsyncMock())
     workspace = overrides.get("workspace", AsyncMock())
@@ -34,7 +33,6 @@ def _make_deps(**overrides: AsyncMock) -> ContentActionsDeps:
     return ContentActionsDeps(
         task=task,
         git=git,
-        messaging=messaging,
         a2a=a2a,
         journal=journal,
         workspace=workspace,

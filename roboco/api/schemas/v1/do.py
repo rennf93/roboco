@@ -128,12 +128,6 @@ class ProposeRoadmapRequest(BaseModel):
     items: list[RoadmapItemInput] = Field(..., min_length=1)
 
 
-class SayRequest(BaseModel):
-    channel: str
-    text: str = Field(..., min_length=1)
-    task_id: UUID | None = None
-
-
 class DmRequest(BaseModel):
     recipient: str  # agent slug
     text: str = Field(..., min_length=1)
@@ -150,34 +144,6 @@ class NotifyRequest(BaseModel):
 
 class EvidenceRequest(BaseModel):
     task_id: UUID
-
-
-# =============================================================================
-# Wave 1 — Pre-gateway parity restoration
-# =============================================================================
-
-
-class OpenSessionRequest(BaseModel):
-    """PM creates a discussion session for one or more tasks.
-
-    Backs the `open_session` do-verb. Populates the
-    panel's Sessions tab.
-    """
-
-    task_id: UUID
-    channel: str = Field(..., min_length=1)
-    topic: str = Field(..., min_length=1, max_length=200)
-    relationship_type: str = "discussion"  # discussion|planning|review|retrospective
-    group_id: UUID | None = None
-
-
-class LinkSessionRequest(BaseModel):
-    """Link an existing session to a task. Idempotent."""
-
-    session_id: UUID
-    task_id: UUID
-    is_primary: bool = False
-    relationship_type: str = "discussion"
 
 
 class ProgressRequest(BaseModel):
@@ -214,10 +180,6 @@ class NotifyGetRequest(BaseModel):
 
 class NotifyAckRequest(BaseModel):
     notification_id: UUID
-
-
-class ChannelsRequest(BaseModel):
-    """No params — caller's identity comes from X-Agent-ID header."""
 
 
 class ReadMessagesRequest(BaseModel):

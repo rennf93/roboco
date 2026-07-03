@@ -284,7 +284,6 @@ class ContentActionsDeps:
 
     task: Any
     git: Any
-    messaging: Any
     a2a: Any
     journal: Any
     workspace: Any
@@ -378,10 +377,6 @@ class ContentActions:
     @property
     def git(self) -> Any:
         return self._deps.git
-
-    @property
-    def messaging(self) -> Any:
-        return self._deps.messaging
 
     @property
     def a2a(self) -> Any:
@@ -1211,80 +1206,6 @@ class ContentActions:
             },
         )
 
-    async def say(
-        self,
-        *,
-        agent_id: UUID,
-        channel: str,
-        text: str,
-        task_id: UUID | None = None,
-    ) -> Envelope:
-        """Post to a channel. task_id auto-injected if you have an active task.
-
-        Channel-write RBAC is enforced inside `messaging.post_to_channel`
-        (which forwards the agent's slug to `send_message` so
-        `validate_channel_access` runs). A denial bubbles up as
-        `ChannelAccessDeniedError`; we convert it into a friendly
-        `not_authorized` Envelope listing the agent's writable channels.
-        """
-        if rej := self._reject_soup(text, field="message", min_chars=2):
-            return rej
-        from roboco.enforcement.channel_access import (
-            ChannelAccessDeniedError,
-            get_agent_channels,
-        )
-
-        # Spec §5.5: silent / no-comms roles — defense-in-depth runtime guard.
-        # The spawn manifest already omits `say` from these roles' tool
-        # surfaces, but that is convention-only. This guard refuses any
-        # call that bypassed the manifest (direct verb dispatch, test
-        # harness, future routing change) so the no-comms rule holds
-        # regardless of how the call arrived. Covers auditor (silent
-        # observer), pr_reviewer (posts findings on the PR), and the
-        # human-only prompter / secretary (note + evidence only).
-        agent = await self.task.agent_for(agent_id)
-        caller_role = str(agent.role) if agent is not None else ""
-        if caller_role in _NO_COMMS_ROLES:
-            return Envelope.not_authorized(
-                message=(
-                    f"role '{caller_role}' is a silent / no-comms role;"
-                    " say is not permitted"
-                ),
-                remediate=_no_comms_remediate(caller_role),
-                context_briefing={},
-            )
-
-        if task_id is not None:
-            if reject := await self._verify_explicit_task_ownership(agent_id, task_id):
-                return reject
-        else:
-            t = await self.task.get_journal_context_task_for_agent(agent_id)
-            if t is not None:
-                task_id = t.id
-        try:
-            await self.messaging.post_to_channel(
-                agent_id=agent_id,
-                channel_slug=channel,
-                content=text,
-                task_id=task_id,
-            )
-        except ChannelAccessDeniedError as e:
-            writable = get_agent_channels(e.agent_id, action="write")
-            writable_str = ", ".join(writable) if writable else "(none)"
-            return Envelope.not_authorized(
-                message=(
-                    f"agent '{e.agent_id}' may not write to channel '{e.channel_slug}'"
-                ),
-                remediate=f"channels you may write to: {writable_str}",
-                context_briefing={},
-            )
-        return Envelope.ok(
-            status="posted",
-            task_id=str(task_id) if task_id else None,
-            next="continue",
-            context_briefing={},
-        )
-
     async def dm(
         self,
         *,
@@ -1595,10 +1516,6 @@ class ContentActions:
     # Wave 1 — pre-gateway parity restoration
     # =========================================================================
 
-    _SESSION_OPENER_ROLES: ClassVar[frozenset[str]] = frozenset(
-        {"cell_pm", "main_pm", "product_owner", "head_marketing", "ceo"}
-    )
-
     _PROGRESS_ACTIVE_STATUSES: ClassVar[frozenset[str]] = frozenset(
         {"in_progress", "verifying", "awaiting_qa", "awaiting_documentation"}
     )
@@ -1697,121 +1614,6 @@ class ContentActions:
             context_briefing={},
         )
 
-    async def open_session(
-        self,
-        *,
-        agent_id: UUID,
-        task_id: UUID,
-        channel: str,
-        topic: str,
-        relationship_type: str = "discussion",
-        group_id: UUID | None = None,
-    ) -> Envelope:
-        """PM-or-up creates a discussion session linked to a task.
-
-        Backs the `open_session` do-verb. The
-        underlying service de-duplicates: if an ancestor of this task
-        already has a primary session in the same channel, it reuses
-        that session instead of opening a new one.
-        """
-        if rej := self._reject_soup(topic, field="topic", min_chars=5):
-            return rej
-        from roboco.models.session import (
-            SessionForTasksCreate,
-            SessionTaskRelationshipType,
-        )
-
-        agent = await self.task.agent_for(agent_id)
-        role_str = str(agent.role) if agent is not None else ""
-        if role_str not in self._SESSION_OPENER_ROLES:
-            return Envelope.not_authorized(
-                message=(f"role {role_str!r} cannot open sessions; PM roles only"),
-                remediate=(
-                    "ask your PM to open_session for you, or escalate_up if "
-                    "no session exists for the work you need to discuss"
-                ),
-                context_briefing={},
-            )
-        try:
-            rel_type = SessionTaskRelationshipType(relationship_type)
-        except ValueError:
-            rel_type = SessionTaskRelationshipType.DISCUSSION
-        req = SessionForTasksCreate(
-            task_ids=[task_id],
-            channel_slug=channel,
-            relationship_type=rel_type,
-            group_id=group_id,
-        )
-        # ``topic`` isn't part of SessionForTasksCreateRequest yet — pre-gateway
-        # the session topic was implicit (group name). For now we attach it to
-        # the envelope so the panel + journal can surface it; threading it
-        # into the session row is Wave 2 work.
-        _ = topic
-        session, links = await self.messaging.create_session_for_tasks(
-            req=req, pm_agent_id=agent_id
-        )
-        return Envelope.ok(
-            status="session_open",
-            task_id=str(task_id),
-            next="continue",
-            evidence={
-                "session_id": str(session.id),
-                "channel": channel,
-                "topic": topic,
-                "link_count": len(links),
-            },
-            context_briefing={},
-        )
-
-    async def link_session(
-        self,
-        *,
-        agent_id: UUID,
-        session_id: UUID,
-        task_id: UUID,
-        is_primary: bool = False,
-        relationship_type: str = "discussion",
-    ) -> Envelope:
-        """Link an existing session to a task (idempotent).
-
-        Caller must own the task — prevents cross-agent session-link spam.
-        """
-        from roboco.models.session import SessionTaskRelationshipType
-
-        t = await self.task.get(task_id)
-        if t is None:
-            return Envelope.not_found(message=f"task {task_id} not found")
-        if t.assigned_to is not None and t.assigned_to != agent_id:
-            return _ownership_violation(task_id)
-        try:
-            rel = SessionTaskRelationshipType(relationship_type)
-        except ValueError:
-            return Envelope.invalid_state(
-                message=(f"invalid relationship_type {relationship_type!r}"),
-                remediate=(
-                    "use one of: discussion | planning | review | retrospective"
-                ),
-                context_briefing={},
-            )
-        link = await self.messaging.link_session_to_task(
-            session_id=session_id,
-            task_id=task_id,
-            added_by=agent_id,
-            is_primary=is_primary,
-            relationship_type=rel,
-        )
-        return Envelope.ok(
-            status="session_linked",
-            task_id=str(task_id),
-            next="continue",
-            evidence={
-                "session_id": str(session_id),
-                "link_id": str(link.id),
-                "is_primary": is_primary,
-            },
-            context_briefing={},
-        )
-
     async def notify_list(
         self,
         *,
@@ -1882,39 +1684,6 @@ class ContentActions:
                 "body": n.body,
                 "requires_ack": n.requires_ack,
                 "from_agent": str(n.from_agent) if n.from_agent else None,
-            },
-            context_briefing={},
-        )
-
-    async def channels(self, *, agent_id: UUID) -> Envelope:
-        """Return the channels this agent can read / write.
-
-        Pre-gateway parity for ``roboco_channel_list``. Stops the
-        invented-channel-slug pattern (e.g. ``backend-dev``, ``backend``)
-        observed on smoke runs — the LLM sees the closed set in the
-        response and can pattern-match valid slugs from it.
-        """
-        from roboco.enforcement.channel_access import get_agent_channels
-
-        agent = await self.task.agent_for(agent_id)
-        slug = getattr(agent, "slug", "") or ""
-        if not slug:
-            return Envelope.not_found(
-                message=f"agent {agent_id} not in registry",
-            )
-        readable = sorted(get_agent_channels(slug, action="read"))
-        writable = sorted(get_agent_channels(slug, action="write"))
-        return Envelope.ok(
-            status="ok",
-            task_id=None,
-            next="continue",
-            evidence={
-                "writable": writable,
-                "readable": readable,
-                "note": (
-                    "Use the slug verbatim (no leading '#'). Inventing slugs "
-                    "returns 'Channel not found'."
-                ),
             },
             context_briefing={},
         )

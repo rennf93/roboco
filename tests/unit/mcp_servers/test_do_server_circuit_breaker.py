@@ -35,7 +35,6 @@ _FULL_MANIFEST = {
     "do_tools": [
         "commit",
         "note",
-        "say",
         "dm",
         "evidence",
         "progress",
@@ -394,7 +393,7 @@ def test_dict_shaped_invalid_input_counts_as_incomplete_input(
             "error": {"code": "INVALID_INPUT", "message": "bad payload"}
         },
         sdk_response={
-            "verb": "say",
+            "verb": "dm",
             "task_id": None,
             "attempts": 1,
             "limit": 3,
@@ -404,7 +403,7 @@ def test_dict_shaped_invalid_input_counts_as_incomplete_input(
         },
     )
     with patch("httpx.Client", side_effect=factory):
-        do_module.say(channel="backend-cell", text="x")
+        do_module.dm(recipient="be-qa", text="x")
     sdk_calls = [(url, body) for url, body in captured if "test-sdk" in url]
     assert len(sdk_calls) == 1
     assert sdk_calls[0][1]["rejection_kind"] == "incomplete_input"

@@ -36,7 +36,6 @@ from roboco.services.gateway.content_actions import ContentActions, ContentActio
 from roboco.services.gateway.evidence_repo import EvidenceRepo
 from roboco.services.git import GitService
 from roboco.services.journal import JournalService
-from roboco.services.messaging import MessagingService
 from roboco.services.notification import NotificationService
 from roboco.services.notification_delivery import NotificationDeliveryService
 from roboco.services.permissions import AgentContext, PermissionService
@@ -711,7 +710,6 @@ async def get_content_actions(
         ContentActionsDeps(
             task=TaskService(db_session),
             git=GitService(db_session),
-            messaging=MessagingService(db_session),
             a2a=A2AService(db_session),
             journal=JournalService(db_session),
             workspace=WorkspaceService(db_session),
