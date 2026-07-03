@@ -62,6 +62,11 @@ async def ensure_seed_user(db: AsyncSession) -> None:
         logger.info("Seeded cloud-auth login user", email=email)
         return
 
+    _apply_seed_updates(existing, email, password)
+
+
+def _apply_seed_updates(existing: UserTable, email: str, password: str) -> None:
+    """Reconcile the existing seed row to the configured email/password."""
     changed = False
     if existing.email != email:
         existing.email = email

@@ -696,6 +696,26 @@ class _SpawnAbortedDuringShutdown(Exception):
     """
 
 
+def _is_held_ceo_source(task: dict[str, Any]) -> bool:
+    """True for sources the PM dispatcher must never route as delivery work.
+
+    External-PR review (owned by the PR dispatcher), release proposals and X
+    posts/replies (CEO-HELD, acted on only by their own routes), and a
+    self-heal fix task until the CEO's approve_and_start flips
+    ``confirmed_by_human``. Module-level (not a method) so the dispatcher's
+    unit tests, which drive it with a wholesale-mocked ``self``, exercise the
+    real skip logic rather than an auto-mocked stub.
+    """
+    source = task.get("source")
+    if source in PR_REVIEW_SOURCES:
+        return True
+    if source == RELEASE_MANAGER_SOURCE:
+        return True
+    if source in X_SOURCES:
+        return True
+    return source == SELF_HEAL_SOURCE and not task.get("confirmed_by_human")
+
+
 class AgentOrchestrator:
     """
     Manages Claude Code containers for all agents.
@@ -10495,26 +10515,10 @@ Start now: evidence(task_id="{task_id}")
         for task in tasks:
             if self._is_task_handled_this_tick(task.get("id")):
                 continue
-            # External-PR review tasks are owned by _dispatch_pr_review_work; the
-            # PM hierarchy never routes or spawns them.
-            if task.get("source") in PR_REVIEW_SOURCES:
-                continue
-            # Release proposals are HELD for the CEO — never delivery work. They
-            # are acted on by the release routes + executor, never dispatched.
-            if task.get("source") == RELEASE_MANAGER_SOURCE:
-                continue
-            # X posts/replies are HELD for the CEO — never delivery work. They
-            # are acted on by the x routes + post service, never dispatched.
-            if task.get("source") in X_SOURCES:
-                continue
-            # A self-heal fix task is HELD for the CEO's Approve-&-Start
-            # (confirmed_by_human=False at origination). It must NOT dispatch
-            # autonomously — the CEO's approve_and_start flips
-            # confirmed_by_human True, after which it flows through the
-            # assigned-PM path below like any other PM task.
-            if task.get("source") == SELF_HEAL_SOURCE and not task.get(
-                "confirmed_by_human"
-            ):
+            # CEO-HELD / externally-owned sources are never PM delivery work
+            # (external-PR review, release proposals, X posts/replies, and a
+            # not-yet-confirmed self-heal fix task) — see _is_held_ceo_source.
+            if _is_held_ceo_source(task):
                 continue
             assigned_to = task.get("assigned_to")
             if assigned_to:

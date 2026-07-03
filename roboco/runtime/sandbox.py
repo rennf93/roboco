@@ -264,15 +264,10 @@ class SandboxProvisioner:
         with contextlib.suppress(Exception):
             await run(["rm", "-f", name], _DOCKER_TEARDOWN_TIMEOUT_SECONDS)
 
-    async def janitor_sweep(self) -> None:
-        """Remove sandbox containers whose owning agent container is gone.
-
-        Async, error-isolated: any docker-call failure aborts this sweep pass
-        (never raises), retried on the next tick.
-        """
-        run = self._run()
+    async def _list_labeled_sandboxes(self) -> list[tuple[str, str]]:
+        """(sandbox name, owner) pairs from `docker ps`; [] on any failure."""
         try:
-            rc, stdout, _ = await run(
+            rc, stdout, _ = await self._run()(
                 [
                     "ps",
                     "-a",
@@ -284,14 +279,15 @@ class SandboxProvisioner:
                 _DOCKER_PS_TIMEOUT_SECONDS,
             )
         except Exception:
-            return
+            return []
         if rc != 0:
-            return
-        sandboxes = _parse_owner_lines(stdout.decode(errors="replace"))
-        if not sandboxes:
-            return
+            return []
+        return _parse_owner_lines(stdout.decode(errors="replace"))
+
+    async def _list_live_agent_containers(self) -> set[str] | None:
+        """Names of running agent containers; None on any failure (abort sweep)."""
         try:
-            live_rc, live_out, _ = await run(
+            rc, out, _ = await self._run()(
                 [
                     "ps",
                     "--filter",
@@ -302,14 +298,31 @@ class SandboxProvisioner:
                 _DOCKER_PS_TIMEOUT_SECONDS,
             )
         except Exception:
-            return
-        live = set(live_out.decode(errors="replace").split()) if live_rc == 0 else set()
+            return None
+        return set(out.decode(errors="replace").split()) if rc == 0 else set()
+
+    def _prune_grace(self) -> None:
+        """Drop provision timestamps past the janitor grace window."""
         now = time.monotonic()
         self._provisioned_at = {
             owner: at
             for owner, at in self._provisioned_at.items()
             if now - at < _JANITOR_GRACE_SECONDS
         }
+
+    async def janitor_sweep(self) -> None:
+        """Remove sandbox containers whose owning agent container is gone.
+
+        Async, error-isolated: any docker-call failure aborts this sweep pass
+        (never raises), retried on the next tick.
+        """
+        sandboxes = await self._list_labeled_sandboxes()
+        if not sandboxes:
+            return
+        live = await self._list_live_agent_containers()
+        if live is None:
+            return
+        self._prune_grace()
         for name, owner in sandboxes:
             if owner and owner not in live and owner not in self._provisioned_at:
                 await self._teardown_one(name)

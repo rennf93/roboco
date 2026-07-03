@@ -122,6 +122,26 @@ def oauth1_authorization_header(
     return f"OAuth {header_params}"
 
 
+def _parse_mention_items(data: dict[str, Any]) -> list[XMention]:
+    """Normalise the `data` array of a mentions response into XMentions."""
+    mentions: list[XMention] = []
+    for item in data.get("data") or []:
+        if not isinstance(item, dict):
+            continue
+        metrics = item.get("public_metrics") or {}
+        mentions.append(
+            XMention(
+                id=str(item.get("id", "")),
+                author_id=str(item.get("author_id", "")),
+                text=str(item.get("text", "")),
+                like_count=int(metrics.get("like_count", 0) or 0),
+                reply_count=int(metrics.get("reply_count", 0) or 0),
+                retweet_count=int(metrics.get("retweet_count", 0) or 0),
+            )
+        )
+    return mentions
+
+
 # --------------------------------------------------------------------------- #
 # Client
 # --------------------------------------------------------------------------- #
@@ -280,22 +300,7 @@ class LiveXClient(XClient):
             data: dict[str, Any] = resp.json()
         except (ValueError, TypeError):
             return []
-        mentions: list[XMention] = []
-        for item in data.get("data") or []:
-            if not isinstance(item, dict):
-                continue
-            metrics = item.get("public_metrics") or {}
-            mentions.append(
-                XMention(
-                    id=str(item.get("id", "")),
-                    author_id=str(item.get("author_id", "")),
-                    text=str(item.get("text", "")),
-                    like_count=int(metrics.get("like_count", 0) or 0),
-                    reply_count=int(metrics.get("reply_count", 0) or 0),
-                    retweet_count=int(metrics.get("retweet_count", 0) or 0),
-                )
-            )
-        return mentions
+        return _parse_mention_items(data)
 
 
 def build_x_client(

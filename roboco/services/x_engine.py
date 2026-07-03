@@ -234,6 +234,13 @@ class XEngine(BaseService):
             return []
         mentions = await client.fetch_mentions(since_id=None, max_results=50)
         project = await self._roboco_project()
+        return await self._process_mentions(mentions, project, open_count)
+
+    async def _process_mentions(
+        self, mentions: list[XMention], project: ProjectTable | None, open_count: int
+    ) -> list[TaskTable]:
+        """Filter/dedup each mention and originate held reply drafts, honoring
+        the per-cycle and open-post caps."""
         originated: list[TaskTable] = []
         for mention in mentions:
             if len(originated) >= settings.x_mentions_max_per_cycle:
@@ -250,8 +257,9 @@ class XEngine(BaseService):
                     "x-engine: RoboCo project not resolvable; skipping mentions cycle"
                 )
                 break
-            task = await self._originate_reply(mention, cast("UUID", project.id))
-            originated.append(task)
+            originated.append(
+                await self._originate_reply(mention, cast("UUID", project.id))
+            )
         return originated
 
     async def _originate_reply(self, mention: XMention, project_id: UUID) -> TaskTable:
