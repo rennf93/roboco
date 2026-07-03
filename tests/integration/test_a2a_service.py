@@ -599,6 +599,28 @@ async def test_list_unread_a2a_preview_is_incoming_not_own(a2a_setup: dict) -> N
     assert "ok on it" not in items[0]["last_message_preview"]
 
 
+@pytest.mark.asyncio
+async def test_get_unread_messages_returns_incoming_bodies_and_clears(
+    a2a_setup: dict,
+) -> None:
+    """read_a2a delivers the unread INCOMING bodies to the agent (never its own
+    sends) in order, then clears them — a second call returns nothing."""
+    svc = a2a_setup["svc"]
+    dev = a2a_setup["dev"]  # be-dev-1
+    conv = await svc.get_or_create_conversation(
+        "be-qa", "be-dev-1", task_id=a2a_setup["task_id"]
+    )
+    await svc.send_chat_message(UUID(conv.id), "be-qa", "first")
+    await svc.send_chat_message(UUID(conv.id), "be-dev-1", "my own reply")
+    await svc.send_chat_message(UUID(conv.id), "be-qa", "second")
+
+    msgs = await svc.get_unread_messages(dev.id)
+
+    assert [m["content"] for m in msgs] == ["first", "second"]
+    assert all(m["from_agent"] == "be-qa" for m in msgs)
+    assert await svc.get_unread_messages(dev.id) == []
+
+
 # ---------------------------------------------------------------------------
 # Admin (CEO live view) service methods — no participant filter
 # ---------------------------------------------------------------------------

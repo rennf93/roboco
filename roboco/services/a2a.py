@@ -1500,6 +1500,76 @@ class A2AService:
         await self.session.flush()
         return len(convs)
 
+    async def get_unread_messages(self, agent_id: UUID) -> list[dict[str, Any]]:
+        """Return the agent's unread INCOMING A2A messages and mark them read.
+
+        Delivers the actual message bodies (not just counts) so the agent can
+        reason about what was said to it. Only inbound messages (``from_agent``
+        != caller) are returned — the agent's own sends are never echoed back.
+        Collect-then-mark is atomic within the session: only the exact rows
+        returned are stamped read, so a message arriving mid-call stays unread
+        rather than being silently cleared.
+        """
+        from datetime import UTC, datetime
+
+        from sqlalchemy import func, or_, update
+
+        slug = await self._resolve_slug_from_id(agent_id)
+        conv_ids = select(A2AConversationTable.id).where(
+            or_(
+                A2AConversationTable.agent_a == slug,
+                A2AConversationTable.agent_b == slug,
+            )
+        )
+        result = await self.session.execute(
+            select(A2AMessageTable)
+            .where(
+                A2AMessageTable.conversation_id.in_(conv_ids),
+                A2AMessageTable.from_agent != slug,
+                A2AMessageTable.read_at.is_(None),
+            )
+            .order_by(A2AMessageTable.created_at.asc())
+        )
+        msgs = list(result.scalars().all())
+        if not msgs:
+            return []
+
+        await self.session.execute(
+            update(A2AMessageTable)
+            .where(A2AMessageTable.id.in_([m.id for m in msgs]))
+            .values(read_at=datetime.now(UTC))
+        )
+        # Recompute each affected conversation's unread counter from the rows
+        # still unread — a message that arrived mid-call is preserved, not zeroed.
+        for cid in {m.conversation_id for m in msgs}:
+            conv = await self.session.get(A2AConversationTable, cid)
+            if conv is None:
+                continue
+            remaining = await self.session.scalar(
+                select(func.count())
+                .select_from(A2AMessageTable)
+                .where(
+                    A2AMessageTable.conversation_id == cid,
+                    A2AMessageTable.from_agent != slug,
+                    A2AMessageTable.read_at.is_(None),
+                )
+            )
+            if conv.agent_a == slug:
+                conv.unread_by_a = remaining or 0
+            else:
+                conv.unread_by_b = remaining or 0
+        await self.session.flush()
+
+        return [
+            {
+                "conversation_id": str(m.conversation_id),
+                "from_agent": m.from_agent,
+                "content": m.content,
+                "created_at": m.created_at.isoformat() if m.created_at else None,
+            }
+            for m in msgs
+        ]
+
     async def get_inbox_summary(self, agent_slug: str) -> A2AInboxSummary:
         """Get summary of pending A2A for agent."""
         from sqlalchemy import func, or_

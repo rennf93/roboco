@@ -361,6 +361,17 @@ async def do_read_messages(
     return envelope_to_response(env, request)
 
 
+@router.post("/read_a2a")
+async def do_read_a2a(
+    request: Request,
+    _body: ReadMessagesRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.read_a2a(agent_id=x_agent_id)
+    return envelope_to_response(env, request)
+
+
 @router.post("/channels")
 async def do_channels(
     request: Request,

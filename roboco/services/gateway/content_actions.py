@@ -2074,6 +2074,23 @@ class ContentActions:
             context_briefing={},
         )
 
+    async def read_a2a(self, *, agent_id: UUID) -> Envelope:
+        """Return the caller's unread INCOMING A2A message bodies, then clear them.
+
+        The content-bearing read: ``read_messages`` only zeroes the unread
+        counter, so an agent could see "3 unread from be-qa" without ever
+        reading what was said. This returns the actual text of the inbound
+        messages (never the caller's own sends) so it can act on them.
+        """
+        messages = await self.a2a.get_unread_messages(agent_id)
+        return Envelope.ok(
+            status="read",
+            task_id=None,
+            next="act on the messages, then retry i_am_idle()",
+            evidence={"messages": messages},
+            context_briefing={},
+        )
+
 
 def _strip_task_prefix(msg: str) -> str:
     """Strip any [task-id] prefix the agent supplied; gateway re-adds canonical."""

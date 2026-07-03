@@ -855,6 +855,15 @@ def read_messages() -> dict[str, Any]:
     return _post("/api/v1/do/read_messages", {})
 
 
+def read_a2a() -> dict[str, Any]:
+    """Read the bodies of your unread A2A direct messages (and mark them read).
+
+    Unlike ``read_messages`` (which only clears the unread counter), this
+    returns what other agents actually said to you so you can act on it.
+    """
+    return _post("/api/v1/do/read_a2a", {})
+
+
 # ---------- Tool registry ----------
 #
 # Maps the tool name an agent calls (matches manifest entries and the
@@ -878,6 +887,7 @@ _TOOLS: dict[str, Any] = {
     "channels": channels,
     "pr_update": pr_update,
     "read_messages": read_messages,
+    "read_a2a": read_a2a,
     "draft_playbook": draft_playbook,
     "approve_playbook": approve_playbook,
     "reject_playbook": reject_playbook,
