@@ -1585,31 +1585,6 @@ class MessagingService(BaseService):
                 message_id=str(message.id),
             )
 
-    async def _index_message_async(self, message: MessageTable) -> None:
-        """Index message in RAG system (fire-and-forget)."""
-        from roboco.models.optimal import IndexConversationParams
-        from roboco.services.optimal import get_optimal_service
-
-        try:
-            optimal = await get_optimal_service()
-            await optimal.index_conversation(
-                IndexConversationParams(
-                    content=message.content,
-                    channel_id=require_uuid(message.channel_id),
-                    session_id=require_uuid(message.session_id),
-                    agent_id=require_uuid(message.agent_id),
-                    task_id=to_python_uuid(message.task_id),
-                    message_type=message.type.value if message.type else None,
-                )
-            )
-            self.log.debug("Message indexed", message_id=str(message.id))
-        except Exception as e:
-            self.log.warning(
-                "Failed to index message",
-                message_id=str(message.id),
-                error=str(e),
-            )
-
     _MAX_MSG_CHARS: ClassVar[int] = 10_000
 
     def _assert_content(self, raw: str | None) -> None:
@@ -1707,11 +1682,6 @@ class MessagingService(BaseService):
 
         # Notify mentioned agents via Redis Streams
         await self._notify_mentions(message, req.agent_id, channel.slug)
-
-        # Index message in RAG (fire-and-forget)
-        bg_task = asyncio.create_task(self._index_message_async(message))
-        self._background_tasks.add(bg_task)
-        bg_task.add_done_callback(self._background_tasks.discard)
 
         if self._check_session_boundaries(session):
             await self.close_session(cast("UUID", session.id), "Boundary exceeded")

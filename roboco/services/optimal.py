@@ -21,7 +21,6 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from roboco.models.optimal import (
-    IndexConversationParams,
     IndexDecisionParams,
     IndexErrorParams,
     IndexJournalEntryParams,
@@ -34,7 +33,6 @@ from roboco.models.optimal import (
 )
 from roboco.services.optimal_brain.indexes import (
     BaseIndexPlugin,
-    ConversationsIndexPlugin,
     DecisionsIndexPlugin,
     DocsIndexPlugin,
     ErrorsIndexPlugin,
@@ -139,7 +137,6 @@ class AutoIndexReport:
 PLUGIN_REGISTRY: dict[IndexType, type[BaseIndexPlugin]] = {
     # IndexType.CODE removed - deprecated due to slow CPU embedding and poor retrieval
     IndexType.DOCUMENTATION: DocsIndexPlugin,
-    IndexType.CONVERSATIONS: ConversationsIndexPlugin,
     IndexType.JOURNALS: JournalsIndexPlugin,
     IndexType.ERRORS: ErrorsIndexPlugin,
     IndexType.STANDARDS: StandardsIndexPlugin,
@@ -761,52 +758,6 @@ class OptimalService:
                 )
             )
             return [r[0] for r in rows.all() if r[0]]
-
-    async def index_conversation(self, params: IndexConversationParams) -> None:
-        """Index a conversation message."""
-        plugin = self._get_plugin(IndexType.CONVERSATIONS)
-        if isinstance(plugin, ConversationsIndexPlugin):
-            result = await plugin.index_message(params)
-        else:
-            result = await plugin.ingest(
-                content=params.content,
-                channel_id=params.channel_id,
-                session_id=params.session_id,
-                agent_id=params.agent_id,
-                task_id=params.task_id,
-                message_type=params.message_type,
-            )
-
-        # Track in database. Refuse to fall back to 'unknown' — that masked
-        # upstream bugs where session_id was None despite the type contract.
-        if params.session_id is None:
-            raise ValueError(
-                "index_conversation: session_id is required; refusing to "
-                "build doc-source with placeholder. Caller must pass a "
-                "flushed session UUID."
-            )
-        # Best-effort: an actual failure (e.g. embedder down) must not record
-        # the message as indexed. A successful-but-empty result (short message
-        # filtered to zero chunks) still tracks, matching prior behavior.
-        if not result.success:
-            logger.warning(
-                "Conversation indexing failed; skipping tracking row",
-                session_id=str(params.session_id),
-                error=result.error,
-            )
-            return
-        source = f"roboco://conversations/{params.session_id}"
-        await self._track_indexed_document(
-            IndexType.CONVERSATIONS,
-            source=source,
-            title=f"Message in {params.channel_id or 'channel'}",
-            preview=params.content[:500] if params.content else None,
-            metadata={
-                "channel_id": str(params.channel_id) if params.channel_id else None,
-                "session_id": str(params.session_id) if params.session_id else None,
-                "agent_id": str(params.agent_id) if params.agent_id else None,
-            },
-        )
 
     async def index_journal_entry(self, params: IndexJournalEntryParams) -> None:
         """Index a journal entry."""

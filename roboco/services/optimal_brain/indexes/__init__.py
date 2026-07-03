@@ -8,7 +8,6 @@ specialized chunking, metadata handling, and search strategies per type.
 
 from roboco.services.optimal_brain.indexes.base import BaseIndexPlugin, IndexConfig
 from roboco.services.optimal_brain.indexes.code import CodeIndexPlugin
-from roboco.services.optimal_brain.indexes.conversations import ConversationsIndexPlugin
 from roboco.services.optimal_brain.indexes.decisions import DecisionsIndexPlugin
 from roboco.services.optimal_brain.indexes.docs import DocsIndexPlugin
 from roboco.services.optimal_brain.indexes.errors import ErrorsIndexPlugin
@@ -21,7 +20,6 @@ from roboco.services.optimal_brain.indexes.standards import StandardsIndexPlugin
 __all__ = [
     "BaseIndexPlugin",
     "CodeIndexPlugin",
-    "ConversationsIndexPlugin",
     "DecisionsIndexPlugin",
     "DocsIndexPlugin",
     "ErrorsIndexPlugin",
