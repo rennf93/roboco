@@ -53,6 +53,8 @@ dependencies = [
     "fastapi-guard",  # HTTP security middleware + per-route decorators (import: guard)
     "guard-core",  # SecurityConfig/decorator models + request/response protocols
     "fastapi-users[sqlalchemy]",  # Cloud auth: cookie session for the seeded CEO login
+    "fastapi-users-db-sqlalchemy",  # imported directly (SQLAlchemyUserDatabase); declare it
+    "pyjwt",  # imported directly as `jwt` in the cloud-auth JWT strategy
 ]
 
 [project.optional-dependencies]
