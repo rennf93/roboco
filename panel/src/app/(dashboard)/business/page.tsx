@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { GoalsTab } from "@/components/business/goals-tab";
+import { CompanyScorecardCard } from "@/components/business/company-scorecard-card";
 import { SecretaryTab } from "@/components/business/secretary-tab";
 import { PitchesTab } from "@/components/business/pitches-tab";
 
@@ -12,7 +13,7 @@ import { PitchesTab } from "@/components/business/pitches-tab";
 // Valid tab values
 // ---------------------------------------------------------------------------
 
-const TAB_VALUES = ["goals", "secretary", "pitches"] as const;
+const TAB_VALUES = ["goals", "scorecard", "secretary", "pitches"] as const;
 type TabValue = (typeof TAB_VALUES)[number];
 
 function isValidTab(value: string | null): value is TabValue {
@@ -50,12 +51,17 @@ function BusinessPageContent() {
       <Tabs value={activeTab} onValueChange={handleTabChange}>
         <TabsList>
           <TabsTrigger value="goals">Goals</TabsTrigger>
+          <TabsTrigger value="scorecard">Scorecard</TabsTrigger>
           <TabsTrigger value="secretary">Secretary</TabsTrigger>
           <TabsTrigger value="pitches">Pitches</TabsTrigger>
         </TabsList>
 
         <TabsContent value="goals" className="mt-4">
           <GoalsTab />
+        </TabsContent>
+
+        <TabsContent value="scorecard" className="mt-4">
+          <CompanyScorecardCard />
         </TabsContent>
 
         <TabsContent value="secretary" className="mt-4">

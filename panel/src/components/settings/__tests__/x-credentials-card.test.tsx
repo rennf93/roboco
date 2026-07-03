@@ -12,7 +12,7 @@ vi.mock("@/lib/api", () => ({
   xApi: { getCredentialsStatus, setCredentials },
 }));
 
-import { XCredentialsCard } from "../x-credentials-card";
+import { XCredentialsForm } from "../x-credentials-card";
 
 function withQueryClient(ui: ReactNode) {
   const client = new QueryClient({
@@ -21,7 +21,7 @@ function withQueryClient(ui: ReactNode) {
   return <QueryClientProvider client={client}>{ui}</QueryClientProvider>;
 }
 
-describe("XCredentialsCard", () => {
+describe("XCredentialsForm", () => {
   beforeEach(() => {
     getCredentialsStatus.mockClear();
     setCredentials.mockClear();
@@ -31,14 +31,14 @@ describe("XCredentialsCard", () => {
   });
 
   it("shows 'no credentials configured' by default and never renders a secret", async () => {
-    render(withQueryClient(<XCredentialsCard />));
+    render(withQueryClient(<XCredentialsForm />));
     expect(
       await screen.findByText("No credentials configured"),
     ).toBeInTheDocument();
   });
 
   it("disables Save until all 4 fields are filled", async () => {
-    render(withQueryClient(<XCredentialsCard />));
+    render(withQueryClient(<XCredentialsForm />));
     await screen.findByText("No credentials configured");
     const saveButton = screen.getByRole("button", { name: "Save" });
     expect(saveButton).toBeDisabled();
@@ -61,7 +61,7 @@ describe("XCredentialsCard", () => {
   });
 
   it("saves all 4 secrets and clears the inputs on success", async () => {
-    render(withQueryClient(<XCredentialsCard />));
+    render(withQueryClient(<XCredentialsForm />));
     await screen.findByText("No credentials configured");
 
     fireEvent.change(screen.getByLabelText("API key"), {

@@ -529,6 +529,53 @@ async def test_send_bus_failure_does_not_break_send(a2a_setup: dict) -> None:
     assert sent.content == "hello"
 
 
+@pytest.mark.asyncio
+async def test_send_chat_message_directly_publishes_event(
+    a2a_setup: dict,
+) -> None:
+    """The REST send paths (conversation-create + post-message) call
+    send_chat_message directly, not the send() wrapper. That direct path must
+    still emit A2A_MESSAGE_SENT so those messages light up the CEO's live view
+    — the gap this test guards."""
+    svc = a2a_setup["svc"]
+    task_id = a2a_setup["task_id"]
+    conv = await svc.get_or_create_conversation("be-dev-1", "be-qa", task_id=task_id)
+    mock_bus = AsyncMock()
+    mock_bus.is_connected = lambda: True
+    mock_bus.publish = AsyncMock(return_value=None)
+    with patch("roboco.services.a2a.get_event_bus", return_value=mock_bus):
+        sent = await svc.send_chat_message(
+            UUID(conv.id),
+            "be-dev-1",
+            "please review",
+            options={"skill": "code_review"},
+        )
+    mock_bus.publish.assert_awaited_once()
+    data = mock_bus.publish.await_args.args[0].data
+    assert data["message_id"] == sent.id
+    assert data["from_agent"] == "be-dev-1"
+    assert data["to_agent"] == "be-qa"
+    assert data["skill"] == "code_review"
+    assert data["task_id"] == str(task_id)
+
+
+@pytest.mark.asyncio
+async def test_suppressed_duplicate_does_not_republish(
+    a2a_setup: dict,
+) -> None:
+    """A re-sent identical unread message dedups to the existing row and must
+    NOT emit a second live-view event (no redundant cache invalidation)."""
+    svc = a2a_setup["svc"]
+    conv = await svc.get_or_create_conversation("be-dev-1", "be-qa")
+    mock_bus = AsyncMock()
+    mock_bus.is_connected = lambda: True
+    mock_bus.publish = AsyncMock(return_value=None)
+    with patch("roboco.services.a2a.get_event_bus", return_value=mock_bus):
+        await svc.send_chat_message(UUID(conv.id), "be-dev-1", "same text")
+        await svc.send_chat_message(UUID(conv.id), "be-dev-1", "same text")
+    mock_bus.publish.assert_awaited_once()
+
+
 # ---------------------------------------------------------------------------
 # Admin (CEO live view) service methods — no participant filter
 # ---------------------------------------------------------------------------

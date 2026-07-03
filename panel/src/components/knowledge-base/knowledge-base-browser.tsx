@@ -72,6 +72,7 @@ const INDEX_LABELS: Record<KBIndexType, string> = {
   [KBIndexType.DECISIONS]: "Decisions",
   [KBIndexType.REVIEWS]: "Code Reviews",
   [KBIndexType.LEARNINGS]: "Learnings",
+  [KBIndexType.PLAYBOOKS]: "Playbooks",
 };
 
 // Valid KB index types for URL param validation
@@ -84,6 +85,7 @@ const VALID_INDEX_TYPES: KBIndexType[] = [
   KBIndexType.DECISIONS,
   KBIndexType.REVIEWS,
   KBIndexType.LEARNINGS,
+  KBIndexType.PLAYBOOKS,
 ];
 
 function KnowledgeBaseBrowserContent() {
@@ -454,6 +456,16 @@ function KnowledgeBaseBrowserContent() {
                         <div>LLM: {health.llm_status}</div>
                         <div>Vector: {health.vector_store_status}</div>
                       </div>
+                      {(["llm_error", "embedding_error", "vector_store_error"] as const)
+                        .filter((k) => typeof health.details?.[k] === "string")
+                        .map((k) => (
+                          <p
+                            key={k}
+                            className="text-xs text-red-600 dark:text-red-400 break-words"
+                          >
+                            {health.details[k] as string}
+                          </p>
+                        ))}
                     </div>
                   ) : (
                     <p className="text-muted-foreground text-sm">

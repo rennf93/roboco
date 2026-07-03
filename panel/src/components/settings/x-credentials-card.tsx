@@ -3,17 +3,10 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { xApi } from "@/lib/api";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { AtSign, Key, KeyRound, Save } from "lucide-react";
+import { Key, KeyRound, Save } from "lucide-react";
 import { toast } from "sonner";
 
 const FIELDS: Array<{
@@ -29,7 +22,8 @@ const FIELDS: Array<{
 // The CEO's one-time (or rotate) entry of the 4 OAuth 1.0a user-context
 // secrets from the X developer app. Write-only — the stored values are never
 // displayed back, only whether they're set (mirrors the git-token card).
-export function XCredentialsCard() {
+// Rendered chrome-less so it can nest inside the X-engine feature-flag row.
+export function XCredentialsForm() {
   const queryClient = useQueryClient();
   const [values, setValues] = useState({
     api_key: "",
@@ -69,67 +63,61 @@ export function XCredentialsCard() {
   const canSave = allFilled || (noneFilled && !!status?.has_credentials);
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <AtSign className="h-5 w-5" />X (Twitter) Credentials
-        </CardTitle>
-        <CardDescription>
-          The 4 OAuth 1.0a user-context secrets from your X developer app.
-          Stored encrypted server-side; agents never see them and this panel
-          never displays them again once saved.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="flex items-center gap-2 rounded-md border p-3">
-          {status?.has_credentials ? (
-            <>
-              <Key className="h-4 w-4 text-green-500" />
-              <span className="text-sm text-green-600 dark:text-green-400">
-                Credentials are set
-              </span>
-            </>
-          ) : (
-            <>
-              <KeyRound className="h-4 w-4 text-amber-500" />
-              <span className="text-sm text-amber-600 dark:text-amber-400">
-                {isLoading ? "Checking..." : "No credentials configured"}
-              </span>
-            </>
-          )}
-        </div>
+    <div className="space-y-4">
+      <p className="text-sm text-muted-foreground">
+        The 4 OAuth 1.0a user-context secrets from your X developer app. Stored
+        encrypted server-side; agents never see them and this panel never
+        displays them again once saved.
+      </p>
 
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          {FIELDS.map((field) => (
-            <div key={field.key} className="space-y-2">
-              <Label htmlFor={`x-cred-${field.key}`}>
-                {status?.has_credentials ? `Replace ${field.label}` : field.label}
-              </Label>
-              <Input
-                id={`x-cred-${field.key}`}
-                type="password"
-                value={values[field.key]}
-                onChange={(e) =>
-                  setValues((prev) => ({ ...prev, [field.key]: e.target.value }))
-                }
-                placeholder="••••••••••••"
-              />
-            </div>
-          ))}
-        </div>
+      <div className="flex items-center gap-2 rounded-md border p-3">
+        {status?.has_credentials ? (
+          <>
+            <Key className="h-4 w-4 text-green-500" />
+            <span className="text-sm text-green-600 dark:text-green-400">
+              Credentials are set
+            </span>
+          </>
+        ) : (
+          <>
+            <KeyRound className="h-4 w-4 text-amber-500" />
+            <span className="text-sm text-amber-600 dark:text-amber-400">
+              {isLoading ? "Checking..." : "No credentials configured"}
+            </span>
+          </>
+        )}
+      </div>
 
-        <p className="text-xs text-muted-foreground">
-          Set all 4 to save (or rotate); leave all 4 blank and save to clear.
-        </p>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        {FIELDS.map((field) => (
+          <div key={field.key} className="space-y-2">
+            <Label htmlFor={`x-cred-${field.key}`}>
+              {status?.has_credentials ? `Replace ${field.label}` : field.label}
+            </Label>
+            <Input
+              id={`x-cred-${field.key}`}
+              type="password"
+              value={values[field.key]}
+              onChange={(e) =>
+                setValues((prev) => ({ ...prev, [field.key]: e.target.value }))
+              }
+              placeholder="••••••••••••"
+            />
+          </div>
+        ))}
+      </div>
 
-        <Button
-          onClick={() => saveMutation.mutate()}
-          disabled={saveMutation.isPending || !canSave}
-        >
-          <Save className="mr-2 h-4 w-4" />
-          {saveMutation.isPending ? "Saving..." : "Save"}
-        </Button>
-      </CardContent>
-    </Card>
+      <p className="text-xs text-muted-foreground">
+        Set all 4 to save (or rotate); leave all 4 blank and save to clear.
+      </p>
+
+      <Button
+        onClick={() => saveMutation.mutate()}
+        disabled={saveMutation.isPending || !canSave}
+      >
+        <Save className="mr-2 h-4 w-4" />
+        {saveMutation.isPending ? "Saving..." : "Save"}
+      </Button>
+    </div>
   );
 }

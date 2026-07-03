@@ -27,7 +27,6 @@ import { toast } from "sonner";
 import { API_URL, WS_URL } from "@/lib/constants";
 import { TranscriptRetentionCard } from "@/components/settings/transcript-retention-card";
 import { FeatureFlagsCard } from "@/components/settings/feature-flags-card";
-import { XCredentialsCard } from "@/components/settings/x-credentials-card";
 
 export default function SettingsPage() {
   const { theme, setTheme } = useTheme();
@@ -55,8 +54,7 @@ export default function SettingsPage() {
 
       {/* Cards grid — two columns on large screens. Order (row,col):
           User Info (1,1) · Appearance (1,2) · Data & Refresh (2,1) ·
-          Transcript Retention (2,2) · Notifications (3,1) · Connection Info (3,2) ·
-          X Credentials (4,1). */}
+          Transcript Retention (2,2) · Notifications (3,1) · Connection Info (3,2). */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* User Info */}
         <Card>
@@ -248,12 +246,11 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
 
-        {/* X (Twitter) Credentials (4,1) — write-only, panel-tunable */}
-        <XCredentialsCard />
       </div>
 
       {/* Feature Flags — master switches for optional subsystems (full width;
-          persisted server-side, applied on next restart). */}
+          persisted server-side, applied on next restart). The X (Twitter)
+          credentials form nests as a collapsible under the X-engine flag. */}
       <FeatureFlagsCard />
 
       {/* Save Button */}
