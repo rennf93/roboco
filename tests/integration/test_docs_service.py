@@ -161,6 +161,29 @@ async def test_write_doc_invalid_doc_type(docs_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_write_doc_user_facing_refused(docs_setup: dict) -> None:
+    """doc_type='user_facing' is a recognized value (not a generic 'Unknown
+    doc_type') but is structurally refused: this store's buckets are all
+    excluded from the published site. The guidance names the roboco-website
+    project and the 3-edit pattern instead of silently landing an
+    unpublished write (docs-site-split Phase 2)."""
+    svc = docs_setup["svc"]
+    with pytest.raises(ValidationError, match="roboco-website") as exc_info:
+        await svc.write_doc(
+            agent_id="be-doc",
+            req=WriteDocInput(
+                task_id=docs_setup["task_id"],
+                filename="x.md",
+                doc_type="user_facing",
+                title="Title",
+                content="Content",
+            ),
+        )
+    assert "Unknown doc_type" not in str(exc_info.value)
+    assert "docs.roboco.tech" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
 async def test_write_doc_path_traversal_in_filename(docs_setup: dict) -> None:
     svc = docs_setup["svc"]
     with pytest.raises(ValidationError, match="path separators"):
