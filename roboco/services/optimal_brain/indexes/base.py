@@ -1138,7 +1138,7 @@ class BaseIndexPlugin(ABC):
         import contextlib
         import hashlib
 
-        from sqlalchemy import select
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
 
         from roboco.db.tables import IndexedDocumentTable
 
@@ -1150,24 +1150,21 @@ class BaseIndexPlugin(ABC):
         with contextlib.suppress(Exception):
             preview = file_path.read_text(errors="ignore")[:500].strip()
 
-        existing = await db.execute(
-            select(IndexedDocumentTable).where(
-                IndexedDocumentTable.index_type == self.index_type.value,
-                IndexedDocumentTable.source_hash == source_hash,
+        # Atomic upsert instead of check-then-insert: concurrent indexers of the
+        # same source used to race into a uq_indexed_doc_source violation.
+        # chunk_count is left untouched on conflict (an existing row keeps its
+        # count).
+        stmt = pg_insert(IndexedDocumentTable).values(
+            index_type=self.index_type.value,
+            source=source_str,
+            source_hash=source_hash,
+            title=title,
+            preview=preview,
+            chunk_count=0,
+        )
+        await db.execute(
+            stmt.on_conflict_do_update(
+                constraint="uq_indexed_doc_source",
+                set_={"title": title, "preview": preview},
             )
         )
-        doc = existing.scalar_one_or_none()
-        if doc:
-            doc.title = title
-            doc.preview = preview
-        else:
-            db.add(
-                IndexedDocumentTable(
-                    index_type=self.index_type.value,
-                    source=source_str,
-                    source_hash=source_hash,
-                    title=title,
-                    preview=preview,
-                    chunk_count=0,
-                )
-            )
