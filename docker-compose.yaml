@@ -424,19 +424,20 @@ services:
       ROBOCO_RESEARCH_ENABLED: ${ROBOCO_RESEARCH_ENABLED:-true}
       ROBOCO_PROVISIONING_ENABLED: ${ROBOCO_PROVISIONING_ENABLED:-true}
       ROBOCO_TRANSCRIPT_PRUNE_ENABLED: ${ROBOCO_TRANSCRIPT_PRUNE_ENABLED:-true}
-      # Two knobs that change FAILURE / AUTH behavior rather than adding a
-      # capability — deliberately OPT-IN (default off), not blanket-armed:
-      #   - CLOUD_AUTH: exposes the panel behind a login. Arming it REQUIRES
-      #     ROBOCO_CLOUD_AUTH_EMAIL / _PASSWORD / _SECRET (startup fails loud
-      #     without the secret) and TLS (the session cookie is secure-only), and
-      #     it ends the passwordless local flow. Set those + flip this in .env
-      #     when exposing the panel beyond localhost.
+      # Two knobs that also default ON here (like every feature), but change
+      # FAILURE / AUTH behavior — the .env must be set up for each before a real
+      # boot, which the operator owns:
+      #   - CLOUD_AUTH: exposes the panel behind a login. Set
+      #     ROBOCO_CLOUD_AUTH_EMAIL / _PASSWORD / _SECRET in .env (startup fails
+      #     loud without the secret) and terminate TLS (the session cookie is
+      #     secure-only); leave ROBOCO_PANEL_AGENT_TOKEN unset (it bypasses
+      #     login). To test-deploy before the creds exist, set
+      #     ROBOCO_CLOUD_AUTH_ENABLED=false in .env for that run.
       #   - ROUTING_STRICT: fail-closed model routing — a spawn whose provider is
-      #     disabled RAISES instead of degrading to the legacy path. A stale
-      #     model_assignments row pointing at a disabled provider would then crash
-      #     that spawn; enable deliberately after auditing assignments.
-      ROBOCO_CLOUD_AUTH_ENABLED: ${ROBOCO_CLOUD_AUTH_ENABLED:-false}
-      ROBOCO_ROUTING_STRICT: ${ROBOCO_ROUTING_STRICT:-false}
+      #     disabled RAISES instead of degrading. Audit model_assignments first
+      #     (a stale row pointing at a disabled provider would crash that spawn).
+      ROBOCO_CLOUD_AUTH_ENABLED: ${ROBOCO_CLOUD_AUTH_ENABLED:-true}
+      ROBOCO_ROUTING_STRICT: ${ROBOCO_ROUTING_STRICT:-true}
       # Spawn preflight (token-opt Phase 3) — refuse a non-gateway delivery role
       # that would respawn forever. Default-OFF in config; ARMED here (inert in
       # practice: every real delivery role is gateway-enabled). OFF in registry.
