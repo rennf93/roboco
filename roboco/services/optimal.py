@@ -1947,6 +1947,17 @@ class OptimalService:
                     details["llm_model"] = settings.local_llm_model
                     details["llm_base_url"] = settings.local_llm_base_url
                     return True
+                # A non-2xx (e.g. Ollama Cloud 429 weekly-limit) is NOT an
+                # httpx exception, so record the status + upstream message
+                # instead of returning a bare, diagnostic-less False.
+                reason = resp.text[:200]
+                try:
+                    body = resp.json()
+                    if isinstance(body, dict) and body.get("error"):
+                        reason = str(body["error"])
+                except Exception:
+                    pass
+                details["llm_error"] = f"HTTP {resp.status_code}: {reason}"
         except Exception as e:
             details["llm_error"] = str(e)
         return False

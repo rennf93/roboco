@@ -10,10 +10,18 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { useState } from "react";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { Separator } from "@/components/ui/separator";
-import { Flag } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import { XCredentialsForm } from "@/components/settings/x-credentials-card";
+import { cn } from "@/lib/utils";
+import { Flag, ChevronDown, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
 
 // One-line blurb per flag so the operator knows what each master switch gates.
@@ -60,6 +68,7 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
 
 export function FeatureFlagsCard() {
   const queryClient = useQueryClient();
+  const [xCredsOpen, setXCredsOpen] = useState(false);
 
   const { data, isLoading } = useQuery({
     queryKey: ["feature-flags"],
@@ -97,7 +106,7 @@ export function FeatureFlagsCard() {
           environment default. {note}
         </CardDescription>
       </CardHeader>
-      <CardContent className="space-y-4">
+      <CardContent>
         {isLoading && (
           <p className="text-sm text-muted-foreground">
             Loading feature flags…
@@ -108,30 +117,65 @@ export function FeatureFlagsCard() {
             No feature flags available.
           </p>
         )}
-        {flags.map((flag, i) => (
-          <div key={flag.key}>
-            {i > 0 && <Separator className="mb-4" />}
-            <div className="flex items-center justify-between gap-4">
-              <div className="min-w-0">
-                <Label htmlFor={`flag-${flag.key}`}>{flag.label}</Label>
-                <p className="text-sm text-muted-foreground">
-                  {FLAG_DESCRIPTIONS[flag.key] ?? ""}
-                </p>
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          {flags.map((flag) => {
+            const isXEngine = flag.key === "x_engine_enabled";
+            return (
+              <div
+                key={flag.key}
+                className={cn(
+                  "rounded-lg border p-4",
+                  isXEngine && "md:col-span-2",
+                )}
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <Label htmlFor={`flag-${flag.key}`}>{flag.label}</Label>
+                    <p className="text-sm text-muted-foreground">
+                      {FLAG_DESCRIPTIONS[flag.key] ?? ""}
+                    </p>
+                  </div>
+                  <Switch
+                    id={`flag-${flag.key}`}
+                    checked={flag.enabled}
+                    disabled={
+                      toggleMutation.isPending &&
+                      toggleMutation.variables?.key === flag.key
+                    }
+                    onCheckedChange={(checked) =>
+                      toggleMutation.mutate({ key: flag.key, enabled: checked })
+                    }
+                  />
+                </div>
+                {isXEngine && (
+                  <Collapsible
+                    open={xCredsOpen}
+                    onOpenChange={setXCredsOpen}
+                    className="mt-3"
+                  >
+                    <CollapsibleTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="w-full justify-between px-2 text-muted-foreground"
+                      >
+                        <span className="text-sm">X (Twitter) credentials</span>
+                        {xCredsOpen ? (
+                          <ChevronDown className="h-4 w-4" />
+                        ) : (
+                          <ChevronRight className="h-4 w-4" />
+                        )}
+                      </Button>
+                    </CollapsibleTrigger>
+                    <CollapsibleContent className="pt-3">
+                      <XCredentialsForm />
+                    </CollapsibleContent>
+                  </Collapsible>
+                )}
               </div>
-              <Switch
-                id={`flag-${flag.key}`}
-                checked={flag.enabled}
-                disabled={
-                  toggleMutation.isPending &&
-                  toggleMutation.variables?.key === flag.key
-                }
-                onCheckedChange={(checked) =>
-                  toggleMutation.mutate({ key: flag.key, enabled: checked })
-                }
-              />
-            </div>
-          </div>
-        ))}
+            );
+          })}
+        </div>
       </CardContent>
     </Card>
   );

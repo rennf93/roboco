@@ -22,7 +22,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { OfflineState } from "@/components/ui/offline-state";
-import { CompanyScorecardCard } from "@/components/business/company-scorecard-card";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -376,7 +375,6 @@ export function GoalsTab() {
       ) : (
         <GoalsForm goals={data} refetch={() => void refetch()} />
       )}
-      <CompanyScorecardCard />
     </div>
   );
 }

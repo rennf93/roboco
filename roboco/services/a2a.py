@@ -1332,7 +1332,18 @@ class A2AService:
             from_agent=from_agent,
         )
 
-        return self._msg_to_model(msg)
+        model = self._msg_to_model(msg)
+        # Single chokepoint for the operator live view: every persisted A2A
+        # message emits A2A_MESSAGE_SENT here, so the direct REST send paths
+        # (conversation-create + post-message) light up the /a2a view too, not
+        # just the gateway send() wrapper. Suppressed duplicates return above
+        # and deliberately don't re-emit.
+        to_agent = conv.agent_b if from_agent == conv.agent_a else conv.agent_a
+        task_id = str(conv.task_id) if conv.task_id else None
+        await self._publish_a2a_message_sent(
+            model, task_id, from_agent, to_agent, skill
+        )
+        return model
 
     async def get_messages(
         self,
@@ -1735,13 +1746,12 @@ class A2AService:
             content=body,
             options=options or None,
         )
-        await self._publish_a2a_message_sent(msg, task_id, from_slug, to_slug, skill)
         return msg
 
     @staticmethod
     async def _publish_a2a_message_sent(
         msg: A2AChatMessage,
-        task_id: UUID,
+        task_id: str | None,
         from_slug: str,
         to_slug: str,
         skill: str | None,
@@ -1765,7 +1775,7 @@ class A2AService:
                         data={
                             "conversation_id": msg.conversation_id,
                             "message_id": msg.id,
-                            "task_id": str(task_id),
+                            "task_id": task_id,
                             "from_agent": from_slug,
                             "to_agent": to_slug,
                             "skill": skill,

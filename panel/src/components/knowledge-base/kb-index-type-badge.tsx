@@ -11,6 +11,7 @@ import {
   GitBranch,
   ClipboardCheck,
   Lightbulb,
+  ScrollText,
 } from "lucide-react";
 
 const indexTypeConfig: Record<
@@ -59,6 +60,12 @@ const indexTypeConfig: Record<
     color:
       "bg-yellow-100 text-yellow-700 dark:bg-yellow-900 dark:text-yellow-300",
     icon: <Lightbulb className="h-3 w-3" />,
+  },
+  [KBIndexType.PLAYBOOKS]: {
+    label: "Playbooks",
+    color:
+      "bg-emerald-100 text-emerald-700 dark:bg-emerald-900 dark:text-emerald-300",
+    icon: <ScrollText className="h-3 w-3" />,
   },
 };
 

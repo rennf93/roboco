@@ -757,6 +757,7 @@ export enum KBIndexType {
   DECISIONS = "decisions",
   REVIEWS = "reviews",
   LEARNINGS = "learnings",
+  PLAYBOOKS = "playbooks",
 }
 
 export interface KBSearchRequest {

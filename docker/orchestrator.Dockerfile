@@ -43,10 +43,14 @@ RUN uv sync --frozen --no-dev
 FROM python:3.13-slim-bookworm AS runner
 
 # Runtime apt deps: docker-cli (spawn agents), git (workspace ops),
-# make (backstop for projects whose CI commands use make targets).
-# curl/gnupg/lsb-release are only needed to add the docker repo, then purged.
+# make (backstop for projects whose CI commands use make targets), Node.js 22
+# via NodeSource. Debian's distro nodejs is v18, but current pnpm requires
+# Node >=22.13 — installing v18 made `pnpm install` fail in Node/TS workspaces.
+# curl/gnupg/lsb-release are only needed to add the repos, then purged.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl ca-certificates gnupg lsb-release git make nodejs npm \
+        curl ca-certificates gnupg lsb-release git make \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
     && curl -fsSL https://download.docker.com/linux/debian/gpg \
         | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg \
     && DEBIAN_CODENAME=$(lsb_release -cs) \
@@ -62,7 +66,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # deps (`pnpm install`) the same way uv handles Python cells. Without it the
 # dep-install step gracefully skips (WorkspaceService._run_dep_install catches
 # the missing-tool OSError) and the fe-dev re-installs per task. node/npm come
-# from the apt layer above; pnpm matches how agent-dev-fe installs it.
+# from the NodeSource layer above; pnpm matches how agent-dev-fe installs it.
 RUN npm install -g pnpm
 
 WORKDIR /app
