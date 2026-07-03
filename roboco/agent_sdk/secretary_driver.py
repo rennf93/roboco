@@ -6,7 +6,9 @@ and differs only in its tools. Where Intake has a single intercepted
 ``propose_draft``, the Secretary has three tools that actually call the backend
 ``/api/secretary/*`` routes on the CEO's behalf:
 
-* ``read_company_state`` / ``read_task`` — reads (always allowed)
+* ``read_company_state`` / ``read_task`` / ``search_tasks`` — reads (always
+  allowed); ``search_tasks`` resolves a task NAME to ids so a directive can
+  target one (the CEO refers to tasks by name).
 * ``submit_directive`` — acts; the backend gate-list queues high-impact kinds
   for the CEO's confirmation and runs low-risk ones directly.
 
@@ -49,9 +51,14 @@ async def _call_backend(
     path: str,
     *,
     json_body: dict[str, Any] | None = None,
+    params: dict[str, Any] | None = None,
     client: httpx.AsyncClient | None = None,
-) -> dict[str, Any]:
-    """Call ``/api/secretary{path}`` with the agent's auth; never raises."""
+) -> Any:
+    """Call ``/api/secretary{path}`` with the agent's auth; never raises.
+
+    Returns the decoded JSON (an object for most routes, a list for the task
+    search) or an ``{"error": ...}`` envelope on any HTTP/transport failure.
+    """
     owns = client is None
     http = client or httpx.AsyncClient(timeout=_TIMEOUT)
     try:
@@ -60,6 +67,7 @@ async def _call_backend(
             f"{_api_base()}/api/secretary{path}",
             headers=_headers(),
             json=json_body,
+            params=params,
             timeout=_TIMEOUT,
         )
     except httpx.HTTPError as exc:
@@ -69,18 +77,40 @@ async def _call_backend(
             await http.aclose()
     if not resp.is_success:
         return {"error": f"http_{resp.status_code}", "detail": resp.text[:300]}
-    parsed: dict[str, Any] = resp.json()
-    return parsed
+    return resp.json()
 
 
 async def _do_read_state(*, client: httpx.AsyncClient | None = None) -> dict[str, Any]:
-    return await _call_backend("GET", "/state", client=client)
+    result: dict[str, Any] = await _call_backend("GET", "/state", client=client)
+    return result
 
 
 async def _do_read_task(
     task_id: str, *, client: httpx.AsyncClient | None = None
 ) -> dict[str, Any]:
-    return await _call_backend("GET", f"/tasks/{task_id}", client=client)
+    result: dict[str, Any] = await _call_backend(
+        "GET", f"/tasks/{task_id}", client=client
+    )
+    return result
+
+
+async def _do_search_tasks(
+    q: str,
+    limit: int = 20,
+    *,
+    client: httpx.AsyncClient | None = None,
+) -> dict[str, Any]:
+    """Resolve a task NAME to concrete ids (title/description/id-prefix match).
+
+    Wraps the list of matches under ``tasks`` so the tool result is an object;
+    passes an ``{"error": ...}`` envelope straight through.
+    """
+    result = await _call_backend(
+        "GET", "/tasks", params={"q": q, "limit": limit}, client=client
+    )
+    if isinstance(result, list):
+        return {"tasks": result}
+    return result if isinstance(result, dict) else {"error": "unexpected_response"}
 
 
 async def _do_submit_directive(
@@ -89,12 +119,13 @@ async def _do_submit_directive(
     *,
     client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
-    return await _call_backend(
+    result: dict[str, Any] = await _call_backend(
         "POST",
         "/directives",
         json_body={"kind": kind, "payload": payload},
         client=client,
     )
+    return result
 
 
 def _text_result(data: dict[str, Any]) -> dict[str, Any]:
@@ -142,6 +173,17 @@ def build_secretary_options(
         return _text_result(await _do_read_task(str(args["task_id"])))
 
     @tool(
+        "search_tasks",
+        "Resolve a task NAME to concrete task ids. The CEO refers to tasks by "
+        "name; search a title/description substring (min 2 chars) to get "
+        "matching ids, then pass an id to read_task or to submit_directive's "
+        "control_task. Returns up to 20 matches.",
+        {"q": str},
+    )
+    async def _t_search(args: dict[str, Any]) -> dict[str, Any]:
+        return _text_result(await _do_search_tasks(str(args["q"])))
+
+    @tool(
         "submit_directive",
         "Act on the CEO's command. 'kind' is one of: relay_message "
         "(payload: channel, text), update_charter (payload: charter), "
@@ -163,7 +205,7 @@ def build_secretary_options(
     server = create_sdk_mcp_server(
         name="secretary",
         version="1.0.0",
-        tools=[_t_read_state, _t_read_task, _t_submit],
+        tools=[_t_read_state, _t_read_task, _t_search, _t_submit],
     )
 
     async def _gate(tool_name: str, _input: dict[str, Any], _ctx: Any) -> Any:
@@ -183,8 +225,8 @@ def build_secretary_options(
         return PermissionResultDeny(
             message=(
                 f"{tool_name} is not available to the Secretary. Your tools are "
-                "Read, Grep, Glob, read_company_state, read_task, and "
-                "submit_directive."
+                "Read, Grep, Glob, read_company_state, read_task, search_tasks, "
+                "and submit_directive."
             )
         )
 
@@ -196,6 +238,7 @@ def build_secretary_options(
             *_SECRETARY_BASE_TOOLS,
             "mcp__secretary__read_company_state",
             "mcp__secretary__read_task",
+            "mcp__secretary__search_tasks",
             "mcp__secretary__submit_directive",
         ],
         model=model,

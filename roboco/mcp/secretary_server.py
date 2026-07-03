@@ -2,7 +2,8 @@
 
 Parity with the Claude Secretary's SDK tools
 (:func:`roboco.agent_sdk.secretary_driver.build_secretary_options`):
-``read_company_state`` / ``read_task`` (reads) and ``submit_directive`` (acts).
+``read_company_state`` / ``read_task`` / ``search_tasks`` (reads) and
+``submit_directive`` (acts).
 Each calls the backend ``/api/secretary/*`` routes with the container's HMAC
 agent token; the backend gate-list queues high-impact directive kinds for the
 CEO's confirmation and runs low-risk ones directly. The backend-calling logic is
@@ -24,6 +25,7 @@ from mcp.server.fastmcp import FastMCP
 from roboco.agent_sdk.secretary_driver import (
     _do_read_state,
     _do_read_task,
+    _do_search_tasks,
     _do_submit_directive,
 )
 
@@ -45,6 +47,18 @@ async def read_task(task_id: str) -> str:
     """Read one task's full detail by its id — content, notes, plan,
     progress, and PR reference (Secretary FULL task access)."""
     return json.dumps(await _do_read_task(task_id))
+
+
+@mcp.tool()
+async def search_tasks(q: str, limit: int = 20) -> str:
+    """Resolve a task NAME to concrete task ids.
+
+    The CEO refers to tasks by name; search a title/description substring
+    (min 2 chars) to get matching ids, then pass an id to read_task or to
+    submit_directive's control_task. Returns up to 'limit' (default 20)
+    matches under the 'tasks' key.
+    """
+    return json.dumps(await _do_search_tasks(q, limit))
 
 
 @mcp.tool()

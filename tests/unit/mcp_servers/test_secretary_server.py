@@ -41,6 +41,23 @@ async def test_read_task_forwards_the_id(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 @pytest.mark.asyncio
+async def test_search_tasks_forwards_query_and_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, Any] = {}
+
+    async def _search(q: str, limit: int = 20) -> dict[str, Any]:
+        seen["q"] = q
+        seen["limit"] = limit
+        return {"tasks": [{"id": "t1"}]}
+
+    monkeypatch.setattr(secretary_server, "_do_search_tasks", _search)
+    out = await secretary_server.search_tasks("x account", 5)
+    assert seen == {"q": "x account", "limit": 5}
+    assert json.loads(out) == {"tasks": [{"id": "t1"}]}
+
+
+@pytest.mark.asyncio
 async def test_submit_directive_forwards_kind_and_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -52,6 +52,34 @@ async def test_read_task_calls_backend(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_search_tasks_sends_query_and_wraps_list(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _env(monkeypatch)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/secretary/tasks"
+        assert request.url.params["q"] == "x account"
+        assert request.url.params["limit"] == "20"
+        return httpx.Response(200, json=[{"id": "abc", "title": "X account"}])
+
+    out = await sd._do_search_tasks("x account", client=_client(handler))
+    assert out == {"tasks": [{"id": "abc", "title": "X account"}]}
+
+
+@pytest.mark.asyncio
+async def test_search_tasks_passes_error_through(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _env(monkeypatch)
+    out = await sd._do_search_tasks(
+        "q", client=_client(lambda _r: httpx.Response(422, text="too short"))
+    )
+    assert "tasks" not in out
+    assert out["error"] == "http_422"
+
+
+@pytest.mark.asyncio
 async def test_submit_directive_posts_kind_and_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
