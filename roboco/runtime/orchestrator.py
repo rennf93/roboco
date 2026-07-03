@@ -6515,12 +6515,11 @@ Start by:
                 logger.error("Health check error", error=str(e))
 
     async def _sweeper_loop(self) -> None:
-        """Background sweeper for session timeouts and stale notifications.
+        """Background sweeper for stale notifications + runtime maintenance.
 
-        Addresses two silent-failure surfaces:
-        - SessionTable.timeout_seconds / max_time_window were never enforced;
-          sessions stayed ACTIVE forever.
-        - NotificationTable.expires_at existed but no job ever acted on it.
+        Addresses a silent-failure surface (NotificationTable.expires_at existed
+        but no job ever acted on it) and drives the budget kill-switch, token
+        rollups, transcript retention, and dangling-image pruning.
 
         Runs on its own interval so a slow sweep can't delay agent dispatch.
         """
@@ -6535,24 +6534,14 @@ Start by:
                 logger.error("Sweeper loop error", error=str(e))
 
     async def _run_sweep(self) -> None:
-        """Run one pass of session + notification sweepers."""
+        """Run one pass of the notification sweeper + runtime maintenance."""
         from roboco.db.base import get_session_factory
-        from roboco.services.messaging import get_messaging_service
         from roboco.services.notification_delivery import (
             get_notification_delivery_service,
         )
 
         session_factory = get_session_factory()
         async with session_factory() as db:
-            msg_svc = get_messaging_service(db)
-            try:
-                closed = await msg_svc.sweep_timed_out_sessions()
-                if closed:
-                    await db.commit()
-            except Exception as e:
-                await db.rollback()
-                logger.warning("Session sweep failed", error=str(e))
-
             deliv_svc = get_notification_delivery_service(db)
             try:
                 expired = await deliv_svc.sweep_expired_notifications()
