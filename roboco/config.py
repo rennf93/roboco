@@ -6,7 +6,7 @@ Environment-based settings using Pydantic Settings.
 
 from functools import lru_cache
 
-from pydantic import Field, computed_field
+from pydantic import Field, computed_field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -340,6 +340,64 @@ class Settings(BaseSettings):
         default="",
         description="Fernet encryption key for secrets.",
     )
+
+    # ==========================================================================
+    # Cloud auth (FastAPI Users) — DEFAULT OFF
+    # ==========================================================================
+    # Lets the panel/API be safely exposed beyond localhost without changing the
+    # CEO's local no-login flow while off. Off: get_agent_context behaves
+    # byte-for-byte as today (header-trust). On: a valid session cookie for the
+    # single seeded CEO login authenticates; a spoofed CEO header without a
+    # valid session or agent HMAC token is rejected. Not armed by any compose
+    # file by default — arm only behind TLS (cookies are secure-only).
+    cloud_auth_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for cloud auth. OFF by default; when off, "
+            "get_agent_context and the WS panel-token gate behave byte-for-byte "
+            "as today. On, no registration router is mounted — exactly one "
+            "user, seeded from cloud_auth_email/cloud_auth_password."
+        ),
+    )
+    cloud_auth_email: str | None = Field(
+        default=None,
+        description="Email for the single seeded CEO login user.",
+    )
+    cloud_auth_password: str | None = Field(
+        default=None,
+        description=(
+            "Password for the single seeded CEO login user. Hashed at startup "
+            "and never stored in plain text."
+        ),
+    )
+    cloud_auth_secret: str | None = Field(
+        default=None,
+        description=(
+            "Session-signing secret for the login cookie's JWT. Required when "
+            "cloud_auth_enabled is true (startup fails loud if unset). Generate "
+            "with: python -c 'import secrets; print(secrets.token_hex(32))'"
+        ),
+    )
+    cloud_auth_cookie_max_age: int = Field(
+        default=2592000,
+        ge=60,
+        description=(
+            "Session cookie lifetime in seconds (default 30 days). Sliding: "
+            "every authenticated request re-mints + re-sets the cookie, so an "
+            "active session never expires — only genuine inactivity past this "
+            "window logs out."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_cloud_auth(self) -> "Settings":
+        """Fail loud at startup rather than silently minting unsigned sessions."""
+        if self.cloud_auth_enabled and not self.cloud_auth_secret:
+            raise ValueError(
+                "ROBOCO_CLOUD_AUTH_SECRET is required when "
+                "ROBOCO_CLOUD_AUTH_ENABLED=true."
+            )
+        return self
 
     # ==========================================================================
     # GitHub repository provisioning (pitch -> approve -> auto-provision)

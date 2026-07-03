@@ -20,6 +20,10 @@ const api: AxiosInstance = axios.create({
     "Content-Type": "application/json",
   },
   timeout: 60000, // Increased to 60s for long operations like reindexing
+  // Rides the cloud-auth session cookie. Harmless when cloud auth is off
+  // (same-origin requests already carry cookies regardless), and required
+  // for a cross-origin dev setup that talks to the backend directly.
+  withCredentials: true,
 });
 
 // Request interceptor to add auth headers and logging
@@ -128,6 +132,15 @@ api.interceptors.response.use(
       );
     } else if (status === 401) {
       console.error("[API] Unauthorized - check API authentication headers");
+      // Only meaningful when cloud auth is on (off-mode's header-trust
+      // practically never 401s); guarded against a redirect loop if the
+      // browser is already on the login page.
+      if (
+        typeof window !== "undefined" &&
+        window.location.pathname !== "/login"
+      ) {
+        window.location.href = "/login";
+      }
     } else if (status === 403) {
       console.error(
         "[API] Forbidden - insufficient permissions for this action",

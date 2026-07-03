@@ -36,3 +36,4 @@ export * from "./use-journals";
 export * from "./use-projects";
 export * from "./use-work-sessions";
 export * from "./use-usage";
+export * from "./use-auth";

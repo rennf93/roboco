@@ -11,6 +11,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from roboco.api.auth.routes import mount_cloud_auth
+from roboco.api.auth.seed import ensure_seed_user_startup
 from roboco.api.deps import _auth_required, get_orchestrator_or_none
 from roboco.api.middleware import setup_middleware
 from roboco.api.routes.a2a import router as a2a_router
@@ -109,6 +111,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     await init_db()
     logger.info("Database initialized")
 
+    # Cloud auth: idempotently upsert the single seeded CEO login user.
+    # No-op unless ROBOCO_CLOUD_AUTH_ENABLED (see ensure_seed_user_startup).
+    await ensure_seed_user_startup()
+
     # Overlay panel-persisted feature-flag overrides onto the live config so the
     # rest of startup (and the dispatch loops) read the panel's choices; unset
     # flags keep their env/config default. Best-effort — a failure here must not
@@ -192,6 +198,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     await close_db()
 
     logger.info("Shutdown complete")
+
+
+def _mount_v1_routers(app: FastAPI) -> None:
+    """Mount every API v1 (intent-verb + content-tool) router."""
+    app.include_router(flow_dev_module.router)
+    app.include_router(flow_qa_module.router)
+    app.include_router(flow_doc_module.router)
+    app.include_router(flow_cell_pm_module.router)
+    app.include_router(flow_main_pm_module.router)
+    app.include_router(flow_board_module.router)
+    app.include_router(flow_auditor_module.router)
+    app.include_router(flow_pr_reviewer_module.router)
+    app.include_router(do_module.router)
 
 
 def create_app() -> FastAPI:
@@ -459,32 +478,14 @@ def create_app() -> FastAPI:
         tags=["System"],
     )
 
-    # API v1 — intent-verb flow endpoints
-    app.include_router(flow_dev_module.router)
+    # Cloud auth — /auth/status is always public; login/logout mount only
+    # when ROBOCO_CLOUD_AUTH_ENABLED (mirrors apply_guard's conditional mount).
+    mount_cloud_auth(app, f"{api_prefix}/auth")
 
-    # API v1 — intent-verb QA flow endpoints
-    app.include_router(flow_qa_module.router)
-
-    # API v1 — intent-verb documenter flow endpoints
-    app.include_router(flow_doc_module.router)
-
-    # API v1 — intent-verb cell PM flow endpoints
-    app.include_router(flow_cell_pm_module.router)
-
-    # API v1 — intent-verb main PM flow endpoints
-    app.include_router(flow_main_pm_module.router)
-
-    # API v1 — intent-verb board flow endpoints
-    app.include_router(flow_board_module.router)
-
-    # API v1 — intent-verb auditor flow endpoints
-    app.include_router(flow_auditor_module.router)
-
-    # API v1 — intent-verb PR-reviewer flow endpoints
-    app.include_router(flow_pr_reviewer_module.router)
-
-    # API v1 — content-tool endpoints
-    app.include_router(do_module.router)
+    # API v1 — intent-verb flow + content-tool endpoints (each module owns
+    # its own prefix); grouped into one helper to keep create_app's own
+    # statement count from growing unbounded as roles are added.
+    _mount_v1_routers(app)
 
     # ==========================================================================
     # WebSocket

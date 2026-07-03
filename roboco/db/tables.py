@@ -5,7 +5,7 @@ ORM mappings for all RoboCo data models.
 """
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID as PyUUID
 from uuid import uuid4
 
@@ -2593,3 +2593,50 @@ class ProjectConventionFindingTable(Base):
         nullable=False,
         index=True,
     )
+
+
+# =============================================================================
+# CLOUD AUTH USERS TABLE (FastAPI Users schema)
+# =============================================================================
+
+
+class UserTable(Base):
+    """The single seeded CEO login user for cloud auth (default off).
+
+    Field set matches the FastAPI Users ``UserProtocol`` (structural typing —
+    no mixin inheritance needed): id/email/hashed_password/is_active/
+    is_superuser/is_verified. No registration router is mounted; the one row
+    is idempotently upserted at startup from cloud_auth_email/password
+    (``roboco.api.auth.seed.ensure_seed_user``).
+
+    The ``TYPE_CHECKING`` split (bare types vs. ``Mapped[...]``) mirrors
+    ``fastapi_users_db_sqlalchemy``'s own base table: mypy's structural
+    Protocol check needs the plain-type view to accept this class as a
+    ``UserProtocol``; the ``else`` branch is what SQLAlchemy actually builds
+    at runtime.
+    """
+
+    __tablename__ = "users"
+
+    if TYPE_CHECKING:
+        id: PyUUID
+        email: str
+        hashed_password: str
+        is_active: bool
+        is_superuser: bool
+        is_verified: bool
+    else:
+        id: Mapped[UUID] = mapped_column(
+            UUID(as_uuid=True), primary_key=True, default=uuid4
+        )
+        email: Mapped[str] = mapped_column(
+            String(320), unique=True, index=True, nullable=False
+        )
+        hashed_password: Mapped[str] = mapped_column(String(1024), nullable=False)
+        is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+        is_superuser: Mapped[bool] = mapped_column(
+            Boolean, default=False, nullable=False
+        )
+        is_verified: Mapped[bool] = mapped_column(
+            Boolean, default=False, nullable=False
+        )

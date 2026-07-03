@@ -331,6 +331,7 @@ async def test_get_agent_context_missing_id_raises() -> None:
     with pytest.raises(HTTPException) as exc:
         await get_agent_context(
             MagicMock(),
+            MagicMock(),
             x_agent_id=None,
             x_agent_role="developer",
         )
@@ -341,6 +342,7 @@ async def test_get_agent_context_missing_id_raises() -> None:
 async def test_get_agent_context_missing_role_raises() -> None:
     with pytest.raises(HTTPException) as exc:
         await get_agent_context(
+            MagicMock(),
             MagicMock(),
             x_agent_id="be-dev-1",
             x_agent_role=None,
@@ -357,6 +359,7 @@ async def test_get_agent_context_happy_path(monkeypatch: pytest.MonkeyPatch) -> 
         new=AsyncMock(return_value=(aid, "be-dev-1")),
     ):
         ctx = await get_agent_context(
+            MagicMock(),
             MagicMock(),
             x_agent_id="be-dev-1",
             x_agent_role="developer",

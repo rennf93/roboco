@@ -24,3 +24,5 @@ export type {
 } from "./release";
 export { playbooksApi } from "./playbooks";
 export type { Playbook } from "./playbooks";
+export { authApi } from "./auth";
+export type { AuthStatus } from "./auth";

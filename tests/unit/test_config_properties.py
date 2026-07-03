@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from roboco.config import Settings
 
 
@@ -37,3 +38,32 @@ def test_redis_url_with_password_includes_credential() -> None:
 def test_redis_url_without_password() -> None:
     s = Settings(redis_host="redis", redis_port=6379, redis_db=0, redis_password=None)
     assert s.redis_url == "redis://redis:6379/0"
+
+
+# ---------------------------------------------------------------------------
+# Cloud auth — fail-loud secret validation
+# ---------------------------------------------------------------------------
+
+
+def test_cloud_auth_off_does_not_require_secret() -> None:
+    """Default (off) construction never raises, secret or not."""
+    s = Settings(cloud_auth_enabled=False, cloud_auth_secret=None)
+    assert s.cloud_auth_enabled is False
+
+
+def test_cloud_auth_enabled_without_secret_fails_loud() -> None:
+    """Arming cloud auth with no session-signing secret must fail at startup,
+    not silently mint unsigned/unsafe sessions."""
+    with pytest.raises(ValueError, match="ROBOCO_CLOUD_AUTH_SECRET"):
+        Settings(cloud_auth_enabled=True, cloud_auth_secret=None)
+
+
+def test_cloud_auth_enabled_with_secret_succeeds() -> None:
+    s = Settings(cloud_auth_enabled=True, cloud_auth_secret="s" * 32)
+    assert s.cloud_auth_enabled is True
+    assert s.cloud_auth_secret == "s" * 32
+
+
+def test_cloud_auth_cookie_max_age_defaults_to_30_days() -> None:
+    s = Settings()
+    assert s.cloud_auth_cookie_max_age == 30 * 24 * 60 * 60

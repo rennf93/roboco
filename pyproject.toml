@@ -52,6 +52,7 @@ dependencies = [
     "claude-agent-sdk",
     "fastapi-guard",  # HTTP security middleware + per-route decorators (import: guard)
     "guard-core",  # SecurityConfig/decorator models + request/response protocols
+    "fastapi-users[sqlalchemy]",  # Cloud auth: cookie session for the seeded CEO login
 ]
 
 [project.optional-dependencies]
@@ -159,7 +160,9 @@ select = [
 "roboco/api/routes/*.py" = ["PLC0415", "PLR0913"]
 # deps.py is the DI wiring hub; it defers a few service imports to call time
 # to avoid import cycles with the modules it wires (same rationale as above).
-"roboco/api/deps.py" = ["PLC0415"]
+# get_agent_context's dual-path helpers carry the same header/cookie contract
+# as the routes above (X-Agent-* + the session cookie), hence PLR0913 too.
+"roboco/api/deps.py" = ["PLC0415", "PLR0913"]
 "roboco/runtime/*.py" = ["PLC0415"]
 # The e2e smoke harness defers every roboco import until the stack fixture
 # runs, so the default (skipped) suite never pays the app-surface import

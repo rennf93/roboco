@@ -81,6 +81,7 @@ def test_create_app_registers_all_router_prefixes() -> None:
         "/api/providers",
         "/api/work-sessions",
         "/api/docs",
+        "/api/auth",
         "/ws",
     ]
     for prefix in expected_prefixes:
