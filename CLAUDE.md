@@ -498,6 +498,10 @@ The system runs as Docker Compose services. All Dockerfiles live under `docker/`
 
 This avoids CORS since the browser sees one origin. The Next.js code uses relative URLs (`/api`, `/ws`) and lets nginx do the dispatch.
 
+### Network topology (DB isolation)
+
+Two user-defined bridges: `roboco_default` (the agent mesh — panel, nginx, ollama, every spawned agent container, and their sandbox DB/Redis sidecars) and `roboco_data` (postgres + redis ONLY). The orchestrator is the only multi-homed service (both networks), so agent containers cannot resolve or TCP-reach `roboco-postgres:5432` / `roboco-redis:6379` at all — network membership is the containment (redis has no auth). Agent↔agent A2A (`:9000`), orchestrator→agent SDK polls (`:9000`), MCP→orchestrator (`:8000`), and host-published ports (`15432`/`16379`/`11435`) are unaffected; `docker exec`/`inspect` paths ride the daemon socket, not the network. `ROBOCO_DB_NETWORK_ISOLATED` (config default `false`) is set `true` by the compose files that carry this topology and suppresses the legacy `_append_gate_env` prod-creds injection (unreachable creds are worse than none); DB-needing projects use the sandbox opt-in instead. The flag is deliberately NOT in the panel feature-flags card — it must travel with the compose `networks:` stanzas.
+
 ### WebSocket streams
 
 The orchestrator exposes WebSocket endpoints under `/ws` (router in `roboco/api/websocket.py`, `ConnectionManager` + `broadcast_*` helpers):

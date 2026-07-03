@@ -745,6 +745,20 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Set by the compose file that carries the roboco_data topology
+    # (postgres/redis on a data-only network agents never join). NOT a panel
+    # feature flag: it must travel with the compose networks: stanzas, and a
+    # runtime toggle cannot change network membership.
+    db_network_isolated: bool = Field(
+        default=False,
+        description=(
+            "True when the deployment's compose topology isolates "
+            "postgres/redis from agent containers (roboco_data network). "
+            "Suppresses the legacy prod-creds gate-env injection, which "
+            "would hand agents credentials for an unreachable host."
+        ),
+    )
+
     # ==========================================================================
     # Workspaces (Multi-Agent Git)
     # ==========================================================================

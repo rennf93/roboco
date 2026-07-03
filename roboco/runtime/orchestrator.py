@@ -2580,7 +2580,15 @@ class AgentOrchestrator:
         feeds the test harness and never changes live behaviour. Gated on the
         same faithful-gate flag as interpreter matching — both exist to make an
         agent's self-gate trustworthy.
+
+        Under DB network isolation (postgres/redis on the data-only compose
+        network) agents cannot reach these hosts at all, so the injection is
+        suppressed entirely: creds that dead-end in a connect timeout are
+        worse than none (the conftest reachability check skips cleanly on a
+        fast refusal). DB-needing projects opt into `sandbox_services` instead.
         """
+        if settings.db_network_isolated:
+            return
         if not settings.toolchain_match_enabled:
             return
         cmd.extend(

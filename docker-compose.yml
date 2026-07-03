@@ -6,6 +6,11 @@ services:
     image: pgvector/pgvector:pg16
     container_name: roboco-postgres
     restart: unless-stopped
+    # data-only network: agent containers (on roboco_default) cannot reach
+    # the production DB; only the multi-homed orchestrator can. Host port
+    # publishing (15432) is unaffected — roboco_data is a normal bridge.
+    networks:
+      - data
     environment:
       POSTGRES_USER: roboco
       POSTGRES_PASSWORD: roboco
@@ -27,6 +32,10 @@ services:
     image: redis:8-alpine
     container_name: roboco-redis
     restart: unless-stopped
+    # data-only network — see postgres. Redis has no auth, so network
+    # membership is its ONLY containment against agent containers.
+    networks:
+      - data
     command: redis-server --appendonly yes
     ports:
       - "16379:6379"
@@ -278,6 +287,11 @@ services:
     image: roboco-orchestrator
     container_name: roboco-orchestrator
     restart: unless-stopped
+    # Multi-homed: the agent mesh (default) for spawned agents / panel /
+    # ollama, plus the data network for postgres/redis.
+    networks:
+      - default
+      - data
     ports:
       - "8000:8000"
     environment:
@@ -376,6 +390,19 @@ services:
       ROBOCO_DEP_UPDATE_ENABLED: ${ROBOCO_DEP_UPDATE_ENABLED:-true}
       ROBOCO_RELEASE_MANAGER_ENABLED: ${ROBOCO_RELEASE_MANAGER_ENABLED:-true}
       ROBOCO_ORG_MEMORY_ENABLED: ${ROBOCO_ORG_MEMORY_ENABLED:-true}
+      # Sandboxed per-agent test DB/Redis: orchestrator-provisioned throwaway
+      # sibling containers per spawn, replacing the prod-creds gate-env
+      # injection for an opted-in project (its `sandbox_services` column set).
+      # Config default is OFF; enabled HERE (personal deploy), deliberately
+      # left OFF in docker-compose.registry.yml so the published default
+      # stays conservative until verified on a live run.
+      ROBOCO_SANDBOX_DB_ENABLED: ${ROBOCO_SANDBOX_DB_ENABLED:-true}
+      # DB network isolation is LIVE in this file (postgres/redis on the
+      # data-only network): suppress the legacy prod-creds gate-env
+      # injection — agents can't reach roboco-postgres anyway, and handing
+      # out creds that dead-end in a connect timeout is worse than none.
+      # This flag must always travel with the networks: topology above.
+      ROBOCO_DB_NETWORK_ISOLATED: ${ROBOCO_DB_NETWORK_ISOLATED:-true}
       # Strategy engine (proactive strategy signals) + internal PR review — both
       # default-OFF in config; ARMED here for the NAS deploy like the rest. Left
       # OFF in docker-compose.registry.yml so the published default stays conservative.
@@ -490,3 +517,10 @@ services:
 networks:
   default:
     name: roboco_default
+  # DB isolation: postgres/redis live ONLY here; the orchestrator is the
+  # only service homed on both. Spawned agent containers + sandbox sidecars
+  # join roboco_default (AGENT_NETWORK) and cannot resolve or reach the
+  # production DB/Redis. Normal bridge (not internal) so host-published
+  # ports keep working.
+  data:
+    name: roboco_data
