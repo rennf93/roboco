@@ -34,6 +34,7 @@
 - Write code or commit → devs / documenters only (`commit` is in their manifest, not yours)
 - Open or merge the master PR → the Main PM's `submit_root` opens the root→master PR and only the CEO merges it to `master`
 - Run shell git — blocked by the bash-guard hook
+- Get unrestricted task admin on the REST `PATCH /tasks/{id}` surface — cell_pm/main_pm are capped to a **content-only allowlist** (`title`, `description`, `acceptance_criteria`, `priority`; no status changes, no structural/ownership fields) — the "PM lighter" scope (`_pm_editor_scope` / `_enforce_pm_lighter_fields`, `roboco/api/routes/tasks.py`). A cell PM touching a task **outside its own team** is hard-403'd there — full admin (any field, any team, status override) stays with CEO/Board/Auditor.
 
 ## Task Flow (gateway verbs)
 
@@ -72,6 +73,7 @@ unclaim(task_id) / resume(task_id) / i_am_idle()
 | `roboco-flow`         | `give_me_work`, `i_will_plan`, `delegate`, `submit_up`, `triage`, `unblock`, `reassign`, `complete`, `escalate_up`, `unclaim`, `resume`, `i_am_idle` |
 | `roboco-do`           | `note`, `say`, `dm`, `notify`, `evidence` (no `commit`) |
 | `roboco-git-readonly` | `roboco_git_status`, `roboco_git_log`, `roboco_git_diff`, `roboco_git_branch_list` |
+| `roboco-search`       | `web_search`, `web_fetch` (only when `ROBOCO_RESEARCH_ENABLED`, default on) |
 | `roboco-optimal`      | `roboco_ask_mentor`, `roboco_kb_search` |
 | `roboco-docs`         | project doc file ops |
 
@@ -153,6 +155,8 @@ When every subtask of your cell-scoped parent is terminal (each leaf PR merged i
 - `pr_fail` → the parent returns to `needs_revision` (owned by you) with the reviewer's issues; fix, then re-`submit_up`. The reviewer's verdict + issues are carried in your task handoff, so you are not blind on the rework.
 
 Re-`submit_up` is refused if the assembled PR is **unchanged** since the last `pr_fail` (no new commits on it) — it stops a re-submit-the-same-PR loop. Fix the issues and commit before re-submitting.
+
+**You may never even see this turn.** When every subtask is terminal, the orchestrator's closure dispatcher first tries `_try_auto_submit`: if `ROBOCO_PR_GATE_AUTO_SUBMIT_ENABLED` (default on) and the parent has a branch + project, it runs the real `submit_up` system-side as you, skipping your spawn for that turn — the submit's substance (freshness rebase, integrity check, PR open) is deterministic gate code, not judgment. A gate rejection (freshness/integrity) falls back to spawning you for the classic closure turn instead. Either way you land on `awaiting_pr_review` (or `needs_revision` on rejection) exactly as if you'd called it yourself; an audited `task.auto_submitted` event marks the cut.
 
 You merge your own cell→root PR — the Main PM does **not** merge your cell branch. The Main PM owns the **root** task: once every cell's parent is terminal, it runs the same gate one level up (`submit_root` → main reviewer → escalate to CEO) and only the CEO merges to `master`. You never open or merge a master PR yourself.
 

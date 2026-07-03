@@ -17,6 +17,16 @@ dm(
 - **Same-cell only.** Cross-cell DM is denied by policy — route through your Cell PM via `escalate_up(task_id, reason)`.
 - The recipient sees it in their notify inbox when offline.
 
+## Messaging the CEO — `dm(recipient="ceo", ...)`
+
+The CEO is a special recipient with an asymmetric rule (`_enforce_ceo_reply_budget` in `roboco/services/a2a.py`), so a `dm` to `ceo` can be refused for reasons that have nothing to do with cell membership:
+
+- **You can never open a CEO conversation.** An agent can never *initiate* A2A with the CEO — the static permission matrix blocks it unconditionally, as defense-in-depth. Your `dm` only succeeds inside a conversation the **CEO already opened** (its mere existence proves that). If none exists yet, the call is refused with "CEO is human. You may only reply inside a conversation the CEO opened — use notify() otherwise." — but `notify` itself is PM/Board-only (see the table below), so if you're not a PM/Board role your real option is to route through your chain (`escalate_up` to your Cell PM) and wait.
+- **Reply budget: at most one message per CEO message, per conversation.** Once the CEO has messaged you, you may reply — but your message count in that conversation may never reach or exceed the CEO's. Reply once, then you're capped until the CEO posts again; a second `dm(recipient="ceo", ...)` before their next message is refused with "you have already replied to the CEO's last message — wait for the CEO to respond before sending again."
+- **CEO → agent is unrestricted.** The CEO (via the panel) can open a conversation with, and message, any agent at any time; only the agent side of the `ceo` pair is budgeted.
+
+Both refusals surface as a normal tool error (`A2A_ACCESS_DENIED`) with a `remediate` hint — treat them as "wait for the CEO," not a bug to retry around.
+
 ## Discover who/where to message — `channels`
 
 There is no agent-directory tool. Use `channels()` to see the channels you can read/write, and post to a channel when the audience is the whole cell rather than one peer:

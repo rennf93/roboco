@@ -77,6 +77,8 @@ These roles can create/assign tasks (`create_subtask`, `delegate` — PM-only pe
 
 The Board (`product_owner`, `head_marketing`), the Auditor, and the CEO do NOT create or assign tasks through the gateway.
 
+**Footnote — `propose_roadmap` is not an exception to this.** The Product Owner's `propose_roadmap` content verb authors a themed cycle of roadmap item **drafts** onto its own held exploration task — it does not call `delegate` and creates nothing directly. A draft only becomes a real BACKLOG task via a distinct code path, `RoadmapService.approve_item` (the CEO's per-item approval in the roadmap queue), which itself calls the same `create_task_from_draft` helper the pitch-approval flow uses. So the Board still never creates or assigns a task on its own authority — it authors proposals; only the CEO's explicit per-item approval materializes one.
+
 ## Cancellation Roles
 
 These roles can cancel tasks from most non-terminal states (`cancel` action in `lifecycle.py`):

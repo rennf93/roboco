@@ -9,6 +9,7 @@ This slice is the agent-runtime + LLM-provider seam plus the in-container agent 
 | roboco/runtime/spawn_manifest.py | Builds the per-role /app/tool-manifest.json (allowed verbs/tools, env) from role_config | 85 |
 | roboco/runtime/streaming.py | Global reasoning-stream callback holder+setter for live UI streaming | 53 |
 | roboco/runtime/transcript_retention.py | Pure selector of agent-owned old Claude transcripts to prune (never operator dirs) | 74 |
+| roboco/runtime/sandbox.py | `SandboxProvisioner` — throwaway per-agent-spawn Postgres/Redis sibling containers (orchestrator-side, never docker-in-agent); provision/teardown/janitor_sweep, standalone + unit-testable via an injected `DockerRunner` | 344 |
 | roboco/llm/__init__.py | Re-exports ToonAdapter/ToonMetrics singletons | 17 |
 | roboco/llm/metrics.py | Singleton holder for TOON token-savings metrics | 21 |
 | roboco/llm/toon_adapter.py | TOON serialization adapter for token-efficient LLM communication (JSON fallback) | 188 |
@@ -46,6 +47,7 @@ This slice is the agent-runtime + LLM-provider seam plus the in-container agent 
 | stream_reasoning | function | roboco/runtime/streaming.py:39 | Stream a reasoning chunk to the registered callback if any |
 | is_agent_owned_dir | function | roboco/runtime/transcript_retention.py:23 | True if a ~/.claude/projects subdir was written by a spawned agent (-app or encoded workspaces root prefix, boundary-aware) |
 | select_prunable_transcripts | function | roboco/runtime/transcript_retention.py:59 | Pure selector of agent-owned *.jsonl transcripts older than cutoff_epoch (never operator dirs) |
+| SandboxProvisioner | class | roboco/runtime/sandbox.py:90 | Per-agent-spawn throwaway Postgres/Redis provisioner; `provision`/`teardown`/`janitor_sweep`, docker plumbing is an injected `DockerRunner` callable |
 | ToonAdapter | class | roboco/llm/toon_adapter.py:33 | TOON serialization adapter: encode/decode with JSON fallback, prompt formatting, token-savings estimate |
 | get_toon_adapter | function | roboco/llm/toon_adapter.py:184 | Singleton ToonAdapter accessor |
 | SpawnResult | dataclass | roboco/llm/providers/base.py:26 | Provider spawn result: instance_id, initial agent_state, extra metadata |

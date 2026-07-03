@@ -1,7 +1,7 @@
 # db-migrations slice
 
 ## Purpose
-The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for the in-house RAG engine. Schema evolution is owned by an Alembic chain (001→054) that runs on every boot via `init_db()`; `Base.metadata.create_all` is no longer the source of truth — migration 017 reconciled the drift the other way. The ORM tables live in one fat module `roboco/db/tables.py` (~2.5k lines, 37 tables).
+The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for the in-house RAG engine. Schema evolution is owned by an Alembic chain (001→059) that runs on every boot via `init_db()`; `Base.metadata.create_all` is no longer the source of truth — migration 017 reconciled the drift the other way. The ORM tables live in one fat module `roboco/db/tables.py` (~2.5k lines, 37 tables).
 
 ## Files
 
@@ -13,7 +13,7 @@ The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for 
 | `roboco/db/seed.py` | `bootstrap_database()` — runs `init_db` then seeds agents, channels, groups, initial messages. |
 | `alembic/env.py` | Async Alembic env; imports `roboco.db.tables` to register metadata, overrides `sqlalchemy.url` from settings, `compare_type` + `compare_server_default` on. |
 | `alembic.ini` | Standard config; `script_location=alembic`, `prepend_sys_path=.`, no URL (set in env.py). |
-| `alembic/versions/` | 54 migration files 001..054 (two share number 026 — chained, not a collision). |
+| `alembic/versions/` | 59 migration files 001..059 (two share number 026 — chained, not a collision). |
 
 ## Key Symbols
 
@@ -29,7 +29,7 @@ The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for 
 | `TaskTable` | class | tables.py:157 | Core task entity (largest table, drives lifecycle). |
 | `WorkSessionTable` | class | tables.py:798 | Per-claim session; single-active enforced by 047 partial-unique index. |
 | `AgentTable` | class | tables.py:95 | Agent identity, role, team, model provider assignment. |
-| `ProjectTable` | class | tables.py:475 | Git repo config + CI/watch/dep-update/quality_command cols. |
+| `ProjectTable` | class | tables.py:475 | Git repo config + CI/watch/dep-update/quality_command/`sandbox_services` (057) cols. |
 | `AuditLogTable` | class | tables.py:1940 | Transition journey; `details` JSONB (010); composite query index (045). |
 | `AgentSpawnSessionTable` | class | tables.py:2170 | Per-spawn token totals; feeds usage dashboard. |
 | `ProjectConventionsCacheTable` | class | tables.py:2442 | Effective conventions map per (project, HEAD sha). |
@@ -38,6 +38,9 @@ The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for 
 | `TaskCellProjectTable` | class | tables.py:632 | Per-cell project map for a MegaTask root-subtask (052). |
 | `WaitingRecordTable` | class | tables.py:1872 | Persisted dispatcher waiting records (restore at start). |
 | `IndexedDocumentTable` | class | tables.py:1651 | RAG corpus docs (added to chain by 017). |
+| `UserTable` | class | tables.py:2603 | Cloud-auth (FastAPI Users) single seeded CEO login row (058). |
+| `XCredentialsTable` | class | tables.py:2650 | Singleton Fernet-encrypted OAuth 1.0a secrets for the X engine (059). |
+| `XSeenMentionTable` | class | tables.py:2675 | X mentions-poll dedup ledger, keyed by mention id (059). |
 | `run_async_migrations` | fn | env.py | Async online migration runner (NullPool). |
 
 ## Migration Chain
@@ -99,6 +102,11 @@ The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for 
 | 052 | 052_task_cell_projects.py | `task_cell_projects` (per-cell project map for MegaTask root-subtask; reuses team enum create_type=False). |
 | 053 | 053_playbook_archived_attr.py | `playbooks.archived_by` (UUID) + `playbooks.archived_at` (DateTime) — distinct retirement attribution; keeps `approved_by`/`approved_at` as approval-only provenance. |
 | 054 | 054_a2a_message_skill.py | `a2a_messages.skill` (String 100, nullable) — persists the capability a directed A2A message concerns; was silently dropped on send. |
+| 055 | 055_spawn_session_turns_tool_calls.py | `agent_spawn_sessions.turns` + `.tool_calls` (BigInteger, DEFAULT 0) — per-stint LLM iterations + tool invocations for the granular per-member performance metrics. |
+| 056 | 056_member_perf_daily.py | `member_performance_daily` — one row per (date, member_kind, agent_slug) scorecard rollup (incl. CEO as `member_kind='ceo'`). |
+| 057 | 057_project_sandbox_services.py | `projects.sandbox_services` (ARRAY(String), nullable) — per-project opt-in for the sandboxed per-agent-spawn Postgres/Redis provisioner. |
+| 058 | 058_cloud_auth_users.py | `users` table (FastAPI Users schema) — the single seeded CEO login for cloud auth (`ROBOCO_CLOUD_AUTH_ENABLED`, default off). |
+| 059 | 059_x_credentials.py | `x_credentials` (singleton Fernet-encrypted OAuth 1.0a secrets) + `x_seen_mentions` (mentions-poll dedup ledger) — the X (Twitter) engine (`ROBOCO_X_ENGINE_ENABLED`, default off). |
 
 ## Data Flow
 On boot, `init_db()` probes for application tables and `alembic_version`; if a pre-Alembic DB exists it stamps it at revision 001, then always runs `run_migrations()` → `alembic upgrade head` (in a thread via `asyncio.to_thread`). `env.py` imports `roboco.db.tables` so `Base.metadata` is fully populated, overrides `sqlalchemy.url` from `settings.database_url`, and runs online with an async NullPool engine. `compare_type` + `compare_server_default` are on so autogenerate drift is detectable. `tables.py` classes are the ORM mapping the migrations build; the domain layer reads them through `roboco/models/` dataclasses, not the tables directly.
@@ -113,12 +121,13 @@ graph LR
   027-->028-->029-->030-->031-->032-->033-->034-->035-->036
   036-->037-->038-->039-->040-->041-->042-->043-->044-->045
   045-->046-->047-->048-->049-->050-->051-->052-->053-->054
+  054-->055-->056-->057-->058-->059
 ```
 
 ## Logical Tree
 
 ```
-Migration chain 001..054
+Migration chain 001..059
 ├── Initial schema
 │   └── 001 initial schema (agents, tasks, work_sessions, channels, sessions, messages, notifications, journals, audit_log, a2a_*)
 ├── Persistence
@@ -201,8 +210,17 @@ Migration chain 001..054
 │   └── 053 playbooks.archived_by + archived_at (distinct retirement attribution from approval)
 ├── Orchestrator runtime durability
 │   └── 051 respawn_tracker (durable PM-respawn counter)
-└── A2A messaging
-    └── 054 a2a_messages.skill (nullable; persists directed-A2A capability context)
+├── A2A messaging
+│   └── 054 a2a_messages.skill (nullable; persists directed-A2A capability context)
+├── Per-member performance metrics
+│   ├── 055 agent_spawn_sessions.turns + .tool_calls (DEFAULT 0)
+│   └── 056 member_performance_daily (per date/member_kind/agent_slug rollup)
+├── Sandboxed dev DB/Redis
+│   └── 057 projects.sandbox_services (per-project opt-in array)
+├── Cloud auth
+│   └── 058 users (FastAPI Users; single seeded CEO login)
+└── X (Twitter) engine
+    └── 059 x_credentials (singleton encrypted OAuth 1.0a) + x_seen_mentions (dedup ledger)
 ```
 
 ## Dependencies
@@ -231,7 +249,7 @@ Migration chain 001..054
 - **017 reconciled drift the other way** — added ORM tables the chain had missed; `create_all` is no longer authoritative.
 
 ## Drift from CLAUDE.md
-- CLAUDE.md says "52 migrations 001..052" — now stale; chain is 001..054 (54 files). Does not mention the two 026 files (chained, not a conflict).
+- CLAUDE.md says "52 migrations 001..052" — now stale; chain is 001..059 (59 files). Does not mention the two 026 files (chained, not a conflict).
 - CLAUDE.md cites migrations 043/046/047/048/049/050/051 by number in feature sections — all present and consistent.
 - No factual drift found in the DB layer description.
 
@@ -241,7 +259,9 @@ Migration chain 001..054
 
 (Only one commit in range touches these paths.)
 
-> Post-snapshot updates (since 2026-06-29): `536bbb64` (Chore/all/logical gaps sweep #286) — adds migration 053 (`playbooks.archived_by`/`archived_at`), two new columns on `PlaybookTable`; `d8a5bb48` ([chore] a2a hierarchy gate + skill persist) — adds migration 054 (`a2a_messages.skill`), one new column on `A2AMessageTable`, wired through `send_chat_message` and the A2AChatMessage model. Chain head is now 054.
+> Post-snapshot updates (since 2026-06-29): `536bbb64` (Chore/all/logical gaps sweep #286) — adds migration 053 (`playbooks.archived_by`/`archived_at`), two new columns on `PlaybookTable`; `d8a5bb48` ([chore] a2a hierarchy gate + skill persist) — adds migration 054 (`a2a_messages.skill`), one new column on `A2AMessageTable`, wired through `send_chat_message` and the A2AChatMessage model.
+>
+> Delta 2026-07-03 (v0.17.0, 5 features): `055_spawn_session_turns_tool_calls` (`agent_spawn_sessions.turns`/`.tool_calls`) + `056_member_perf_daily` (`member_performance_daily`) predate this wave but were never appended to this doc; `057_project_sandbox_services` adds `projects.sandbox_services` (sandboxed dev DB/Redis, `ROBOCO_SANDBOX_DB_ENABLED`); `058_cloud_auth_users` adds `users` (`UserTable`, cloud auth, `ROBOCO_CLOUD_AUTH_ENABLED`); `059_x_credentials` adds `x_credentials` (`XCredentialsTable`) + `x_seen_mentions` (`XSeenMentionTable`) (X engine, `ROBOCO_X_ENGINE_ENABLED`). Chain head is now 059.
 
 ## Regression Risks
 
@@ -257,4 +277,4 @@ Migration chain 001..054
 | Single-head violation on re-apply | alembic/versions/017_reconcile_orm_schema_drift.py | 017 adds tables/columns that `create_all` had created; on a DB built by `create_all` then stamped, 017 may double-create. | Medium |
 
 ## Health
-The chain is linear and complete (001→052), with `init_db` running `upgrade head` on every boot so deployed schemas stay current. The two structural risks are the `sa.Enum(create_type=False)` no-op in 001 (latent on clean re-applies) and the enum-parity gate's dependence on a populated migrated DB. New migrations consistently use the `postgresql.ENUM(create_type=False)` pattern and `ALTER TYPE ... ADD VALUE IF NOT EXISTS` for enum widening, so recent additions are safe.
+The chain is linear and complete (001→059), with `init_db` running `upgrade head` on every boot so deployed schemas stay current. The two structural risks are the `sa.Enum(create_type=False)` no-op in 001 (latent on clean re-applies) and the enum-parity gate's dependence on a populated migrated DB. New migrations consistently use the `postgresql.ENUM(create_type=False)` pattern and `ALTER TYPE ... ADD VALUE IF NOT EXISTS` for enum widening, so recent additions are safe.

@@ -40,6 +40,9 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | roboco/api/routes/usage.py | Token usage summary/time-series/by-agent/team/model/role/sessions, cache-efficiency, spawn-waste (per-role unproductive-spawn rate + respawn strikes). |
 | roboco/api/routes/system.py | System-wide info. |
 | roboco/api/routes/docs.py | Project docs write/read/list/delete. |
+| roboco/api/routes/x.py | X (Twitter) engine — CEO-only: list/approve/reject held draft posts + set/status OAuth 1.0a credentials. |
+| roboco/api/routes/roadmap.py | Board roadmap engine — CEO-only: list open cycles + per-item approve/reject. |
+| roboco/api/auth/ | Cloud auth (FastAPI Users, default off): `backend.py` (cookie transport + password-fingerprint-bound JWT strategy), `manager.py` (`UserManager` + DI chain), `session.py` (`resolve_session_user`, shared by the HTTP dual-path and the WS panel-token gate), `seed.py` (idempotent single seeded CEO login upsert), `routes.py` (always-public `/auth/status` + conditional login/logout mount). |
 | roboco/api/routes/v1/_role_dep.py | Per-role HMAC guards + `envelope_to_response` helper. |
 | roboco/api/routes/v1/do.py | Content verbs `/api/v1/do/*` (commit/note/say/dm/evidence/playbook...). |
 | roboco/api/routes/v1/flow_dev.py | Developer flow verbs. |
@@ -62,12 +65,19 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | GET | /api/dashboard/ceo | dashboard.py | agent context |
 | GET | /api/dashboard/metrics/{cycle-time,bottlenecks,rework,scorecard/*} | dashboard.py | agent context |
 | GET/POST/PATCH/DELETE | /api/tasks, /api/tasks/{id}/{claim,start,verify,submit-qa,pass-qa,fail-qa,complete,cancel,escalate-to-ceo} | tasks.py | agent context + `require_task_action` |
+| GET | /api/tasks/summary?q= (list_tasks_summary) | tasks.py | agent context — trimmed list-view rows; server-side title/description/id-prefix search via `TaskService.search_tasks` when `q` is set (wave 1, `d1cf6ecb`) |
 | GET/POST | /api/orchestrator/{status,agents/{id},waiting} ; /spawn,/stop,/resolve-wait,/mark-waiting | orchestrator.py | `_require_ceo` (HMAC) |
 | POST | /api/a2a/{send,send-stream} ; /chat/conversations ; /tasks/{id}/cancel | a2a.py | `require_any_authenticated_agent` |
+| GET/POST | /api/a2a/chat/admin/{conversations,pairs,conversations/{id}/messages,conversations/{id}/reply} | a2a.py | `_require_ceo` (org-wide live view + reply-as-CEO; wave 2 `da563487` / wave 2c `876e19b3`) |
 | POST | /api/prompter/live, /live/{id}/{stream,status,messages,stop,confirm,confirm-batch} | prompter_live.py | `require_panel_token` (CEO HMAC) |
+| GET | /api/prompter/live/{id}/search-tasks | prompter_live.py | session-aliveness check (no agent identity) — intake's `search_past_tasks` tool (wave 1, `d1cf6ecb`) |
 | POST | /api/secretary/live, /live/{id}/{stream,messages,stop,events} ; /api/secretary/{state,directives} | secretary*.py | panel token / agent ctx |
+| GET | /api/secretary/tasks?q= (search_tasks) | secretary.py | agent ctx, Secretary or CEO role — resolve a task NAME to id(s) for a directive (wave 1, `d1cf6ecb`) |
 | GET/POST | /api/release/proposal, /proposal/approve, /proposal/reject | release.py | `_require_ceo` (agent.role==CEO) |
 | GET/POST | /api/playbooks, /{id}/{approve,reject,archive} | playbooks.py | agent context (Auditor/CEO) |
+| GET/POST | /api/x/posts, /posts/{id}/{approve,reject}, /credentials | x.py | `require_ceo_role` (agent context) |
+| GET/POST | /api/roadmap/cycles, /cycles/{id}/items/{id}/{approve,reject} | roadmap.py | `require_ceo_role` (agent context) |
+| GET/POST | /api/auth/status (always), /auth/login, /auth/logout (mounted only when `cloud_auth_enabled`) | auth/routes.py | none (status) / FastAPI Users cookie login |
 | GET/POST/PUT/DELETE | /api/projects, /{id}/conventions, /workspace, /sync | project.py | agent context |
 | POST | /api/v1/flow/developer/{give_me_work,i_will_work_on,open_pr,i_am_done,unclaim,resume,sync_branch} | flow_dev.py | `require_dev` (role + HMAC) |
 | POST | /api/v1/flow/qa/{claim_review,pass_review,fail_review} | flow_qa.py | `require_qa` |
@@ -161,6 +171,8 @@ roboco/api/
 │   │   ├── release.py           release proposal approve/reject
 │   │   ├── playbooks.py         playbook curation
 │   │   ├── pitch.py             pitch approve/reject
+│   │   ├── x.py                 X engine post queue approve/reject + credentials
+│   │   ├── roadmap.py           board roadmap cycle item approve/reject
 │   │   ├── a2a.py               agent-to-agent + SSE
 │   │   ├── prompter_live.py     live Intake chat
 │   │   ├── secretary.py         company state + directives
@@ -177,6 +189,12 @@ roboco/api/
 │       ├── flow_board.py        board flow verbs
 │       ├── flow_auditor.py      auditor flow verbs
 │       └── flow_pr_reviewer.py  PR-reviewer flow verbs
+├── auth/ (cloud auth, default off — ROBOCO_CLOUD_AUTH_ENABLED)
+│   ├── backend.py               cookie transport + password-fingerprint-bound JWT strategy
+│   ├── manager.py                UserManager + get_user_db/get_user_manager DI chain
+│   ├── session.py               resolve_session_user (shared HTTP + WS cookie validation)
+│   ├── seed.py                  ensure_seed_user / ensure_seed_user_startup (single CEO row)
+│   └── routes.py                always-public /status + conditional login/logout mount
 └── schemas/
     ├── *.py                     per-domain Pydantic models
     └── v1/
@@ -188,7 +206,8 @@ roboco/api/
 - FastAPI + sse-starlette (SSE), pydantic v2.
 - `roboco/api/deps.py` — shared deps (DbSession, agent context, HMAC, orchestrator).
 - `roboco/api/middleware.py` — exception handlers + correlation/log middleware.
-- `roboco/services/*` — TaskService, GitService, OptimalService, AgentOrchestrator, Choreographer, ContentActions, ReleaseProposalService, PrompterService, SecretaryService, MetricsService, etc.
+- `roboco/services/*` — TaskService, GitService, OptimalService, AgentOrchestrator, Choreographer, ContentActions, ReleaseProposalService, PrompterService, SecretaryService, MetricsService, XPostService, XCredentialsService, RoadmapService, etc.
+- `roboco/api/auth/*` (`auth_backend`, `get_user_manager`, `resolve_session_user`, `mount_cloud_auth`) — cloud auth, consumed by `deps.get_agent_context`'s dual-path and the WS panel-token gate.
 - `roboco/foundation/identity.py` (`Role`) + `roboco/agents_config.py` (`verify_agent_token`, `CEO_AGENT_ID`).
 - `roboco/api/websocket.py` + `websocket_bridge.py` (WS event forwarding).
 
@@ -208,6 +227,8 @@ roboco/api/
 - `StrList` BeforeValidator is load-bearing: without it the Claude SDK's XML-nested list input crashes `i_will_plan`/`delegate` with 422 (MegaTask memory Bug 3).
 - `orchestrator.py` and `release.py` use two different `_require_ceo` implementations (HMAC header vs `agent.role==CEO` from context) — keep their semantics aligned.
 - WS endpoints live on `/ws/*` (separate router in `websocket.py`), not under `/api`; the bridge subscribes to `StreamEventBus` and forwards per resource-id.
+- `/api/tasks` PATCH is not a single admin surface: `_pm_editor_scope` (tasks.py:256) routes cell_pm/main_pm to a content-only allowlist (`_PM_LIGHTER_UPDATE_FIELDS`: title/description/acceptance_criteria/priority, zero status changes) enforced by `_enforce_pm_lighter_fields` (tasks.py:278), while CEO/Board/Auditor keep the unrestricted admin bypass; a cell_pm editing a task outside its own team 403s before the field check even runs.
+- `GET /api/tasks/summary` and `GET /api/secretary/tasks` both call the same `TaskService.search_tasks` (ILIKE title/description + id-prefix) but through different auth (agent-context view-scope vs Secretary-or-CEO role check) and different response shapes (trimmed `TaskSummaryResponse` vs a hand-built dict list) — don't assume one route's pagination/limit semantics apply to the other.
 
 ## Drift from CLAUDE.md
 - CLAUDE.md lists `pr_pass`/`pr_fail` under `pr_reviewer` verbs and the in-path gate; code matches (`flow_pr_reviewer.py` exposes `claim_gate_review`, `pr_pass`, `pr_fail`). No drift found.
@@ -218,15 +239,18 @@ roboco/api/
 
 ## Changes Since Baseline
 `git log fd10cc86..HEAD -- roboco/api/routes/ roboco/api/schemas/`:
-- `15effce0` Chore: 141 Gaps fill-in (#283) — broad route/schema hardening pass (the only logic-touching commit in range).
+- `15effce0` Chore: 141 Gaps fill-in (#283) — broad route/schema hardening pass (the only logic-touching commit in range at the time this section was last refreshed).
 
-(Baseline..HEAD contains a single sweep commit touching this slice; earlier per-fix commits predate the baseline.)
+> Post-snapshot: many further commits touch this slice (536bbb64, df87fcf0, a8cb2470, 0ca9d91b, cfde4369, 0f1ed3cc, 1c87a4e4, and the three below) — only the wave-1/2/2c ones relevant to this pass are itemized; a full re-audit of the intervening route/schema history is still owed.
+> - `d1cf6ecb` Wave 1 (#295) — adds `GET /api/tasks/summary?q=` search (`TaskService.search_tasks`), `GET /api/prompter/live/{id}/search-tasks` (intake memory), `GET /api/secretary/tasks?q=` (Secretary task-by-name lookup), and the Secretary `edit` directive action.
+> - `da563487` Wave 2 (#297) — adds the CEO-only `/api/a2a/chat/admin/{conversations,conversations/{id}/messages,conversations/{id}/reply}` routes (`_require_ceo`) for the A2A live view + reply-as-CEO.
+> - `876e19b3` Wave 2c (#298) — adds `/api/a2a/chat/admin/pairs` (the switchboard, same `_require_ceo` gate); tightens `/api/tasks` PATCH so cell/main PM roles get a content-only field allowlist instead of the unrestricted CEO/Board/Auditor admin bypass (`_pm_editor_scope` / `_enforce_pm_lighter_fields`, `roboco/api/routes/tasks.py:256,278`) — closes an over-permission hole where PM identities could edit any-team tasks via the ASSIGN-holding bypass.
 
 ## Regression Risks
 
 | Title | File:Line | Claim | Severity |
 |-------|-----------|-------|----------|
-| do/a2a any-role token gate | v1/do.py:43, a2a.py:114 | `require_any_authenticated_agent` only verifies HMAC + that the agent exists; it does NOT assert the role matches the verb's intended role family — a QA-signed token could call `do/commit` or a dev could call `a2a` admin paths. Service-layer scope is the sole guard; a missed service check = privilege escape. | High |
+| do/a2a any-role token gate | v1/do.py:43, a2a.py:114 | `require_any_authenticated_agent` only verifies HMAC + that the agent exists; it does NOT assert the role matches the verb's intended role family — a QA-signed token could call `do/commit`, or any agent could call the participant-scoped `a2a` routes (send/conversations) for a pair it has no policy access to (only the gateway's `can_a2a_direct`/`validate_a2a_access` matrix, a service-layer check, stops it). Service-layer scope is the sole guard on these paths; a missed service check = privilege escape. **Correction:** the `/chat/admin/*` routes (org-wide live view + reply-as-CEO) are NOT on this gate — they carry their own router-level `_require_ceo` guard, added in wave 2 (`da563487`) and extended to `/chat/admin/pairs` in wave 2c (`876e19b3`); a non-CEO agent 403s before reaching the service layer on those. | High |
 | 422 response echoes secrets | middleware.py:407 | `_scrub_secrets` redacts only the **log** body; the JSON response still contains `body` with the caller's original secret fields. A 422 on `git_token`/`api_key` returns the secret back to the client (and to any MITM/log of the response). | High |
 | orchestrator CEO gate vs release CEO gate divergence | orchestrator.py:37 vs release.py:32 | Two independent `_require_ceo` implementations: orchestrator uses HMAC header verification, release uses `agent.role == CEO` from `CurrentAgentContext`. If one path's HMAC/context resolution drifts, the two CEO surfaces enforce different identities. | Medium |
 | SSE transport errors swallowed | prompter_live.py:122, secretary_live.py:61, a2a.py:195 | `EventSourceResponse` streams run long-lived; a Choreographer/orchestrator raise mid-stream is caught by `contextlib` suppress but can drop the stream silently without a terminal event to the panel. | Medium |

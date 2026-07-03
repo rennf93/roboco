@@ -17,6 +17,9 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `roboco/services/research_quota.py` | Per-agent UTC-daily Redis quota counter for research calls (fail-open) | 78 |
 | `roboco/services/pitch.py` | Board pitch CRUD + CEO approve → provision repos/Projects(+Product) + seed Main-PM task | 274 |
 | `roboco/services/github_provisioning.py` | The only service that CREATES GitHub repos (POST `/orgs/{org}/repos`) | 174 |
+| `roboco/services/roadmap_engine.py` | Dormant weekly engine: originates ONE held roadmap-exploration task for the Product Owner (default off) | 111 |
+| `roboco/services/roadmap_service.py` | CEO's per-item approve/reject glue over a held roadmap cycle; approve materializes a BACKLOG task | 211 |
+| `roboco/api/routes/roadmap.py` | CEO-only routes: list open cycles, approve/reject one item | 124 |
 
 ## Key Symbols
 
@@ -74,6 +77,15 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `GitHubProvisioningService._fetch_existing_repo` | method | github_provisioning.py:140 | GET `org/name` and reconstruct `ProvisionedRepo` — called on 422 to reuse an orphaned repo from a rolled-back prior approval |
 | `_GITHUB_REPO_EXISTS_STATUS` | constant | github_provisioning.py:42 | `422` — GitHub's "name already exists" status sentinel |
 | `ProvisionedRepo` / `ProvisioningError` / `ProvisioningDisabledError` | dataclass/exc | github_provisioning.py:32 / 23 / 27 | Result + error types |
+| `RoadmapEngine` | class | roadmap_engine.py:49 | Dormant "engine 3": mirrors the release-manager "detect → originate a CEO-gated artifact → hold" shape, but the artifact is a cycle the PO *authors*, not a report the engine assembles |
+| `RoadmapEngine.run_cycle` | method | roadmap_engine.py:54 | No-op unless `roadmap_engine_enabled`, a cycle is already open (`list_open_roadmap_cycles`), or the RoboCo project isn't resolvable; else opens ONE held PENDING exploration task assigned to the Product Owner |
+| `RoadmapService` | class | roadmap_service.py:50 | List / approve / reject items within the open roadmap cycle(s) |
+| `RoadmapService.approve_item` | method | roadmap_service.py:59 | Materialize one proposed item as a BACKLOG task via `PrompterService.create_task_from_draft`; idempotent per item |
+| `RoadmapService.reject_item` | method | roadmap_service.py:108 | Record the CEO's reason; idempotent; an already-approved item cannot be rejected |
+| `RoadmapService._find_item` | method | roadmap_service.py:146 | Resolve (exploration task, deep-copied cycle payload, one item) — deep copy so mutation doesn't poison SQLAlchemy's dirty-check before `markers.set_roadmap_cycle` reassigns |
+| `RoadmapService._maybe_complete_cycle` | staticmethod | roadmap_service.py:202 | Completes the exploration task once every item on it is terminal (approved/rejected) |
+| `RoadmapItemResult` | dataclass | roadmap_service.py:37 | Outcome of one approve/reject call (status/item_id/materialized_task_id/detail) |
+| `get_roadmap_engine` / `get_roadmap_service` | factory | roadmap_engine.py:109 / roadmap_service.py:209 | Session-bound constructors |
 
 ## Data Flow
 
@@ -86,6 +98,8 @@ Two distinct flows originate work into the delivery lifecycle:
 **Research flow (on-demand agent capability).** A Board/PM agent calls the `roboco-search` MCP tool (mounted only when `research_enabled` and role is research-eligible, orchestrator line 2914) → `/api/research/{search,fetch}` route. The route enforces the per-agent daily quota via the module-level `ResearchQuotaTracker` singleton (Redis INCR, fail-open), then calls `get_research_service()` → `ResearchService.search/fetch` → selected provider adapter. Result count and char size are clamped to `research_max_results` / `research_fetch_max_chars`. The provider key lives only server-side; the agent never egresses.
 
 **Routing flow (runtime keystone).** `ProductService.project_for(product_id, team)` is called from the gateway delegate path to resolve which Project a cell works on within a product; None falls back to the parent task's project.
+
+**Roadmap flow (dormant weekly originator, default off).** `Orchestrator._roadmap_engine_loop` returns immediately unless `roadmap_engine_enabled`; otherwise each `roadmap_interval_seconds` (default weekly) it opens a DB context and calls `RoadmapEngine.run_cycle`, which no-ops if a roadmap-source task is already open or the RoboCo project isn't resolvable, else opens ONE held PENDING exploration task (`source=board_roadmap`, `confirmed_by_human=False`) assigned to the Product Owner. The normal board one-shot dispatch (`_dispatch_roadmap_exploration`) spawns the PO, who explores the charter/releases/metrics/projects and calls the `propose_roadmap` do-tool exactly once with a themed goal + 3-7 item drafts (persisted as an `orchestration_markers` payload). The CEO reviews the cycle in the panel's Roadmap Review Queue and approves/rejects each item individually via `/api/roadmap/cycles/{id}/items/{id}/{approve,reject}` → `RoadmapService`; an approved item materializes as a BACKLOG task (`source=roadmap`) through `PrompterService.create_task_from_draft` — nothing auto-starts, normal PM activation takes it from BACKLOG. Once every item is terminal, the exploration task itself completes.
 
 **Read-only views.** `KanbanService` builds role-specific boards from `TaskTable` queries on demand for the kanban API; `CompanyGoalsService.get` is read by the briefing injector into every agent's `context_briefing`.
 
@@ -120,6 +134,15 @@ flowchart TD
         Route --> RS[ResearchService]
         RS --> Prov2{"Tavily|Brave|Exa|Null"}
         Prov2 -->|provider API| Web[(Web)]
+    end
+
+    subgraph RoadmapLoop[dormant — roadmap_engine_enabled]
+        RLoop[Orchestrator._roadmap_engine_loop] -->|interval, default weekly| RCycle[RoadmapEngine.run_cycle]
+        RCycle -->|held PENDING task| PO[Product Owner spawn]
+        PO -->|propose_roadmap do-tool| Payload[(orchestration_markers cycle payload)]
+        CEO -->|approve/reject per item /api/roadmap| RSvc[RoadmapService]
+        RSvc -->|approve| Backlog[BACKLOG task via PrompterService]
+        RSvc -->|all items terminal| Complete[exploration task completes]
     end
 ```
 
@@ -167,9 +190,16 @@ product-strategy-research-pitch
 │   ├── _provision_repos (idempotent on re-approval)
 │   ├── _register_topology (Product vs seed-project)
 │   └── _seed_main_pm_task (PENDING Main-PM task)
-└── github_provisioning.py — GitHubProvisioningService
-    ├── enabled (master+token+org)
-    └── create_repo (POST /orgs/{org}/repos, auto_init)
+├── github_provisioning.py — GitHubProvisioningService
+│   ├── enabled (master+token+org)
+│   └── create_repo (POST /orgs/{org}/repos, auto_init)
+├── roadmap_engine.py — RoadmapEngine (dormant, roadmap_engine_enabled)
+│   └── run_cycle (one held exploration task for the Product Owner; one-open-cycle dedup)
+└── roadmap_service.py — RoadmapService
+    ├── list_open_cycles
+    ├── approve_item (materialize BACKLOG task, idempotent)
+    ├── reject_item (record reason, idempotent)
+    └── _maybe_complete_cycle (completes exploration task once all items terminal)
 ```
 
 ## Dependencies
@@ -185,12 +215,15 @@ product-strategy-research-pitch
 - `roboco.services.conventions` — lazy-imported in `ProjectService._maybe_scaffold_conventions`.
 - `roboco.services.work_session` — lazy in `ProjectService.delete`.
 - `roboco.services.workspace` — lazy in `ProjectService.delete` (delete_workspaces).
-- `roboco.services.task` — `StrategyEngine` (`list_in_progress_or_claimed`, `list_long_running_blocked`), `PitchService._seed_main_pm_task`.
+- `roboco.services.task` — `StrategyEngine` (`list_in_progress_or_claimed`, `list_long_running_blocked`), `PitchService._seed_main_pm_task`; `RoadmapEngine`/`RoadmapService` (`ROADMAP_SOURCE`/`ROADMAP_ITEM_SOURCE`, `list_open_roadmap_cycles`, `TaskCreateRequest`).
+- `roboco.services.prompter` — `RoadmapService._materialize` lazy-imports `get_prompter_service` (`create_task_from_draft`, the same confirmed-by-CEO-approval path pitch items use).
+- `roboco.foundation.policy.content.markers` — `RoadmapService`/`api/routes/roadmap.py` (`get_roadmap_cycle`/`set_roadmap_cycle`, the cycle payload persisted on `orchestration_markers`).
+- `roboco.foundation.identity` — `RoadmapEngine._originate` (`AGENTS["product-owner"]`/`AGENTS["system"]`).
 - `roboco.services.agent` — `PitchService` (`get_by_slug("main-pm")`).
 - `roboco.services.notification` — `StrategyEngine.run_cycle`.
 - `roboco.services.github_provisioning` — `PitchService.approve`.
 - `roboco.services.project` / `product` — `PitchService`.
-- `roboco.runtime.orchestrator` — runs `_strategy_engine_loop`; mounts `roboco-search` MCP when `research_enabled`.
+- `roboco.runtime.orchestrator` — runs `_strategy_engine_loop` + `_roadmap_engine_loop`/`_dispatch_roadmap_exploration`; mounts `roboco-search` MCP when `research_enabled`.
 
 **External:**
 - `sqlalchemy` (async ext) — all DB-backed services.
@@ -210,7 +243,8 @@ product-strategy-research-pitch
   - `research.py` — `POST /api/research/search`, `/fetch` → `get_research_service` + module-level `ResearchQuotaTracker`.
   - `prompter_live.py` — `get_project_service` for project lookup during intake.
   - `dashboard.py` — `get_product_service` / `get_project_service` for dashboard views.
-- **Orchestrator loop tick:** `_strategy_engine_loop` (orchestrator.py:6360) — created at `start()` (line 1010), cancelled in shutdown (line 1075); ticks every `strategy_engine_interval_seconds`, calls `StrategyEngine.run_cycle`.
+  - `roadmap.py` — `GET /api/roadmap/cycles`, `POST /cycles/{id}/items/{id}/{approve,reject}` (CEO-only) → `get_roadmap_service`.
+- **Orchestrator loop tick:** `_strategy_engine_loop` (orchestrator.py:6360) — created at `start()` (line 1010), cancelled in shutdown (line 1075); ticks every `strategy_engine_interval_seconds`, calls `StrategyEngine.run_cycle`. `_roadmap_engine_loop` (orchestrator.py:7462) — same lifecycle shape, ticks every `roadmap_interval_seconds` (default weekly), calls `RoadmapEngine.run_cycle`; `_dispatch_roadmap_exploration` (orchestrator.py:10284) spawns the Product Owner once per open exploration task.
 - **MCP mount (orchestrator spawn):** `roboco-search` MCP mounted into Board/PM agent containers only when `research_enabled` (orchestrator.py:2914); the MCP server calls the `/api/research/*` routes.
 - **Service-to-service:** `ProjectService` called by `WorkspaceService`, `GitService`, `PitchService`, `task`, `docs`, `cockpit`, `secretary`, gateway choreographer; `ProductService.project_for` called from gateway delegate path; `CompanyGoalsService.get` called by briefing injector.
 - **No CLI / lifespan entry points** for this slice.
@@ -238,6 +272,10 @@ product-strategy-research-pitch
 | `ROBOCO_STRATEGY_STRANDED_BLOCKED_MINUTES` | `120` | config.py:360 | Blocked-task threshold for "stranded" observation |
 | `ROBOCO_PROTECTED_GIT_URLS` | `[]` | config.py:770 | Denylist — `ProjectService` rejects `git_url` containing any entry |
 | `ROBOCO_ENCRYPTION_KEY` | `""` | config.py:295 | Fernet key for git-token encrypt/decrypt |
+| `ROBOCO_ROADMAP_ENGINE_ENABLED` | `False` | config.py:865 | Master switch — `_roadmap_engine_loop` never opens an exploration cycle when off |
+| `ROBOCO_ROADMAP_INTERVAL_SECONDS` | `604800` | config.py:875 | Seconds between roadmap-exploration cycles (default weekly) |
+| `ROBOCO_ROADMAP_MIN_ITEMS_PER_CYCLE` | `3` | config.py:880 | Minimum item drafts `propose_roadmap` must submit for a themed cycle |
+| `ROBOCO_ROADMAP_MAX_ITEMS_PER_CYCLE` | `7` | config.py:885 | Maximum item drafts per cycle |
 
 ## Gotchas
 

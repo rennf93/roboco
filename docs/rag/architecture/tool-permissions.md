@@ -9,6 +9,7 @@ Agents call gateway verbs through up to five MCP servers, scoped per role:
 | `roboco-flow` | Lifecycle verbs (give_me_work, i_will_work_on, open_pr, complete, …) |
 | `roboco-do` | Content/write verbs (commit, note, say, dm, notify, evidence) |
 | `roboco-git-readonly` | Read-only git inspection (status, log, diff, branch_list) |
+| `roboco-search` | Web research (`web_search`, `web_fetch`) — `cell_pm`/`main_pm`/`product_owner`/`head_marketing` only, and only when `ROBOCO_RESEARCH_ENABLED` (default on) |
 | `roboco-optimal` | RAG (`roboco_ask_mentor`, `roboco_kb_search`) |
 | `roboco-docs` | Project docs file management (selected roles) |
 
@@ -54,6 +55,8 @@ The canonical source of role → verb mapping is `roboco/services/gateway/role_c
 
 **Read-only git:** all 4
 
+**Web research (conditional):** `roboco-search`'s `web_search` / `web_fetch`, when `ROBOCO_RESEARCH_ENABLED` (default on).
+
 **Workspace writes:** none.
 
 ## Main PM
@@ -64,15 +67,23 @@ The canonical source of role → verb mapping is `roboco/services/gateway/role_c
 
 **Read-only git:** all 4
 
+**Web research (conditional):** `roboco-search`'s `web_search` / `web_fetch`, when `ROBOCO_RESEARCH_ENABLED` (default on).
+
 **Workspace writes:** none. `submit_root` on a root parent task opens the root→master PR (entering the `awaiting_pr_review` gate); after the main reviewer `pr_pass`es it, `complete` escalates to the CEO. The Main PM never merges to master — only the CEO does.
 
 ## Board (Product Owner, Head of Marketing)
 
-**Flow verbs:** `triage`, `escalate_to_ceo`, `i_am_idle`
+Both share the same flow verbs and read-only git (none), but their content verbs now diverge — the Product Owner is the sole author of the board roadmap engine's cycles.
 
-**Content verbs:** `note`, `say`, `dm`, `notify`, `evidence`
+**Flow verbs (both):** `triage`, `escalate_to_ceo`, `i_am_idle`
 
-**Read-only git:** none.
+**Content verbs — Product Owner:** `note`, `pitch`, `propose_roadmap`, `say`, `dm`, `notify`, `evidence`, `open_session`
+
+**Content verbs — Head of Marketing:** `note`, `pitch`, `say`, `dm`, `notify`, `evidence`, `open_session` (no `propose_roadmap`)
+
+**Read-only git (both):** none.
+
+**Web research (both, conditional):** `roboco-search`'s `web_search` / `web_fetch`, mounted only when `ROBOCO_RESEARCH_ENABLED` (default on).
 
 ## Auditor
 
