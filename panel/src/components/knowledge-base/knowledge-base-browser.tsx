@@ -353,7 +353,7 @@ function KnowledgeBaseBrowserContent() {
                 onChange={handleSearchChange}
                 isLoading={searchLoading}
               />
-              <ScrollArea className="h-[calc(100vh-380px)]">
+              <ScrollArea className="h-[calc(100dvh-380px)]">
                 <KBResultList
                   response={searchResults}
                   isLoading={searchLoading}
@@ -378,7 +378,7 @@ function KnowledgeBaseBrowserContent() {
                 onSubmit={handleRAGQuery}
                 isLoading={ragMutation.isPending}
               />
-              <ScrollArea className="h-[calc(100vh-450px)]">
+              <ScrollArea className="h-[calc(100dvh-450px)]">
                 <RAGAnswerDisplay
                   response={ragResponse}
                   isLoading={ragMutation.isPending}
@@ -410,7 +410,7 @@ function KnowledgeBaseBrowserContent() {
 
             {/* Main content */}
             <div className="lg:col-span-3">
-              <ScrollArea className="h-[calc(100vh-320px)]">
+              <ScrollArea className="h-[calc(100dvh-320px)]">
                 <KBCategoryView category={selectedCategory} />
               </ScrollArea>
             </div>

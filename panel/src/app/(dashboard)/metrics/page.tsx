@@ -22,6 +22,12 @@ import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { OfflineState } from "@/components/ui/offline-state";
+import {
+  ResponsiveTable,
+  ResponsiveTableCardList,
+  ResponsiveTableCard,
+  ResponsiveTableCardRow,
+} from "@/components/ui/responsive-table";
 import { DeliveryTabContent } from "@/components/metrics/delivery-tab";
 import { ScorecardsTabContent } from "@/components/metrics/scorecards-tab";
 import {
@@ -635,30 +641,56 @@ function RoleUsageTable({ data, isLoading }: RoleUsageTableProps) {
             No usage recorded yet.
           </p>
         ) : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-xs text-muted-foreground">
-                <th className="pb-1 font-medium">Role</th>
-                <th className="pb-1 font-medium text-right">Cost</th>
-                <th className="pb-1 font-medium text-right">Cache hit</th>
-                <th className="pb-1 font-medium text-right">%</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.map((r) => (
-                <tr key={r.role} className="border-t">
-                  <td className="py-1 font-mono text-xs">{r.role}</td>
-                  <td className="py-1 text-right">${r.cost_usd.toFixed(4)}</td>
-                  <td className="py-1 text-right">
-                    {(r.cache_hit_rate * 100).toFixed(1)}%
-                  </td>
-                  <td className="py-1 text-right text-muted-foreground">
-                    {r.pct_of_total.toFixed(1)}%
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <ResponsiveTable
+            table={
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-muted-foreground">
+                    <th className="pb-1 font-medium">Role</th>
+                    <th className="pb-1 font-medium text-right">Cost</th>
+                    <th className="pb-1 font-medium text-right">Cache hit</th>
+                    <th className="pb-1 font-medium text-right">%</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.map((r) => (
+                    <tr key={r.role} className="border-t">
+                      <td className="py-1 font-mono text-xs">{r.role}</td>
+                      <td className="py-1 text-right">
+                        ${r.cost_usd.toFixed(4)}
+                      </td>
+                      <td className="py-1 text-right">
+                        {(r.cache_hit_rate * 100).toFixed(1)}%
+                      </td>
+                      <td className="py-1 text-right text-muted-foreground">
+                        {r.pct_of_total.toFixed(1)}%
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            }
+            cards={
+              <ResponsiveTableCardList>
+                {data.map((r) => (
+                  <ResponsiveTableCard key={r.role}>
+                    <span className="font-mono text-sm">{r.role}</span>
+                    <div className="mt-2 divide-y">
+                      <ResponsiveTableCardRow label="Cost">
+                        ${r.cost_usd.toFixed(4)}
+                      </ResponsiveTableCardRow>
+                      <ResponsiveTableCardRow label="Cache hit">
+                        {(r.cache_hit_rate * 100).toFixed(1)}%
+                      </ResponsiveTableCardRow>
+                      <ResponsiveTableCardRow label="% of total">
+                        {r.pct_of_total.toFixed(1)}%
+                      </ResponsiveTableCardRow>
+                    </div>
+                  </ResponsiveTableCard>
+                ))}
+              </ResponsiveTableCardList>
+            }
+          />
         )}
       </CardContent>
     </Card>
@@ -696,21 +728,41 @@ function SpawnWasteCard({ data, isLoading }: SpawnWasteCardProps) {
               </p>
             </div>
             {data.by_role.length > 0 && (
-              <table className="w-full text-xs">
-                <tbody>
-                  {data.by_role.map((r) => (
-                    <tr key={r.role} className="border-t">
-                      <td className="py-1 font-mono">{r.role}</td>
-                      <td className="py-1 text-right text-muted-foreground">
-                        {r.unproductive}/{r.spawns}
-                      </td>
-                      <td className="py-1 text-right">
-                        {r.unproductive_pct.toFixed(0)}%
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <ResponsiveTable
+                table={
+                  <table className="w-full text-xs">
+                    <tbody>
+                      {data.by_role.map((r) => (
+                        <tr key={r.role} className="border-t">
+                          <td className="py-1 font-mono">{r.role}</td>
+                          <td className="py-1 text-right text-muted-foreground">
+                            {r.unproductive}/{r.spawns}
+                          </td>
+                          <td className="py-1 text-right">
+                            {r.unproductive_pct.toFixed(0)}%
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                }
+                cards={
+                  <div className="space-y-1.5">
+                    {data.by_role.map((r) => (
+                      <div
+                        key={r.role}
+                        className="flex items-center justify-between border-t pt-1.5 text-xs"
+                      >
+                        <span className="font-mono">{r.role}</span>
+                        <span className="text-muted-foreground">
+                          {r.unproductive}/{r.spawns} (
+                          {r.unproductive_pct.toFixed(0)}%)
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                }
+              />
             )}
             {data.respawn_strikes.length > 0 && (
               <p className="text-xs text-muted-foreground">

@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { OfflineState } from "@/components/ui/offline-state";
+import { cn } from "@/lib/utils";
 import {
   Hash,
   Lock,
@@ -22,6 +23,7 @@ import {
   RefreshCw,
   Folder,
   MessageCircle,
+  ArrowLeft,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import Link from "next/link";
@@ -317,10 +319,28 @@ function CommunicationsPageContent() {
     [updateParams],
   );
 
+  // Below `lg` only one pane is shown at a time (list -> detail drill-down);
+  // at `lg`+ all three always show side by side (mobilePane classes below
+  // are overridden by their own `lg:flex`).
+  const handleBack = useCallback(() => {
+    if (groupId) {
+      updateParams({ group: null });
+    } else if (channelId) {
+      updateParams({ channel: null, group: null });
+    }
+  }, [channelId, groupId, updateParams]);
+
   const selectedChannel = channels?.find((c) => c.id === channelId);
 
+  const showChannelsPane = !channelId;
+  const showGroupsPane = !!channelId && !groupId;
+  const showSessionsPane = !!channelId && !!groupId;
+
   return (
-    <div className="flex flex-col lg:h-[calc(100vh-7rem)]">
+    // h-dvh (not h-vh): mobile Safari's dynamic toolbar resizes the viewport,
+    // and this height is unconditional now (not just lg:+) so the single
+    // visible mobile pane also gets a real height for its ScrollArea.
+    <div className="flex flex-col h-[calc(100dvh-7rem)]">
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <div>
@@ -342,78 +362,108 @@ function CommunicationsPageContent() {
           onRetry={() => refetch()}
         />
       ) : (
-        <div className="grid grid-cols-12 gap-4 lg:gap-6 lg:flex-1 lg:min-h-0">
-          {/* Panel 1: Channels */}
-          <Card className="col-span-12 lg:col-span-3 flex flex-col overflow-hidden">
-            <CardContent className="p-3 flex flex-col h-full">
-              <div className="flex items-center gap-2 mb-3 pb-2 border-b">
-                <Hash className="h-4 w-4 text-muted-foreground" />
-                <span className="text-sm font-medium">Channels</span>
-              </div>
-              <div className="flex-1 overflow-hidden -mx-3">
-                <ChannelList
-                  channels={channels || []}
-                  selectedId={channelId}
-                  onSelect={handleSelectChannel}
-                  isLoading={isLoading}
-                />
-              </div>
-            </CardContent>
-          </Card>
+        <>
+          {/* Mobile-only back affordance — drills back up one level. */}
+          {channelId && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="mb-2 w-fit shrink-0 lg:hidden"
+              onClick={handleBack}
+            >
+              <ArrowLeft className="h-4 w-4 mr-2" />
+              Back
+            </Button>
+          )}
 
-          {/* Panel 2: Groups */}
-          <Card className="col-span-12 lg:col-span-3 flex flex-col overflow-hidden">
-            <CardContent className="p-3 flex flex-col h-full">
-              <div className="flex items-center gap-2 mb-3 pb-2 border-b">
-                <Users className="h-4 w-4 text-muted-foreground" />
-                <span className="text-sm font-medium">Groups</span>
-                {selectedChannel && (
-                  <Badge
-                    variant="outline"
-                    className="ml-auto text-xs font-normal"
-                  >
-                    {selectedChannel.name}
-                  </Badge>
-                )}
-              </div>
-              <div className="flex-1 overflow-hidden -mx-3">
-                {channelId ? (
-                  <GroupList
-                    channelId={channelId}
-                    selectedId={groupId}
-                    onSelect={handleSelectGroup}
+          <div className="grid flex-1 min-h-0 grid-cols-12 gap-4 lg:gap-6">
+            {/* Panel 1: Channels */}
+            <Card
+              className={cn(
+                "col-span-12 flex-col overflow-hidden lg:col-span-3 lg:flex",
+                showChannelsPane ? "flex" : "hidden",
+              )}
+            >
+              <CardContent className="p-3 flex flex-col h-full">
+                <div className="flex items-center gap-2 mb-3 pb-2 border-b">
+                  <Hash className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-sm font-medium">Channels</span>
+                </div>
+                <div className="flex-1 overflow-hidden -mx-3">
+                  <ChannelList
+                    channels={channels || []}
+                    selectedId={channelId}
+                    onSelect={handleSelectChannel}
+                    isLoading={isLoading}
                   />
-                ) : (
-                  <EmptyPanel icon={Folder} message="Select a channel" />
-                )}
-              </div>
-            </CardContent>
-          </Card>
+                </div>
+              </CardContent>
+            </Card>
 
-          {/* Panel 3: Sessions */}
-          <Card className="col-span-12 lg:col-span-6 flex flex-col overflow-hidden">
-            <CardContent className="p-3 flex flex-col h-full">
-              <div className="flex items-center gap-2 mb-3 pb-2 border-b">
-                <MessageCircle className="h-4 w-4 text-muted-foreground" />
-                <span className="text-sm font-medium">Sessions</span>
-              </div>
-              <div className="flex-1 overflow-hidden -mx-3">
-                {channelId && groupId ? (
-                  <SessionList channelId={channelId} groupId={groupId} />
-                ) : (
-                  <EmptyPanel
-                    icon={MessageSquare}
-                    message={
-                      channelId
-                        ? "Select a group"
-                        : "Select a channel and group"
-                    }
-                  />
-                )}
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+            {/* Panel 2: Groups */}
+            <Card
+              className={cn(
+                "col-span-12 flex-col overflow-hidden lg:col-span-3 lg:flex",
+                showGroupsPane ? "flex" : "hidden",
+              )}
+            >
+              <CardContent className="p-3 flex flex-col h-full">
+                <div className="flex items-center gap-2 mb-3 pb-2 border-b">
+                  <Users className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-sm font-medium">Groups</span>
+                  {selectedChannel && (
+                    <Badge
+                      variant="outline"
+                      className="ml-auto text-xs font-normal"
+                    >
+                      {selectedChannel.name}
+                    </Badge>
+                  )}
+                </div>
+                <div className="flex-1 overflow-hidden -mx-3">
+                  {channelId ? (
+                    <GroupList
+                      channelId={channelId}
+                      selectedId={groupId}
+                      onSelect={handleSelectGroup}
+                    />
+                  ) : (
+                    <EmptyPanel icon={Folder} message="Select a channel" />
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Panel 3: Sessions */}
+            <Card
+              className={cn(
+                "col-span-12 flex-col overflow-hidden lg:col-span-6 lg:flex",
+                showSessionsPane ? "flex" : "hidden",
+              )}
+            >
+              <CardContent className="p-3 flex flex-col h-full">
+                <div className="flex items-center gap-2 mb-3 pb-2 border-b">
+                  <MessageCircle className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-sm font-medium">Sessions</span>
+                </div>
+                <div className="flex-1 overflow-hidden -mx-3">
+                  {channelId && groupId ? (
+                    <SessionList channelId={channelId} groupId={groupId} />
+                  ) : (
+                    <EmptyPanel
+                      icon={MessageSquare}
+                      message={
+                        channelId
+                          ? "Select a group"
+                          : "Select a channel and group"
+                      }
+                    />
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </>
       )}
     </div>
   );
@@ -424,7 +474,7 @@ export default function CommunicationsPage() {
   return (
     <Suspense
       fallback={
-        <div className="flex flex-col lg:h-[calc(100vh-7rem)]">
+        <div className="flex flex-col h-[calc(100dvh-7rem)]">
           <div className="flex items-center justify-between mb-4">
             <div>
               <Skeleton className="h-9 w-48 mb-2" />

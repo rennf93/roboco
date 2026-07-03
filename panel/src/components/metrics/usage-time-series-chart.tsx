@@ -12,6 +12,7 @@ import {
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useIsMobile } from "@/hooks/use-is-mobile";
 import type { UsageTimePoint } from "@/types";
 
 interface UsageTimeSeriesChartProps {
@@ -40,6 +41,7 @@ export function UsageTimeSeriesChart({
   data,
   isLoading,
 }: UsageTimeSeriesChartProps) {
+  const isMobile = useIsMobile();
   const chartData = (data ?? []).map((p) => ({
     hour: formatBucket(p.bucket),
     Input: p.tokens_input,
@@ -89,8 +91,8 @@ export function UsageTimeSeriesChart({
               <CartesianGrid strokeDasharray="3 3" className="opacity-20" />
               <XAxis
                 dataKey="hour"
-                tick={{ fontSize: 10 }}
-                interval={3}
+                tick={{ fontSize: isMobile ? 9 : 10 }}
+                interval={isMobile ? 5 : 3}
                 axisLine={false}
                 tickLine={false}
               />
@@ -108,7 +110,7 @@ export function UsageTimeSeriesChart({
                 ]}
                 contentStyle={{ fontSize: 12 }}
               />
-              <Legend wrapperStyle={{ fontSize: 12 }} />
+              <Legend wrapperStyle={{ fontSize: isMobile ? 10 : 12 }} />
               <Area
                 type="monotone"
                 dataKey="Input"

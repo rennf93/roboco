@@ -1,12 +1,15 @@
 "use client";
 
+import { useState } from "react";
 import { GitDiffResponse } from "@/types/git";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { FileCode, FileDiff } from "lucide-react";
+import { cn } from "@/lib/utils";
+import { FileCode, FileDiff, WrapText } from "lucide-react";
 
 interface GitDiffViewerProps {
   stagedDiff: GitDiffResponse | undefined;
@@ -18,9 +21,11 @@ interface GitDiffViewerProps {
 function DiffContent({
   diff,
   isLoading,
+  wrap,
 }: {
   diff: GitDiffResponse | undefined;
   isLoading: boolean;
+  wrap: boolean;
 }) {
   if (isLoading) {
     return (
@@ -45,8 +50,15 @@ function DiffContent({
   const lines = diff.diff.split("\n");
 
   return (
+    // overflow-x-auto is the horizontal-scroll affordance for un-wrapped long
+    // lines on a phone; smaller mobile font, back to the desktop size at sm+.
     <ScrollArea className="h-96">
-      <pre className="p-4 text-xs font-mono leading-relaxed">
+      <pre
+        className={cn(
+          "p-4 font-mono text-[11px] leading-relaxed sm:text-xs",
+          wrap ? "whitespace-pre-wrap break-all" : "overflow-x-auto",
+        )}
+      >
         {lines.map((line, i) => {
           let className = "";
           if (line.startsWith("+") && !line.startsWith("+++")) {
@@ -60,7 +72,14 @@ function DiffContent({
           }
 
           return (
-            <div key={i} className={`px-2 -mx-2 whitespace-pre ${className}`}>
+            <div
+              key={i}
+              className={cn(
+                "px-2 -mx-2",
+                wrap ? "whitespace-pre-wrap break-all" : "whitespace-pre",
+                className,
+              )}
+            >
               {line || " "}
             </div>
           );
@@ -78,14 +97,28 @@ export function GitDiffViewer({
 }: GitDiffViewerProps) {
   const stagedCount = stagedDiff?.files_changed || 0;
   const unstagedCount = unstagedDiff?.files_changed || 0;
+  const [wrap, setWrap] = useState(false);
 
   return (
     <Card>
       <CardHeader className="pb-2">
-        <CardTitle className="text-sm flex items-center gap-2">
-          <FileCode className="h-4 w-4" />
-          Changes
-        </CardTitle>
+        <div className="flex items-center justify-between gap-2">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <FileCode className="h-4 w-4" />
+            Changes
+          </CardTitle>
+          <Button
+            variant={wrap ? "secondary" : "ghost"}
+            size="sm"
+            className="h-7 px-2 text-xs"
+            aria-pressed={wrap}
+            onClick={() => setWrap((w) => !w)}
+            title="Toggle line wrap"
+          >
+            <WrapText className="h-3.5 w-3.5 mr-1" />
+            Wrap
+          </Button>
+        </div>
       </CardHeader>
       <CardContent className="p-0">
         <Tabs defaultValue="unstaged">
@@ -111,11 +144,19 @@ export function GitDiffViewer({
           </div>
 
           <TabsContent value="unstaged" className="m-0">
-            <DiffContent diff={unstagedDiff} isLoading={isLoadingUnstaged} />
+            <DiffContent
+              diff={unstagedDiff}
+              isLoading={isLoadingUnstaged}
+              wrap={wrap}
+            />
           </TabsContent>
 
           <TabsContent value="staged" className="m-0">
-            <DiffContent diff={stagedDiff} isLoading={isLoadingStaged} />
+            <DiffContent
+              diff={stagedDiff}
+              isLoading={isLoadingStaged}
+              wrap={wrap}
+            />
           </TabsContent>
         </Tabs>
       </CardContent>

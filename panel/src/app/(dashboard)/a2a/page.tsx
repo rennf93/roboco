@@ -25,6 +25,7 @@ import { getAgentDisplayName } from "@/lib/agent-utils";
 import { lastSenderOf } from "@/components/a2a/a2a-utils";
 import { cn } from "@/lib/utils";
 import {
+  ArrowLeft,
   LayoutGrid,
   List as ListIcon,
   MessagesSquare,
@@ -156,8 +157,21 @@ function A2APageContent() {
     (error.message?.includes("Network Error") ||
       (error as { code?: string })?.code === "ERR_NETWORK");
 
+  // Below `lg` only one pane shows at a time (list/switchboard -> detail with
+  // a back affordance); at `lg`+ both always show side by side.
+  const onDetailLevel = !!selectedId || !!peekedPair;
+  const handleBack = useCallback(() => {
+    setPeekedPair(null);
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("conversation");
+    const qs = params.toString();
+    router.push(qs ? `/a2a?${qs}` : "/a2a");
+  }, [router, searchParams]);
+
   return (
-    <div className="flex flex-col lg:h-[calc(100vh-7rem)]">
+    // h-dvh (not h-vh) and unconditional now (not just lg:+) so the single
+    // visible mobile pane gets a real height for its internal ScrollArea.
+    <div className="flex flex-col h-[calc(100dvh-7rem)]">
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <div>
@@ -194,137 +208,162 @@ function A2APageContent() {
           onRetry={() => refetchConversations()}
         />
       ) : (
-        <div className="grid grid-cols-12 gap-4 lg:gap-6 lg:flex-1 lg:min-h-0">
-          {/* Panel 1: Switchboard (default) / classic conversation list */}
-          <Card className="col-span-12 lg:col-span-4 flex flex-col overflow-hidden">
-            <CardContent className="p-3 flex flex-col h-full">
-              <div className="flex items-center gap-2 mb-3 pb-2 border-b">
-                <Radio className="h-4 w-4 text-muted-foreground" />
-                <span className="text-sm font-medium">
-                  {view === "switchboard" ? "Switchboard" : "Conversations"}
-                </span>
-                <div className="ml-auto flex items-center gap-1">
-                  <Button
-                    type="button"
-                    variant={view === "switchboard" ? "secondary" : "ghost"}
-                    size="sm"
-                    className="h-7 px-2"
-                    aria-pressed={view === "switchboard"}
-                    onClick={() => setView("switchboard")}
-                    title="Switchboard: org-chart pair cards"
-                  >
-                    <LayoutGrid className="h-3.5 w-3.5" />
-                  </Button>
-                  <Button
-                    type="button"
-                    variant={view === "list" ? "secondary" : "ghost"}
-                    size="sm"
-                    className="h-7 px-2"
-                    aria-pressed={view === "list"}
-                    onClick={() => setView("list")}
-                    title="Classic conversation list"
-                  >
-                    <ListIcon className="h-3.5 w-3.5" />
-                  </Button>
-                </div>
-              </div>
-              <div className="flex-1 overflow-hidden -mx-3">
-                {view === "switchboard" ? (
-                  <A2ASwitchboard
-                    pairs={pairs}
-                    pulses={pulses}
-                    selectedConversationId={selectedId}
-                    isLoading={loadingPairs}
-                    onOpenPair={handleOpenPair}
-                  />
-                ) : (
-                  <A2AConversationList
-                    conversations={conversations}
-                    selectedId={selectedId}
-                    onSelect={handleSelect}
-                    isLoading={loadingConversations}
-                  />
-                )}
-              </div>
-            </CardContent>
-          </Card>
+        <>
+          {/* Mobile-only back affordance — drills back up to the list. */}
+          {onDetailLevel && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="mb-2 w-fit shrink-0 lg:hidden"
+              onClick={handleBack}
+            >
+              <ArrowLeft className="h-4 w-4 mr-2" />
+              Back
+            </Button>
+          )}
 
-          {/* Panel 2: Transcript + composer */}
-          <Card className="col-span-12 lg:col-span-8 flex flex-col overflow-hidden">
-            <CardContent className="p-3 flex flex-col h-full">
-              {selected ? (
-                <>
-                  <div className="flex items-center gap-2 mb-3 pb-2 border-b flex-wrap">
-                    <MessagesSquare className="h-4 w-4 text-muted-foreground" />
-                    <span className="text-sm font-medium">
-                      {getAgentDisplayName(selected.agent_a)}
-                      {" ↔ "}
-                      {getAgentDisplayName(selected.agent_b)}
-                    </span>
-                    <Badge
-                      variant={
-                        selected.status === "active" ? "default" : "secondary"
-                      }
-                      className="text-xs"
+          <div className="grid flex-1 min-h-0 grid-cols-12 gap-4 lg:gap-6">
+            {/* Panel 1: Switchboard (default) / classic conversation list */}
+            <Card
+              className={cn(
+                "col-span-12 flex-col overflow-hidden lg:col-span-4 lg:flex",
+                onDetailLevel ? "hidden" : "flex",
+              )}
+            >
+              <CardContent className="p-3 flex flex-col h-full">
+                <div className="flex items-center gap-2 mb-3 pb-2 border-b">
+                  <Radio className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-sm font-medium">
+                    {view === "switchboard" ? "Switchboard" : "Conversations"}
+                  </span>
+                  <div className="ml-auto flex items-center gap-1">
+                    <Button
+                      type="button"
+                      variant={view === "switchboard" ? "secondary" : "ghost"}
+                      size="sm"
+                      className="h-7 px-2"
+                      aria-pressed={view === "switchboard"}
+                      onClick={() => setView("switchboard")}
+                      title="Switchboard: org-chart pair cards"
                     >
-                      {selected.status}
-                    </Badge>
-                    <span className="text-xs text-muted-foreground ml-auto">
-                      {selected.message_count} msgs · updated{" "}
-                      {formatDistanceToNow(new Date(selected.updated_at))} ago
-                    </span>
+                      <LayoutGrid className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      type="button"
+                      variant={view === "list" ? "secondary" : "ghost"}
+                      size="sm"
+                      className="h-7 px-2"
+                      aria-pressed={view === "list"}
+                      onClick={() => setView("list")}
+                      title="Classic conversation list"
+                    >
+                      <ListIcon className="h-3.5 w-3.5" />
+                    </Button>
                   </div>
-                  <div className="flex-1 overflow-hidden -mx-3">
-                    <A2ATranscript
-                      messages={messages}
-                      isLoading={loadingMessages}
+                </div>
+                <div className="flex-1 overflow-hidden -mx-3">
+                  {view === "switchboard" ? (
+                    <A2ASwitchboard
+                      pairs={pairs}
+                      pulses={pulses}
+                      selectedConversationId={selectedId}
+                      isLoading={loadingPairs}
+                      onOpenPair={handleOpenPair}
                     />
-                  </div>
-                  {/* Reply composer. The backend's reply route rejects with
+                  ) : (
+                    <A2AConversationList
+                      conversations={conversations}
+                      selectedId={selectedId}
+                      onSelect={handleSelect}
+                      isLoading={loadingConversations}
+                    />
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Panel 2: Transcript + composer */}
+            <Card
+              className={cn(
+                "col-span-12 flex-col overflow-hidden lg:col-span-8 lg:flex",
+                onDetailLevel ? "flex" : "hidden",
+              )}
+            >
+              <CardContent className="p-3 flex flex-col h-full">
+                {selected ? (
+                  <>
+                    <div className="flex items-center gap-2 mb-3 pb-2 border-b flex-wrap">
+                      <MessagesSquare className="h-4 w-4 text-muted-foreground" />
+                      <span className="text-sm font-medium">
+                        {getAgentDisplayName(selected.agent_a)}
+                        {" ↔ "}
+                        {getAgentDisplayName(selected.agent_b)}
+                      </span>
+                      <Badge
+                        variant={
+                          selected.status === "active" ? "default" : "secondary"
+                        }
+                        className="text-xs"
+                      >
+                        {selected.status}
+                      </Badge>
+                      <span className="text-xs text-muted-foreground ml-auto">
+                        {selected.message_count} msgs · updated{" "}
+                        {formatDistanceToNow(new Date(selected.updated_at))} ago
+                      </span>
+                    </div>
+                    <div className="flex-1 overflow-hidden -mx-3">
+                      <A2ATranscript
+                        messages={messages}
+                        isLoading={loadingMessages}
+                      />
+                    </div>
+                    {/* Reply composer. The backend's reply route rejects with
                       400 exactly when the watched conversation has no task
                       link (replies ride the gateway send path, which requires
                       one), so a task-less conversation is read-only — say why
                       instead of letting the send bounce. Status does NOT gate
                       the composer: the CEO's reply lands in their own direct
                       thread with the participant, not in this conversation. */}
-                  <div className="shrink-0 border-t -mx-3">
-                    {selected.task_id ? (
-                      <A2AReplyComposer
-                        key={selected.id}
-                        conversationId={selected.id}
-                        agentA={selected.agent_a}
-                        agentB={selected.agent_b}
-                        lastSender={lastSender}
-                      />
-                    ) : (
-                      <div className="p-4 text-center text-sm text-muted-foreground">
-                        This conversation has no linked task, so a reply
-                        can&apos;t be sent (A2A messages are always scoped to a
-                        task).
-                      </div>
-                    )}
+                    <div className="shrink-0 border-t -mx-3">
+                      {selected.task_id ? (
+                        <A2AReplyComposer
+                          key={selected.id}
+                          conversationId={selected.id}
+                          agentA={selected.agent_a}
+                          agentB={selected.agent_b}
+                          lastSender={lastSender}
+                        />
+                      ) : (
+                        <div className="p-4 text-center text-sm text-muted-foreground">
+                          This conversation has no linked task, so a reply
+                          can&apos;t be sent (A2A messages are always scoped to
+                          a task).
+                        </div>
+                      )}
+                    </div>
+                  </>
+                ) : peekedPair ? (
+                  <div className="h-full flex items-center justify-center text-muted-foreground">
+                    <div className="text-center p-4 max-w-xs">
+                      <MessagesSquare className="h-8 w-8 mx-auto mb-2 opacity-50" />
+                      <p className="text-sm">
+                        {getAgentDisplayName(peekedPair.agent_a)} and{" "}
+                        {getAgentDisplayName(peekedPair.agent_b)} haven&apos;t
+                        A2A&apos;d each other yet.
+                      </p>
+                    </div>
                   </div>
-                </>
-              ) : peekedPair ? (
-                <div className="h-full flex items-center justify-center text-muted-foreground">
-                  <div className="text-center p-4 max-w-xs">
-                    <MessagesSquare className="h-8 w-8 mx-auto mb-2 opacity-50" />
-                    <p className="text-sm">
-                      {getAgentDisplayName(peekedPair.agent_a)} and{" "}
-                      {getAgentDisplayName(peekedPair.agent_b)} haven&apos;t
-                      A2A&apos;d each other yet.
-                    </p>
-                  </div>
-                </div>
-              ) : (
-                <EmptyPanel
-                  icon={MessagesSquare}
-                  message="Select a conversation to watch it live"
-                />
-              )}
-            </CardContent>
-          </Card>
-        </div>
+                ) : (
+                  <EmptyPanel
+                    icon={MessagesSquare}
+                    message="Select a conversation to watch it live"
+                  />
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        </>
       )}
     </div>
   );
@@ -335,7 +374,7 @@ export default function A2APage() {
   return (
     <Suspense
       fallback={
-        <div className="flex flex-col lg:h-[calc(100vh-7rem)]">
+        <div className="flex flex-col h-[calc(100dvh-7rem)]">
           <div className="flex items-center justify-between mb-4">
             <div>
               <Skeleton className="h-9 w-48 mb-2" />

@@ -225,40 +225,40 @@ function NotificationsPageContent() {
         </div>
       </div>
 
-      {/* Stats */}
+      {/* Stats — tighter padding below sm so 3 columns still fit at 375px */}
       {!isOffline && data && (
-        <div className="grid grid-cols-3 gap-4">
-          <Card>
-            <CardHeader className="pb-2">
+        <div className="grid grid-cols-3 gap-2 sm:gap-4">
+          <Card className="py-4 sm:py-6">
+            <CardHeader className="px-3 pb-2 sm:px-6">
               <CardTitle className="text-sm font-medium text-muted-foreground">
                 Total
               </CardTitle>
             </CardHeader>
-            <CardContent>
+            <CardContent className="px-3 sm:px-6">
               <div className="text-2xl font-bold">{data.total}</div>
             </CardContent>
           </Card>
-          <Card>
-            <CardHeader className="pb-2">
+          <Card className="py-4 sm:py-6">
+            <CardHeader className="px-3 pb-2 sm:px-6">
               <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1">
                 <Mail className="h-4 w-4" />
                 Unread
               </CardTitle>
             </CardHeader>
-            <CardContent>
+            <CardContent className="px-3 sm:px-6">
               <div className="text-2xl font-bold text-blue-600">
                 {data.unread_count}
               </div>
             </CardContent>
           </Card>
-          <Card>
-            <CardHeader className="pb-2">
+          <Card className="py-4 sm:py-6">
+            <CardHeader className="px-3 pb-2 sm:px-6">
               <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1">
                 <Bell className="h-4 w-4" />
                 Pending Ack
               </CardTitle>
             </CardHeader>
-            <CardContent>
+            <CardContent className="px-3 sm:px-6">
               <div className="text-2xl font-bold text-red-600">
                 {data.pending_ack_count}
               </div>
