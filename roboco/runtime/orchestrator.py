@@ -1426,6 +1426,19 @@ class AgentOrchestrator:
             "Read(/etc/gitconfig)",
             "Read(~/.netrc)",
             "Read(**/.git-credentials)",
+            # The host's Claude Code OAuth credential store (`~/.claude`) is
+            # bind-mounted read-write into EVERY agent container at
+            # /home/agent/.claude (see _build_mount_args) — it is the shared
+            # subscription auth every spawned agent uses, so it can't be
+            # narrowed per-agent. Nothing in any role's job requires the LLM
+            # to read its own harness's credentials, so block the Read tool
+            # from the two files that carry them (`.credentials.json` on
+            # Linux hosts without a keychain; `.claude.json` carries the
+            # linked account + MCP trust state). Absolute `//` form per the
+            # #167 gotcha above — a single `/` resolves against the
+            # settings.json project root, not the container filesystem root.
+            "Read(//home/agent/.claude/.credentials.json)",
+            "Read(//home/agent/.claude.json)",
             # Block direct GitHub API/wire access — agents must use
             # roboco_git_* MCP tools so secrets + traceability stay on the
             # orchestrator side.
@@ -1437,6 +1450,8 @@ class AgentOrchestrator:
             "Bash(cat:*.git/config*)",
             "Bash(cat:*.gitconfig*)",
             "Bash(cat:*.git-credentials*)",
+            "Bash(cat:*.credentials.json*)",
+            "Bash(cat:*.claude.json*)",
             # Block reading env vars that might leak secrets
             "Bash(env:*)",
             "Bash(printenv:*)",
@@ -2549,6 +2564,18 @@ class AgentOrchestrator:
         Permissions still gate *which* paths Edit/Write can touch (see
         `_get_role_permissions`), so this is purely about loading vs
         denying.
+
+        `--disable-slash-commands` closes a separate capability channel
+        `--tools` doesn't reach: skills/slash-commands resolve independently
+        of the built-in tool allowlist (Anthropic's own `--bare` flag docs
+        call this out — skills still resolve via `/skill-name` even with
+        everything else disabled). The agent's `~/.claude` is the host's
+        shared Claude Code auth dir, bind-mounted into every container
+        (`_build_mount_args`); if it ever carries personal
+        skills/plugins/marketplace installs, this stops them from silently
+        becoming callable inside the agent's session. No RoboCo role's
+        workflow uses a Claude Code skill (their surface is the MCP gateway
+        + the `--tools` set above), so this has no legitimate flow to break.
         """
         claude_args = [
             get_agent_image(config.agent_id),
@@ -2561,6 +2588,7 @@ class AgentOrchestrator:
             "--strict-mcp-config",
             "--tools",
             "Read,Write,Edit,Bash,Grep,Glob,TodoWrite",
+            "--disable-slash-commands",
             "--output-format",
             "stream-json",
             "--verbose",
