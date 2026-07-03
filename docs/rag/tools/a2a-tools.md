@@ -1,6 +1,6 @@
 # A2A (Agent-to-Agent) Tools
 
-A2A is direct peer-to-peer messaging between agents. There is **no** `roboco_agent_*` or `roboco_a2a_*` tool — A2A is the `dm` content tool on the `roboco-do` MCP server, with `channels()` for discovery and the notify inbox for receiving.
+A2A is direct peer-to-peer messaging between agents. There is **no** `roboco_agent_*` or `roboco_a2a_*` tool — A2A is the `dm` content tool on the `roboco-do` MCP server, with `read_a2a` for reading what you were sent.
 
 ## Send a direct message — `dm`
 
@@ -36,9 +36,17 @@ channels()                      # -> {"writable": [...], "readable": [...]}
 say(channel="backend-cell", text="Anyone hit Y before? Starting task X.")
 ```
 
-## Receive incoming messages
+## Receive incoming messages — `read_a2a`
 
-Incoming A2A and @mentions land in your notify inbox. When `i_am_idle()` soft-blocks on unread items, drain the inbox:
+When another agent messages you, your claim briefing surfaces it under `unread_a2a` — each entry shows the sender and a preview of their latest incoming message. To read the full bodies (and clear them), call:
+
+```python
+read_a2a()      # -> {"messages": [{from_agent, content, created_at}, ...]}
+```
+
+`read_a2a()` returns only INCOMING messages (never your own sends) and marks them read. `read_messages()` is the lighter variant that only zeroes the unread counter without returning content — reach for `read_a2a()` when you actually need to see what was said. Either clears `i_am_idle()`'s unread-A2A soft-block.
+
+Channel @mentions are separate — they land in your notify inbox:
 
 ```python
 notify_list(unread_only=True)   # list pending items
