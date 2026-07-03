@@ -23,6 +23,7 @@ It runs in its own `agent-secretary` container, reusing the Intake chat machiner
 
 - Read the codebase: `Read`, `Grep`, `Glob`
 - Read a compact company snapshot via **`read_company_state`** — the charter (goals), task counts by status, pending pitches, and any directives already awaiting the CEO's confirmation
+- Resolve a task **name** to ids via **`search_tasks(q)`** — title/description/id-prefix search; the name→id step before a `read_task` or a `control_task` directive
 - Read one task's **full detail** via **`read_task(task_id)`** — Secretary FULL task access: beyond identity/status/description this also carries acceptance criteria, plan, bounded recent `progress_updates`, dev/qa/auditor/pr-reviewer/doc notes, and the branch/PR reference
 - Act on the CEO's command via **`submit_directive`** (see below)
 
@@ -68,14 +69,14 @@ submit_directive(
 
 ### Resolving a task by name
 
-The CEO refers to tasks by **name**, not UUID. The backend exposes `GET /secretary/tasks?q=` (Secretary/CEO-gated; title/description/id-prefix search, capped at 50 rows) precisely for that name→id resolution — but as of this writing it isn't wired to a Secretary tool in either runtime (only `read_company_state` / `read_task` / `submit_directive` are). Until it is, resolve a name the CEO mentions from `read_company_state`'s task counts / your own conversation context, or ask the CEO to confirm the short id before you `control_task` or `read_task` it.
+The CEO refers to tasks by **name**, not UUID. Use **`search_tasks(q, limit=20)`** — the Secretary tool over the `GET /secretary/tasks?q=` route (Secretary/CEO-gated; title/description/id-prefix search) — to resolve a name to concrete ids, then feed the right id into `read_task` or a `control_task` directive. Restate the match to the CEO before you act on a high-impact kind.
 
 ## Tool Surface (locked-down SDK session)
 
 | Source | Tools |
 |--------|-------|
 | Base (read-only) | `Read`, `Grep`, `Glob` |
-| Secretary MCP | `read_company_state`, `read_task`, `submit_directive` |
+| Secretary MCP | `read_company_state`, `search_tasks`, `read_task`, `submit_directive` |
 | `roboco-do` (gateway) | `note`, `evidence` |
 
 Same isolation as Intake: a hard tool allowlist, no host settings, no outward agent comms. Everything else is denied.
