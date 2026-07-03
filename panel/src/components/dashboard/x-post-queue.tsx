@@ -184,7 +184,31 @@ export function XPostQueue({ className }: { className?: string }) {
     approveMutation.mutate({ taskId, body });
   };
 
-  if (isLoading || !posts || posts.length === 0) return null;
+  if (isLoading) return null;
+
+  if (!posts || posts.length === 0) {
+    return (
+      <Card className={className}>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Rocket className="h-5 w-5" />
+            X Post Queue
+          </CardTitle>
+          <CardDescription>
+            Drafted release announcements (and mention replies, if enabled) land
+            here for you to edit, approve, or reject. Nothing posts on its own.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">
+            No drafts yet. A post is drafted here when a release publishes — set
+            your keys in Settings → X (Twitter) Credentials and enable the X
+            engine to start.
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
     <>
