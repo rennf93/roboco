@@ -16,7 +16,6 @@ from sqlalchemy import select
 from roboco.db.tables import ProjectTable, TaskTable, WorkSessionTable
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
 from roboco.models.product import ProductCellMapping
-from roboco.models.session import SessionScope
 from roboco.utils.converters import require_uuid, to_python_uuid, to_python_uuid_list
 
 # =============================================================================
@@ -65,16 +64,6 @@ class CommitRefResponse(BaseModel):
     message: str
     timestamp: datetime
     author_agent_id: UUID | None = None
-
-
-class TaskSessionLinkResponse(BaseModel):
-    """A session linked to this task."""
-
-    session_id: UUID
-    channel_slug: str
-    scope: SessionScope
-    is_primary: bool
-    relationship_type: str
 
 
 class WorkSessionSummaryInTask(BaseModel):
@@ -363,9 +352,6 @@ class TaskResponse(BaseModel):
     # Review Status
     self_verified: bool
     qa_verified: bool | None
-
-    # Linked Sessions (for agent context)
-    sessions: list[TaskSessionLinkResponse] = []
 
     # Git/Development Context (for full traceability)
     project: ProjectSummaryInTask | None = None

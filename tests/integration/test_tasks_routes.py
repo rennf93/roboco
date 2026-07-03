@@ -813,15 +813,6 @@ async def test_escalate_unknown_returns_404(task_client: dict) -> None:
     )
 
 
-@pytest.mark.asyncio
-async def test_get_sessions_for_task(task_client: dict) -> None:
-    client = task_client["client"]
-    task = _seed_task(task_client)
-    await task_client["db"].flush()
-    response = await client.get(f"/api/tasks/{task.id}/sessions", headers=_HDR)
-    assert response.status_code == HTTPStatus.OK
-
-
 # ---------------------------------------------------------------------------
 # Additional create_task validation paths
 # ---------------------------------------------------------------------------
@@ -3170,19 +3161,6 @@ async def test_activate_task_lifecycle_error_returns_403(task_client: dict) -> N
             f"/api/tasks/{task.id}/activate", headers=_HDR
         )
     assert response.status_code == HTTPStatus.FORBIDDEN
-
-
-# ---------------------------------------------------------------------------
-# get_sessions_for_task: 404 path for unknown task
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_get_sessions_for_task_not_found(task_client: dict) -> None:
-    response = await task_client["client"].get(
-        f"/api/tasks/{uuid4()}/sessions", headers=_HDR
-    )
-    assert response.status_code == HTTPStatus.NOT_FOUND
 
 
 # ---------------------------------------------------------------------------

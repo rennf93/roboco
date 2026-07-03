@@ -18,10 +18,6 @@ from roboco.api.deps import (
     get_permission_service,
     require_pm_or_above,
 )
-from roboco.api.schemas.sessions import (
-    SessionTaskLinkResponse,
-    TaskSessionsResponse,
-)
 from roboco.api.schemas.tasks import (
     BoardReviewEntry,
     CancelTaskRequest,
@@ -37,7 +33,6 @@ from roboco.api.schemas.tasks import (
     SubstituteRequest,
     TaskCountResponse,
     TaskResponse,
-    TaskSessionLinkResponse,
     TaskSummaryResponse,
     TaskUpdate,
     TeamTasksQuery,
@@ -68,7 +63,6 @@ from roboco.services.base import (
     ValidationError,
 )
 from roboco.services.journal import get_journal_service
-from roboco.services.messaging import get_messaging_service
 from roboco.services.notification_delivery import (
     EscalationError,
     get_notification_delivery_service,
@@ -1103,7 +1097,7 @@ async def get_task(
     task_id: UUID,
     db: DbSession,
 ) -> TaskResponse:
-    """Get a specific task with full context (sessions, work session, project)."""
+    """Get a specific task with full context (work session, project)."""
     service = get_task_service(db)
     task = await service.get(task_id)
     if not task:
@@ -1111,23 +1105,7 @@ async def get_task(
             status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
         )
 
-    # Get linked sessions for this task
-    messaging = get_messaging_service(db)
-    session_links = await messaging.get_sessions_for_task(task_id)
-
-    # Build response with sessions
     response = task_to_response(task)
-    response.sessions = [
-        TaskSessionLinkResponse(
-            session_id=require_uuid(link.session_id),
-            channel_slug=link.session.group.channel.slug,
-            scope=link.session.scope,
-            is_primary=link.is_primary,
-            relationship_type=link.relationship_type,
-        )
-        for link in session_links
-        if link.session and link.session.group and link.session.group.channel
-    ]
 
     # Enrich with work session and project context
     response = await enrich_task_with_context(response, db)
@@ -2681,51 +2659,3 @@ async def activate_task(
 
     await db.commit()
     return task_to_response(task)
-
-
-# =============================================================================
-# SESSION-TASK ENDPOINTS
-# =============================================================================
-
-
-@router.get("/{task_id}/sessions", response_model=TaskSessionsResponse)
-async def get_sessions_for_task(
-    task_id: UUID,
-    db: DbSession,
-    _agent: CurrentAgentContext,  # Kept for auth dependency
-) -> TaskSessionsResponse:
-    """Get all sessions linked to a task."""
-    # Verify task exists
-    service = get_task_service(db)
-    task = await service.get(task_id)
-    if not task:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Task not found",
-        )
-
-    # Get sessions
-    messaging = get_messaging_service(db)
-    links = await messaging.get_sessions_for_task(task_id)
-
-    # Find primary session
-    primary_link = next((link for link in links if link.is_primary), None)
-
-    return TaskSessionsResponse(
-        task_id=task_id,
-        sessions=[
-            SessionTaskLinkResponse(
-                id=require_uuid(link.id),
-                session_id=require_uuid(link.session_id),
-                task_id=require_uuid(link.task_id),
-                is_primary=link.is_primary,
-                relationship_type=link.relationship_type,
-                added_at=link.added_at,
-                added_by=require_uuid(link.added_by) if link.added_by else None,
-            )
-            for link in links
-        ],
-        primary_session_id=(
-            require_uuid(primary_link.session_id) if primary_link else None
-        ),
-    )
