@@ -816,6 +816,16 @@ class Settings(BaseSettings):
             "per-post CEO approval — nothing auto-posts."
         ),
     )
+    x_replies_enabled: bool = Field(
+        default=False,
+        description=(
+            "Sub-switch for the mention-reply half of the X engine. OFF by "
+            "default: even with x_engine_enabled on, the engine only drafts "
+            "release-announcement posts — it does not poll mentions or draft "
+            "replies. Reading mentions needs a paid X API tier, so replies are "
+            "a deliberate opt-in on top of release posting."
+        ),
+    )
     x_mentions_interval_seconds: int = Field(
         default=1800,
         ge=60,

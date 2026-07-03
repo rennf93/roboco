@@ -115,6 +115,7 @@ async def _seed(session: AsyncSession) -> None:
 
 def _enable(monkeypatch: pytest.MonkeyPatch, **overrides: object) -> None:
     monkeypatch.setattr(cfg, "x_engine_enabled", True)
+    monkeypatch.setattr(cfg, "x_replies_enabled", True)
     monkeypatch.setattr(cfg, "self_heal_project_slug", SLUG)
     monkeypatch.setattr(cfg, "x_max_open_posts", 10)
     monkeypatch.setattr(cfg, "x_mentions_max_per_cycle", 5)
@@ -271,6 +272,37 @@ async def test_disabled_run_cycle_originates_nothing(
     )
     result = await engine.run_cycle()
     assert result == []
+
+
+@pytest.mark.asyncio
+async def test_run_cycle_noop_when_replies_disabled(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Engine on but the mention-reply sub-switch off: the poll cycle drafts
+    nothing (release posting is a separate, still-enabled path)."""
+    await _seed(db_session)
+    _enable(monkeypatch, x_replies_enabled=False)
+    _mock_local_model(monkeypatch, "Thanks!")
+    engine = x_engine_module.XEngine(
+        db_session, client=_FakeClient(mentions=[_mention("m1")])
+    )
+    result = await engine.run_cycle()
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_release_post_holds_even_when_replies_disabled(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Release posting is decoupled from the mention-reply sub-switch: a
+    release draft is still held with replies off."""
+    await _seed(db_session)
+    _enable(monkeypatch, x_replies_enabled=False)
+    _mock_local_model(monkeypatch, "RoboCo shipped something great!")
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    task = await engine.draft_release_post(version=_VERSION, highlights=["feat: x"])
+    assert task is not None
+    assert task.source == X_POST_SOURCE
 
 
 @pytest.mark.asyncio

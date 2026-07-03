@@ -221,8 +221,9 @@ class XEngine(BaseService):
 
     async def run_cycle(self) -> list[TaskTable]:
         """One mentions-poll pass: fetch, filter, dedup, draft, hold. No-op
-        list when the flag is off or no credentials are configured."""
-        if not settings.x_engine_enabled:
+        list unless the engine AND the mention-reply sub-switch are on and
+        credentials are configured (release posting doesn't use this path)."""
+        if not (settings.x_engine_enabled and settings.x_replies_enabled):
             return []
         client = await self._client()
         if not client.configured:

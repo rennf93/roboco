@@ -25,3 +25,15 @@ async def test_x_mentions_loop_returns_immediately_when_disabled(
     # Gated off -> returns at once. If the gate were missing it would sleep the
     # full interval and this wait_for would time out.
     await asyncio.wait_for(AgentOrchestrator._x_mentions_poll_loop(stub), timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_x_mentions_loop_dormant_when_only_replies_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Engine on but the reply sub-switch off (the release-posts-only default):
+    the mentions loop still never runs."""
+    monkeypatch.setattr(cfg, "x_engine_enabled", True)
+    monkeypatch.setattr(cfg, "x_replies_enabled", False)
+    stub = cast("AgentOrchestrator", types.SimpleNamespace(_running=True))
+    await asyncio.wait_for(AgentOrchestrator._x_mentions_poll_loop(stub), timeout=1.0)

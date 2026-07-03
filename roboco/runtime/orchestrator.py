@@ -7432,13 +7432,13 @@ Start by:
         """X engine: poll mentions on an interval, hold meaningful ones as draft
         replies.
 
-        Dormant by default — returns immediately unless ``x_engine_enabled``,
-        so a standard deployment makes no X API call. Release-post drafts are
-        originated event-driven (from the release-proposal approve hook), not
-        by this loop; this loop only runs the periodic mentions poll. It never
-        posts or replies — every draft is held for the CEO.
+        Gated by ``x_replies_enabled`` (default off) on top of the engine
+        master switch — release posting does not need this loop (those drafts
+        are originated event-driven from the release-proposal approve hook), so
+        a standard X deployment posts about releases without ever polling
+        mentions. It never posts or replies — every draft is held for the CEO.
         """
-        if not settings.x_engine_enabled:
+        if not (settings.x_engine_enabled and settings.x_replies_enabled):
             return
         interval = settings.x_mentions_interval_seconds
         while self._running:
