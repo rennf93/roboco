@@ -175,6 +175,19 @@ def create_docs_mcp_server(agent_id: str) -> FastMCP:
         """
         Write or update documentation for your current task.
 
+        SCOPE — TEAM-FACING DOCS ONLY: this tool writes into docs/<team>/...
+        (api/qa/guide/readme/changelog/architecture/design), which is NEVER
+        published to the docs site. It is for internal notes future agents
+        need, not for anything a user should read.
+
+        User-facing docs (anything meant to ship at docs.roboco.tech) do NOT
+        go through this tool at all — author them as a normal task in the
+        'roboco-website' project instead: MDX under src/content/docs/, a
+        route wrapper under src/app/docs/, and a src/content/docs/nav.ts
+        entry (the 3-edit pattern; a CI check fails the PR if any of the
+        three is missing). Calling this tool with doc_type="user_facing" is
+        refused with this same guidance rather than silently accepted.
+
         SMART DEDUPLICATION: Before creating a new doc, RAG searches for
         existing documentation with similar CONTENT (not just title).
         If a high-similarity match is found, the existing doc is updated

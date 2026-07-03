@@ -93,6 +93,33 @@ async def test_write_doc_validation_error(docs_client: AsyncClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_write_doc_user_facing_refused_is_400_not_422(
+    docs_client: AsyncClient,
+) -> None:
+    """doc_type='user_facing' is a recognized DocType enum member, so Pydantic
+    accepts it at the HTTP boundary (no 422) and the service's actionable
+    refusal (400 with roboco-website guidance) is what the agent sees."""
+    with patch("roboco.api.routes.docs.get_docs_service") as mock_get:
+        mock_service = AsyncMock()
+        mock_service.write_doc = AsyncMock(
+            side_effect=ValidationError("...roboco-website project...")
+        )
+        mock_get.return_value = mock_service
+        response = await docs_client.post(
+            "/api/docs/write",
+            json={
+                "task_id": str(uuid4()),
+                "filename": "test.md",
+                "doc_type": "user_facing",
+                "title": "Test",
+                "content": "Some content",
+            },
+            headers=_HDR,
+        )
+    assert response.status_code == HTTPStatus.BAD_REQUEST
+
+
+@pytest.mark.asyncio
 async def test_write_doc_unauthorized(docs_client: AsyncClient) -> None:
     """Service raises UnauthorizedError → 403."""
     with patch("roboco.api.routes.docs.get_docs_service") as mock_get:
