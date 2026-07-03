@@ -20,6 +20,7 @@ _MENTION_EXCERPT_CAP = 280
 _NOTIFICATION_BODY_CAP = 500
 _HANDOFF_CONTENT_CAP = 800
 _NORTH_STAR_CAP = 600
+_A2A_PREVIEW_CAP = 200
 
 
 def _clip(text: str | None, cap: int) -> str:
@@ -69,37 +70,51 @@ class EvidenceRepo:
 
         Conversations are keyed by agent slug (``agent_a``/``agent_b``) with a
         per-side unread counter; surface the ones this agent has yet to read.
+        Each item carries the latest INCOMING message as a preview (never the
+        agent's own reply), fetched in the same query — no N+1 on the briefing
+        path.
         """
         from sqlalchemy import or_, select
 
-        from roboco.db.tables import A2AConversationTable, AgentTable
+        from roboco.db.tables import (
+            A2AConversationTable,
+            A2AMessageTable,
+            AgentTable,
+        )
 
         slug = await self._db.scalar(
             select(AgentTable.slug).where(AgentTable.id == agent_id)
         )
         if slug is None:
             return []
-        rows = (
-            (
-                await self._db.execute(
-                    select(A2AConversationTable)
-                    .where(
-                        or_(
-                            (A2AConversationTable.agent_a == slug)
-                            & (A2AConversationTable.unread_by_a > 0),
-                            (A2AConversationTable.agent_b == slug)
-                            & (A2AConversationTable.unread_by_b > 0),
-                        )
-                    )
-                    .order_by(A2AConversationTable.updated_at.desc())
-                    .limit(10)
-                )
+        preview = (
+            select(A2AMessageTable.content)
+            .where(
+                A2AMessageTable.conversation_id == A2AConversationTable.id,
+                A2AMessageTable.from_agent != slug,
             )
-            .scalars()
-            .all()
+            .order_by(A2AMessageTable.created_at.desc())
+            .limit(1)
+            .correlate(A2AConversationTable)
+            .scalar_subquery()
         )
+        rows = (
+            await self._db.execute(
+                select(A2AConversationTable, preview.label("preview"))
+                .where(
+                    or_(
+                        (A2AConversationTable.agent_a == slug)
+                        & (A2AConversationTable.unread_by_a > 0),
+                        (A2AConversationTable.agent_b == slug)
+                        & (A2AConversationTable.unread_by_b > 0),
+                    )
+                )
+                .order_by(A2AConversationTable.updated_at.desc())
+                .limit(10)
+            )
+        ).all()
         items: list[dict[str, Any]] = []
-        for c in rows:
+        for c, preview_text in rows:
             is_a = c.agent_a == slug
             items.append(
                 {
@@ -108,6 +123,9 @@ class EvidenceRepo:
                     "unread": c.unread_by_a if is_a else c.unread_by_b,
                     "topic": c.topic,
                     "task_id": str(c.task_id) if c.task_id else None,
+                    "last_message_preview": (
+                        preview_text[:_A2A_PREVIEW_CAP] if preview_text else None
+                    ),
                 }
             )
         return items
