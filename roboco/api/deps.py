@@ -696,7 +696,6 @@ async def get_choreographer(
             journal=JournalService(db_session),
             audit=get_audit_service(),
             evidence_repo=EvidenceRepo(db_session),
-            messaging=MessagingService(db_session),
             product=ProductService(db_session),
             orchestrator=orch,
             stream_bus=bus,

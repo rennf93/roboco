@@ -36,7 +36,6 @@ def _build_choreographer() -> Choreographer:
         journal=AsyncMock(),
         audit=AsyncMock(),
         evidence_repo=AsyncMock(),
-        messaging=AsyncMock(),
     )
     repo = deps.evidence_repo
     for method in (

@@ -29,7 +29,6 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
         "journal": AsyncMock(),
         "audit": AsyncMock(),
         "evidence_repo": AsyncMock(),
-        "messaging": AsyncMock(),
     }
     base.update(overrides)
     return ChoreographerDeps(**base)
