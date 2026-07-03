@@ -1,13 +1,11 @@
 # RoboCo Deployment Guide
 
-> **This guide has moved.** Deploying RoboCo is now documented in the full docs site at **[rennf93.github.io/roboco](https://rennf93.github.io/roboco/)** (source under [`docs/`](docs/)).
+> **This guide has moved.** Deploying RoboCo is now documented in the full docs site at **[docs.roboco.tech](https://docs.roboco.tech)**.
 
 Jump straight to:
 
-- **[Install & first run](docs/get-started/installation.md)** — the quickest path: clone, set two secrets, `docker compose up`.
-- **[Deployment](docs/deploy/deployment.md)** — the production guide: compose files, the single-origin nginx, host-path mounts, data persistence, secure mode, and startup ordering.
-- **[Environment reference](docs/deploy/env-reference.md)** — every `ROBOCO_*` setting with its default and purpose.
-- **[Data & migrations](docs/deploy/data-and-migrations.md)** — the schema, pgvector, and how the stack self-migrates.
-- **[Troubleshooting](docs/troubleshooting/common-issues.md)** — the common deploy snags and their fixes.
-
-Preview the site locally with `make serve-docs`.
+- **[Install & first run](https://docs.roboco.tech/docs/get-started/installation)** — the quickest path: clone, set two secrets, `docker compose up`.
+- **[Deployment](https://docs.roboco.tech/docs/deploy/deployment)** — the production guide: compose files, the single-origin nginx, host-path mounts, data persistence, secure mode, and startup ordering.
+- **[Environment reference](https://docs.roboco.tech/docs/deploy/env-reference)** — every `ROBOCO_*` setting with its default and purpose.
+- **[Data & migrations](https://docs.roboco.tech/docs/deploy/data-and-migrations)** — the schema, pgvector, and how the stack self-migrates.
+- **[Troubleshooting](https://docs.roboco.tech/docs/troubleshooting/common-issues)** — the common deploy snags and their fixes.

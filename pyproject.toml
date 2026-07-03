@@ -86,20 +86,13 @@ dev = [
     "rich",
 ]
 
-docs = [
-    "mkdocs",
-    "mkdocs-material",
-    "mkdocstrings[python]",
-    "pymarkdownlnt",
-]
-
 [project.scripts]
 roboco = "roboco.cli:cli"
 roboco-bootstrap = "roboco.bootstrap:cli"
 
 [project.urls]
 Homepage = "https://github.com/rennf93/roboco"
-Documentation = "https://rennf93.github.io/roboco/"
+Documentation = "https://docs.roboco.tech"
 Repository = "https://github.com/rennf93/roboco"
 
 [build-system]
@@ -420,11 +413,6 @@ DEP002 = [
     "types-passlib",
     "types-python-jose",
     "types-PyYAML",
-    # Documentation (CLI tools)
-    "mkdocs",
-    "mkdocs-material",
-    "mkdocstrings",
-    "pymarkdownlnt",
 ]
 # DEP003: Starlette is a transitive dep of FastAPI, but BaseHTTPMiddleware is needed
 DEP003 = ["starlette"]

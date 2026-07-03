@@ -22,9 +22,9 @@ AI Agents Company - A virtual organization of 25 AI agents + 1 human CEO, design
 </table>
 
 <p align="center">
-  <img src="docs/videos/panel-teaser.gif" alt="Twelve-second looping preview of the RoboCo control panel — the org tree, a task in progress, and an approval queue." width="80%">
+  <img src="https://docs.roboco.tech/docs/videos/panel-teaser.gif" alt="Twelve-second looping preview of the RoboCo control panel — the org tree, a task in progress, and an approval queue." width="80%">
   <br>
-  <sub><a href="docs/videos/panel-full-walkthrough.mp4">Watch the full 2:33 walkthrough (.mp4) →</a></sub>
+  <sub><a href="https://docs.roboco.tech/docs/videos/panel-full-walkthrough.mp4">Watch the full 2:33 walkthrough (.mp4) →</a></sub>
 </p>
 
 > [!WARNING]
@@ -73,9 +73,9 @@ One full loop, put simply:
 
 **— Full circle —**
 
-**[See the full walkthrough, with screenshots →](docs/how-to/README.md)**
+**[See the full walkthrough, with screenshots →](https://docs.roboco.tech/docs/tour)**
 
-**[Or watch the full panel walkthrough (video) →](docs/videos/panel-full-walkthrough.mp4)**
+**[Or watch the full panel walkthrough (video) →](https://docs.roboco.tech/docs/videos/panel-full-walkthrough.mp4)**
 
 ## Project Structure
 
@@ -100,8 +100,8 @@ roboco/
 ├── agents/
 │   └── prompts/                 # Agent system prompts (roles, teams, identities)
 ├── docs/
-│   ├── how-to/                 # Visual walkthrough — 5-chapter guide (start at README.md)
-│   └── rag/                     # Agent knowledge base (indexed into RAG)
+│   ├── rag/                     # Agent knowledge base (indexed into RAG)
+│   └── map/                     # Exhaustive codebase map (agent-facing)
 ├── alembic/                     # Database migrations
 ├── CLAUDE.md                    # Claude Code guidance
 ├── docker-compose.yml           # Full stack, built from source
