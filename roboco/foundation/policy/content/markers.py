@@ -34,6 +34,11 @@ ESCALATION = "escalation"
 APPROVE_AND_START_NOTES = "approve_and_start_notes"
 RELEASE_REPORT = "release_report"
 RELEASE_REQUIRED_CHANGES = "release_required_changes"
+X_DRAFT_BODY = "x_draft_body"
+X_RELEASE_VERSION = "x_release_version"
+X_MENTION_REF = "x_mention_ref"
+X_REJECT_REASON = "x_reject_reason"
+X_POSTED_TWEET_ID = "x_posted_tweet_id"
 
 
 def get_marker(task: HasMarkers, key: str, default: Any = None) -> Any:
@@ -126,6 +131,58 @@ def get_release_required_changes(task: HasMarkers) -> str | None:
 
 def set_release_required_changes(task: HasMarkers, text: str) -> None:
     set_marker(task, RELEASE_REQUIRED_CHANGES, text)
+
+
+# --- X (Twitter) held post/reply -------------------------------------------
+# A held x_post / x_reply proposal (never dispatched — CEO approve/reject
+# only) carries its draft body, and a reply additionally carries the mention
+# it answers. Set once at origination; approve may overwrite the draft body
+# with the CEO's edited text before posting.
+
+
+def get_x_draft_body(task: HasMarkers) -> str | None:
+    val = get_marker(task, X_DRAFT_BODY)
+    return str(val) if val else None
+
+
+def set_x_draft_body(task: HasMarkers, body: str) -> None:
+    set_marker(task, X_DRAFT_BODY, body)
+
+
+def get_x_release_version(task: HasMarkers) -> str | None:
+    val = get_marker(task, X_RELEASE_VERSION)
+    return str(val) if val else None
+
+
+def set_x_release_version(task: HasMarkers, version: str) -> None:
+    set_marker(task, X_RELEASE_VERSION, version)
+
+
+def get_x_mention_ref(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, X_MENTION_REF)
+    return val if isinstance(val, dict) else None
+
+
+def set_x_mention_ref(task: HasMarkers, ref: dict[str, Any]) -> None:
+    set_marker(task, X_MENTION_REF, ref)
+
+
+def get_x_reject_reason(task: HasMarkers) -> str | None:
+    val = get_marker(task, X_REJECT_REASON)
+    return str(val) if val else None
+
+
+def set_x_reject_reason(task: HasMarkers, reason: str) -> None:
+    set_marker(task, X_REJECT_REASON, reason)
+
+
+def get_x_posted_tweet_id(task: HasMarkers) -> str | None:
+    val = get_marker(task, X_POSTED_TWEET_ID)
+    return str(val) if val else None
+
+
+def set_x_posted_tweet_id(task: HasMarkers, tweet_id: str) -> None:
+    set_marker(task, X_POSTED_TWEET_ID, tweet_id)
 
 
 # --- external PR head ------------------------------------------------------ #

@@ -58,6 +58,7 @@ from roboco.api.routes.v1 import flow_main_pm as flow_main_pm_module
 from roboco.api.routes.v1 import flow_pr_reviewer as flow_pr_reviewer_module
 from roboco.api.routes.v1 import flow_qa as flow_qa_module
 from roboco.api.routes.work_session import router as work_session_router
+from roboco.api.routes.x import router as x_router
 from roboco.api.websocket import router as ws_router
 from roboco.config import settings
 from roboco.db.base import close_db, get_session_factory, init_db
@@ -360,6 +361,14 @@ def create_app() -> FastAPI:
         playbooks_router,
         prefix=f"{api_prefix}/playbooks",
         tags=["Playbooks"],
+    )
+
+    # X (Twitter) engine — the CEO approves/rejects held posts/replies and
+    # manages credentials. Nothing here posts except an explicit approve.
+    app.include_router(
+        x_router,
+        prefix=f"{api_prefix}/x",
+        tags=["X"],
     )
 
     # Pitches — Board proposals + CEO approve -> auto-provision origination path.

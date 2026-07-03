@@ -26,3 +26,10 @@ export { playbooksApi } from "./playbooks";
 export type { Playbook } from "./playbooks";
 export { authApi } from "./auth";
 export type { AuthStatus } from "./auth";
+export { xApi } from "./x";
+export type {
+  XPost,
+  XMentionRef,
+  XPostExecuteResult,
+  XCredentialsStatus,
+} from "./x";

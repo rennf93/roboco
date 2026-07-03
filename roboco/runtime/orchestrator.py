@@ -73,6 +73,7 @@ from roboco.services.task import (
     PR_REVIEW_SOURCES,
     RELEASE_MANAGER_SOURCE,
     SELF_HEAL_SOURCE,
+    X_SOURCES,
 )
 
 logger = structlog.get_logger()
@@ -745,6 +746,7 @@ class AgentOrchestrator:
         self._ci_watch_task: asyncio.Task | None = None
         self._dep_update_task: asyncio.Task | None = None
         self._release_manager_task: asyncio.Task | None = None
+        self._x_mentions_task: asyncio.Task | None = None
         # Provider registry: maps a ModelProvider to a dedicated AgentProvider
         # backend. Only providers needing a non-Claude-Code runtime are
         # registered (currently GROK, which speaks the OpenAI protocol). Agents
@@ -919,6 +921,7 @@ class AgentOrchestrator:
         self._ci_watch_task = asyncio.create_task(self._ci_watch_loop())
         self._dep_update_task = asyncio.create_task(self._dep_update_loop())
         self._release_manager_task = asyncio.create_task(self._release_manager_loop())
+        self._x_mentions_task = asyncio.create_task(self._x_mentions_poll_loop())
 
         logger.info(
             "Orchestrator started",
@@ -1013,6 +1016,7 @@ class AgentOrchestrator:
             self._ci_watch_task,
             self._dep_update_task,
             self._release_manager_task,
+            self._x_mentions_task,
         ):
             await self._cancel_background_task(task)
 
@@ -7399,6 +7403,37 @@ Start by:
             await get_release_manager_engine(db).run_cycle()
             await db.commit()
 
+    async def _x_mentions_poll_loop(self) -> None:
+        """X engine: poll mentions on an interval, hold meaningful ones as draft
+        replies.
+
+        Dormant by default — returns immediately unless ``x_engine_enabled``,
+        so a standard deployment makes no X API call. Release-post drafts are
+        originated event-driven (from the release-proposal approve hook), not
+        by this loop; this loop only runs the periodic mentions poll. It never
+        posts or replies — every draft is held for the CEO.
+        """
+        if not settings.x_engine_enabled:
+            return
+        interval = settings.x_mentions_interval_seconds
+        while self._running:
+            try:
+                await asyncio.sleep(interval)
+                await self._run_x_mentions_cycle()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("x-mentions poll cycle failed")
+
+    async def _run_x_mentions_cycle(self) -> None:
+        """One mentions-poll pass: run the engine, commit. Testable w/o the sleep."""
+        from roboco.db import get_db_context
+        from roboco.services.x_engine import get_x_engine
+
+        async with get_db_context() as db:
+            await get_x_engine(db).run_cycle()
+            await db.commit()
+
     async def _load_dep_update_set(self, db: Any) -> list[Any]:
         """Projects with a ``dep_update_command`` + a git_url, one per
         (repo, command).
@@ -10396,6 +10431,10 @@ Start now: evidence(task_id="{task_id}")
             # are acted on by the release routes + executor, never dispatched.
             if task.get("source") == RELEASE_MANAGER_SOURCE:
                 continue
+            # X posts/replies are HELD for the CEO — never delivery work. They
+            # are acted on by the x routes + post service, never dispatched.
+            if task.get("source") in X_SOURCES:
+                continue
             # A self-heal fix task is HELD for the CEO's Approve-&-Start
             # (confirmed_by_human=False at origination). It must NOT dispatch
             # autonomously — the CEO's approve_and_start flips
@@ -10905,6 +10944,9 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 continue
             # Release proposals are CEO-gated artifacts, never dev work.
             if task.get("source") == RELEASE_MANAGER_SOURCE:
+                continue
+            # X posts/replies are CEO-gated artifacts, never dev work.
+            if task.get("source") in X_SOURCES:
                 continue
             # A self-heal fix task held for the CEO's Approve-&-Start is not dev
             # work yet — it must not route to its assigned_to as a dev before

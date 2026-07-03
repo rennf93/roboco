@@ -803,6 +803,60 @@ class Settings(BaseSettings):
         ),
     )
 
+    # X (Twitter) account — HoM drafts release posts + mention replies, ALL
+    # held for per-post CEO approval (mirrors the release-manager CEO gate).
+    # Default-off; even when on, posting requires CEO-supplied credentials AND
+    # an explicit per-post CEO approval in the panel — nothing auto-posts.
+    x_engine_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for the X (Twitter) engine. OFF by default; when "
+            "off no draft is originated and no X API call is ever made. Even "
+            "when on, posting requires stored credentials AND an explicit "
+            "per-post CEO approval — nothing auto-posts."
+        ),
+    )
+    x_mentions_interval_seconds: int = Field(
+        default=1800,
+        ge=60,
+        description="Seconds between mentions-poll passes.",
+    )
+    x_mentions_max_per_cycle: int = Field(
+        default=5,
+        ge=1,
+        description=(
+            "Max held reply proposals the mentions poll may originate in one cycle."
+        ),
+    )
+    x_mentions_min_engagement: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Minimum like+reply+retweet count for a mention to count as "
+            "'meaningful' (the engagement floor half of the mention filter)."
+        ),
+    )
+    x_max_open_posts: int = Field(
+        default=10,
+        ge=1,
+        description=(
+            "Rolling cap on concurrently-open held X posts/replies (both "
+            "sources combined); the engine originates nothing more past it."
+        ),
+    )
+    x_account_user_id: str = Field(
+        default="",
+        description=(
+            "Numeric X user id of the account's own account. Empty resolves it "
+            "once per mentions cycle via GET /2/users/me (one extra call)."
+        ),
+    )
+    x_request_timeout_seconds: float = Field(
+        default=15.0,
+        gt=0,
+        description="Per-request timeout for outbound X API HTTP calls.",
+    )
+
     # Set by the compose file that carries the roboco_data topology
     # (postgres/redis on a data-only network agents never join). NOT a panel
     # feature flag: it must travel with the compose networks: stanzas, and a

@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from roboco.db.tables import TaskTable
+    from roboco.services.release_readiness import ReleaseReadinessReport
 
 logger = logging.getLogger(__name__)
 
@@ -182,11 +183,27 @@ class ReleaseProposalService(BaseService):
             if result.status in ("published", "already_published"):
                 task.status = TaskStatus.COMPLETED
                 await self.session.flush()
+                await self._draft_x_post(report)
             return result
         finally:
             await self._finalize_release_lock(
                 heartbeat_task, execute_task, lock_key, lock_token
             )
+
+    async def _draft_x_post(self, report: ReleaseReadinessReport) -> None:
+        """Hand the just-published release to the X engine for a held
+        announcement draft (best-effort — never raises into approve(); a
+        drafting failure must not affect the release's already-succeeded
+        publish). Off/no-creds is itself a no-op inside the engine."""
+        try:
+            from roboco.services.x_engine import get_x_engine
+
+            await get_x_engine(self.session).draft_release_post(
+                version=report.proposed_version,
+                highlights=list(report.change_summary),
+            )
+        except Exception as exc:
+            logger.warning("x-post draft failed (best-effort): %s", exc)
 
     async def _finalize_release_lock(
         self,

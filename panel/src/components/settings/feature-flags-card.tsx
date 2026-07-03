@@ -50,6 +50,8 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
     "Provision a throwaway Postgres/Redis sibling container per agent spawn (per-project opt-in) instead of injecting RoboCo's own production DB credentials into the agent's gate.",
   routing_strict:
     "Fail-closed model routing: refuse to silently downgrade an agent to the legacy Anthropic path when its configured provider is disabled (raise instead). Off => graceful degradation with a warning.",
+  x_engine_enabled:
+    "Draft release-announcement and mention-reply posts for the X (Twitter) account — every draft is held in a queue for you to edit, approve, or reject; nothing posts automatically, and it stays inert until you set credentials in the X card below.",
 };
 
 export function FeatureFlagsCard() {

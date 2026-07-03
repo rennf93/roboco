@@ -2640,3 +2640,47 @@ class UserTable(Base):
         is_verified: Mapped[bool] = mapped_column(
             Boolean, default=False, nullable=False
         )
+
+
+# =============================================================================
+# X (TWITTER) ACCOUNT TABLES
+# =============================================================================
+
+
+class XCredentialsTable(Base):
+    """Singleton row holding the Fernet-encrypted X OAuth 1.0a user-context
+    secrets (mirrors ``ProviderConfigTable``'s encrypted-token column). At most
+    one row ever exists; ``XCredentialsService`` upserts it. Never read by an
+    agent — decrypted only server-side, by ``x_client``."""
+
+    __tablename__ = "x_credentials"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    api_secret_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    access_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    access_token_secret_encrypted: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
+    )
+
+
+class XSeenMentionTable(Base):
+    """Dedup ledger for the mentions poll — one row per mention id the engine
+    has ever turned into a held reply proposal (or decided to skip). Never
+    pruned by task terminal state, so a rejected/completed proposal's mention
+    is never re-proposed on a later cycle."""
+
+    __tablename__ = "x_seen_mentions"
+
+    mention_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
