@@ -1456,6 +1456,21 @@ class TaskService(BaseService):
         )
         return list(result.scalars().all())
 
+    async def list_open_video_post_drafts(self) -> list[TaskTable]:
+        """Non-terminal video_post held drafts only (excludes the video
+        authoring source) — the panel-queue basis for VideoPostService,
+        mirroring list_open_x_posts. Ordered oldest-first so the queue reads
+        chronologically."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == VIDEO_POST_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
     async def list_open_roadmap_cycles(self) -> list[TaskTable]:
         """Non-terminal board-roadmap exploration tasks — the one-open-cycle
         dedup + panel-queue basis. Includes a cycle before AND after the

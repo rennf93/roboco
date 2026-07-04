@@ -43,6 +43,7 @@ X_FEATURE_REF = "x_feature_ref"
 X_SEEN_FEATURES = "x_seen_features"
 ROADMAP_CYCLE = "roadmap_cycle"
 VIDEO_DRAFT = "video_draft"
+VIDEO_REJECT_REASON = "video_reject_reason"
 
 
 def get_marker(task: HasMarkers, key: str, default: Any = None) -> Any:
@@ -238,6 +239,15 @@ def get_video_draft(task: HasMarkers) -> dict[str, Any] | None:
 
 def set_video_draft(task: HasMarkers, payload: dict[str, Any]) -> None:
     set_marker(task, VIDEO_DRAFT, payload)
+
+
+def get_video_reject_reason(task: HasMarkers) -> str | None:
+    val = get_marker(task, VIDEO_REJECT_REASON)
+    return str(val) if val else None
+
+
+def set_video_reject_reason(task: HasMarkers, reason: str) -> None:
+    set_marker(task, VIDEO_REJECT_REASON, reason)
 
 
 # --- external PR head ------------------------------------------------------ #
