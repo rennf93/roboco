@@ -6,7 +6,6 @@ import {
   useAuditorReports,
   useCreateAuditorReport,
 } from "@/hooks/use-dashboard";
-import { LiveFeedsPanel } from "./live-feeds-panel";
 import { QualityMetricsPanel } from "./quality-metrics-panel";
 import { FlaggedItemsPanel } from "./flagged-items-panel";
 import { ReportsPanel } from "./reports-panel";
@@ -70,17 +69,11 @@ export function AuditorDashboard() {
         </div>
       </div>
 
-      {/* Top Row: Live Feeds + Quality Metrics */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-2 2xl:grid-cols-2 gap-6">
-        <LiveFeedsPanel
-          feeds={dashboard?.live_feeds}
-          isLoading={loadingDashboard}
-        />
-        <QualityMetricsPanel
-          metrics={dashboard?.metrics}
-          isLoading={loadingDashboard}
-        />
-      </div>
+      {/* Quality Metrics */}
+      <QualityMetricsPanel
+        metrics={dashboard?.metrics}
+        isLoading={loadingDashboard}
+      />
 
       {/* Bottom Row: Flagged Items + Reports */}
       <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-2 2xl:grid-cols-2 gap-6">

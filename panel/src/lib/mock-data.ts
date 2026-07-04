@@ -1171,29 +1171,6 @@ export const mockAuditorReports = [
 ];
 
 export const mockAuditorDashboard = {
-  live_feeds: [
-    {
-      id: mockId(),
-      name: "Backend Cell",
-      status: "streaming",
-      last_activity: now.toISOString(),
-      message_count_24h: 25,
-    },
-    {
-      id: mockId(),
-      name: "Frontend Cell",
-      status: "idle",
-      last_activity: hourAgo.toISOString(),
-      message_count_24h: 15,
-    },
-    {
-      id: mockId(),
-      name: "UX/UI Cell",
-      status: "idle",
-      last_activity: dayAgo.toISOString(),
-      message_count_24h: 5,
-    },
-  ],
   flagged_items: mockAuditorFlags,
   metrics: {
     total_flags: 2,

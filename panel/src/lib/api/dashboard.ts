@@ -35,7 +35,6 @@ export interface TeamHealth {
 export interface MetricsSummary {
   velocity: VelocityMetric;
   blockers: BlockerMetric;
-  communication: CommunicationMetric;
   agents: AgentMetric;
 }
 
@@ -49,12 +48,6 @@ export interface BlockerMetric {
   total_blocked: number;
   blocked_by_team: Record<string, number>;
   longest_blocked_hours: number;
-}
-
-export interface CommunicationMetric {
-  messages_today: number;
-  active_channels: number;
-  notifications_pending: number;
 }
 
 export interface AgentMetric {
@@ -205,20 +198,6 @@ export const dashboardApi = {
     }
     const { data } = await api.get<BlockerMetric>(
       "/dashboard/metrics/blockers",
-    );
-    return data;
-  },
-
-  getCommunicationMetrics: async (): Promise<CommunicationMetric> => {
-    if (isMockMode()) {
-      return {
-        messages_today: 45,
-        active_channels: 5,
-        notifications_pending: 3,
-      };
-    }
-    const { data } = await api.get<CommunicationMetric>(
-      "/dashboard/metrics/communication",
     );
     return data;
   },

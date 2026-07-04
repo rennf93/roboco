@@ -602,16 +602,7 @@ export interface AuditorReport {
   sent_at: string | null;
 }
 
-export interface ChannelFeed {
-  id: string;
-  name: string;
-  status: string;
-  last_activity: string | null;
-  message_count_24h: number;
-}
-
 export interface AuditorDashboard {
-  live_feeds: ChannelFeed[];
   flagged_items: AuditorFlag[];
   metrics: Record<string, number>;
   audit_queue: Array<{
