@@ -20,6 +20,7 @@ _MENTION_EXCERPT_CAP = 280
 _NOTIFICATION_BODY_CAP = 500
 _HANDOFF_CONTENT_CAP = 800
 _NORTH_STAR_CAP = 600
+_BRAND_VOICE_CAP = 600
 _A2A_PREVIEW_CAP = 200
 
 
@@ -54,7 +55,10 @@ class EvidenceRepo:
         objectives = row.objectives or []
         constraints = row.constraints or []
         operating_policy = row.operating_policy or {}
-        if not any((north_star, objectives, constraints, operating_policy)):
+        brand_voice = row.brand_voice or ""
+        if not any(
+            (north_star, objectives, constraints, operating_policy, brand_voice)
+        ):
             return None
         return {
             # north_star is free Text — cap it for the briefing (the full
@@ -63,6 +67,10 @@ class EvidenceRepo:
             "objectives": objectives[:BRIEFING_LIST_CAP],
             "constraints": constraints[:BRIEFING_LIST_CAP],
             "operating_policy": operating_policy,
+            # Same free-Text/singleton-charter shape as north_star — the CEO's
+            # brand-voice sample, so any full-briefing consumer (XEngine's HoM
+            # spawn included) sees it without a second read.
+            "brand_voice": brand_voice[:_BRAND_VOICE_CAP],
         }
 
     async def list_unread_a2a(self, agent_id: UUID) -> list[dict[str, Any]]:

@@ -24,7 +24,7 @@ from roboco.models.base import (
 from roboco.models.base import TaskNature as TN
 from roboco.models.base import TaskStatus as TS
 from roboco.models.base import TaskType as TT
-from roboco.services.task import X_POST_SOURCE, X_REPLY_SOURCE
+from roboco.services.task import X_FEATURE_SOURCE, X_POST_SOURCE, X_REPLY_SOURCE
 from roboco.services.x_client import XClient, XMention, XPostResult
 from roboco.services.x_post_service import (
     XPostBodyTooLongError,
@@ -315,3 +315,36 @@ async def test_list_open_posts_excludes_terminal(db_session: AsyncSession) -> No
     ids = {t.id for t in open_posts}
     assert open_task.id in ids
     assert rejected_task.id not in ids
+
+
+@pytest.mark.asyncio
+async def test_approve_posts_feature_spotlight_draft(
+    db_session: AsyncSession,
+) -> None:
+    """The feature-spotlight source needs zero service changes: it rides the
+    same generic approve path as x_post/x_reply."""
+    task = await _seed_draft(db_session, source=X_FEATURE_SOURCE)
+    client = _StubClient()
+    with (
+        patch("roboco.services.x_post_service.build_x_client", return_value=client),
+        patch.object(XPostService, "_acquire_lock", AsyncMock(return_value="tok")),
+        patch.object(XPostService, "_release_lock", AsyncMock(return_value=None)),
+    ):
+        result = await _svc(db_session).approve(_id(task))
+    assert result is not None
+    assert result.status == "posted"
+    assert result.tweet_id == "999"
+    assert client.calls == ["Draft body"]
+    await db_session.refresh(task)
+    assert task.status == TS.COMPLETED
+    assert markers.get_x_posted_tweet_id(task) == "999"
+
+
+@pytest.mark.asyncio
+async def test_list_open_posts_includes_feature_spotlight_source(
+    db_session: AsyncSession,
+) -> None:
+    task = await _seed_draft(db_session, source=X_FEATURE_SOURCE)
+    open_posts = await _svc(db_session).list_open_posts()
+    ids = {t.id for t in open_posts}
+    assert task.id in ids

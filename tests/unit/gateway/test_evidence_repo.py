@@ -55,7 +55,11 @@ async def test_company_goals_none_when_no_row() -> None:
 @pytest.mark.asyncio
 async def test_company_goals_none_when_empty_charter() -> None:
     row = SimpleNamespace(
-        north_star="", objectives=[], constraints=[], operating_policy={}
+        north_star="",
+        objectives=[],
+        constraints=[],
+        operating_policy={},
+        brand_voice="",
     )
     assert await _repo_with_goals_row(row).company_goals() is None
 
@@ -67,6 +71,7 @@ async def test_company_goals_compact_dict_when_set() -> None:
         objectives=[{"metric": "NPS", "target": 50}],
         constraints=["AGPL"],
         operating_policy={"autonomy_level": "assisted"},
+        brand_voice="Confident, dry wit.",
     )
     goals = await _repo_with_goals_row(row).company_goals()
     assert goals == {
@@ -74,7 +79,40 @@ async def test_company_goals_compact_dict_when_set() -> None:
         "objectives": [{"metric": "NPS", "target": 50}],
         "constraints": ["AGPL"],
         "operating_policy": {"autonomy_level": "assisted"},
+        "brand_voice": "Confident, dry wit.",
     }
+
+
+@pytest.mark.asyncio
+async def test_company_goals_none_when_only_brand_voice_unset() -> None:
+    """A charter with substantive content but no brand_voice must still
+    surface — brand_voice is additive, not required."""
+    row = SimpleNamespace(
+        north_star="Win the market",
+        objectives=[],
+        constraints=[],
+        operating_policy={},
+        brand_voice="",
+    )
+    goals = await _repo_with_goals_row(row).company_goals()
+    assert goals is not None
+    assert goals["brand_voice"] == ""
+
+
+@pytest.mark.asyncio
+async def test_company_goals_surfaces_when_only_brand_voice_set() -> None:
+    """The inverse: brand_voice alone (everything else empty) must still
+    surface — it counts toward the "charter has content" check."""
+    row = SimpleNamespace(
+        north_star="",
+        objectives=[],
+        constraints=[],
+        operating_policy={},
+        brand_voice="Speak as 'we'.",
+    )
+    goals = await _repo_with_goals_row(row).company_goals()
+    assert goals is not None
+    assert goals["brand_voice"] == "Speak as 'we'."
 
 
 @pytest.mark.asyncio

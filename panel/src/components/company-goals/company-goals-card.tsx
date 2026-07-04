@@ -31,6 +31,7 @@ export function CompanyGoalsCard() {
   const [constraints, setConstraints] = useState<string | null>(null);
   const [objectives, setObjectives] = useState<string | null>(null);
   const [policy, setPolicy] = useState<string | null>(null);
+  const [brandVoice, setBrandVoice] = useState<string | null>(null);
 
   const { data: goals, isLoading } = useQuery({
     queryKey: ["company-goals"],
@@ -43,6 +44,7 @@ export function CompanyGoalsCard() {
     objectives ?? JSON.stringify(goals?.objectives ?? [], null, 2);
   const policyVal =
     policy ?? JSON.stringify(goals?.operating_policy ?? {}, null, 2);
+  const brandVoiceVal = brandVoice ?? goals?.brand_voice ?? "";
 
   const saveMutation = useMutation({
     mutationFn: (update: CompanyGoalsUpdate) => companyGoalsApi.update(update),
@@ -52,6 +54,7 @@ export function CompanyGoalsCard() {
       setConstraints(null);
       setObjectives(null);
       setPolicy(null);
+      setBrandVoice(null);
       toast.success("Company charter updated");
     },
     onError: (error) => {
@@ -92,6 +95,7 @@ export function CompanyGoalsCard() {
         .map((c) => c.trim())
         .filter(Boolean),
       operating_policy: parsedPolicy,
+      brand_voice: brandVoiceVal,
     });
   };
 
@@ -103,9 +107,9 @@ export function CompanyGoalsCard() {
           Company Charter
         </CardTitle>
         <CardDescription>
-          The CEO-owned north star, objectives, constraints, and operating
-          policy. Injected into every agent&apos;s briefing so all work stays
-          goal-aware.
+          The CEO-owned north star, objectives, constraints, operating policy,
+          and brand voice. Injected into every agent&apos;s briefing so all
+          work stays goal-aware.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -118,6 +122,17 @@ export function CompanyGoalsCard() {
             disabled={isLoading}
             onChange={(e) => setNorthStar(e.target.value)}
             placeholder="The long-term vision in one or two sentences..."
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="brand-voice">Brand voice</Label>
+          <Textarea
+            id="brand-voice"
+            rows={3}
+            value={brandVoiceVal}
+            disabled={isLoading}
+            onChange={(e) => setBrandVoice(e.target.value)}
+            placeholder="Sample posts or a style description for the Head of Marketing's drafts..."
           />
         </div>
         <div className="space-y-2">

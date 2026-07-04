@@ -866,6 +866,24 @@ class Settings(BaseSettings):
         gt=0,
         description="Per-request timeout for outbound X API HTTP calls.",
     )
+    x_feature_spotlight_enabled: bool = Field(
+        default=False,
+        description=(
+            "Sub-switch for the feature-spotlight half of the X engine. OFF by "
+            "default: even with x_engine_enabled on, the engine drafts only "
+            "release-announcement posts (and mention replies if enabled) — it does "
+            "not spawn the Head of Marketing to investigate shipped capabilities. "
+            "Unlike the local-model-only release/reply drafts, this spawns a real "
+            "cloud-LLM agent per cycle, so it is a deliberate, costlier opt-in."
+        ),
+    )
+    x_feature_spotlight_interval_seconds: int = Field(
+        default=259200,  # 3 days — tunable; marketing cadence is a CEO call, not a
+        # technical constant. Sits between the 30-min mentions poll
+        # and the weekly roadmap cycle.
+        ge=3600,
+        description="Seconds between feature-spotlight exploration cycles.",
+    )
 
     # Board roadmap engine — weekly, the Product Owner explores the company's
     # projects and proposes a themed cycle of roadmap items; the CEO approves

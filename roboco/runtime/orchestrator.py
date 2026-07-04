@@ -75,6 +75,7 @@ from roboco.services.task import (
     RELEASE_MANAGER_SOURCE,
     ROADMAP_SOURCE,
     SELF_HEAL_SOURCE,
+    X_FEATURE_EXPLORATION_SOURCE,
     X_SOURCES,
 )
 
@@ -770,6 +771,7 @@ class AgentOrchestrator:
         self._release_manager_task: asyncio.Task | None = None
         self._x_mentions_task: asyncio.Task | None = None
         self._roadmap_engine_task: asyncio.Task | None = None
+        self._x_feature_spotlight_task: asyncio.Task | None = None
         # Provider registry: maps a ModelProvider to a dedicated AgentProvider
         # backend. Only providers needing a non-Claude-Code runtime are
         # registered (currently GROK, which speaks the OpenAI protocol). Agents
@@ -946,6 +948,9 @@ class AgentOrchestrator:
         self._release_manager_task = asyncio.create_task(self._release_manager_loop())
         self._x_mentions_task = asyncio.create_task(self._x_mentions_poll_loop())
         self._roadmap_engine_task = asyncio.create_task(self._roadmap_engine_loop())
+        self._x_feature_spotlight_task = asyncio.create_task(
+            self._x_feature_spotlight_loop()
+        )
 
         logger.info(
             "Orchestrator started",
@@ -1042,6 +1047,7 @@ class AgentOrchestrator:
             self._release_manager_task,
             self._x_mentions_task,
             self._roadmap_engine_task,
+            self._x_feature_spotlight_task,
         ):
             await self._cancel_background_task(task)
 
@@ -7562,6 +7568,35 @@ Start by:
             await get_roadmap_engine(db).run_cycle()
             await db.commit()
 
+    async def _x_feature_spotlight_loop(self) -> None:
+        """X engine: on an interval, open ONE held feature-spotlight exploration
+        for the Head of Marketing.
+
+        Dormant by default — returns immediately unless BOTH x_engine_enabled and
+        x_feature_spotlight_enabled, so a standard deployment (or one running only
+        release posts / mention replies) never spawns HoM for this.
+        """
+        if not (settings.x_engine_enabled and settings.x_feature_spotlight_enabled):
+            return
+        interval = settings.x_feature_spotlight_interval_seconds
+        while self._running:
+            try:
+                await asyncio.sleep(interval)
+                await self._run_x_feature_spotlight_cycle()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("x-feature-spotlight cycle failed")
+
+    async def _run_x_feature_spotlight_cycle(self) -> None:
+        """One feature-spotlight pass: run the engine, commit. Testable w/o sleep."""
+        from roboco.db import get_db_context
+        from roboco.services.x_engine import get_x_engine
+
+        async with get_db_context() as db:
+            await get_x_engine(db).open_feature_spotlight_exploration()
+            await db.commit()
+
     async def _load_dep_update_set(self, db: Any) -> list[Any]:
         """Projects with a ``dep_update_command`` + a git_url, one per
         (repo, command).
@@ -10386,6 +10421,41 @@ Start now: evidence(task_id="{task_id}")
             spawned_by="_dispatch_roadmap_exploration",
         )
 
+    async def _dispatch_feature_spotlight_exploration(
+        self, task: dict[str, Any]
+    ) -> None:
+        """One-shot Head-of-Marketing spawn to investigate + author a spotlight.
+
+        Simpler than _dispatch_roadmap_exploration: no "already authored" marker
+        pre-check is needed here, because a successful propose_feature_spotlight()
+        completes this task atomically (it stops matching the PENDING fetch on the
+        next tick) — unlike the roadmap cycle, which stays open across the CEO's
+        per-item decisions and needs the marker check to avoid re-spawning the PO
+        after authoring. Reuses the same one-shot _board_dispatched tracker +
+        respawn breaker every other board dispatch uses.
+        """
+        task_id = str(task.get("id"))
+        hom_slug = "head-marketing"
+        if self._is_agent_active(hom_slug):
+            return
+        key = (hom_slug, task_id)
+        if key in self._board_dispatched:
+            return
+        if await self._pm_respawn_should_gate(hom_slug, task):
+            return
+        self._board_dispatched.add(key)
+        logger.info(
+            "Spawning Head of Marketing for feature-spotlight exploration",
+            task_id=task_id,
+        )
+        await self.spawn_agent(
+            agent_id=hom_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_feature_spotlight_prompt(task),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_feature_spotlight_exploration",
+        )
+
     def _board_review_complete(self, task_id: str) -> bool:
         """True once EVERY board reviewer has reviewed and gone idle.
 
@@ -10597,6 +10667,13 @@ Start now: evidence(task_id="{task_id}")
                     # spawn Head of Marketing and fire the Approve & Start
                     # handoff, both wrong for a roadmap cycle).
                     await self._dispatch_roadmap_exploration(task)
+                elif task.get("source") == X_FEATURE_EXPLORATION_SOURCE:
+                    # HoM-solo (mirrors the ROADMAP_SOURCE branch above) —
+                    # bypasses the two-reviewer board-review gate; never rides
+                    # _handle_board_assigned_task (that would also spawn the
+                    # Product Owner and fire the Approve & Start handoff, both
+                    # wrong for a feature-spotlight cycle).
+                    await self._dispatch_feature_spotlight_exploration(task)
                 elif self._resolve_agent_slug(assigned_to) in self._BOARD_AGENTS:
                     await self._handle_board_assigned_task(task, assigned_to)
                 else:
@@ -11104,6 +11181,12 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
             # Also team-gated away by _dev_dispatch_one (team=board), so this is
             # belt-and-suspenders parity with the other held-artifact sources.
             if task.get("source") == ROADMAP_SOURCE:
+                continue
+            # A feature-spotlight exploration cycle is Board work (HoM's
+            # one-shot dispatch owns it via _dispatch_pm_work) — never dev work.
+            # X_FEATURE_SOURCE (the materialized draft) is already covered by
+            # the X_SOURCES check above; this is the exploration task itself.
+            if task.get("source") == X_FEATURE_EXPLORATION_SOURCE:
                 continue
             # A self-heal fix task held for the CEO's Approve-&-Start is not dev
             # work yet — it must not route to its assigned_to as a dev before
@@ -12739,6 +12822,51 @@ involved in this cycle.
 
 Do NOT claim, plan, delegate, or attempt to start any of the items yourself —
 that is not your job here, and the gateway will reject those verbs.
+"""
+
+    def _build_feature_spotlight_prompt(self, task: dict[str, Any]) -> str:
+        """Prompt for the Head of Marketing's one-shot feature-spotlight cycle."""
+        task_id = task.get("id", "unknown")
+        markers_dict = task.get("orchestration_markers") or {}
+        seen = markers_dict.get(_markers.X_SEEN_FEATURES) or []
+        seen_line = ", ".join(seen) if seen else "(none yet — this is the first cycle)"
+        return f"""\
+You are the Head of Marketing. It's time for your periodic feature-spotlight cycle.
+
+TASK: {task_id}
+
+RoboCo markets its own capabilities, not just releases. Investigate what the
+company has actually shipped and draft ONE marketing post about a genuinely
+useful, under-publicized capability — something a user or prospect would not
+already know from the last release announcement.
+
+ALREADY COVERED — do not repeat: {seen_line}
+
+== WHAT TO DO ==
+
+1. triage() — see your board-level context.
+2. Investigate (read-only, you have full repo read access): CHANGELOG.md (what
+   has actually shipped), the feature-flags ledger (panel/src/components/
+   settings/feature-flags-card.tsx and roboco/services/settings.py's
+   FEATURE_FLAGS — the enumerated subsystems), docs/map/ (the exhaustive
+   codebase map — each slice's Purpose section is marketing-readable), the
+   company charter (already in your briefing), and the knowledge base
+   (roboco_ask_mentor / roboco_kb_search).
+3. Pick ONE feature that is real, currently shipped (or shipped behind a flag
+   the CEO can enable), not in the already-covered list above, and worth
+   telling people about.
+4. Draft ONE post in your voice (see your identity's VOICE GUIDE) — plain
+   text, no markdown, no thread, max 280 characters, and never invent a
+   capability that doesn't exist.
+5. propose_feature_spotlight(feature_slug="<a short stable slug>",
+   feature_title="<human-readable feature name>", body="<the post>")
+     — call this EXACTLY ONCE.
+6. i_am_idle() — once proposed. The CEO reviews, edits, approves, or rejects
+   the draft in the X post queue; nothing posts without that explicit
+   approval.
+
+Do NOT claim, plan, delegate, or attempt to post anything yourself — that is
+not your job here, and the gateway will reject those.
 """
 
     def _build_marketing_prompt(self, task: dict[str, Any]) -> str:

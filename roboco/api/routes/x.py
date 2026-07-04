@@ -11,6 +11,7 @@ from roboco.api.deps import CurrentAgentContext, DbSession, require_ceo_role
 from roboco.api.schemas.x import (
     XCredentialsSetRequest,
     XCredentialsStatus,
+    XFeatureRefModel,
     XMentionRefModel,
     XPostApproveRequest,
     XPostExecuteResponse,
@@ -43,6 +44,7 @@ def _status_value(task: "TaskTable") -> str:
 def _to_response(task: "TaskTable") -> XPostResponse:
     body = markers.get_x_draft_body(task) or task.description or ""
     mention = markers.get_x_mention_ref(task)
+    feature = markers.get_x_feature_ref(task)
     return XPostResponse(
         task_id=str(task.id),
         source=task.source,
@@ -52,6 +54,7 @@ def _to_response(task: "TaskTable") -> XPostResponse:
         char_count=len(body),
         release_version=markers.get_x_release_version(task),
         mention=XMentionRefModel(**mention) if mention else None,
+        feature=XFeatureRefModel(**feature) if feature else None,
         reject_reason=markers.get_x_reject_reason(task),
     )
 

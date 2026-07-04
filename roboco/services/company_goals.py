@@ -27,6 +27,7 @@ _EMPTY: dict[str, Any] = {
     "objectives": [],
     "constraints": [],
     "operating_policy": {},
+    "brand_voice": "",
     "updated_at": None,
     "updated_by": None,
 }
@@ -61,6 +62,8 @@ class CompanyGoalsService(BaseService):
             row.constraints = data["constraints"]
         if "operating_policy" in data:
             row.operating_policy = data["operating_policy"]
+        if "brand_voice" in data:
+            row.brand_voice = data["brand_voice"]
         if updated_by is not None:
             row.updated_by = updated_by
         await self.session.flush()
@@ -73,6 +76,7 @@ class CompanyGoalsService(BaseService):
             "objectives": row.objectives or [],
             "constraints": row.constraints or [],
             "operating_policy": row.operating_policy or {},
+            "brand_voice": row.brand_voice or "",
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
             "updated_by": str(row.updated_by) if row.updated_by else None,
         }

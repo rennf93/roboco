@@ -53,6 +53,7 @@ def _make_orchestrator() -> AgentOrchestrator:
         "_release_manager_task",
         "_x_mentions_task",
         "_roadmap_engine_task",
+        "_x_feature_spotlight_task",
     ):
         setattr(orch, attr, None)
     return orch

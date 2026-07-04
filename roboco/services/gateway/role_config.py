@@ -116,6 +116,12 @@ _PRODUCT_OWNER_DO = (
     "propose_roadmap",
 )
 
+# Head of Marketing only (mirrors _PRODUCT_OWNER_DO's propose_roadmap grant).
+_HEAD_MARKETING_DO = (
+    *_BOARD_DO,
+    "propose_feature_spotlight",
+)
+
 _AUDITOR_FLOW = spec.intents_for_role(spec.Role.AUDITOR)
 # Auditor reads, does not chat or escalate. notify_list/get for inbox visibility;
 # no ack (silent observer — wouldn't ack notifications).
@@ -208,7 +214,7 @@ ROLE_CONFIGS: dict[str, RoleConfig] = {
     "head_marketing": RoleConfig(
         role="head_marketing",
         flow_tools=_HEAD_MARKETING_FLOW,
-        do_tools=_BOARD_DO,
+        do_tools=_HEAD_MARKETING_DO,
         allows_write=False,
         allows_subagent=True,
         description="Marketing oversight; escalates to CEO.",

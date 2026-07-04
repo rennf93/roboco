@@ -13,15 +13,21 @@ export interface XMentionRef {
   text: string;
 }
 
+export interface XFeatureRef {
+  slug: string;
+  title: string;
+}
+
 export interface XPost {
   task_id: string;
-  source: "x_post" | "x_reply";
+  source: "x_post" | "x_reply" | "x_feature";
   title: string;
   status: string;
   body: string;
   char_count: number;
   release_version?: string | null;
   mention?: XMentionRef | null;
+  feature?: XFeatureRef | null;
   reject_reason?: string | null;
 }
 

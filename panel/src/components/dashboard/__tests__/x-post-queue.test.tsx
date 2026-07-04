@@ -71,6 +71,26 @@ describe("XPostQueue", () => {
     expect(screen.getByDisplayValue("RoboCo v0.17.0 just shipped!")).toBeInTheDocument();
   });
 
+  it("renders a feature-spotlight draft with its own label and badge", async () => {
+    listPosts.mockResolvedValueOnce([
+      {
+        task_id: "x-3",
+        source: "x_feature",
+        title: "X feature spotlight: playbooks",
+        status: "pending",
+        body: "Did you know RoboCo curates playbooks from real task runs?",
+        char_count: 60,
+        feature: { slug: "playbooks", title: "Playbook curation" },
+      },
+    ] as XPost[]);
+
+    render(withQueryClient(<XPostQueue />));
+
+    expect(await screen.findByText("Feature spotlight")).toBeInTheDocument();
+    expect(screen.queryByText("Mention reply")).not.toBeInTheDocument();
+    expect(screen.getByText(/Playbook curation/)).toBeInTheDocument();
+  });
+
   it("disables only the row being approved, not every row's Approve", async () => {
     render(withQueryClient(<XPostQueue />));
 

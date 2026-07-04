@@ -62,6 +62,8 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
     "Draft release-announcement posts for the X (Twitter) account — every draft is held in a queue for you to edit, approve, or reject; nothing posts automatically, and it stays inert until you set credentials in the X card below.",
   x_replies_enabled:
     "Also poll X mentions and draft replies (still held for your approval — nothing auto-replies). Off by default: reading mentions needs a paid X API tier, so leave this off if you only want release posts.",
+  x_feature_spotlight_enabled:
+    "Periodically spawn the Head of Marketing to investigate RoboCo's shipped features and draft a spotlight post for an under-publicized capability — held in the same X post queue below for your approval. Needs x_engine_enabled and X credentials.",
   roadmap_engine_enabled:
     "Weekly: the Product Owner explores the company's projects and proposes a themed cycle of 3-7 roadmap items — you approve or reject each one individually; approved items land in the backlog and nothing auto-starts.",
   fable_mode_enabled:

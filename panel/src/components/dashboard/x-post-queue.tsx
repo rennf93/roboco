@@ -23,16 +23,17 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import { AtSign, CheckCircle2, Rocket, XCircle } from "lucide-react";
+import { AtSign, CheckCircle2, Rocket, Sparkles, XCircle } from "lucide-react";
 import { toast } from "sonner";
 
 const MAX_TWEET_CHARS = 280;
 const _MIN_REASON_CHARS = 4;
 
 function sourceMeta(source: XPost["source"]) {
-  return source === "x_post"
-    ? { label: "Release post", icon: Rocket }
-    : { label: "Mention reply", icon: AtSign };
+  if (source === "x_post") return { label: "Release post", icon: Rocket };
+  if (source === "x_feature")
+    return { label: "Feature spotlight", icon: Sparkles };
+  return { label: "Mention reply", icon: AtSign };
 }
 
 function describeExecuteResult(result: XPostExecuteResult): string {
@@ -76,6 +77,11 @@ function XPostRow({
         {post.mention && (
           <Badge variant="secondary" className="max-w-56 truncate">
             re: {post.mention.text}
+          </Badge>
+        )}
+        {post.feature && (
+          <Badge variant="outline" className="max-w-56 truncate">
+            feature: {post.feature.title}
           </Badge>
         )}
       </div>
@@ -195,8 +201,9 @@ export function XPostQueue({ className }: { className?: string }) {
             X Post Queue
           </CardTitle>
           <CardDescription>
-            Drafted release announcements (and mention replies, if enabled) land
-            here for you to edit, approve, or reject. Nothing posts on its own.
+            Drafted release announcements, feature spotlights, and mention
+            replies (if enabled) land here for you to edit, approve, or
+            reject. Nothing posts on its own.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -220,8 +227,9 @@ export function XPostQueue({ className }: { className?: string }) {
             <Badge variant="secondary">{posts.length}</Badge>
           </CardTitle>
           <CardDescription>
-            Drafted release announcements and mention replies — edit, approve
-            (posts to X), or reject. Nothing posts on its own.
+            Drafted release announcements, feature spotlights, and mention
+            replies — edit, approve (posts to X), or reject. Nothing posts on
+            its own.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">

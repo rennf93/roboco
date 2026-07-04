@@ -15,17 +15,26 @@ class XMentionRefModel(BaseModel):
     text: str
 
 
+class XFeatureRefModel(BaseModel):
+    """The shipped feature a held spotlight draft covers."""
+
+    slug: str
+    title: str
+
+
 class XPostResponse(BaseModel):
-    """One held draft (release post or mention reply) awaiting the CEO."""
+    """One held draft (release post, mention reply, or feature spotlight)
+    awaiting the CEO."""
 
     task_id: str
-    source: str  # "x_post" | "x_reply"
+    source: str  # "x_post" | "x_reply" | "x_feature"
     title: str
     status: str
     body: str
     char_count: int
     release_version: str | None = None
     mention: XMentionRefModel | None = None
+    feature: XFeatureRefModel | None = None
     reject_reason: str | None = None
 
 

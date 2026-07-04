@@ -40,6 +40,19 @@ async def test_ceo_can_update_and_persist(db_session: Any) -> None:
 
 
 @pytest.mark.asyncio
+async def test_ceo_can_update_and_persist_brand_voice(db_session: Any) -> None:
+    ceo = _agent(AgentRole.CEO)
+    resp = await update_company_goals(
+        CompanyGoalsUpdate(brand_voice="Confident, dry wit."), db_session, ceo
+    )
+    assert resp.brand_voice == "Confident, dry wit."
+    # Persisted and readable by a non-CEO agent (round-trips through the
+    # Pydantic response schema, not just the service-layer dict).
+    again = await get_company_goals(db_session, _agent(AgentRole.QA))
+    assert again.brand_voice == "Confident, dry wit."
+
+
+@pytest.mark.asyncio
 async def test_non_ceo_cannot_update() -> None:
     # The CEO check fires before any DB access, so a dummy session suffices.
     with pytest.raises(HTTPException) as exc:

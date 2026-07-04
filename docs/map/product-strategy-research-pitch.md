@@ -20,6 +20,12 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `roboco/services/roadmap_engine.py` | Dormant weekly engine: originates ONE held roadmap-exploration task for the Product Owner (default off) | 111 |
 | `roboco/services/roadmap_service.py` | CEO's per-item approve/reject glue over a held roadmap cycle; approve materializes a BACKLOG task | 211 |
 | `roboco/api/routes/roadmap.py` | CEO-only routes: list open cycles, approve/reject one item | 124 |
+| `roboco/services/x_engine.py` | Dormant "engine 4": drafts X (Twitter) release posts (event hook), mention replies (poll), and — new — feature-spotlight explorations (dormant interval, spawns Head of Marketing), ALL held for CEO approval (default off) | 463 |
+| `roboco/services/x_post_service.py` | CEO's approve/reject over a held X draft; approve posts via a Redis single-flight lock, idempotent | 223 |
+| `roboco/services/x_client.py` | OAuth 1.0a HMAC-SHA1 X API client (`LiveXClient`) + `NullXClient` (no creds, never egresses) + `build_x_client` factory | 318 |
+| `roboco/services/x_credentials.py` | Singleton Fernet-encrypted OAuth 1.0a credential CRUD; decrypts server-side only | 140 |
+| `roboco/api/routes/x.py` | CEO-only routes: list open X posts, approve/reject one draft | 164 |
+| `roboco/api/schemas/x.py` | `XPostResponse` + `XMentionRefModel` / `XFeatureRefModel` response shapes | 73 |
 
 ## Key Symbols
 
@@ -86,6 +92,18 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `RoadmapService._maybe_complete_cycle` | staticmethod | roadmap_service.py:202 | Completes the exploration task once every item on it is terminal (approved/rejected) |
 | `RoadmapItemResult` | dataclass | roadmap_service.py:37 | Outcome of one approve/reject call (status/item_id/materialized_task_id/detail) |
 | `get_roadmap_engine` / `get_roadmap_service` | factory | roadmap_engine.py:109 / roadmap_service.py:209 | Session-bound constructors |
+| `XEngine` | class | x_engine.py:150 | Dormant "engine 4": mirrors the release-manager "detect → originate a CEO-gated artifact → hold" shape across THREE responsibilities — release posts, mention replies, feature spotlights |
+| `XEngine._voice_guide` | method | x_engine.py:173 | Baseline house-voice constant (`_HOM_VOICE`) plus the CEO's `company_goals.brand_voice` sample when set — feeds release/reply prompts AND is the mechanism the HoM identity file points to for its own drafting |
+| `XEngine.draft_release_post` | method | x_engine.py:192 | Event-driven hook (called from `ReleaseProposalService.approve`'s publish-success branch); local-model-drafted, deduped per version, capped by `x_max_open_posts` |
+| `XEngine.run_cycle` | method | x_engine.py:255 | Periodic mentions poll; no-op unless `x_engine_enabled` AND `x_replies_enabled`; filters bot-like/low-engagement mentions, dedupes by mention id (`XSeenMentionTable`) |
+| `XEngine.open_feature_spotlight_exploration` | method | x_engine.py:337 | No-ops unless `x_engine_enabled` AND `x_feature_spotlight_enabled`, no creds, a cycle already open, the open-post cap reached, or project unresolvable; else opens ONE held PENDING exploration task for the Head of Marketing (`source=x_feature_exploration`) carrying a `x_seen_features` marker snapshot |
+| `XEngine.materialize_feature_spotlight` | method | x_engine.py:433 | Called from the `propose_feature_spotlight` do-tool: marks the feature slug seen (`XSeenFeatureTable`), creates the held draft (`source=x_feature`, identical shape to a release/reply draft), completes the exploration task |
+| `XPostService.approve` | method | x_post_service.py:77 | The ONLY caller of `x_client.post_tweet`; Redis single-flight lock, re-reads task under lock, idempotent on an already-posted draft |
+| `XPostService.reject` | method | x_post_service.py:180 | Records the CEO's reason; cancels the held draft |
+| `XClient` / `NullXClient` / `LiveXClient` | ABC/class | x_client.py:150 / 166 / 186 | `NullXClient.configured` is False (no creds) — drafting still runs (content nobody can post is a no-op upstream), just never originates; `LiveXClient` signs OAuth 1.0a HMAC-SHA1 |
+| `build_x_client` | factory | x_client.py:306 | Returns `LiveXClient` when credentials decrypt, else `NullXClient` |
+| `XCredentialsService.set_credentials` / `.get_decrypted` | method | x_credentials.py:61 / 116 | All-or-nothing Fernet-encrypted singleton credential set/clear; decrypts server-side only, never exposed to agents |
+| `get_x_engine` | factory | x_engine.py:461 | Session-bound constructor (optional injected `XClient` for tests) |
 
 ## Data Flow
 
@@ -100,6 +118,8 @@ Two distinct flows originate work into the delivery lifecycle:
 **Routing flow (runtime keystone).** `ProductService.project_for(product_id, team)` is called from the gateway delegate path to resolve which Project a cell works on within a product; None falls back to the parent task's project.
 
 **Roadmap flow (dormant weekly originator, default off).** `Orchestrator._roadmap_engine_loop` returns immediately unless `roadmap_engine_enabled`; otherwise each `roadmap_interval_seconds` (default weekly) it opens a DB context and calls `RoadmapEngine.run_cycle`, which no-ops if a roadmap-source task is already open or the RoboCo project isn't resolvable, else opens ONE held PENDING exploration task (`source=board_roadmap`, `confirmed_by_human=False`) assigned to the Product Owner. The normal board one-shot dispatch (`_dispatch_roadmap_exploration`) spawns the PO, who explores the charter/releases/metrics/projects and calls the `propose_roadmap` do-tool exactly once with a themed goal + 3-7 item drafts (persisted as an `orchestration_markers` payload). The CEO reviews the cycle in the panel's Roadmap Review Queue and approves/rejects each item individually via `/api/roadmap/cycles/{id}/items/{id}/{approve,reject}` → `RoadmapService`; an approved item materializes as a BACKLOG task (`source=roadmap`) through `PrompterService.create_task_from_draft` — nothing auto-starts, normal PM activation takes it from BACKLOG. Once every item is terminal, the exploration task itself completes.
+
+**X (Twitter) flow (three originators, one held queue, default off).** Unlike every other engine on this page, `XEngine` never spawns an agent for release posts or mention replies — `draft_release_post` (event hook off `ReleaseProposalService.approve`'s publish-success branch) and `run_cycle` (periodic mentions poll, `Orchestrator._x_mentions_poll_loop`) both draft via a raw local-model chat completion, never a cloud LLM. The feature-spotlight half is the exception: `Orchestrator._x_feature_spotlight_loop` (dormant unless BOTH `x_engine_enabled` AND `x_feature_spotlight_enabled`) opens a DB context each `x_feature_spotlight_interval_seconds` and calls `XEngine.open_feature_spotlight_exploration`, which no-ops on the usual guards (creds, one-open-cycle dedup, the shared `x_max_open_posts` cap, project resolvability) or else opens ONE held PENDING exploration task (`source=x_feature_exploration`) assigned to the Head of Marketing, carrying a snapshot of already-covered feature slugs (`x_seen_features` marker). The board dispatcher's `_dispatch_pm_work` special-cases this source (mirroring `ROADMAP_SOURCE`) to call `_dispatch_feature_spotlight_exploration`, a one-shot spawn of the real Head-of-Marketing agent (full read tools) who investigates CHANGELOG.md/feature-flags/docs/map/charter/KB and calls the `propose_feature_spotlight` do-tool exactly once; that verb materializes a brand-new held draft task (`source=x_feature`) and completes the exploration task as a side effect — a deliberate asymmetry from `propose_roadmap`, which instead writes a marker onto the SAME task and leaves it open. Every draft from all three paths — release, reply, spotlight — lands in the identical held-task shape (`TaskTable`, `confirmed_by_human=False`, `assigned_to=secretary-1`, body in `orchestration_markers.x_draft_body`) rendered by the panel's X Post Queue and acted on only by `XPostService.approve`/`.reject`; nothing here ever calls `x_client.post_tweet` itself. `XEngine._voice_guide` (a live `CompanyGoalsService.get()` read, never hardcoded) feeds a baseline house-voice constant plus the CEO's optional `brand_voice` charter sample into every one of the two local-model prompts, and the Head of Marketing's own identity prompt points it at the same charter field for its cloud-LLM-authored spotlight body.
 
 **Read-only views.** `KanbanService` builds role-specific boards from `TaskTable` queries on demand for the kanban API; `CompanyGoalsService.get` is read by the briefing injector into every agent's `context_briefing`.
 
@@ -143,6 +163,21 @@ flowchart TD
         CEO -->|approve/reject per item /api/roadmap| RSvc[RoadmapService]
         RSvc -->|approve| Backlog[BACKLOG task via PrompterService]
         RSvc -->|all items terminal| Complete[exploration task completes]
+    end
+
+    subgraph XEngineFlow[dormant — x_engine_enabled]
+        RelHook[ReleaseProposalService.approve publish] --> XDraftRelease[XEngine.draft_release_post]
+        XMentLoop[Orchestrator._x_mentions_poll_loop] -->|interval| XRunCycle[XEngine.run_cycle]
+        XDraftRelease --> XChat[local-model chat, _voice_guide]
+        XRunCycle --> XChat
+        XSpotLoop["Orchestrator._x_feature_spotlight_loop (x_feature_spotlight_enabled)"] -->|interval, default 3d| XOpen[XEngine.open_feature_spotlight_exploration]
+        XOpen -->|held PENDING task| HoM[Head of Marketing spawn]
+        HoM -->|propose_feature_spotlight do-tool| XMat[XEngine.materialize_feature_spotlight]
+        XMat --> XQueue[(held X post/reply/feature draft)]
+        XDraftRelease --> XQueue
+        XRunCycle --> XQueue
+        CEO -->|approve/reject /api/x/posts| XSvc[XPostService]
+        XSvc -->|approve, single-flight lock| Tweet[(x_client.post_tweet)]
     end
 ```
 
@@ -195,11 +230,26 @@ product-strategy-research-pitch
 │   └── create_repo (POST /orgs/{org}/repos, auto_init)
 ├── roadmap_engine.py — RoadmapEngine (dormant, roadmap_engine_enabled)
 │   └── run_cycle (one held exploration task for the Product Owner; one-open-cycle dedup)
-└── roadmap_service.py — RoadmapService
-    ├── list_open_cycles
-    ├── approve_item (materialize BACKLOG task, idempotent)
-    ├── reject_item (record reason, idempotent)
-    └── _maybe_complete_cycle (completes exploration task once all items terminal)
+├── roadmap_service.py — RoadmapService
+│   ├── list_open_cycles
+│   ├── approve_item (materialize BACKLOG task, idempotent)
+│   ├── reject_item (record reason, idempotent)
+│   └── _maybe_complete_cycle (completes exploration task once all items terminal)
+├── x_engine.py — XEngine (dormant, x_engine_enabled)
+│   ├── _voice_guide (baseline + CEO brand_voice charter sample, live DB read)
+│   ├── draft_release_post (event hook; local-model; dedup per version)
+│   ├── run_cycle (mentions poll; x_replies_enabled sub-switch; bot/engagement filter)
+│   ├── open_feature_spotlight_exploration (x_feature_spotlight_enabled sub-switch; one-open-cycle dedup; seen-features marker)
+│   ├── materialize_feature_spotlight (called from propose_feature_spotlight; marks seen, holds draft, completes exploration)
+│   └── _originate_post (shared held-task origination, all three sources)
+├── x_post_service.py — XPostService
+│   ├── approve (single-flight lock, idempotent, only caller of x_client.post_tweet)
+│   └── reject (record reason, cancel draft)
+├── x_client.py — XClient ABC / NullXClient / LiveXClient
+│   └── build_x_client (creds present → LiveXClient, else NullXClient)
+└── x_credentials.py — XCredentialsService (singleton, Fernet-encrypted)
+    ├── set_credentials (all-or-nothing)
+    └── get_decrypted (server-side only)
 ```
 
 ## Dependencies
@@ -244,7 +294,8 @@ product-strategy-research-pitch
   - `prompter_live.py` — `get_project_service` for project lookup during intake.
   - `dashboard.py` — `get_product_service` / `get_project_service` for dashboard views.
   - `roadmap.py` — `GET /api/roadmap/cycles`, `POST /cycles/{id}/items/{id}/{approve,reject}` (CEO-only) → `get_roadmap_service`.
-- **Orchestrator loop tick:** `_strategy_engine_loop` (orchestrator.py:6360) — created at `start()` (line 1010), cancelled in shutdown (line 1075); ticks every `strategy_engine_interval_seconds`, calls `StrategyEngine.run_cycle`. `_roadmap_engine_loop` (orchestrator.py:7462) — same lifecycle shape, ticks every `roadmap_interval_seconds` (default weekly), calls `RoadmapEngine.run_cycle`; `_dispatch_roadmap_exploration` (orchestrator.py:10284) spawns the Product Owner once per open exploration task.
+  - `x.py` — `GET /api/x/posts`, `POST /posts/{id}/{approve,reject}` (CEO-only) → `get_x_post_service`.
+- **Orchestrator loop tick:** `_strategy_engine_loop` (orchestrator.py:6360) — created at `start()` (line 1010), cancelled in shutdown (line 1075); ticks every `strategy_engine_interval_seconds`, calls `StrategyEngine.run_cycle`. `_roadmap_engine_loop` (orchestrator.py:7462) — same lifecycle shape, ticks every `roadmap_interval_seconds` (default weekly), calls `RoadmapEngine.run_cycle`; `_dispatch_roadmap_exploration` (orchestrator.py:10284) spawns the Product Owner once per open exploration task. `_x_mentions_poll_loop` (orchestrator.py:7509) ticks every `x_mentions_interval_seconds`, calls `XEngine.run_cycle`. `_x_feature_spotlight_loop` (orchestrator.py:7571) — same lifecycle shape, dormant unless BOTH `x_engine_enabled` AND `x_feature_spotlight_enabled`, ticks every `x_feature_spotlight_interval_seconds` (default 3 days), calls `XEngine.open_feature_spotlight_exploration`; `_dispatch_feature_spotlight_exploration` (orchestrator.py:10424) spawns the Head of Marketing once per open exploration task — `_dispatch_pm_work` routes `source=x_feature_exploration` to it BEFORE the generic `_BOARD_AGENTS` check (mirroring the roadmap source's own early branch), so it never falls into the two-reviewer board-review gate.
 - **MCP mount (orchestrator spawn):** `roboco-search` MCP mounted into Board/PM agent containers only when `research_enabled` (orchestrator.py:2914); the MCP server calls the `/api/research/*` routes.
 - **Service-to-service:** `ProjectService` called by `WorkspaceService`, `GitService`, `PitchService`, `task`, `docs`, `cockpit`, `secretary`, gateway choreographer; `ProductService.project_for` called from gateway delegate path; `CompanyGoalsService.get` called by briefing injector.
 - **No CLI / lifespan entry points** for this slice.

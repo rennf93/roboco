@@ -38,3 +38,11 @@ def test_x_engine_flag_registered_in_feature_flags() -> None:
 
 def test_x_engine_flag_validates_as_bool() -> None:
     validate_setting("x_engine_enabled", "true")
+
+
+def test_x_feature_spotlight_disabled_by_default() -> None:
+    assert Settings().x_feature_spotlight_enabled is False
+
+
+def test_x_feature_spotlight_flag_registered_in_feature_flags() -> None:
+    assert "x_feature_spotlight_enabled" in [key for key, _ in FEATURE_FLAGS]

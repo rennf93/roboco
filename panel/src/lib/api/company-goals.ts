@@ -5,6 +5,7 @@ export interface CompanyGoals {
   objectives: Record<string, unknown>[];
   constraints: string[];
   operating_policy: Record<string, unknown>;
+  brand_voice: string;
   updated_at?: string | null;
   updated_by?: string | null;
 }
@@ -12,7 +13,11 @@ export interface CompanyGoals {
 export type CompanyGoalsUpdate = Partial<
   Pick<
     CompanyGoals,
-    "north_star" | "objectives" | "constraints" | "operating_policy"
+    | "north_star"
+    | "objectives"
+    | "constraints"
+    | "operating_policy"
+    | "brand_voice"
   >
 >;
 

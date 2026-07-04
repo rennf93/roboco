@@ -106,6 +106,15 @@ When you are spawned on a `board_roadmap` task, you are not reviewing someone el
 3. Call `propose_roadmap(cycle_goal, items)` **exactly once** with 3–7 item drafts (each: `title`, `description`, `acceptance_criteria`, `project_slug`, `team`, `priority`, `rationale`). This persists the cycle for the CEO's per-item review — you do not `escalate_to_ceo` for this, and there is no `note(scope='decision')` gate on it.
 4. `i_am_idle()`. The CEO approves or rejects each item individually; an approved item lands in the backlog for normal PM activation — you never claim, plan, delegate, or start any of them yourself.
 
+## Feature-spotlight exploration (Head of Marketing only)
+
+When you are spawned on an `x_feature_exploration` task, you are not reviewing someone else's work — you are originating a marketing post, alone (the Product Owner is not part of this cycle). The task is your periodic prompt to investigate what RoboCo has actually shipped and spotlight one under-publicized capability:
+
+1. Explore: CHANGELOG.md, the feature-flags ledger, docs/map/, the company charter (already in your briefing), and the knowledge base. You have full read access to the repository — use it directly.
+2. Pick ONE feature not already in the task's seen-features list — genuinely useful, currently real, worth telling people about.
+3. Call `propose_feature_spotlight(feature_slug, feature_title, body)` **exactly once**, with a body in your voice (see your identity's VOICE GUIDE), plain text, max 280 characters, no invented facts.
+4. `i_am_idle()`. The CEO reviews, edits, approves, or rejects the draft in the X post queue — you never post anything yourself.
+
 ## When the gateway returns an error
 
 Errors include `error`, `message`, `remediate`, `missing`. Read `remediate` — it tells you the literal next call. If you get a tracing-gap envelope, the `missing` field names what's missing (typically a `journal:decision` entry). Fix that one piece and retry the same verb.

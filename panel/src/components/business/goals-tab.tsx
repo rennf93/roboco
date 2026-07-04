@@ -224,6 +224,7 @@ function GoalsForm({ goals, refetch }: GoalsFormProps) {
   const queryClient = useQueryClient();
 
   const [northStar, setNorthStar] = useState<string | null>(null);
+  const [brandVoice, setBrandVoice] = useState<string | null>(null);
   const [constraints, setConstraints] = useState<string | null>(null);
   const [objectives, setObjectives] = useState<
     Record<string, unknown>[] | null
@@ -231,6 +232,7 @@ function GoalsForm({ goals, refetch }: GoalsFormProps) {
   const [policy, setPolicy] = useState<Record<string, unknown> | null>(null);
 
   const northStarVal = northStar ?? goals.north_star ?? "";
+  const brandVoiceVal = brandVoice ?? goals.brand_voice ?? "";
   const constraintsVal = constraints ?? (goals.constraints ?? []).join("\n");
   const objectivesVal = objectives ?? goals.objectives ?? [];
   const policyVal = policy ?? goals.operating_policy ?? {};
@@ -240,6 +242,7 @@ function GoalsForm({ goals, refetch }: GoalsFormProps) {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["company-goals"] });
       setNorthStar(null);
+      setBrandVoice(null);
       setConstraints(null);
       setObjectives(null);
       setPolicy(null);
@@ -253,6 +256,7 @@ function GoalsForm({ goals, refetch }: GoalsFormProps) {
   const handleSave = () => {
     saveMutation.mutate({
       north_star: northStarVal,
+      brand_voice: brandVoiceVal,
       objectives: objectivesVal,
       constraints: constraintsVal
         .split("\n")
@@ -269,9 +273,9 @@ function GoalsForm({ goals, refetch }: GoalsFormProps) {
       <CardHeader>
         <CardTitle>Company Charter</CardTitle>
         <CardDescription>
-          CEO-owned north star, objectives, constraints, and operating policy.
-          Injected into every agent&apos;s briefing so all work stays
-          goal-aware.
+          CEO-owned north star, brand voice, objectives, constraints, and
+          operating policy. Injected into every agent&apos;s briefing so all
+          work stays goal-aware.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
@@ -285,6 +289,19 @@ function GoalsForm({ goals, refetch }: GoalsFormProps) {
             disabled={saving}
             onChange={(e) => setNorthStar(e.target.value)}
             placeholder="The long-term vision in one or two sentences…"
+          />
+        </div>
+
+        {/* Brand voice */}
+        <div className="space-y-2">
+          <Label htmlFor="brand-voice">Brand voice</Label>
+          <Textarea
+            id="brand-voice"
+            rows={3}
+            value={brandVoiceVal}
+            disabled={saving}
+            onChange={(e) => setBrandVoice(e.target.value)}
+            placeholder="Sample posts or a style description in your real voice — feeds every X (Twitter) draft and the Head of Marketing's spotlight posts…"
           />
         </div>
 

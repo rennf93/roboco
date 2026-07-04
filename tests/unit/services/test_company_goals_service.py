@@ -28,6 +28,7 @@ async def test_get_returns_empty_defaults_when_unset(db_session: Any) -> None:
     assert goals["objectives"] == []
     assert goals["constraints"] == []
     assert goals["operating_policy"] == {}
+    assert goals["brand_voice"] == ""
 
 
 @pytest.mark.asyncio
@@ -68,3 +69,23 @@ async def test_upsert_is_singleton_and_partial(db_session: Any) -> None:
     # Exactly one row exists (singleton), found at the canonical id.
     row = await db_session.get(CompanyGoalsTable, SINGLETON_ID)
     assert row is not None
+
+
+@pytest.mark.asyncio
+async def test_brand_voice_roundtrips(db_session: Any) -> None:
+    svc = get_company_goals_service(db_session)
+    await svc.upsert({"brand_voice": "Confident, dry wit, no exclamation points."})
+    goals = await svc.get()
+    assert goals["brand_voice"] == "Confident, dry wit, no exclamation points."
+
+
+@pytest.mark.asyncio
+async def test_brand_voice_untouched_by_partial_upsert(db_session: Any) -> None:
+    svc = get_company_goals_service(db_session)
+    await svc.upsert({"brand_voice": "Speak as 'we'."})
+    # A later partial upsert that omits brand_voice must leave it unchanged —
+    # the same partial-update contract north_star/constraints already have.
+    await svc.upsert({"north_star": "Ship a delightful product"})
+    goals = await svc.get()
+    assert goals["brand_voice"] == "Speak as 'we'."
+    assert goals["north_star"] == "Ship a delightful product"

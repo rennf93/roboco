@@ -128,6 +128,15 @@ class ProposeRoadmapRequest(BaseModel):
     items: list[RoadmapItemInput] = Field(..., min_length=1)
 
 
+class ProposeFeatureSpotlightRequest(BaseModel):
+    """Head of Marketing's feature-spotlight draft: a picked feature + a
+    ready-to-post body."""
+
+    feature_slug: str = Field(..., min_length=1, max_length=128)
+    feature_title: str = Field(..., min_length=1)
+    body: str = Field(..., min_length=1)
+
+
 class DmRequest(BaseModel):
     recipient: str  # agent slug
     text: str = Field(..., min_length=1)

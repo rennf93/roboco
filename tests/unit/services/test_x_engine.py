@@ -13,13 +13,20 @@ from unittest.mock import AsyncMock
 
 import pytest
 from roboco.config import settings as cfg
-from roboco.db.tables import AgentTable, ProjectTable
+from roboco.db.tables import AgentTable, ProjectTable, XSeenFeatureTable
 from roboco.foundation import identity as _foundation
 from roboco.foundation.policy.content import markers
 from roboco.models.base import AgentRole, AgentStatus, Team
 from roboco.models.base import TaskStatus as TS
 from roboco.services import x_engine as x_engine_module
-from roboco.services.task import X_POST_SOURCE, X_REPLY_SOURCE, get_task_service
+from roboco.services.company_goals import get_company_goals_service
+from roboco.services.task import (
+    X_FEATURE_EXPLORATION_SOURCE,
+    X_FEATURE_SOURCE,
+    X_POST_SOURCE,
+    X_REPLY_SOURCE,
+    get_task_service,
+)
 from roboco.services.x_client import MAX_TWEET_CHARS, XClient, XMention, XPostResult
 from sqlalchemy import select
 
@@ -28,6 +35,7 @@ if TYPE_CHECKING:
 
 SYSTEM_UUID = _foundation.AGENTS["system"].uuid
 SECRETARY_UUID = _foundation.AGENTS["secretary-1"].uuid
+HOM_UUID = _foundation.AGENTS["head-marketing"].uuid
 SLUG = "roboco"
 ONE = 1
 TWO = 2
@@ -73,9 +81,10 @@ class _NullClient(XClient):
 
 
 async def _seed(session: AsyncSession) -> None:
-    for uuid, slug, role in (
-        (SYSTEM_UUID, "system", AgentRole.SYSTEM),
-        (SECRETARY_UUID, "secretary-1", AgentRole.SECRETARY),
+    for uuid, slug, role, team in (
+        (SYSTEM_UUID, "system", AgentRole.SYSTEM, None),
+        (SECRETARY_UUID, "secretary-1", AgentRole.SECRETARY, None),
+        (HOM_UUID, "head-marketing", AgentRole.HEAD_MARKETING, Team.BOARD),
     ):
         if await session.get(AgentTable, uuid) is None:
             session.add(
@@ -84,7 +93,7 @@ async def _seed(session: AsyncSession) -> None:
                     name=slug,
                     slug=slug,
                     role=role,
-                    team=None,
+                    team=team,
                     status=AgentStatus.ACTIVE,
                     model_config={},
                     system_prompt="x",
@@ -438,3 +447,219 @@ async def test_engine_never_calls_post_tweet(
     await engine.run_cycle()
     await engine.draft_release_post(version=_VERSION, highlights=[])
     assert client.posted == []
+
+
+# --------------------------------------------------------------------------- #
+# Feature-spotlight exploration (Head of Marketing)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_feature_spotlight_disabled_creates_no_exploration(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    monkeypatch.setattr(cfg, "x_engine_enabled", False)
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    task = await engine.open_feature_spotlight_exploration()
+    assert task is None
+    assert await get_task_service(db_session).list_open_feature_explorations() == []
+
+
+@pytest.mark.asyncio
+async def test_feature_spotlight_subswitch_off_creates_no_exploration(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """x_engine_enabled on but x_feature_spotlight_enabled off: no exploration —
+    the engine still drafts release posts/mention replies via the other paths."""
+    await _seed(db_session)
+    _enable(monkeypatch, x_feature_spotlight_enabled=False)
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    task = await engine.open_feature_spotlight_exploration()
+    assert task is None
+    assert await get_task_service(db_session).list_open_feature_explorations() == []
+
+
+@pytest.mark.asyncio
+async def test_feature_spotlight_no_credentials_creates_no_exploration(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch, x_feature_spotlight_enabled=True)
+    engine = x_engine_module.XEngine(db_session, client=_NullClient())
+    task = await engine.open_feature_spotlight_exploration()
+    assert task is None
+    assert await get_task_service(db_session).list_open_feature_explorations() == []
+
+
+@pytest.mark.asyncio
+async def test_feature_spotlight_dedupe_one_open_cycle(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch, x_feature_spotlight_enabled=True)
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    first = await engine.open_feature_spotlight_exploration()
+    second = await engine.open_feature_spotlight_exploration()
+    assert first is not None
+    assert second is None
+    open_cycles = await get_task_service(db_session).list_open_feature_explorations()
+    assert len(open_cycles) == ONE
+    cycle = open_cycles[0]
+    assert cycle.status == TS.PENDING
+    assert cycle.confirmed_by_human is False  # HELD; board-dispatched only
+    assert cycle.assigned_to == HOM_UUID
+    assert cycle.team == Team.BOARD
+    assert cycle.source == X_FEATURE_EXPLORATION_SOURCE
+    assert "spotlight" in cycle.title.lower()
+
+
+@pytest.mark.asyncio
+async def test_feature_spotlight_respects_open_post_cap(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch, x_feature_spotlight_enabled=True, x_max_open_posts=1)
+    _mock_local_model(monkeypatch, "shipped!")
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    # Fill the shared open-post cap with an unrelated release draft first.
+    await engine.draft_release_post(version="1.0.0", highlights=[])
+    task = await engine.open_feature_spotlight_exploration()
+    assert task is None
+    assert await get_task_service(db_session).list_open_feature_explorations() == []
+
+
+@pytest.mark.asyncio
+async def test_feature_spotlight_unresolvable_project_no_cycle(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch, x_feature_spotlight_enabled=True)
+    monkeypatch.setattr(cfg, "self_heal_project_slug", "no-such-project")
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    task = await engine.open_feature_spotlight_exploration()
+    assert task is None
+    assert await get_task_service(db_session).list_open_feature_explorations() == []
+
+
+@pytest.mark.asyncio
+async def test_feature_spotlight_exploration_carries_seen_features_marker(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    db_session.add(XSeenFeatureTable(feature_slug="old-feature-1"))
+    db_session.add(XSeenFeatureTable(feature_slug="old-feature-2"))
+    await db_session.flush()
+    _enable(monkeypatch, x_feature_spotlight_enabled=True)
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    task = await engine.open_feature_spotlight_exploration()
+    assert task is not None
+    assert set(markers.get_x_seen_features(task)) == {
+        "old-feature-1",
+        "old-feature-2",
+    }
+
+
+@pytest.mark.asyncio
+async def test_materialize_feature_spotlight_holds_draft_and_completes_exploration(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch, x_feature_spotlight_enabled=True)
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    exploration = await engine.open_feature_spotlight_exploration()
+    assert exploration is not None
+
+    draft = await engine.materialize_feature_spotlight(
+        exploration_task=exploration,
+        feature_slug="org-memory",
+        feature_title="Organizational Memory Loop",
+        body="Did you know RoboCo agents learn from every completed task?",
+    )
+
+    assert draft.source == X_FEATURE_SOURCE
+    assert draft.assigned_to == SECRETARY_UUID
+    assert draft.confirmed_by_human is False
+    assert draft.status == TS.PENDING
+    ref = markers.get_x_feature_ref(draft)
+    assert ref is not None
+    assert ref["slug"] == "org-memory"
+    assert ref["title"] == "Organizational Memory Loop"
+    body = markers.get_x_draft_body(draft)
+    assert body is not None
+    assert "RoboCo" in body
+
+    # The exploration task itself is completed as a side effect...
+    assert exploration.status == TS.COMPLETED
+    # ...and therefore excluded from the open-cycle list on the next query.
+    still_open = await get_task_service(db_session).list_open_feature_explorations()
+    assert still_open == []
+
+
+@pytest.mark.asyncio
+async def test_materialize_feature_spotlight_marks_feature_seen(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch, x_feature_spotlight_enabled=True)
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    exploration = await engine.open_feature_spotlight_exploration()
+    assert exploration is not None
+
+    assert await engine.is_feature_seen("sandboxed-dev-db") is False
+    await engine.materialize_feature_spotlight(
+        exploration_task=exploration,
+        feature_slug="sandboxed-dev-db",
+        feature_title="Sandboxed Dev DB/Redis",
+        body="Every agent now gets a throwaway Postgres + Redis sandbox.",
+    )
+    assert await engine.is_feature_seen("sandboxed-dev-db") is True
+
+
+@pytest.mark.asyncio
+async def test_materialize_feature_spotlight_enforces_280_chars(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch, x_feature_spotlight_enabled=True)
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    exploration = await engine.open_feature_spotlight_exploration()
+    assert exploration is not None
+
+    draft = await engine.materialize_feature_spotlight(
+        exploration_task=exploration,
+        feature_slug="runaway-body",
+        feature_title="Runaway Body",
+        body="z" * 500,  # a runaway HoM-authored draft
+    )
+    body = markers.get_x_draft_body(draft)
+    assert body is not None
+    assert len(body) <= MAX_TWEET_CHARS
+
+
+# --------------------------------------------------------------------------- #
+# Voice guide (feeds release/reply prompts + the HoM identity's briefing claim)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_voice_guide_falls_back_when_brand_voice_unset(
+    db_session: AsyncSession,
+) -> None:
+    await get_company_goals_service(db_session).upsert({"brand_voice": ""})
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    voice = await engine._voice_guide()
+    assert voice == x_engine_module._HOM_VOICE
+
+
+@pytest.mark.asyncio
+async def test_voice_guide_appends_brand_voice_when_set(
+    db_session: AsyncSession,
+) -> None:
+    await get_company_goals_service(db_session).upsert(
+        {"brand_voice": "Dry wit, never an exclamation point."}
+    )
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    voice = await engine._voice_guide()
+    assert x_engine_module._HOM_VOICE in voice
+    assert "Dry wit, never an exclamation point." in voice

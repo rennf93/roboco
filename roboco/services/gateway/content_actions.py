@@ -28,6 +28,7 @@ from roboco.services.content_notes import content_type_for_role
 from roboco.services.gateway.commit_validator import validate_commit_message
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import build_evidence_for_task
+from roboco.services.x_client import MAX_TWEET_CHARS
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -306,6 +307,10 @@ _PITCH_ROLES: frozenset[str] = frozenset({"product_owner", "head_marketing"})
 # board gate when an approved item later ships as real work (see the roadmap
 # spec's non-goals).
 _ROADMAP_ROLES: frozenset[str] = frozenset({"product_owner"})
+
+# Feature spotlights are HoM-authored — the Product Owner stays out of this
+# cycle (mirrors _ROADMAP_ROLES's PO-only symmetry, reversed).
+_FEATURE_SPOTLIGHT_ROLES: frozenset[str] = frozenset({"head_marketing"})
 
 # Text fields on a roadmap item draft, with their anti-soup minimum length.
 _ROADMAP_ITEM_TEXT_FIELDS: tuple[tuple[str, int], ...] = (
@@ -1203,6 +1208,100 @@ class ContentActions:
             context_briefing={
                 "cycle_goal": cycle_goal.strip(),
                 "item_count": len(normalized),
+            },
+        )
+
+    @classmethod
+    def _reject_feature_spotlight_fields(
+        cls, feature_slug: str, feature_title: str, body: str
+    ) -> Envelope | None:
+        """Soup + 280-char validation for a spotlight draft's free-text fields,
+        collapsed into one caller-side check (keeps propose_feature_spotlight's
+        return-statement count under the xenon/PLR0911 budget)."""
+        if rej := cls._reject_soup(feature_slug, field="feature_slug", min_chars=2):
+            return rej
+        if rej := cls._reject_soup(feature_title, field="feature_title", min_chars=4):
+            return rej
+        if rej := cls._reject_soup(body, field="body", min_chars=8):
+            return rej
+        if len(body) > MAX_TWEET_CHARS:
+            return Envelope.invalid_state(
+                message=(
+                    f"body is {len(body)} chars, over the {MAX_TWEET_CHARS}-char "
+                    "tweet limit"
+                ),
+                remediate="shorten the post to 280 characters or fewer",
+                context_briefing={},
+            )
+        return None
+
+    async def propose_feature_spotlight(
+        self,
+        *,
+        agent_id: UUID,
+        feature_slug: str,
+        feature_title: str,
+        body: str,
+    ) -> Envelope:
+        """Head of Marketing authors ONE feature-spotlight draft.
+
+        Validates role, field lengths, the 280-char tweet limit, and that the
+        feature hasn't already been covered, then materializes the held X-queue
+        draft and completes the caller's exploration task. One call per cycle.
+        """
+        role = await self._caller_role(agent_id)
+        if role not in _FEATURE_SPOTLIGHT_ROLES:
+            return Envelope.not_authorized(
+                message=(
+                    f"role {role!r} cannot propose a feature spotlight; only the "
+                    "Head of Marketing does"
+                ),
+                remediate="this verb is Head-of-Marketing-only",
+                context_briefing={},
+            )
+        if rej := self._reject_feature_spotlight_fields(
+            feature_slug, feature_title, body
+        ):
+            return rej
+
+        from roboco.services.task import get_task_service
+        from roboco.services.x_engine import get_x_engine
+
+        task_svc = get_task_service(self.task.session)
+        explorations = await task_svc.list_open_feature_explorations()
+        task = next((t for t in explorations if t.assigned_to == agent_id), None)
+        if task is None:
+            return Envelope.invalid_state(
+                message="no open feature-spotlight exploration task assigned to you",
+                remediate=(
+                    "propose_feature_spotlight only runs against an active "
+                    "exploration spawned by the X engine; wait for the next cycle"
+                ),
+                context_briefing={},
+            )
+        engine = get_x_engine(self.task.session)
+        if await engine.is_feature_seen(feature_slug):
+            return Envelope.invalid_state(
+                message=f"feature {feature_slug!r} was already covered",
+                remediate=(
+                    "pick a different, not-yet-covered feature — see the "
+                    "seen-features list in your briefing"
+                ),
+                context_briefing={},
+            )
+        new_task = await engine.materialize_feature_spotlight(
+            exploration_task=task,
+            feature_slug=feature_slug,
+            feature_title=feature_title,
+            body=body,
+        )
+        return Envelope.ok(
+            status="feature_spotlight_proposed",
+            task_id=str(new_task.id),
+            next="i_am_idle() — the CEO reviews the draft in the X post queue",
+            context_briefing={
+                "feature_slug": feature_slug,
+                "feature_title": feature_title,
             },
         )
 

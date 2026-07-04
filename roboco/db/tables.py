@@ -1652,6 +1652,11 @@ class CompanyGoalsTable(Base):
     operating_policy: Mapped[dict[str, Any]] = mapped_column(
         JSON, nullable=False, default=dict
     )
+    # CEO-authored brand-voice sample/direction — a first-class, long charter
+    # field (like north_star), not folded into the catch-all operating_policy
+    # JSON blob, so it gets the same discoverability. Feeds XEngine._voice_guide
+    # and the Head of Marketing's briefing; empty until the CEO sets it.
+    brand_voice: Mapped[str] = mapped_column(Text, nullable=False, default="")
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),
@@ -2251,6 +2256,19 @@ class XSeenMentionTable(Base):
     __tablename__ = "x_seen_mentions"
 
     mention_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+
+class XSeenFeatureTable(Base):
+    """Dedup ledger for feature-spotlight drafts — one row per feature slug the
+    engine has ever turned into a held spotlight. Prevents re-covering the same
+    shipped capability on a later cycle. Never pruned by task terminal state."""
+
+    __tablename__ = "x_seen_features"
+
+    feature_slug: Mapped[str] = mapped_column(String(128), primary_key=True)
     seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )

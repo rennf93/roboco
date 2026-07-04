@@ -25,3 +25,4 @@
 | `notify_ack` | `notify_ack(notification_id: UUID)` |
 | `read_messages` | `read_messages()` |
 | `read_a2a` | `read_a2a(see do_server)` |
+| `propose_feature_spotlight` | `propose_feature_spotlight(feature_slug: str, feature_title: str, body: str)` |

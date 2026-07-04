@@ -24,15 +24,19 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 
 import httpx
+from sqlalchemy import select
 
 from roboco.config import settings
-from roboco.db.tables import XSeenMentionTable
+from roboco.db.tables import XSeenFeatureTable, XSeenMentionTable
 from roboco.foundation import identity as _foundation
 from roboco.foundation.policy.content import markers
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
 from roboco.services.base import BaseService
+from roboco.services.company_goals import get_company_goals_service
 from roboco.services.project import get_project_service
 from roboco.services.task import (
+    X_FEATURE_EXPLORATION_SOURCE,
+    X_FEATURE_SOURCE,
     X_POST_SOURCE,
     X_REPLY_SOURCE,
     TaskCreateRequest,
@@ -52,6 +56,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from roboco.db.tables import ProjectTable, TaskTable
+    from roboco.services.task import TaskService
 
 _CHAT_TIMEOUT_SECONDS = 60.0
 _MIN_MENTION_CHARS = 3
@@ -76,19 +81,19 @@ def _fallback_release_body(version: str, highlights: list[str]) -> str:
     return f"RoboCo v{version} is out: {lead}"
 
 
-def _release_prompt(version: str, highlights: list[str]) -> str:
+def _release_prompt(version: str, highlights: list[str], voice: str) -> str:
     bullets = "\n".join(f"- {h}" for h in highlights[:5]) or "- routine improvements"
     return (
-        f"{_HOM_VOICE}\n\n"
+        f"{voice}\n\n"
         f"Draft ONE tweet (max 280 characters) announcing that RoboCo "
         f"v{version} just shipped. Lead with the most user-visible change.\n\n"
         f"Highlights:\n{bullets}\n"
     )
 
 
-def _reply_prompt(mention: XMention) -> str:
+def _reply_prompt(mention: XMention, voice: str) -> str:
     return (
-        f"{_HOM_VOICE}\n\n"
+        f"{voice}\n\n"
         "Draft ONE reply tweet (max 280 characters) to this mention. Be "
         "helpful and on-brand; do not invent facts about RoboCo.\n\n"
         f'Mention: "{mention.text}"\n'
@@ -132,6 +137,16 @@ def _is_meaningful(mention: XMention, min_engagement: int) -> bool:
     return engagement >= min_engagement
 
 
+_FEATURE_EXPLORATION_TITLE = "X feature-spotlight exploration"
+_FEATURE_EXPLORATION_DESCRIPTION = (
+    "Investigate RoboCo's own shipped capabilities — CHANGELOG.md, the "
+    "feature-flags ledger, docs/map, the company charter, and the knowledge "
+    "base — and pick ONE under-publicized feature not already covered (see "
+    "the seen-features list on this task). Draft ONE marketing post via "
+    "propose_feature_spotlight()."
+)
+
+
 class XEngine(BaseService):
     """Draft release posts (event hook) + mention replies (poll), both held."""
 
@@ -154,6 +169,23 @@ class XEngine(BaseService):
     async def _roboco_project(self) -> ProjectTable | None:
         slug = (settings.self_heal_project_slug or "roboco-api").strip()
         return await get_project_service(self.session).get_by_slug(slug)
+
+    async def _voice_guide(self) -> str:
+        """Baseline house style plus the CEO's brand-voice sample, when set.
+
+        The CEO-supplied sample lives in the company charter (``company_goals.
+        brand_voice``, panel-editable) — a live DB read, never hardcoded, so an
+        edit takes effect on the next draft with no deploy. Falls back to the
+        baseline constant alone when unset, so this is additive, not required.
+        """
+        charter = await get_company_goals_service(self.session).get()
+        brand_voice = (charter.get("brand_voice") or "").strip()
+        if not brand_voice:
+            return _HOM_VOICE
+        return (
+            f"{_HOM_VOICE}\n\n"
+            f"Additional brand-voice direction from the CEO:\n{brand_voice}"
+        )
 
     # ---- release posts (event-driven hook) --------------------------------
 
@@ -206,8 +238,9 @@ class XEngine(BaseService):
         return task
 
     async def _draft_release_body(self, version: str, highlights: list[str]) -> str:
+        voice = await self._voice_guide()
         try:
-            draft = await _chat(_release_prompt(version, highlights))
+            draft = await _chat(_release_prompt(version, highlights, voice))
         except Exception as exc:
             self.log.warning(
                 "x-engine: local-model draft failed (fallback template)",
@@ -280,8 +313,9 @@ class XEngine(BaseService):
         return task
 
     async def _draft_reply_body(self, mention: XMention) -> str:
+        voice = await self._voice_guide()
         try:
-            draft = await _chat(_reply_prompt(mention))
+            draft = await _chat(_reply_prompt(mention, voice))
         except Exception as exc:
             self.log.warning(
                 "x-engine: local-model reply draft failed (fallback template)",
@@ -297,6 +331,76 @@ class XEngine(BaseService):
     async def _mark_seen(self, mention_id: str) -> None:
         self.session.add(XSeenMentionTable(mention_id=mention_id))
         await self.session.flush()
+
+    # ---- feature spotlight (periodic HoM investigation) --------------------
+
+    async def open_feature_spotlight_exploration(self) -> TaskTable | None:
+        """Originate ONE held exploration task for the Head of Marketing, or None.
+
+        No-ops when the flags are off, no X credentials are configured (drafting
+        content nobody can ever post is pointless — mirrors the release/mentions
+        guard), a cycle is already open, the shared open-post cap is reached, or
+        the RoboCo project isn't resolvable. Never authors content itself — HoM
+        does, via propose_feature_spotlight() once the dispatcher spawns it.
+        """
+        if not (settings.x_engine_enabled and settings.x_feature_spotlight_enabled):
+            return None
+        client = await self._client()
+        if not client.configured:
+            return None
+        task_svc = get_task_service(self.session)
+        if await task_svc.list_open_feature_explorations():
+            return None  # one open cycle at a time
+        if len(await task_svc.list_open_x_posts()) >= settings.x_max_open_posts:
+            return None  # respect the shared held-draft cap
+        project = await self._roboco_project()
+        if project is None or project.id is None:
+            self.log.warning(
+                "x-engine: RoboCo project not resolvable; skipping feature spotlight"
+            )
+            return None
+        return await self._originate_feature_exploration(
+            task_svc, cast("UUID", project.id)
+        )
+
+    async def _originate_feature_exploration(
+        self, task_svc: TaskService, project_id: UUID
+    ) -> TaskTable:
+        seen = await self._seen_feature_slugs()
+        task = await task_svc.create(
+            TaskCreateRequest(
+                title=_FEATURE_EXPLORATION_TITLE,
+                description=_FEATURE_EXPLORATION_DESCRIPTION,
+                acceptance_criteria=[
+                    "propose_feature_spotlight() is called once with an "
+                    "under-publicized, not-yet-covered feature"
+                ],
+                team=Team.BOARD,
+                assigned_to=_foundation.AGENTS["head-marketing"].uuid,
+                created_by=_foundation.AGENTS["system"].uuid,
+                task_type=TaskType.ADMINISTRATIVE,
+                nature=TaskNature.NON_TECHNICAL,
+                estimated_complexity=Complexity.LOW,
+                project_id=project_id,
+                status=TaskStatus.PENDING,
+                source=X_FEATURE_EXPLORATION_SOURCE,
+                confirmed_by_human=False,  # HELD; board-dispatched, not delivery
+            )
+        )
+        markers.set_x_seen_features(task, seen)
+        await self.session.flush()
+        self.log.info(
+            "feature-spotlight exploration opened (Head of Marketing)",
+            task_id=str(task.id),
+        )
+        return task
+
+    async def _seen_feature_slugs(self) -> list[str]:
+        result = await self.session.execute(select(XSeenFeatureTable.feature_slug))
+        return list(result.scalars().all())
+
+    async def is_feature_seen(self, feature_slug: str) -> bool:
+        return await self.session.get(XSeenFeatureTable, feature_slug) is not None
 
     # ---- shared origination -------------------------------------------------
 
@@ -324,6 +428,33 @@ class XEngine(BaseService):
         )
         markers.set_x_draft_body(task, body)
         await self.session.flush()
+        return task
+
+    async def materialize_feature_spotlight(
+        self,
+        *,
+        exploration_task: TaskTable,
+        feature_slug: str,
+        feature_title: str,
+        body: str,
+    ) -> TaskTable:
+        """Complete a HoM-authored spotlight: mark the feature seen, create the
+        held draft (identical shape to _originate_post), complete the exploration
+        task. Called only from the propose_feature_spotlight content verb."""
+        self.session.add(XSeenFeatureTable(feature_slug=feature_slug))
+        task = await self._originate_post(
+            title=f"X post: feature spotlight — {feature_title}",
+            body=_clamp_tweet(body),
+            source=X_FEATURE_SOURCE,
+            project_id=cast("UUID", exploration_task.project_id),
+        )
+        markers.set_x_feature_ref(task, {"slug": feature_slug, "title": feature_title})
+        exploration_task.status = TaskStatus.COMPLETED
+        await self.session.flush()
+        self.log.info(
+            "x-engine: feature spotlight drafted (held for CEO)",
+            feature_slug=feature_slug,
+        )
         return task
 
 

@@ -39,6 +39,8 @@ X_RELEASE_VERSION = "x_release_version"
 X_MENTION_REF = "x_mention_ref"
 X_REJECT_REASON = "x_reject_reason"
 X_POSTED_TWEET_ID = "x_posted_tweet_id"
+X_FEATURE_REF = "x_feature_ref"
+X_SEEN_FEATURES = "x_seen_features"
 ROADMAP_CYCLE = "roadmap_cycle"
 
 
@@ -184,6 +186,24 @@ def get_x_posted_tweet_id(task: HasMarkers) -> str | None:
 
 def set_x_posted_tweet_id(task: HasMarkers, tweet_id: str) -> None:
     set_marker(task, X_POSTED_TWEET_ID, tweet_id)
+
+
+def get_x_feature_ref(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, X_FEATURE_REF)
+    return val if isinstance(val, dict) else None
+
+
+def set_x_feature_ref(task: HasMarkers, ref: dict[str, Any]) -> None:
+    set_marker(task, X_FEATURE_REF, ref)
+
+
+def get_x_seen_features(task: HasMarkers) -> list[str]:
+    val = get_marker(task, X_SEEN_FEATURES, [])
+    return [str(s) for s in val] if isinstance(val, list) else []
+
+
+def set_x_seen_features(task: HasMarkers, slugs: list[str]) -> None:
+    set_marker(task, X_SEEN_FEATURES, [str(s) for s in slugs])
 
 
 # --- board roadmap cycle ---------------------------------------------------

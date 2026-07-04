@@ -555,12 +555,28 @@ DEP_UPDATE_SOURCE = "dep_update"
 RELEASE_MANAGER_SOURCE = "release_manager"
 
 # Source tags for the X (Twitter) engine's held posts: a drafted release
-# announcement (x_post) or a drafted mention reply (x_reply). Like
-# release_manager these are NEVER dispatched — held for the CEO
-# (confirmed_by_human=False) and acted on only by the x routes + post service.
+# announcement (x_post), a drafted mention reply (x_reply), or a drafted
+# feature spotlight (x_feature). Like release_manager these are NEVER
+# dispatched — held for the CEO (confirmed_by_human=False) and acted on only
+# by the x routes + post service.
 X_POST_SOURCE = "x_post"
 X_REPLY_SOURCE = "x_reply"
-X_SOURCES = (X_POST_SOURCE, X_REPLY_SOURCE)
+
+# Source tag for the Head of Marketing's held feature-spotlight investigation:
+# a PENDING task the X engine opens for HoM to explore shipped capabilities and
+# author one spotlight via propose_feature_spotlight(). Like ROADMAP_SOURCE (and
+# unlike X_SOURCES below) it IS dispatched — one-shot HoM spawn — but never rides
+# the delivery lifecycle; a successful call completes it and materializes the
+# actual draft under X_FEATURE_SOURCE.
+X_FEATURE_EXPLORATION_SOURCE = "x_feature_exploration"
+
+# Source tag for a materialized feature-spotlight draft — the HoM-authored,
+# fully-formed post. Added to X_SOURCES so it inherits every existing consumer
+# (XPostService, list_open_x_posts, the PM-dispatcher's held-source skip) for
+# free.
+X_FEATURE_SOURCE = "x_feature"
+
+X_SOURCES = (X_POST_SOURCE, X_REPLY_SOURCE, X_FEATURE_SOURCE)
 
 # Source tag for a board roadmap exploration cycle: a PENDING task the roadmap
 # engine opens for the Product Owner to author a themed cycle of roadmap item
@@ -1405,6 +1421,19 @@ class TaskService(BaseService):
             select(TaskTable)
             .where(
                 TaskTable.source == ROADMAP_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_feature_explorations(self) -> list[TaskTable]:
+        """Non-terminal feature-spotlight exploration tasks — the one-open-cycle
+        dedup + propose_feature_spotlight's task lookup. Ordered oldest-first."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == X_FEATURE_EXPLORATION_SOURCE,
                 TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
             )
             .order_by(TaskTable.created_at)
@@ -7681,9 +7710,10 @@ class TaskService(BaseService):
         CEO opens the gate. The hold is scoped to self-heal: ordinary delegated
         subtasks default to ``confirmed_by_human=False`` (the PM delegated them,
         which is itself the authorization to start) and MUST still be offered.
-        The same hold covers ``x_post``/``x_reply`` — CEO-gated X drafts owned
-        by the Secretary, who has no ``give_me_work`` verb, but held here too
-        for the same belt-and-suspenders reason.
+        The same hold covers every ``X_SOURCES`` member (``x_post``/``x_reply``/
+        ``x_feature``) — CEO-gated X drafts owned by the Secretary, who has no
+        ``give_me_work`` verb, but held here too for the same belt-and-suspenders
+        reason.
 
         Ordered by sequence asc, then priority asc, then created_at asc so
         earlier-sequence tasks win.
@@ -7694,9 +7724,7 @@ class TaskService(BaseService):
                 TaskTable.assigned_to == agent_id,
                 TaskTable.status == TaskStatus.PENDING,
                 or_(
-                    TaskTable.source.notin_(
-                        (SELF_HEAL_SOURCE, X_POST_SOURCE, X_REPLY_SOURCE)
-                    ),
+                    TaskTable.source.notin_((SELF_HEAL_SOURCE, *X_SOURCES)),
                     TaskTable.confirmed_by_human.is_(True),
                 ),
             )
