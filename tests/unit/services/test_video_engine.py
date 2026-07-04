@@ -323,6 +323,7 @@ async def test_originate_video_post_holds_draft_for_secretary(
     assert draft["tiktok_caption"] == "New release, check it out"
     assert draft["platforms"] == ["x", "tiktok"]
     assert draft["render_status"] == "rendered"
+    assert draft["source_task_id"] == str(source_task.id)  # traceability back-ref
 
 
 @pytest.mark.asyncio

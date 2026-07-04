@@ -1,8 +1,9 @@
 """The orchestrator video-render loop: dormant when off; the cycle wrapper
 iterates + commits (mocked wiring test, mirrors test_dep_update_loop.py); the
 per-task render (mocked renderer/workspace, real DB) renders both cuts, holds
-one video_post draft, and is idempotent (a rendered/failed task is never
-retried) — never itself committing, so it never pollutes the session-scoped
+one video_post draft, and is idempotent (a rendered task is never re-rendered;
+a failed render bounded-retries up to a cap, then is terminal) — never itself
+committing, so it never pollutes the session-scoped
 shared test database the way routing it through the committing cycle wrapper
 would.
 """

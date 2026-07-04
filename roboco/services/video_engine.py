@@ -303,6 +303,7 @@ class VideoEngine(BaseService):
                 task,
                 {
                     **source_draft,
+                    "source_task_id": str(source_task.id),
                     "mp4_paths": mp4_paths,
                     "x_caption": captions.get("x", ""),
                     "tiktok_caption": captions.get("tiktok", ""),
