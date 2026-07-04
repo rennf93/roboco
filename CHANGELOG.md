@@ -6,11 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-07-04
+
 ### Added
 
 - **A2A is now a delivered inbox, not a write-only log.** The new `read_a2a` verb returns an agent's unread message bodies (atomic, own-sends excluded) and is granted to every delivery role, and the claim briefing's `list_unread_a2a` carries an incoming-only `last_message_preview` (single correlated query, no N+1). A peer's `dm` now actually reaches the recipient's reasoning instead of sitting unread — the gap that motivated retiring the channel/session backbone in the first place.
 - **Fable-mode (default-off): opus-fable-playbook adoption.** `ROBOCO_FABLE_MODE_ENABLED` gates two additive levers that make the fleet behave more like Fable 5 on the existing model tiers. The doctrine layer composes the vendored behavioral doctrine (`agents/prompts/doctrine/fable.md`, from `github.com/rennf93/opus-fable-playbook` MIT, frontmatter stripped) into every agent's system prompt right after the universal base rules. The hook layer installs 5 vendored turn-discipline/honesty/verification scripts (`docker/scripts/fable-*.sh`) alongside RoboCo's own hooks on the Claude runtime, appended after (never replacing) the existing per-event entries; the grok runtime gets only the non-denying honesty-nudge hook in this V1 — a grok `PreToolUse`/`Stop` hook deny cancels the entire run, so denying hooks are deliberately not ported there yet. Off by default: the composed prompt, generated settings.json, and grok hooks are byte-for-byte unchanged when the flag is off. No new eval harness — watch the existing rework/spawn-waste dashboard instead.
 - **X feature-spotlight marketing (default-off).** A second, independent sub-switch on top of the X engine: `ROBOCO_X_FEATURE_SPOTLIGHT_ENABLED` (needs `ROBOCO_X_ENGINE_ENABLED` too) spawns the Head of Marketing on a periodic interval (default 3 days, `ROBOCO_X_FEATURE_SPOTLIGHT_INTERVAL_SECONDS`) to investigate RoboCo's own shipped capabilities — CHANGELOG.md, the feature-flags ledger, docs/map, the charter, the knowledge base — and draft ONE spotlight for an under-publicized feature via a new `propose_feature_spotlight` do-tool (Head-of-Marketing-only), deduped against a `x_seen_features` ledger (migration 061) so a feature is never re-covered. The draft materializes as a `source=x_feature` held task — mirrors `x_post`/`x_reply` exactly, rendered in the same panel X Post Queue with its own "Feature spotlight" label/badge, reviewed/approved/rejected by the same `XPostService` — no new surface. The CEO's real voice now has a home: a new `company_goals.brand_voice` charter field (migration 061, panel-editable in Business → Goals) feeds `XEngine._voice_guide`, applied to ALL three draft kinds (release, reply, spotlight); falls back to a generic baseline until the CEO fills it in.
+- **FE/UXUI design bar.** Frontend and UX/UI agents now carry a distilled design-taste bar in their team prompts (from `Leonxlnx/taste-skill`, MIT): the three dials (design variance / motion intensity / visual density) with dense-product-UI defaults, plus typography/hierarchy, spacing/layout, motion, and AI-tells-to-avoid rules, scoped to respect a project's existing design system rather than override it. Prompt-only — `compose_prompt` is unchanged; a composition test guards it, and the developer-role pointer heading is deliberately worded so the backend-dev negative test still holds.
 
 ### Changed
 
@@ -24,6 +27,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **Release-manager read clone no longer walks the entire history.** The release-readiness read clone was tagless, so the diff-since-last-tag walk saw no tags and classified all history as unreleased (the observed 729-commit blow-up). The clone now carries tags, so the semver bump and CHANGELOG-completeness checks assess only the real delta.
 - **Panel RAG-health errors are labelled by subsystem.** Health error lines in the panel now name which subsystem failed instead of rendering an unattributed error.
+
+### Security
+
+- **Three production agent hooks repaired — the prompt-injection guard is functional again.** A shell stdin bug (`<pipe JSON> | python3 - <<'PY'`, where both `python3 -` and the heredoc claim stdin, so the piped JSON was silently discarded) had left three hooks reading empty input and never firing: `user-prompt-hook.sh` (the prompt-injection guard) allowed injection strings instead of denying them, `post-tool-budget-hook.sh` hashed every tool call to `{tool:unknown}` (blinding per-tool loop detection), and `usage-report-hook.sh` never synced token usage. Fixed to `python3 -c "$(cat <<'PY')"` (verified before/after: the guard now denies injection strings, exit 2); the already-correct `fable-*` hooks were untouched.
 
 ## [0.17.0] - 2026-07-03
 
