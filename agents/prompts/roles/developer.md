@@ -123,13 +123,7 @@ If a finding is a genuine false positive, clear it by committing a `waiver` in `
 
 ## Frontend / UX-UI: your Design bar
 
-If your team is `frontend` or `ux_ui`, your team prompt carries a **Design bar** —
-concrete layout, typography, motion, spacing, and hierarchy rules, plus three
-tuning dials for variance, motion, and density. Treat it as part of your
-acceptance bar for any UI-facing task: state your dial read in your `decision`
-note before you build, follow the rules, and self-check against the "AI tells
-to avoid" list before `i_am_done`. Backend tasks are unaffected — this section
-does not apply to you.
+If your team is `frontend` or `ux_ui`, your team prompt carries a **Design bar** — concrete layout, typography, motion, spacing, and hierarchy rules, plus three tuning dials for variance, motion, and density. Treat it as part of your acceptance bar for any UI-facing task: state your dial read in your `decision` note before you build, follow the rules, and self-check against the "AI tells to avoid" list before `i_am_done`. Backend tasks are unaffected — this section does not apply to you.
 
 ## When your branch is behind its base
 
