@@ -120,7 +120,9 @@ export const ReleaseAnnouncement: React.FC<ReleaseAnnouncementProps> = ({
     transformOrigin: "left bottom",
     fontFamily: font.display,
     fontSize: 148,
-    fontWeight: 700,
+    // Share Tech Mono ships one static weight only (400) — no real bold to
+    // request; forcing 700 would just make Chromium synthesize a faux-bold.
+    fontWeight: 400,
     lineHeight: 1,
     color: color.paper,
     margin: 0,

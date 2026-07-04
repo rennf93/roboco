@@ -53,11 +53,15 @@ landing/marketing register, not a dense dashboard.
   accent color used with intent (a label, a rule, a marker — not washed
   across the frame). Reuse `theme.ts`'s tokens; don't hardcode new hex values
   per composition.
-- **Type** — a distinctive display face for the one big headline moment,
-  paired with a clean workhorse body face for everything else (both loaded
-  via `@remotion/google-fonts`, so rendering never depends on whatever fonts
-  happen to be installed on the render host). At least two weights of the
-  body face, so hierarchy comes from more than just size.
+- **Type** — **Share Tech Mono** (a single static weight, 400 Regular — no
+  bold/italic exists for this family) for the one big headline moment,
+  paired with **Inter** as the clean workhorse body face for everything
+  else. Both are vendored under `public/fonts/*.woff2` and loaded via
+  `@remotion/fonts`' `loadFont()` (see `src/theme.ts`) rather than fetched
+  from Google Fonts at render time — rendering never depends on network
+  access or on whatever fonts happen to be installed on the render host.
+  At least two weights of the body face, so hierarchy comes from more than
+  just size.
 - **Motion** — entrances are `spring()`-driven (a little overshoot, quick
   settle — see `springConfig` in `ReleaseAnnouncement.tsx`), staggered across
   elements rather than all firing on frame 0. Keep one continuous ambient

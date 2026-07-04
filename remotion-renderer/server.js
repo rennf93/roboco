@@ -9,7 +9,7 @@
 import express from "express";
 import multer from "multer";
 import { createReadStream } from "node:fs";
-import { renderComposition } from "./render.js";
+import { renderComposition, UnknownCompositionError } from "./render.js";
 
 const PORT = Number(process.env.PORT ?? 3001);
 
@@ -81,12 +81,43 @@ app.post("/render", upload.single("source"), async (req, res) => {
     stream.on("close", () => {
       cleanup();
     });
+    // stream.pipe() never propagates a DESTINATION close back to the
+    // source: if the client aborts, or the orchestrator's retry-on-timeout
+    // hangs up mid-download, `res` closes but the source stream's own
+    // "close" above never fires — leaking this request's render-output
+    // temp dir on every such disconnect. Destroying the still-open source
+    // releases its fd immediately; cleanup() is idempotent (rm force:true)
+    // so also landing here on a normal end-of-stream close is harmless.
+    res.on("close", () => {
+      stream.destroy();
+      cleanup();
+    });
     stream.pipe(res);
   } catch (err) {
+    if (err instanceof UnknownCompositionError) {
+      res.status(err.statusCode).json({ error: err.message });
+      return;
+    }
     const message = err instanceof Error ? err.message : String(err);
     console.error("remotion-renderer: render failed", message);
     res.status(500).json({ error: `render failed: ${message}` });
   }
+});
+
+// 4-arg signature required for Express to treat this as error-handling
+// middleware. Catches errors `next()`-ed from earlier middleware — in
+// practice, today, that's multer rejecting an oversized/malformed upload
+// before our route body ever runs (otherwise Express's default handler
+// returns a generic 500 HTML page instead of a clear JSON 4xx).
+app.use((err, req, res, _next) => {
+  if (err instanceof multer.MulterError) {
+    const status = err.code === "LIMIT_FILE_SIZE" ? 413 : 400;
+    res.status(status).json({ error: `upload rejected: ${err.message}` });
+    return;
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  console.error("remotion-renderer: unhandled error", message);
+  res.status(500).json({ error: "internal error" });
 });
 
 app.listen(PORT, () => {
