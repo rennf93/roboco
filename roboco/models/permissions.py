@@ -18,7 +18,7 @@ class PermissionLevel(IntEnum):
     CEO = 0  # Full access
     BOARD = 1  # Cross-org access
     MAIN_PM = 2  # All cells access
-    CELL_PM = 3  # Own cell + PM channel
+    CELL_PM = 3  # Own cell + PM scope
     CELL_MEMBER = 4  # Own cell only
     AUDITOR = 99  # Special: silent read all
 

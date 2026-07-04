@@ -121,7 +121,7 @@ _AUDITOR_FLOW = spec.intents_for_role(spec.Role.AUDITOR)
 # no ack (silent observer — wouldn't ack notifications).
 # The Auditor is the playbook quality gate — a deliberate, bounded expansion of
 # its surface (approve/reject/archive are KB curation actions, not agent comms,
-# so the no-say/no-dm restriction is preserved).
+# so the no-dm restriction is preserved).
 _AUDITOR_DO = (
     "note",
     "evidence",
@@ -135,7 +135,7 @@ _AUDITOR_DO = (
 # PR reviewer: a read-only reviewer of inbound external/fork PRs. Flow verbs come
 # from the lifecycle spec (a dedicated review trio, not QA's). It reads diffs and
 # records findings (note/evidence); the change-request is posted server-side, so
-# it has no outward agent comms (no say/dm).
+# it has no outward agent comms (no dm).
 _PR_REVIEWER_FLOW = spec.intents_for_role(spec.Role.PR_REVIEWER)
 _PR_REVIEWER_DO = ("note", "evidence", "notify_list", "notify_get")
 
@@ -143,8 +143,8 @@ _PROMPTER_FLOW = spec.intents_for_role(
     spec.Role.PROMPTER
 )  # none — not a lifecycle role
 # Intake interviewer: human-only. It journals (note) and cites sources
-# (evidence) but has NO outward agent comms — no say (channels), no dm/notify
-# (agents), no channel discovery. Its conversation with the human runs over the
+# (evidence) but has NO outward agent comms — no dm/notify (agents).
+# Its conversation with the human runs over the
 # live-session bridge, not these gateway tools.
 _PROMPTER_DO = ("note", "evidence")
 

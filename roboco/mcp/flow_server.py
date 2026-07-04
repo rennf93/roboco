@@ -88,7 +88,6 @@ _CIRCUIT_REJECTION_KINDS: frozenset[str] = frozenset(
 # counted kind without a map update.
 _DICT_ERROR_CODE_MAP: dict[str, str | None] = {
     "AUTHENTICATION_REQUIRED": "not_authorized",
-    "CHANNEL_ACCESS_DENIED": "not_authorized",
     "JOURNAL_ACCESS_DENIED": "not_authorized",
     "PERMISSION_DENIED": "not_authorized",
     "INVALID_INPUT": "incomplete_input",

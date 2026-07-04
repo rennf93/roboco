@@ -7481,7 +7481,7 @@ class TaskService(BaseService):
     }
 
     # States in which the agent still owns the task for content / journal
-    # context, even if it isn't progressing. Used by note / say / dm /
+    # context, even if it isn't progressing. Used by note / dm /
     # evidence so journal entries written from blocked or paused get the
     # task_id auto-attached (otherwise the C8 + tracing gates never see
     # the agent's decisions and the agent spirals).

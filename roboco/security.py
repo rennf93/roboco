@@ -117,7 +117,7 @@ async def prompt_injection_validator(request: GuardRequest) -> GuardResponse | N
     """Block prompt-injection / role-override phrasing in free-text bodies.
 
     Attach to human/agent free-text ingress (intake + secretary chat, task
-    descriptions, agent note/say). Not for code/structured bodies.
+    descriptions, agent note/dm). Not for code/structured bodies.
     """
     body = await _scan_body(request)
     if body and any(p.search(body) for p in _PROMPT_INJECTION_PATTERNS):

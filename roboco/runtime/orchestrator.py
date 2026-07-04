@@ -9107,7 +9107,7 @@ Gateway verbs (already loaded):
 - unblock(task_id, restore=True)
 - complete(task_id="{task_id}", notes=...)  for root awaiting_pm_review
 - escalate_to_ceo(task_id="{task_id}", reason=...) for root tasks
-- say(channel, text), dm(recipient, text)
+- dm(recipient, text), read_a2a()
 - i_am_idle() — when delegated and waiting
 
 == WORKFLOW ==
@@ -9123,8 +9123,7 @@ Gateway verbs (already loaded):
             acceptance_criteria=["c1", "c2"], estimated_complexity="medium")
    — repeat per cell that needs work. ONE subtask per cell; the Cell PM
    breaks it down further.
-5. say("#main-pm-board", "Delegated <root> to be-pm/fe-pm — see subtasks")
-6. i_am_idle() — you'll be respawned once subtasks are terminal so you can
+5. i_am_idle() — you'll be respawned once subtasks are terminal so you can
    complete(task_id="{task_id}", notes=...) or escalate_to_ceo on the root.
 
 == RULES ==
@@ -9145,7 +9144,6 @@ Start now: evidence(task_id="{task_id}")
         team = task.get("team", "unknown")
 
         # Build team-specific info
-        channel = f"{team}-cell" if team != "ux_ui" else "uxui-cell"
         dev_map = {
             "backend": ("be-dev-1", "be-dev-2"),
             "frontend": ("fe-dev-1", "fe-dev-2"),
@@ -9195,7 +9193,7 @@ Gateway verbs (already loaded):
     when YOUR OWN cell-PM task's subtasks are all terminal: opens cell-level
     PR up to Main PM's branch and transitions to awaiting_pm_review.
 - escalate_up(task_id, reason)            — to Main PM
-- say("{channel}", text), dm(recipient, text)
+- dm(recipient, text), read_a2a()
 - i_am_idle() — when delegated and waiting
 
 == WORKFLOW ==
@@ -9210,8 +9208,7 @@ Gateway verbs (already loaded):
             assigned_to="{primary_dev}", team="{team}", task_type="code",
             acceptance_criteria=["c1", "c2"], estimated_complexity="medium")
    — repeat 2 to 5 times for focused subtasks under your cell-PM task.
-5. say("{channel}", "Broke down <task>: subtasks created and assigned")
-6. i_am_idle() — you'll be respawned for two reasons:
+5. i_am_idle() — you'll be respawned for two reasons:
    - a SUBTASK enters awaiting_pm_review → review + complete(subtask_id, ...)
    - all subtasks terminal → submit_up(task_id="{task_id}", notes=...) on YOUR task
 
@@ -10329,7 +10326,7 @@ Start now: evidence(task_id="{task_id}")
              button appear — it never shows on a board task the board hasn't
              finished reviewing.
           2. Emit an ack-required APPROVAL notification to the CEO. Board agents
-             only post channel dialogue + journal notes during review, which
+             only record journal notes during review, which
              left the CEO with no actionable signal; this is that signal.
 
         Fires at most once per task; a failure clears the guard so a later tick
@@ -12610,8 +12607,8 @@ delegate — those verbs are not yours. Your deliverable is a recorded review.
         the UX, user-facing impact, and how the feature is positioned>",
         scope='decision', task_id="{task_id}")
      — this recorded review is how the CEO and Main PM act on your input.
-3. say(...) in your board channel to flag UX, positioning, or risk concerns and
-     to coordinate with your fellow board reviewer.
+3. dm(...) your fellow board reviewer to flag UX, positioning, or risk concerns
+     and coordinate (optional; PO/HoM only).
 4. i_am_idle()
      — when your review is recorded. Once both board reviewers are done, the
        CEO is notified the task is ready for Approve & Start, then routes it to
@@ -12732,7 +12729,7 @@ Your job:
 
 1. Acknowledge the notification with notify_ack("{notif_id}")
 2. Assess the escalation and determine action needed
-3. Communicate decisions via appropriate channels
+3. Communicate decisions via dm / notify
 4. If this requires further escalation, use escalate_up()
 5. When resolved, call triage() for other work
 6. If no more work, call i_am_idle() to shutdown gracefully
@@ -12779,9 +12776,9 @@ DETAILS: {body}
 Your job:
 
 1. Investigate the quality issue
-2. Review relevant channels and task history (you have read access to all)
+2. Review relevant tasks and history (you have read access to all)
 3. Compile your findings
-4. Report to CEO via appropriate channel
+4. Report to CEO via your journal (note scope='reflect')
 5. Call i_am_idle() when complete
 """
 

@@ -20,7 +20,7 @@ You are the Product Owner. You define product vision and priorities, and escalat
 - `triage()` returns the next strategic task awaiting review
 - `escalate_to_ceo(task_id, reason)` for that task once you've logged a `note(scope='decision', task_id, text)`
 - `evidence(task_id)` to inspect a task before deciding
-- `say` / `dm` for board + main-pm coordination
+- `dm` for board + main-pm coordination
 - `i_am_idle()` when no strategic work waits
 
 ## MegaTasks (batched, sequenced work)

@@ -254,11 +254,11 @@ class NotificationService:
 
         Board-reviewed coordination tasks stay ``pending`` and wait for the
         CEO's Approve & Start gate (``TaskService.approve_and_start``). The
-        Product Owner + Head of Marketing record their review via channel
-        dialogue and journal notes, but that left the CEO with no actionable
+        Product Owner + Head of Marketing record their review via journal
+        notes, but that left the CEO with no actionable
         signal — only buried chatter. This emits a
         formal APPROVAL notification (ack-required) carrying ``related_task_id``
-        so the handoff is a real signal the panel can surface, not channel
+        so the handoff is a real signal the panel can surface, not buried
         noise. Board roles are exactly the senders permitted to notify, so the
         orchestrator emits it as ``system`` on their behalf once BOTH board
         reviewers (PO + Head of Marketing) have finished.
@@ -346,7 +346,7 @@ class NotificationService:
         treat it as a high-attention formal signal rather than
         conflating with task-state-driven notifications. The subject
         is derived from the first line of `body` (truncated), matching
-        how `say`/`dm` derive a subject from free text.
+        how `dm` derives a subject from free text.
         """
         subject = body.split("\n", 1)[0][:200] or "Notification"
         related_task_id = str(task_id) if task_id is not None else None

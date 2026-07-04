@@ -2,7 +2,7 @@
 A2A Access Enforcement
 
 Validates agent-to-agent communication permissions.
-Uses the same communication matrix as channels/notifications.
+Uses the same communication matrix as notifications.
 """
 
 from roboco.agents_config import can_a2a_direct, get_a2a_route_hint

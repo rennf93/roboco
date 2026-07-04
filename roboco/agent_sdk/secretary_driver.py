@@ -186,7 +186,7 @@ def build_secretary_options(
     @tool(
         "submit_directive",
         "Act on the CEO's command. 'kind' is one of: relay_message "
-        "(payload: channel, text), update_charter (payload: charter), "
+        "(payload: text), update_charter (payload: charter), "
         "control_task (payload: task_id, action[start|cancel|override|edit], "
         "status? for override, fields? for edit — edit accepts title/"
         "description/acceptance_criteria/priority/team/estimated_complexity/"

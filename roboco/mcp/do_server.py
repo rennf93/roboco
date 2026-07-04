@@ -3,7 +3,7 @@
 Forwards to /api/v1/do/* on the orchestrator. Tools are role-scoped at *spawn*
 time: the orchestrator writes ``do_tools`` into the per-agent manifest and we
 register only those names on this server. The orchestrator's API is not
-role-scoped here (any allowed role can call commit/note/say/dm/notify/evidence),
+role-scoped here (any allowed role can call commit/note/dm/notify/evidence),
 so the path is fixed (no role segment). Per-tool role gates (e.g., notify
 restricting to PMs/Board) live inside the gateway verbs.
 
@@ -72,7 +72,6 @@ _CIRCUIT_REJECTION_KINDS: frozenset[str] = frozenset(
 # counted kind without a map update. Mirrors flow_server.
 _DICT_ERROR_CODE_MAP: dict[str, str | None] = {
     "AUTHENTICATION_REQUIRED": "not_authorized",
-    "CHANNEL_ACCESS_DENIED": "not_authorized",
     "JOURNAL_ACCESS_DENIED": "not_authorized",
     "PERMISSION_DENIED": "not_authorized",
     "INVALID_INPUT": "incomplete_input",
@@ -576,7 +575,7 @@ def notify(
 ) -> dict[str, Any]:
     """Send a formal ack-required notification (PMs and Board only).
 
-    Distinct from say (channel post) and dm (informal A2A): notify creates
+    Distinct from dm (informal A2A): notify creates
     a notification the recipient must acknowledge. priority in
     normal|high|urgent. task_id auto-injected from active task when omitted.
     """

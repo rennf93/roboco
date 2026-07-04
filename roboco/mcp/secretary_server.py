@@ -65,7 +65,7 @@ async def search_tasks(q: str, limit: int = 20) -> str:
 async def submit_directive(kind: str, payload: dict[str, Any]) -> str:
     """Act on the CEO's command.
 
-    'kind' is one of: relay_message (payload: channel, text), update_charter
+    'kind' is one of: relay_message (payload: text), update_charter
     (payload: charter), control_task (payload: task_id, action[start|cancel|
     override|edit], status? for override, fields? for edit — edit accepts
     title/description/acceptance_criteria/priority/team/estimated_complexity/

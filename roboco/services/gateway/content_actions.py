@@ -1,4 +1,4 @@
-"""Smart-wrapped content tools — commit, note, say, dm, evidence.
+"""Smart-wrapped content tools — commit, note, dm, read_a2a, evidence.
 
 Each method:
 1. Validates input (e.g., commit_validator for commit messages).
@@ -89,9 +89,9 @@ _NOTIFY_ALLOWED_ROLES: frozenset[str] = frozenset(
 )
 
 # Roles with NO agent-comms surface (CLAUDE.md): auditor (silent observer),
-# pr_reviewer (posts review findings on the PR itself — no say/dm), prompter
-# and secretary (human-only, restricted to note + evidence — no say/dm/notify).
-# The spawn manifest already omits say/dm from these roles' tool surfaces, but
+# pr_reviewer (posts review findings on the PR itself — no dm), prompter
+# and secretary (human-only, restricted to note + evidence — no dm/notify).
+# The spawn manifest already omits dm from these roles' tool surfaces, but
 # that is convention-only — this frozenset is the handler-level defence-in-depth
 # that refuses any call that bypassed the manifest (direct verb dispatch, test
 # harness, future routing change), so the no-comms invariant holds regardless of
@@ -103,7 +103,7 @@ _NO_COMMS_ROLES: frozenset[str] = frozenset(
 
 
 def _no_comms_remediate(role: str) -> str:
-    """Role-appropriate remediation for a no-comms role blocked at say/dm."""
+    """Role-appropriate remediation for a no-comms role blocked at dm."""
     if role == "auditor":
         return "record observations via note(scope='reflect') instead"
     if role == "pr_reviewer":
@@ -249,9 +249,9 @@ def _ownership_violation(task_id: UUID) -> Envelope:
     return Envelope.not_authorized(
         message=(f"you are not the assignee of {task_id}; cannot post content to it"),
         remediate=(
-            "only the task's assignee may attach content (commit/note/say/"
+            "only the task's assignee may attach content (commit/note/"
             "dm/evidence) to it. Use a different task_id or omit task_id "
-            "for off-task channel posts (say/dm only)."
+            "for off-task messages (dm only)."
         ),
         context_briefing={},
     )
@@ -1219,8 +1219,8 @@ class ContentActions:
         if rej := self._reject_soup(text, field="message", min_chars=2):
             return rej
         # Spec §5.5: silent / no-comms roles — defense-in-depth runtime guard.
-        # See say() for rationale. Mirrored here because dm() is the other
-        # channel through which a no-comms role could "speak". Covers auditor,
+        # Defense-in-depth: dm() is the channel through which a no-comms role
+        # could "speak". Covers auditor,
         # pr_reviewer, and the human-only prompter / secretary.
         agent = await self.task.agent_for(agent_id)
         caller_role = str(agent.role) if agent is not None else ""
@@ -1287,7 +1287,7 @@ class ContentActions:
     ) -> Envelope:
         """Send a formal ack-required notification (PMs and Board only).
 
-        Distinct from `say` (channel post, no ack) and `dm` (informal A2A):
+        Distinct from `dm` (informal A2A, no ack):
         a notification is a formal signal that the recipient must
         acknowledge. Pre-gateway, NotificationService restricted senders
         to PMs/Board; the gateway re-asserts that gate here because the
@@ -1321,7 +1321,7 @@ class ContentActions:
                     "only PMs and Board may issue ack-required signals"
                 ),
                 remediate=(
-                    "use say() for channel posts or dm() for informal A2A. "
+                    "use dm() for informal A2A. "
                     "notify() is reserved for cell_pm, main_pm, "
                     "product_owner, and head_marketing."
                 ),
@@ -1386,7 +1386,7 @@ class ContentActions:
                     " same-purpose notifications via the dedup query"
                 ),
                 remediate=(
-                    "use say() to a channel the human reads, or escalate via the"
+                    "escalate via the"
                     " CEO route. ack-required notify() targets must be agents"
                     " (or the CEO, who acks via the panel)"
                 ),
