@@ -27,6 +27,7 @@ class Company:
     main_pm_id: Any
     pr_reviewer_id: Any
     ceo_id: Any
+    hom_id: Any  # Head of Marketing — Board role
 
 
 _COMPANY_CACHE: dict[str, Company] = {}
@@ -67,6 +68,7 @@ def seed_company(stack: E2EStack) -> Company:
         main_pm = agent("main-pm", AgentRole.MAIN_PM, None)
         reviewer = agent("pr-reviewer-1", AgentRole.PR_REVIEWER, None)
         ceo = agent("ceo", AgentRole.CEO, None)
+        hom = agent("head-marketing", AgentRole.HEAD_MARKETING, Team.BOARD)
         await session.flush()
         out.ceo_id = ceo.id
         out.dev_id = dev.id
@@ -75,6 +77,7 @@ def seed_company(stack: E2EStack) -> Company:
         out.cell_pm_id = cell_pm.id
         out.main_pm_id = main_pm.id
         out.pr_reviewer_id = reviewer.id
+        out.hom_id = hom.id
 
     stack.run_db(_run)
     _COMPANY_CACHE["company"] = out
