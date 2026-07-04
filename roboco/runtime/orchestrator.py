@@ -721,6 +721,16 @@ def _is_held_ceo_source(task: dict[str, Any]) -> bool:
     return source == SELF_HEAL_SOURCE and not task.get("confirmed_by_human")
 
 
+def _is_non_dev_dispatch_source(task: dict[str, Any]) -> bool:
+    """Sources ``_dispatch_dev_work`` must skip: every CEO-held source plus the
+    Board exploration cycles (``board_roadmap`` / feature-spotlight exploration)
+    that ``_dispatch_pm_work`` owns. One flat call keeps the dev loop's skip out
+    of a long per-source ``if`` chain (xenon budget)."""
+    if _is_held_ceo_source(task):
+        return True
+    return task.get("source") in (ROADMAP_SOURCE, X_FEATURE_EXPLORATION_SOURCE)
+
+
 class AgentOrchestrator:
     """
     Manages Claude Code containers for all agents.
@@ -11170,39 +11180,9 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         for task in tasks:
             if self._is_task_handled_this_tick(task.get("id")):
                 continue
-            # External-PR review tasks belong to the pr_reviewer, never a dev —
-            # _dispatch_pr_review_work owns them.
-            if task.get("source") in PR_REVIEW_SOURCES:
-                continue
-            # Release proposals are CEO-gated artifacts, never dev work.
-            if task.get("source") == RELEASE_MANAGER_SOURCE:
-                continue
-            # X posts/replies are CEO-gated artifacts, never dev work.
-            if task.get("source") in X_SOURCES:
-                continue
-            # Video-post drafts are CEO-gated artifacts, never dev work. The
-            # video-authoring source is NOT in VIDEO_HELD_SOURCES, so it falls
-            # through and dispatches like any other pre-assigned code task.
-            if task.get("source") in VIDEO_HELD_SOURCES:
-                continue
-            # A board roadmap exploration cycle is Board work (the PO's
-            # one-shot dispatch owns it via _dispatch_pm_work) — never dev work.
-            # Also team-gated away by _dev_dispatch_one (team=board), so this is
-            # belt-and-suspenders parity with the other held-artifact sources.
-            if task.get("source") == ROADMAP_SOURCE:
-                continue
-            # A feature-spotlight exploration cycle is Board work (HoM's
-            # one-shot dispatch owns it via _dispatch_pm_work) — never dev work.
-            # X_FEATURE_SOURCE (the materialized draft) is already covered by
-            # the X_SOURCES check above; this is the exploration task itself.
-            if task.get("source") == X_FEATURE_EXPLORATION_SOURCE:
-                continue
-            # A self-heal fix task held for the CEO's Approve-&-Start is not dev
-            # work yet — it must not route to its assigned_to as a dev before
-            # the CEO approves it.
-            if task.get("source") == SELF_HEAL_SOURCE and not task.get(
-                "confirmed_by_human"
-            ):
+            # Held CEO artifacts + Board exploration cycles belong to other
+            # dispatchers (their own routes / _dispatch_pm_work), never a dev.
+            if _is_non_dev_dispatch_source(task):
                 continue
             await self._dev_dispatch_one(client, task)
 
