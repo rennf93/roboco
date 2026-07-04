@@ -1,7 +1,7 @@
 """roboco.api.deps coverage — agent identity / context / role gate helpers.
 
 Covers the slug→UUID resolution, header-based agent ID/context dependencies,
-HMAC token enforcement, role coercion fallbacks, channel/notification/task
+HMAC token enforcement, role coercion fallbacks, notification/task
 permission factories, and the choreographer + content-actions wiring.
 """
 
@@ -28,8 +28,6 @@ from roboco.api.deps import (
     get_orchestrator,
     get_pagination,
     get_permission_service,
-    require_channel_read,
-    require_channel_write,
     require_notification_permission,
     require_task_action,
     resolve_agent_id,
@@ -374,47 +372,6 @@ async def test_get_agent_context_happy_path(monkeypatch: pytest.MonkeyPatch) -> 
 # ---------------------------------------------------------------------------
 # Permission factories — exercise the inner closure on both pass and fail.
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_require_channel_read_passes_when_allowed() -> None:
-    fake_perms = MagicMock()
-    fake_perms.can_read_channel = MagicMock(return_value=True)
-    agent = AgentContext(agent_id=uuid4(), role=AgentRole.DEVELOPER, team=Team.BACKEND)
-    dep = require_channel_read("backend-cell")
-    # No raise.
-    await dep(agent, fake_perms)
-
-
-@pytest.mark.asyncio
-async def test_require_channel_read_raises_when_denied() -> None:
-    fake_perms = MagicMock()
-    fake_perms.can_read_channel = MagicMock(return_value=False)
-    agent = AgentContext(agent_id=uuid4(), role=AgentRole.DEVELOPER, team=Team.BACKEND)
-    dep = require_channel_read("frontend-cell")
-    with pytest.raises(HTTPException) as exc:
-        await dep(agent, fake_perms)
-    assert exc.value.status_code == _HTTP_403
-
-
-@pytest.mark.asyncio
-async def test_require_channel_write_passes_when_allowed() -> None:
-    fake_perms = MagicMock()
-    fake_perms.can_write_channel = MagicMock(return_value=True)
-    agent = AgentContext(agent_id=uuid4(), role=AgentRole.DEVELOPER, team=Team.BACKEND)
-    dep = require_channel_write("backend-cell")
-    await dep(agent, fake_perms)
-
-
-@pytest.mark.asyncio
-async def test_require_channel_write_raises_when_denied() -> None:
-    fake_perms = MagicMock()
-    fake_perms.can_write_channel = MagicMock(return_value=False)
-    agent = AgentContext(agent_id=uuid4(), role=AgentRole.DEVELOPER, team=Team.BACKEND)
-    dep = require_channel_write("frontend-cell")
-    with pytest.raises(HTTPException) as exc:
-        await dep(agent, fake_perms)
-    assert exc.value.status_code == _HTTP_403
 
 
 @pytest.mark.asyncio

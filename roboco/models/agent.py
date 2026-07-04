@@ -49,12 +49,6 @@ class AgentPermissions(RobocoBase):
         default=False,
         description="Whether agent can send notifications (only PMs, Board, Auditor)",
     )
-    channels_read: list[UUID] = Field(
-        default_factory=list, description="Channel IDs agent can read"
-    )
-    channels_write: list[UUID] = Field(
-        default_factory=list, description="Channel IDs agent can write to"
-    )
 
 
 class AgentMetrics(RobocoBase):

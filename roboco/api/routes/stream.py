@@ -180,22 +180,6 @@ async def get_my_permissions(
     """
     Get permission summary for the current agent.
 
-    Returns accessible channels, allowed actions, etc.
+    Returns allowed task actions, notification permission, etc.
     """
     return permissions.check_all(agent)
-
-
-@router.get("/permissions/channel/{channel_name}")
-async def check_channel_permission(
-    channel_name: str,
-    agent: CurrentAgentContext,
-    permissions: PermissionServiceDep,
-) -> dict[str, Any]:
-    """
-    Check permissions for a specific channel.
-    """
-    return {
-        "channel": channel_name,
-        "can_read": permissions.can_read_channel(agent, channel_name),
-        "can_write": permissions.can_write_channel(agent, channel_name),
-    }

@@ -42,7 +42,6 @@ class JournalEntryResponse(BaseModel):
     title: str
     content: str
     task_id: UUID | None
-    session_id: UUID | None
     timestamp: datetime
     tags: list[str]
     sentiment: str | None
@@ -61,7 +60,6 @@ class CreateEntryRequest(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
     content: str = Field(..., min_length=1)
     task_id: UUID | None = None
-    session_id: UUID | None = None
     tags: list[str] = Field(default_factory=list)
     sentiment: str | None = None
     is_private: bool = False
@@ -121,7 +119,6 @@ class GeneralEntryRequest(BaseModel):
     title: str = Field(..., min_length=1, max_length=200)
     content: str
     task_id: UUID | None = None
-    session_id: UUID | None = None
     tags: list[str] = Field(default_factory=list)
     is_private: bool = False
 

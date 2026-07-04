@@ -570,54 +570,6 @@ def require_cell_access(agent: AgentContext, cell: Team, action: str) -> None:
         )
 
 
-def require_channel_read(
-    channel_name: str,
-) -> Callable[..., Coroutine[Any, Any, None]]:
-    """
-    Dependency factory that requires read access to a channel.
-
-    Usage:
-        @router.get("/channels/{channel_id}/messages")
-        async def get_messages(
-            agent: CurrentAgentContext,
-            _: Annotated[None, Depends(require_channel_read("backend-cell"))],
-        ):
-            ...
-    """
-
-    async def check_permission(
-        agent: CurrentAgentContext,
-        permissions: PermissionServiceDep,
-    ) -> None:
-        if not permissions.can_read_channel(agent, channel_name):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"No read access to channel: {channel_name}",
-            )
-
-    return check_permission
-
-
-def require_channel_write(
-    channel_name: str,
-) -> Callable[..., Coroutine[Any, Any, None]]:
-    """
-    Dependency factory that requires write access to a channel.
-    """
-
-    async def check_permission(
-        agent: CurrentAgentContext,
-        permissions: PermissionServiceDep,
-    ) -> None:
-        if not permissions.can_write_channel(agent, channel_name):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"No write access to channel: {channel_name}",
-            )
-
-    return check_permission
-
-
 def require_notification_permission() -> Callable[..., Coroutine[Any, Any, None]]:
     """
     Dependency that requires the agent can send notifications.

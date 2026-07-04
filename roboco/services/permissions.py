@@ -2,7 +2,6 @@
 Permission Service
 
 Implements the access control model:
-- Channel read/write permissions
 - Task permissions by role
 - Notification permissions (who can notify whom)
 - Communication matrix (who can communicate with whom)
@@ -11,7 +10,7 @@ Permission Levels:
 - L0: CEO (full access)
 - L1: Board (cross-org access)
 - L2: Main PM (all cells access)
-- L3: Cell PM (own cell + PM channel)
+- L3: Cell PM (own cell + PM coordination)
 - L4: Cell Members (own cell only)
 - SPECIAL: Auditor (silent read all)
 
@@ -29,11 +28,6 @@ from sqlalchemy import select
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
-from roboco.agents_config import (
-    AGENT_ROLE_MAP,
-    AGENT_TEAM_MAP,
-    CHANNEL_ACCESS,
-)
 from roboco.foundation.identity import Role as _FoundationRole
 from roboco.foundation.policy.communications import NOTIFY_SENDER_ROLES
 from roboco.models import AgentRole, Team
@@ -46,27 +40,6 @@ from roboco.models.permissions import (
     TaskAction,
 )
 from roboco.services.base import SingletonService
-
-# =============================================================================
-# CHANNEL PERMISSIONS (derived from agents_config.CHANNEL_ACCESS)
-# =============================================================================
-
-# Build role→team mapping from agents_config for efficient lookups
-_ROLE_TEAM_LOOKUP: dict[tuple[str, str | None], list[str]] = {}
-for agent_slug, role in AGENT_ROLE_MAP.items():
-    team = AGENT_TEAM_MAP.get(agent_slug)
-    key = (role, team)
-    if key not in _ROLE_TEAM_LOOKUP:
-        _ROLE_TEAM_LOOKUP[key] = []
-    _ROLE_TEAM_LOOKUP[key].append(agent_slug)
-
-
-def _get_agents_for_role_team(role: AgentRole, team: Team | None) -> list[str]:
-    """Get all agent slugs that match a role and optional team."""
-    role_str = role.value
-    team_str = team.value if team else None
-    return _ROLE_TEAM_LOOKUP.get((role_str, team_str), [])
-
 
 # =============================================================================
 # NOTIFICATION PERMISSIONS (derived from foundation.NOTIFY_SENDER_ROLES)
@@ -137,116 +110,12 @@ class PermissionService(SingletonService):
     Usage:
         service = PermissionService()
 
-        # Check channel access
-        if service.can_read_channel(agent_ctx, channel_name):
-            messages = await get_messages(channel_name)
-
         # Check notification permission
         if service.can_notify(sender_ctx, recipient_ctx):
             await send_notification(...)
     """
 
     service_name: ClassVar[str] = "permissions"
-    # No duplicate storage - uses agents_config.CHANNEL_ACCESS directly
-
-    # =========================================================================
-    # CHANNEL PERMISSIONS (uses agents_config.CHANNEL_ACCESS)
-    # =========================================================================
-
-    def _check_channel_access_for_agent(
-        self,
-        agent: AgentContext,
-        channel_name: str,
-        access_type: str,
-    ) -> bool:
-        """
-        Check channel access using agents_config.CHANNEL_ACCESS.
-
-        Converts AgentContext (role+team) to potential agent slugs,
-        then checks if any of them have access.
-        """
-        channel = CHANNEL_ACCESS.get(channel_name)
-        if not channel:
-            self.log.warning("Unknown channel", channel=channel_name)
-            return False
-
-        # Get list of agent slugs that match this role+team
-        agent_slugs = _get_agents_for_role_team(agent.role, agent.team)
-
-        # Check if any matching agent has the requested access
-        access_list = channel.get(access_type, [])
-        silent_list = channel.get("silent", [])
-
-        for slug in agent_slugs:
-            if slug in access_list:
-                return True
-            if access_type == "read" and slug in silent_list:
-                return True
-
-        return False
-
-    def can_read_channel(
-        self,
-        agent: AgentContext,
-        channel_name: str,
-    ) -> bool:
-        """Check if agent can read from a channel."""
-        # Auditor has silent read access to everything
-        if agent.role == AgentRole.AUDITOR:
-            return True
-
-        # CEO has full access
-        if agent.role == AgentRole.CEO:
-            return True
-
-        # Main PM has access to all channels
-        if agent.role == AgentRole.MAIN_PM:
-            return True
-
-        return self._check_channel_access_for_agent(agent, channel_name, "read")
-
-    def can_write_channel(
-        self,
-        agent: AgentContext,
-        channel_name: str,
-    ) -> bool:
-        """Check if agent can write to a channel."""
-        # CEO has full access
-        if agent.role == AgentRole.CEO:
-            return True
-
-        # Auditor is a silent, read-only observer (no say/dm in its verb surface);
-        # deny channel writes so this layer matches the role's actual capabilities.
-        if agent.role == AgentRole.AUDITOR:
-            return False
-
-        # Main PM has access to all channels
-        if agent.role == AgentRole.MAIN_PM:
-            return True
-
-        return self._check_channel_access_for_agent(agent, channel_name, "write")
-
-    def get_accessible_channels(
-        self,
-        agent: AgentContext,
-    ) -> list[str]:
-        """Get list of channels an agent can read."""
-        channels = []
-        for channel_name in CHANNEL_ACCESS:
-            if self.can_read_channel(agent, channel_name):
-                channels.append(channel_name)
-        return channels
-
-    def get_writable_channels(
-        self,
-        agent: AgentContext,
-    ) -> list[str]:
-        """Get list of channels an agent can write to."""
-        channels = []
-        for channel_name in CHANNEL_ACCESS:
-            if self.can_write_channel(agent, channel_name):
-                channels.append(channel_name)
-        return channels
 
     # =========================================================================
     # NOTIFICATION PERMISSIONS (foundation.NOTIFY_SENDER_ROLES + local scope)
@@ -364,8 +233,6 @@ class PermissionService(SingletonService):
             "role": agent.role.value,
             "team": agent.team.value if agent.team else None,
             "level": self.get_permission_level(agent.role).name,
-            "readable_channels": self.get_accessible_channels(agent),
-            "writable_channels": self.get_writable_channels(agent),
             "can_send_notifications": self.can_send_notifications(agent),
             "task_actions": list(self.get_task_actions(agent)),
         }
@@ -375,7 +242,7 @@ class PermissionService(SingletonService):
 # ASYNC DATABASE LOOKUPS
 # =============================================================================
 
-# Roles with full access to all channels (bypass membership checks)
+# Roles with full org-wide access (no team/scope restriction).
 PRIVILEGED_ROLES = frozenset({AgentRole.CEO, AgentRole.AUDITOR, AgentRole.MAIN_PM})
 
 
@@ -383,7 +250,6 @@ async def has_privileged_access(db: "AsyncSession", agent_id: UUID) -> bool:
     """
     Check if agent has a privileged role (CEO, Auditor, Main PM).
 
-    These roles have full access to all channels regardless of membership.
     Queries by both id and slug since agent_id could be either
     (CEO uses UUID-style slug, others use short slugs like "be-dev-1").
     """

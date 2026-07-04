@@ -4,13 +4,6 @@ API Schemas
 Pydantic models for request/response serialization.
 """
 
-from roboco.api.schemas.channels import (
-    ChannelDetailResponse,
-    ChannelListResponse,
-    ChannelResponse,
-    GroupResponse,
-    ListChannelsQuery,
-)
 from roboco.api.schemas.common import (
     ApiResponse,
     ErrorCode,
@@ -45,13 +38,6 @@ from roboco.api.schemas.journals import (
     StruggleRequest,
     TaskReflectionRequest,
 )
-from roboco.api.schemas.messages import (
-    ListMessagesParams,
-    MessageCreateRequest,
-    MessageEditRequest,
-    MessageListResponse,
-    MessageResponse,
-)
 from roboco.api.schemas.notifications import (
     ListNotificationsParams,
     NotificationListResponse,
@@ -81,12 +67,6 @@ from roboco.api.schemas.orchestrator import (
     ResolveWaitRequest,
     SpawnAgentRequest,
     WaitingAgentResponse,
-)
-from roboco.api.schemas.sessions import (
-    ListSessionsParams,
-    SessionCreateRequest,
-    SessionListResponse,
-    SessionResponse,
 )
 from roboco.api.schemas.stream import (
     ExtractedMessageResponse,
@@ -119,10 +99,6 @@ __all__ = [
     "AuditorFlag",
     "AuditorReport",
     "CEOOverview",
-    "ChannelDetailResponse",
-    # Channels
-    "ChannelListResponse",
-    "ChannelResponse",
     # Tasks
     "CheckpointRequest",
     "ClaimRequest",
@@ -142,7 +118,6 @@ __all__ = [
     "ExtractionResponse",
     "FlagSeverity",
     "GeneralEntryRequest",
-    "GroupResponse",
     "GrowthMetricsResponse",
     # Health
     "HealthResponse",
@@ -154,20 +129,11 @@ __all__ = [
     "JournalResponse",
     "JournalStatsResponse",
     "LearningRequest",
-    "ListChannelsQuery",
     "ListEntriesParams",
-    # Messages
-    "ListMessagesParams",
     # Notifications
     "ListNotificationsParams",
     "ListResponse",
-    # Sessions
-    "ListSessionsParams",
     "ListTasksQuery",
-    "MessageCreateRequest",
-    "MessageEditRequest",
-    "MessageListResponse",
-    "MessageResponse",
     "NotificationListResponse",
     "NotificationResponse",
     "OrchestratorStatusResponse",
@@ -185,9 +151,6 @@ __all__ = [
     "SearchRequest",
     "SearchResponse",
     "SearchResultResponse",
-    "SessionCreateRequest",
-    "SessionListResponse",
-    "SessionResponse",
     "SpawnAgentRequest",
     "StreamChunkRequest",
     "StreamCompleteRequest",

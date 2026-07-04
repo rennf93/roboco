@@ -4,7 +4,7 @@ SQLAlchemy Table Definitions
 ORM mappings for all RoboCo data models.
 """
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID as PyUUID
 from uuid import uuid4
@@ -20,7 +20,6 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
-    Interval,
     String,
     Text,
     UniqueConstraint,
@@ -36,21 +35,17 @@ from roboco.models.base import (
     AgentStatus,
     AssignmentScope,
     BlockerResolverType,
-    ChannelType,
     Complexity,
     HandoffStatus,
     JournalEntryType,
-    MessageType,
     ModelProvider,
     NotificationPriority,
     NotificationType,
-    SessionStatus,
     TaskNature,
     TaskStatus,
     TaskType,
     Team,
 )
-from roboco.models.session import SessionScope
 from roboco.models.work_session import WorkSessionStatus
 
 # Python class name → canonical postgres enum name (only the cases where
@@ -431,18 +426,6 @@ class TaskTable(Base):
     )
     project: Mapped["ProjectTable | None"] = relationship(
         "ProjectTable", foreign_keys=[project_id], lazy="joined"
-    )
-    # Session links (many-to-many via SessionTaskTable).
-    # passive_deletes=True tells SA to trust the DB's ON DELETE CASCADE and
-    # NOT emit `UPDATE session_tasks SET task_id=NULL` before the delete —
-    # the task_id column is NOT NULL, so that pre-null attempt hits an
-    # IntegrityError and DELETE /tasks/{id} fails with NotNullViolation.
-    session_links: Mapped[list["SessionTaskTable"]] = relationship(
-        "SessionTaskTable",
-        back_populates="task",
-        lazy="select",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
     )
     # Per-cell project map for an ad-hoc (non-Product) coordination root —
     # mirrors product_projects but is owned by the task itself, so a MegaTask
@@ -919,414 +902,6 @@ class WorkSessionTable(Base):
 
 
 # =============================================================================
-# CHANNEL TABLE
-# =============================================================================
-
-
-class ChannelTable(Base):
-    """SQLAlchemy table for channels."""
-
-    __tablename__ = "channels"
-
-    # Identity
-    id: Mapped[UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid4
-    )
-    name: Mapped[str] = mapped_column(String(100), nullable=False)
-    slug: Mapped[str] = mapped_column(
-        String(50), unique=True, nullable=False, index=True
-    )
-    type: Mapped[ChannelType] = mapped_column(_str_enum(ChannelType), nullable=False)
-
-    # Description
-    description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    topic: Mapped[str | None] = mapped_column(String(500), nullable=True)
-
-    # Access Control
-    members: Mapped[list[PyUUID]] = mapped_column(
-        ARRAY(UUID(as_uuid=True)), default=list
-    )
-    writers: Mapped[list[PyUUID]] = mapped_column(
-        ARRAY(UUID(as_uuid=True)), default=list
-    )
-    silent_observers: Mapped[list[PyUUID]] = mapped_column(
-        ARRAY(UUID(as_uuid=True)), default=list
-    )
-
-    # Settings
-    is_archived: Mapped[bool] = mapped_column(Boolean, default=False)
-    is_private: Mapped[bool] = mapped_column(Boolean, default=False)
-    allow_threads: Mapped[bool] = mapped_column(Boolean, default=True)
-    allow_reactions: Mapped[bool] = mapped_column(Boolean, default=True)
-    message_retention_days: Mapped[int | None] = mapped_column(
-        Integer, nullable=True, default=90
-    )
-    max_message_length: Mapped[int] = mapped_column(Integer, default=10000)
-
-    # Statistics
-    message_count: Mapped[int] = mapped_column(Integer, default=0)
-    group_count: Mapped[int] = mapped_column(Integer, default=0)
-    last_activity: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-
-    # Timestamps
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
-    )
-    updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
-    )
-
-    # Relationships - use lazy="select" for collections to avoid N+1
-    groups: Mapped[list["GroupTable"]] = relationship(
-        "GroupTable", back_populates="channel", lazy="select"
-    )
-
-
-# =============================================================================
-# GROUP TABLE
-# =============================================================================
-
-
-class GroupTable(Base):
-    """SQLAlchemy table for groups."""
-
-    __tablename__ = "groups"
-
-    # Identity
-    id: Mapped[UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid4
-    )
-    name: Mapped[str] = mapped_column(String(100), nullable=False)
-    channel_id: Mapped[UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("channels.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-
-    # Access Control
-    allowed_roles: Mapped[list[str]] = mapped_column(ARRAY(String), default=list)
-    hierarchy_level: Mapped[int] = mapped_column(Integer, default=4)
-    members: Mapped[list[PyUUID]] = mapped_column(
-        ARRAY(UUID(as_uuid=True)), default=list
-    )
-
-    # Settings
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-
-    # Current Session
-    active_session_id: Mapped[UUID | None] = mapped_column(
-        UUID(as_uuid=True), nullable=True
-    )
-
-    # Session Configuration (stored as JSON)
-    default_session_config: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-
-    # Statistics
-    total_sessions: Mapped[int] = mapped_column(Integer, default=0)
-    total_messages: Mapped[int] = mapped_column(Integer, default=0)
-    last_activity: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-
-    # Timestamps
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
-    )
-    updated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
-    )
-
-    # Relationships - use lazy="select" for collections to avoid N+1
-    channel: Mapped["ChannelTable"] = relationship(
-        "ChannelTable", back_populates="groups"
-    )
-    sessions: Mapped[list["SessionTable"]] = relationship(
-        "SessionTable", back_populates="group", lazy="select"
-    )
-
-
-# =============================================================================
-# SESSION TABLE
-# =============================================================================
-
-
-class SessionTable(Base):
-    """SQLAlchemy table for sessions."""
-
-    __tablename__ = "sessions"
-
-    # Identity
-    id: Mapped[UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid4
-    )
-    group_id: Mapped[UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("groups.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-
-    # Boundaries
-    max_time_window: Mapped[timedelta | None] = mapped_column(
-        Interval, nullable=True, default=timedelta(minutes=30)
-    )
-    max_message_count: Mapped[int | None] = mapped_column(
-        Integer, nullable=True, default=100
-    )
-    max_content_length: Mapped[int | None] = mapped_column(
-        Integer, nullable=True, default=50000
-    )
-
-    # Timeout
-    timeout_seconds: Mapped[int] = mapped_column(Integer, default=300)
-
-    # State
-    status: Mapped[SessionStatus] = mapped_column(
-        _str_enum(SessionStatus),
-        nullable=False,
-        default=SessionStatus.ACTIVE,
-        index=True,
-    )
-
-    # Scope (for smart context loading)
-    scope: Mapped[SessionScope] = mapped_column(
-        _str_enum(SessionScope), nullable=False, default=SessionScope.TASK, index=True
-    )
-
-    # Timestamps
-    started_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
-    )
-    last_activity_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
-    )
-    closed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-
-    # Statistics
-    message_count: Mapped[int] = mapped_column(Integer, default=0)
-    total_content_length: Mapped[int] = mapped_column(Integer, default=0)
-
-    # Timestamps
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
-    )
-
-    # Relationships - CRITICAL: use lazy="select" for messages (sessions can have 100+)
-    group: Mapped["GroupTable"] = relationship("GroupTable", back_populates="sessions")
-    messages: Mapped[list["MessageTable"]] = relationship(
-        "MessageTable", back_populates="session", lazy="select"
-    )
-    # Task links (many-to-many via SessionTaskTable).
-    # passive_deletes mirrors the TaskTable side — the DB FK is CASCADE, so
-    # deleting a session should cascade-delete session_tasks rows. Without
-    # passive_deletes, SA tries to NULL task_id first, violating NOT NULL.
-    task_links: Mapped[list["SessionTaskTable"]] = relationship(
-        "SessionTaskTable",
-        back_populates="session",
-        lazy="select",
-        cascade="all, delete-orphan",
-        passive_deletes=True,
-    )
-
-    __table_args__ = (
-        # Composite indexes for common queries
-        Index("ix_sessions_group_status", "group_id", "status"),
-        Index("ix_sessions_status_started", "status", "started_at"),
-    )
-
-
-# =============================================================================
-# SESSION-TASK JUNCTION TABLE
-# =============================================================================
-
-
-class SessionTaskTable(Base):
-    """
-    Junction table for many-to-many Session ↔ Task relationship.
-
-    Enables PMs to create work sessions as discussion contexts for tasks.
-    A task can have multiple sessions (planning, review, retrospective).
-    A session can discuss multiple related tasks.
-    """
-
-    __tablename__ = "session_tasks"
-
-    # Identity
-    id: Mapped[UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid4
-    )
-
-    # Foreign Keys (indexes defined in __table_args__)
-    session_id: Mapped[UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("sessions.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    task_id: Mapped[UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("tasks.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-
-    # Relationship Metadata
-    is_primary: Mapped[bool] = mapped_column(
-        Boolean, default=False, nullable=False
-    )  # Primary discussion session for this task
-    relationship_type: Mapped[str] = mapped_column(
-        String(50), default="discussion", nullable=False
-    )  # "discussion", "planning", "review", "retrospective"
-
-    # Audit
-    added_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
-    )
-    added_by: Mapped[UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("agents.id", ondelete="SET NULL"),
-        nullable=True,  # Allow NULL if PM is deleted
-    )
-
-    # Relationships
-    session: Mapped["SessionTable"] = relationship(
-        "SessionTable", back_populates="task_links", lazy="joined"
-    )
-    task: Mapped["TaskTable"] = relationship(
-        "TaskTable", back_populates="session_links", lazy="joined"
-    )
-    added_by_agent: Mapped["AgentTable | None"] = relationship(
-        "AgentTable", lazy="select"
-    )
-
-    __table_args__ = (
-        # Each session-task pair is unique
-        UniqueConstraint("session_id", "task_id", name="uq_session_task"),
-        # Partial unique index: only one primary session per task
-        Index(
-            "ix_session_tasks_primary_per_task",
-            "task_id",
-            unique=True,
-            postgresql_where=(is_primary.is_(True)),
-        ),
-        # Fast lookups
-        Index("ix_session_tasks_task_id", "task_id"),
-        Index("ix_session_tasks_session_id", "session_id"),
-        Index("ix_session_tasks_type", "relationship_type"),
-    )
-
-
-# =============================================================================
-# MESSAGE TABLE
-# =============================================================================
-
-
-class MessageTable(Base):
-    """SQLAlchemy table for messages."""
-
-    __tablename__ = "messages"
-
-    # Identity
-    id: Mapped[UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid4
-    )
-
-    # Source & Context
-    agent_id: Mapped[UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("agents.id"), nullable=False, index=True
-    )
-    channel_id: Mapped[UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("channels.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    group_id: Mapped[UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("groups.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    session_id: Mapped[UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("sessions.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-
-    # Content
-    type: Mapped[MessageType] = mapped_column(
-        _str_enum(MessageType), nullable=False, index=True
-    )
-    content: Mapped[str] = mapped_column(Text, nullable=False)
-    content_length: Mapped[int] = mapped_column(Integer, nullable=False)
-
-    # Threading
-    is_reply: Mapped[bool] = mapped_column(Boolean, default=False)
-    reply_to: Mapped[UUID | None] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("messages.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-
-    # Mentions
-    mentions: Mapped[list[UUID]] = mapped_column(
-        ARRAY(UUID(as_uuid=True)), default=list
-    )
-
-    # Task Context
-    task_id: Mapped[UUID | None] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("tasks.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-    commit_ref: Mapped[str | None] = mapped_column(String(40), nullable=True)
-
-    # Metadata
-    timestamp: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        default=lambda: datetime.now(UTC),
-        nullable=False,
-        index=True,
-    )
-
-    # Extraction metadata
-    confidence: Mapped[float] = mapped_column(Float, default=1.0)
-    raw_excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    # Edit tracking (stored as JSON)
-    edited_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    edit_history: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
-
-    # Timestamps
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
-    )
-
-    # Relationships - use lazy="joined" for agent to avoid N+1 on message lists
-    agent: Mapped["AgentTable"] = relationship("AgentTable", lazy="joined")
-    session: Mapped["SessionTable"] = relationship(
-        "SessionTable", back_populates="messages"
-    )
-    parent_message: Mapped["MessageTable | None"] = relationship(
-        "MessageTable", remote_side=[id], lazy="select"
-    )
-
-    __table_args__ = (
-        # Composite indexes for efficient queries
-        Index("ix_messages_channel_timestamp", "channel_id", "timestamp"),
-        Index("ix_messages_agent_timestamp", "agent_id", "timestamp"),
-        Index("ix_messages_session_timestamp", "session_id", "timestamp"),
-    )
-
-
-# =============================================================================
 # NOTIFICATION TABLE
 # =============================================================================
 
@@ -1491,11 +1066,6 @@ class JournalEntryTable(Base):
     # Context
     task_id: Mapped[UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
-    )
-    session_id: Mapped[UUID | None] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("sessions.id", ondelete="SET NULL"),
-        nullable=True,
     )
 
     # Metadata

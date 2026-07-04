@@ -40,17 +40,6 @@ class ReportData:
 
 
 @dataclass
-class ChannelFeedData:
-    """Channel feed status."""
-
-    id: UUID
-    name: str
-    status: str
-    last_activity: datetime | None
-    message_count_24h: int
-
-
-@dataclass
 class TeamHealthData:
     """Team health status."""
 

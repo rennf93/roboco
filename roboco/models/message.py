@@ -6,6 +6,7 @@ context, and RAG purposes.
 """
 
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID, uuid4
 
 from pydantic import Field
@@ -19,14 +20,6 @@ from roboco.models.base import (
 # =============================================================================
 # SUPPORTING MODELS
 # =============================================================================
-
-
-class MessageEdit(RobocoBase):
-    """Tracks edits to messages. Agents can only edit their own messages."""
-
-    edited_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    previous_content: str = Field(..., description="Content before the edit")
-    edit_reason: str | None = Field(default=None, description="Why the edit was made")
 
 
 class RawStream(RobocoBase):
@@ -107,31 +100,11 @@ class ExtractedMessage(TimestampMixin):
 
     # Edit tracking
     edited_at: datetime | None = None
-    edit_history: list[MessageEdit] = Field(
+    edit_history: list[dict[str, Any]] = Field(
         default_factory=list, description="Previous versions if edited"
     )
 
-    # NOTE: Message editing should be performed through MessagingService.
-    # The edit() method should be in a service layer. To check if a message
-    # was edited: len(message.edit_history) > 0
-
-
-# =============================================================================
-# CREATE SCHEMA
-# =============================================================================
-
-
-class MessageCreate(RobocoBase):
-    """Schema for creating a new message."""
-
-    agent_id: UUID
-    channel_id: UUID
-    group_id: UUID
-    session_id: UUID
-    type: MessageType
-    content: str
-    is_reply: bool = False
-    reply_to: UUID | None = None
-    mentions: list[UUID] = Field(default_factory=list)
-    task_id: UUID | None = None
-    commit_ref: str | None = None
+    # NOTE: Message editing is dead — no writer ever appends to edit_history,
+    # and ExtractedMessage is never persisted to a DB table (extraction is a
+    # pure in-memory pipeline). To check if a message was edited:
+    # len(message.edit_history) > 0

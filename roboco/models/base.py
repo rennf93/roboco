@@ -117,14 +117,6 @@ class PlaybookStatus(StrEnum):
     ARCHIVED = "archived"
 
 
-class SessionStatus(StrEnum):
-    """Session states."""
-
-    ACTIVE = "active"
-    CLOSED = "closed"
-    TIMED_OUT = "timed_out"
-
-
 class MessageType(StrEnum):
     """Types of extracted messages from agent streams."""
 
@@ -158,15 +150,6 @@ class NotificationPriority(StrEnum):
     NORMAL = "normal"
     HIGH = "high"
     URGENT = "urgent"
-
-
-class ChannelType(StrEnum):
-    """Channel types for communication."""
-
-    CELL = "cell"  # Internal team
-    CROSS_CELL = "cross_cell"  # Coordination
-    MANAGEMENT = "management"
-    SPECIAL = "special"  # Announcements, all-hands
 
 
 class JournalEntryType(StrEnum):

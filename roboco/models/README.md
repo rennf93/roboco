@@ -10,14 +10,11 @@ This directory contains all Pydantic data models for the RoboCo AI Agents Compan
 └─────────────────────────────────────────────────────────────────────────────┘
 
 Organization Layer:
-├─► Agent          → Individual AI agents with roles, teams, permissions
-├─► Channel        → Top-level communication containers (#backend-cell, etc.)
-└─► Group          → Role-based groups within channels
+└─► Agent          → Individual AI agents with roles, teams, permissions
 
 Communication Layer:
-├─► Session        → Bounded message groups (by time, count, or length)
-├─► Message        → Extracted messages from agent streams
-└─► Notification   → Formal signals requiring acknowledgment
+├─► ExtractedMessage → Extracted messages from agent streams (extraction pipeline)
+└─► Notification     → Formal signals requiring acknowledgment
 
 Work Layer:
 ├─► Task           → Atomic unit of work with lifecycle states
@@ -36,10 +33,7 @@ Work Layer:
 | `agent.py` | Agent model with roles, teams, and state |
 | `project.py` | Git repository configuration and commands |
 | `work_session.py` | Git work session tracking (branch, commits, PR) |
-| `session.py` | Communication session boundaries |
-| `message.py` | Extracted messages and raw streams |
-| `group.py` | Group model for role-based access |
-| `channel.py` | Channel model for team structure |
+| `message.py` | Extracted messages and raw streams (extraction pipeline) |
 | `notification.py` | Formal notification system |
 | `journal.py` | Agent journaling and reflection |
 | `handoff.py` | Documentation handoff system |
@@ -285,10 +279,6 @@ These Pydantic models are mirrored in SQLAlchemy tables at `roboco/db/tables.py`
 | `Agent` | `AgentTable` |
 | `Project` | `ProjectTable` |
 | `WorkSession` | `WorkSessionTable` |
-| `Session` | `SessionTable` |
-| `Message` | `MessageTable` |
-| `Channel` | `ChannelTable` |
-| `Group` | `GroupTable` |
 | `Notification` | `NotificationTable` |
 | `JournalEntry` | `JournalEntryTable` |
 

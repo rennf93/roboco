@@ -222,7 +222,7 @@ class JournalService(BaseService):
             entry_create: Entry creation schema
 
         Returns:
-            The created entry, or None if the referenced task/session/journal
+            The created entry, or None if the referenced task/journal
             no longer exists (e.g. after a runtime reset).
         """
         from sqlalchemy.exc import IntegrityError
@@ -234,7 +234,6 @@ class JournalService(BaseService):
             title=entry_create.title,
             content=entry_create.content,
             task_id=entry_create.task_id,
-            session_id=entry_create.session_id,
             tags=entry_create.tags,
             sentiment=entry_create.sentiment,
             is_private=entry_create.is_private,
@@ -267,9 +266,6 @@ class JournalService(BaseService):
                 "Journal entry skipped - referenced row was deleted",
                 journal_id=str(entry_create.journal_id),
                 task_id=str(entry_create.task_id) if entry_create.task_id else None,
-                session_id=str(entry_create.session_id)
-                if entry_create.session_id
-                else None,
                 error=str(e.orig),
             )
             return None
@@ -313,7 +309,6 @@ class JournalService(BaseService):
             title=entry_row.title,
             content=entry_row.content,
             task_id=to_python_uuid(entry_row.task_id),
-            session_id=to_python_uuid(entry_row.session_id),
             timestamp=entry_row.timestamp,
             tags=entry_row.tags,
             sentiment=entry_row.sentiment,
@@ -389,7 +384,6 @@ class JournalService(BaseService):
             title=entry_row.title,
             content=entry_row.content,
             task_id=to_python_uuid(entry_row.task_id),
-            session_id=to_python_uuid(entry_row.session_id),
             timestamp=entry_row.timestamp,
             tags=entry_row.tags,
             sentiment=entry_row.sentiment,
@@ -441,7 +435,6 @@ class JournalService(BaseService):
                 title=row.title,
                 content=row.content,
                 task_id=to_python_uuid(row.task_id),
-                session_id=to_python_uuid(row.session_id),
                 timestamp=row.timestamp,
                 tags=row.tags,
                 sentiment=row.sentiment,
@@ -660,7 +653,6 @@ class JournalService(BaseService):
             title=params.title,
             content=params.content,
             task_id=params.task_id,
-            session_id=params.session_id,
             tags=params.tags,
             is_private=params.is_private,
         )
@@ -672,7 +664,6 @@ class JournalService(BaseService):
                 title=entry.title,
                 content=entry.content,
                 task_id=entry.task_id,
-                session_id=entry.session_id,
                 tags=entry.tags,
                 is_private=entry.is_private,
             )

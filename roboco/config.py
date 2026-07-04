@@ -1072,16 +1072,6 @@ class Settings(BaseSettings):
         ),
     )
 
-    session_idle_timeout_seconds: int = Field(
-        default=3600,
-        ge=30,
-        description=(
-            "Idle seconds before a messaging session is swept closed. The "
-            "previous 300s default was shorter than a human conversation pause, "
-            "so a person's chat session expired and reopened between messages."
-        ),
-    )
-
     protected_git_urls: list[str] = Field(
         default_factory=list,
         description=(

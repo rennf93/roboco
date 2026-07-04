@@ -41,9 +41,6 @@ class JournalEntry(TimestampMixin):
 
     # Context
     task_id: UUID | None = Field(default=None, description="Related task if applicable")
-    session_id: UUID | None = Field(
-        default=None, description="Related session if applicable"
-    )
 
     # Metadata
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -172,7 +169,6 @@ class GeneralEntryParams:
     title: str
     content: str
     task_id: UUID | None = None
-    session_id: UUID | None = None
     tags: list[str] = field(default_factory=list)
     is_private: bool = False
     journal_id: UUID | None = None
@@ -310,7 +306,6 @@ def create_general_entry(params: GeneralEntryParams) -> JournalEntry:
         title=params.title,
         content=params.content,
         task_id=params.task_id,
-        session_id=params.session_id,
         tags=params.tags,
         is_private=params.is_private,
     )
@@ -329,7 +324,6 @@ class JournalEntryCreate(RobocoBase):
     title: str = Field(..., min_length=1, max_length=200)
     content: str
     task_id: UUID | None = None
-    session_id: UUID | None = None
     tags: list[str] = Field(default_factory=list)
     sentiment: str | None = None
     is_private: bool = False
