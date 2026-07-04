@@ -137,6 +137,17 @@ class ProposeFeatureSpotlightRequest(BaseModel):
     body: str = Field(..., min_length=1)
 
 
+class ProposeVideoRequest(BaseModel):
+    """UX/UI dev's video metadata draft: a composition ref + per-platform
+    captions. Metadata only — no render."""
+
+    composition_id: str = Field(..., min_length=1)
+    x_caption: str = Field(..., min_length=1)
+    tiktok_caption: str = Field(..., min_length=1)
+    platforms: list[str] = Field(..., min_length=1)
+    input_props: dict[str, Any] | None = None
+
+
 class DmRequest(BaseModel):
     recipient: str  # agent slug
     text: str = Field(..., min_length=1)

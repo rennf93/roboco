@@ -26,6 +26,10 @@ class TestBuildForRole:
         # Issue #8: the developer manifest must carry `evidence` so the
         # do-server registers mcp__roboco-do__evidence inside the container.
         assert "evidence" in m.do_tools
+        # Every dev's manifest carries propose_video (role alone can't tell a
+        # ux-dev from a be-dev/fe-dev); the runtime _caller_team check is the
+        # real gate — see test_content_actions_video.py.
+        assert "propose_video" in m.do_tools
         assert "Edit" in m.write_tools
         assert m.subagent_allowed is False
         assert m.subagent_model is None  # devs don't dispatch

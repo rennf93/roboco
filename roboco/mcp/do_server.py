@@ -572,6 +572,39 @@ def propose_feature_spotlight(
     )
 
 
+def propose_video(
+    composition_id: str,
+    x_caption: str,
+    tiktok_caption: str,
+    platforms: list[str],
+    input_props: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """UX/UI dev: propose your video's composition + captions. Metadata only —
+    this does NOT render (rendering happens later, off this path).
+
+    Call this exactly ONCE per authoring task, after building the Remotion
+    composition in motion/. Then commit + open_pr to send it through the
+    normal PR-review gate.
+
+    Args:
+        composition_id: The Remotion composition id (must exist in motion/).
+        x_caption: X post text for this clip (<=280 chars).
+        tiktok_caption: TikTok caption for this clip (<=2200 chars).
+        platforms: Target platforms for this clip — any of 'x', 'tiktok'.
+        input_props: Optional props passed into the composition at render time.
+    """
+    return _post(
+        "/api/v1/do/propose_video",
+        {
+            "composition_id": composition_id,
+            "x_caption": x_caption,
+            "tiktok_caption": tiktok_caption,
+            "platforms": platforms,
+            "input_props": input_props,
+        },
+    )
+
+
 def dm(
     recipient: str,
     text: str,
@@ -813,6 +846,7 @@ _TOOLS: dict[str, Any] = {
     "pitch": pitch,
     "propose_roadmap": propose_roadmap,
     "propose_feature_spotlight": propose_feature_spotlight,
+    "propose_video": propose_video,
     "dm": dm,
     "notify": notify,
     "evidence": evidence,

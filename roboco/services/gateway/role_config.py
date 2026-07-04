@@ -51,6 +51,11 @@ _DEV_DO = (
     "progress",
     "pr_update",
     "draft_playbook",
+    # Every dev's manifest carries this (Role.DEVELOPER doesn't distinguish
+    # ux-dev from be-dev/fe-dev) — harmless, since only UX/UI devs are ever
+    # assigned a video-authoring task. The real gate is propose_video's
+    # runtime _caller_team check.
+    "propose_video",
     *_NOTIFY_RECEIVER,
 )
 
