@@ -103,6 +103,10 @@ panel/coverage/
 panel/tsconfig.tsbuildinfo
 panel/.env.local
 panel/.env.*.local
+
+# motion/ (Remotion compositions) + remotion-renderer (its render sidecar)
+motion/node_modules/
+remotion-renderer/node_modules/
 # Internal-only: strategy/scratch/reference dumps — never publish
 docs/internal/
 .pnpm-store/

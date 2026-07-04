@@ -116,6 +116,29 @@ services:
         echo "=== All models ready! ==="
 
   # --------------------------------------------------------------------------
+  # Remotion Renderer - sidecar for the video-generation engine (bundles +
+  # renders motion/ compositions to MP4). Harmless when idle — it only
+  # renders when POSTed; the video_engine_* feature flags (off by default in
+  # this compose) gate whether the orchestrator ever sends it work. No DB
+  # access, no git, no credentials.
+  # --------------------------------------------------------------------------
+  remotion-renderer:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-remotion:${ROBOCO_VERSION:-latest}
+    container_name: roboco-remotion
+    restart: unless-stopped
+    networks:
+      - default
+    # Chrome headless rendering can crash under Docker's default 64MB
+    # /dev/shm ("Chrome crashed"); give it real shared memory.
+    shm_size: "1gb"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # --------------------------------------------------------------------------
   # Agent image pre-pull (one-shot). Each pulls its published image then exits,
   # so `docker compose pull` fetches every agent image up front. The
   # orchestrator spawns these same images at runtime.
@@ -226,6 +249,10 @@ services:
       ROBOCO_LOCAL_LLM_MODEL: glm-5.2:cloud
       ROBOCO_DEFAULT_EMBEDDING_MODEL: qwen3-embedding:0.6b
       ROBOCO_OLLAMA_BASE_URL: http://roboco-ollama:11434
+      # Remotion renderer sidecar (use container name). The video engine
+      # itself is default-off (video_engine_enabled); this just points the
+      # client at the sidecar for when it's armed.
+      ROBOCO_REMOTION_BASE_URL: http://roboco-remotion:3001
       # Spawn the PRE-BUILT agent images from the same registry instead of
       # building them from source (the orchestrator pulls any it lacks).
       ROBOCO_AGENT_IMAGE_REGISTRY: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}

@@ -1,0 +1,94 @@
+// remotion-renderer — HTTP sidecar for the RoboCo video engine.
+//
+// POST /render accepts a gzipped tar of a motion/ composition source (arcname
+// "motion") plus {composition_id, orientation, input_props} form fields, and
+// responds with the rendered MP4 as the raw response body. GET /health is a
+// plain liveness probe. Credential-free and git-free: this process never
+// holds a git token, never shells out to git, and only ever reads what the
+// orchestrator POSTs to it.
+import express from "express";
+import multer from "multer";
+import { createReadStream } from "node:fs";
+import { renderComposition } from "./render.js";
+
+const PORT = Number(process.env.PORT ?? 3001);
+
+// motion/ source (no node_modules, no build output) is a few hundred KB in
+// practice; this cap is generous headroom, not a tuned budget.
+const MAX_UPLOAD_BYTES = 256 * 1024 * 1024;
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_UPLOAD_BYTES },
+});
+
+const app = express();
+
+app.get("/health", (_req, res) => {
+  res.status(200).json({ status: "ok" });
+});
+
+app.post("/render", upload.single("source"), async (req, res) => {
+  const body = req.body ?? {};
+  const compositionId = body.composition_id;
+  const orientation = body.orientation;
+  const inputPropsRaw = body.input_props;
+
+  if (!req.file) {
+    res
+      .status(400)
+      .json({ error: "missing 'source' file field (gzipped tar of motion/)" });
+    return;
+  }
+  if (!compositionId || typeof compositionId !== "string") {
+    res.status(400).json({ error: "missing 'composition_id' field" });
+    return;
+  }
+  if (orientation !== "vertical" && orientation !== "square") {
+    res
+      .status(400)
+      .json({ error: "'orientation' must be 'vertical' or 'square'" });
+    return;
+  }
+
+  let inputProps;
+  try {
+    inputProps = inputPropsRaw ? JSON.parse(inputPropsRaw) : {};
+  } catch {
+    res.status(400).json({ error: "'input_props' is not valid JSON" });
+    return;
+  }
+
+  try {
+    const { outputLocation, cleanup } = await renderComposition({
+      tarBuffer: req.file.buffer,
+      compositionId,
+      inputProps,
+      orientation,
+    });
+
+    res.status(200);
+    res.setHeader("Content-Type", "video/mp4");
+    const stream = createReadStream(outputLocation);
+    stream.on("error", (err) => {
+      console.error("remotion-renderer: stream error", err);
+      if (!res.headersSent) {
+        res.status(500);
+      }
+      res.end();
+      cleanup();
+    });
+    stream.on("close", () => {
+      cleanup();
+    });
+    stream.pipe(res);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("remotion-renderer: render failed", message);
+    res.status(500).json({ error: `render failed: ${message}` });
+  }
+});
+
+app.listen(PORT, () => {
+  console.log(`remotion-renderer listening on :${PORT}`);
+});
