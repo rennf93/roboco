@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 class StreamChunkRequest(BaseModel):
     """Request to process a stream chunk."""
 
-    channel_id: UUID = Field(..., description="Target channel")
+    channel_id: UUID = Field(..., description="Target stream")
     session_id: UUID = Field(..., description="Current session")
     chunk: str = Field(..., description="Raw LLM output chunk")
 
@@ -26,9 +26,9 @@ class StreamCompleteRequest(BaseModel):
 class ExtractRequest(BaseModel):
     """Request to extract messages from content."""
 
-    channel_id: UUID = Field(..., description="Target channel")
+    channel_id: UUID = Field(..., description="Target stream")
     session_id: UUID = Field(..., description="Current session")
-    group_id: UUID = Field(..., description="Group within channel")
+    group_id: UUID = Field(..., description="Group within stream")
     content: str = Field(..., description="Content to extract from")
     task_id: UUID | None = Field(default=None, description="Related task")
 

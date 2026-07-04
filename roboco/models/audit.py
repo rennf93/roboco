@@ -15,7 +15,6 @@ class AuditEventType(StrEnum):
 
     # Permission denials
     PERMISSION_DENIED = "permission_denied"
-    CHANNEL_ACCESS_DENIED = "channel_access_denied"
     TASK_ACTION_DENIED = "task_action_denied"
     NOTIFICATION_DENIED = "notification_denied"
     STATE_TRANSITION_DENIED = "state_transition_denied"

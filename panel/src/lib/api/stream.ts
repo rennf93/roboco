@@ -164,23 +164,4 @@ export const streamApi = {
     const { data } = await api.get<ChannelPermissions[]>("/stream/permissions");
     return data;
   },
-
-  /**
-   * Get permissions for a specific channel
-   */
-  getChannelPermissions: async (
-    channelName: string,
-  ): Promise<ChannelPermissions> => {
-    if (isMockMode()) {
-      return {
-        channel_name: channelName,
-        can_transcribe: true,
-        can_extract: true,
-      };
-    }
-    const { data } = await api.get<ChannelPermissions>(
-      `/stream/permissions/channel/${channelName}`,
-    );
-    return data;
-  },
 };

@@ -64,7 +64,7 @@ const mockSearchResults: KBSearchResult[] = [
   {
     content:
       "BE-DEV-1: I've completed the task validation logic. The acceptance criteria now require at least one item before a task can be created.",
-    source: "channel:backend/session:abc123",
+    source: "journal:be-dev-1",
     score: 0.75,
     index_type: KBIndexType.CONVERSATIONS,
     metadata: { agent: "be-dev-1", timestamp: "2024-01-15T10:30:00Z" },
