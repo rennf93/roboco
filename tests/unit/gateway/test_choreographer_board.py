@@ -314,3 +314,102 @@ async def test_board_triage_works_for_head_marketing() -> None:
     env = await c.board_triage(hm_id)
     body = env.as_dict()
     assert body["task_id"] == str(strategic.id)
+
+
+@pytest.mark.asyncio
+async def test_board_triage_idle_branch_carries_company_goals_for_product_owner() -> (
+    None
+):
+    """The idle branch is what the Product Owner's roadmap-exploration one-shot
+    spawn hits first (its directly-assigned exploration task is never itself a
+    "strategic root awaiting PM review"), so the CEO's brand_voice/north_star
+    charter must still reach it there."""
+    po_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.agent_for.return_value = MagicMock(role="product_owner", team="board")
+    task_svc.list_strategic_for_board.return_value = []
+    deps = _make_deps(task=task_svc)
+    deps.evidence_repo.company_goals.return_value = {
+        "north_star": "Win the market",
+        "brand_voice": "Confident, dry wit.",
+    }
+    c = Choreographer(deps)
+
+    env = await c.board_triage(po_id)
+    body = env.as_dict()
+    assert body["status"] == "idle"
+    company_goals = body["context_briefing"]["company_goals"]
+    assert company_goals["brand_voice"] == "Confident, dry wit."
+    assert company_goals["north_star"] == "Win the market"
+    deps.evidence_repo.company_goals.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_board_triage_idle_branch_carries_company_goals_for_head_marketing() -> (
+    None
+):
+    """Same gap, Head of Marketing side — hit by the feature-spotlight
+    exploration spawn's triage() call."""
+    hm_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.agent_for.return_value = MagicMock(role="head_marketing", team="board")
+    task_svc.list_strategic_for_board.return_value = []
+    deps = _make_deps(task=task_svc)
+    deps.evidence_repo.company_goals.return_value = {
+        "north_star": "Win the market",
+        "brand_voice": "Confident, dry wit.",
+    }
+    c = Choreographer(deps)
+
+    env = await c.board_triage(hm_id)
+    body = env.as_dict()
+    assert body["status"] == "idle"
+    company_goals = body["context_briefing"]["company_goals"]
+    assert company_goals["brand_voice"] == "Confident, dry wit."
+    deps.evidence_repo.company_goals.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_board_triage_idle_branch_omits_company_goals_when_charter_unset() -> (
+    None
+):
+    """No regression: an unset charter (EvidenceRepo.company_goals() -> None)
+    still yields no company_goals key — the idle branch does not fabricate a
+    section that isn't there."""
+    po_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.agent_for.return_value = MagicMock(role="product_owner", team="board")
+    task_svc.list_strategic_for_board.return_value = []
+    deps = _make_deps(task=task_svc)
+    deps.evidence_repo.company_goals.return_value = None
+    c = Choreographer(deps)
+
+    env = await c.board_triage(po_id)
+    body = env.as_dict()
+    assert "company_goals" not in body["context_briefing"]
+
+
+@pytest.mark.asyncio
+async def test_board_triage_strategic_branch_company_goals_unaffected() -> None:
+    """No regression: the strategic-review branch already passed full=True and
+    keeps doing exactly that — one company_goals fetch, unaffected by the
+    idle-branch's narrower include_company_goals opt-in."""
+    po_id = uuid4()
+    strategic = MagicMock(
+        id=uuid4(),
+        status="awaiting_pm_review",
+        title="strategic root",
+        team="backend",
+        parent_task_id=None,
+    )
+    task_svc = AsyncMock()
+    task_svc.agent_for.return_value = MagicMock(role="product_owner", team="board")
+    task_svc.list_strategic_for_board.return_value = [strategic]
+    deps = _make_deps(task=task_svc)
+    deps.evidence_repo.company_goals.return_value = {"north_star": "Win"}
+    c = Choreographer(deps)
+
+    env = await c.board_triage(po_id)
+    body = env.as_dict()
+    assert body["context_briefing"]["company_goals"] == {"north_star": "Win"}
+    deps.evidence_repo.company_goals.assert_awaited_once()

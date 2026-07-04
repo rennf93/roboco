@@ -818,6 +818,7 @@ class Choreographer:
         task: Any | None = None,
         include_ac_coverage: bool = False,
         full: bool = False,
+        include_company_goals: bool = False,
     ) -> dict[str, Any]:
         """Assemble context_briefing for agent_id, optionally scoped to task_id.
 
@@ -829,6 +830,17 @@ class Choreographer:
         signals-only briefing (unread a2a/mentions/notifications + metadata
         gaps). The agent already holds the heavy context from its claim, and
         every extra copy is re-read at cache-read price on all later turns.
+
+        ``include_company_goals`` is a narrow, cheap-only opt-in for callers
+        that want the charter (north_star/brand_voice/…) without paying for
+        the rest of ``full``'s heavy sections (team activity, blockers, an
+        institutional-memory RAG search). ``company_goals`` is a single
+        capped-singleton lookup, so this stays safe on a low-cardinality path
+        like ``board_triage``'s idle branch — hit when the Product Owner /
+        Head of Marketing's one-shot roadmap / feature-spotlight exploration
+        spawn finds no strategic root to review, which is not a "strategic
+        root" itself so the ``full=True`` branch never fires for it. A no-op
+        when ``full`` is already True (company_goals is already fetched).
 
         ``task`` is the already-loaded row (every claim / give_me_work / done
         path holds it). The prior-work handoff is built only when it is passed —
@@ -846,6 +858,9 @@ class Choreographer:
         heavy = (
             await self._heavy_briefing_sections(agent_id, task_id, task) if full else {}
         )
+        company_goals = await self._resolve_company_goals(
+            heavy, full=full, include_company_goals=include_company_goals
+        )
         inputs = BriefingInputs(
             unread_a2a=await repo.list_unread_a2a(agent_id),
             unread_mentions=await repo.list_unread_mentions(agent_id),
@@ -856,7 +871,7 @@ class Choreographer:
             recent_team_activity=heavy.get("recent_team_activity", []),
             blockers_in_my_lane=heavy.get("blockers_in_my_lane", []),
             task_handoff=heavy.get("task_handoff"),
-            company_goals=heavy.get("company_goals"),
+            company_goals=company_goals,
         )
         briefing = build_context_briefing(inputs)
         memory = heavy.get("institutional_memory", [])
@@ -879,6 +894,30 @@ class Choreographer:
                     ],
                 }
         return briefing
+
+    async def _resolve_company_goals(
+        self,
+        heavy: dict[str, Any],
+        *,
+        full: bool,
+        include_company_goals: bool,
+    ) -> dict[str, Any] | None:
+        """The briefing's company_goals section — split out of ``_briefing_for``
+        to keep its complexity down.
+
+        ``full=True`` already resolved it into ``heavy`` (one query, via
+        ``_heavy_briefing_sections``); otherwise a standalone cheap fetch runs
+        only under the narrower ``include_company_goals`` opt-in. Never both —
+        no double query when a caller somehow sets both.
+        """
+        goals: dict[str, Any] | None
+        if full:
+            goals = heavy.get("company_goals")
+        elif include_company_goals:
+            goals = await self._deps.evidence_repo.company_goals()
+        else:
+            goals = None
+        return goals
 
     async def _heavy_briefing_sections(
         self, agent_id: UUID, task_id: UUID | None, task: Any | None

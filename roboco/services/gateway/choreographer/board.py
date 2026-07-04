@@ -32,7 +32,17 @@ class BoardMixin(_Base):
     """Board (Product Owner + Head Marketing) + Auditor verbs."""
 
     async def board_triage(self, board_agent_id: UUID) -> Envelope:
-        """Phase 4: Board triage — next strategic root task awaiting PM review."""
+        """Phase 4: Board triage — next strategic root task awaiting PM review.
+
+        The idle branch (no strategic root to review) is also what the
+        Product Owner's roadmap-exploration and Head of Marketing's
+        feature-spotlight-exploration one-shot spawns hit first (their
+        directly-assigned exploration task is never itself a "strategic root
+        awaiting PM review"): pass ``include_company_goals`` so the CEO's
+        charter (brand_voice/north_star) still reaches them there, without
+        paying for the rest of ``full``'s heavy sections on this low-
+        cardinality, board-only path.
+        """
         strategic = await self.task.list_strategic_for_board()
         if strategic:
             t = strategic[0]
@@ -51,7 +61,9 @@ class BoardMixin(_Base):
             status="idle",
             task_id=None,
             next="no strategic-review work — i_am_idle",
-            context_briefing=await self._briefing_for(board_agent_id, None),
+            context_briefing=await self._briefing_for(
+                board_agent_id, None, include_company_goals=True
+            ),
         )
 
     async def auditor_triage(self, auditor_agent_id: UUID) -> Envelope:

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **The CEO's brand_voice/north_star charter now reaches the board exploration spawns.** `board_triage`'s idle branch (hit whenever the Product Owner's roadmap-exploration or Head of Marketing's feature-spotlight-exploration one-shot spawn finds no strategic root to review — their directly-assigned exploration task is never itself a "strategic root awaiting PM review") built its briefing with `full=False`, so `company_goals` — and therefore `brand_voice` — never reached either spawn despite both prompts claiming the charter is "already in your briefing." A new narrow `include_company_goals` opt-in on `_briefing_for` (`_resolve_company_goals`) fetches just the cheap company_goals singleton on that path, without pulling in `full`'s other heavy sections (team activity, blockers, an institutional-memory RAG search) — every other briefing consumer is unchanged.
+
 ## [0.18.0] - 2026-07-04
 
 ### Added

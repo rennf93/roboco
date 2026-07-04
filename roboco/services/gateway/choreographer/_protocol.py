@@ -94,6 +94,7 @@ class ChoreographerHelpers:
         task: Any | None = None,
         include_ac_coverage: bool = False,
         full: bool = False,
+        include_company_goals: bool = False,
     ) -> dict[str, Any]:
         raise NotImplementedError
 

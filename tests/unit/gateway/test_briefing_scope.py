@@ -92,6 +92,40 @@ class TestBriefingScope:
         assert "task_handoff" not in briefing
         repo.journal_highlights_for_task.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_include_company_goals_fetches_only_that_heavy_field(self) -> None:
+        """The board_triage idle-branch opt-in: company_goals reaches the
+        briefing without pulling in the rest of ``full``'s heavy sections."""
+        choreo, repo = _choreographer_with_repo()
+        briefing = await choreo._briefing_for(uuid4(), None, include_company_goals=True)
+        assert briefing["company_goals"] == {"north_star": "win"}
+        repo.company_goals.assert_awaited_once()
+        for heavy in (
+            "recent_team_activity",
+            "blockers_in_my_lane",
+            "task_handoff",
+            "institutional_memory",
+        ):
+            assert heavy not in briefing
+        # No heavy queries beyond the one company_goals lookup.
+        repo.recent_team_activity.assert_not_awaited()
+        repo.blockers_in_lane.assert_not_awaited()
+        repo.journal_highlights_for_task.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_full_true_ignores_include_company_goals_no_double_fetch(
+        self,
+    ) -> None:
+        """``full=True`` already resolves company_goals via the heavy-sections
+        batch; passing include_company_goals=True too must not issue a second
+        query."""
+        choreo, repo = _choreographer_with_repo()
+        briefing = await choreo._briefing_for(
+            uuid4(), None, full=True, include_company_goals=True
+        )
+        assert briefing["company_goals"] == {"north_star": "win"}
+        repo.company_goals.assert_awaited_once()
+
 
 class TestPayloadCaps:
     def test_truncate_diff_caps_and_annotates(self) -> None:
