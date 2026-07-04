@@ -933,6 +933,29 @@ class Settings(BaseSettings):
         gt=0,
         description="Per-request timeout for outbound video-engine HTTP calls.",
     )
+    remotion_base_url: str = Field(
+        default="http://roboco-remotion:3001",
+        description=(
+            "Base URL of the remotion-renderer sidecar. The orchestrator tars "
+            "the merged motion/ source and POSTs it here; the sidecar returns "
+            "MP4 bytes in the response (no cross-container shared volume)."
+        ),
+    )
+    video_render_interval_seconds: float = Field(
+        default=120.0,
+        gt=0,
+        description=(
+            "Seconds between video-render loop passes (scans completed "
+            "authoring tasks with an unrendered composition)."
+        ),
+    )
+    video_output_dir: str = Field(
+        default="/data/video-renders",
+        description=(
+            "Orchestrator-local directory where rendered MP4s are written. "
+            "The sidecar never writes here directly — it only returns bytes."
+        ),
+    )
 
     # Board roadmap engine — weekly, the Product Owner explores the company's
     # projects and proposes a themed cycle of roadmap items; the CEO approves

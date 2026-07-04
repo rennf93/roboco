@@ -54,6 +54,7 @@ def _make_orchestrator() -> AgentOrchestrator:
         "_x_mentions_task",
         "_roadmap_engine_task",
         "_x_feature_spotlight_task",
+        "_video_render_task",
     ):
         setattr(orch, attr, None)
     return orch

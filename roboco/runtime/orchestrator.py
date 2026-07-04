@@ -731,6 +731,13 @@ def _is_non_dev_dispatch_source(task: dict[str, Any]) -> bool:
     return task.get("source") in (ROADMAP_SOURCE, X_FEATURE_EXPLORATION_SOURCE)
 
 
+# Bounded retry for the video render loop: a failed render (read-clone not yet
+# synced to the just-merged composition, or a transient sidecar blip) retries on
+# a later cycle; only after this many attempts is a task marked terminally
+# failed, so a genuinely broken composition can't re-render forever.
+_MAX_VIDEO_RENDER_ATTEMPTS = 5
+
+
 class AgentOrchestrator:
     """
     Manages Claude Code containers for all agents.
@@ -786,6 +793,7 @@ class AgentOrchestrator:
         self._x_mentions_task: asyncio.Task | None = None
         self._roadmap_engine_task: asyncio.Task | None = None
         self._x_feature_spotlight_task: asyncio.Task | None = None
+        self._video_render_task: asyncio.Task | None = None
         # Provider registry: maps a ModelProvider to a dedicated AgentProvider
         # backend. Only providers needing a non-Claude-Code runtime are
         # registered (currently GROK, which speaks the OpenAI protocol). Agents
@@ -965,6 +973,7 @@ class AgentOrchestrator:
         self._x_feature_spotlight_task = asyncio.create_task(
             self._x_feature_spotlight_loop()
         )
+        self._video_render_task = asyncio.create_task(self._video_render_loop())
 
         logger.info(
             "Orchestrator started",
@@ -1062,6 +1071,7 @@ class AgentOrchestrator:
             self._x_mentions_task,
             self._roadmap_engine_task,
             self._x_feature_spotlight_task,
+            self._video_render_task,
         ):
             await self._cancel_background_task(task)
 
@@ -7610,6 +7620,119 @@ Start by:
         async with get_db_context() as db:
             await get_x_engine(db).open_feature_spotlight_exploration()
             await db.commit()
+
+    async def _video_render_loop(self) -> None:
+        """Video engine: on an interval, render merged compositions to MP4 and
+        materialize held video_post drafts.
+
+        Dormant by default — returns immediately unless video_engine_enabled,
+        so a standard deployment never scans for completed video tasks or
+        reaches the rendering sidecar.
+        """
+        if not settings.video_engine_enabled:
+            return
+        interval = settings.video_render_interval_seconds
+        while self._running:
+            try:
+                await asyncio.sleep(interval)
+                await self._run_video_render_cycle()
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                logger.exception("video-render cycle failed")
+
+    async def _run_video_render_cycle(self) -> None:
+        """One render pass: render every completed authoring task carrying an
+        unrendered composition. Testable w/o the sleep."""
+        from roboco.db import get_db_context
+        from roboco.services.task import get_task_service
+
+        async with get_db_context() as db:
+            tasks = await get_task_service(db).list_completed_video_tasks()
+            for task in tasks:
+                await self._render_video_task(db, task)
+            await db.commit()
+
+    async def _render_video_task(self, db: Any, task: Any) -> None:
+        """Render one completed authoring task's composition, or skip/retry/fail.
+
+        Skips silently when the dev hasn't called ``propose_video`` yet (no
+        ``composition_id``) or the task already reached a terminal render state
+        (``rendered`` — idempotent re-run; ``failed`` — retries exhausted). A
+        render failure (read-clone not yet synced to the just-merged
+        composition, transient sidecar blip, bad response) is caught here so one
+        broken task never blocks the cycle, and is RETRIED on later cycles up to
+        ``_MAX_VIDEO_RENDER_ATTEMPTS`` before being marked terminally failed.
+        """
+        from roboco.foundation.policy.content import markers
+
+        draft = markers.get_video_draft(task) or {}
+        composition_id = draft.get("composition_id")
+        if not composition_id or draft.get("render_status") in ("rendered", "failed"):
+            return
+        try:
+            mp4_paths = await self._render_both_cuts(
+                db, draft, composition_id, str(task.id)
+            )
+            await self._materialize_video_post(db, task, draft, mp4_paths)
+        except Exception as exc:
+            attempts = int(draft.get("render_attempts", 0)) + 1
+            terminal = attempts >= _MAX_VIDEO_RENDER_ATTEMPTS
+            payload = {**draft, "render_attempts": attempts}
+            if terminal:
+                payload["render_status"] = "failed"
+            markers.set_video_draft(task, payload)
+            logger.warning(
+                "video-render: render attempt failed",
+                task_id=str(task.id),
+                attempts=attempts,
+                terminal=terminal,
+                error=str(exc),
+            )
+
+    async def _render_both_cuts(
+        self, db: Any, draft: dict[str, Any], composition_id: str, render_key: str
+    ) -> dict[str, str]:
+        """Render the vertical + square cuts from the roboco project's merged
+        read-clone's motion/ dir; returns {"vertical": path, "square": path}.
+        ``render_key`` (the source task id) scopes each cut's output path."""
+        from roboco.services.remotion_client import get_remotion_renderer
+        from roboco.services.workspace import get_workspace_service
+
+        slug = (settings.self_heal_project_slug or "roboco-api").strip()
+        workspace = await get_workspace_service(db).ensure_read_clone(slug)
+        motion_dir = str(workspace / "motion")
+        input_props = draft.get("input_props") or {}
+        renderer = get_remotion_renderer()
+        cuts: dict[str, str] = {}
+        for orientation in ("vertical", "square"):
+            cuts[orientation] = await renderer.render(
+                source_dir=motion_dir,
+                composition_id=composition_id,
+                input_props=input_props,
+                orientation=orientation,
+                render_key=render_key,
+            )
+        return cuts
+
+    async def _materialize_video_post(
+        self, db: Any, task: Any, draft: dict[str, Any], mp4_paths: dict[str, str]
+    ) -> None:
+        """Materialize the held video_post draft, then mark the source task
+        rendered — the idempotency key the next cycle's scan checks."""
+        from roboco.foundation.policy.content import markers
+        from roboco.services.video_engine import get_video_engine
+
+        await get_video_engine(db)._originate_video_post(
+            source_task=task,
+            mp4_paths=mp4_paths,
+            captions={
+                "x": draft.get("x_caption", ""),
+                "tiktok": draft.get("tiktok_caption", ""),
+            },
+            platforms=draft.get("platforms") or [],
+        )
+        markers.set_video_draft(task, {**draft, "render_status": "rendered"})
 
     async def _load_dep_update_set(self, db: Any) -> list[Any]:
         """Projects with a ``dep_update_command`` + a git_url, one per

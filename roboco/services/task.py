@@ -1441,6 +1441,21 @@ class TaskService(BaseService):
         )
         return list(result.scalars().all())
 
+    async def list_completed_video_tasks(self) -> list[TaskTable]:
+        """Completed video-authoring tasks — the render loop's scan basis.
+
+        Source=VIDEO_SOURCE only (a held video_post draft is never itself
+        rendered). composition_id/render_status live in the JSON marker, not
+        a column, so the caller filters those in Python after this query.
+        """
+        result = await self.session.execute(
+            select(TaskTable).where(
+                TaskTable.source == VIDEO_SOURCE,
+                TaskTable.status == TaskStatus.COMPLETED,
+            )
+        )
+        return list(result.scalars().all())
+
     async def list_open_roadmap_cycles(self) -> list[TaskTable]:
         """Non-terminal board-roadmap exploration tasks — the one-open-cycle
         dedup + panel-queue basis. Includes a cycle before AND after the
