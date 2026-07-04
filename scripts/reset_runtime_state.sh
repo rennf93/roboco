@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Reset the smoke-test runtime state (tasks, sessions, messages, journals,
-# journal entries, notifications, audit, waiting, work_sessions, groups)
-# while preserving the project scaffolding (agents, projects, channels).
+# Reset the smoke-test runtime state (tasks, journals, journal entries,
+# notifications, audit, waiting, work_sessions)
+# while preserving the project scaffolding (agents, projects).
 #
 # Also resets agent git workspaces to a clean state on the default
 # branch — uncommitted edits or stale feature branches from prior runs
@@ -63,7 +63,7 @@ if [ -n "$agents_running" ]; then
     done <<< "$agents_running"
 fi
 
-echo ">>> Wiping runtime DB state (preserving agents/projects/channels)..."
+echo ">>> Wiping runtime DB state (preserving agents/projects)..."
 $DOCKER exec -i roboco-postgres psql -U roboco -d roboco < "$SQL_FILE"
 
 # Flush Redis — it caches permission checks, session lookups, dispatcher
