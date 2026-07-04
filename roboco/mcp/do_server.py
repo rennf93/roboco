@@ -547,6 +547,31 @@ def propose_roadmap(cycle_goal: str, items: list[dict[str, Any]]) -> dict[str, A
     )
 
 
+def propose_feature_spotlight(
+    feature_slug: str, feature_title: str, body: str
+) -> dict[str, Any]:
+    """Head of Marketing: draft ONE feature-spotlight marketing post.
+
+    Call this exactly ONCE per exploration cycle, after investigating the
+    CHANGELOG, feature-flags ledger, docs/map, charter, and KB to pick a real,
+    under-publicized capability. The draft is held in the X post queue for the
+    CEO to edit/approve — nothing auto-posts.
+
+    Args:
+        feature_slug: Stable slug identifying the feature (the dedup key).
+        feature_title: Short human title of the feature.
+        body: The tweet text (plain, <=280 chars, no invented facts).
+    """
+    return _post(
+        "/api/v1/do/propose_feature_spotlight",
+        {
+            "feature_slug": feature_slug,
+            "feature_title": feature_title,
+            "body": body,
+        },
+    )
+
+
 def dm(
     recipient: str,
     text: str,
@@ -787,6 +812,7 @@ _TOOLS: dict[str, Any] = {
     "note": note,
     "pitch": pitch,
     "propose_roadmap": propose_roadmap,
+    "propose_feature_spotlight": propose_feature_spotlight,
     "dm": dm,
     "notify": notify,
     "evidence": evidence,
