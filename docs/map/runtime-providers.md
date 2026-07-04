@@ -20,7 +20,7 @@ This slice is the agent-runtime + LLM-provider seam plus the in-container agent 
 | roboco/llm/providers/_docker.py | Shared async docker stop/kill/inspect-running helpers for providers | 42 |
 | roboco/llm/providers/grok.py | GrokCliProvider: spawns roboco-agent-grok container, mounts ~/.grok dir + usage dir + grok env | 236 |
 | roboco/llm/providers/grok_auth.py | SuperGrok token refresh-token grant loop + --check backstop CLI; atomic auth.json rewrite | 317 |
-| roboco/llm/providers/grok_cli_config.py | Entrypoint renderer: mcp-config -> ~/.grok/config.toml, per-role grok flags, AGENTS.md, bash-guard hook | 317 |
+| roboco/llm/providers/grok_cli_config.py | Entrypoint renderer: mcp-config -> ~/.grok/config.toml, per-role grok flags, AGENTS.md, bash-guard hook, + default-off fable-mode honesty-nudge hook | 317 |
 | roboco/llm/providers/grok_cli_usage.py | Capture token usage from grok sessions/updates.jsonl -> usage.json (notional cost) | 201 |
 | roboco/agent_sdk/__init__.py | Package docstring only | 10 |
 | roboco/agent_sdk/models.py | Pydantic models: A2A messages, budget/terminal/verb-circuit/token-usage request+status | 258 |
@@ -78,6 +78,8 @@ This slice is the agent-runtime + LLM-provider seam plus the in-container agent 
 | write_grok_hooks | function | roboco/llm/providers/grok_cli_config.py:276 | Install bash-guard PreToolUse JSON hook into ~/.grok/hooks (ROBOCO_GUARD_SKIP_GIT=1) |
 | bash_guard_hook_config | function | roboco/llm/providers/grok_cli_config.py:251 | Build the grok hooks JSON for the bash-guard (matcher Bash, exit 2 deny) |
 | grok_cli_config.main | function | roboco/llm/providers/grok_cli_config.py:293 | Entrypoint: write config.toml + AGENTS.md + hooks + per-role args file |
+| fable_honesty_nudge_hook_config | function | roboco/llm/providers/grok_cli_config.py:308 | Build the grok PostToolUse hooks JSON for the fable-mode honesty-nudge script; hook path env-overridable via ROBOCO_FABLE_HONESTY_NUDGE_HOOK |
+| write_grok_fable_hooks | function | roboco/llm/providers/grok_cli_config.py:329 | Default-off (`fable_mode_enabled`): install the honesty-nudge hook JSON into ~/.grok/hooks; no-ops if the flag is off or the script file is missing — the only fable-mode hook ported to grok (a grok PreToolUse/Stop deny cancels the whole run, unlike Claude Code, so only the never-denying PostToolUse honesty-nudge is safe to port) |
 | total_tokens_from_updates | function | roboco/llm/providers/grok_cli_usage.py:46 | Max cumulative totalTokens across a grok updates.jsonl (params.update._meta / params._meta / top-level fallback) |
 | capture_session_usage | function | roboco/llm/providers/grok_cli_usage.py:115 | Write usage.json (model, total_tokens, cost_usd) for one grok session; reusable per-turn by interactive driver |
 | session_id_from_run_log | function | roboco/llm/providers/grok_cli_usage.py:153 | Read grok-generated sessionId from --output-format json or streaming-json run log (grok -p ignores -s) |
@@ -321,6 +323,8 @@ runtime-providers
 | 15effce0 | Chore: 141 Gaps fill-in (#283) — only commit touching this slice since fd10cc86 | Four files changed. grok_auth.py: F006 fix — _atomic_write now has a direct-write fallback so a rotated single-use refresh_token is never lost; added _exp_from_access_token (JWT exp decode) so a fresh token isn't left with stale expires_at when xAI omits expires_in (was: silently kept old expires_at -> is_valid/--check forever rejected + re-rotation burn). grok.py: auth mount changed from single auth.json FILE to whole ~/.grok DIRECTORY (inode-pinning fix so tmp+rename refresh propagates to running containers); missing auth.json now logs a loud warning instead of silently not mounting. server.py: /usage/sync now validates transcript_path via _contained_transcript_path (.jsonl + must resolve under transcript root) — closes unauthenticated arbitrary-file stat/read. intake_driver.py: _coerce_draft/_coerce_spec_fields now flatten XML-ish list fields (acceptance_criteria/what_this_builds/notes + the_work[].items) to list[str] so a non-array never crashes the panel/VARCHAR[] insert; propose_draft/propose_batch tool descriptions updated to declare per-cell project_id (MegaTask multi-cell). |
 
 > Post-snapshot updates (since 2026-06-29): 536bbb64 (Chore/all/logical gaps sweep #286) — grok_auth.py: added module-level `_refresh_lock = threading.Lock()` (line 48) and new `_recheck_or_refresh` helper (line 283); `refresh_if_stale` now acquires `_refresh_lock` before the grant POST and delegates to `_recheck_or_refresh` inside the lock so a concurrent caller that waited finds the already-refreshed token and returns `fresh` instead of re-POSTing the now-dead single-use refresh grant (#94). All other commits touching roboco/runtime/ in this window only modified orchestrator.py (out-of-scope for this slice).
+>
+> **v0.18.0** (2026-07-04): Fable mode's grok side — `fable_honesty_nudge_hook_config`/`write_grok_fable_hooks` (grok_cli_config.py:308-345), gated by `fable_mode_enabled` (default off). Deliberately narrower than the Claude path's 5 hooks: only the never-denying PostToolUse honesty-nudge is ported, because a grok `PreToolUse`/`Stop` hook deny cancels the entire run (verified live) — the same asymmetry this file's Gotchas section already documents for the bash-guard's git-deny-vs-exfil-cancel split.
 
 ## Regression Risks
 

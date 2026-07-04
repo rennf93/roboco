@@ -324,6 +324,8 @@ No other commits in this slice since baseline.
 > - **`0d714b6c` — "[chore] mcp-servers: normalize exception bodies to Envelope + lift task_id/correlation_id on circuit_open"** (committed 2026-06-30). IMPACT on this slice:
 >   - **`flow_server.py` + `do_server.py`**: added `_remediate_for_kind` and `_normalize_exception_envelope`; the non-404 JSON path in `_post` now normalizes dict-`error` exception-handler bodies and 422 `detail` lists into the Envelope wire format so agents get `remediate`/`next` instead of raw exception bodies (#232); `_record_and_check_circuit` lifts `task_id`/`correlation_id` from the original rejection onto the circuit_open envelope top level (#359).
 >   - **`intake_server.py`**: `_post_event` captures relay response body under `detail` on non-success so the grok intake agent sees the real failure reason instead of an opaque `http_422` token (#57).
+>
+> - **v0.18.0** (2026-07-04): No commit touched `roboco/mcp/` for the X feature-spotlight workstream — `do_server.py`'s `_TOOLS` dict (21 content tools) is unchanged, which is itself the finding: `propose_feature_spotlight` was wired at the role-config + content-actions layers but never registered here. See Regression Risks below.
 
 ## Regression Risks
 
@@ -336,6 +338,7 @@ No other commits in this slice since baseline.
 | `propose_batch` well-formed filter could silently drop intended drafts | `intake_server.py:146` | **Partially mitigated (536bbb64 #163):** `_draft_title` now accepts `name` as a fallback for `title`, and `_normalize_batch_drafts` normalizes `name`-only drafts onto `title` before posting. Residual risk: a draft using a different key (e.g. `label`) is still dropped silently; the `dropped` count is sent but the CEO may not notice. | low |
 | Breaker SDK timeout (2s) may be too tight under load | `flow_server.py:55`, `do_server.py:37` | `_SDK_TIMEOUT=2.0` for the loopback `/verb/attempted` POST. Under container CPU contention the SDK could exceed 2s and the breaker fails open (returns original payload) — re-introducing the unbounded-retry condition the breaker was added to stop. Fail-open is safe but defeats the protection. | low |
 | Circuit-breaker forwarding does not pass `task_id` for content tools that lack one | `do_server.py:379` | `body.get("task_id")` is sent to the SDK. Several do-tools (`read_messages`, `notify_list`) have no `task_id` — the breaker records `task_id=None`, so the per-verb (not per-task) breaker still works, but any future per-task breaker logic would mis-attribute these. | low |
+| `propose_feature_spotlight` granted by role_config but not registered in `do_server.py` | `do_server.py:785-888`, `roboco/services/gateway/role_config.py:120-123` | v0.18.0's Head-of-Marketing-only content verb (`ContentActions.propose_feature_spotlight`) has no wrapper function or `_TOOLS` entry here, unlike `propose_roadmap` which has both (`do_server.py:529`, `:789`). `_register_tools()` only registers the intersection of the manifest's granted verbs and `_TOOLS` (`unknown = [verb for verb in allowed if verb not in _TOOLS]` silently drops anything else), so a spawned Head-of-Marketing agent cannot actually call this tool via MCP despite the role-config grant. Found via static read (grep for the verb name across `do_server.py` returns zero hits) — not reproduced against a live spawn. | Medium |
 
 ## Health
 

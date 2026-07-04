@@ -61,6 +61,7 @@ The support layer of the agent gateway: pure/cheap components the Choreographer 
 | ContentActions.archive_playbook | method | roboco/services/gateway/content_actions.py:784 | Auditor archives an approved playbook -> retired. |
 | ContentActions._curate_playbook | method | roboco/services/gateway/content_actions.py:792 | Shared Auditor-only curation; commit status BEFORE RAG index/unindex; ConflictError->invalid_state. |
 | ContentActions.pitch | method | roboco/services/gateway/content_actions.py:935 | Board (PO/Head Marketing) proposes a product; validates cells, ConflictError/ValidationError->invalid_state. |
+| ContentActions.propose_feature_spotlight | method | roboco/services/gateway/content_actions.py:1238 | Head-of-Marketing-only (`_FEATURE_SPOTLIGHT_ROLES`); validates feature_slug/title/body, checks `XEngine.is_feature_seen`, calls `XEngine.materialize_feature_spotlight` (creates a held X-post draft + completes the caller's exploration task). |
 | ContentActions.dm | method | roboco/services/gateway/content_actions.py:1080 | A2A direct message; requires task_id; no-comms RBAC; A2AAccessDenied->not_authorized. |
 | ContentActions.notify | method | roboco/services/gateway/content_actions.py:1150 | Formal ack-required notification (PMs/Board only); rejects bad priority, no-comms sender, disallowed recipient. |
 | ContentActions._reject_disallowed_recipient | method | roboco/services/gateway/content_actions.py:1230 | Reject notify to prompter/secretary (no ack path) then defer to CEO-dependency-notify check. |
@@ -226,12 +227,12 @@ gateway-support
     validate_commit_message
   content_actions.py
     helpers: _merge_resumption_fields, _render_journal_content, _normalize_structured, _strip_task_prefix, _reject_soup, _ownership_violation, _not_active_claimant, _coerce_pitch_cells
-    role frozensets: _COMMIT_ALLOWED_ROLES, _NOTIFY_ALLOWED_ROLES, _NO_COMMS_ROLES, _PITCH_ROLES, _DRAFT/_CURATE_PLAYBOOK_ROLES
+    role frozensets: _COMMIT_ALLOWED_ROLES, _NOTIFY_ALLOWED_ROLES, _NO_COMMS_ROLES, _PITCH_ROLES, _DRAFT/_CURATE_PLAYBOOK_ROLES, _FEATURE_SPOTLIGHT_ROLES
     ContentActionsDeps
     ContentActions
       commit / note / _write_journal_note / _record_section_handoff
       draft_playbook / approve_playbook / reject_playbook / archive_playbook / _curate_playbook
-      pitch / dm / notify / _reject_disallowed_recipient / _reject_ceo_dependency_notify / _dependency_block_reason
+      pitch / propose_feature_spotlight / dm / notify / _reject_disallowed_recipient / _reject_ceo_dependency_notify / _dependency_block_reason
       evidence / _is_caller_dependency / _active_claim_violation / _verify_explicit_task_ownership / _board_may_co_review
       progress
       notify_list / notify_get / notify_ack / read_messages / read_a2a
@@ -332,6 +333,8 @@ gateway-support
 | 15effce0 | remediation: hint_for_short_quick_context now points to top-level done/next string args | Hint text updated to 'pass done and next as top-level string args, not nested in section' to match the new _merge_resumption_fields contract. |
 
 > Post-snapshot updates (since 2026-06-29): commit 536bbb64 ("Chore/all/logical gaps sweep #286") touched content_actions.py and rate_limit_tracker.py in this slice. (1) rate_limit_tracker: activate() is now a Lua atomic merge (_ACTIVATE_RATE_LIMIT) that carries over the previous probe_failures count — the increment-vs-activate race is closed. (2) content_actions: _curate_playbook wraps the gating session.commit() in try/except PendingRollbackError; a poisoned session now returns a clean Envelope.invalid_state instead of 500-ing, and an uncommitted playbook cannot fall through to the RAG index.
+>
+> **v0.18.0** (2026-07-04): X feature-spotlight adds `ContentActions.propose_feature_spotlight` (content_actions.py:1238) + `_FEATURE_SPOTLIGHT_ROLES = frozenset({"head_marketing"})` (line 313), mirroring `pitch`'s Board-gated-verb shape. **Gap found (static read, not live-verified):** this verb has no wrapper function or `_TOOLS` entry in `roboco/mcp/do_server.py` (unlike `propose_roadmap`, which has both), so `_register_tools()`'s manifest∩`_TOOLS` intersection never exposes it to a spawned Head-of-Marketing agent despite the role-config grant — see mcp-servers.md Regression Risks.
 
 ## Regression Risks
 

@@ -629,6 +629,18 @@ Six subsystems, all default-off + additive:
 Compose: every optional feature armed `:-true` in the NAS composes, OFF in registry; two opt-in exceptions (`CLOUD_AUTH`, `ROUTING_STRICT`) default off (change auth/failure behavior, not capability).
 
 ---
+## Delta 2026-07-04 — v0.18.0
+
+Three workstreams plus a migration-chain catch-up (all reviewed; all default-off except the doc-only design bar):
+
+1. **Fable mode** (`ROBOCO_FABLE_MODE_ENABLED`, default off) — opus-fable-playbook adoption on the existing model tiers (no new tier; Fable 5 is not a model option). Two levers: **doctrine** — `fable_doctrine_layer()` (`roboco/agents/factories/_base.py:203`) injects the vendored behavioral doctrine (`agents/prompts/doctrine/fable.md`) into `compose_prompt`'s layer tuple right after `base.md`. **Hooks** — `AgentOrchestrator._fable_hook_groups()` (`orchestrator.py:1414`) appends 5 vendored scripts (`docker/scripts/fable-{stop-gate,bash-discipline,honesty-nudge,prompt-nudge,precompact}-hook.sh`) AFTER RoboCo's own per-event hooks in the Claude settings.json; the grok path installs only the honesty-nudge (`write_grok_fable_hooks`/`fable_honesty_nudge_hook_config`, `roboco/llm/providers/grok_cli_config.py:308-345`) since a grok `PreToolUse`/`Stop` hook deny cancels the whole run (verified live) while `PostToolUse` never denies. Off = byte-for-byte unchanged spawn path.
+2. **X feature-spotlight** (`ROBOCO_X_FEATURE_SPOTLIGHT_ENABLED`, default off, sub-switch of `x_engine_enabled`) — a third `XEngine` origination path alongside release posts and mention replies. `Orchestrator._x_feature_spotlight_loop` opens one held exploration task for the Head of Marketing every `x_feature_spotlight_interval_seconds` (default 3d); the HoM investigates and calls the new `propose_feature_spotlight` do-verb (HoM-only, `ContentActions.propose_feature_spotlight`, `content_actions.py:1238`, role gate `_FEATURE_SPOTLIGHT_ROLES`), which materializes a held draft (`XEngine.materialize_feature_spotlight`) into the same X Post Queue as release/reply drafts. Migration 061 adds `x_seen_features` (dedup ledger) + `company_goals.brand_voice` (feeds `_voice_guide` for all three draft kinds). **Gap found (static read, not live-verified):** `propose_feature_spotlight` has no wrapper function or `_TOOLS` entry in `roboco/mcp/do_server.py` (unlike `propose_roadmap`, which has both) — `_register_tools()` only registers the intersection of the manifest's granted verbs and `_TOOLS`, so a spawned Head-of-Marketing agent cannot see this tool via MCP today despite the role-config grant.
+3. **FE/UX-UI design bar** (doc-only, no flag) — a `## Design bar` section added to `agents/prompts/teams/frontend.md` and `agents/prompts/teams/ux_ui.md` (distilled from `Leonxlnx/taste-skill`, MIT: three tuning dials — DESIGN_VARIANCE/MOTION_INTENSITY/VISUAL_DENSITY — plus typography/spacing/motion rules and an "AI tells to avoid" list), plus a pointer section in `agents/prompts/roles/developer.md` scoping it to frontend/ux_ui tasks only (backend unaffected).
+4. **Migration-chain catch-up** — `060_drop_messaging` (the comms-teardown migration: drops `messages`/`session_tasks`/`sessions`/`groups`/`channels` + 4 enum types + `journal_entries.session_id`; A2A is now the sole directed-message channel) had already landed on master but was never appended to this doc. Chain head is now **061** (this doc previously said 059); `roboco/db/tables.py` now carries **38** ORM table classes (verified via direct count), up from the 37 this doc's Purpose section stated (that figure predates 055-061 and was never recomputed).
+
+Slices touched: orchestrator (1, 2), runtime-providers (1), prompts-roles-taxonomy (1, 3), deployment-tooling (1), gateway-support + mcp-servers (2), product-strategy-research-pitch (2, already current from an earlier pass), db-migrations (2, 4).
+
+---
 
 ## Purpose
 The canonical source of truth for RoboCo's task state machine, per-role action/verb permissions, claim rules, team-match rules, and self-review prevention. The spec module is pure data + lookups (no DB, no I/O); the enforcement package re-exports a backwards-compat view of the same tables plus the git-workflow gates, SLA keys, A2A/journal/ownership access control. Import-time validators in _validate_lifecycle.py make a misconfigured spec fail fast at container start.
@@ -1829,7 +1841,7 @@ The models package is coherent and well-layered: a single `RobocoBase` config dr
 # db-migrations slice
 
 ## Purpose
-The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for the in-house RAG engine. Schema evolution is owned by an Alembic chain (001→059) that runs on every boot via `init_db()`; `Base.metadata.create_all` is no longer the source of truth — migration 017 reconciled the drift the other way. The ORM tables live in one fat module `roboco/db/tables.py` (~2.5k lines, 37 tables).
+The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for the in-house RAG engine. Schema evolution is owned by an Alembic chain (001→061) that runs on every boot via `init_db()`; `Base.metadata.create_all` is no longer the source of truth — migration 017 reconciled the drift the other way. The ORM tables live in one fat module `roboco/db/tables.py` (~2.5k lines, 38 tables).
 
 ## Files
 
@@ -1841,7 +1853,7 @@ The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for 
 | `roboco/db/seed.py` | `bootstrap_database()` — runs `init_db` then seeds agents. |
 | `alembic/env.py` | Async Alembic env; imports `roboco.db.tables` to register metadata, overrides `sqlalchemy.url` from settings, `compare_type` + `compare_server_default` on. |
 | `alembic.ini` | Standard config; `script_location=alembic`, `prepend_sys_path=.`, no URL (set in env.py). |
-| `alembic/versions/` | 59 migration files 001..059 (two share number 026 — chained, not a collision). |
+| `alembic/versions/` | 61 migration files 001..061 (two share number 026 — chained, not a collision). |
 
 ## Key Symbols
 
@@ -1869,6 +1881,7 @@ The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for 
 | `UserTable` | class | tables.py:2603 | Cloud-auth (FastAPI Users) single seeded CEO login row (058). |
 | `XCredentialsTable` | class | tables.py:2650 | Singleton Fernet-encrypted OAuth 1.0a secrets for the X engine (059). |
 | `XSeenMentionTable` | class | tables.py:2675 | X mentions-poll dedup ledger, keyed by mention id (059). |
+| `XSeenFeatureTable` | class | tables.py:2264 | X feature-spotlight dedup ledger, keyed by feature slug (061). |
 | `run_async_migrations` | fn | env.py | Async online migration runner (NullPool). |
 
 ## Migration Chain
@@ -1935,6 +1948,8 @@ The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for 
 | 057 | 057_project_sandbox_services.py | `projects.sandbox_services` (ARRAY(String), nullable) — per-project opt-in for the sandboxed per-agent-spawn Postgres/Redis provisioner. |
 | 058 | 058_cloud_auth_users.py | `users` table (FastAPI Users schema) — the single seeded CEO login for cloud auth (`ROBOCO_CLOUD_AUTH_ENABLED`, default off). |
 | 059 | 059_x_credentials.py | `x_credentials` (singleton Fernet-encrypted OAuth 1.0a secrets) + `x_seen_mentions` (mentions-poll dedup ledger) — the X (Twitter) engine (`ROBOCO_X_ENGINE_ENABLED`, default off). |
+| 060 | 060_drop_messaging.py | Drops the channels/groups/sessions/session_tasks/messages subsystem (comms teardown — A2A is now the sole directed-message channel): `journal_entries.session_id` column, the 5 tables, and 4 enum types (`messagetype`/`sessionstatus`/`sessionscope`/`channeltype`); one-way (`downgrade()` raises `NotImplementedError`). |
+| 061 | 061_x_feature_spotlight.py | `x_seen_features` (feature-spotlight dedup ledger, keyed by feature slug) + `company_goals.brand_voice` (Text, CEO-authored brand-voice sample, feeds `_voice_guide`) — X feature-spotlight (`ROBOCO_X_FEATURE_SPOTLIGHT_ENABLED`, default off, sub-switch of `x_engine_enabled`). |
 
 ## Data Flow
 On boot, `init_db()` probes for application tables and `alembic_version`; if a pre-Alembic DB exists it stamps it at revision 001, then always runs `run_migrations()` → `alembic upgrade head` (in a thread via `asyncio.to_thread`). `env.py` imports `roboco.db.tables` so `Base.metadata` is fully populated, overrides `sqlalchemy.url` from `settings.database_url`, and runs online with an async NullPool engine. `compare_type` + `compare_server_default` are on so autogenerate drift is detectable. `tables.py` classes are the ORM mapping the migrations build; the domain layer reads them through `roboco/models/` dataclasses, not the tables directly.
@@ -1949,7 +1964,7 @@ graph LR
   027-->028-->029-->030-->031-->032-->033-->034-->035-->036
   036-->037-->038-->039-->040-->041-->042-->043-->044-->045
   045-->046-->047-->048-->049-->050-->051-->052-->053-->054
-  054-->055-->056-->057-->058-->059
+  054-->055-->056-->057-->058-->059-->060-->061
 ```
 
 ## Logical Tree
@@ -2047,8 +2062,11 @@ Migration chain 001..059
 │   └── 057 projects.sandbox_services (per-project opt-in array)
 ├── Cloud auth
 │   └── 058 users (FastAPI Users; single seeded CEO login)
-└── X (Twitter) engine
-    └── 059 x_credentials (singleton encrypted OAuth 1.0a) + x_seen_mentions (dedup ledger)
+├── X (Twitter) engine
+│   ├── 059 x_credentials (singleton encrypted OAuth 1.0a) + x_seen_mentions (dedup ledger)
+│   └── 061 x_seen_features (feature-spotlight dedup ledger) + company_goals.brand_voice
+└── Comms teardown
+    └── 060 drop channels/groups/sessions/session_tasks/messages + journal_entries.session_id (A2A is now the sole directed-message channel; one-way, no downgrade)
 ```
 
 ## Dependencies
@@ -2090,6 +2108,8 @@ Migration chain 001..059
 > Post-snapshot updates (since 2026-06-29): `536bbb64` (Chore/all/logical gaps sweep #286) — adds migration 053 (`playbooks.archived_by`/`archived_at`), two new columns on `PlaybookTable`; `d8a5bb48` ([chore] a2a hierarchy gate + skill persist) — adds migration 054 (`a2a_messages.skill`), one new column on `A2AMessageTable`, wired through `send_chat_message` and the A2AChatMessage model.
 >
 > Delta 2026-07-03 (v0.17.0, 5 features): `055_spawn_session_turns_tool_calls` (`agent_spawn_sessions.turns`/`.tool_calls`) + `056_member_perf_daily` (`member_performance_daily`) predate this wave but were never appended to this doc; `057_project_sandbox_services` adds `projects.sandbox_services` (sandboxed dev DB/Redis, `ROBOCO_SANDBOX_DB_ENABLED`); `058_cloud_auth_users` adds `users` (`UserTable`, cloud auth, `ROBOCO_CLOUD_AUTH_ENABLED`); `059_x_credentials` adds `x_credentials` (`XCredentialsTable`) + `x_seen_mentions` (`XSeenMentionTable`) (X engine, `ROBOCO_X_ENGINE_ENABLED`). Chain head is now 059.
+>
+> Delta 2026-07-04 (v0.18.0): `060_drop_messaging` (the comms-teardown migration — drops `messages`/`session_tasks`/`sessions`/`groups`/`channels` + 4 enum types + `journal_entries.session_id`; A2A is now the sole directed-message channel; one-way, `downgrade()` raises `NotImplementedError`) had already landed on master but was never appended to this doc; `061_x_feature_spotlight` adds `x_seen_features` (`XSeenFeatureTable`) + `company_goals.brand_voice` (X feature-spotlight, `ROBOCO_X_FEATURE_SPOTLIGHT_ENABLED`, sub-switch of `x_engine_enabled`). Chain head is now 061. ORM table count is now 38 (verified via `grep -c '^class .*Table' roboco/db/tables.py`), up from this doc's previously-stated 37 (that figure predates 055-061 and was never recomputed).
 
 ## Regression Risks
 
@@ -2103,9 +2123,10 @@ Migration chain 001..059
 | 047 partial-unique index assumes single-active | alembic/versions/047_ws_single_active.py | A duplicate ACTIVE session raises on the partial-unique index; service-layer guard must run first or claim crashes. | Medium |
 | 052 reuses team enum — order-dependent | alembic/versions/052_task_cell_projects.py:44 | Depends on `team` enum already existing (from 001/016); a partial chain replay to 052 without 016 would fail. | Low |
 | Single-head violation on re-apply | alembic/versions/017_reconcile_orm_schema_drift.py | 017 adds tables/columns that `create_all` had created; on a DB built by `create_all` then stamped, 017 may double-create. | Medium |
+| Migration 060 is a one-way removal with no downgrade | alembic/versions/060_drop_messaging.py:57-61 | `downgrade()` raises `NotImplementedError` — recreating channels/groups/sessions/session_tasks/messages + 4 enum types would need the full original schema. Any rollback plan for a bad deploy past 060 must restore from a pre-060 DB backup, not `alembic downgrade`. | Low |
 
 ## Health
-The chain is linear and complete (001→059), with `init_db` running `upgrade head` on every boot so deployed schemas stay current. The two structural risks are the `sa.Enum(create_type=False)` no-op in 001 (latent on clean re-applies) and the enum-parity gate's dependence on a populated migrated DB. New migrations consistently use the `postgresql.ENUM(create_type=False)` pattern and `ALTER TYPE ... ADD VALUE IF NOT EXISTS` for enum widening, so recent additions are safe.
+The chain is linear and complete (001→061), with `init_db` running `upgrade head` on every boot so deployed schemas stay current. The two structural risks are the `sa.Enum(create_type=False)` no-op in 001 (latent on clean re-applies) and the enum-parity gate's dependence on a populated migrated DB. New migrations consistently use the `postgresql.ENUM(create_type=False)` pattern and `ALTER TYPE ... ADD VALUE IF NOT EXISTS` for enum widening, so recent additions are safe.
 
 # RoboCo Slice Map — `api-core-websocket`
 
@@ -2723,6 +2744,7 @@ The support layer of the agent gateway: pure/cheap components the Choreographer 
 | ContentActions.archive_playbook | method | roboco/services/gateway/content_actions.py:784 | Auditor archives an approved playbook -> retired. |
 | ContentActions._curate_playbook | method | roboco/services/gateway/content_actions.py:792 | Shared Auditor-only curation; commit status BEFORE RAG index/unindex; ConflictError->invalid_state. |
 | ContentActions.pitch | method | roboco/services/gateway/content_actions.py:935 | Board (PO/Head Marketing) proposes a product; validates cells, ConflictError/ValidationError->invalid_state. |
+| ContentActions.propose_feature_spotlight | method | roboco/services/gateway/content_actions.py:1238 | Head-of-Marketing-only (`_FEATURE_SPOTLIGHT_ROLES`); validates feature_slug/title/body, checks `XEngine.is_feature_seen`, calls `XEngine.materialize_feature_spotlight` (creates a held X-post draft + completes the caller's exploration task). |
 | ContentActions.dm | method | roboco/services/gateway/content_actions.py:1080 | A2A direct message; requires task_id; no-comms RBAC; A2AAccessDenied->not_authorized. |
 | ContentActions.notify | method | roboco/services/gateway/content_actions.py:1150 | Formal ack-required notification (PMs/Board only); rejects bad priority, no-comms sender, disallowed recipient. |
 | ContentActions._reject_disallowed_recipient | method | roboco/services/gateway/content_actions.py:1230 | Reject notify to prompter/secretary (no ack path) then defer to CEO-dependency-notify check. |
@@ -2888,12 +2910,12 @@ gateway-support
     validate_commit_message
   content_actions.py
     helpers: _merge_resumption_fields, _render_journal_content, _normalize_structured, _strip_task_prefix, _reject_soup, _ownership_violation, _not_active_claimant, _coerce_pitch_cells
-    role frozensets: _COMMIT_ALLOWED_ROLES, _NOTIFY_ALLOWED_ROLES, _NO_COMMS_ROLES, _PITCH_ROLES, _DRAFT/_CURATE_PLAYBOOK_ROLES
+    role frozensets: _COMMIT_ALLOWED_ROLES, _NOTIFY_ALLOWED_ROLES, _NO_COMMS_ROLES, _PITCH_ROLES, _DRAFT/_CURATE_PLAYBOOK_ROLES, _FEATURE_SPOTLIGHT_ROLES
     ContentActionsDeps
     ContentActions
       commit / note / _write_journal_note / _record_section_handoff
       draft_playbook / approve_playbook / reject_playbook / archive_playbook / _curate_playbook
-      pitch / dm / notify / _reject_disallowed_recipient / _reject_ceo_dependency_notify / _dependency_block_reason
+      pitch / propose_feature_spotlight / dm / notify / _reject_disallowed_recipient / _reject_ceo_dependency_notify / _dependency_block_reason
       evidence / _is_caller_dependency / _active_claim_violation / _verify_explicit_task_ownership / _board_may_co_review
       progress
       notify_list / notify_get / notify_ack / read_messages / read_a2a
@@ -2994,6 +3016,8 @@ gateway-support
 | 15effce0 | remediation: hint_for_short_quick_context now points to top-level done/next string args | Hint text updated to 'pass done and next as top-level string args, not nested in section' to match the new _merge_resumption_fields contract. |
 
 > Post-snapshot updates (since 2026-06-29): commit 536bbb64 ("Chore/all/logical gaps sweep #286") touched content_actions.py and rate_limit_tracker.py in this slice. (1) rate_limit_tracker: activate() is now a Lua atomic merge (_ACTIVATE_RATE_LIMIT) that carries over the previous probe_failures count — the increment-vs-activate race is closed. (2) content_actions: _curate_playbook wraps the gating session.commit() in try/except PendingRollbackError; a poisoned session now returns a clean Envelope.invalid_state instead of 500-ing, and an uncommitted playbook cannot fall through to the RAG index.
+>
+> **v0.18.0** (2026-07-04): X feature-spotlight adds `ContentActions.propose_feature_spotlight` (content_actions.py:1238) + `_FEATURE_SPOTLIGHT_ROLES = frozenset({"head_marketing"})` (line 313), mirroring `pitch`'s Board-gated-verb shape. **Gap found (static read, not live-verified):** this verb has no wrapper function or `_TOOLS` entry in `roboco/mcp/do_server.py` (unlike `propose_roadmap`, which has both), so `_register_tools()`'s manifest∩`_TOOLS` intersection never exposes it to a spawned Head-of-Marketing agent despite the role-config grant — see mcp-servers.md Regression Risks.
 
 ## Regression Risks
 
@@ -3337,6 +3361,8 @@ No other commits in this slice since baseline.
 > - **`0d714b6c` — "[chore] mcp-servers: normalize exception bodies to Envelope + lift task_id/correlation_id on circuit_open"** (committed 2026-06-30). IMPACT on this slice:
 >   - **`flow_server.py` + `do_server.py`**: added `_remediate_for_kind` and `_normalize_exception_envelope`; the non-404 JSON path in `_post` now normalizes dict-`error` exception-handler bodies and 422 `detail` lists into the Envelope wire format so agents get `remediate`/`next` instead of raw exception bodies (#232); `_record_and_check_circuit` lifts `task_id`/`correlation_id` from the original rejection onto the circuit_open envelope top level (#359).
 >   - **`intake_server.py`**: `_post_event` captures relay response body under `detail` on non-success so the grok intake agent sees the real failure reason instead of an opaque `http_422` token (#57).
+>
+> - **v0.18.0** (2026-07-04): No commit touched `roboco/mcp/` for the X feature-spotlight workstream — `do_server.py`'s `_TOOLS` dict (21 content tools) is unchanged, which is itself the finding: `propose_feature_spotlight` was wired at the role-config + content-actions layers but never registered here. See Regression Risks below.
 
 ## Regression Risks
 
@@ -3349,6 +3375,7 @@ No other commits in this slice since baseline.
 | `propose_batch` well-formed filter could silently drop intended drafts | `intake_server.py:146` | **Partially mitigated (536bbb64 #163):** `_draft_title` now accepts `name` as a fallback for `title`, and `_normalize_batch_drafts` normalizes `name`-only drafts onto `title` before posting. Residual risk: a draft using a different key (e.g. `label`) is still dropped silently; the `dropped` count is sent but the CEO may not notice. | low |
 | Breaker SDK timeout (2s) may be too tight under load | `flow_server.py:55`, `do_server.py:37` | `_SDK_TIMEOUT=2.0` for the loopback `/verb/attempted` POST. Under container CPU contention the SDK could exceed 2s and the breaker fails open (returns original payload) — re-introducing the unbounded-retry condition the breaker was added to stop. Fail-open is safe but defeats the protection. | low |
 | Circuit-breaker forwarding does not pass `task_id` for content tools that lack one | `do_server.py:379` | `body.get("task_id")` is sent to the SDK. Several do-tools (`read_messages`, `notify_list`) have no `task_id` — the breaker records `task_id=None`, so the per-verb (not per-task) breaker still works, but any future per-task breaker logic would mis-attribute these. | low |
+| `propose_feature_spotlight` granted by role_config but not registered in `do_server.py` | `do_server.py:785-888`, `roboco/services/gateway/role_config.py:120-123` | v0.18.0's Head-of-Marketing-only content verb (`ContentActions.propose_feature_spotlight`) has no wrapper function or `_TOOLS` entry here, unlike `propose_roadmap` which has both (`do_server.py:529`, `:789`). `_register_tools()` only registers the intersection of the manifest's granted verbs and `_TOOLS` (`unknown = [verb for verb in allowed if verb not in _TOOLS]` silently drops anything else), so a spawned Head-of-Marketing agent cannot actually call this tool via MCP despite the role-config grant. Found via static read (grep for the verb name across `do_server.py` returns zero hits) — not reproduced against a live spawn. | Medium |
 
 ## Health
 
@@ -4608,6 +4635,7 @@ The AgentOrchestrator is the runtime brain of RoboCo: it owns the per-agent Dock
 | AgentOrchestrator._drain_bg_tasks | method | roboco/runtime/orchestrator.py:1031 | Bounded wait for fire-and-forget bg writes to commit before exit; cancels past _SHUTDOWN_DRAIN_TIMEOUT_SECONDS. |
 | AgentOrchestrator._ensure_agent_image | method | roboco/runtime/orchestrator.py:1110 | Build/pull base + role-specialized agent Docker images; idempotent; registry-mode pulls pre-built images. |
 | AgentOrchestrator._get_role_permissions | method | roboco/runtime/orchestrator.py:1313 | Build the Edit/Write/Read allowlist scoped to the agent's cwd (worktree or clone root) and cell workspace for documenters. |
+| AgentOrchestrator._fable_hook_groups | method | roboco/runtime/orchestrator.py:1414 | Default-off (`fable_mode_enabled`) Claude-path hook groups for 5 vendored fable-mode scripts (stop-gate/bash-discipline/honesty-nudge/prompt-nudge/precompact); appended AFTER RoboCo's own per-event hooks inside `_generate_agent_settings`. |
 | AgentOrchestrator._task_git_context | method | roboco/runtime/orchestrator.py:1685 | Build SpawnGitContext from a task payload; sets task_short_id (first 8 chars) only when a branch exists. |
 | AgentOrchestrator._safe_spawn | method | roboco/runtime/orchestrator.py:1816 | Build SpawnInputs and delegate to the resolved AgentProvider (grok) or built-in _spawn_container path. |
 | AgentOrchestrator._prepare_agent_spawn | method | roboco/runtime/orchestrator.py:1930 | Resolve project/team/cwd, ensure worktree, generate settings/permissions, write briefing + MCP config, compose prompt, ensure image, register STARTING instance. |
@@ -4666,9 +4694,13 @@ The AgentOrchestrator is the runtime brain of RoboCo: it owns the per-agent Dock
 | AgentOrchestrator._sandbox_janitor_sweep | method | roboco/runtime/orchestrator.py:9426 | Best-effort: remove sandbox containers whose owner agent is gone; rides the reaper tick, error-isolated. |
 | AgentOrchestrator._x_mentions_poll_loop | method | roboco/runtime/orchestrator.py:7431 | Default-off X-engine mentions-poll tick loop (`x_engine_enabled`); release-post drafts are event-driven, not from this loop. |
 | AgentOrchestrator._run_x_mentions_cycle | method | roboco/runtime/orchestrator.py:7453 | One mentions-poll pass: `get_x_engine(db).run_cycle()` + commit; testable without the sleep. |
+| AgentOrchestrator._x_feature_spotlight_loop | method | roboco/runtime/orchestrator.py:7571 | Default-off X-engine feature-spotlight tick loop (`x_engine_enabled` AND `x_feature_spotlight_enabled`); opens one held Head-of-Marketing exploration task per `x_feature_spotlight_interval_seconds` (default 3d). |
+| AgentOrchestrator._run_x_feature_spotlight_cycle | method | roboco/runtime/orchestrator.py:7591 | One feature-spotlight pass: `get_x_engine(db).open_feature_spotlight_exploration()` + commit; testable without the sleep. |
 | AgentOrchestrator._roadmap_engine_loop | method | roboco/runtime/orchestrator.py:7462 | Default-off board roadmap-engine tick loop (`roadmap_engine_enabled`); opens one held exploration cycle per interval. |
 | AgentOrchestrator._run_roadmap_engine_cycle | method | roboco/runtime/orchestrator.py:7484 | One roadmap-engine pass: `get_roadmap_engine(db).run_cycle()` + commit; testable without the sleep. |
 | AgentOrchestrator._dispatch_roadmap_exploration | method | roboco/runtime/orchestrator.py:10284 | One-shot Product-Owner spawn to author a themed roadmap cycle; bypasses the two-reviewer board-review-pair machinery (PO-solo in v1). |
+| AgentOrchestrator._dispatch_feature_spotlight_exploration | method | roboco/runtime/orchestrator.py:10424 | One-shot Head-of-Marketing spawn to investigate + call `propose_feature_spotlight` once; `_dispatch_pm_work` routes `source=x_feature_exploration` to it before the generic board-review check, mirroring the roadmap source's own early branch. |
+| AgentOrchestrator._build_feature_spotlight_prompt | method | roboco/runtime/orchestrator.py:12827 | Render the one-shot feature-spotlight exploration prompt (investigate CHANGELOG/flags/docs/charter/KB, call `propose_feature_spotlight` once, then `i_am_idle`). |
 | AgentOrchestrator._dispatch_all_work | method | roboco/runtime/orchestrator.py:8814 | Reset tick-handled set, reap stale claims, enforce grok budget, run all 17 dispatchers under one httpx client with per-dispatcher isolation. |
 | AgentOrchestrator._pm_respawn_should_gate | method | roboco/runtime/orchestrator.py:8915 | Per-(slug,task) respawn circuit breaker; tracing_gap rule-following resets (bounded) + durable persist; CEO notify once when tripped. |
 | AgentOrchestrator._handle_pm_assigned_task | method | roboco/runtime/orchestrator.py:9084 | Spawn/respawn the PM for an assigned coordination root subject to the respawn gate. |
@@ -4779,6 +4811,8 @@ stateDiagram-v2
 - `ROBOCO_CLOUD_AUTH_ENABLED` (+ `_EMAIL`/`_PASSWORD`/`_SECRET`/`_COOKIE_MAX_AGE`, default off) — cloud auth master switch; read by `roboco.api.deps.get_agent_context`/`roboco.api.auth.*`, not the orchestrator itself, but gates whether a spawned agent's own HMAC-token identity path is the sole non-CEO auth route.
 - `ROBOCO_X_ENGINE_ENABLED` (+ `_mentions_interval_seconds` / `_mentions_max_per_cycle` / `_mentions_min_engagement` / `_max_open_posts` / `_account_user_id` / `_request_timeout_seconds`, default off) — gates `_x_mentions_poll_loop`.
 - `ROBOCO_ROADMAP_ENGINE_ENABLED` (+ `_interval_seconds` default 604800 / `_min_items_per_cycle` / `_max_items_per_cycle`, default off) — gates `_roadmap_engine_loop`.
+- `ROBOCO_X_FEATURE_SPOTLIGHT_ENABLED` (+ `_interval_seconds` default 259200/3d, default off, sub-switch of `x_engine_enabled`) — gates `_x_feature_spotlight_loop`.
+- `ROBOCO_FABLE_MODE_ENABLED` (default off) — gates `_fable_hook_groups` (Claude-path hook install) and, via `roboco/agents/factories/_base.py`, the `fable_doctrine_layer` prompt layer; off = byte-for-byte unchanged spawn path.
 - `ROBOCO_PR_GATE_AUTO_SUBMIT_ENABLED` (`pr_gate_auto_submit_enabled`, default **True**) — wave-1 PR-gate turn cut: when every child of an assembled parent is terminal, `_try_auto_submit` runs the owning PM's submit_up/submit_root gate system-side instead of spawning the PM for that turn; a gate rejection (freshness/integrity) falls back to the classic PM closure spawn.
 
 ## Gotchas
@@ -4807,6 +4841,7 @@ stateDiagram-v2
 > - `7be10057` Agent image: stop baking `VIRTUAL_ENV=/app/.venv` — comment in `_generate_mcp_config` updated to drop the stale VIRTUAL_ENV reference.
 > - `6b441e42` Converters: `InvalidIdentifierError` now caught explicitly in `_release_stopped_agent_claim` with a structured warning log instead of a silent broad-except return.
 > - `d1cf6ecb` Wave 1: PR-gate turn cut, task search, trace timestamps, Secretary edits + e2e scenarios 2–3 (#295) — adds `config.pr_gate_auto_submit_enabled` (default True) + `_AUTO_SUBMIT_VERB_BY_ROLE` / `_auto_submit_target` / `_try_auto_submit` / `_closure_handled_without_pm`, wired into `_maybe_spawn_pm_closure` so an assembled, all-children-terminal parent is submitted to the PR gate system-side instead of always spawning the PM for that turn; fires a new `task.auto_submitted` audit event.
+> - **v0.18.0** (2026-07-04): Fable mode — `_fable_hook_groups` (orchestrator.py:1414) appends 5 vendored hook scripts after RoboCo's own inside `_generate_agent_settings`, gated by `fable_mode_enabled` (default off). X feature-spotlight — `_x_feature_spotlight_loop`/`_run_x_feature_spotlight_cycle` (mirrors `_x_mentions_poll_loop`'s shape) + `_dispatch_feature_spotlight_exploration`/`_build_feature_spotlight_prompt` (mirrors the roadmap engine's one-shot board-solo dispatch) open a held Head-of-Marketing exploration task every `x_feature_spotlight_interval_seconds`, gated by `x_feature_spotlight_enabled` (sub-switch of `x_engine_enabled`, both default off).
 
 ## Regression Risks
 
@@ -4848,7 +4883,7 @@ This slice is the agent-runtime + LLM-provider seam plus the in-container agent 
 | roboco/llm/providers/_docker.py | Shared async docker stop/kill/inspect-running helpers for providers | 42 |
 | roboco/llm/providers/grok.py | GrokCliProvider: spawns roboco-agent-grok container, mounts ~/.grok dir + usage dir + grok env | 236 |
 | roboco/llm/providers/grok_auth.py | SuperGrok token refresh-token grant loop + --check backstop CLI; atomic auth.json rewrite | 317 |
-| roboco/llm/providers/grok_cli_config.py | Entrypoint renderer: mcp-config -> ~/.grok/config.toml, per-role grok flags, AGENTS.md, bash-guard hook | 317 |
+| roboco/llm/providers/grok_cli_config.py | Entrypoint renderer: mcp-config -> ~/.grok/config.toml, per-role grok flags, AGENTS.md, bash-guard hook, + default-off fable-mode honesty-nudge hook | 317 |
 | roboco/llm/providers/grok_cli_usage.py | Capture token usage from grok sessions/updates.jsonl -> usage.json (notional cost) | 201 |
 | roboco/agent_sdk/__init__.py | Package docstring only | 10 |
 | roboco/agent_sdk/models.py | Pydantic models: A2A messages, budget/terminal/verb-circuit/token-usage request+status | 258 |
@@ -4906,6 +4941,8 @@ This slice is the agent-runtime + LLM-provider seam plus the in-container agent 
 | write_grok_hooks | function | roboco/llm/providers/grok_cli_config.py:276 | Install bash-guard PreToolUse JSON hook into ~/.grok/hooks (ROBOCO_GUARD_SKIP_GIT=1) |
 | bash_guard_hook_config | function | roboco/llm/providers/grok_cli_config.py:251 | Build the grok hooks JSON for the bash-guard (matcher Bash, exit 2 deny) |
 | grok_cli_config.main | function | roboco/llm/providers/grok_cli_config.py:293 | Entrypoint: write config.toml + AGENTS.md + hooks + per-role args file |
+| fable_honesty_nudge_hook_config | function | roboco/llm/providers/grok_cli_config.py:308 | Build the grok PostToolUse hooks JSON for the fable-mode honesty-nudge script; hook path env-overridable via ROBOCO_FABLE_HONESTY_NUDGE_HOOK |
+| write_grok_fable_hooks | function | roboco/llm/providers/grok_cli_config.py:329 | Default-off (`fable_mode_enabled`): install the honesty-nudge hook JSON into ~/.grok/hooks; no-ops if the flag is off or the script file is missing — the only fable-mode hook ported to grok (a grok PreToolUse/Stop deny cancels the whole run, unlike Claude Code, so only the never-denying PostToolUse honesty-nudge is safe to port) |
 | total_tokens_from_updates | function | roboco/llm/providers/grok_cli_usage.py:46 | Max cumulative totalTokens across a grok updates.jsonl (params.update._meta / params._meta / top-level fallback) |
 | capture_session_usage | function | roboco/llm/providers/grok_cli_usage.py:115 | Write usage.json (model, total_tokens, cost_usd) for one grok session; reusable per-turn by interactive driver |
 | session_id_from_run_log | function | roboco/llm/providers/grok_cli_usage.py:153 | Read grok-generated sessionId from --output-format json or streaming-json run log (grok -p ignores -s) |
@@ -5149,6 +5186,8 @@ runtime-providers
 | 15effce0 | Chore: 141 Gaps fill-in (#283) — only commit touching this slice since fd10cc86 | Four files changed. grok_auth.py: F006 fix — _atomic_write now has a direct-write fallback so a rotated single-use refresh_token is never lost; added _exp_from_access_token (JWT exp decode) so a fresh token isn't left with stale expires_at when xAI omits expires_in (was: silently kept old expires_at -> is_valid/--check forever rejected + re-rotation burn). grok.py: auth mount changed from single auth.json FILE to whole ~/.grok DIRECTORY (inode-pinning fix so tmp+rename refresh propagates to running containers); missing auth.json now logs a loud warning instead of silently not mounting. server.py: /usage/sync now validates transcript_path via _contained_transcript_path (.jsonl + must resolve under transcript root) — closes unauthenticated arbitrary-file stat/read. intake_driver.py: _coerce_draft/_coerce_spec_fields now flatten XML-ish list fields (acceptance_criteria/what_this_builds/notes + the_work[].items) to list[str] so a non-array never crashes the panel/VARCHAR[] insert; propose_draft/propose_batch tool descriptions updated to declare per-cell project_id (MegaTask multi-cell). |
 
 > Post-snapshot updates (since 2026-06-29): 536bbb64 (Chore/all/logical gaps sweep #286) — grok_auth.py: added module-level `_refresh_lock = threading.Lock()` (line 48) and new `_recheck_or_refresh` helper (line 283); `refresh_if_stale` now acquires `_refresh_lock` before the grant POST and delegates to `_recheck_or_refresh` inside the lock so a concurrent caller that waited finds the already-refreshed token and returns `fresh` instead of re-POSTing the now-dead single-use refresh grant (#94). All other commits touching roboco/runtime/ in this window only modified orchestrator.py (out-of-scope for this slice).
+>
+> **v0.18.0** (2026-07-04): Fable mode's grok side — `fable_honesty_nudge_hook_config`/`write_grok_fable_hooks` (grok_cli_config.py:308-345), gated by `fable_mode_enabled` (default off). Deliberately narrower than the Claude path's 5 hooks: only the never-denying PostToolUse honesty-nudge is ported, because a grok `PreToolUse`/`Stop` hook deny cancels the entire run (verified live) — the same asymmetry this file's Gotchas section already documents for the bash-guard's git-deny-vs-exfil-cancel split.
 
 ## Regression Risks
 
@@ -5165,18 +5204,19 @@ runtime-providers
 This slice is coherent and well-factored: the provider ABC + registry cleanly isolates the Grok backend while the Anthropic/Ollama/LOCAL paths stay on the built-in spawn (additive seam, no destabilization), and the agent_sdk sidecar centralizes budget/loop/verb-circuit/token state that hooks share. The single baseline-to-HEAD commit (15effce0) landed three genuine hardening fixes — the F006 refresh_token-loss guard with direct-write fallback, the JWT-exp decode so a refreshed token isn't forever rejected, and the /usage/sync path-traversal guard — plus the grok directory-mount fix that resolves the inode-pinning hang. The main integrity concerns are operational rather than structural: the grok directory mount widens RO exposure to host grok state, the 6h expires_at default can burn the single-use refresh_token on the rare double-miss, the in-process SDK state is lost on every container restart (by design, but means verb-circuit/budget counters reset), and ClaudeCodeProvider is dead reference code whose 'default' label in CLAUDE.md is misleading. Interactive intake/secretary parity between Claude and Grok is real (shared IntakeDriver, only the SessionFactory differs). No obviously broken logic was introduced; the regression risks are edge-case behavior shifts, not holes. Recommend re-running the grok auth refresh test against a token that omits expires_in to confirm the JWT-exp path, and a /usage/sync test with a symlinked transcript to confirm the new guard fails loud where appropriate.
 
 ## Purpose
-This slice is the prompt-composition pipeline and the role/team/permission taxonomy that feeds it. At agent spawn the orchestrator resolves an agent's role+team from the canonical foundation-derived maps in agents_config.py, then compose_prompt layers (in order) a tool-load directive, the autogenerated lifecycle verb surface, the universal base rules, the role prompt, the autogenerated per-role verb-signature table, the team prompt, the agent identity, and an optional architectural-conventions ambient block — writing the result to a per-agent .md file the runtime mounts. A separate prompt-injection guard (prompt_guard.py) denies poisoned incoming turns at the interactive input boundary for both Claude-SDK and Grok sessions, mirroring the bash UserPromptSubmit hook. agents_config.py is also the MCP-layer permission taxonomy (HMAC agent tokens, role/team helpers, escalation chain, A2A routing) that gates tool visibility and identity-binding at spawn.
+This slice is the prompt-composition pipeline and the role/team/permission taxonomy that feeds it. At agent spawn the orchestrator resolves an agent's role+team from the canonical foundation-derived maps in agents_config.py, then compose_prompt layers (in order) a tool-load directive, the autogenerated lifecycle verb surface, the universal base rules, an optional fable-mode doctrine layer (`fable_mode_enabled`), the role prompt, the autogenerated per-role verb-signature table, the team prompt, the agent identity, and an optional architectural-conventions ambient block — writing the result to a per-agent .md file the runtime mounts. A separate prompt-injection guard (prompt_guard.py) denies poisoned incoming turns at the interactive input boundary for both Claude-SDK and Grok sessions, mirroring the bash UserPromptSubmit hook. agents_config.py is also the MCP-layer permission taxonomy (HMAC agent tokens, role/team helpers, escalation chain, A2A routing) that gates tool visibility and identity-binding at spawn.
 
 ## Files
 
 | Path | Role | LOC |
 |---|---|---|
-| roboco/agents/factories/_base.py | Layered prompt composer: loads/concatenates tool-directive + lifecycle + base + role + autogen-verbs + team + identity + ambient layers; exports PROMPTS_BASE_PATH, role/team/builtin-tool maps, compose_prompt, conventions_ambient_layer, make_slug | 298 |
+| roboco/agents/factories/_base.py | Layered prompt composer: loads/concatenates tool-directive + lifecycle + base + an optional fable-mode doctrine + role + autogen-verbs + team + identity + ambient layers; exports PROMPTS_BASE_PATH, role/team/builtin-tool maps, compose_prompt, fable_doctrine_layer, conventions_ambient_layer, make_slug | 298 |
 | roboco/agents/factories/__init__.py | One-line re-export shim pointing to _base | 1 |
 | roboco/agents_config.py | 691-line MCP-layer permission/taxonomy module: HMAC agent-token issue/verify, role+team+cell maps derived from foundation, escalation chain, ROLE_PERMISSION_LEVELS, ROLE_SKILLS, A2A routing helpers | 691 |
 | roboco/agent_sdk/prompt_guard.py | Reusable Python port of the bash injection guard: _PATTERNS regex list, detect_injection, refusal_message, CLI main (exit 1 on injection) for the grok entrypoint | 93 |
 | agents/prompts/base.md | Universal base layer: identity separation, gateway-verb-only action, envelope shapes, missing-key cheatsheet, resume-from-briefing, charter alignment, todo rules, ground rules | 93 |
-| agents/prompts/roles/developer.md | Developer role prompt: implement-only identity, verb table (give_me_work/i_will_work_on/commit/open_pr/i_am_done/sync_branch/...), workspace path, behind-base -> sync_branch guidance, conventions waiver path | 25176 |
+| agents/prompts/doctrine/fable.md | Vendored Fable-5 behavioral doctrine (from `github.com/rennf93/opus-fable-playbook`, MIT, YAML frontmatter stripped): communication/turn-discipline/autonomy-calibration/honesty/code-discipline/delegation/precedence sections; loaded only when `fable_mode_enabled`, injected right after base.md via `fable_doctrine_layer()` | 47 |
+| agents/prompts/roles/developer.md | Developer role prompt: implement-only identity, verb table (give_me_work/i_will_work_on/commit/open_pr/i_am_done/sync_branch/...), workspace path, behind-base -> sync_branch guidance, conventions waiver path, a pointer scoping frontend/ux_ui's `## Design bar` to those teams only | 25176 |
 | agents/prompts/roles/qa.md | QA role prompt: review-only identity, claim_review/pass/fail/i_am_blocked verbs, ac_verdicts per criterion, circuit-breaker guidance | 13355 |
 | agents/prompts/roles/documenter.md | Documenter role prompt: docs-on-same-branch identity, claim_doc_task/commit/i_documented/i_am_blocked verbs, circuit-breaker guidance | 10739 |
 | agents/prompts/roles/cell_pm.md | Cell PM role prompt: coordinator identity, i_will_plan/delegate/complete/submit_up/unblock verbs, AC coverage gate, collision-surface declaration (intends_to_touch/adds_migration/touches_shared/depends_on), behind-base escalation | 35682 |
@@ -5186,8 +5226,8 @@ This slice is the prompt-composition pipeline and the role/team/permission taxon
 | agents/prompts/roles/prompter.md | Intake interviewer role prompt: CEO-only chat, propose_draft/propose_batch, MegaTask batch + per-cell-project-map drafting, root-subtask coordination-level AC guidance | 13825 |
 | agents/prompts/roles/secretary.md | Secretary role prompt: CEO chief-of-staff, gated-action confirm protocol, reading-free/prepare-direct/high-impact-bounce discipline | 4338 |
 | agents/prompts/teams/backend.md | Backend team layer: Python/FastAPI/Postgres stack, teammates, uv quality commands | 983 |
-| agents/prompts/teams/frontend.md | Frontend team layer: TS/Next.js stack, pnpm quality commands | 976 |
-| agents/prompts/teams/ux_ui.md | UX/UI team layer: design-system focus areas, teammates | 1009 |
+| agents/prompts/teams/frontend.md | Frontend team layer: TS/Next.js stack, pnpm quality commands, `## Design bar` section (taste-skill-distilled layout/typography/motion/spacing rules + 3 tuning dials + an "AI tells to avoid" list) | 976 |
+| agents/prompts/teams/ux_ui.md | UX/UI team layer: design-system focus areas, teammates, `## Design bar` section (same taste-skill basis as frontend.md, plus a design-artifact-to-code handoff bullet) | 1009 |
 | agents/prompts/identities/ | 19 per-agent identity files (be-dev-1/2, fe-dev-1/2, ux-dev-1/2, be/fe/ux -qa/-doc/-pm, main-pm, product-owner, head-marketing, auditor): YAML id/name/role/team/cell/reports_to + scope blurb; loaded by slug | 0 |
 | agents/prompts/_generated/lifecycle-developer.md | Autogenerated lifecycle verb list for developer (regenerated from lifecycle spec by make lifecycle); lists sync_branch etc. | 1498 |
 | agents/prompts/_generated/lifecycle-main_pm.md | Autogenerated lifecycle verbs for main_pm; submit_root now branch-keyed not task_type-keyed | 2034 |
@@ -5230,6 +5270,7 @@ This slice is the prompt-composition pipeline and the role/team/permission taxon
 | _ROLE_BUILTIN_TOOLS | dict | roboco/agents/factories/_base.py:136 | Per-role builtin-tool grant map; non-authors get common-only |
 | _tool_load_directive_layer | function | roboco/agents/factories/_base.py:149 | Build top-of-prompt 'your tools are ready' block; steers away from ToolSearch and shell-redirect rewrites |
 | _lifecycle_layer | function | roboco/agents/factories/_base.py:187 | Load _generated/lifecycle-<role>.md canonical verb-surface fragment (from lifecycle spec, CI-gated) |
+| fable_doctrine_layer | function | roboco/agents/factories/_base.py:203 | Return the vendored `doctrine/fable.md` doctrine text, or None when `fable_mode_enabled` is off / the file is missing; only caller is compose_prompt, inserted right after base.md |
 | compose_prompt | function | roboco/agents/factories/_base.py:203 | Compose the full system prompt by concatenating tool-directive, lifecycle, base, role, autogen-verbs, team, identity, ambient layers with '---' separators, skipping empty layers |
 | _AMBIENT_TOTAL_CAP | constant | roboco/agents/factories/_base.py:256 | 3000-char cap on the concatenated conventions ambient block |
 | conventions_ambient_layer | async function | roboco/agents/factories/_base.py:259 | Render per-project architectural-standard ambient block(s), multi-project headed, capped; None when conventions off / no projects |
@@ -5395,13 +5436,14 @@ prompts-roles-taxonomy slice
 ## Config Flags
 - ROBOCO_AGENT_AUTH_SECRET (env) — HMAC signing secret for agent/panel tokens; unset => verify_agent_token fail-closes (rejects every token), issue_*_token returns UNSIGNED
 - ROBOCO_CONVENTIONS_ENABLED — gates whether conventions_ambient_layer resolves + injects the architectural-standard ambient block; off => compose_prompt omits the ambient layer entirely
+- ROBOCO_FABLE_MODE_ENABLED (default off) — gates fable_doctrine_layer; off => compose_prompt omits the doctrine layer entirely (byte-for-byte unchanged prompt)
 - ROBOCO_SDK_URL (env, default http://localhost:9000) — used by the bash user-prompt-hook.sh (sister guard), not prompt_guard.py directly
 - ROBOCO_INITIAL_PROMPT (env) — the one-shot prompt the grok entrypoint hands to prompt_guard CLI main
 - PROJECT_HOST_PATH (orchestrator) — selects container (/app/prompts-generated) vs host ($TMPDIR/roboco-prompts) output dir for composed prompts
 
 
 ## Gotchas
-- Layer ORDER matters and is load-bearing: tool-directive FIRST, then lifecycle, then base, then role, then autogen-verbs, then team, then identity, then ambient. The lifecycle fragment is intentionally before base so the agent reads its allowed verb surface before any other instruction. Reordering would change model attention priority.
+- Layer ORDER matters and is load-bearing: tool-directive FIRST, then lifecycle, then base, then an optional fable-mode doctrine layer (`fable_mode_enabled`, `agents/prompts/doctrine/fable.md`), then role, then autogen-verbs, then team, then identity, then ambient. The lifecycle fragment is intentionally before base so the agent reads its allowed verb surface before any other instruction. Reordering would change model attention priority.
 - Empty/missing layers are silently dropped (compose_prompt skips falsy layers). An unknown role yields _role_layer=None AND _autogen_verbs_layer=None AND _lifecycle_layer=None — the agent would still spawn with just tool-directive + base + identity + ambient, missing its entire role+verb surface. The orchestrator guards upstream (raises ValueError on unknown role), but a typo in _ROLE_LAYER_MAP silently degrades to a roleless prompt rather than failing.
 - _ROLE_LAYER_MAP maps all three board roles (product_owner/head_marketing/auditor) to the SAME board.md file. The per-role distinction (PO vs HoM vs Auditor) comes only from the identity file + the _generated/<role>.md verb table, not from the role layer. A board role missing its identity file would lose its role-specific scope.
 - verbs.md is the aggregate reference doc but is NOT injected at spawn — _base.py loads the per-role _generated/<role>.md file instead. Editing verbs.md has zero prompt effect; it is a documentation/CI artifact only. The per-role files are the load-bearing ones.
@@ -5430,6 +5472,8 @@ prompts-roles-taxonomy slice
 | 15effce0 | Chore: 141 Gaps fill-in (#283) — sole commit touching this slice since fd10cc86 | Prompt-surface alignment with gateway/spec: (1) developer.md + lifecycle-developer.md + verbs.md add the new sync_branch verb and rewrite the behind-base guidance on developer/cell_pm/main_pm to point devs at sync_branch instead of i_am_blocked/escalate_up (cell/root integration branches still escalate). (2) qa.md and documenter.md add the i_am_blocked verb row and rewrite the circuit-breaker section to use i_am_blocked instead of 'you don't have an i_am_blocked verb -> unclaim' — corrects a false prompt claim. (3) cell_pm.md delegate signature + verbs.md add the collision-surface fields intends_to_touch/adds_migration/touches_shared/depends_on and a new 'Collision surface' section instructing the PM to declare them on every code subtask so siblings sequence. (4) pr_reviewer.md adds the in-path gate verbs claim_gate_review/pr_pass/pr_fail + an 'In-path gate review' section. (5) prompter.md adds MegaTask root-subtask coordination-level AC guidance (task_type=planning, coordination-level ACs). (6) lifecycle-main_pm.md submit_root description changes from 'Only for code roots' to 'branch-bearing roots; gate is branch-keyed not task_type-keyed'. (7) note verb schema in all autogen tables gains done/next/where_to_look top-level string params; pass_review ac_verdicts and delegate covers_parent_criteria/intends_to_touch now show BeforeValidator in the signature. |
 
 > Post-snapshot updates (since 2026-06-29): **536bbb64** (Chore/all/logical gaps sweep #286) — (a) agents_config.py: `_TEAM_SCOPED_ROLES` deduped: was inline-defined, now re-exported as `_comms.TEAM_SCOPED_ROLES` from `foundation.policy.communications` (values unchanged: dev/qa/doc/cell_pm); (b) _generated/cell_pm.md, main_pm.md, qa.md, verbs.md: BeforeValidator repr cleaned from delegate/pass_review signatures — now renders `list[str] | None = None` instead of the memory-address-bearing BeforeValidator literal; (c) lifecycle spec: `PRECONDITION_ROOT_NOT_CODE` added to `submit_root` extra_preconditions, backing the branch-keyed / planning-typed claim the prompt asserts. **aba57359** ([chore] lifecycle artifacts regenerate, foundation-check) — lifecycle-cell_pm.md, lifecycle-developer.md, lifecycle-documenter.md, lifecycle-main_pm.md, lifecycle-qa.md: `unclaim` description expanded with "A PR reviewer who claimed an external/gate review and cannot finish releases the claim here rather than wedging the lane"; lifecycle-cell_pm.md + lifecycle-main_pm.md: `complete` description clarified "The merge runs BEFORE the complete transition" ordering.
+>
+> **v0.18.0** (2026-07-04): Fable mode adds a 9th conditional compose_prompt layer — `fable_doctrine_layer()` (_base.py:203) injects `agents/prompts/doctrine/fable.md` right after base.md, gated by `fable_mode_enabled` (default off; off = byte-for-byte unchanged prompt). FE/UX-UI design bar: `## Design bar` sections added to `teams/frontend.md` + `teams/ux_ui.md` (taste-skill-distilled dials + rules), plus a scoping pointer in `roles/developer.md` — doc-only, no flag, no compose_prompt change (team/role layers already existed; only their file contents grew).
 
 ## Regression Risks
 
@@ -6862,6 +6906,12 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `roboco/services/roadmap_engine.py` | Dormant weekly engine: originates ONE held roadmap-exploration task for the Product Owner (default off) | 111 |
 | `roboco/services/roadmap_service.py` | CEO's per-item approve/reject glue over a held roadmap cycle; approve materializes a BACKLOG task | 211 |
 | `roboco/api/routes/roadmap.py` | CEO-only routes: list open cycles, approve/reject one item | 124 |
+| `roboco/services/x_engine.py` | Dormant "engine 4": drafts X (Twitter) release posts (event hook), mention replies (poll), and — new — feature-spotlight explorations (dormant interval, spawns Head of Marketing), ALL held for CEO approval (default off) | 463 |
+| `roboco/services/x_post_service.py` | CEO's approve/reject over a held X draft; approve posts via a Redis single-flight lock, idempotent | 223 |
+| `roboco/services/x_client.py` | OAuth 1.0a HMAC-SHA1 X API client (`LiveXClient`) + `NullXClient` (no creds, never egresses) + `build_x_client` factory | 318 |
+| `roboco/services/x_credentials.py` | Singleton Fernet-encrypted OAuth 1.0a credential CRUD; decrypts server-side only | 140 |
+| `roboco/api/routes/x.py` | CEO-only routes: list open X posts, approve/reject one draft | 164 |
+| `roboco/api/schemas/x.py` | `XPostResponse` + `XMentionRefModel` / `XFeatureRefModel` response shapes | 73 |
 
 ## Key Symbols
 
@@ -6928,6 +6978,18 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `RoadmapService._maybe_complete_cycle` | staticmethod | roadmap_service.py:202 | Completes the exploration task once every item on it is terminal (approved/rejected) |
 | `RoadmapItemResult` | dataclass | roadmap_service.py:37 | Outcome of one approve/reject call (status/item_id/materialized_task_id/detail) |
 | `get_roadmap_engine` / `get_roadmap_service` | factory | roadmap_engine.py:109 / roadmap_service.py:209 | Session-bound constructors |
+| `XEngine` | class | x_engine.py:150 | Dormant "engine 4": mirrors the release-manager "detect → originate a CEO-gated artifact → hold" shape across THREE responsibilities — release posts, mention replies, feature spotlights |
+| `XEngine._voice_guide` | method | x_engine.py:173 | Baseline house-voice constant (`_HOM_VOICE`) plus the CEO's `company_goals.brand_voice` sample when set — feeds release/reply prompts AND is the mechanism the HoM identity file points to for its own drafting |
+| `XEngine.draft_release_post` | method | x_engine.py:192 | Event-driven hook (called from `ReleaseProposalService.approve`'s publish-success branch); local-model-drafted, deduped per version, capped by `x_max_open_posts` |
+| `XEngine.run_cycle` | method | x_engine.py:255 | Periodic mentions poll; no-op unless `x_engine_enabled` AND `x_replies_enabled`; filters bot-like/low-engagement mentions, dedupes by mention id (`XSeenMentionTable`) |
+| `XEngine.open_feature_spotlight_exploration` | method | x_engine.py:337 | No-ops unless `x_engine_enabled` AND `x_feature_spotlight_enabled`, no creds, a cycle already open, the open-post cap reached, or project unresolvable; else opens ONE held PENDING exploration task for the Head of Marketing (`source=x_feature_exploration`) carrying a `x_seen_features` marker snapshot |
+| `XEngine.materialize_feature_spotlight` | method | x_engine.py:433 | Called from the `propose_feature_spotlight` do-tool: marks the feature slug seen (`XSeenFeatureTable`), creates the held draft (`source=x_feature`, identical shape to a release/reply draft), completes the exploration task |
+| `XPostService.approve` | method | x_post_service.py:77 | The ONLY caller of `x_client.post_tweet`; Redis single-flight lock, re-reads task under lock, idempotent on an already-posted draft |
+| `XPostService.reject` | method | x_post_service.py:180 | Records the CEO's reason; cancels the held draft |
+| `XClient` / `NullXClient` / `LiveXClient` | ABC/class | x_client.py:150 / 166 / 186 | `NullXClient.configured` is False (no creds) — drafting still runs (content nobody can post is a no-op upstream), just never originates; `LiveXClient` signs OAuth 1.0a HMAC-SHA1 |
+| `build_x_client` | factory | x_client.py:306 | Returns `LiveXClient` when credentials decrypt, else `NullXClient` |
+| `XCredentialsService.set_credentials` / `.get_decrypted` | method | x_credentials.py:61 / 116 | All-or-nothing Fernet-encrypted singleton credential set/clear; decrypts server-side only, never exposed to agents |
+| `get_x_engine` | factory | x_engine.py:461 | Session-bound constructor (optional injected `XClient` for tests) |
 
 ## Data Flow
 
@@ -6942,6 +7004,8 @@ Two distinct flows originate work into the delivery lifecycle:
 **Routing flow (runtime keystone).** `ProductService.project_for(product_id, team)` is called from the gateway delegate path to resolve which Project a cell works on within a product; None falls back to the parent task's project.
 
 **Roadmap flow (dormant weekly originator, default off).** `Orchestrator._roadmap_engine_loop` returns immediately unless `roadmap_engine_enabled`; otherwise each `roadmap_interval_seconds` (default weekly) it opens a DB context and calls `RoadmapEngine.run_cycle`, which no-ops if a roadmap-source task is already open or the RoboCo project isn't resolvable, else opens ONE held PENDING exploration task (`source=board_roadmap`, `confirmed_by_human=False`) assigned to the Product Owner. The normal board one-shot dispatch (`_dispatch_roadmap_exploration`) spawns the PO, who explores the charter/releases/metrics/projects and calls the `propose_roadmap` do-tool exactly once with a themed goal + 3-7 item drafts (persisted as an `orchestration_markers` payload). The CEO reviews the cycle in the panel's Roadmap Review Queue and approves/rejects each item individually via `/api/roadmap/cycles/{id}/items/{id}/{approve,reject}` → `RoadmapService`; an approved item materializes as a BACKLOG task (`source=roadmap`) through `PrompterService.create_task_from_draft` — nothing auto-starts, normal PM activation takes it from BACKLOG. Once every item is terminal, the exploration task itself completes.
+
+**X (Twitter) flow (three originators, one held queue, default off).** Unlike every other engine on this page, `XEngine` never spawns an agent for release posts or mention replies — `draft_release_post` (event hook off `ReleaseProposalService.approve`'s publish-success branch) and `run_cycle` (periodic mentions poll, `Orchestrator._x_mentions_poll_loop`) both draft via a raw local-model chat completion, never a cloud LLM. The feature-spotlight half is the exception: `Orchestrator._x_feature_spotlight_loop` (dormant unless BOTH `x_engine_enabled` AND `x_feature_spotlight_enabled`) opens a DB context each `x_feature_spotlight_interval_seconds` and calls `XEngine.open_feature_spotlight_exploration`, which no-ops on the usual guards (creds, one-open-cycle dedup, the shared `x_max_open_posts` cap, project resolvability) or else opens ONE held PENDING exploration task (`source=x_feature_exploration`) assigned to the Head of Marketing, carrying a snapshot of already-covered feature slugs (`x_seen_features` marker). The board dispatcher's `_dispatch_pm_work` special-cases this source (mirroring `ROADMAP_SOURCE`) to call `_dispatch_feature_spotlight_exploration`, a one-shot spawn of the real Head-of-Marketing agent (full read tools) who investigates CHANGELOG.md/feature-flags/docs/map/charter/KB and calls the `propose_feature_spotlight` do-tool exactly once; that verb materializes a brand-new held draft task (`source=x_feature`) and completes the exploration task as a side effect — a deliberate asymmetry from `propose_roadmap`, which instead writes a marker onto the SAME task and leaves it open. Every draft from all three paths — release, reply, spotlight — lands in the identical held-task shape (`TaskTable`, `confirmed_by_human=False`, `assigned_to=secretary-1`, body in `orchestration_markers.x_draft_body`) rendered by the panel's X Post Queue and acted on only by `XPostService.approve`/`.reject`; nothing here ever calls `x_client.post_tweet` itself. `XEngine._voice_guide` (a live `CompanyGoalsService.get()` read, never hardcoded) feeds a baseline house-voice constant plus the CEO's optional `brand_voice` charter sample into every one of the two local-model prompts, and the Head of Marketing's own identity prompt points it at the same charter field for its cloud-LLM-authored spotlight body.
 
 **Read-only views.** `KanbanService` builds role-specific boards from `TaskTable` queries on demand for the kanban API; `CompanyGoalsService.get` is read by the briefing injector into every agent's `context_briefing`.
 
@@ -6985,6 +7049,21 @@ flowchart TD
         CEO -->|approve/reject per item /api/roadmap| RSvc[RoadmapService]
         RSvc -->|approve| Backlog[BACKLOG task via PrompterService]
         RSvc -->|all items terminal| Complete[exploration task completes]
+    end
+
+    subgraph XEngineFlow[dormant — x_engine_enabled]
+        RelHook[ReleaseProposalService.approve publish] --> XDraftRelease[XEngine.draft_release_post]
+        XMentLoop[Orchestrator._x_mentions_poll_loop] -->|interval| XRunCycle[XEngine.run_cycle]
+        XDraftRelease --> XChat[local-model chat, _voice_guide]
+        XRunCycle --> XChat
+        XSpotLoop["Orchestrator._x_feature_spotlight_loop (x_feature_spotlight_enabled)"] -->|interval, default 3d| XOpen[XEngine.open_feature_spotlight_exploration]
+        XOpen -->|held PENDING task| HoM[Head of Marketing spawn]
+        HoM -->|propose_feature_spotlight do-tool| XMat[XEngine.materialize_feature_spotlight]
+        XMat --> XQueue[(held X post/reply/feature draft)]
+        XDraftRelease --> XQueue
+        XRunCycle --> XQueue
+        CEO -->|approve/reject /api/x/posts| XSvc[XPostService]
+        XSvc -->|approve, single-flight lock| Tweet[(x_client.post_tweet)]
     end
 ```
 
@@ -7037,11 +7116,26 @@ product-strategy-research-pitch
 │   └── create_repo (POST /orgs/{org}/repos, auto_init)
 ├── roadmap_engine.py — RoadmapEngine (dormant, roadmap_engine_enabled)
 │   └── run_cycle (one held exploration task for the Product Owner; one-open-cycle dedup)
-└── roadmap_service.py — RoadmapService
-    ├── list_open_cycles
-    ├── approve_item (materialize BACKLOG task, idempotent)
-    ├── reject_item (record reason, idempotent)
-    └── _maybe_complete_cycle (completes exploration task once all items terminal)
+├── roadmap_service.py — RoadmapService
+│   ├── list_open_cycles
+│   ├── approve_item (materialize BACKLOG task, idempotent)
+│   ├── reject_item (record reason, idempotent)
+│   └── _maybe_complete_cycle (completes exploration task once all items terminal)
+├── x_engine.py — XEngine (dormant, x_engine_enabled)
+│   ├── _voice_guide (baseline + CEO brand_voice charter sample, live DB read)
+│   ├── draft_release_post (event hook; local-model; dedup per version)
+│   ├── run_cycle (mentions poll; x_replies_enabled sub-switch; bot/engagement filter)
+│   ├── open_feature_spotlight_exploration (x_feature_spotlight_enabled sub-switch; one-open-cycle dedup; seen-features marker)
+│   ├── materialize_feature_spotlight (called from propose_feature_spotlight; marks seen, holds draft, completes exploration)
+│   └── _originate_post (shared held-task origination, all three sources)
+├── x_post_service.py — XPostService
+│   ├── approve (single-flight lock, idempotent, only caller of x_client.post_tweet)
+│   └── reject (record reason, cancel draft)
+├── x_client.py — XClient ABC / NullXClient / LiveXClient
+│   └── build_x_client (creds present → LiveXClient, else NullXClient)
+└── x_credentials.py — XCredentialsService (singleton, Fernet-encrypted)
+    ├── set_credentials (all-or-nothing)
+    └── get_decrypted (server-side only)
 ```
 
 ## Dependencies
@@ -7086,7 +7180,8 @@ product-strategy-research-pitch
   - `prompter_live.py` — `get_project_service` for project lookup during intake.
   - `dashboard.py` — `get_product_service` / `get_project_service` for dashboard views.
   - `roadmap.py` — `GET /api/roadmap/cycles`, `POST /cycles/{id}/items/{id}/{approve,reject}` (CEO-only) → `get_roadmap_service`.
-- **Orchestrator loop tick:** `_strategy_engine_loop` (orchestrator.py:6360) — created at `start()` (line 1010), cancelled in shutdown (line 1075); ticks every `strategy_engine_interval_seconds`, calls `StrategyEngine.run_cycle`. `_roadmap_engine_loop` (orchestrator.py:7462) — same lifecycle shape, ticks every `roadmap_interval_seconds` (default weekly), calls `RoadmapEngine.run_cycle`; `_dispatch_roadmap_exploration` (orchestrator.py:10284) spawns the Product Owner once per open exploration task.
+  - `x.py` — `GET /api/x/posts`, `POST /posts/{id}/{approve,reject}` (CEO-only) → `get_x_post_service`.
+- **Orchestrator loop tick:** `_strategy_engine_loop` (orchestrator.py:6360) — created at `start()` (line 1010), cancelled in shutdown (line 1075); ticks every `strategy_engine_interval_seconds`, calls `StrategyEngine.run_cycle`. `_roadmap_engine_loop` (orchestrator.py:7462) — same lifecycle shape, ticks every `roadmap_interval_seconds` (default weekly), calls `RoadmapEngine.run_cycle`; `_dispatch_roadmap_exploration` (orchestrator.py:10284) spawns the Product Owner once per open exploration task. `_x_mentions_poll_loop` (orchestrator.py:7509) ticks every `x_mentions_interval_seconds`, calls `XEngine.run_cycle`. `_x_feature_spotlight_loop` (orchestrator.py:7571) — same lifecycle shape, dormant unless BOTH `x_engine_enabled` AND `x_feature_spotlight_enabled`, ticks every `x_feature_spotlight_interval_seconds` (default 3 days), calls `XEngine.open_feature_spotlight_exploration`; `_dispatch_feature_spotlight_exploration` (orchestrator.py:10424) spawns the Head of Marketing once per open exploration task — `_dispatch_pm_work` routes `source=x_feature_exploration` to it BEFORE the generic `_BOARD_AGENTS` check (mirroring the roadmap source's own early branch), so it never falls into the two-reviewer board-review gate.
 - **MCP mount (orchestrator spawn):** `roboco-search` MCP mounted into Board/PM agent containers only when `research_enabled` (orchestrator.py:2914); the MCP server calls the `/api/research/*` routes.
 - **Service-to-service:** `ProjectService` called by `WorkspaceService`, `GitService`, `PitchService`, `task`, `docs`, `cockpit`, `secretary`, gateway choreographer; `ProductService.project_for` called from gateway delegate path; `CompanyGoalsService.get` called by briefing injector.
 - **No CLI / lifespan entry points** for this slice.
@@ -7154,6 +7249,7 @@ product-strategy-research-pitch
 > - `536bbb64` (Chore/all/logical gaps sweep #286, 2026-06-30): `github_provisioning.py` — added `_GITHUB_REPO_EXISTS_STATUS = 422` sentinel and `_fetch_existing_repo` method; `create_repo` now handles 422 "already exists" idempotently, resolving the orphaned-repo partial-failure risk (#83/#84). `pitch.py` docstring updated to reflect new idempotency guarantee. `project.py` `update()` — removed `exclude_none=True` from `model_dump` so explicit-None fields now clear stored values (#197).
 > - `c71f9b3b` ([chore] logical-gaps: kanban board column coverage + status-class fixes, 2026-06-30): `kanban.py` — added `_load_subtask_counts` batch query; `_task_to_card` now takes a `subtask_counts` dict and populates real subtask counts (#198). Added "Other" fallback column in `_build_columns` to prevent any task-card from being built-then-discarded. `get_qa_board`: removed `VERIFYING` from QA statuses (dev self-verification, not a QA state). `get_documenter_board`: added `task_type == DOCUMENTATION` filter. `get_main_pm_board_flat`: broadened status filter to include `PENDING`/`CLAIMED`/`COMPLETED` and added proper column routing (incoming/distributed/done). Added "Coordination" column for non-cell-team tasks (#196).
 > - `b3558d4e` ([chore] complexity: split 5 C-rank blocks to <=B, 2026-06-30): `kanban.py` `get_main_pm_board_flat` — refactored if/elif routing to a dict-dispatch (`status_col` + `team_col` maps) for xenon complexity gate; no functional change.
+> - **v0.18.0** (2026-07-04): the X feature-spotlight content in this slice (`XEngine` feature-spotlight methods, `_x_feature_spotlight_loop`/`_dispatch_feature_spotlight_exploration`, migration 061, `x_feature_spotlight_enabled`) was authored directly into this file's Files/Key Symbols/Data Flow/Mermaid/Logical Tree/Entry Points sections at implementation time rather than landing as a dated delta — noted here for changelog continuity; the body text above is current as of this date. (Config Flags is unchanged — the X-engine flags live in deployment-tooling.md's comprehensive list, not here.)
 
 ## Regression Risks
 
@@ -8182,6 +8278,7 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | docker/scripts/user-prompt-hook.sh | UserPromptSubmit: prompt-injection guard (deny classic jailbreak patterns, exit 2) + budget nudge | 72 |
 | docker/scripts/pre-compact-hook.sh | PreCompact: snapshot budget + terminal status to /tmp/roboco-precompact-<agent>.md for session resume | 48 |
 | docker/scripts/session-end-hook.sh | SessionEnd: post a reflective journal post-mortem (tool count, halt/loop, last terminal tool) to the SDK | 49 |
+| docker/scripts/fable-{stop-gate,bash-discipline,honesty-nudge,prompt-nudge,precompact}-hook.sh | 5 vendored fable-mode hook scripts (from `opus-fable-playbook` v0.1.3), installed only when `fable_mode_enabled`: Stop/SubagentStop turn-discipline gate, PreToolUse[Bash] read-tool discipline, PostToolUse[Bash] honesty nudge (the one also ported to grok), UserPromptSubmit shape-matched reminder, PreCompact survival-list injection; all fail-open | ~200 |
 | docker/scripts/grok-cli-agent-entrypoint.sh | Grok runtime entrypoint: render ~/.grok/config.toml, prompt-guard, symlink auth.json from RO mount, grok_auth --check (exit 78 on stale), run grok -p streaming-json, capture usage, exit 75 on 429/quota | 112 |
 | docker/scripts/tests/bash-guard-tests.sh | bash-guard-hook test harness: run_case allow/deny table incl. the new /app venv-protection cases | 7451 |
 | scripts/build_lifecycle_artifacts.py | Deterministic regeneration of lifecycle artifacts (intent-verbs.md, status-transitions.md, panel/lib/lifecycle.json, per-role prompt fragments) from foundation.policy.lifecycle | 57 |
@@ -8310,7 +8407,7 @@ deployment-tooling
 ├─ Dockerfiles (docker/)
 │  ├─ orchestrator.Dockerfile (builder + runner w/ docker-cli, git, make, node, pnpm, uv)
 │  ├─ agent-base.Dockerfile (venv + Node22 + claude-code + hooks, USER agent)
-│  │  └─ docker/scripts/*.sh (sdk-startup, a2a-check, bash-guard, post-tool-budget, usage-report, stop, user-prompt, pre-compact, session-end)
+│  │  └─ docker/scripts/*.sh (sdk-startup, a2a-check, bash-guard, post-tool-budget, usage-report, stop, user-prompt, pre-compact, session-end, + 5 default-off fable-*.sh gated by fable_mode_enabled)
 │  ├─ role images FROM agent-base: pm, dev-be, dev-fe, qa-be, qa-fe, ux, doc, prompter, secretary, pr-reviewer
 │  ├─ grok family: agent-grok.Dockerfile (+ grok CLI 0.2.56, grok-cli-agent-entrypoint.sh)
 │  │  └─ agent-grok-prompter / agent-grok-secretary (FROM grok, agent_sdk drivers)
@@ -8393,6 +8490,8 @@ deployment-tooling
 - ROBOCO_CLOUD_AUTH_ENABLED / _EMAIL / _PASSWORD / _SECRET / _COOKIE_MAX_AGE — FastAPI Users cookie login for the single seeded CEO; `Settings` fails loud at startup if armed with no secret
 - ROBOCO_X_ENGINE_ENABLED / _MENTIONS_INTERVAL_SECONDS / _MENTIONS_MAX_PER_CYCLE / _MENTIONS_MIN_ENGAGEMENT / _MAX_OPEN_POSTS / ROBOCO_X_ACCOUNT_USER_ID / _REQUEST_TIMEOUT_SECONDS — the X (Twitter) engine; inert without stored OAuth 1.0a credentials regardless of the flag
 - ROBOCO_ROADMAP_ENGINE_ENABLED / _INTERVAL_SECONDS (default 604800) / _MIN_ITEMS_PER_CYCLE / _MAX_ITEMS_PER_CYCLE — the board roadmap engine
+- ROBOCO_X_FEATURE_SPOTLIGHT_ENABLED / _INTERVAL_SECONDS (default 259200/3d) — X-engine feature-spotlight sub-switch (requires ROBOCO_X_ENGINE_ENABLED also on), default off
+- ROBOCO_FABLE_MODE_ENABLED — opus-fable-playbook adoption (doctrine layer in the composed prompt + 5 Claude-path hook scripts + 1 grok-path hook), default off; off = byte-for-byte unchanged spawn path
 - ROBOCO_TRANSCRIPT_RETENTION_DAYS / ROBOCO_TRANSCRIPT_PRUNE_ENABLED / _INTERVAL_SECONDS
 - ROBOCO_IMAGE_PRUNE_ENABLED / _INTERVAL_SECONDS
 - ROBOCO_GIT_COMMAND_TIMEOUT_SECONDS / _COMMIT_TIMEOUT_SECONDS / _NETWORK_TIMEOUT_SECONDS
@@ -8449,6 +8548,8 @@ deployment-tooling
 > Post-snapshot updates (since 2026-06-29): 7be10057 `[bug] agent image: stop baking VIRTUAL_ENV=/app/.venv` — removed `VIRTUAL_ENV=/app/.venv` from the global ENV in agent-base.Dockerfile; updated bash-guard-hook.sh comment/deny message to reflect that `--active` now errors (no active env) rather than retargeting /app/.venv. 536bbb64 `Chore/all/logical gaps sweep (#286)` — added `routing_strict` (ROBOCO_ROUTING_STRICT), `self_heal_notify_dedupe_seconds` (ROBOCO_SELF_HEAL_NOTIFY_DEDUPE_SECONDS), and `claude_stuck_kill_seconds` (ROBOCO_CLAUDE_STUCK_KILL_SECONDS) to config.py; minor type-annotation strip fix in scripts/regenerate_verb_tables.py. 2759edf7 `[B-REL] release executor` — added `release_ci_workflow` (ROBOCO_RELEASE_CI_WORKFLOW) to config.py, decoupled from self_heal_ci_workflow.
 
 > **Local branch (not on master, NOT deployed):** `feature/fastapi-guard-hardening` landed `ROBOCO_GUARD_ENABLED` / `_PASSIVE_MODE` / `_FAIL_SECURE` / `_TELEMETRY_ENABLED` / `_AGENT_API_KEY` / `_PROJECT_ID` / `_EMERGENCY` / `_EMERGENCY_WHITELIST` in `config.py` (6 commits, `896532a3`..`99ee666e`) and set both NAS composes' `ROBOCO_GUARD_ENABLED=true` / `ROBOCO_GUARD_PASSIVE_MODE=true` / `ROBOCO_GUARD_FAIL_SECURE=false` (`c496b677`, Phase 5); `docker-compose.registry.yml` is untouched and stays off. See api-core-websocket for the `roboco/security.py` module + `create_app` wiring detail.
+
+> **v0.18.0** (2026-07-04): Fable mode — `agent-base.Dockerfile` now `COPY`s 5 vendored `docker/scripts/fable-*.sh` hook scripts (stop-gate, bash-discipline, honesty-nudge, prompt-nudge, precompact), installed at spawn time only when `ROBOCO_FABLE_MODE_ENABLED` is set (default off; `session-start.sh` from the upstream `opus-fable-playbook` was deliberately not ported — redundant with the doctrine layer). X feature-spotlight adds `ROBOCO_X_FEATURE_SPOTLIGHT_ENABLED`/`_INTERVAL_SECONDS` to `config.py` as a sub-switch of the existing X-engine flag.
 
 ## Regression Risks
 
