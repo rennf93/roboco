@@ -114,13 +114,6 @@ export enum AssignmentScope {
   AGENT_SLUG = "agent_slug",
 }
 
-export enum SessionTaskRelationshipType {
-  DISCUSSION = "discussion",
-  PLANNING = "planning",
-  REVIEW = "review",
-  RETROSPECTIVE = "retrospective",
-}
-
 export enum NotificationType {
   TASK_ASSIGNMENT = "task_assignment",
   PRIORITY_CHANGE = "priority_change",
@@ -137,34 +130,6 @@ export enum NotificationPriority {
   NORMAL = "normal",
   HIGH = "high",
   URGENT = "urgent",
-}
-
-export enum SessionStatus {
-  ACTIVE = "active",
-  CLOSED = "closed",
-  TIMED_OUT = "timed_out",
-}
-
-export enum SessionScope {
-  INITIATIVE = "initiative",
-  CELL = "cell",
-  TASK = "task",
-}
-
-export enum MessageType {
-  REASONING = "reasoning",
-  DIALOGUE = "dialogue",
-  DECISION = "decision",
-  ACTION = "action",
-  BLOCKER = "blocker",
-  TECHNICAL = "technical",
-}
-
-export enum ChannelType {
-  CELL = "cell",
-  CROSS_CELL = "cross_cell",
-  MANAGEMENT = "management",
-  SPECIAL = "special",
 }
 
 export enum AgentStatus {
@@ -218,14 +183,6 @@ export interface ExecutionLog {
   events: Record<string, unknown>[];
   errors: Record<string, unknown>[];
   total_duration_seconds: number | null;
-}
-
-export interface TaskSessionLink {
-  session_id: string;
-  channel_slug: string;
-  scope: SessionScope;
-  is_primary: boolean;
-  relationship_type: string;
 }
 
 export interface SubTask {
@@ -315,8 +272,6 @@ export interface Task {
   // Review Status
   self_verified: boolean;
   qa_verified: boolean | null;
-  // Linked Sessions
-  sessions: TaskSessionLink[];
   // Git/Development Context
   branch_name: string | null;
   pr_number: number | null;
@@ -482,71 +437,11 @@ export interface WaitingAgent {
   context: Record<string, unknown>;
 }
 
-export interface Channel {
-  id: string;
-  name: string;
-  slug: string;
-  type: ChannelType;
-  description: string | null;
-  topic: string | null;
-  member_count: number;
-  message_count: number;
-  group_count: number;
-  is_archived: boolean;
-  is_private: boolean;
-  can_write: boolean;
-}
-
-export interface ChannelDetail extends Channel {
-  groups: Group[];
-}
-
-export interface Group {
-  id: string;
-  name: string;
-  hierarchy_level: number;
-  is_active: boolean;
-  total_messages: number;
-  active_session_id: string | null;
-}
-
-export interface Message {
-  id: string;
-  agent_id: string;
-  channel_id: string;
-  group_id: string;
-  session_id: string;
-  type: MessageType;
-  content: string;
-  content_length: number;
-  is_reply: boolean;
-  reply_to: string | null;
-  mentions: string[];
-  task_id: string | null;
-  commit_ref: string | null;
-  timestamp: string;
-  edited_at: string | null;
-  was_edited: boolean;
-}
-
 export interface SessionTaskInfo {
   task_id: string;
   task_title: string | null;
   is_primary: boolean;
   relationship_type: string;
-}
-
-export interface Session {
-  id: string;
-  group_id: string;
-  status: SessionStatus;
-  scope: SessionScope;
-  message_count: number;
-  total_content_length: number;
-  started_at: string;
-  last_activity_at: string;
-  closed_at: string | null;
-  task_links: SessionTaskInfo[];
 }
 
 export interface Notification {

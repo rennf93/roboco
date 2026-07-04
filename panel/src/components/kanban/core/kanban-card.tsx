@@ -28,7 +28,6 @@ import {
   CheckCircle,
   XCircle,
   UserPlus,
-  MessageSquare,
   Clock,
   Hash,
 } from "lucide-react";
@@ -54,8 +53,6 @@ export function KanbanCard({
   const isBacklog = task.status === TaskStatus.BACKLOG;
   const [assignOpen, setAssignOpen] = useState(false);
   const updateTask = useUpdateTask();
-  const hasSessions = task.sessions && task.sessions.length > 0;
-  const primarySession = task.sessions?.find((s) => s.is_primary);
 
   const {
     attributes,
@@ -165,32 +162,6 @@ export function KanbanCard({
                   </TooltipTrigger>
                   <TooltipContent>
                     <p>Awaiting session creation by PM</p>
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-            )}
-            {hasSessions && (
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger>
-                    <Badge
-                      variant="secondary"
-                      className={`text-xs gap-1 ${primarySession ? "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300" : ""}`}
-                    >
-                      <MessageSquare className="h-3 w-3" />
-                      {task.sessions.length}
-                    </Badge>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    <p>
-                      {task.sessions.length} linked session
-                      {task.sessions.length !== 1 ? "s" : ""}
-                    </p>
-                    {primarySession && (
-                      <p className="text-xs text-muted-foreground">
-                        Primary: #{primarySession.channel_slug}
-                      </p>
-                    )}
                   </TooltipContent>
                 </Tooltip>
               </TooltipProvider>

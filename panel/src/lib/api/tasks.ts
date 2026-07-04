@@ -87,7 +87,6 @@ const summaryToTask = (s: TaskSummaryWire): Task => ({
   quick_context: null,
   self_verified: false,
   qa_verified: null,
-  sessions: [],
 });
 
 export const tasksApi = {
@@ -202,7 +201,6 @@ export const tasksApi = {
         qa_notes: null,
         auditor_notes: null,
         quick_context: null,
-        sessions: [],
         branch_name: null,
         pr_number: null,
         pr_url: null,

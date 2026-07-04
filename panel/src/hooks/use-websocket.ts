@@ -23,17 +23,6 @@ export interface AgentStreamMessage {
   timestamp?: string;
 }
 
-export interface ChannelMessage {
-  type: "connected" | "message.new" | "session.closed";
-  channel_id?: string;
-  message_id?: string;
-  agent_id?: string;
-  content?: string;
-  message_type?: string;
-  subscriber_count?: number;
-  timestamp?: string;
-}
-
 export interface NotificationMessage {
   type: "connected" | "notification";
   agent_id?: string;
@@ -53,19 +42,6 @@ export interface A2ASystemMessage {
   to_agent?: string;
   skill?: string | null;
   body_excerpt?: string;
-  timestamp?: string;
-}
-
-export interface SessionMessage {
-  type: "connected" | "message.new";
-  message_id?: string;
-  session_id?: string;
-  channel_id?: string;
-  agent_id?: string;
-  content?: string;
-  message_type?: string;
-  is_reply?: boolean;
-  reply_to?: string | null;
   timestamp?: string;
 }
 
@@ -185,73 +161,6 @@ export function useAgentStream(agentId: string | null) {
     messages,
     streamChunks,
     streamOutput,
-    clearMessages,
-    isConnected,
-    isConnecting,
-  };
-}
-
-/**
- * Subscribe to a channel's message stream
- */
-export function useChannelStream(channelId: string | null) {
-  const {
-    state,
-    lastMessage,
-    messages,
-    clearMessages,
-    isConnected,
-    isConnecting,
-  } = useWebSocket<ChannelMessage>(
-    channelId ? "/channels/" + channelId : "",
-    { agent_id: CEO_AGENT_ID },
-    !!channelId,
-  );
-
-  // Filter to only actual messages
-  const channelMessages = messages.filter((m) => m.type === "message.new");
-
-  return {
-    state,
-    lastMessage,
-    channelMessages,
-    allMessages: messages,
-    clearMessages,
-    isConnected,
-    isConnecting,
-  };
-}
-
-/**
- * Subscribe to a session's live message stream (`/ws/sessions/{id}`).
- *
- * The backend publishes MESSAGE_SENT on every persisted send; the websocket
- * bridge fans it to this stream as a `message.new` frame. The session detail
- * view consumes `lastMessage` to refresh its transcript live instead of
- * relying on the manual Refresh button.
- */
-export function useSessionStream(sessionId: string | null) {
-  const {
-    state,
-    lastMessage,
-    messages,
-    clearMessages,
-    isConnected,
-    isConnecting,
-  } = useWebSocket<SessionMessage>(
-    sessionId ? "/sessions/" + sessionId : "",
-    { agent_id: CEO_AGENT_ID },
-    !!sessionId,
-  );
-
-  // Filter to only actual messages (drop the initial `connected` frame).
-  const sessionMessages = messages.filter((m) => m.type === "message.new");
-
-  return {
-    state,
-    lastMessage,
-    sessionMessages,
-    allMessages: messages,
     clearMessages,
     isConnected,
     isConnecting,

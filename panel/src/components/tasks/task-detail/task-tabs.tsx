@@ -9,7 +9,6 @@ import { TabProgress } from "./tab-progress";
 import { TabCommits } from "./tab-commits";
 import { TabNotes } from "./tab-notes";
 import { TabDependencies } from "./tab-dependencies";
-import { TabSessions } from "./tab-sessions";
 import {
   FileText,
   Layout,
@@ -17,7 +16,6 @@ import {
   GitCommit,
   StickyNote,
   Link2,
-  MessageSquare,
 } from "lucide-react";
 
 interface TaskTabsProps {
@@ -34,11 +32,10 @@ export function TaskTabs({ task }: TaskTabsProps) {
     (task.auditor_notes ? 1 : 0) +
     (task.quick_context ? 1 : 0);
   const depsCount = task.dependency_ids.length + task.blocker_ids.length;
-  const sessionsCount = task.sessions?.length || 0;
 
   return (
     <Tabs defaultValue="overview" className="mt-6">
-      <TabsList className="grid w-full grid-cols-7 lg:w-auto lg:inline-grid">
+      <TabsList className="grid w-full grid-cols-6 lg:w-auto lg:inline-grid">
         <TabsTrigger value="overview" className="gap-2">
           <FileText className="h-4 w-4" />
           <span className="hidden sm:inline">Overview</span>
@@ -58,15 +55,6 @@ export function TaskTabs({ task }: TaskTabsProps) {
           {progressCount > 0 && (
             <Badge variant="secondary" className="ml-1 h-5 px-1.5">
               {progressCount}
-            </Badge>
-          )}
-        </TabsTrigger>
-        <TabsTrigger value="sessions" className="gap-2">
-          <MessageSquare className="h-4 w-4" />
-          <span className="hidden sm:inline">Sessions</span>
-          {sessionsCount > 0 && (
-            <Badge variant="secondary" className="ml-1 h-5 px-1.5">
-              {sessionsCount}
             </Badge>
           )}
         </TabsTrigger>
@@ -108,9 +96,6 @@ export function TaskTabs({ task }: TaskTabsProps) {
         </TabsContent>
         <TabsContent value="progress">
           <TabProgress task={task} />
-        </TabsContent>
-        <TabsContent value="sessions">
-          <TabSessions task={task} />
         </TabsContent>
         <TabsContent value="commits">
           <TabCommits task={task} />

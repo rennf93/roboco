@@ -12,5 +12,4 @@ export { AcceptanceCriteria } from "./acceptance-criteria";
 export { ProgressTimeline } from "./progress-timeline";
 export { CheckpointCard } from "./checkpoint-card";
 export { CommitCard } from "./commit-card";
-export { TabSessions } from "./tab-sessions";
 export { WorkSessionCard } from "./work-session-card";

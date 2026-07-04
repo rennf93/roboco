@@ -7,10 +7,6 @@ import {
   NotificationType,
   NotificationPriority,
   JournalEntryType,
-  ChannelType,
-  SessionStatus,
-  SessionScope,
-  MessageType,
   FlagSeverity,
   TaskNature,
   TaskType,
@@ -62,17 +58,6 @@ export const TASK_IDS = {
 export const PROJECT_IDS = {
   roboco: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
   robocoPanel: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-};
-
-export const CHANNEL_IDS = {
-  backendCell: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-  frontendCell: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-  uxuiCell: "cccccccc-cccc-cccc-cccc-cccccccccccc",
-  devAll: "dddddddd-dddd-dddd-dddd-dddddddddddd",
-  qaAll: "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
-  pmAll: "ffffffff-ffff-ffff-ffff-ffffffffffff",
-  announcements: "00000000-0000-0000-0000-000000000100",
-  allHands: "00000000-0000-0000-0000-000000000101",
 };
 
 // Timestamps - computed dynamically to stay relative
@@ -299,7 +284,6 @@ Implement a complete user authentication system including:
     completed_at: null,
     self_verified: false,
     qa_verified: null,
-    sessions: [],
     branch_name: "feature/TASK-001-user-auth",
     pr_number: null,
     pr_url: null,
@@ -442,7 +426,6 @@ Implement a complete user authentication system including:
     completed_at: null,
     self_verified: false,
     qa_verified: null,
-    sessions: [],
     branch_name: null,
     pr_number: null,
     pr_url: null,
@@ -497,7 +480,6 @@ Pagination should maintain filter state.`,
     completed_at: null,
     self_verified: false,
     qa_verified: null,
-    sessions: [],
     branch_name: "fix/TASK-003-pagination-bug",
     pr_number: null,
     pr_url: null,
@@ -548,7 +530,6 @@ The flow should guide new users through:
     completed_at: hourAgo.toISOString(),
     self_verified: true,
     qa_verified: null,
-    sessions: [],
     branch_name: "feature/TASK-004-onboarding-design",
     pr_number: 42,
     pr_url: "https://github.com/roboco/roboco/pull/42",
@@ -659,7 +640,6 @@ Reduce response time to < 100ms for all endpoints.`,
     completed_at: null,
     self_verified: false,
     qa_verified: null,
-    sessions: [],
     branch_name: "perf/TASK-005-db-optimization",
     pr_number: null,
     pr_url: null,
@@ -718,7 +698,6 @@ Include:
     completed_at: hourAgo.toISOString(),
     self_verified: true,
     qa_verified: true,
-    sessions: [],
     branch_name: "docs/TASK-006-api-documentation",
     pr_number: 38,
     pr_url: "https://github.com/roboco/roboco/pull/38",
@@ -931,83 +910,6 @@ export const mockWaitingAgents = [
 ];
 
 // =============================================================================
-// MOCK CHANNELS - Matching backend ChannelResponse schema
-// =============================================================================
-
-export const mockChannels = [
-  {
-    id: CHANNEL_IDS.backendCell,
-    name: "Backend Cell",
-    slug: "backend-cell",
-    type: ChannelType.CELL,
-    description: "Backend development team channel",
-    topic: null,
-    member_count: 6,
-    message_count: 150,
-    group_count: 3,
-    is_archived: false,
-    is_private: false,
-    can_write: true,
-  },
-  {
-    id: CHANNEL_IDS.frontendCell,
-    name: "Frontend Cell",
-    slug: "frontend-cell",
-    type: ChannelType.CELL,
-    description: "Frontend development team channel",
-    topic: null,
-    member_count: 6,
-    message_count: 120,
-    group_count: 2,
-    is_archived: false,
-    is_private: false,
-    can_write: true,
-  },
-  {
-    id: CHANNEL_IDS.uxuiCell,
-    name: "UX/UI Cell",
-    slug: "uxui-cell",
-    type: ChannelType.CELL,
-    description: "UX/UI design team channel",
-    topic: null,
-    member_count: 5,
-    message_count: 80,
-    group_count: 2,
-    is_archived: false,
-    is_private: false,
-    can_write: true,
-  },
-  {
-    id: CHANNEL_IDS.devAll,
-    name: "All Developers",
-    slug: "dev-all",
-    type: ChannelType.CROSS_CELL,
-    description: "Cross-cell developer discussion",
-    topic: null,
-    member_count: 10,
-    message_count: 200,
-    group_count: 5,
-    is_archived: false,
-    is_private: false,
-    can_write: true,
-  },
-  {
-    id: CHANNEL_IDS.announcements,
-    name: "Announcements",
-    slug: "announcements",
-    type: ChannelType.SPECIAL,
-    description: "Company-wide announcements",
-    topic: null,
-    member_count: 19,
-    message_count: 25,
-    group_count: 1,
-    is_archived: false,
-    is_private: false,
-    can_write: false,
-  },
-];
-
-// =============================================================================
 // MOCK NOTIFICATIONS - Matching backend NotificationResponse schema
 // =============================================================================
 
@@ -1216,146 +1118,6 @@ export const mockKanbanDevBoard = {
 };
 
 // =============================================================================
-// MOCK SESSIONS - Matching backend SessionResponse schema
-// =============================================================================
-
-export const mockSessions = [
-  {
-    id: mockId(),
-    group_id: mockId(),
-    status: SessionStatus.ACTIVE,
-    scope: SessionScope.TASK,
-    message_count: 25,
-    total_content_length: 5000,
-    started_at: hourAgo.toISOString(),
-    last_activity_at: now.toISOString(),
-    closed_at: null,
-  },
-  {
-    id: mockId(),
-    group_id: mockId(),
-    status: SessionStatus.CLOSED,
-    scope: SessionScope.CELL,
-    message_count: 50,
-    total_content_length: 12000,
-    started_at: dayAgo.toISOString(),
-    last_activity_at: new Date(
-      now.getTime() - 2 * 60 * 60 * 1000,
-    ).toISOString(),
-    closed_at: new Date(now.getTime() - 2 * 60 * 60 * 1000).toISOString(),
-  },
-];
-
-// =============================================================================
-// MOCK MESSAGES - Matching backend MessageResponse schema
-// =============================================================================
-
-const messageGroupId = mockId();
-
-// Use getter for fresh timestamps
-export const getMockMessages = () => [
-  {
-    id: mockId(),
-    agent_id: AGENT_IDS.beDev1,
-    channel_id: CHANNEL_IDS.backendCell,
-    group_id: messageGroupId,
-    session_id: mockSessions[0].id,
-    type: MessageType.DIALOGUE,
-    content:
-      "Just finished the auth service implementation. Ready to start on the API endpoints.",
-    content_length: 78,
-    is_reply: false,
-    reply_to: null,
-    mentions: [],
-    task_id: TASK_IDS.task1,
-    commit_ref: null,
-    timestamp: getMinutesAgo(60).toISOString(),
-    edited_at: null,
-    was_edited: false,
-  },
-  {
-    id: mockId(),
-    agent_id: AGENT_IDS.bePm,
-    channel_id: CHANNEL_IDS.backendCell,
-    group_id: messageGroupId,
-    session_id: mockSessions[0].id,
-    type: MessageType.DECISION,
-    content: "Great progress! Let's prioritize the OAuth integration next.",
-    content_length: 58,
-    is_reply: true,
-    reply_to: null,
-    mentions: [AGENT_IDS.beDev1],
-    task_id: TASK_IDS.task1,
-    commit_ref: null,
-    timestamp: getMinutesAgo(55).toISOString(),
-    edited_at: null,
-    was_edited: false,
-  },
-  {
-    id: mockId(),
-    agent_id: AGENT_IDS.beDev2,
-    channel_id: CHANNEL_IDS.backendCell,
-    group_id: messageGroupId,
-    session_id: mockSessions[0].id,
-    type: MessageType.BLOCKER,
-    content:
-      "I'm blocked on the database optimization task. Need the auth changes to merge first.",
-    content_length: 82,
-    is_reply: false,
-    reply_to: null,
-    mentions: [AGENT_IDS.beDev1],
-    task_id: TASK_IDS.task5,
-    commit_ref: null,
-    timestamp: getMinutesAgo(50).toISOString(),
-    edited_at: null,
-    was_edited: false,
-  },
-  {
-    id: mockId(),
-    agent_id: AGENT_IDS.beDev1,
-    channel_id: CHANNEL_IDS.backendCell,
-    group_id: messageGroupId,
-    session_id: mockSessions[0].id,
-    type: MessageType.TECHNICAL,
-    content: "Commit pushed: feat(auth): add user authentication schema",
-    content_length: 55,
-    is_reply: false,
-    reply_to: null,
-    mentions: [],
-    task_id: TASK_IDS.task1,
-    commit_ref: "abc123def456",
-    timestamp: getMinutesAgo(45).toISOString(),
-    edited_at: null,
-    was_edited: false,
-  },
-];
-// Legacy export for backwards compatibility
-export const mockMessages = getMockMessages();
-
-// =============================================================================
-// MOCK GROUPS - Matching backend GroupResponse schema
-// =============================================================================
-
-export const mockGroups = [
-  {
-    id: mockId(),
-    name: "General Discussion",
-    hierarchy_level: 0,
-    is_active: true,
-    total_messages: 150,
-    active_session_id: mockSessions[0].id,
-  },
-  {
-    id: mockId(),
-    name: "Tech Talk",
-    hierarchy_level: 1,
-    is_active: true,
-    total_messages: 80,
-    active_session_id: null,
-  },
-];
-
-// =============================================================================
 // MOCK AUDITOR DATA - Matching backend dashboard.py schemas
 // =============================================================================
 
@@ -1411,21 +1173,21 @@ export const mockAuditorReports = [
 export const mockAuditorDashboard = {
   live_feeds: [
     {
-      id: CHANNEL_IDS.backendCell,
+      id: mockId(),
       name: "Backend Cell",
       status: "streaming",
       last_activity: now.toISOString(),
       message_count_24h: 25,
     },
     {
-      id: CHANNEL_IDS.frontendCell,
+      id: mockId(),
       name: "Frontend Cell",
       status: "idle",
       last_activity: hourAgo.toISOString(),
       message_count_24h: 15,
     },
     {
-      id: CHANNEL_IDS.uxuiCell,
+      id: mockId(),
       name: "UX/UI Cell",
       status: "idle",
       last_activity: dayAgo.toISOString(),
