@@ -16,7 +16,7 @@ SDK_URL="${ROBOCO_SDK_URL:-http://localhost:9000}"
 input=$(cat 2>/dev/null || true)
 [[ -z "$input" ]] && exit 0
 
-TRANSCRIPT=$(printf '%s' "$input" | python3 - <<'PY'
+TRANSCRIPT=$(printf '%s' "$input" | python3 -c "$(cat <<'PY'
 import json, sys
 try:
     d = json.loads(sys.stdin.read())
@@ -24,7 +24,7 @@ try:
 except Exception:
     print("")
 PY
-)
+)")
 
 [[ -z "$TRANSCRIPT" ]] && exit 0
 

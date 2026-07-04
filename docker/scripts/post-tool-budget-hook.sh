@@ -25,7 +25,7 @@ input=$(cat 2>/dev/null || true)
 [[ -z "$input" ]] && exit 0
 
 # Strip MCP prefix, keep tool_input deterministic for hash.
-read -r TOOL ARGS_HASH <<<"$(printf '%s' "$input" | python3 - <<'PY'
+read -r TOOL ARGS_HASH <<<"$(printf '%s' "$input" | python3 -c "$(cat <<'PY'
 import json, sys, hashlib
 try:
     d = json.loads(sys.stdin.read())
@@ -37,7 +37,7 @@ try:
 except Exception:
     print("unknown unknown")
 PY
-)"
+)")"
 
 # Record the tool name on the SDK so the stop-hook can recognize a
 # graceful terminal call (i_am_idle / i_am_done / pass / fail / etc.).
