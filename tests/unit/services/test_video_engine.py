@@ -9,6 +9,7 @@ Secretary-owned and held for the CEO. Asserted against a real Postgres DB.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock
 
 import pytest
 from roboco.config import settings as cfg
@@ -82,6 +83,12 @@ def _enable(monkeypatch: pytest.MonkeyPatch, **overrides: object) -> None:
     monkeypatch.setattr(cfg, "video_max_open_posts", 5)
     for key, value in overrides.items():
         monkeypatch.setattr(cfg, key, value)
+
+
+def _mock_local_model(monkeypatch: pytest.MonkeyPatch, reply: str | None) -> AsyncMock:
+    mock = AsyncMock(return_value=reply)
+    monkeypatch.setattr(video_engine_module, "_chat", mock)
+    return mock
 
 
 # --------------------------------------------------------------------------- #
@@ -293,3 +300,104 @@ async def test_originate_video_post_not_counted_by_dedupe_against_new_occasion(
     assert second is not None
     open_tasks = await get_task_service(db_session).list_open_video_posts()
     assert len(open_tasks) == TWO
+
+
+# --------------------------------------------------------------------------- #
+# draft_release_video
+# --------------------------------------------------------------------------- #
+
+_CHANGELOG = "## [1.0.0]\n\n### Added\n- a huge new release\n"
+
+
+@pytest.mark.asyncio
+async def test_draft_release_video_disabled_opens_nothing(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch, video_on_release=True)
+    monkeypatch.setattr(cfg, "video_engine_enabled", False)
+    engine = video_engine_module.VideoEngine(db_session)
+    task = await engine.draft_release_video(version="1.0.0", changelog=_CHANGELOG)
+    assert task is None
+    assert await get_task_service(db_session).list_open_video_posts() == []
+
+
+@pytest.mark.asyncio
+async def test_draft_release_video_sub_switch_off_opens_nothing(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch, video_on_release=False)
+    engine = video_engine_module.VideoEngine(db_session)
+    task = await engine.draft_release_video(version="1.0.0", changelog=_CHANGELOG)
+    assert task is None
+    assert await get_task_service(db_session).list_open_video_posts() == []
+
+
+@pytest.mark.asyncio
+async def test_draft_release_video_opens_authoring_task(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch, video_on_release=True)
+    _mock_local_model(monkeypatch, "RoboCo v1.0.0 just shipped a huge release.")
+    engine = video_engine_module.VideoEngine(db_session)
+    task = await engine.draft_release_video(version="1.0.0", changelog=_CHANGELOG)
+    assert task is not None
+    assert task.source == VIDEO_SOURCE
+    assert task.team == Team.UX_UI
+    assert task.confirmed_by_human is True
+    draft = markers.get_video_draft(task)
+    assert draft is not None
+    assert draft["occasion"] == "release 1.0.0"
+    assert draft["platforms"] == ["x", "tiktok"]
+    assert draft["script"] == "RoboCo v1.0.0 just shipped a huge release."
+    assert draft["brief"] == draft["script"]
+
+
+@pytest.mark.asyncio
+async def test_draft_release_video_falls_back_to_template_on_local_model_failure(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch, video_on_release=True)
+    mock = AsyncMock(side_effect=RuntimeError("ollama down"))
+    monkeypatch.setattr(video_engine_module, "_chat", mock)
+    engine = video_engine_module.VideoEngine(db_session)
+    task = await engine.draft_release_video(version="1.0.0", changelog=_CHANGELOG)
+    assert task is not None
+    draft = markers.get_video_draft(task)
+    assert draft is not None
+    assert "1.0.0" in draft["script"]
+    assert "a huge new release" in draft["script"]
+
+
+@pytest.mark.asyncio
+async def test_draft_release_video_falls_back_to_template_on_empty_local_reply(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch, video_on_release=True)
+    _mock_local_model(monkeypatch, None)  # non-success / empty local-model reply
+    engine = video_engine_module.VideoEngine(db_session)
+    task = await engine.draft_release_video(version="2.0.0", changelog="- no bullets")
+    assert task is not None
+    draft = markers.get_video_draft(task)
+    assert draft is not None
+    assert draft["script"] == "RoboCo v2.0.0 just shipped: no bullets."
+
+
+@pytest.mark.asyncio
+async def test_draft_release_video_dedupes_same_version(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    _enable(monkeypatch, video_on_release=True)
+    _mock_local_model(monkeypatch, "shipped!")
+    engine = video_engine_module.VideoEngine(db_session)
+    first = await engine.draft_release_video(version="1.0.0", changelog=_CHANGELOG)
+    second = await engine.draft_release_video(version="1.0.0", changelog=_CHANGELOG)
+    assert first is not None
+    assert second is None
+    open_tasks = await get_task_service(db_session).list_open_video_posts()
+    assert len(open_tasks) == ONE

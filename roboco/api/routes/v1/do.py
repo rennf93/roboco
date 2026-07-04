@@ -173,6 +173,8 @@ async def do_propose_feature_spotlight(
         feature_slug=body.feature_slug,
         feature_title=body.feature_title,
         body=body.body,
+        wants_video=body.wants_video,
+        video_script=body.video_script,
     )
     return envelope_to_response(env, request)
 

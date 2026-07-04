@@ -21,6 +21,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
+import httpx
+
 from roboco.config import settings
 from roboco.foundation import identity as _foundation
 from roboco.foundation.policy.content import markers
@@ -46,6 +48,62 @@ _AUTHORING_ACCEPTANCE_CRITERIA = [
     "Captions within platform limits",
 ]
 _POST_ACCEPTANCE_CRITERIA = ["CEO approves or rejects the draft"]
+
+_CHAT_TIMEOUT_SECONDS = 60.0
+
+
+async def _chat(prompt: str) -> str | None:
+    """One local-LLM chat call (OpenAI-compatible); None on a non-success.
+
+    Mirrors XEngine's identical helper, duplicated locally (rather than
+    imported) so video_engine doesn't reach into another service's private
+    internals."""
+    async with httpx.AsyncClient(timeout=_CHAT_TIMEOUT_SECONDS) as client:
+        resp = await client.post(
+            f"{settings.local_llm_base_url}/chat/completions",
+            json={
+                "model": settings.local_llm_model,
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 200,
+            },
+        )
+        if not resp.is_success:
+            return None
+        data = resp.json()
+        choices = data.get("choices") or []
+        if not choices:
+            return None
+        content = choices[0].get("message", {}).get("content")
+        return content if isinstance(content, str) else None
+
+
+def _first_changelog_bullet(changelog: str) -> str:
+    """First CHANGELOG bullet's text, or "" if none — the fallback template's
+    headline when the local model is unavailable."""
+    for line in changelog.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(("-", "*")):
+            text = stripped.lstrip("-*").strip()
+            if text:
+                return text
+    return ""
+
+
+def _fallback_release_script(version: str, changelog: str) -> str:
+    highlight = _first_changelog_bullet(changelog)
+    lead = f": {highlight}" if highlight else ""
+    return f"RoboCo v{version} just shipped{lead}."
+
+
+def _release_video_prompt(version: str, changelog: str) -> str:
+    return (
+        "You are RoboCo's marketing team, writing a short voiceover script "
+        "for a bespoke motion-graphics video announcing a release. Plain "
+        "text, 2-3 short sentences, energetic but factual — no invented "
+        "facts.\n\n"
+        f"Write the script for RoboCo v{version}, based on this CHANGELOG "
+        f"entry:\n{changelog[:1000]}\n"
+    )
 
 
 class VideoEngine(BaseService):
@@ -148,6 +206,41 @@ class VideoEngine(BaseService):
             assignee=str(assignee),
         )
         return task
+
+    # ---- release trigger (event-driven hook) -------------------------------
+
+    async def draft_release_video(
+        self, *, version: str, changelog: str
+    ) -> TaskTable | None:
+        """Originate ONE UX/UI video-authoring task for a release announcement,
+        or None (no-op).
+
+        No-ops when the flag or the release sub-switch is off; the shared
+        dedup/open-cap/project checks in ``open_video_task`` cover the rest.
+        Called from ``ReleaseProposalService.approve()``'s publish success
+        branch, right beside the X-post draft hook — never invoked by a loop
+        itself.
+        """
+        if not (settings.video_engine_enabled and settings.video_on_release):
+            return None
+        script = await self._draft_release_script(version, changelog)
+        return await self.open_video_task(
+            occasion=f"release {version}",
+            script=script,
+            platforms=["x", "tiktok"],
+            brief=script,
+        )
+
+    async def _draft_release_script(self, version: str, changelog: str) -> str:
+        try:
+            draft = await _chat(_release_video_prompt(version, changelog))
+        except Exception as exc:
+            self.log.warning(
+                "video-engine: local-model script draft failed (fallback template)",
+                error=str(exc),
+            )
+            draft = None
+        return (draft or "").strip() or _fallback_release_script(version, changelog)
 
     # ---- held draft (materialized once a render pass produces MP4s) -------
 

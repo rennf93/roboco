@@ -184,6 +184,7 @@ class ReleaseProposalService(BaseService):
                 task.status = TaskStatus.COMPLETED
                 await self.session.flush()
                 await self._draft_x_post(report)
+                await self._draft_video(report)
             return result
         finally:
             await self._finalize_release_lock(
@@ -204,6 +205,21 @@ class ReleaseProposalService(BaseService):
             )
         except Exception as exc:
             logger.warning("x-post draft failed (best-effort): %s", exc)
+
+    async def _draft_video(self, report: ReleaseReadinessReport) -> None:
+        """Hand the just-published release to the video engine for a held
+        UX/UI authoring task (best-effort — never raises into approve(); a
+        drafting failure must not affect the release's already-succeeded
+        publish). Off/no-sub-switch is itself a no-op inside the engine."""
+        try:
+            from roboco.services.video_engine import get_video_engine
+
+            await get_video_engine(self.session).draft_release_video(
+                version=report.proposed_version,
+                changelog=report.drafted_changelog,
+            )
+        except Exception as exc:
+            logger.warning("video draft failed (best-effort): %s", exc)
 
     async def _finalize_release_lock(
         self,

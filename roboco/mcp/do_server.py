@@ -548,7 +548,11 @@ def propose_roadmap(cycle_goal: str, items: list[dict[str, Any]]) -> dict[str, A
 
 
 def propose_feature_spotlight(
-    feature_slug: str, feature_title: str, body: str
+    feature_slug: str,
+    feature_title: str,
+    body: str,
+    wants_video: bool = False,
+    video_script: str = "",
 ) -> dict[str, Any]:
     """Head of Marketing: draft ONE feature-spotlight marketing post.
 
@@ -561,6 +565,10 @@ def propose_feature_spotlight(
         feature_slug: Stable slug identifying the feature (the dedup key).
         feature_title: Short human title of the feature.
         body: The tweet text (plain, <=280 chars, no invented facts).
+        wants_video: Also request a companion video (held separately for CEO
+            approval, when the video engine is armed for spotlights).
+        video_script: Optional script for that video; falls back to the
+            feature title/body when omitted.
     """
     return _post(
         "/api/v1/do/propose_feature_spotlight",
@@ -568,6 +576,8 @@ def propose_feature_spotlight(
             "feature_slug": feature_slug,
             "feature_title": feature_title,
             "body": body,
+            "wants_video": wants_video,
+            "video_script": video_script,
         },
     )
 

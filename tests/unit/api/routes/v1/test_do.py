@@ -172,6 +172,60 @@ async def test_evidence_with_task_id_returns_evidence_envelope() -> None:
 
 
 @pytest.mark.asyncio
+async def test_propose_feature_spotlight_defaults_wants_video_false() -> None:
+    """POST /api/v1/do/propose_feature_spotlight without wants_video/video_script
+    threads the schema defaults through to the verb unchanged."""
+    mock_actions = MagicMock(spec=ContentActions)
+    mock_actions.propose_feature_spotlight = AsyncMock(
+        return_value=_make_envelope(status="feature_spotlight_proposed")
+    )
+    client = TestClient(_build_app(mock_actions))
+
+    resp = client.post(
+        "/api/v1/do/propose_feature_spotlight",
+        json={
+            "feature_slug": "org-memory",
+            "feature_title": "Organizational Memory Loop",
+            "body": "Did you know RoboCo agents learn from every task?",
+        },
+        headers=_HEADERS,
+    )
+
+    assert resp.status_code == _HTTP_200
+    mock_actions.propose_feature_spotlight.assert_awaited_once()
+    kwargs = mock_actions.propose_feature_spotlight.call_args.kwargs
+    assert kwargs["wants_video"] is False
+    assert kwargs["video_script"] == ""
+
+
+@pytest.mark.asyncio
+async def test_propose_feature_spotlight_threads_wants_video_and_script() -> None:
+    """Explicit wants_video=True + video_script reach the verb call verbatim."""
+    mock_actions = MagicMock(spec=ContentActions)
+    mock_actions.propose_feature_spotlight = AsyncMock(
+        return_value=_make_envelope(status="feature_spotlight_proposed")
+    )
+    client = TestClient(_build_app(mock_actions))
+
+    resp = client.post(
+        "/api/v1/do/propose_feature_spotlight",
+        json={
+            "feature_slug": "org-memory",
+            "feature_title": "Organizational Memory Loop",
+            "body": "Did you know RoboCo agents learn from every task?",
+            "wants_video": True,
+            "video_script": "A custom voiceover script",
+        },
+        headers=_HEADERS,
+    )
+
+    assert resp.status_code == _HTTP_200
+    kwargs = mock_actions.propose_feature_spotlight.call_args.kwargs
+    assert kwargs["wants_video"] is True
+    assert kwargs["video_script"] == "A custom voiceover script"
+
+
+@pytest.mark.asyncio
 async def test_notify_dispatches_target_text_priority() -> None:
     """POST /api/v1/do/notify forwards target/text/priority to ContentActions."""
     mock_actions = MagicMock(spec=ContentActions)

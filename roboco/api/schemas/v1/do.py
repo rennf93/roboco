@@ -130,11 +130,13 @@ class ProposeRoadmapRequest(BaseModel):
 
 class ProposeFeatureSpotlightRequest(BaseModel):
     """Head of Marketing's feature-spotlight draft: a picked feature + a
-    ready-to-post body."""
+    ready-to-post body, plus an optional companion-video request."""
 
     feature_slug: str = Field(..., min_length=1, max_length=128)
     feature_title: str = Field(..., min_length=1)
     body: str = Field(..., min_length=1)
+    wants_video: bool = False
+    video_script: str = ""
 
 
 class ProposeVideoRequest(BaseModel):

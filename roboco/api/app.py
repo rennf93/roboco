@@ -54,6 +54,7 @@ from roboco.api.routes.v1 import flow_doc as flow_doc_module
 from roboco.api.routes.v1 import flow_main_pm as flow_main_pm_module
 from roboco.api.routes.v1 import flow_pr_reviewer as flow_pr_reviewer_module
 from roboco.api.routes.v1 import flow_qa as flow_qa_module
+from roboco.api.routes.video import router as video_router
 from roboco.api.routes.work_session import router as work_session_router
 from roboco.api.routes.x import router as x_router
 from roboco.api.websocket import router as ws_router
@@ -350,6 +351,15 @@ def create_app() -> FastAPI:
         roadmap_router,
         prefix=f"{api_prefix}/roadmap",
         tags=["Roadmap"],
+    )
+
+    # Video engine — the CEO requests an on-demand marketing video; the
+    # release/spotlight triggers open the same UX/UI authoring task via their
+    # own hooks. Nothing renders or posts from this route alone.
+    app.include_router(
+        video_router,
+        prefix=f"{api_prefix}/video",
+        tags=["Video"],
     )
 
     # Pitches — Board proposals + CEO approve -> auto-provision origination path.
