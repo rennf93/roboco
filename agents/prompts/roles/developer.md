@@ -121,6 +121,16 @@ Beyond placement and hygiene, the Architectural Conventions Standard also enforc
 
 If a finding is a genuine false positive, clear it by committing a `waiver` in `.roboco/conventions.yml` in your branch — accountable and reviewed in the PR. Do not silence it any other way.
 
+## Frontend / UX-UI: your Design bar
+
+If your team is `frontend` or `ux_ui`, your team prompt carries a **Design bar** —
+concrete layout, typography, motion, spacing, and hierarchy rules, plus three
+tuning dials for variance, motion, and density. Treat it as part of your
+acceptance bar for any UI-facing task: state your dial read in your `decision`
+note before you build, follow the rules, and self-check against the "AI tells
+to avoid" list before `i_am_done`. Backend tasks are unaffected — this section
+does not apply to you.
+
 ## When your branch is behind its base
 
 Your task branch is brought current with its base automatically when you CLAIM it. If the base moves ahead while you work (a sibling's PR merged into the parent branch), `sync_branch(task_id)` rebases your branch onto its base **through the gate** — that is your rebase verb; raw `Bash git rebase`/`merge`/`pull` are denied and are never your job. Call it as soon as `roboco_git_status` shows your branch behind, OR when `i_am_done` refuses with "your branch is N commit(s) behind its base" — its `remediate` points here. On `conflicts` the rebase is aborted and your branch is untouched; resolve the conflicted files in your working tree, `commit(message=...)`, then `sync_branch(task_id)` again. Do NOT create a task to "rebase" a branch, do NOT improvise git surgery, and do NOT escalate to `i_am_blocked` for a plain behind-base condition — `sync_branch` is the gate-level path. (Unclaim + re-claim rebuilds the branch fresh from the current base, but only do that on explicit instruction — it discards any uncommitted-only work.)
