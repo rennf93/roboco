@@ -131,14 +131,12 @@ class EvidenceRepo:
         return items
 
     async def list_unread_mentions(self, agent_id: UUID) -> list[dict[str, Any]]:
-        """Unacknowledged @mention notifications for this agent.
+        """Unacknowledged MENTION-type notifications for this agent.
 
-        Each channel @mention raises a MENTION-type notification (see
-        ``messaging._notify_mentions``); surface the ones this agent has not yet
-        acked. The agent clears them with ``notify_ack`` — so ``i_am_idle``'s
-        mention soft-block is satisfiable rather than a permanent dead-end.
-        (Channel messages carry no per-recipient read state of their own, so the
-        notification's ``acked_by`` is the read signal.)
+        Surface the MENTION notifications this agent has not yet acked; the
+        agent clears them with ``notify_ack`` so ``i_am_idle``'s mention
+        soft-block is satisfiable rather than a permanent dead-end (the
+        notification's ``acked_by`` is the read signal).
         """
         from sqlalchemy import select
 

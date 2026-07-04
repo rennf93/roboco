@@ -96,7 +96,7 @@ _NOTIFY_ALLOWED_ROLES: frozenset[str] = frozenset(
 # that refuses any call that bypassed the manifest (direct verb dispatch, test
 # harness, future routing change), so the no-comms invariant holds regardless of
 # how the call arrived. Matches the explicit role-frozenset gates on commit /
-# notify / pitch / playbook / open_session.
+# notify / pitch / playbook.
 _NO_COMMS_ROLES: frozenset[str] = frozenset(
     {"auditor", "pr_reviewer", "prompter", "secretary"}
 )
