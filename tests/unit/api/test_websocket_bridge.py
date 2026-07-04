@@ -15,10 +15,8 @@ import pytest
 from roboco.api.websocket_bridge import (
     _handle_a2a_message_event,
     _handle_agent_event,
-    _handle_message_event,
     _handle_notification_sent,
     _handle_rate_limit_event,
-    _handle_session_event,
     _handle_usage_event,
     register_websocket_bridge_handlers,
     start_websocket_bridge,
@@ -132,151 +130,6 @@ async def test_handle_notification_acked_broadcasts_using_agent_id() -> None:
     call_kwargs = bcast.await_args.kwargs
     assert call_kwargs["notification_id"] == nid
     assert call_kwargs["agent_ids"] == [aid]
-
-
-# ---------------------------------------------------------------------------
-# _handle_session_event
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_handle_session_event_skips_missing_session_id() -> None:
-    event = _evt(EventType.SESSION_CREATED, {})
-    with patch("roboco.api.websocket_bridge.manager") as mgr:
-        mgr.broadcast_to_session = AsyncMock()
-        await _handle_session_event(event)
-        mgr.broadcast_to_session.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_handle_session_event_skips_invalid_uuid() -> None:
-    event = _evt(EventType.SESSION_CREATED, {"session_id": "bad-uuid"})
-    with patch("roboco.api.websocket_bridge.manager") as mgr:
-        mgr.broadcast_to_session = AsyncMock()
-        await _handle_session_event(event)
-        mgr.broadcast_to_session.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_handle_session_event_skips_when_no_connections() -> None:
-    sid = uuid4()
-    event = _evt(EventType.SESSION_CREATED, {"session_id": str(sid)})
-    with patch("roboco.api.websocket_bridge.manager") as mgr:
-        mgr.session_connections = {}
-        mgr.broadcast_to_session = AsyncMock()
-        await _handle_session_event(event)
-        mgr.broadcast_to_session.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_handle_session_event_broadcasts() -> None:
-    sid = uuid4()
-    event = _evt(EventType.SESSION_CLOSED, {"session_id": str(sid)})
-    with patch("roboco.api.websocket_bridge.manager") as mgr:
-        mgr.session_connections = {sid: {"sock-1"}}
-        mgr.broadcast_to_session = AsyncMock()
-        await _handle_session_event(event)
-        mgr.broadcast_to_session.assert_awaited_once()
-        # Payload includes the trailing piece of the event-type ('closed').
-        call_args = mgr.broadcast_to_session.await_args
-        assert call_args.args[0] == sid
-        assert call_args.args[1]["type"] == "session.closed"
-
-
-# ---------------------------------------------------------------------------
-# _handle_message_event
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_handle_message_event_skips_missing_ids() -> None:
-    """A MESSAGE_SENT event with no session_id/message_id → no broadcast."""
-    event = _evt(EventType.MESSAGE_SENT, {"content": "x"})
-    with patch("roboco.api.websocket_bridge.manager") as mgr:
-        mgr.broadcast_to_session = AsyncMock()
-        mgr.broadcast_to_channel = AsyncMock()
-        await _handle_message_event(event)
-        mgr.broadcast_to_session.assert_not_called()
-        mgr.broadcast_to_channel.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_handle_message_event_skips_invalid_uuid() -> None:
-    event = _evt(
-        EventType.MESSAGE_SENT,
-        {"session_id": "bad", "channel_id": "bad", "message_id": "bad"},
-    )
-    with patch("roboco.api.websocket_bridge.manager") as mgr:
-        mgr.broadcast_to_session = AsyncMock()
-        mgr.broadcast_to_channel = AsyncMock()
-        await _handle_message_event(event)
-        mgr.broadcast_to_session.assert_not_called()
-        mgr.broadcast_to_channel.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_handle_message_event_broadcasts_to_session_and_channel() -> None:
-    """A MESSAGE_SENT event fans out a `message.new` payload to both the
-    session stream and the channel stream — the payload the panel's
-    useChannelStream/useSessionStream filters on."""
-    sid = uuid4()
-    cid = uuid4()
-    mid = uuid4()
-    aid = uuid4()
-    event = _evt(
-        EventType.MESSAGE_SENT,
-        {
-            "session_id": str(sid),
-            "channel_id": str(cid),
-            "message_id": str(mid),
-            "agent_id": str(aid),
-            "content": "hello",
-            "message_type": "dialogue",
-            "timestamp": "2026-06-30T00:00:00+00:00",
-        },
-    )
-    with patch("roboco.api.websocket_bridge.manager") as mgr:
-        mgr.broadcast_to_session = AsyncMock()
-        mgr.broadcast_to_channel = AsyncMock()
-        await _handle_message_event(event)
-        mgr.broadcast_to_session.assert_awaited_once()
-        mgr.broadcast_to_channel.assert_awaited_once()
-        s_payload = mgr.broadcast_to_session.await_args.args[1]
-        c_payload = mgr.broadcast_to_channel.await_args.args[1]
-        assert s_payload["type"] == "message.new"
-        assert c_payload["type"] == "message.new"
-        assert s_payload["message_id"] == str(mid)
-        assert s_payload["session_id"] == str(sid)
-        assert s_payload["channel_id"] == str(cid)
-        assert s_payload["content"] == "hello"
-        assert mgr.broadcast_to_session.await_args.args[0] == sid
-        assert mgr.broadcast_to_channel.await_args.args[0] == cid
-
-
-@pytest.mark.asyncio
-async def test_handle_message_event_skips_when_no_connections() -> None:
-    """No subscribers on either stream → broadcast helpers still called (they
-    no-op internally), but the UUIDs must resolve without error."""
-    sid = uuid4()
-    cid = uuid4()
-    event = _evt(
-        EventType.MESSAGE_SENT,
-        {
-            "session_id": str(sid),
-            "channel_id": str(cid),
-            "message_id": str(uuid4()),
-            "agent_id": str(uuid4()),
-            "content": "x",
-            "message_type": "dialogue",
-        },
-    )
-    with patch("roboco.api.websocket_bridge.manager") as mgr:
-        mgr.broadcast_to_session = AsyncMock()
-        mgr.broadcast_to_channel = AsyncMock()
-        await _handle_message_event(event)
-        # Forwarder always dispatches; the manager no-ops on empty sets.
-        mgr.broadcast_to_session.assert_awaited_once()
-        mgr.broadcast_to_channel.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -490,9 +343,6 @@ def test_register_websocket_bridge_handlers_subscribes_all_event_types() -> None
     # All expected event types appear at least once.
     assert EventType.NOTIFICATION_SENT in types
     assert EventType.NOTIFICATION_ACKED in types
-    assert EventType.SESSION_CREATED in types
-    assert EventType.SESSION_CLOSED in types
-    assert EventType.SESSION_TIMEOUT in types
     assert EventType.AGENT_SPAWNED in types
     assert EventType.AGENT_STOPPED in types
     assert EventType.AGENT_WAITING in types
@@ -502,8 +352,6 @@ def test_register_websocket_bridge_handlers_subscribes_all_event_types() -> None
     assert EventType.RATE_LIMIT_LIFTED in types
     # Usage events forwarded to /ws/system.
     assert EventType.USAGE_SNAPSHOT in types
-    # Message delivery forwarded to /ws/channels + /ws/sessions.
-    assert EventType.MESSAGE_SENT in types
     # A2A live chat forwarded to /ws/system (CEO live view).
     assert EventType.A2A_MESSAGE_SENT in types
 
