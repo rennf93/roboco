@@ -1405,6 +1405,86 @@ class AgentOrchestrator:
             )
         return configs.get(role, {"allow": [], "deny": []})
 
+    def _fable_hook_groups(self) -> dict[str, list[dict[str, Any]]]:
+        """Additive Fable-mode hook registrations, keyed by Claude Code event.
+
+        Empty when the flag is off, so callers that append these onto the
+        existing per-event arrays leave settings.json byte-for-byte
+        unchanged. Appended AFTER RoboCo's own hooks for each event —
+        stop-hook.sh's mechanical terminal-verb check runs first, the
+        Fable linguistic check runs second. See
+        docs/superpowers/plans/2026-07-04-v0.18.0-A-opus-fable-plan.md.
+        """
+        from roboco.config import settings as _settings
+
+        if not _settings.fable_mode_enabled:
+            return {}
+        return {
+            "Stop": [
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "/app/scripts/fable-stop-gate-hook.sh",
+                        }
+                    ]
+                },
+            ],
+            "SubagentStop": [
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "/app/scripts/fable-stop-gate-hook.sh subagent",
+                        }
+                    ]
+                },
+            ],
+            "PreToolUse": [
+                {
+                    "matcher": "Bash",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "/app/scripts/fable-bash-discipline-hook.sh",
+                        }
+                    ],
+                },
+            ],
+            "PostToolUse": [
+                {
+                    "matcher": "Bash",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "/app/scripts/fable-honesty-nudge-hook.sh",
+                        }
+                    ],
+                },
+            ],
+            "UserPromptSubmit": [
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "/app/scripts/fable-prompt-nudge-hook.sh",
+                        }
+                    ]
+                },
+            ],
+            "PreCompact": [
+                {
+                    "matcher": "manual|auto",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "/app/scripts/fable-precompact-hook.sh",
+                        }
+                    ],
+                },
+            ],
+        }
+
     def _generate_agent_settings(
         self,
         agent_id: str,
@@ -1642,6 +1722,9 @@ class AgentOrchestrator:
                 ],
             },
         }
+
+        for event, groups in self._fable_hook_groups().items():
+            settings["hooks"].setdefault(event, []).extend(groups)
 
         # Write to per-agent settings file
         # When running in container: write to /app/agent-settings (mounted to host)

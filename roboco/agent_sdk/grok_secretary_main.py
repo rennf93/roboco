@@ -29,6 +29,7 @@ from roboco.llm.providers.grok_cli_config import (
     GROK_CONFIG_PATH,
     render_config_toml,
     write_agents_md,
+    write_grok_fable_hooks,
     write_grok_hooks,
 )
 
@@ -89,6 +90,7 @@ async def main() -> None:  # pragma: no cover - needs the live container + grok
     # disallowed, but survives any future shell re-enable, matching the one-shot path).
     write_agents_md()
     write_grok_hooks()
+    write_grok_fable_hooks()
 
     queue: asyncio.Queue[str | None] = asyncio.Queue()
     client = httpx.AsyncClient(timeout=30.0)

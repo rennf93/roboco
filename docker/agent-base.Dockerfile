@@ -75,6 +75,11 @@ COPY docker/scripts/stop-hook.sh /app/scripts/stop-hook.sh
 COPY docker/scripts/user-prompt-hook.sh /app/scripts/user-prompt-hook.sh
 COPY docker/scripts/pre-compact-hook.sh /app/scripts/pre-compact-hook.sh
 COPY docker/scripts/session-end-hook.sh /app/scripts/session-end-hook.sh
+COPY docker/scripts/fable-stop-gate-hook.sh /app/scripts/fable-stop-gate-hook.sh
+COPY docker/scripts/fable-bash-discipline-hook.sh /app/scripts/fable-bash-discipline-hook.sh
+COPY docker/scripts/fable-honesty-nudge-hook.sh /app/scripts/fable-honesty-nudge-hook.sh
+COPY docker/scripts/fable-prompt-nudge-hook.sh /app/scripts/fable-prompt-nudge-hook.sh
+COPY docker/scripts/fable-precompact-hook.sh /app/scripts/fable-precompact-hook.sh
 RUN chmod 0755 /app/scripts/*.sh
 
 USER agent

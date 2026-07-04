@@ -37,6 +37,7 @@ from typing import Any
 import tomli_w
 
 from roboco.agents_config import get_agent_role
+from roboco.config import settings
 from roboco.services.gateway.role_config import get_role_config
 
 # grok reads its global config from ``$HOME/.grok/config.toml`` (the agent's HOME
@@ -290,6 +291,60 @@ def write_grok_hooks(
     return True
 
 
+# Fable-mode (opus-fable-playbook adoption), gated by settings.fable_mode_enabled.
+# Conservative V1 grok scope: honesty-nudge ONLY. PostToolUse never denies
+# (context injection only), so it is safe regardless of grok's PreToolUse/Stop
+# deny-cancels-the-run semantics. bash-discipline / stop-gate / precompact are
+# deliberately NOT ported to grok in V1 — see the plan doc under
+# docs/superpowers/plans/ (Task 9/10: a grok hook deny cancels the whole run,
+# verified live for bash-guard's exfil categories; porting a denying hook
+# without confirming a non-cancelling outcome exists would be disproportionate
+# for a benign habit like a bare `cat`).
+FABLE_HONESTY_NUDGE_HOOK = os.environ.get(
+    "ROBOCO_FABLE_HONESTY_NUDGE_HOOK", "/app/scripts/fable-honesty-nudge-hook.sh"
+)
+
+
+def fable_honesty_nudge_hook_config(
+    hook_path: str = FABLE_HONESTY_NUDGE_HOOK,
+) -> dict[str, Any]:
+    """Grok hooks JSON for the Fable honesty-nudge PostToolUse hook.
+
+    PostToolUse never denies (context injection only) — the one Fable hook
+    safe to port regardless of grok's Stop/PreToolUse deny-cancels-the-run
+    semantics. See docs/superpowers/plans/2026-07-04-v0.18.0-A-opus-fable-plan.md.
+    """
+    return {
+        "hooks": {
+            "PostToolUse": [
+                {
+                    "matcher": "Bash",
+                    "hooks": [{"type": "command", "command": hook_path}],
+                }
+            ]
+        }
+    }
+
+
+def write_grok_fable_hooks(*, hooks_dir: Path = GROK_HOOKS_DIR) -> bool:
+    """Install the Fable-mode hooks confirmed safe on the grok CLI (best-effort).
+
+    Conservative V1 scope: honesty-nudge only. bash-discipline/stop-gate/
+    precompact are deliberately NOT ported here (see the module-level note
+    above). Off when ``fable_mode_enabled`` is False or the script is
+    missing, so a flag-off / pre-image spawn never fails the render.
+    """
+    if not settings.fable_mode_enabled:
+        return False
+    if not Path(FABLE_HONESTY_NUDGE_HOOK).is_file():
+        return False
+    hooks_dir.mkdir(parents=True, exist_ok=True)
+    (hooks_dir / "roboco-fable-honesty-nudge.json").write_text(
+        json.dumps(fable_honesty_nudge_hook_config(), indent=2), encoding="utf-8"
+    )
+    return True
+
+
 def main() -> int:
     """Entrypoint: write ``~/.grok/config.toml`` + AGENTS.md + hooks + per-role args."""
     agent_id = os.environ.get("ROBOCO_AGENT_ID", "")
@@ -307,6 +362,7 @@ def main() -> int:
     )
     write_agents_md()
     write_grok_hooks()
+    write_grok_fable_hooks()
     GROK_ARGS_PATH.write_text(
         "\n".join(grok_cli_args(agent_id, max_turns=max_turns)) + "\n", encoding="utf-8"
     )

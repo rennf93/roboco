@@ -64,6 +64,8 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
     "Also poll X mentions and draft replies (still held for your approval — nothing auto-replies). Off by default: reading mentions needs a paid X API tier, so leave this off if you only want release posts.",
   roadmap_engine_enabled:
     "Weekly: the Product Owner explores the company's projects and proposes a themed cycle of 3-7 roadmap items — you approve or reject each one individually; approved items land in the backlog and nothing auto-starts.",
+  fable_mode_enabled:
+    "Compose the Fable behavioral doctrine into every agent's system prompt and install the matching turn-discipline/honesty/verification hooks at spawn (both Claude Code and grok runtimes). Off by default; spawn path is byte-for-byte unchanged.",
 };
 
 export function FeatureFlagsCard() {

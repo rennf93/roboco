@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import tomllib
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 
 from roboco.llm.providers import grok_cli_config as gc
 
@@ -174,4 +175,30 @@ def test_write_grok_hooks_noops_when_script_absent(tmp_path: Path) -> None:
         gc.write_grok_hooks(hooks_dir=hooks_dir, hook_path=str(tmp_path / "nope.sh"))
         is False
     )
+    assert not hooks_dir.exists()
+
+
+def test_write_grok_fable_hooks_writes_honesty_nudge_when_enabled(
+    tmp_path: Path,
+) -> None:
+    hooks_dir = tmp_path / "hooks"
+    with (
+        patch("roboco.config.settings.fable_mode_enabled", True),
+        patch(
+            "roboco.llm.providers.grok_cli_config.FABLE_HONESTY_NUDGE_HOOK",
+            "/app/scripts/fable-honesty-nudge-hook.sh",
+        ),
+        patch("pathlib.Path.is_file", return_value=True),
+    ):
+        result = gc.write_grok_fable_hooks(hooks_dir=hooks_dir)
+    assert result is True
+    written = json.loads((hooks_dir / "roboco-fable-honesty-nudge.json").read_text())
+    assert written["hooks"]["PostToolUse"][0]["matcher"] == "Bash"
+
+
+def test_write_grok_fable_hooks_noop_when_disabled(tmp_path: Path) -> None:
+    hooks_dir = tmp_path / "hooks"
+    with patch("roboco.config.settings.fable_mode_enabled", False):
+        result = gc.write_grok_fable_hooks(hooks_dir=hooks_dir)
+    assert result is False
     assert not hooks_dir.exists()

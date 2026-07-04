@@ -398,6 +398,13 @@ services:
       #     the Product Owner, who proposes a themed cycle of roadmap items;
       #     the CEO approves each item individually into the backlog.
       ROBOCO_ROADMAP_ENGINE_ENABLED: ${ROBOCO_ROADMAP_ENGINE_ENABLED:-true}
+      # Fable-mode: composes the Fable behavioral doctrine into every agent's
+      # system prompt + installs turn-discipline/honesty/verification hooks
+      # at spawn (both runtimes). Config default is OFF; ARMED here for the
+      # NAS deploy (our live test bed) like the rest. Left OFF in
+      # docker-compose.registry.yml so the published default stays
+      # conservative until verified on a live run.
+      ROBOCO_FABLE_MODE_ENABLED: ${ROBOCO_FABLE_MODE_ENABLED:-true}
       # Sandboxed per-agent test DB/Redis: orchestrator-provisioned throwaway
       # sibling containers per spawn, replacing the prod-creds gate-env
       # injection for an opted-in project (its `sandbox_services` column set).

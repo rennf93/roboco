@@ -898,6 +898,27 @@ class Settings(BaseSettings):
         description="Maximum roadmap item drafts a themed cycle may propose.",
     )
 
+    # ==========================================================================
+    # Fable-mode (opus-fable-playbook adoption) — DEFAULT OFF
+    # ==========================================================================
+    # Composes the Fable 5 behavioral doctrine into every agent's system prompt
+    # (compose_prompt's fable_doctrine_layer) and installs the matching
+    # turn-discipline/honesty/verification hooks at spawn on both runtimes
+    # (ClaudeCodeProvider's per-agent settings.json; grok's write_grok_hooks).
+    # Source: github.com/rennf93/opus-fable-playbook (MIT), vendored at
+    # agents/prompts/doctrine/fable.md. Off by default; the spawn path is
+    # byte-for-byte unchanged when off.
+    fable_mode_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for opus-fable-playbook adoption: the Fable "
+            "doctrine ambient layer in every composed system prompt, plus "
+            "the matching turn-discipline/honesty/verification hooks "
+            "installed at spawn (Claude Code settings.json + grok "
+            "~/.grok/hooks). Off => spawn path byte-for-byte unchanged."
+        ),
+    )
+
     # Set by the compose file that carries the roboco_data topology
     # (postgres/redis on a data-only network agents never join). NOT a panel
     # feature flag: it must travel with the compose networks: stanzas, and a

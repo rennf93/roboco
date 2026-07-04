@@ -123,3 +123,75 @@ class TestSlashCommandsDisabled:
         assert "--tools" in cmd
         idx = cmd.index("--tools")
         assert cmd[idx + 1] == "Read,Write,Edit,Bash,Grep,Glob,TodoWrite"
+
+
+class TestFableModeHooksInjection:
+    """Fable-mode hooks are additive to settings.json, gated by the flag."""
+
+    def test_fable_hooks_absent_when_flag_disabled(self) -> None:
+        with patch("roboco.config.settings.fable_mode_enabled", False):
+            orch = _orch()
+            path = orch._generate_agent_settings(
+                agent_id="be-dev-1",
+                role="developer",
+                workspace_path=_WS,
+                cell_workspace_path=_CELL,
+            )
+        hooks = json.loads(Path(path).read_text())["hooks"]
+        assert "SubagentStop" not in hooks
+        stop_cmds = [h["command"] for g in hooks["Stop"] for h in g["hooks"]]
+        assert not any("fable" in c for c in stop_cmds)
+
+    def test_fable_hooks_present_when_flag_enabled(self) -> None:
+        with patch("roboco.config.settings.fable_mode_enabled", True):
+            orch = _orch()
+            path = orch._generate_agent_settings(
+                agent_id="be-dev-1",
+                role="developer",
+                workspace_path=_WS,
+                cell_workspace_path=_CELL,
+            )
+        hooks = json.loads(Path(path).read_text())["hooks"]
+        stop_cmds = [h["command"] for g in hooks["Stop"] for h in g["hooks"]]
+        assert stop_cmds[-1] == "/app/scripts/fable-stop-gate-hook.sh"  # appended last
+        assert stop_cmds[0] == "/app/scripts/stop-hook.sh"  # RoboCo's check still first
+        subagent_cmds = [
+            h["command"] for g in hooks["SubagentStop"] for h in g["hooks"]
+        ]
+        assert subagent_cmds == ["/app/scripts/fable-stop-gate-hook.sh subagent"]
+        pretool_bash = [
+            h["command"]
+            for g in hooks["PreToolUse"]
+            if g.get("matcher") == "Bash"
+            for h in g["hooks"]
+        ]
+        assert "/app/scripts/bash-guard-hook.sh" in pretool_bash  # existing guard kept
+        assert "/app/scripts/fable-bash-discipline-hook.sh" in pretool_bash
+        posttool_bash = [
+            h["command"]
+            for g in hooks["PostToolUse"]
+            if g.get("matcher") == "Bash"
+            for h in g["hooks"]
+        ]
+        assert posttool_bash == ["/app/scripts/fable-honesty-nudge-hook.sh"]  # new
+
+    def test_fable_hooks_off_leaves_hooks_dict_unchanged(self) -> None:
+        """Regression guard: flag-off output equals a captured pre-Phase-2 baseline."""
+        with patch("roboco.config.settings.fable_mode_enabled", False):
+            orch = _orch()
+            path = orch._generate_agent_settings(
+                agent_id="be-dev-1",
+                role="developer",
+                workspace_path=_WS,
+                cell_workspace_path=_CELL,
+            )
+        hooks = json.loads(Path(path).read_text())["hooks"]
+        assert set(hooks.keys()) == {
+            "SessionStart",
+            "PreToolUse",
+            "PostToolUse",
+            "Stop",
+            "UserPromptSubmit",
+            "PreCompact",
+            "SessionEnd",
+        }
