@@ -14,7 +14,7 @@ The `roboco/mcp` package is the agent-side MCP gateway: a set of `FastMCP` serve
 | `roboco/mcp/utils.py` | Shared HTTP helpers: `_get_agent_headers`, `format_error_response`, `ApiResponse`, `ApiClient` (async httpx wrapper). Used by `optimal_server`, `docs_server`, `search_server`. | 383 |
 | `roboco/mcp/schemas/__init__.py` | Pydantic input models. After Phase-4 T9 deletions only `WriteDocInput` remains. | 35 |
 | `roboco/mcp/flow_server.py` | `roboco-flow` MCP server — intent verbs (lifecycle). Manifest-scoped registration, role-scoped path `/api/v1/flow/<route>/<verb>`, per-verb circuit breaker + 404-route synthesis. | 1028 |
-| `roboco/mcp/do_server.py` | `roboco-do` MCP server — content tools (commit, note, pitch, propose_roadmap, say, dm, notify, evidence, progress, sessions, playbook curation, pr_update). Manifest-scoped; fixed `/api/v1/do/<verb>` path; mirror circuit breaker. | 976 |
+| `roboco/mcp/do_server.py` | `roboco-do` MCP server — content tools (commit, note, pitch, propose_roadmap, dm, notify, evidence, progress, playbook curation, pr_update). Manifest-scoped; fixed `/api/v1/do/<verb>` path; mirror circuit breaker. | 976 |
 | `roboco/mcp/optimal_server.py` | `roboco-optimal` MCP server — RAG / KB / mentor / error / decision / standards / learnings / index-mgmt / proactive-context. Factory `create_optimal_mcp_server(agent_id)`; calls `/optimal/*`. | 1102 |
 | `roboco/mcp/docs_server.py` | `roboco-docs` MCP server — docs write/read/list/delete via `/docs/*`. Factory `create_docs_mcp_server(agent_id)`. RAG-based dedup on write. | 251 |
 | `roboco/mcp/git_readonly.py` | `roboco-git-readonly` MCP server — four read-only git views (status/log/diff/branch list) via `/api/git/*`. No breaker, no manifest. | 123 |
@@ -60,10 +60,10 @@ The `roboco/mcp` package is the agent-side MCP gateway: a set of `FastMCP` serve
 | `claim_pr_review` / `post_pr_review` / `claim_gate_review` / `pr_pass` / `pr_fail` | verb funcs | `flow_server.py:656–876` | PR-reviewer verbs (inbound + in-path gate). |
 | `i_will_plan` / `delegate` / `submit_up` / `submit_root` | verb funcs | `flow_server.py:759–856` | PM coordination verbs. |
 | `note` | verb func | `do_server.py:428` | Journal entry + handoff section writer (top-level `done`/`next` strings — the meltdown-#1 fix). |
-| `commit` / `say` / `dm` / `notify` / `evidence` | verb funcs | `do_server.py:423–598` | Core content tools. |
+| `commit` / `dm` / `notify` / `evidence` | verb funcs | `do_server.py:423–598` | Core content tools. |
 | `propose_roadmap` | verb func | `do_server.py:531` | Product Owner (board-roadmap-only, `_PRODUCT_OWNER_DO`): propose a themed roadmap cycle (goal + 3-7 item drafts) exactly once per exploration task. |
 | `draft_playbook` / `approve_playbook` / `reject_playbook` / `archive_playbook` | verb funcs | `do_server.py:600–644` | Playbook curation (delivery + Auditor). |
-| `progress` / `open_session` / `link_session` / `notify_list` / `notify_get` / `notify_ack` / `channels` / `pr_update` / `read_messages` | verb funcs | `do_server.py:646–840` | Wave-1 parity content tools. |
+| `progress` / `notify_list` / `notify_get` / `notify_ack` / `pr_update` / `read_messages` | verb funcs | `do_server.py:646–840` | Wave-1 parity content tools. |
 | `create_optimal_mcp_server` | factory | `optimal_server.py:1068` | Build `roboco-optimal-{agent_id}` server; registers 8 tool groups. |
 | `roboco_kb_search` / `roboco_rag_query` / `roboco_kb_stats` | tools | `optimal_server.py:70–213` | Search / RAG / stats. |
 | `roboco_ask_mentor` | tool | `optimal_server.py:371` | Primary conversational RAG tool (65s timeout). |
@@ -173,8 +173,8 @@ roboco/mcp/
 │   └── _load_manifest_flow_tools / _register_tools (fails loud if no manifest; ROBOCO_ALLOW_FULL_TOOLSET escape hatch)
 ├── do_server.py             # roboco-do (content tools)
 │   ├── mirror breaker machinery (_CIRCUIT_REJECTION_KINDS, _DICT_ERROR_CODE_MAP, _classify_*, _remediate_for_kind, _normalize_exception_envelope, _record_and_check_circuit)
-│   ├── commit, note (handoff done/next), pitch, propose_roadmap, say, dm, notify, evidence
-│   ├── progress, open_session, link_session, notify_list/get/ack, channels, pr_update, read_messages
+│   ├── commit, note (handoff done/next), pitch, propose_roadmap, dm, notify, evidence
+│   ├── progress, notify_list/get/ack, pr_update, read_messages
 │   ├── draft_playbook, approve_playbook, reject_playbook, archive_playbook
 │   └── _TOOLS / _load_manifest_do_tools / _register_tools (fails loud; ROBOCO_ALLOW_FULL_TOOLSET escape hatch)
 ├── optimal_server.py        # roboco-optimal (RAG/KB)
@@ -288,7 +288,7 @@ CLAUDE.md "MCP servers running per agent container" table lists 5 servers (`robo
 
 CLAUDE.md "roboco-optimal" row says the server exposes `roboco_ask_mentor`, `roboco_kb_search` only. The actual `optimal_server.py` registers **18** tools (search/rag/stats/index_code/index_docs/tokens_estimate/ask_mentor/search_error/record_error_solution/check_decision/record_decision/get_standards/validate_action/review_code/record_learning/search_learnings/clear_index/reindex_all/index_status/get_proactive_context). Understatement, not contradiction.
 
-CLAUDE.md "roboco-do" row lists `commit, note, say, dm, evidence` and (in the Agent Gateway section) `draft_playbook` for delivery roles + `approve_playbook`/`reject_playbook`/`archive_playbook` for the Auditor. The actual `do_server.py` `do_tools` registry also contains `pitch`, `propose_roadmap` (Product Owner only), `progress`, `open_session`, `link_session`, `notify`, `notify_list`, `notify_get`, `notify_ack`, `channels`, `pr_update`, `read_messages` — none mentioned in CLAUDE.md (`_TOOLS` is 21 entries, not the 5 named). Understatement.
+CLAUDE.md "roboco-do" row lists `commit, note, say, dm, evidence` and (in the Agent Gateway section) `draft_playbook` for delivery roles + `approve_playbook`/`reject_playbook`/`archive_playbook` for the Auditor. The actual `do_server.py` `do_tools` registry also contains `pitch`, `propose_roadmap` (Product Owner only), `progress`, `notify`, `notify_list`, `notify_get`, `notify_ack`, `pr_update`, `read_messages`, `read_a2a` — none mentioned in CLAUDE.md (`do_tools` is 18 entries, not the 5 named). Understatement.
 
 CLAUDE.md says the `note`/journal write "returns as soon as the entry is persisted; RAG indexing runs fire-and-forget." The MCP `note` tool itself is synchronous w.r.t. the orchestrator (a single POST); the fire-and-forget behavior is server-side, not visible in this slice — consistent, not drift.
 
@@ -335,7 +335,7 @@ No other commits in this slice since baseline.
 | `_register_tools` raises at import if manifest missing — local dev breakage | `flow_server.py:965`, `do_server.py:896` | **Mitigated (536bbb64):** `ROBOCO_ALLOW_FULL_TOOLSET` env var added as a dev/test escape hatch that bypasses the `RuntimeError` and registers the full tool set. Production behaviour is unchanged (ROBOCO_ALLOW_FULL_TOOLSET is not set in the orchestrator manifest). The mitigant must not leak into production containers. | low |
 | `propose_batch` well-formed filter could silently drop intended drafts | `intake_server.py:146` | **Partially mitigated (536bbb64 #163):** `_draft_title` now accepts `name` as a fallback for `title`, and `_normalize_batch_drafts` normalizes `name`-only drafts onto `title` before posting. Residual risk: a draft using a different key (e.g. `label`) is still dropped silently; the `dropped` count is sent but the CEO may not notice. | low |
 | Breaker SDK timeout (2s) may be too tight under load | `flow_server.py:55`, `do_server.py:37` | `_SDK_TIMEOUT=2.0` for the loopback `/verb/attempted` POST. Under container CPU contention the SDK could exceed 2s and the breaker fails open (returns original payload) — re-introducing the unbounded-retry condition the breaker was added to stop. Fail-open is safe but defeats the protection. | low |
-| Circuit-breaker forwarding does not pass `task_id` for content tools that lack one | `do_server.py:379` | `body.get("task_id")` is sent to the SDK. Several do-tools (`channels`, `read_messages`, `notify_list`) have no `task_id` — the breaker records `task_id=None`, so the per-verb (not per-task) breaker still works, but any future per-task breaker logic would mis-attribute these. | low |
+| Circuit-breaker forwarding does not pass `task_id` for content tools that lack one | `do_server.py:379` | `body.get("task_id")` is sent to the SDK. Several do-tools (`read_messages`, `notify_list`) have no `task_id` — the breaker records `task_id=None`, so the per-verb (not per-task) breaker still works, but any future per-task breaker logic would mis-attribute these. | low |
 
 ## Health
 

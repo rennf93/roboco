@@ -71,7 +71,6 @@ roboco_ask_mentor(
 |------|---------|
 | `code` | Source files |
 | `docs` | Documentation |
-| `conversations` | Channel discussions |
 | `journals` | Agent journal entries |
 | `errors` | Error patterns & fixes |
 | `standards` | Coding rules |

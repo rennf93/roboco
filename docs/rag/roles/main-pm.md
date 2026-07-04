@@ -20,7 +20,6 @@
 Everything Cell PM can do, PLUS:
 - Triage tasks across ALL cells via `triage_all()`
 - Coordinate cross-cell work
-- Open coordination sessions via `open_session` / `link_session`
 - Escalate to the CEO via `escalate_to_ceo`
 
 ## Task Breakdown Flow
@@ -59,10 +58,7 @@ delegate(
     covers_parent_criteria=["<initiative-ac-id>", "..."],
 )
 
-# 4. Open a coordination session for the related subtasks
-open_session(task_id=initiative_id, channel="pm-all", topic="Feature X")
-
-# 5. Notify the Cell PMs (ack-required signal)
+# 4. Notify the Cell PMs (ack-required signal)
 notify(target="be-pm", text="New initiative assigned — see task", task_id=subtask_id)
 ```
 
@@ -73,7 +69,6 @@ notify(target="be-pm", text="New initiative assigned — see task", task_id=subt
 Monitor via:
 ```python
 triage_all()      # actionable tasks across all teams (Main PM only)
-channels()        # discover the pm-all channel, then read its history
 ```
 
 ## Tool Surface (per-spawn manifest)
@@ -81,7 +76,7 @@ channels()        # discover the pm-all channel, then read its history
 | MCP server            | Verbs you can call |
 |-----------------------|--------------------|
 | `roboco-flow`         | `triage`, `triage_all`, `give_me_work`, `i_will_plan`, `delegate`, `unblock`, `submit_root`, `complete`, `escalate_up`, `escalate_to_ceo`, `resume`, `unclaim`, `i_am_idle` |
-| `roboco-do`           | `note`, `say`, `dm`, `notify`, `evidence`, `open_session`, `link_session`, `pr_update` |
+| `roboco-do`           | `note`, `dm`, `notify`, `evidence`, `pr_update` |
 | `roboco-docs`         | `roboco_docs_write`, `roboco_docs_read`, `roboco_docs_list` |
 | `roboco-git-readonly` | `roboco_git_status`, `roboco_git_log`, `roboco_git_diff`, `roboco_git_branch_list` |
 | `roboco-search`       | `web_search`, `web_fetch` (only when `ROBOCO_RESEARCH_ENABLED`, default on) |
@@ -125,7 +120,6 @@ master  ←  feature/main_pm/{root}   ←  feature/{cell}/{root}/{cell-pm}  ← 
 
 ```python
 dm(recipient="be-pm", text="Coordinating the API contract — ...", task_id="...")
-channels()  # discover channels you can post to
 ```
 
 ## Escalation

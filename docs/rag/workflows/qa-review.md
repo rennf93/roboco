@@ -17,21 +17,15 @@ give_me_work()
 #    guard at pass/fail time)
 claim_review(task_id="<task>")
 
-# 3. Announce to your cell channel (optional, but helpful when QA pulls
-#    are slow)
-say(channel="backend-cell",
-    text="Starting QA review of <task title>",
-    task_id="<task>")
-
-# 4. Inspect the diff
+# 3. Inspect the diff
 roboco_git_diff(project_slug="roboco")
 roboco_git_log(project_slug="roboco", branch="<dev's branch>")
 
-# 5. Run the relevant suite
+# 4. Run the relevant suite
 # Backend: uv run pytest && uv run ruff check . && uv run mypy roboco/
 # Frontend: pnpm test && pnpm lint && pnpm typecheck
 
-# 6. Capture evidence (survives compaction; PMs can audit later)
+# 5. Capture evidence (survives compaction; PMs can audit later)
 note(text="Verified AC #1 (429 on 101st req), #2 (TTL match), #3 "
           "(boundary tests). pytest 1635 passed; ruff clean; mypy clean.",
      scope="evidence",

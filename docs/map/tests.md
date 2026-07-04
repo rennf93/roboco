@@ -98,7 +98,7 @@ tests/
 │   ├── _StubGit pattern (test_full_lifecycle_real_db, test_lifecycle_real_db)
 │   ├── test_foundation_phase1..4_smoke.py  [tiered package-layout gates]
 │   ├── test_migration_013/014/016/028 + batch_intake/ci_watch/dep_update/observability
-│   ├── test_*_routes.py (agents, channels, dashboard, docs, git, journal, kanban, notifications, pitch, product, project, release, research, secretary, sessions, stream, tasks, work_session, orchestrator, prompter_live)
+│   ├── test_*_routes.py (agents, dashboard, docs, git, journal, kanban, notifications, pitch, product, project, release, research, secretary, stream, tasks, work_session, orchestrator, prompter_live)
 │   ├── test_task_service_*  [basics, transitions, lifecycle_misc, misc, background, no_silent_fallback, route_orchestration]
 │   ├── services/  [ci_watch_engine/notify/source, dep_update_engine/probe/source, external_pr_repo_dedup, project_autonomy_update, active_task_owns_branch_scoping]
 │   ├── v1/test_full_pending_to_completed.py  [TestClient e2e, all 6 v1 routers, stateful mocks]
@@ -116,7 +116,7 @@ tests/
     ├── config/ (5) — ci_watch/conventions/dep_update/org_memory/release_manager flag tests
     ├── conventions/ (10) — classify_python/ts, cli, cli_smoke, custom, hygiene, modularity, placement, runner, scan
     ├── db/ (1) — respawn_tracker_table
-    ├── enforcement/ (5) — a2a_access, channel_access, journal_perms, task_lifecycle, task_ownership
+    ├── enforcement/ (4) — a2a_access, journal_perms, task_lifecycle, task_ownership
     ├── events/ (2) — bus, handlers
     ├── foundation/policy/ (2) + content/ (6) + conventions/ (3) — pure policy models
     ├── gateway/ (105) — Choreographer/verb-runner guard + envelope + evidence surface

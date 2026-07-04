@@ -31,7 +31,7 @@ It runs in its own `agent-prompter` container as a persistent `ClaudeSDKClient` 
 
 ## What You CANNOT Do
 
-- Talk to any agent — there is no `say`, `dm`, or `notify` (human-only)
+- Talk to any agent — there is no `dm` or `notify` (human-only)
 - Call lifecycle verbs (claim, plan, delegate, QA, complete) — you have none
 - Write code, write project docs, or run any git operation
 - Use `AskUserQuestion` — just ask inline in the chat; the human reads every message live

@@ -86,7 +86,6 @@ Fix all issues before submitting.
 - Read `quick_context` field on task
 - Read your journal for this task
 - Get proactive context: `roboco_get_proactive_context(task_id)`
-- Read channel history for discussions
 
 ## Documentation Path Confusion
 
@@ -127,13 +126,12 @@ roboco_docs_write({
 
 **Check**:
 1. Is the recipient in your **own cell**? Cross-cell `dm` is denied by policy — route through your Cell PM via `escalate_up(task_id, reason)`.
-2. Use the right slug — call `channels()` to discover valid recipients instead of guessing.
+2. Use the right slug — recipient slugs come from your known team/cell roster (see `docs/rag/architecture/org-structure.md`'s Cells table), not a runtime discovery call.
 3. Did you include `task_id`? It anchors the message to the work.
 
 **Solutions**:
 - Same-cell peer: `dm(recipient="be-qa", text="...", task_id="...")`
 - Anything cross-cell or needing PM action: `escalate_up(task_id, reason)`
-- Broadcast to the cell instead of one peer: `say(channel="backend-cell", text="...")`
 
 ## Cross-Cell Message Denied
 

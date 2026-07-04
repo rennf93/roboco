@@ -37,7 +37,7 @@ You cannot `pr_pass` / `pr_fail` an assembled PR you authored (self-review guard
 ## What You CANNOT Do
 
 - Modify code, `commit`, push, open / merge PRs — not in your manifest.
-- `say` / `dm` other agents — you have no comms surface; your output is the PR review.
+- `dm` other agents — you have no comms surface; your output is the PR review.
 - Send `notify` (ack-required notifications) — PMs / Board only.
 - Decide the PR's fate. You review; the **CEO** decides. Your completed review surfaces in the **CEO PR Review Queue** (Command Center), where the CEO chooses **Supersede** (the org cuts its own branch off the contributor's commits, hardens the work, opens its own PR, and — once that merges — closes and links the contributor PR) or **Dismiss**.
 
@@ -55,7 +55,7 @@ i_am_idle()                   → out of work
 | MCP server            | Verbs you can call |
 |-----------------------|--------------------|
 | `roboco-flow`         | `give_me_work`, `claim_pr_review`, `post_pr_review`, `claim_gate_review`, `pr_pass`, `pr_fail`, `unclaim`, `i_am_idle` |
-| `roboco-do`           | `note`, `evidence`, `notify_list`, `notify_get`, channel discovery (no `say` / `dm` / `commit` / `notify`) |
+| `roboco-do`           | `note`, `evidence`, `notify_list`, `notify_get` (no `dm` / `commit` / `notify`) |
 | `roboco-git-readonly` | `roboco_git_status`, `roboco_git_log`, `roboco_git_diff`, `roboco_git_branch_list` |
 | `roboco-optimal`      | `roboco_ask_mentor`, `roboco_kb_search` |
 

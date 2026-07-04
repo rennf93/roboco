@@ -9,10 +9,6 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 |------|------|
 | roboco/api/routes/health.py | Liveness/readiness (DB + Redis probes). |
 | roboco/api/routes/agents.py | List/get agents. |
-| roboco/api/routes/channels.py | Channel CRUD + member ops. |
-| roboco/api/routes/groups.py | Group create/list. |
-| roboco/api/routes/sessions.py | Communication sessions + messages. |
-| roboco/api/routes/messages.py | Message list/create/patch/delete. |
 | roboco/api/routes/notifications.py | Notification list/ack/send. |
 | roboco/api/routes/stream.py | Agent stream chunk/complete/extract + permissions. |
 | roboco/api/routes/journals.py | Journal entries, search, growth stats. |
@@ -85,7 +81,7 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | POST | /api/v1/flow/main_pm/{submit_root,triage_all,escalate_to_ceo,complete} | flow_main_pm.py | `require_main_pm` |
 | POST | /api/v1/flow/pr_reviewer/{claim_pr_review,claim_gate_review,pr_pass,pr_fail,post_pr_review} | flow_pr_reviewer.py | `require_pr_reviewer` |
 | POST | /api/v1/do/{commit,note,say,dm,notify,evidence,draft_playbook,approve_playbook,...} | do.py | `require_any_authenticated_agent` (HMAC, any role) |
-| GET | /ws/{channels,agents,sessions,notifications,system}/{id} | websocket.py | WS panel/HMAC token |
+| GET | /ws/{agents,notifications,system}/{id} | websocket.py | WS panel/HMAC token |
 
 ## Key Symbols
 
@@ -144,10 +140,6 @@ roboco/api/
 │   ├── operator-panel (api/*)
 │   │   ├── health.py            liveness/readiness
 │   │   ├── agents.py            agent list/get
-│   │   ├── channels.py          channel CRUD + members
-│   │   ├── groups.py            group create/list
-│   │   ├── sessions.py          comms sessions + messages
-│   │   ├── messages.py          message CRUD
 │   │   ├── notifications.py     notification ack/send
 │   │   ├── stream.py            agent stream chunks/extract
 │   │   ├── journals.py          journal entries + growth
@@ -232,7 +224,7 @@ roboco/api/
 
 ## Drift from CLAUDE.md
 - CLAUDE.md lists `pr_pass`/`pr_fail` under `pr_reviewer` verbs and the in-path gate; code matches (`flow_pr_reviewer.py` exposes `claim_gate_review`, `pr_pass`, `pr_fail`). No drift found.
-- CLAUDE.md says agent comms use `say`/`dm`/`notify` via do_server; code matches (`v1/do.py` exposes all three). No drift.
+- CLAUDE.md says agent comms use `dm`/`read_a2a`/`notify` via do_server (the channel/session `say`/`open_session`/`link_session` surface was removed in the comms-subsystem teardown); code matches. No drift.
 - CLAUDE.md lists `sync_branch` as a developer verb; present in `flow_dev.py:125`. No drift.
 - CLAUDE.md's verb table omits `flow_pr_reviewer.post_pr_review` (external PR comment) — present in code; additive, not contradictory.
 - None material.

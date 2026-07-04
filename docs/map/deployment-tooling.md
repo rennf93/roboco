@@ -15,7 +15,7 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | roboco/bootstrap.py | Async bootstrap: DB init, Redis event bus, websocket bridge, orchestrator construction, uvicorn API server task, wait-for-ready poll, optional agent spawn, graceful shutdown | 161 |
 | roboco/cli.py | argparse CLI wrapper around bootstrap.main / db-only; the ENTRYPOINT invoked by `python -m roboco.cli` | 59 |
 | roboco/logging.py | structlog setup (dev ConsoleRenderer / prod JSONRenderer), secret-redaction processor, rotating file handler under /data/logs, LogContext context-manager | 252 |
-| roboco/exceptions.py | Exception hierarchy (RobocoError base + NotFound/Validation/InvalidState/Permission/Auth/Task/TaskLifecycle/Agent/Channel/Session/Notification/Service/Database/Git/MergeConflict/GitCommand/GitTimeout); includes TaskLifecycle transition hints and git-secret scrubbing | 497 |
+| roboco/exceptions.py | Exception hierarchy (RobocoError base + NotFound/Validation/InvalidState/Permission/Auth/Task/TaskLifecycle/Agent/Notification/Service/Database/Git/MergeConflict/GitCommand/GitTimeout); includes TaskLifecycle transition hints and git-secret scrubbing | 497 |
 | docker/orchestrator.Dockerfile | Multi-stage build: uv venv builder (python:3.13-slim) + runner with docker-cli/git/make/node/npm/pnpm, ENTRYPOINT python -m roboco.cli | 99 |
 | docker/agent-base.Dockerfile | Shared agent runtime: uv venv + Node 22 + @anthropic-ai/claude-code, agent user, hook scripts, safe.directory *, ENTRYPOINT claude | 108 |
 | docker/agent-pm.Dockerfile | PM agent — FROM roboco-agent-base, no extra tools (MCP-only) | 11 |
@@ -51,7 +51,7 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | scripts/verify_postgres_enums.py | Foundation drift gate: compare postgres agentrole/team enum labels to foundation identity; exit 0 on match/skip(unreachable or unmigrated), 1 on drift | 127 |
 | scripts/reflow_md.py | Reflow hard-wrapped markdown prose to one line per paragraph (token-invariant safety check); --apply / --check modes for the CI gate | 214 |
 | scripts/reset_runtime_state.sh | Host/container smoke-test reset: stop agent containers, run reset_runtime_state.sql, FLUSH Redis, optional FULL_RESET data wipe, per-workspace git hard-reset + stray-branch prune | 263 |
-| scripts/reset_runtime_state.sql | Transactional DELETE of runtime tables (tasks/sessions/messages/.../a2a_*) preserving agents/projects/channels/alembic_version; resets agents.metrics + groups.active_session_id | 159 |
+| scripts/reset_runtime_state.sql | Transactional DELETE of runtime tables (tasks/.../a2a_*) preserving agents/projects/alembic_version; resets agents.metrics | 159 |
 
 ## Key Symbols
 
@@ -86,9 +86,6 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | TaskError | class | roboco/exceptions.py:171 | Base task error (code TASK_ERROR), carries task_id |
 | TaskLifecycleError | class | roboco/exceptions.py:191 | Invalid transition; _TRANSITION_HINTS table appends procedural tool-call hints for common footguns |
 | AgentError | class | roboco/exceptions.py:273 | Base agent error carrying agent_id |
-| ChannelError | class | roboco/exceptions.py:298 | Base channel/messaging error |
-| ChannelAccessDeniedError | class | roboco/exceptions.py:318 | No read/write access to a channel (code CHANNEL_ACCESS_DENIED) |
-| SessionClosedError | class | roboco/exceptions.py:340 | Session is closed (code SESSION_CLOSED) |
 | NotificationError | class | roboco/exceptions.py:364 | Notification error base |
 | ServiceError | class | roboco/exceptions.py:381 | External service error carrying service name |
 | DatabaseError | class | roboco/exceptions.py:400 | Database operation failed |
@@ -261,7 +258,6 @@ deployment-tooling
 - ROBOCO_TRANSCRIPT_RETENTION_DAYS / ROBOCO_TRANSCRIPT_PRUNE_ENABLED / _INTERVAL_SECONDS
 - ROBOCO_IMAGE_PRUNE_ENABLED / _INTERVAL_SECONDS
 - ROBOCO_GIT_COMMAND_TIMEOUT_SECONDS / _COMMIT_TIMEOUT_SECONDS / _NETWORK_TIMEOUT_SECONDS
-- ROBOCO_SESSION_IDLE_TIMEOUT_SECONDS
 - ROBOCO_PROTECTED_GIT_URLS
 - ROBOCO_AGENT_TOOL_CALL_WARN/HALT / ROBOCO_AGENT_LOOP_THRESHOLD/WINDOW / ROBOCO_AGENT_STOP_ATTEMPT_ALLOWANCE / ROBOCO_AGENT_SLA_* / ROBOCO_CLAUDE_STUCK_KILL_SECONDS
 - ROBOCO_QA_NOTES_MIN_CHARS / DOCS / DEV / PR_REVIEWER / QUICK_CONTEXT_MIN_CHARS

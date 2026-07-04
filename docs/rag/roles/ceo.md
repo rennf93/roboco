@@ -24,7 +24,7 @@ The CEO is a **human** and acts through the **panel/UI**, not through the agent 
 - Approve or reject tasks in `awaiting_ceo_approval`
 - Cancel tasks (CEO is one of the cancel-authorized roles)
 - Set strategic direction
-- Read all channels
+- Message any agent directly via A2A (`dm`), unrestricted on the CEO's side
 
 ## CEO Approval Workflow
 
@@ -56,9 +56,6 @@ Only `main_pm`, `product_owner`, and `head_marketing` can escalate a task to the
 
 ## Communication
 
-The CEO has read access to all channels, including:
-- #board-private
-- #announcements
-- All cell and cross-cell channels
+The CEO has no channels to monitor. Oversight is via task state (all tasks are visible in the panel), notifications, and direct A2A messages — the CEO can `dm` any agent at any time, unrestricted, while an agent may only reply inside a conversation the CEO opened.
 
-The CEO communicates and decides through the panel/UI rather than the agent content tools (`say` / `dm` / `notify`).
+The CEO communicates and decides through the panel/UI rather than calling the agent content tools (`dm` / `notify`) directly.

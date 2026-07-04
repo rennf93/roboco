@@ -73,5 +73,5 @@ The **provider** selects the agent backend, resolved through the `ProviderRegist
 | `current_task_id` | Currently assigned task |
 | `journal_id` | Personal journal |
 | `system_prompt` | Base prompt |
-| `permissions` | Channel access |
+| `permissions` | Tool/verb permission scope |
 | `metrics` | Performance data |

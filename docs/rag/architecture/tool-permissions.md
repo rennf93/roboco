@@ -7,7 +7,7 @@ Agents call gateway verbs through up to five MCP servers, scoped per role:
 | MCP server | Provides |
 |------------|----------|
 | `roboco-flow` | Lifecycle verbs (give_me_work, i_will_work_on, open_pr, complete, …) |
-| `roboco-do` | Content/write verbs (commit, note, say, dm, notify, evidence) |
+| `roboco-do` | Content/write verbs (commit, note, dm, notify, evidence) |
 | `roboco-git-readonly` | Read-only git inspection (status, log, diff, branch_list) |
 | `roboco-search` | Web research (`web_search`, `web_fetch`) — `cell_pm`/`main_pm`/`product_owner`/`head_marketing` only, and only when `ROBOCO_RESEARCH_ENABLED` (default on) |
 | `roboco-optimal` | RAG (`roboco_ask_mentor`, `roboco_kb_search`) |
@@ -21,7 +21,7 @@ The canonical source of role → verb mapping is `roboco/services/gateway/role_c
 
 **Flow verbs (roboco-flow):** `give_me_work`, `i_will_work_on`, `open_pr`, `i_am_done`, `i_am_blocked`, `unclaim`, `resume`, `i_am_idle`
 
-**Content verbs (roboco-do):** `commit`, `note`, `say`, `dm`, `evidence`
+**Content verbs (roboco-do):** `commit`, `note`, `dm`, `evidence`
 
 **Read-only git (roboco-git-readonly):** all 4 (`status`, `log`, `diff`, `branch_list`)
 
@@ -31,7 +31,7 @@ The canonical source of role → verb mapping is `roboco/services/gateway/role_c
 
 **Flow verbs:** `give_me_work`, `claim_review`, `pass`, `fail`, `unclaim`, `resume`, `i_am_idle`
 
-**Content verbs:** `note`, `say`, `dm`, `evidence` (no `commit` — QA does not write code)
+**Content verbs:** `note`, `dm`, `evidence` (no `commit` — QA does not write code)
 
 **Read-only git:** all 4
 
@@ -41,7 +41,7 @@ The canonical source of role → verb mapping is `roboco/services/gateway/role_c
 
 **Flow verbs:** `give_me_work`, `claim_doc_task`, `i_documented`, `unclaim`, `resume`, `i_am_idle`
 
-**Content verbs:** `commit`, `note`, `say`, `dm`, `evidence`
+**Content verbs:** `commit`, `note`, `dm`, `evidence`
 
 **Read-only git:** all 4
 
@@ -51,7 +51,7 @@ The canonical source of role → verb mapping is `roboco/services/gateway/role_c
 
 **Flow verbs:** `give_me_work`, `i_will_plan`, `delegate`, `submit_up`, `triage`, `unblock`, `complete`, `escalate_up`, `unclaim`, `resume`, `i_am_idle`
 
-**Content verbs:** `note`, `say`, `dm`, `notify`, `evidence` (no `commit` — PMs delegate code; merging the leaf PR happens automatically inside `complete`)
+**Content verbs:** `note`, `dm`, `notify`, `evidence` (no `commit` — PMs delegate code; merging the leaf PR happens automatically inside `complete`)
 
 **Read-only git:** all 4
 
@@ -63,7 +63,7 @@ The canonical source of role → verb mapping is `roboco/services/gateway/role_c
 
 **Flow verbs:** `give_me_work`, `i_will_plan`, `delegate`, `triage_all`, `unblock`, `complete`, `escalate_up`, `escalate_to_ceo`, `unclaim`, `resume`, `i_am_idle`
 
-**Content verbs:** `note`, `say`, `dm`, `notify`, `evidence`
+**Content verbs:** `note`, `dm`, `notify`, `evidence`
 
 **Read-only git:** all 4
 
@@ -77,9 +77,9 @@ Both share the same flow verbs and read-only git (none), but their content verbs
 
 **Flow verbs (both):** `triage`, `escalate_to_ceo`, `i_am_idle`
 
-**Content verbs — Product Owner:** `note`, `pitch`, `propose_roadmap`, `say`, `dm`, `notify`, `evidence`, `open_session`
+**Content verbs — Product Owner:** `note`, `pitch`, `propose_roadmap`, `dm`, `notify`, `evidence`
 
-**Content verbs — Head of Marketing:** `note`, `pitch`, `say`, `dm`, `notify`, `evidence`, `open_session` (no `propose_roadmap`)
+**Content verbs — Head of Marketing:** `note`, `pitch`, `dm`, `notify`, `evidence` (no `propose_roadmap`)
 
 **Read-only git (both):** none.
 
@@ -89,7 +89,7 @@ Both share the same flow verbs and read-only git (none), but their content verbs
 
 **Flow verbs:** `triage`, `i_am_idle`  (read-only)
 
-**Content verbs:** `note` (scope=reflect), `evidence`  (no `say` / `dm` — Auditor observes silently)
+**Content verbs:** `note` (scope=reflect), `evidence`  (no `dm` — Auditor observes silently)
 
 **Read-only git:** none.
 
@@ -97,7 +97,7 @@ Both share the same flow verbs and read-only git (none), but their content verbs
 
 **Flow verbs:** `give_me_work`, `claim_pr_review`, `post_pr_review` (inbound external/fork + internal PRs), `claim_gate_review`, `pr_pass`, `pr_fail` (in-path assembled-PR gate), `unclaim`, `i_am_idle`  (read-only)
 
-**Content verbs:** `note`, `evidence`, plus notification reads (`notify_list`, `notify_get`) and channel discovery — no `say` / `dm`: the change-request is posted server-side on the PR itself.
+**Content verbs:** `note`, `evidence`, plus notification reads (`notify_list`, `notify_get`) — no `dm`: the change-request is posted server-side on the PR itself.
 
 **Read-only git:** none.
 
@@ -109,7 +109,7 @@ Both are human-only roles — they chat with the CEO, not other agents.
 
 **Flow verbs:** `i_am_idle` only.
 
-**Content verbs:** `note`, `evidence` only (no `say` / `dm` / `notify`).
+**Content verbs:** `note`, `evidence` only (no `dm` / `notify`).
 
 **Read-only git / workspace writes:** none.
 
@@ -125,7 +125,7 @@ Both are human-only roles — they chat with the CEO, not other agents.
 | `complete` (merges PR) | — | — | — | ✓ | ✓ | — | — |
 | `escalate_to_ceo` | — | — | — | — | ✓ | ✓ | — |
 | `notify` (ack-required) | — | — | — | ✓ | ✓ | ✓ | — |
-| `say` / `dm` (channel / A2A) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — |
+| `dm` (A2A) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | — |
 | `note` (journal entry) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ (reflect) |
 | `roboco_git_*` (read-only) | ✓ | ✓ | ✓ | ✓ | ✓ | — | — |
 | `Write` / `Edit` (own workspace) | ✓ | ✓ | — | — | — | — | — |

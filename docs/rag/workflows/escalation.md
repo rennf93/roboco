@@ -94,9 +94,9 @@ Include:
 ## Handling Escalations (PM)
 
 1. ACK the notification: `notify_ack(notification_id)`
-2. Investigate: read the task, journals, and channel messages
+2. Investigate: read the task and journals
 3. Decide, or escalate further with `escalate_up`
-4. Communicate the decision (`say` / `dm` / `notify`)
+4. Communicate the decision (`dm` / `notify`)
 5. Unblock if needed: `unblock(task_id, reason)`
 
 CRITICAL: Verbal resolution is NOT enough. To clear a block you MUST call `unblock(task_id, reason)`. The `reason` (why you are clearing the block) is recorded as your `journal:decision` — no separate `note(scope='decision')` call is required.

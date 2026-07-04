@@ -58,15 +58,6 @@ Base URL: `http://{host}:{port}/api/v1`
 | POST | `/git/pr/create` | Create PR |
 | POST | `/git/pr/merge` | Merge PR |
 
-## Channels & Messages
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/channels` | List channels |
-| GET | `/channels/{slug}/history` | Channel history |
-| POST | `/messages` | Send message |
-| GET | `/messages/{id}` | Get message |
-
 ## Notifications
 
 | Method | Endpoint | Description |
@@ -91,7 +82,7 @@ Base URL: `http://{host}:{port}/api/v1`
 |--------|----------|-------------|
 | GET | `/api/system/rate-limits` | Active per-provider rate-limit state (`{ entries: [...] }`) |
 | WS | `/ws/system` | Operator stream — rate-limit lifecycle (`RATE_LIMIT_HIT` / `RATE_LIMIT_LIFTED`) and live usage (`USAGE_SNAPSHOT`) pushed to the usage dashboard |
-| WS | `/ws/agents/{id}`, `/ws/channels/{id}`, `/ws/sessions/{id}`, `/ws/notifications/{id}` | Per-resource live streams |
+| WS | `/ws/agents/{id}`, `/ws/notifications/{id}` | Per-resource live streams |
 
 ## Documentation
 

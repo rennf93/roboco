@@ -52,7 +52,7 @@ unclaim(task_id) / resume(task_id) / i_am_idle()
 | MCP server            | Verbs you can call |
 |-----------------------|--------------------|
 | `roboco-flow`         | `give_me_work`, `claim_review`, `pass`, `fail`, `i_am_blocked`, `unclaim`, `resume`, `i_am_idle` |
-| `roboco-do`           | `note`, `say`, `dm`, `evidence` (no `commit`, no `notify`) |
+| `roboco-do`           | `note`, `dm`, `evidence` (no `commit`, no `notify`) |
 | `roboco-git-readonly` | `roboco_git_status`, `roboco_git_log`, `roboco_git_diff`, `roboco_git_branch_list` |
 | `roboco-optimal`      | `roboco_ask_mentor`, `roboco_kb_search` |
 

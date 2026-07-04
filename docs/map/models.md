@@ -2,14 +2,14 @@
 
 ## Purpose
 
-The Pydantic/dataclass domain surface of RoboCo — the typed contract the API, services, orchestrator, and agent runtimes all speak. These are **not** the ORM tables (`roboco/db/tables.py` owns persistence); models here are request/response schemas, domain aggregates, runtime DTOs, and enums that get crossed into SQLAlchemy rows by the service layer. Validation (`RobocoBase`: `extra="forbid"`, `validate_assignment`, `use_enum_values`) lives here, and several files (`agents.py`, `runtime.py`, `optimal.py`, `metrics.py`, `llm.py`, `audit.py`, `dashboard.py`, `transcription.py`, `extraction.py`, `messaging.py`, `permissions.py`) are pure dataclasses/StrEnums with no Pydantic model at all — runtime value types the orchestrator and services pass around.
+The Pydantic/dataclass domain surface of RoboCo — the typed contract the API, services, orchestrator, and agent runtimes all speak. These are **not** the ORM tables (`roboco/db/tables.py` owns persistence); models here are request/response schemas, domain aggregates, runtime DTOs, and enums that get crossed into SQLAlchemy rows by the service layer. Validation (`RobocoBase`: `extra="forbid"`, `validate_assignment`, `use_enum_values`) lives here, and several files (`agents.py`, `runtime.py`, `optimal.py`, `metrics.py`, `llm.py`, `audit.py`, `dashboard.py`, `transcription.py`, `extraction.py`, `permissions.py`) are pure dataclasses/StrEnums with no Pydantic model at all — runtime value types the orchestrator and services pass around.
 
 ## Files
 
 | Path | Role | approx LOC |
 |------|------|------------|
-| `__init__.py` | Public re-export surface (`Agent`, `Task`, `Session`, `Channel`, `Notification`, `Journal`, `CommitRef`, enums, `get_column_config`, …) | 149 |
-| `base.py` | All shared StrEnums (`TaskStatus`, `TaskType`, `AgentStatus`, `ModelProvider`, `ChannelType`, `JournalEntryType`, …) + `RobocoBase`/`TimestampMixin` + `AgentRole`/`Team` aliases to `foundation.identity` | 275 |
+| `__init__.py` | Public re-export surface (`Agent`, `Task`, `Notification`, `Journal`, `CommitRef`, enums, `get_column_config`, …) | 149 |
+| `base.py` | All shared StrEnums (`TaskStatus`, `TaskType`, `AgentStatus`, `ModelProvider`, `JournalEntryType`, …) + `RobocoBase`/`TimestampMixin` + `AgentRole`/`Team` aliases to `foundation.identity` | 275 |
 | `task.py` | `Task` aggregate + `CommitRef`/`DocRef`/`ProgressUpdate`/`Checkpoint`/`SubTask`/`TaskPlan` + `TaskCreate`/`TaskUpdate`/`TaskCreateRequest` | 502 |
 | `a2a.py` | A2A protocol wire models (`AgentCard`, `A2ATask`, `A2AMessage`, parts) + persistent conversation models (`A2AConversation`, `A2AChatMessage`) + state mappers | 592 |
 | `agents.py` | Agent **runtime** domain types — per-role phase enums (`DevTaskPhase`, `QATaskPhase`, `CellPMPhase`, …), `AgentConfig`/`AgentState`, `TaskContext`/`ReviewContext`/`DocContext`, `AuditFlag`/`AuditReport` | 405 |
@@ -17,28 +17,24 @@ The Pydantic/dataclass domain surface of RoboCo — the typed contract the API, 
 | `permissions.py` | `PermissionLevel` IntEnum, `ROLE_LEVELS` (built from `agents_config`), `AgentContext`, `COMMUNICATION_MATRIX`, `TASK_PERMISSIONS`, `KB_PERMISSIONS` | 284 |
 | `optimal.py` | RAG domain types — `IndexType`, `SearchResult`/`SearchOutcome`/`RAGResponse`, `ErrorPattern`/`Decision`/`Standard`, `MentorResponse`, `CodeReviewResult` | 275 |
 | `metrics.py` | `VelocityMetrics`/`BlockerMetrics`/`TeamMetrics`/`AgentMetrics` + v0.10.0 observability: `StageTiming`/`StageBottleneck`/`BottleneckReport`/`AgentReworkRate`/`ReworkReport`/`Scorecard` | 249 |
-| `session.py` | `Session` + `SessionScope`/`SessionConfig`/`SessionTaskRelationshipType` + `SessionTaskLink` + create schemas | 214 |
 | `events.py` | `EventType` StrEnum + `Event` dataclass (JSON round-trip) + `NotificationServiceProtocol`/`OrchestratorAccessProtocol`/`EventContext` DI container | 199 |
 | `handoff.py` | `DocumenterHandoff` + `CodeSample`/`DocumentationItem`/`ConversationRef` + `HandoffCreate` (RESERVED — see file header) | 202 |
 | `project.py` | `Project` + `BranchReason` + `ProjectCreate`/`ProjectUpdate` (CI-watch, dep-update, quality_command fields) | 178 |
 | `agent.py` | `Agent` API model + `ModelConfig`/`AgentPermissions`/`AgentMetrics` + `AgentCreate`/`AgentUpdate` | 172 |
 | `kanban.py` | `KanbanBoard`/`KanbanColumn`/`KanbanCard`/`KanbanSwimlane` + per-role column configs + `get_column_config` | 159 |
 | `llm_catalog.py` | `CatalogEntry` + `MODEL_CATALOG`/`MODEL_CATALOG_BY_NAME`/`provider_type_for_model` + `OLLAMA_ROLE_DEFAULTS`/`OLLAMA_DEFAULT_MODEL` (Settings dropdown source of truth) | 132 |
-| `message.py` | `ExtractedMessage` + `MessageEdit`/`RawStream` + `MessageCreate` | 137 |
+| `message.py` | `ExtractedMessage` + `RawStream` | 137 |
 | `runtime.py` | Orchestrator runtime types — `OrchestratorAgentState`, `SpawnGitContext`, `OrchestratorAgentConfig`, `AgentInstance`, `WaitingRecord`, `MODEL_MAP`, `ROLE_MODEL_MAP` | 128 |
 | `transcription.py` | `StreamBuffer` (flush heuristic) + `TranscriptionConfig` | 119 |
 | `llm.py` | `LLMUsage`/`ToonConfig`/`EncodedBlock`/`ToonMetrics` (token + TOON serialization metrics) | 118 |
 | `notification.py` | `Notification` + `NotificationCreate` + `CreateNotificationParams` | 117 |
-| `channel.py` | `Channel` + `ChannelCreate`/`ChannelUpdate` | 115 |
 | `work_session.py` | `WorkSession` + `WorkSessionStatus` + `WorkSessionCreate`/`WorkSessionUpdate` | 117 |
 | `pitch.py` | `Pitch` + `PitchStatus` + `PitchCreate` (Board proposal → provisioning) | 73 |
 | `extraction.py` | `ExtractionContext`/`ExtractionResult`/`ExtractionConfig` | 68 |
 | `product.py` | `Product` + `ProductCellMapping` (cell→Project map; validator enforces cell-only) + create/update DTOs | 69 |
-| `messaging.py` | `ChannelCreateRequest`/`GroupCreateRequest`/`SessionCreateRequest`/`MessageCreateRequest` (service-layer DTOs) | 61 |
 | `playbook.py` | `Playbook` + `PlaybookCreate`/`PlaybookUpdate` (curated procedure; `from_attributes` for ORM load) | 58 |
 | `audit.py` | `AuditEventType` StrEnum + `PermissionDenialContext`/`StateTransitionDenialContext` dataclasses | 58 |
-| `dashboard.py` | `FlagData`/`ReportData`/`ChannelFeedData`/`TeamHealthData`/`AuditQueueItem`/`CreateFlagParams`/`DashboardStorage` | 96 |
-| `group.py` | `Group` (role-based chat container, hierarchy_level 0–4) + `GroupCreate`/`GroupUpdate` | 100 |
+| `dashboard.py` | `FlagData`/`ReportData`/`TeamHealthData`/`AuditQueueItem`/`CreateFlagParams`/`DashboardStorage` | 96 |
 | `secretary.py` | `DirectiveKind`/`DirectiveStatus` StrEnums + `GATED_KINDS` frozenset | 41 |
 | `README.md` | Architecture doc for the models package | ~250 |
 
@@ -60,17 +56,11 @@ The Pydantic/dataclass domain surface of RoboCo — the typed contract the API, 
 | `Team` | alias | base.py:24 | `= identity.Team` — canonical Team enum lives in `foundation/identity` |
 | `ModelProvider` | StrEnum | base.py:197 | anthropic/ollama_cloud/openai/local/grok |
 | `ModelConfig` | Pydantic model | agent.py:27 | provider + name + fallback + temperature + max_tokens |
-| `AgentPermissions` | Pydantic model | agent.py:45 | can_notify + channels_read/write |
+| `AgentPermissions` | Pydantic model | agent.py:45 | can_notify |
 | `WorkSession` | Pydantic model | work_session.py:25 | Branch/PR/merge tracking for a (project, task, agent) work episode |
 | `WorkSessionStatus` | StrEnum | work_session.py:17 | active/completed/abandoned |
 | `Project` | Pydantic model | project.py:47 | Git repo config + CI/dep-update/`sandbox_services` opt-ins + `assigned_cell` |
 | `BranchReason` | StrEnum | project.py:18 | feature/bug/chore/docs/hotfix (branch-name prefixes) |
-| `Session` | Pydantic model | session.py:90 | Bounded message group (time/count/length); `scope` for context loading |
-| `SessionScope` | StrEnum | session.py:30 | initiative/cell/task |
-| `SessionTaskLink` | Pydantic model | session.py:157 | Many-to-many session↔task with `is_primary` + relationship_type |
-| `Channel` | Pydantic model | channel.py:24 | Top-level comms unit; members/writers/silent_observers |
-| `ChannelType` | StrEnum | base.py:163 | cell/cross_cell/management/special |
-| `Group` | Pydantic model | group.py:25 | Role-based chat container with hierarchy_level 0–4 |
 | `ExtractedMessage` | Pydantic model | message.py:51 | Stored message with embedding, edit_history, mentions, task_id |
 | `MessageType` | StrEnum | base.py:128 | reasoning/dialogue/decision/action/blocker/technical |
 | `RawStream` | Pydantic model | message.py:32 | Ephemeral WebSocket chunk payload |
@@ -121,7 +111,7 @@ The Pydantic/dataclass domain surface of RoboCo — the typed contract the API, 
 
 ## Data Flow
 
-API request bodies → Pydantic `*Create`/`*Update` schemas (validation boundary, `extra="forbid"`) → route handlers → services. Services translate between these models and the SQLAlchemy ORM tables in `roboco/db/tables.py` (e.g. `TaskTable`, `WorkSessionTable`, `ProjectTable`, `SessionTable`, `MessageTable`, `NotificationTable`, `JournalTable`, `JournalEntryTable`, `AgentTable`, `PlaybookTable`, `ProductTable`, `PitchTable`): the ORM row is the persistence shape; the Pydantic model is the contract shape. Several ORM tables load back into a model via `model_config = ConfigDict(from_attributes=True)` (`Playbook` at playbook.py:20, `Product`/`ProductCellMapping` via `RobocoBase`). Runtime-only DTOs (`AgentInstance`, `WaitingRecord`, `SpawnGitContext`, `Event`, `ExtractionResult`, `StreamBuffer`, the metrics/observability dataclasses, `AuditFlag`/`AuditReport`) never touch the DB directly — they are orchestrator/service in-process values. Enum parity between model and ORM is enforced by the test gate (`enum` columns in `tables.py` reference the same `StrEnum` classes from `base.py`/`foundation.identity`). `agent.py` `Agent` is the API/persistence model; `agents.py` `AgentConfig` is the runtime analogue used by the agent implementations — the comment at agents.py:7 calls this split out explicitly. Validation lives almost entirely on the Pydantic schemas (`min_length`, `ge`/`le`, `pattern`, `model_validator`); the dataclass models are intentionally validation-light.
+API request bodies → Pydantic `*Create`/`*Update` schemas (validation boundary, `extra="forbid"`) → route handlers → services. Services translate between these models and the SQLAlchemy ORM tables in `roboco/db/tables.py` (e.g. `TaskTable`, `WorkSessionTable`, `ProjectTable`, `NotificationTable`, `JournalTable`, `JournalEntryTable`, `AgentTable`, `PlaybookTable`, `ProductTable`, `PitchTable`): the ORM row is the persistence shape; the Pydantic model is the contract shape. Several ORM tables load back into a model via `model_config = ConfigDict(from_attributes=True)` (`Playbook` at playbook.py:20, `Product`/`ProductCellMapping` via `RobocoBase`). Runtime-only DTOs (`AgentInstance`, `WaitingRecord`, `SpawnGitContext`, `Event`, `ExtractionResult`, `StreamBuffer`, the metrics/observability dataclasses, `AuditFlag`/`AuditReport`) never touch the DB directly — they are orchestrator/service in-process values. Enum parity between model and ORM is enforced by the test gate (`enum` columns in `tables.py` reference the same `StrEnum` classes from `base.py`/`foundation.identity`). `agent.py` `Agent` is the API/persistence model; `agents.py` `AgentConfig` is the runtime analogue used by the agent implementations — the comment at agents.py:7 calls this split out explicitly. Validation lives almost entirely on the Pydantic schemas (`min_length`, `ge`/`le`, `pattern`, `model_validator`); the dataclass models are intentionally validation-light.
 
 ## Mermaid
 
@@ -145,12 +135,6 @@ erDiagram
     Agent ||--o{ Journal : "journal_id"
     Journal ||--o{ JournalEntry : entries
     JournalEntry }o--o| Task : task_id
-    Channel ||--o{ Group : "channel_id"
-    Group ||--o{ Session : "group_id"
-    Session ||--o{ SessionTaskLink : "session_id"
-    SessionTaskLink }o--|| Task : "task_id"
-    Channel ||--o{ ExtractedMessage : "channel_id"
-    Session ||--o{ ExtractedMessage : "session_id"
     ExtractedMessage }o--|| Agent : "agent_id"
     Agent ||--o{ Notification : "from_agent"
     Notification }o--o{ Task : "related_task_id"
@@ -173,11 +157,7 @@ models/
 │   ├── agents.py          AgentConfig, AgentState, DevTaskPhase/QATaskPhase/CellPMPhase/MainPMPhase/DocTaskPhase/ProductOwnerPhase/HeadMarketingPhase/AuditorPhase, TaskContext/ReviewContext/DocContext, AuditFlag, AuditReport
 │   └── permissions.py     PermissionLevel, ROLE_LEVELS, AgentContext, COMMUNICATION_MATRIX, TASK_PERMISSIONS, KB_PERMISSIONS
 ├── comms
-│   ├── session.py         Session, SessionScope, SessionConfig, SessionTaskLink, SessionTaskRelationshipType
-│   ├── channel.py         Channel, ChannelCreate, ChannelUpdate
-│   ├── group.py           Group, GroupCreate, GroupUpdate
-│   ├── message.py         ExtractedMessage, MessageCreate, MessageEdit, RawStream
-│   ├── messaging.py       ChannelCreateRequest, GroupCreateRequest, SessionCreateRequest, MessageCreateRequest
+│   ├── message.py         ExtractedMessage, RawStream
 │   ├── notification.py    Notification, NotificationCreate, CreateNotificationParams
 │   ├── a2a.py             AgentCard, A2ATask, A2AMessage, parts, A2AConversation, A2AChatMessage, state mappers
 │   ├── extraction.py      ExtractionContext, ExtractionResult, ExtractionConfig
@@ -188,7 +168,7 @@ models/
 ├── journal / audit
 │   ├── journal.py         Journal, JournalEntry, JournalEntryCreate, factory params, create_*_entry, JournalStats, GrowthMetrics
 │   ├── audit.py           AuditEventType, PermissionDenialContext, StateTransitionDenialContext
-│   └── dashboard.py       FlagData, ReportData, ChannelFeedData, TeamHealthData, AuditQueueItem, DashboardStorage
+│   └── dashboard.py       FlagData, ReportData, TeamHealthData, AuditQueueItem, DashboardStorage
 ├── llm
 │   ├── llm.py             LLMUsage, ToonConfig, EncodedBlock, ToonMetrics
 │   ├── llm_catalog.py     CatalogEntry, MODEL_CATALOG, provider_type_for_model, OLLAMA_ROLE_DEFAULTS, OLLAMA_DEFAULT_MODEL
@@ -214,7 +194,6 @@ models/
 - **`roboco.foundation.identity`** — `base.py:21` imports `identity` and aliases `AgentRole = identity.Role`, `Team = identity.Team`. `product.py` and `pitch.py` import `CELL_TEAMS`/`Team` directly from `foundation.identity`.
 - **`roboco.agents_config`** — `permissions.py:11` imports `ROLE_PERMISSION_LEVELS` to build `ROLE_LEVELS` at import time.
 - **`roboco.models.runtime`** — `llm_catalog.py:22` imports `MODEL_MAP` to derive Anthropic catalog entries.
-- **`roboco.models.session`** — `group.py:18` imports `SessionConfig`; `messaging.py:11` imports `SessionScope`.
 - **`roboco.models.message`** — `extraction.py:12` imports `ExtractedMessage`.
 - **`roboco.models.product`** — `task.py:24` imports `ProductCellMapping` (the `cell_projects` field).
 - Internal cross-imports are otherwise minimal; `__init__.py` is the single aggregation point.
@@ -233,7 +212,7 @@ None — pure models, no flags. (The `Project` model *carries* opt-in fields `ci
 
 - `AgentRole` and `Team` are **not defined in `models/base.py`** — they are `identity.Role` / `identity.Team` aliased at base.py:23–24. The comment says "Removed in Phase 4 housekeeping after every consumer is migrated." SQLAlchemy `sa.Enum(AgentRole, name="agentrole")` still works because Python identity is preserved. New code should import from `roboco.foundation.identity` directly.
 - `ProductCellMapping` deliberately overrides `use_enum_values=False` (product.py:22) so `team` stays a real `Team` enum for `is`-checks and the validator's `.value` error — the only model that deviates from `RobocoBase`'s `use_enum_values=True`.
-- `Task` mutations are not done on the model; `task.py:337` directs callers to `TaskService` (`claim`, `start`, `block`, `complete`, …). Same pattern for `Session`, `Channel`, `Notification`, `Journal`, `WorkSession` — service-owned state.
+- `Task` mutations are not done on the model; `task.py:337` directs callers to `TaskService` (`claim`, `start`, `block`, `complete`, …). Same pattern for `Notification`, `Journal`, `WorkSession` — service-owned state.
 - `TaskCreate` has **no silent defaults** for `task_type` / `nature` / `estimated_complexity` (task.py:350 docstring) — mirrors `foundation.policy.task_completeness.TASK_AT_CREATE`. The 2026-05-08 trace of agents omitting `task_type` and deadlocking the lifecycle is the reason.
 - `TaskCreate._exactly_one_target` (task.py:405) enforces exactly one of `project_id` / `product_id` / `cell_projects`. Old callers passing `cell_projects` alongside either of the others now fail.
 - The "one active WorkSession per task" invariant is **not** in the model — it's a DB partial-unique index (migration 047) + service-layer guard. The model alone won't stop you constructing two active `WorkSession`s.
@@ -251,7 +230,7 @@ None — pure models, no flags. (The `Project` model *carries* opt-in fields `ci
 - CLAUDE.md lists the `Task` model key fields (`task_type`, `project_id`, `branch_name`, `work_session_id`, `pr_number`, `pr_url`, `docs_complete`, `pr_created`, `commits: list[CommitRef]`) — all present on `Task` (task.py:163–255). CLAUDE.md does **not** mention `cell_projects` (task.py:179) or `batch_id`/`intends_to_touch`/`adds_migration`/`touches_shared` (task.py:225–236), which the MegaTask/sequencing sections elsewhere in CLAUDE.md do cover — so the model is ahead of the "Data Models" prose but consistent with the MegaTask section.
 - CLAUDE.md "A task has at most one active WorkSession" — enforced by DB partial-unique index (migration 047) + service layer, not by the `WorkSession` model itself (work_session.py has no such constraint). Consistent with CLAUDE.md's "enforced both at the service layer and by a DB partial-unique index".
 - The slice prompt named `AuditEvent` and `A2AEnvelope` as landmarks; the actual symbols are `AuditEventType` (audit.py:13, no `AuditEvent` class) and there is no `A2AEnvelope` in `a2a.py` (the gateway `Envelope` lives in `services/gateway/`, not here). Listed the real landmarks instead.
-- Otherwise: `TaskStatus` 15-state enum, `TaskType` 6 values, `NotificationType`/`ChannelType`/`JournalEntryType` all match CLAUDE.md verbatim.
+- Otherwise: `TaskStatus` 15-state enum, `TaskType` 6 values, `NotificationType`/`JournalEntryType` all match CLAUDE.md verbatim.
 - v0.17.0 delta: the three new ORM tables backing cloud auth + the X engine (`UserTable`, `XCredentialsTable`, `XSeenMentionTable` — migrations 058/059) have **no Pydantic counterpart in this package** — cloud auth's `UserTable` is consumed directly by `fastapi_users`/`roboco.api.auth.*` and the X engine's two tables are read/written directly off the ORM row by `roboco.services.x_*`. They are documented as ORM `Key Symbols` in `db-migrations.md`, not here, consistent with this file's own Purpose statement ("these are not the ORM tables").
 
 ## Changes Since Baseline
@@ -276,7 +255,7 @@ Logic-touching commits:
 > - **c71f9b3b** `[chore] logical-gaps: kanban board column coverage + status-class fixes` — `kanban.py`: `DEV_COLUMNS` expanded from 7 to 15 entries (all `TaskStatus` values now covered); `QA_COLUMNS` dropped the `VERIFYING→"In Review"` entry (VERIFYING is the dev's self-check, not a QA state); `PM_COLUMNS` widened to include all gate/revision/paused/cancelled/backlog columns. No model API surface change; internal column configs only.
 > - **d8a5bb48** `[chore] logical-gaps: a2a service hierarchy gate + persist skill on message row` — `a2a.py`: `A2AChatMessage` gained `skill: str | None` field (migration 054 adds the DB column). The `send()` verb now persists which capability the A2A is about so the receiver and inbox can surface it.
 > - **536bbb64** `[chore] logical-gaps sweep (#286)` — `task.py`: `DocRef` gained `commit_status: str | None` (whether the doc reached the project repo: `committed`/`skipped`/`failed`); this 8-line insertion shifts all subsequent task.py line numbers by +8 vs the baseline annotations above. `playbook.py`: `Playbook` gained `archived_by: UUID | None` and `archived_at: datetime | None` to support the archive curation path.
-> - **76ce53e3** `[fix] chat: wire live message delivery end-to-end (MESSAGE_SENT)` — `events.py`: added `EventType.MESSAGE_SENT = "message.sent"`; the bridge now forwards it to `/ws/sessions/{id}` and `/ws/channels/{id}` subscribers.
+> - **76ce53e3** `[fix] chat: wire live message delivery end-to-end (MESSAGE_SENT)` — `events.py`: added `EventType.MESSAGE_SENT = "message.sent"`; the bridge forwarded it to `/ws/sessions/{id}` and `/ws/channels/{id}` subscribers. **Now removed** by the comms-subsystem teardown (`docs/internal/specs/2026-07-03-comms-teardown-trace.md`) — the `/ws/sessions`/`/ws/channels` bridge and the tables it served are gone; `EventType.MESSAGE_SENT` itself is left as a dead/inert enum member, not deleted.
 
 ## Regression Risks
 
@@ -291,4 +270,4 @@ Logic-touching commits:
 
 ## Health
 
-The models package is coherent and well-layered: a single `RobocoBase` config drives consistency, enums are centralized in `base.py` (with the `AgentRole`/`Team` alias-to-`foundation.identity` migration clearly commented), and the API/Pydantic vs runtime/dataclass split is explicit (`agent.py` vs `agents.py`, with a docstring calling it out). The recent MegaTask per-cell-map change is small, additive, and validator-guarded; the main follow-on risk is migration 052 parity and test assertions on the renamed validator message — both mechanical. Two long-standing cleanliness items linger: `handoff.py` is a reserved-but-unwired model (file header says so), and several files (`dashboard.py`, `transcription.py`, `extraction.py`, `messaging.py`) are pure dataclasses that read as service-layer DTOs rather than domain models — harmless but slightly muddies the "models = typed contract surface" framing. Enum parity with the ORM (`tables.py`) is enforced by the test gate. No blocking issues; the package is in good shape.
+The models package is coherent and well-layered: a single `RobocoBase` config drives consistency, enums are centralized in `base.py` (with the `AgentRole`/`Team` alias-to-`foundation.identity` migration clearly commented), and the API/Pydantic vs runtime/dataclass split is explicit (`agent.py` vs `agents.py`, with a docstring calling it out). The recent MegaTask per-cell-map change is small, additive, and validator-guarded; the main follow-on risk is migration 052 parity and test assertions on the renamed validator message — both mechanical. Two long-standing cleanliness items linger: `handoff.py` is a reserved-but-unwired model (file header says so), and several files (`dashboard.py`, `transcription.py`, `extraction.py`) are pure dataclasses that read as service-layer DTOs rather than domain models — harmless but slightly muddies the "models = typed contract surface" framing. Enum parity with the ORM (`tables.py`) is enforced by the test gate. No blocking issues; the package is in good shape.

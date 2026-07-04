@@ -37,9 +37,8 @@ Exactly one active WorkSession exists per task at a time (enforced in the servic
 
 ## After Claiming
 
-1. Announce to your cell: `say(channel="backend-cell", text="...", task_id=task_id)`
-2. Get proactive context: `roboco_get_proactive_context(task_id)`
-3. Search the KB for similar work: `roboco_kb_search(query="...")`
+1. Get proactive context: `roboco_get_proactive_context(task_id)`
+2. Search the KB for similar work: `roboco_kb_search(query="...")`
 
 ## Claiming Rules
 

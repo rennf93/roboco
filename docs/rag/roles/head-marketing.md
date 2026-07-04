@@ -17,8 +17,7 @@
 
 - Triage actionable tasks in your scope via `triage()`
 - Escalate tasks to the CEO via `escalate_to_ceo(task_id, reason)`
-- Communicate: `say` (channel), `dm` (A2A), `notify` (ack-required signal)
-- Open strategic sessions via `open_session`
+- Communicate: `dm` (A2A), `notify` (ack-required signal)
 - Propose a product via `pitch(title, slug, problem, proposed_solution, target_cells)` — queues for CEO approval, then auto-provisions
 - Read project docs via `roboco_docs_read` / `roboco_docs_list`
 - Research the market via `web_search` / `web_fetch` (when `ROBOCO_RESEARCH_ENABLED`)
@@ -37,7 +36,7 @@
 | MCP server            | Verbs you can call |
 |-----------------------|--------------------|
 | `roboco-flow`         | `triage`, `escalate_to_ceo`, `i_am_idle` |
-| `roboco-do`           | `note`, `pitch`, `say`, `dm`, `notify`, `evidence`, `open_session` |
+| `roboco-do`           | `note`, `pitch`, `dm`, `notify`, `evidence` |
 | `roboco-docs`         | `roboco_docs_read`, `roboco_docs_list` |
 | `roboco-git-readonly` | `roboco_git_status`, `roboco_git_log`, `roboco_git_diff`, `roboco_git_branch_list` |
 | `roboco-search`       | `web_search`, `web_fetch` (only when `ROBOCO_RESEARCH_ENABLED`) |
@@ -67,16 +66,13 @@ The CEO acts via the panel/UI; you idle until the CEO decides.
 
 ```python
 dm(recipient="product-owner", text="Market analysis for the launch — ...", task_id="...")
-channels()  # discover channels you can post to
 ```
 
 Skills: market_analysis
 
 ## Communication
 
-Access to:
-- #main-pm-board
-- #board-private
-- #announcements (write)
+Coordination rides task state, task detail fields, and A2A.
 
-Can `notify`: Main PM, Product Owner, Auditor, CEO
+- `dm`: direct peer-to-peer messages via A2A (see the A2A section above)
+- Can `notify`: Main PM, Product Owner, Auditor, CEO

@@ -281,9 +281,6 @@ Major tasks are escalated to CEO for final approval:
 | `Project` | Git repository configuration and CI/CD commands |
 | `WorkSession` | Links agent work to task, tracks branch/commits/PR |
 | `Agent` | AI agent with role, team, capabilities |
-| `Session` | Communication session with messages |
-| `Channel` | Team communication channel |
-| `Message` | Extracted message from agent streams |
 | `Notification` | Formal notification requiring acknowledgment |
 | `Journal` | Agent personal log for reflections/learnings |
 
@@ -308,15 +305,7 @@ commits: list[CommitRef] # All commits made for this task
 
 ## Communication Model
 
-**Communication** = constant stream (always flowing, logged, observed) **Notifications** = formal signals (require acknowledgment, sent by PMs/Board only)
-
-### Channel Structure
-- Cell channels: `#backend-cell`, `#frontend-cell`, `#uxui-cell`
-- Cross-cell: `#dev-all`, `#qa-all`, `#pm-all`, `#doc-all`
-- Management: `#main-pm-board`, `#board-private`
-- Special: `#announcements` (read-only except Board/Main PM), `#all-hands`
-
-The Auditor has silent read access to ALL channels.
+Agents coordinate via **task state + task detail fields**, not a channel/session backbone. Two comms primitives sit alongside that: **A2A** (`dm` + `read_a2a`, direct peer-to-peer, same-cell only — see `docs/rag/tools/a2a-tools.md`) for informal contact, and **Notifications** (`notify`, ack-required, sent by PMs/Board only) for formal signals.
 
 Agent learnings (`note` scope='learning') broadcast as knowledge-share notifications only to other **agents** — the human / human-driven roles (CEO, prompter, secretary) are excluded, since agent knowledge-sharing is noise in a human's inbox.
 
@@ -350,18 +339,18 @@ Each agent gets a **spawn manifest** at `/app/tool-manifest.json` listing the ve
 | pr_reviewer   | `give_me_work`, `claim_pr_review`, `post_pr_review` (inbound external/fork PRs), `claim_gate_review`, `pr_pass`, `pr_fail` (in-path assembled-PR gate), `unclaim` |
 | product_owner | `triage`, `escalate_to_ceo`                                                                      |
 | head_marketing| `triage`, `escalate_to_ceo`                                                                      |
-| auditor       | `triage` (read-only — no `say`/`dm`)                                                             |
+| auditor       | `triage` (read-only — no `dm`)                                                             |
 | prompter      | (none beyond `i_am_idle` — not a delivery-lifecycle role; intake interviewer, human-only)        |
 | secretary     | (none beyond `i_am_idle` — human-only chief-of-staff; reads company state + runs gated CEO directives) |
 
-Content tools (do_server) — most roles: `commit`, `note`, `say`, `dm`, `evidence`. Delivery roles (developer / qa / documenter / cell_pm / main_pm) also get `draft_playbook` (draft a curated playbook for the KB). Auditor is restricted to `note` (scope=reflect) + `evidence`, plus the playbook-curation verbs `approve_playbook` / `reject_playbook` / `archive_playbook` (a bounded, deliberate expansion — KB curation, not agent comms, so its no-`say`/no-`dm` restriction holds). The `pr_reviewer` posts its change-request on the PR itself (no agent comms). The `prompter` (intake) and `secretary` are restricted to `note` + `evidence` — human-only, no `say`/`dm`/`notify`. The `note`/journal write returns as soon as the entry is persisted; RAG indexing (Ollama embedding) runs fire-and-forget, so the tool no longer times out under concurrent load.
+Content tools (do_server) — most roles: `commit`, `note`, `dm`, `read_a2a`, `evidence`. Delivery roles (developer / qa / documenter / cell_pm / main_pm) also get `draft_playbook` (draft a curated playbook for the KB). Auditor is restricted to `note` (scope=reflect) + `evidence`, plus the playbook-curation verbs `approve_playbook` / `reject_playbook` / `archive_playbook` (a bounded, deliberate expansion — KB curation, not agent comms, so its no-`dm` restriction holds). The `pr_reviewer` posts its change-request on the PR itself (no agent comms). The `prompter` (intake) and `secretary` are restricted to `note` + `evidence` — human-only, no `dm`/`notify`. The `note`/journal write returns as soon as the entry is persisted; RAG indexing (Ollama embedding) runs fire-and-forget, so the tool no longer times out under concurrent load.
 
 ### MCP servers running per agent container
 
 | Server               | Purpose                                                              |
 |----------------------|----------------------------------------------------------------------|
 | `roboco-flow`        | Intent verbs (give_me_work, i_am_done, claim_review, complete, ...) |
-| `roboco-do`          | Content tools (commit, note, say, dm, evidence)                      |
+| `roboco-do`          | Content tools (commit, note, dm, read_a2a, evidence)                  |
 | `roboco-git-readonly`| Read-only git: status, log, diff, branches                           |
 | `roboco-optimal`     | RAG: `roboco_ask_mentor`, `roboco_kb_search`                         |
 | `roboco-docs`        | Project docs file management (selected roles)                        |
@@ -434,7 +423,6 @@ Core services in `roboco/services/`:
 | `WorkSessionService` | Git session management, PR lifecycle |
 | `WorkspaceService` | Multi-agent workspace resolution and cloning |
 | `ProjectService` | Project/repository management |
-| `MessagingService` | Channels, sessions, messages |
 | `NotificationService` | Formal notifications |
 | `JournalService` | Agent journals and entries |
 | `OptimalService` | RAG queries (in-house pgvector engine) |
@@ -514,10 +502,10 @@ The orchestrator exposes WebSocket endpoints under `/ws` (router in `roboco/api/
 
 | Endpoint | Purpose |
 |----------|---------|
-| `/ws/channels/{id}`, `/ws/agents/{id}`, `/ws/sessions/{id}`, `/ws/notifications/{id}` | Per-resource live streams — `/ws/channels` + `/ws/sessions` carry live `message.new` frames (from `EventType.MESSAGE_SENT`), so a session transcript updates without a manual refresh |
-| `/ws/system` | Operator/system-wide stream (no per-agent keying) — the rate-limit lifecycle (`RATE_LIMIT_HIT` / `RATE_LIMIT_LIFTED`) and live usage (`USAGE_SNAPSHOT`, pushed to the usage dashboard) |
+| `/ws/agents/{id}`, `/ws/notifications/{id}` | Per-resource live streams |
+| `/ws/system` | Operator/system-wide stream (no per-agent keying) — the rate-limit lifecycle (`RATE_LIMIT_HIT` / `RATE_LIMIT_LIFTED`), live usage (`USAGE_SNAPSHOT`, pushed to the usage dashboard), and A2A message events (`a2a.message` frames) |
 
-Server-side events reach these sockets through `roboco/api/websocket_bridge.py`, which subscribes to the `StreamEventBus` and forwards each event to the matching connections. To add a new live event: define an `EventType` (dotted value), publish it to the bus, add a `_handle_*` forwarder in `websocket_bridge`, and consume it on the panel via the `useWebSocket("/<endpoint>", …)` hook — do not stand up a parallel endpoint or client stack. `MESSAGE_SENT` is the worked example: `send_message` publishes it, `_handle_message_event` fans it out to `/ws/sessions/{id}` + `/ws/channels/{id}` as a `message.new` frame, and the panel's `useSessionStream` consumes it.
+Server-side events reach these sockets through `roboco/api/websocket_bridge.py`, which subscribes to the `StreamEventBus` and forwards each event to the matching connections. To add a new live event: define an `EventType` (dotted value), publish it to the bus, add a `_handle_*` forwarder in `websocket_bridge`, and consume it on the panel via the `useWebSocket("/<endpoint>", …)` hook — do not stand up a parallel endpoint or client stack. `A2A_MESSAGE_SENT` is the worked example: `A2AService.send` publishes it (excerpt-capped payload), the bridge forwards it to `/ws/system` as an `a2a.message` frame, and the panel's `useA2ALiveStream` hook (a second consumer of that same shared `/ws/system` connection) consumes it to invalidate-on-frame.
 
 ### Rate limiting & usage
 

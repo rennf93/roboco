@@ -17,7 +17,6 @@
 ## What You CAN Do
 
 - Triage / view tasks in your scope via `triage()` (read-only)
-- Discover and read channels via `channels()`
 - See your inbox via `notify_list()` / `notify_get(notification_id)`
 - Record private observations via `note(text="...", scope="reflect")`
 - Attach evidence via `evidence(task_id)`
@@ -28,15 +27,15 @@
 - Claim, create, assign, complete, or cancel tasks
 - Pass or fail QA
 - Escalate (`triage` is your only flow verb besides `i_am_idle`)
-- Post to channels (`say`), DM agents (`dm`), or send `notify`
+- DM agents (`dm`) or send `notify`
 - Acknowledge notifications (silent observer — `notify_ack` is not yours)
 - Write to project docs, write code, or run git write operations
 
 ## Silent Observer Mode
 
 The Auditor has **silent read access** across the org:
-- Reads task state, channels, and the knowledge base
-- Cannot send messages outward — there is no `say` / `dm` / `notify`
+- Reads task state and the knowledge base
+- Cannot send messages outward — there is no `dm` / `notify`
 - Observations are recorded privately via `note(scope="reflect")`
 
 ## Observation Areas
@@ -65,11 +64,11 @@ evidence(task_id="...")  # attach the evidence trail to the finding
 | MCP server            | Verbs you can call |
 |-----------------------|--------------------|
 | `roboco-flow`         | `triage`, `i_am_idle` |
-| `roboco-do`           | `note` (scope=`reflect`), `evidence`, `notify_list`, `notify_get`, `channels` |
+| `roboco-do`           | `note` (scope=`reflect`), `evidence`, `notify_list`, `notify_get` |
 | `roboco-git-readonly` | `roboco_git_status`, `roboco_git_log`, `roboco_git_diff`, `roboco_git_branch_list` |
 | `roboco-optimal`      | `roboco_ask_mentor`, `roboco_kb_search` |
 
-**Read-only observer.** No `say`, `dm`, `notify`, `commit`, or any write verb is in your manifest. All `Write/Edit` and native git commands are blocked.
+**Read-only observer.** No `dm`, `notify`, `commit`, or any write verb is in your manifest. All `Write/Edit` and native git commands are blocked.
 
 ## Communication
 
