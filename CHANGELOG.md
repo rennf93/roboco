@@ -6,10 +6,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-### Fixed
-
-- **The CEO's brand_voice/north_star charter now reaches the board exploration spawns.** `board_triage`'s idle branch (hit whenever the Product Owner's roadmap-exploration or Head of Marketing's feature-spotlight-exploration one-shot spawn finds no strategic root to review — their directly-assigned exploration task is never itself a "strategic root awaiting PM review") built its briefing with `full=False`, so `company_goals` — and therefore `brand_voice` — never reached either spawn despite both prompts claiming the charter is "already in your briefing." A new narrow `include_company_goals` opt-in on `_briefing_for` (`_resolve_company_goals`) fetches just the cheap company_goals singleton on that path, without pulling in `full`'s other heavy sections (team activity, blockers, an institutional-memory RAG search) — every other briefing consumer is unchanged.
-
 ## [0.18.0] - 2026-07-04
 
 ### Added
@@ -31,6 +27,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **Release-manager read clone no longer walks the entire history.** The release-readiness read clone was tagless, so the diff-since-last-tag walk saw no tags and classified all history as unreleased (the observed 729-commit blow-up). The clone now carries tags, so the semver bump and CHANGELOG-completeness checks assess only the real delta.
 - **Panel RAG-health errors are labelled by subsystem.** Health error lines in the panel now name which subsystem failed instead of rendering an unattributed error.
+- **The CEO's brand_voice/north_star charter now reaches the board exploration spawns.** `board_triage`'s idle branch (hit whenever the Product Owner's roadmap-exploration or Head of Marketing's feature-spotlight-exploration one-shot spawn finds no strategic root to review — their directly-assigned exploration task is never itself a "strategic root awaiting PM review") built its briefing with `full=False`, so `company_goals` — and therefore `brand_voice` — never reached either spawn despite both prompts claiming the charter is "already in your briefing." A new narrow `include_company_goals` opt-in on `_briefing_for` (`_resolve_company_goals`) fetches just the cheap company_goals singleton on that path, without pulling in `full`'s other heavy sections (team activity, blockers, an institutional-memory RAG search) — every other briefing consumer is unchanged.
 
 ### Security
 
