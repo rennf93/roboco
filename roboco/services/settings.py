@@ -65,6 +65,9 @@ FEATURE_FLAGS: tuple[tuple[str, str], ...] = (
     ("x_engine_enabled", "X (Twitter) engine"),
     ("x_replies_enabled", "X mention replies (needs a paid X API tier)"),
     ("x_feature_spotlight_enabled", "X feature-spotlight marketing"),
+    ("video_engine_enabled", "Video generation engine"),
+    ("video_on_release", "Video on release"),
+    ("video_on_spotlight", "Video on feature spotlight"),
     ("roadmap_engine_enabled", "Board roadmap engine"),
     ("fable_mode_enabled", "Fable-mode doctrine + hooks"),
 )

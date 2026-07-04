@@ -75,6 +75,7 @@ from roboco.services.task import (
     RELEASE_MANAGER_SOURCE,
     ROADMAP_SOURCE,
     SELF_HEAL_SOURCE,
+    VIDEO_HELD_SOURCES,
     X_FEATURE_EXPLORATION_SOURCE,
     X_SOURCES,
 )
@@ -700,12 +701,13 @@ class _SpawnAbortedDuringShutdown(Exception):
 def _is_held_ceo_source(task: dict[str, Any]) -> bool:
     """True for sources the PM dispatcher must never route as delivery work.
 
-    External-PR review (owned by the PR dispatcher), release proposals and X
-    posts/replies (CEO-HELD, acted on only by their own routes), and a
-    self-heal fix task until the CEO's approve_and_start flips
-    ``confirmed_by_human``. Module-level (not a method) so the dispatcher's
-    unit tests, which drive it with a wholesale-mocked ``self``, exercise the
-    real skip logic rather than an auto-mocked stub.
+    External-PR review (owned by the PR dispatcher), release proposals, X
+    posts/replies, and video-post drafts (all CEO-HELD, acted on only by
+    their own routes), and a self-heal fix task until the CEO's
+    approve_and_start flips ``confirmed_by_human``. Module-level (not a
+    method) so the dispatcher's unit tests, which drive it with a
+    wholesale-mocked ``self``, exercise the real skip logic rather than an
+    auto-mocked stub.
     """
     source = task.get("source")
     if source in PR_REVIEW_SOURCES:
@@ -713,6 +715,8 @@ def _is_held_ceo_source(task: dict[str, Any]) -> bool:
     if source == RELEASE_MANAGER_SOURCE:
         return True
     if source in X_SOURCES:
+        return True
+    if source in VIDEO_HELD_SOURCES:
         return True
     return source == SELF_HEAL_SOURCE and not task.get("confirmed_by_human")
 
@@ -11175,6 +11179,11 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
                 continue
             # X posts/replies are CEO-gated artifacts, never dev work.
             if task.get("source") in X_SOURCES:
+                continue
+            # Video-post drafts are CEO-gated artifacts, never dev work. The
+            # video-authoring source is NOT in VIDEO_HELD_SOURCES, so it falls
+            # through and dispatches like any other pre-assigned code task.
+            if task.get("source") in VIDEO_HELD_SOURCES:
                 continue
             # A board roadmap exploration cycle is Board work (the PO's
             # one-shot dispatch owns it via _dispatch_pm_work) — never dev work.

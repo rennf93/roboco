@@ -885,6 +885,55 @@ class Settings(BaseSettings):
         description="Seconds between feature-spotlight exploration cycles.",
     )
 
+    # Video generation (Remotion) — a UX/UI dev authors a bespoke motion-video
+    # composition per release/spotlight/on-demand trigger through the normal
+    # delivery lifecycle; a later render pass renders it to MP4 and holds the
+    # clip as a CEO-approval draft (mirrors the X engine's held-draft shape).
+    # Default-off; even when on, distribution requires an explicit per-clip
+    # CEO approval — nothing auto-posts.
+    video_engine_enabled: bool = Field(
+        default=False,
+        description=(
+            "Master switch for the video-generation engine. OFF by default; "
+            "when off no video-authoring task is ever opened. Even when on, "
+            "distribution requires an explicit per-clip CEO approval — "
+            "nothing auto-posts."
+        ),
+    )
+    video_on_release: bool = Field(
+        default=False,
+        description=(
+            "Sub-switch: open a video-authoring task when a release publishes. "
+            "OFF by default even with video_engine_enabled on."
+        ),
+    )
+    video_on_spotlight: bool = Field(
+        default=False,
+        description=(
+            "Sub-switch: open a video-authoring task when the CEO approves a "
+            "feature-spotlight draft that requests one. OFF by default even "
+            "with video_engine_enabled on."
+        ),
+    )
+    video_max_open_posts: int = Field(
+        default=5,
+        ge=1,
+        description=(
+            "Rolling cap on concurrently-open video tasks (authoring plus held "
+            "post drafts combined); the engine opens nothing more past it."
+        ),
+    )
+    video_render_timeout_seconds: float = Field(
+        default=600.0,
+        gt=0,
+        description="Deadline for one render pass on the rendering sidecar.",
+    )
+    video_request_timeout_seconds: float = Field(
+        default=30.0,
+        gt=0,
+        description="Per-request timeout for outbound video-engine HTTP calls.",
+    )
+
     # Board roadmap engine — weekly, the Product Owner explores the company's
     # projects and proposes a themed cycle of roadmap items; the CEO approves
     # each item individually into the backlog. Default-off; even when on

@@ -578,6 +578,20 @@ X_FEATURE_SOURCE = "x_feature"
 
 X_SOURCES = (X_POST_SOURCE, X_REPLY_SOURCE, X_FEATURE_SOURCE)
 
+# Source tag for a video-authoring task: the VideoEngine assigns this to a
+# UX/UI dev to build a Remotion composition. Unlike X_SOURCES above it IS
+# dispatched — a normal, pre-assigned delivery task like any other cell code
+# task — so it stays out of every held-source skip bucket.
+VIDEO_SOURCE = "video"
+
+# Source tag for a held video-post draft: mp4s + captions ready for CEO
+# approval. Like release_manager/X_SOURCES this is NEVER dispatched — held
+# for the CEO (confirmed_by_human=False) and acted on only by the video
+# routes + post service.
+VIDEO_POST_SOURCE = "video_post"
+
+VIDEO_HELD_SOURCES = (VIDEO_POST_SOURCE,)
+
 # Source tag for a board roadmap exploration cycle: a PENDING task the roadmap
 # engine opens for the Product Owner to author a themed cycle of roadmap item
 # drafts (the ``propose_roadmap`` content verb). Unlike RELEASE_MANAGER_SOURCE
@@ -1407,6 +1421,20 @@ class TaskService(BaseService):
             select(TaskTable)
             .where(
                 TaskTable.source.in_(X_SOURCES),
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_video_posts(self) -> list[TaskTable]:
+        """Non-terminal video tasks (authoring + held draft) — the open-cap +
+        dedup basis for VideoEngine. Ordered oldest-first so the queue reads
+        chronologically."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source.in_((VIDEO_SOURCE, *VIDEO_HELD_SOURCES)),
                 TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
             )
             .order_by(TaskTable.created_at)
@@ -7713,7 +7741,10 @@ class TaskService(BaseService):
         The same hold covers every ``X_SOURCES`` member (``x_post``/``x_reply``/
         ``x_feature``) — CEO-gated X drafts owned by the Secretary, who has no
         ``give_me_work`` verb, but held here too for the same belt-and-suspenders
-        reason.
+        reason. ``VIDEO_HELD_SOURCES`` (``video_post``) gets the identical
+        treatment; the video-authoring source (``video``) is NOT held — it is
+        pre-assigned to a ux-dev and must still be offered like any other
+        delegated code task.
 
         Ordered by sequence asc, then priority asc, then created_at asc so
         earlier-sequence tasks win.
@@ -7724,7 +7755,9 @@ class TaskService(BaseService):
                 TaskTable.assigned_to == agent_id,
                 TaskTable.status == TaskStatus.PENDING,
                 or_(
-                    TaskTable.source.notin_((SELF_HEAL_SOURCE, *X_SOURCES)),
+                    TaskTable.source.notin_(
+                        (SELF_HEAL_SOURCE, *X_SOURCES, *VIDEO_HELD_SOURCES)
+                    ),
                     TaskTable.confirmed_by_human.is_(True),
                 ),
             )

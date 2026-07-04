@@ -42,6 +42,7 @@ X_POSTED_TWEET_ID = "x_posted_tweet_id"
 X_FEATURE_REF = "x_feature_ref"
 X_SEEN_FEATURES = "x_seen_features"
 ROADMAP_CYCLE = "roadmap_cycle"
+VIDEO_DRAFT = "video_draft"
 
 
 def get_marker(task: HasMarkers, key: str, default: Any = None) -> Any:
@@ -220,6 +221,23 @@ def get_roadmap_cycle(task: HasMarkers) -> dict[str, Any] | None:
 
 def set_roadmap_cycle(task: HasMarkers, payload: dict[str, Any]) -> None:
     set_marker(task, ROADMAP_CYCLE, payload)
+
+
+# --- video draft ------------------------------------------------------------
+# The video engine's working payload, carried on both the UX/UI authoring task
+# (source=video) and the held post draft it later produces (source=video_post):
+# {occasion, script, composition_id, input_props, mp4_paths, x_caption,
+# tiktok_caption, platforms, render_status}. Set once at authoring-open time
+# and extended (not replaced) once rendering fills in the mp4/caption fields.
+
+
+def get_video_draft(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, VIDEO_DRAFT)
+    return val if isinstance(val, dict) else None
+
+
+def set_video_draft(task: HasMarkers, payload: dict[str, Any]) -> None:
+    set_marker(task, VIDEO_DRAFT, payload)
 
 
 # --- external PR head ------------------------------------------------------ #
