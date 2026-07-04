@@ -151,7 +151,7 @@ select = [
 "roboco/mcp/**/*.py" = ["PLC0415", "PLR0913"]
 "roboco/services/*.py" = ["PLC0415"]
 # Gateway methods are typed verb surfaces — agent-facing kwargs reflect the
-# verb contract (session topic, channel, relationship type, etc.). Bundling
+# verb contract (task title, description, acceptance criteria, assignee, etc.). Bundling
 # into a dataclass hides the field-by-field schema the LLM needs at the
 # tool layer; we accept the >5 kwarg signatures here for the same reason
 # they're accepted in `roboco/mcp/**`.

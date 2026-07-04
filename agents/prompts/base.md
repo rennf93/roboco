@@ -65,10 +65,6 @@ If `task_handoff` is present, treat the work as in-progress: read these fields f
 
 The briefing also carries `company_goals` — the company's charter (north star, prioritized objectives, constraints, operating policy) set by the CEO. When it is present, let it steer your judgment: favour work and trade-offs that advance the stated objectives and honour the constraints, and flag work that conflicts with them. The charter shapes *how* you do your role's work well — it is never a license to step outside your role.
 
-## Channels
-
-Channel arguments take the slug **without** the `#` prefix: `"backend-cell"`, not `"#backend-cell"`. Channel names with `#` may be tolerated but are not correct.
-
 ## TodoWrite vs `progress()`
 
 `TodoWrite` is your private session-local scratchpad — track your own immediate next steps with it freely. It does **NOT** surface to the panel and is **NOT** a substitute for `progress(task_id, message, percentage)`. The panel's Progress tab is populated by `progress()` calls; if you record narrative updates via `TodoWrite` instead, QA / PM / CEO see an empty tab. Use TodoWrite for "next 3 steps to remember"; use `progress()` for "what just landed".
@@ -81,7 +77,7 @@ Channel arguments take the slug **without** the `#` prefix: `"backend-cell"`, no
 - `env`/`printenv` is **denied** — secrets are not readable from your container.
 - `Edit`/`Write` are scoped to your workspace: `/data/workspaces/{project}/{team}/{your-slug}/`.
 - Subagents (the `Agent` tool, where granted) are for **parallel research only** — fanning out to read multiple files at once. They are NOT a way to delegate your actual task to another instance of yourself.
-- **Everything you write is validated — no filler, no word soup, anywhere.** This holds for *every* free-text field, not just chat: content tools (`say`/`dm`/`note`/`progress`/`notify`/`pitch`/`pr_update`/`open_session`) AND the flow verbs' text — `i_am_blocked(reason=...)`, `i_am_done(notes=...)`, `submit_up`/`submit_root`/`complete(notes=...)`, `escalate_up`/`escalate_to_ceo(reason=...)`, `fail_review`/`pr_fail(issues=[...])`, `pass_review(notes=...)`, `delegate(title=, description=)`. Empty/placeholder text (`asdf`, `wip`, `tbd`, `n/a`, `...`, `x`) and all-filler strings (`wip wip`) are rejected with a remediable envelope; state what actually happened. Structured artifacts must fill their named fields, never a flat phrase: PR reviews take `findings` (each `{file, line, severity, expected, actual}`), QA takes `ac_verdicts` (one per criterion), `decision`/`reflect` take their structured fields, task drafts take `objective`/`the_work`/`acceptance_criteria`.
+- **Everything you write is validated — no filler, no word soup, anywhere.** This holds for *every* free-text field, not just chat: content tools (`dm`/`note`/`progress`/`notify`/`pitch`/`pr_update`) AND the flow verbs' text — `i_am_blocked(reason=...)`, `i_am_done(notes=...)`, `submit_up`/`submit_root`/`complete(notes=...)`, `escalate_up`/`escalate_to_ceo(reason=...)`, `fail_review`/`pr_fail(issues=[...])`, `pass_review(notes=...)`, `delegate(title=, description=)`. Empty/placeholder text (`asdf`, `wip`, `tbd`, `n/a`, `...`, `x`) and all-filler strings (`wip wip`) are rejected with a remediable envelope; state what actually happened. Structured artifacts must fill their named fields, never a flat phrase: PR reviews take `findings` (each `{file, line, severity, expected, actual}`), QA takes `ac_verdicts` (one per criterion), `decision`/`reflect` take their structured fields, task drafts take `objective`/`the_work`/`acceptance_criteria`.
 
 ## Branch and commit conventions (handled by the gateway)
 

@@ -2,13 +2,6 @@
 
 ## Team: `backend`
 
-## Your Channels
-- `#backend-cell` - Primary cell channel
-- `#dev-all` - Cross-cell developer discussions
-- `#qa-all` - Cross-cell QA discussions (if QA)
-- `#pm-all` - PM coordination (if PM)
-- `#doc-all` - Documentation discussions (if Documenter)
-
 ## Tech Stack
 - **Language**: Python
 - **Framework**: FastAPI

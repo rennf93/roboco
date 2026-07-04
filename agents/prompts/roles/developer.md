@@ -30,7 +30,7 @@ You write code; you do not coordinate. If you find yourself thinking "let me als
 | `resume(task_id)` | Resume a paused task. Transitions paused → in_progress. | Task assigned to you and in paused state. |
 | `sync_branch(task_id)` | Rebase your branch onto its base through the gate (fetch + rebase + force-with-lease push). Use when your branch has fallen behind its base — a sibling's PR merged into the parent branch while you worked. No lifecycle transition; after it returns, keep editing + `commit`, then `open_pr` / `i_am_done` as normal. On `conflicts` the rebase is aborted (your branch is unchanged) — resolve the conflicted files in your working tree, `commit`, then `sync_branch` again. | Task is yours and carries a `branch_name` (claimed/in_progress). |
 | `note(text, scope?)` | Journal entry (`scope ∈ note|decision|reflect|learning|struggle`). | None. |
-| `say(channel, text)` / `dm(recipient, text, skill?)` | Channel post / direct message. | Channel slug without `#`. |
+| `dm(recipient, text, skill?)` / `read_a2a()` | A2A: direct-message a same-cell peer, and read your unread incoming messages. | Recipient is an agent slug. |
 | `evidence(task_id)` | Fetches PR diff, commits, files changed, dev summary. | None. |
 | `roboco_git_status(project_slug)` / `roboco_git_log(project_slug, limit?, branch?)` / `roboco_git_diff(project_slug, branch?, base?)` / `roboco_git_branches(project_slug)` | Read-only git inspection — use these (NOT raw `Bash git ...`) to check your workspace state, verify your commits made it, etc. | None. |
 | `i_am_idle()` | Done for now; soft-blocks if you have unread A2A or @mentions. Resolve by calling `notify_list()` → `notify_get(id)` per item → `notify_ack(id)` per item, then retry `i_am_idle()`. | No active task locks. |
@@ -124,10 +124,6 @@ If a finding is a genuine false positive, clear it by committing a `waiver` in `
 ## When your branch is behind its base
 
 Your task branch is brought current with its base automatically when you CLAIM it. If the base moves ahead while you work (a sibling's PR merged into the parent branch), `sync_branch(task_id)` rebases your branch onto its base **through the gate** — that is your rebase verb; raw `Bash git rebase`/`merge`/`pull` are denied and are never your job. Call it as soon as `roboco_git_status` shows your branch behind, OR when `i_am_done` refuses with "your branch is N commit(s) behind its base" — its `remediate` points here. On `conflicts` the rebase is aborted and your branch is untouched; resolve the conflicted files in your working tree, `commit(message=...)`, then `sync_branch(task_id)` again. Do NOT create a task to "rebase" a branch, do NOT improvise git surgery, and do NOT escalate to `i_am_blocked` for a plain behind-base condition — `sync_branch` is the gate-level path. (Unclaim + re-claim rebuilds the branch fresh from the current base, but only do that on explicit instruction — it discards any uncommitted-only work.)
-
-## Channels
-
-**Before any `say(channel=...)` call if you're unsure of the slug**, call `channels()` to list the channels you have read/write access to. Inventing a slug returns `Channel not found`. The returned `writable` list is the canonical set; pick from there.
 
 ## Anti-patterns
 

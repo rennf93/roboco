@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **A2A is now a delivered inbox, not a write-only log.** The new `read_a2a` verb returns an agent's unread message bodies (atomic, own-sends excluded) and is granted to every delivery role, and the claim briefing's `list_unread_a2a` carries an incoming-only `last_message_preview` (single correlated query, no N+1). A peer's `dm` now actually reaches the recipient's reasoning instead of sitting unread — the gap that motivated retiring the channel/session backbone in the first place.
+
+### Changed
+
+- **A2A + Notifications are the two comms primitives.** With the channel/session backbone gone, coordination rides the task state machine + task details, direct peer contact rides A2A (`dm` + `read_a2a`, same-cell), and formal ack-required signals ride Notifications. The Secretary's company-wide announce reroutes from the retired broadcast channel to a Notification fanned to every agent's inbox. Docs, panel, and CLAUDE.md are rewritten A2A-primary.
+
+### Removed
+
+- **The channels / groups / discussion-sessions / messages subsystem is retired.** Direction was validated first — agents barely read channel/session messages, and A2A bodies never reached the recipient's reasoning — so the whole backbone is gone. Removed the `say`, `open_session`, `link_session`, and `channels()` verbs; `MessagingService`, the five tables + models, and the `ChannelType` → `agents_config` → permissions → `stream.py` policy cascade; the `CONVERSATIONS` RAG index and channel seeding; the channel/session API routes + the `/ws/channels` / `/ws/sessions` WebSocket streams; and the panel's Communications surface (channel/session views + the auditor channel-feed + a dead communication-metric route). Migration 060 drops the five tables (FK-safe order), the `journal_entries.session_id` column, `chunks_conversations`, and the four enum types — verified 001 → 060 against a real Postgres, single head. `ExtractedMessage` (the extraction pipeline) is retained and confirmed never persisted to a dropped table.
+
+### Fixed
+
+- **Release-manager read clone no longer walks the entire history.** The release-readiness read clone was tagless, so the diff-since-last-tag walk saw no tags and classified all history as unreleased (the observed 729-commit blow-up). The clone now carries tags, so the semver bump and CHANGELOG-completeness checks assess only the real delta.
+- **Panel RAG-health errors are labelled by subsystem.** Health error lines in the panel now name which subsystem failed instead of rendering an unattributed error.
+
 ## [0.17.0] - 2026-07-03
 
 ### Added

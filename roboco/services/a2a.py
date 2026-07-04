@@ -1835,8 +1835,8 @@ class A2AService:
     ) -> None:
         """Best-effort publish of A2A_MESSAGE_SENT for the operator live view.
 
-        Mirrors MessagingService.send_message's publish pattern: a bus outage
-        is logged and never rolls back the already-persisted message.
+        A bus outage is logged and never rolls back the already-persisted
+        message.
         """
         try:
             bus = get_event_bus()

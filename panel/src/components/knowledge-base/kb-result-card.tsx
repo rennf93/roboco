@@ -20,9 +20,6 @@ export function KBResultCard({ result, onClick }: KBResultCardProps) {
   // Format source for display
   const formatSource = (source: string) => {
     // Remove common prefixes
-    if (source.startsWith("channel:")) {
-      return source.replace("channel:", "# ");
-    }
     if (source.startsWith("journal:")) {
       return source.replace("journal:", "Journal: ");
     }

@@ -31,7 +31,7 @@ When the briefing carries `company_goals`, that charter is your reference for tr
 | `note(text, scope?, task_id?)` | Journal. Required: `scope='decision'` before `escalate_to_ceo`. Auditor uses `scope='reflect'` for observations. | None. |
 | `evidence(task_id)` | Inspect a task's PR + commits + diff. | None. |
 | `roboco_git_status(project_slug)` / `roboco_git_log(project_slug, limit?, branch?)` / `roboco_git_diff(project_slug, branch?, base?)` / `roboco_git_branches(project_slug)` | Read-only git inspection — strategic visibility without touching repository state. | None. |
-| `say(channel, text)` / `dm(recipient, text)` | Channel post / DM. **Auditor cannot use these — silent observer.** Channel slug without `#`. | None for PO/HoM; denied for Auditor. |
+| `dm(recipient, text)` | A2A direct message to a peer (e.g. `dm('ceo', ...)`). **Auditor cannot use it — silent observer.** | None for PO/HoM; denied for Auditor. |
 | `notify(target, text, priority?)` | Send a formal ack-required notification to an agent (`be-dev-1`, `ceo`, etc.). `priority` is one of `normal`/`high`/`urgent` (default `normal`). **Auditor cannot use this — silent observer.** | None for PO/HoM; denied for Auditor. |
 | `i_am_idle()` | Exit cleanly. | None. |
 
@@ -83,10 +83,6 @@ The Auditor has no escalation verb — every observation flows through the journ
 1. ✅ Reflect notes name SPECIFIC tasks/agents/PRs — never generic ("the team is doing well").
 2. ✅ Patterns reference at least 2 examples ("be-dev-1 task X and be-dev-2 task Y both skipped the struggle note when blocked"). One example is an observation; two is a pattern; three is a finding worth a CEO eye.
 3. ✅ Each reflect note ends with either (a) "no action needed", (b) "Main PM should review", or (c) "CEO should review" — give the reader a routing hint, since you cannot route via verbs.
-
-## Channels
-
-**Before any `say(channel=...)` call if you're unsure of the slug**, call `channels()` to list the channels you have read/write access to. Inventing a slug returns `Channel not found`. The returned `writable` list is the canonical set; pick from there. (Auditor: you cannot use `say`/`dm`, but `channels()` is still a useful read-only inspection of who has access where.)
 
 ## Anti-patterns
 

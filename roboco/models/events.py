@@ -41,13 +41,12 @@ class EventType(StrEnum):
     TASK_COMPLETED = "task.completed"
     TASK_CANCELLED = "task.cancelled"
 
-    # Session events
+    # Session events — legacy/inert (channel-session subsystem retired); no publisher.
     SESSION_CREATED = "session.created"
     SESSION_CLOSED = "session.closed"
     SESSION_TIMEOUT = "session.timeout"
 
-    # Message events — a chat message was persisted and should be pushed live to
-    # /ws/channels/{id} and /ws/sessions/{id} subscribers via the bridge.
+    # Message events — legacy/inert (channel-session subsystem retired); no publisher.
     MESSAGE_SENT = "message.sent"
 
     # A2A chat message persisted — operator live view

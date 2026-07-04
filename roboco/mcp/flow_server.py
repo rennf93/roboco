@@ -98,7 +98,6 @@ _DICT_ERROR_CODE_MAP: dict[str, str | None] = {
     "TASK_LIFECYCLE_ERROR": "invalid_state",
     "TASK_OWNERSHIP_ERROR": "invalid_state",
     "SERVICE_ERROR": "invalid_state",
-    "SESSION_CLOSED": "invalid_state",
     "FETCH_FAILED": "invalid_state",
     "LIST_FAILED": "invalid_state",
     "READ_FAILED": "invalid_state",

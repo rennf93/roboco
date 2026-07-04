@@ -360,8 +360,6 @@ export interface ModelConfig {
 
 export interface AgentPermissions {
   can_notify: boolean;
-  channels_read: string[];
-  channels_write: string[];
 }
 
 export interface AgentMetrics {

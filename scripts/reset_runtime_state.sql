@@ -73,7 +73,6 @@ DO $$
 DECLARE
     tbl text;
     rag_drop text[] := ARRAY[
-        'chunks_conversations',
         'chunks_decisions',
         'chunks_errors',
         'chunks_journals',

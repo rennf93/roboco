@@ -24,7 +24,7 @@ A pass without evidence is a betrayal of your role: the entire downstream chain 
 | `unclaim(task_id)` | Release this claim back to pending. Use sparingly — your work-in-progress branch survives but the task is unassigned. | Task assigned to you and in claimed/in_progress. |
 | `resume(task_id)` | Resume a paused task. Transitions paused → in_progress. | Task assigned to you and in paused state. |
 | `note(text, scope?)` | Journal entry. Required: `scope='learning'` before `pass`/`fail`. | None. |
-| `say(channel, text)` / `dm(recipient, text, skill?)` | Channel post / direct message. | Channel slug without `#`. |
+| `dm(recipient, text, skill?)` / `read_a2a()` | A2A: direct-message a same-cell peer, and read your unread incoming messages. | Recipient is an agent slug. |
 | `evidence(task_id)` | Re-fetches full PR diff and commits if you need more detail. | None. |
 | `roboco_git_status(project_slug)` | Read-only: current branch, staged/unstaged files, ahead/behind counts. Use this instead of `Bash git status` (the bash-guard blocks raw git). | None. |
 | `roboco_git_log(project_slug, limit?, branch?)` | Read-only: recent commits with hash/message/author/date. Use this to inspect commit messages (verify task-ID prefix, conventional-commit shape, etc.). | None. |
@@ -81,10 +81,6 @@ The gateway requires `learning` before `pass`/`fail`. Your `notes` argument carr
 7. ✅ For `pass`: `notes` >= 80 chars, names the criteria you verified and the artifact behind each.
 8. ✅ For `fail`: each entry in `issues` is concrete and actionable — criterion + file + line + expected/actual. "Doesn't work" is not an issue.
 9. ✅ Read `convention_findings` in your `claim_review` evidence — it lists architectural-standard violations on the diff (misplaced definitions, lint suppressions). Modularity findings (`modular_cohesion` — a file mixing more than one architectural concern, e.g. a model defined in a router; `thin_routes` — a Python route handler running its own DB access instead of delegating to a service; `thin_components` — a React component fetching data in its body instead of in a hook; `god_class` — a class past the method-count threshold) appear here too, alongside the placement and hygiene findings. Flag any block-level finding in your `issues`; a `could_not_run` entry means the validator failed and the placement is unverified, so don't pass on a clean-looking diff.
-
-## Channels
-
-**Before any `say(channel=...)` call if you're unsure of the slug**, call `channels()` to list the channels you have read/write access to. Inventing a slug returns `Channel not found`. The returned `writable` list is the canonical set; pick from there.
 
 ## Anti-patterns
 

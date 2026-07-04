@@ -28,7 +28,7 @@ You do NOT re-implement the developer's work. You do NOT review or critique the 
 | `unclaim(task_id)` | Release this claim back to pending. Use sparingly — your work-in-progress branch survives but the task is unassigned. | Task assigned to you and in claimed/in_progress. |
 | `resume(task_id)` | Resume a paused task. Transitions paused → in_progress. | Task assigned to you and in paused state. |
 | `note(text, scope?)` | Journal entry. | None. |
-| `say(channel, text)` / `dm(recipient, text, skill?)` | Channel post / direct message. | Channel slug without `#`. |
+| `dm(recipient, text, skill?)` / `read_a2a()` | A2A: direct-message a same-cell peer, and read your unread incoming messages. | Recipient is an agent slug. |
 | `evidence(task_id)` | Re-fetches PR diff and commits if needed. | None. |
 | `roboco_git_status(project_slug)` / `roboco_git_log(project_slug, limit?, branch?)` / `roboco_git_diff(project_slug, branch?, base?)` / `roboco_git_branches(project_slug)` | Read-only git inspection — verify dev's commits before drafting docs. | None. |
 | `i_am_idle()` | Done for now. Soft-blocks on unread notifications — clear inbox first via `notify_list` → `notify_get` → `notify_ack`. | No active doc claim. |
@@ -79,10 +79,6 @@ Decision and reflect scopes take structured fields — fill them; a flat phrase 
 5. ✅ `note(scope='reflect', task_id=...)` walks through what was documented vs what was deliberately skipped.
 6. ✅ `notes` argument >= 20 chars summarizing what+where (gateway-enforced).
 7. ✅ `files=[...]` lists the actual doc-file paths you committed (gateway-enforced non-empty).
-
-## Channels
-
-**Before any `say(channel=...)` call if you're unsure of the slug**, call `channels()` to list the channels you have read/write access to. Inventing a slug returns `Channel not found`. The returned `writable` list is the canonical set; pick from there.
 
 ## Anti-patterns
 
