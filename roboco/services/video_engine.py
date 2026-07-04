@@ -169,43 +169,59 @@ class VideoEngine(BaseService):
                 occasion=occasion,
             )
             return None
+        from sqlalchemy.exc import SQLAlchemyError
+
         assignee = self._select_ux_dev(open_tasks)
-        task = await task_svc.create(
-            TaskCreateRequest(
-                title=f"Video: {occasion}",
-                description=brief,
-                acceptance_criteria=list(_AUTHORING_ACCEPTANCE_CRITERIA),
-                team=Team.UX_UI,
-                assigned_to=assignee,
-                created_by=_foundation.AGENTS["system"].uuid,
-                task_type=TaskType.CODE,
-                nature=TaskNature.TECHNICAL,
-                # LOW keeps it atomic: a single composition needs no cell-PM
-                # decomposition, and a medium/high root task assigned to a dev
-                # is auto-blocked for subtasks it will never have.
-                estimated_complexity=Complexity.LOW,
-                project_id=cast("UUID", project.id),
-                status=TaskStatus.PENDING,
-                source=VIDEO_SOURCE,
-                confirmed_by_human=True,  # normal delivery task, not CEO-held
+        # Savepoint-isolate the insert: a DBAPI error here (FK, deadlock,
+        # dropped connection) must roll back ONLY this insert, never poison the
+        # shared session — whose next commit is the caller's release-publish
+        # finalize / request boundary, which must not inherit an error state.
+        try:
+            async with self.session.begin_nested():
+                task = await task_svc.create(
+                    TaskCreateRequest(
+                        title=f"Video: {occasion}",
+                        description=brief,
+                        acceptance_criteria=list(_AUTHORING_ACCEPTANCE_CRITERIA),
+                        team=Team.UX_UI,
+                        assigned_to=assignee,
+                        created_by=_foundation.AGENTS["system"].uuid,
+                        task_type=TaskType.CODE,
+                        nature=TaskNature.TECHNICAL,
+                        # LOW keeps it atomic: a single composition needs no
+                        # cell-PM decomposition, and a medium/high root task
+                        # assigned to a dev is auto-blocked for subtasks it
+                        # will never have.
+                        estimated_complexity=Complexity.LOW,
+                        project_id=cast("UUID", project.id),
+                        status=TaskStatus.PENDING,
+                        source=VIDEO_SOURCE,
+                        confirmed_by_human=True,  # normal delivery, not CEO-held
+                    )
+                )
+                markers.set_video_draft(
+                    task,
+                    {
+                        "occasion": occasion,
+                        "script": script,
+                        "platforms": platforms,
+                        "brief": brief,
+                    },
+                )
+                await self.session.flush()
+            self.log.info(
+                "video-engine: authoring task opened",
+                occasion=occasion,
+                assignee=str(assignee),
             )
-        )
-        markers.set_video_draft(
-            task,
-            {
-                "occasion": occasion,
-                "script": script,
-                "platforms": platforms,
-                "brief": brief,
-            },
-        )
-        await self.session.flush()
-        self.log.info(
-            "video-engine: authoring task opened",
-            occasion=occasion,
-            assignee=str(assignee),
-        )
-        return task
+            return task
+        except SQLAlchemyError as exc:
+            self.log.warning(
+                "video-engine: authoring task insert failed",
+                occasion=occasion,
+                error=str(exc),
+            )
+            return None
 
     # ---- release trigger (event-driven hook) -------------------------------
 
@@ -262,35 +278,39 @@ class VideoEngine(BaseService):
         task_svc = get_task_service(self.session)
         source_draft = markers.get_video_draft(source_task) or {}
         occasion = source_draft.get("occasion") or source_task.title
-        task = await task_svc.create(
-            TaskCreateRequest(
-                title=f"Video post: {occasion}",
-                description=source_draft.get("script") or source_task.description,
-                acceptance_criteria=list(_POST_ACCEPTANCE_CRITERIA),
-                team=Team.MAIN_PM,
-                assigned_to=_foundation.AGENTS["secretary-1"].uuid,
-                created_by=_foundation.AGENTS["system"].uuid,
-                task_type=TaskType.ADMINISTRATIVE,
-                nature=TaskNature.NON_TECHNICAL,
-                estimated_complexity=Complexity.LOW,
-                project_id=cast("UUID", source_task.project_id),
-                status=TaskStatus.PENDING,
-                source=VIDEO_POST_SOURCE,
-                confirmed_by_human=False,  # HELD for the CEO; never dispatched
+        # Savepoint-isolate the insert: in the render loop's N-tasks-per-cycle
+        # commit, a DBAPI error on one held draft must roll back only that
+        # insert (the loop then marks the task failed) — not the cycle's work.
+        async with self.session.begin_nested():
+            task = await task_svc.create(
+                TaskCreateRequest(
+                    title=f"Video post: {occasion}",
+                    description=source_draft.get("script") or source_task.description,
+                    acceptance_criteria=list(_POST_ACCEPTANCE_CRITERIA),
+                    team=Team.MAIN_PM,
+                    assigned_to=_foundation.AGENTS["secretary-1"].uuid,
+                    created_by=_foundation.AGENTS["system"].uuid,
+                    task_type=TaskType.ADMINISTRATIVE,
+                    nature=TaskNature.NON_TECHNICAL,
+                    estimated_complexity=Complexity.LOW,
+                    project_id=cast("UUID", source_task.project_id),
+                    status=TaskStatus.PENDING,
+                    source=VIDEO_POST_SOURCE,
+                    confirmed_by_human=False,  # HELD for the CEO; never dispatched
+                )
             )
-        )
-        markers.set_video_draft(
-            task,
-            {
-                **source_draft,
-                "mp4_paths": mp4_paths,
-                "x_caption": captions.get("x", ""),
-                "tiktok_caption": captions.get("tiktok", ""),
-                "platforms": platforms,
-                "render_status": "rendered",
-            },
-        )
-        await self.session.flush()
+            markers.set_video_draft(
+                task,
+                {
+                    **source_draft,
+                    "mp4_paths": mp4_paths,
+                    "x_caption": captions.get("x", ""),
+                    "tiktok_caption": captions.get("tiktok", ""),
+                    "platforms": platforms,
+                    "render_status": "rendered",
+                },
+            )
+            await self.session.flush()
         self.log.info(
             "video-engine: video post drafted (held for CEO)",
             source_task_id=str(source_task.id),

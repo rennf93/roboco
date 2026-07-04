@@ -20,7 +20,7 @@ from roboco.models.base import AgentRole, AgentStatus, Complexity, Team
 from roboco.models.base import TaskStatus as TS
 from roboco.services import video_engine as video_engine_module
 from roboco.services.task import VIDEO_POST_SOURCE, VIDEO_SOURCE, get_task_service
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -212,6 +212,64 @@ async def test_open_video_task_unresolvable_project_opens_nothing(
     )
     assert task is None
     assert await get_task_service(db_session).list_open_video_posts() == []
+
+
+@pytest.mark.asyncio
+async def test_open_video_task_insert_error_returns_none_session_usable(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F042 guard: a real DBAPI error on the authoring insert (assignee FK
+    absent) rolls back ONLY the savepoint and returns None; the shared session
+    stays usable, so a caller's later commit is not poisoned."""
+    if await db_session.get(AgentTable, SYSTEM_UUID) is None:
+        db_session.add(
+            AgentTable(
+                id=SYSTEM_UUID,
+                name="system",
+                slug="system",
+                role=AgentRole.SYSTEM,
+                team=None,
+                status=AgentStatus.ACTIVE,
+                model_config={},
+                system_prompt="x",
+                capabilities=[],
+                permissions={},
+                metrics={},
+            )
+        )
+    # ux-devs deliberately absent -> the assigned_to FK violates at flush.
+    await db_session.execute(
+        delete(AgentTable).where(AgentTable.id.in_([UX_DEV_1_UUID, UX_DEV_2_UUID]))
+    )
+    has_project = (
+        await db_session.execute(select(ProjectTable).where(ProjectTable.slug == SLUG))
+    ).scalar_one_or_none()
+    if has_project is None:
+        db_session.add(
+            ProjectTable(
+                name="RoboCo",
+                slug=SLUG,
+                git_url="https://github.com/x/roboco.git",
+                default_branch="master",
+                protected_branches=["master"],
+                assigned_cell=Team.BACKEND,
+                created_by=SYSTEM_UUID,
+                is_active=True,
+            )
+        )
+    await db_session.flush()
+    _enable(monkeypatch)
+    engine = video_engine_module.VideoEngine(db_session)
+    task = await engine.open_video_task(
+        occasion="fk-fail", script="s", platforms=["x"], brief="b"
+    )
+    assert task is None
+    # Not poisoned: a follow-up statement runs cleanly (this raised
+    # PendingRollbackError before the savepoint fix).
+    check = await db_session.execute(
+        select(ProjectTable).where(ProjectTable.slug == SLUG)
+    )
+    assert check.scalar_one_or_none() is not None
 
 
 # --------------------------------------------------------------------------- #
