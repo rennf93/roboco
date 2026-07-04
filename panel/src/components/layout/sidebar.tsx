@@ -8,7 +8,6 @@ import {
   LayoutDashboard,
   ListTodo,
   Kanban,
-  MessageSquare,
   Bell,
   Activity,
   ChevronLeft,
@@ -50,7 +49,6 @@ export const navItems = [
   { title: "Auditor", href: "/auditor", icon: Shield },
 
   // History
-  { title: "Communications", href: "/communications", icon: MessageSquare },
   { title: "A2A Live", href: "/a2a", icon: Radio },
   { title: "Journals", href: "/journals", icon: BookOpen },
 

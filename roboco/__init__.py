@@ -11,7 +11,6 @@ __version__ = "0.17.0"
 from roboco.config import settings
 from roboco.exceptions import (
     AgentError,
-    ChannelError,
     NotFoundError,
     PermissionDeniedError,
     RobocoError,
@@ -23,7 +22,6 @@ from roboco.logging import LogContext, get_logger, setup_logging
 
 __all__ = [
     "AgentError",
-    "ChannelError",
     "LogContext",
     "NotFoundError",
     "PermissionDeniedError",

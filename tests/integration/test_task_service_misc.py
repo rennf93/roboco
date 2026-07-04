@@ -250,21 +250,6 @@ async def test_activate_without_project_or_product_raises(
 
     monkeypatch.setattr(svc, "get", _stub_get)
 
-    # Stub session.execute to return a session_link so we get past that gate
-    fake_link = MagicMock()
-    fake_result = MagicMock()
-    fake_result.scalar_one_or_none.return_value = fake_link
-
-    db = task_setup["db"]
-    real_execute = db.execute
-
-    async def _exec_stub(stmt: Any, *a: Any, **kw: Any) -> Any:
-        compiled = str(stmt)
-        if "session_tasks" in compiled.lower():
-            return fake_result
-        return await real_execute(stmt, *a, **kw)
-
-    monkeypatch.setattr(db, "execute", _exec_stub)
     with pytest.raises(ValueError, match="no project or product"):
         await svc.activate(fake_task.id, agent_role="cell_pm")
 

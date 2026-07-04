@@ -36,7 +36,6 @@ from roboco.services.gateway.content_actions import ContentActions, ContentActio
 from roboco.services.gateway.evidence_repo import EvidenceRepo
 from roboco.services.git import GitService
 from roboco.services.journal import JournalService
-from roboco.services.messaging import MessagingService
 from roboco.services.notification import NotificationService
 from roboco.services.notification_delivery import NotificationDeliveryService
 from roboco.services.permissions import AgentContext, PermissionService
@@ -571,54 +570,6 @@ def require_cell_access(agent: AgentContext, cell: Team, action: str) -> None:
         )
 
 
-def require_channel_read(
-    channel_name: str,
-) -> Callable[..., Coroutine[Any, Any, None]]:
-    """
-    Dependency factory that requires read access to a channel.
-
-    Usage:
-        @router.get("/channels/{channel_id}/messages")
-        async def get_messages(
-            agent: CurrentAgentContext,
-            _: Annotated[None, Depends(require_channel_read("backend-cell"))],
-        ):
-            ...
-    """
-
-    async def check_permission(
-        agent: CurrentAgentContext,
-        permissions: PermissionServiceDep,
-    ) -> None:
-        if not permissions.can_read_channel(agent, channel_name):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"No read access to channel: {channel_name}",
-            )
-
-    return check_permission
-
-
-def require_channel_write(
-    channel_name: str,
-) -> Callable[..., Coroutine[Any, Any, None]]:
-    """
-    Dependency factory that requires write access to a channel.
-    """
-
-    async def check_permission(
-        agent: CurrentAgentContext,
-        permissions: PermissionServiceDep,
-    ) -> None:
-        if not permissions.can_write_channel(agent, channel_name):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"No write access to channel: {channel_name}",
-            )
-
-    return check_permission
-
-
 def require_notification_permission() -> Callable[..., Coroutine[Any, Any, None]]:
     """
     Dependency that requires the agent can send notifications.
@@ -696,7 +647,6 @@ async def get_choreographer(
             journal=JournalService(db_session),
             audit=get_audit_service(),
             evidence_repo=EvidenceRepo(db_session),
-            messaging=MessagingService(db_session),
             product=ProductService(db_session),
             orchestrator=orch,
             stream_bus=bus,
@@ -712,7 +662,6 @@ async def get_content_actions(
         ContentActionsDeps(
             task=TaskService(db_session),
             git=GitService(db_session),
-            messaging=MessagingService(db_session),
             a2a=A2AService(db_session),
             journal=JournalService(db_session),
             workspace=WorkspaceService(db_session),

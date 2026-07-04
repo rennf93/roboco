@@ -55,7 +55,7 @@ _FULL_MANIFEST = {
         "submit_up",
         "escalate_to_ceo",
     ],
-    "do_tools": ["commit", "note", "say", "dm", "evidence"],
+    "do_tools": ["commit", "note", "dm", "evidence"],
     "read_tools": ["Read", "Glob", "Grep"],
     "write_tools": ["Edit", "Write"],
     "bash_allowed": True,

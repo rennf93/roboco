@@ -1,4 +1,4 @@
-"""PermissionService coverage — RBAC for channels, notifications, tasks, KB.
+"""PermissionService coverage — RBAC for notifications, tasks, KB.
 
 Pure-logic checks driven by ``agents_config`` constants — no DB needed.
 The service is a SingletonService, so we instantiate it directly with
@@ -29,69 +29,6 @@ def svc() -> PermissionService:
 
 def _ctx(role: AgentRole, team: Team | None = None) -> AgentContext:
     return AgentContext(agent_id=uuid4(), role=role, team=team)
-
-
-# ---------------------------------------------------------------------------
-# Channel read access
-# ---------------------------------------------------------------------------
-
-
-def test_auditor_can_read_any_channel(svc: PermissionService) -> None:
-    """AUDITOR has silent read on every channel."""
-    auditor = _ctx(AgentRole.AUDITOR)
-    assert svc.can_read_channel(auditor, "backend-cell")
-    assert svc.can_read_channel(auditor, "main-pm-board")
-    assert svc.can_read_channel(auditor, "any-channel-name")
-
-
-def test_ceo_can_read_any_channel(svc: PermissionService) -> None:
-    ceo = _ctx(AgentRole.CEO)
-    assert svc.can_read_channel(ceo, "backend-cell")
-
-
-def test_main_pm_can_read_any_channel(svc: PermissionService) -> None:
-    main_pm = _ctx(AgentRole.MAIN_PM)
-    assert svc.can_read_channel(main_pm, "backend-cell")
-    assert svc.can_read_channel(main_pm, "frontend-cell")
-
-
-# ---------------------------------------------------------------------------
-# Channel write access
-# ---------------------------------------------------------------------------
-
-
-def test_ceo_can_write_any_channel(svc: PermissionService) -> None:
-    ceo = _ctx(AgentRole.CEO)
-    assert svc.can_write_channel(ceo, "backend-cell")
-
-
-def test_auditor_cannot_write_any_channel(svc: PermissionService) -> None:
-    """Auditor is a silent, read-only observer — it cannot write to channels."""
-    auditor = _ctx(AgentRole.AUDITOR)
-    assert not svc.can_write_channel(auditor, "backend-cell")
-
-
-def test_main_pm_can_write_any_channel(svc: PermissionService) -> None:
-    main_pm = _ctx(AgentRole.MAIN_PM)
-    assert svc.can_write_channel(main_pm, "backend-cell")
-
-
-# ---------------------------------------------------------------------------
-# Channel listing
-# ---------------------------------------------------------------------------
-
-
-def test_get_accessible_channels_for_auditor(svc: PermissionService) -> None:
-    """Auditor sees every configured channel."""
-    auditor = _ctx(AgentRole.AUDITOR)
-    channels = svc.get_accessible_channels(auditor)
-    assert len(channels) > 0
-
-
-def test_get_writable_channels_for_ceo(svc: PermissionService) -> None:
-    ceo = _ctx(AgentRole.CEO)
-    channels = svc.get_writable_channels(ceo)
-    assert len(channels) > 0
 
 
 # ---------------------------------------------------------------------------
@@ -255,50 +192,6 @@ def test_can_notify_cell_pm_to_dev_in_same_team(svc: PermissionService) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Channel bypass edge cases
-# ---------------------------------------------------------------------------
-
-
-def test_can_read_channel_for_main_pm_unknown_bypasses(
-    svc: PermissionService,
-) -> None:
-    """Main PM has bypass — unknown channel returns True (no DB lookup)."""
-    main_pm = _ctx(AgentRole.MAIN_PM)
-    assert svc.can_read_channel(main_pm, "ghost-channel") is True
-
-
-def test_can_write_channel_for_ceo_unknown_bypasses(
-    svc: PermissionService,
-) -> None:
-    """CEO has bypass — unknown channel returns True."""
-    ceo = _ctx(AgentRole.CEO)
-    assert svc.can_write_channel(ceo, "ghost-channel") is True
-
-
-# ---------------------------------------------------------------------------
-# Channel read for non-bypass roles (covers _check_channel_access_for_agent)
-# ---------------------------------------------------------------------------
-
-
-def test_dev_read_unknown_channel_returns_false(svc: PermissionService) -> None:
-    """Unknown channel for non-bypass role → warns + returns False (lines 137-138)."""
-    dev = _ctx(AgentRole.DEVELOPER, team=Team.BACKEND)
-    assert svc.can_read_channel(dev, "ghost-channel-x") is False
-
-
-def test_dev_write_unknown_channel_returns_false(svc: PermissionService) -> None:
-    """Unknown channel for non-bypass role on write → False."""
-    dev = _ctx(AgentRole.DEVELOPER, team=Team.BACKEND)
-    assert svc.can_write_channel(dev, "ghost-channel-y") is False
-
-
-def test_dev_can_read_own_cell_channel(svc: PermissionService) -> None:
-    """Developer in backend can read backend-cell (regular role-based access)."""
-    dev = _ctx(AgentRole.DEVELOPER, team=Team.BACKEND)
-    assert svc.can_read_channel(dev, "backend-cell") is True
-
-
-# ---------------------------------------------------------------------------
 # can_notify branches
 # ---------------------------------------------------------------------------
 
@@ -338,16 +231,6 @@ def test_view_own_falls_back_to_view_all_for_ceo(svc: PermissionService) -> None
     """CEO has VIEW_ALL but not VIEW_OWN — VIEW_OWN check falls back to True."""
     ceo = _ctx(AgentRole.CEO)
     assert svc.can_perform_task_action(ceo, TaskAction.VIEW_OWN, Team.BACKEND) is True
-
-
-def test_check_channel_access_silent_observer_grants_read(
-    svc: PermissionService,
-) -> None:
-    """Line 151: agent slug in silent list grants read access via direct call."""
-    auditor = _ctx(AgentRole.AUDITOR, team=Team.BOARD)
-    # _check_channel_access_for_agent bypasses the auditor short-circuit at
-    # can_read_channel and exercises the silent-list match (line 150-151).
-    assert svc._check_channel_access_for_agent(auditor, "backend-cell", "read") is True
 
 
 def test_can_notify_unknown_scope_returns_false(svc: PermissionService) -> None:

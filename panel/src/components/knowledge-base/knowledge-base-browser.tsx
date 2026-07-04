@@ -456,13 +456,22 @@ function KnowledgeBaseBrowserContent() {
                         <div>LLM: {health.llm_status}</div>
                         <div>Vector: {health.vector_store_status}</div>
                       </div>
-                      {(["llm_error", "embedding_error", "vector_store_error"] as const)
-                        .filter((k) => typeof health.details?.[k] === "string")
-                        .map((k) => (
+                      {(
+                        [
+                          ["llm_error", "LLM"],
+                          ["embedding_error", "Embedding"],
+                          ["vector_store_error", "Vector store"],
+                        ] as const
+                      )
+                        .filter(
+                          ([k]) => typeof health.details?.[k] === "string",
+                        )
+                        .map(([k, label]) => (
                           <p
                             key={k}
                             className="text-xs text-red-600 dark:text-red-400 break-words"
                           >
+                            <span className="font-medium">{label}:</span>{" "}
                             {health.details[k] as string}
                           </p>
                         ))}

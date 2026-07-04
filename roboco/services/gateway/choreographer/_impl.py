@@ -221,10 +221,6 @@ class ChoreographerDeps:
     journal: Any
     audit: Any
     evidence_repo: Any
-    # messaging is optional so existing callsites + tests that
-    # don't exercise session propagation don't have to plumb it in. The
-    # delegate() path uses it to thread parent sessions onto new subtasks.
-    messaging: Any = None
     # Per-cell project routing for the delegate verb. Optional so existing
     # callsites / tests that don't exercise Product routing don't have to plumb
     # it in; when None, delegate falls back to parent-project inheritance.
@@ -385,10 +381,6 @@ class Choreographer:
     @property
     def evidence_repo(self) -> Any:
         return self._deps.evidence_repo
-
-    @property
-    def messaging(self) -> Any:
-        return self._deps.messaging
 
     @property
     def product(self) -> Any:
@@ -5513,18 +5505,6 @@ class Choreographer:
             Team.UX_UI.value,
         ):
             await self.task.wire_by_osmosis_edge(new_task.id)
-        # Thread the parent's existing session links onto the
-        # new subtask so the assigned agent (dev/qa/doc) lands in the
-        # group chat the PM has already been talking in. Pre-gateway
-        # parity — sessions were wired to the whole tree at creation
-        # time; the gateway path created subtasks one-by-one and forgot
-        # this step. Idempotent on re-runs; no-op when no parent session.
-        if self.messaging is not None:
-            await self.messaging.propagate_sessions_to_subtask(
-                parent_task_id=parent_task_id,
-                subtask_id=new_task.id,
-                added_by=pm_agent_id,
-            )
         return new_task
 
     @staticmethod

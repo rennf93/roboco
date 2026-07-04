@@ -141,7 +141,10 @@ async def test_unread_a2a_maps_other_agent_and_unread_count() -> None:
         topic="rework",
         task_id=None,
     )
-    out = await _repo_with_rows([conv], scalar="be-pm").list_unread_a2a(uuid4())
+    # list_unread_a2a now selects (conversation, last_incoming_preview) tuples.
+    out = await _repo_with_rows(
+        [(conv, "please redo the auth check")], scalar="be-pm"
+    ).list_unread_a2a(uuid4())
     assert out == [
         {
             "conversation_id": str(cid),
@@ -149,6 +152,7 @@ async def test_unread_a2a_maps_other_agent_and_unread_count() -> None:
             "unread": 3,
             "topic": "rework",
             "task_id": None,
+            "last_message_preview": "please redo the auth check",
         }
     ]
 

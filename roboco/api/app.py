@@ -18,17 +18,14 @@ from roboco.api.middleware import setup_middleware
 from roboco.api.routes.a2a import router as a2a_router
 from roboco.api.routes.a2a import wellknown_router as a2a_wellknown_router
 from roboco.api.routes.agents import router as agents_router
-from roboco.api.routes.channels import router as channels_router
 from roboco.api.routes.cockpit import router as cockpit_router
 from roboco.api.routes.company_goals import router as company_goals_router
 from roboco.api.routes.dashboard import router as dashboard_router
 from roboco.api.routes.docs import router as docs_router
 from roboco.api.routes.git import router as git_router
-from roboco.api.routes.groups import router as groups_router
 from roboco.api.routes.health import router as health_router
 from roboco.api.routes.journals import router as journals_router
 from roboco.api.routes.kanban import router as kanban_router
-from roboco.api.routes.messages import router as messages_router
 from roboco.api.routes.notifications import router as notifications_router
 from roboco.api.routes.optimal import router as optimal_router
 from roboco.api.routes.orchestrator import router as orchestrator_router
@@ -43,7 +40,6 @@ from roboco.api.routes.research import router as research_router
 from roboco.api.routes.roadmap import router as roadmap_router
 from roboco.api.routes.secretary import router as secretary_router
 from roboco.api.routes.secretary_live import router as secretary_live_router
-from roboco.api.routes.sessions import router as sessions_router
 from roboco.api.routes.settings import router as settings_router
 from roboco.api.routes.stream import router as stream_router
 from roboco.api.routes.system import router as system_router
@@ -275,24 +271,6 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(
-        channels_router,
-        prefix=f"{api_prefix}/channels",
-        tags=["Channels"],
-    )
-
-    app.include_router(
-        groups_router,
-        prefix=f"{api_prefix}/groups",
-        tags=["Groups"],
-    )
-
-    app.include_router(
-        sessions_router,
-        prefix=f"{api_prefix}/sessions",
-        tags=["Sessions"],
-    )
-
-    app.include_router(
         settings_router,
         prefix=f"{api_prefix}/settings",
         tags=["Settings"],
@@ -302,12 +280,6 @@ def create_app() -> FastAPI:
         company_goals_router,
         prefix=f"{api_prefix}/company-goals",
         tags=["Company"],
-    )
-
-    app.include_router(
-        messages_router,
-        prefix=f"{api_prefix}/messages",
-        tags=["Messages"],
     )
 
     app.include_router(

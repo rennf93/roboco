@@ -16,7 +16,6 @@ class IndexType(StrEnum):
     # Existing indexes
     CODE = "code"
     DOCUMENTATION = "documentation"
-    CONVERSATIONS = "conversations"
     JOURNALS = "journals"
 
     # New indexes for Optimal Brain
@@ -75,18 +74,6 @@ class QueryContext:
     agent_id: UUID | None = None
     channel_id: UUID | None = None
     index_types: list[IndexType] | None = None
-
-
-@dataclass
-class IndexConversationParams:
-    """Parameters for indexing a conversation message."""
-
-    content: str
-    channel_id: UUID
-    session_id: UUID
-    agent_id: UUID
-    task_id: UUID | None = None
-    message_type: str | None = None
 
 
 @dataclass

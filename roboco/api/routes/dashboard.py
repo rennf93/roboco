@@ -16,7 +16,6 @@ from roboco.api.schemas.dashboard import (
     AuditorFlag,
     AuditorReport,
     CEOOverview,
-    ChannelFeed,
     CreateFlagRequest,
     CreateReportRequest,
     FlagSeverity,
@@ -63,26 +62,12 @@ async def get_auditor_dashboard(
     Get the complete auditor dashboard.
 
     Includes:
-    - Live channel feeds with status
     - Flagged items requiring attention
     - Key metrics
     - Audit queue
     - Recent reports
     """
     service = get_dashboard_service(db)
-
-    # Get live feeds
-    feeds = await service.get_channel_feeds()
-    live_feeds = [
-        ChannelFeed(
-            id=f.id,
-            name=f.name,
-            status=f.status,
-            last_activity=f.last_activity,
-            message_count_24h=f.message_count_24h,
-        )
-        for f in feeds
-    ]
 
     # Get flagged items
     flags = service.get_flags(resolved=False)
@@ -128,7 +113,6 @@ async def get_auditor_dashboard(
     ]
 
     return AuditorDashboard(
-        live_feeds=live_feeds,
         flagged_items=flagged_items,
         metrics=metrics,
         audit_queue=audit_queue,
@@ -501,16 +485,6 @@ async def get_team_metrics(
     metrics_service = get_metrics_service(db)
     metrics = await metrics_service.get_team_metrics(team)
     return metrics.to_dict()
-
-
-@router.get("/metrics/communication")
-async def get_communication_metrics(
-    db: DbSession,
-    hours: int = Query(default=24, ge=1, le=168),
-) -> dict[str, Any]:
-    """Get communication volume metrics."""
-    metrics_service = get_metrics_service(db)
-    return await metrics_service.get_communication_volume(hours)
 
 
 @router.get("/metrics/health")

@@ -13,7 +13,6 @@ from roboco.models.agent import (
 from roboco.models.base import (
     AgentRole,
     AgentStatus,
-    ChannelType,
     Complexity,
     HandoffStatus,
     JournalEntryType,
@@ -23,22 +22,11 @@ from roboco.models.base import (
     NotificationType,
     # Base types
     RobocoBase,
-    SessionStatus,
     SubstituteReason,
     # Enums
     TaskNature,
     TaskStatus,
     Team,
-)
-from roboco.models.channel import (
-    Channel,
-    ChannelCreate,
-    ChannelUpdate,
-)
-from roboco.models.group import (
-    Group,
-    GroupCreate,
-    GroupUpdate,
 )
 from roboco.models.handoff import (
     DocumenterHandoff,
@@ -59,22 +47,11 @@ from roboco.models.kanban import (
 )
 from roboco.models.message import (
     ExtractedMessage,
-    MessageCreate,
-    MessageEdit,
     RawStream,
 )
 from roboco.models.notification import (
     Notification,
     NotificationCreate,
-)
-from roboco.models.session import (
-    Session,
-    SessionConfig,
-    SessionCreate,
-    SessionForTasksCreate,
-    SessionTaskLink,
-    SessionTaskLinkCreate,
-    SessionTaskRelationshipType,
 )
 from roboco.models.task import (
     Checkpoint,
@@ -93,19 +70,12 @@ __all__ = [
     "AgentRole",
     "AgentStatus",
     "AgentUpdate",
-    "Channel",
-    "ChannelCreate",
-    "ChannelType",
-    "ChannelUpdate",
     "Checkpoint",
     "CommitRef",
     "Complexity",
     "DocRef",
     "DocumenterHandoff",
     "ExtractedMessage",
-    "Group",
-    "GroupCreate",
-    "GroupUpdate",
     "HandoffCreate",
     "HandoffStatus",
     "Journal",
@@ -117,8 +87,6 @@ __all__ = [
     "KanbanCard",
     "KanbanColumn",
     "KanbanSwimlane",
-    "MessageCreate",
-    "MessageEdit",
     "MessageType",
     "ModelConfig",
     "ModelProvider",
@@ -129,14 +97,6 @@ __all__ = [
     "ProgressUpdate",
     "RawStream",
     "RobocoBase",
-    "Session",
-    "SessionConfig",
-    "SessionCreate",
-    "SessionForTasksCreate",
-    "SessionStatus",
-    "SessionTaskLink",
-    "SessionTaskLinkCreate",
-    "SessionTaskRelationshipType",
     "SubstituteReason",
     "Task",
     "TaskCreate",

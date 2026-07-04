@@ -15,9 +15,7 @@ import pytest
 from fastapi import WebSocketDisconnect, status
 from roboco.agents_config import CEO_AGENT_ID, issue_agent_token
 from roboco.api.websocket import (
-    ConnectionManager,
     agent_stream,
-    channel_stream,
     notification_stream,
     system_stream,
 )
@@ -120,52 +118,6 @@ async def test_agent_stream_rejects_missing_token_when_required(
     ws.close.assert_awaited_once()
     assert ws.close.await_args.kwargs["code"] == status.WS_1008_POLICY_VIOLATION
     ws.accept.assert_not_awaited()
-
-
-# ---------------------------------------------------------------------------
-# The channel stream must be usable by a panel-token holder. It previously
-# called validate_channel_access, which HTTP-loopbacked to a non-existent
-# /api/permissions/check endpoint — every connection 404'd → False → the stream
-# closed with WS_1008_POLICY_VIOLATION for every client (the channel live-stream
-# was dead). Post-F004 the panel-token gate IS the channel-stream authorization
-# (the CEO panel is the sole WS client and may view every channel), so the
-# broken loopback check is removed rather than replaced with theater.
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_channel_stream_accepts_panel_token_holder(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A panel-token holder supplying an agent_id query param is accepted and
-    registered on the channel stream — not fail-closed by a dead permission
-    check that 404s against a non-existent endpoint."""
-    monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", _SECRET)
-    monkeypatch.setenv("ROBOCO_AGENT_AUTH_REQUIRED", "true")
-    token = issue_agent_token(CEO_AGENT_ID, "ceo", "")
-    channel_id = uuid4()
-    viewer_id = uuid4()
-    mgr = ConnectionManager()
-    ws = _mock_ws(
-        headers={"x-agent-token": token},
-        query={"agent_id": str(viewer_id)},
-    )
-    monkeypatch.setattr("roboco.api.websocket.manager", mgr)
-
-    await channel_stream(ws, channel_id)
-
-    ws.accept.assert_awaited_once()
-    # Not fail-closed by a dead permission check.
-    ws.close.assert_not_awaited()
-    # The "connected" confirmation is sent immediately after connect_channel
-    # registers the socket, and its subscriber_count proves the socket was in
-    # the channel's subscription set at confirmation time (the mock then raises
-    # WebSocketDisconnect so the finally disconnects it — the normal clean
-    # exit, not a fail-close).
-    confirmation = ws.send_json.await_args.args[0]
-    assert confirmation["type"] == "connected"
-    assert confirmation["channel_id"] == str(channel_id)
-    assert confirmation["subscriber_count"] == 1
 
 
 @pytest.mark.asyncio

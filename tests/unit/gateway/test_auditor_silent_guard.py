@@ -1,11 +1,10 @@
-"""Auditor is silent — runtime guard refuses say()/dm().
+"""Auditor is silent — runtime guard refuses dm().
 
 Spec §5.5: the auditor is a silent observer. The spawn manifest already
-omits `say` and `dm` from the auditor's tool surface, but that is a
-convention-only defense. These tests pin a defense-in-depth runtime guard
-inside ContentActions.say/dm: if the caller's role is "auditor", the
-verb refuses with Envelope.not_authorized regardless of how the call
-arrived.
+omits `dm` from the auditor's tool surface, but that is a convention-only
+defense. These tests pin a defense-in-depth runtime guard inside
+ContentActions.dm: if the caller's role is "auditor", the verb refuses with
+Envelope.not_authorized regardless of how the call arrived.
 """
 
 from __future__ import annotations
@@ -30,7 +29,6 @@ def _make_deps(agent_role: str, **overrides: AsyncMock) -> ContentActionsDeps:
         task.agent_for.return_value = MagicMock(role=agent_role)
 
     git = overrides.get("git", AsyncMock())
-    messaging = overrides.get("messaging", AsyncMock())
     a2a = overrides.get("a2a", AsyncMock())
     journal = overrides.get("journal", AsyncMock())
     workspace = overrides.get("workspace", AsyncMock())
@@ -38,30 +36,11 @@ def _make_deps(agent_role: str, **overrides: AsyncMock) -> ContentActionsDeps:
     return ContentActionsDeps(
         task=task,
         git=git,
-        messaging=messaging,
         a2a=a2a,
         journal=journal,
         workspace=workspace,
         notifications=notifications,
     )
-
-
-@pytest.mark.asyncio
-async def test_auditor_say_returns_not_authorized() -> None:
-    """Auditor role calling say() is refused regardless of manifest."""
-    auditor_id = uuid4()
-    deps = _make_deps("auditor")
-    actions = ContentActions(deps)
-
-    env = await actions.say(agent_id=auditor_id, channel="backend-cell", text="hi")
-    body = env.as_dict()
-
-    assert body["error"] == "not_authorized"
-    haystack = (body.get("message") or "") + " " + (body.get("remediate") or "")
-    assert "silent" in haystack.lower() or "auditor" in haystack.lower()
-    # The messaging service must not have been touched — the guard fires
-    # before any downstream call.
-    deps.messaging.post_to_channel.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -83,27 +62,6 @@ async def test_auditor_dm_returns_not_authorized() -> None:
     haystack = (body.get("message") or "") + " " + (body.get("remediate") or "")
     assert "silent" in haystack.lower() or "auditor" in haystack.lower()
     deps.a2a.send.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_developer_say_passes_auditor_guard() -> None:
-    """Non-auditor roles are not blocked by the new guard.
-
-    The messaging mock returns None so downstream flow is whatever the
-    happy path is — we only assert that the auditor guard didn't fire
-    (i.e. the response is not the auditor-silent not_authorized envelope).
-    """
-    dev_id = uuid4()
-    deps = _make_deps("developer")
-    actions = ContentActions(deps)
-
-    env = await actions.say(agent_id=dev_id, channel="backend-cell", text="hi")
-    body = env.as_dict()
-
-    # The auditor-silent message is what we explicitly want to NOT see.
-    if body.get("error") == "not_authorized":
-        haystack = (body.get("message") or "") + " " + (body.get("remediate") or "")
-        assert "silent" not in haystack.lower()
 
 
 @pytest.mark.asyncio
@@ -137,26 +95,6 @@ async def test_developer_dm_passes_auditor_guard() -> None:
 
 
 _NO_COMMS_ROLES = ("pr_reviewer", "prompter", "secretary")
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("role", _NO_COMMS_ROLES)
-async def test_no_comms_role_say_returns_not_authorized(role: str) -> None:
-    """pr_reviewer / prompter / secretary may not say() — the handler-level
-    guard must refuse them regardless of how the call arrived, same as auditor."""
-    deps = _make_deps(role)
-    actions = ContentActions(deps)
-
-    env = await actions.say(agent_id=uuid4(), channel="backend-cell", text="hi")
-    body = env.as_dict()
-
-    assert body["error"] == "not_authorized"
-    # The no-comms signal distinguishes the role guard from any downstream
-    # reject (channel-access denial) — proves it's the silent-role guard.
-    haystack = (body.get("message") or "") + " " + (body.get("remediate") or "")
-    assert "silent" in haystack.lower()
-    # The guard fires before any downstream call.
-    deps.messaging.post_to_channel.assert_not_called()
 
 
 @pytest.mark.asyncio

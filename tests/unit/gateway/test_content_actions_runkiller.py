@@ -141,7 +141,6 @@ def _content_actions(session: AsyncSession) -> ContentActions:
         ContentActionsDeps(
             task=TaskService(session),
             git=git,
-            messaging=AsyncMock(),
             a2a=AsyncMock(),
             journal=AsyncMock(),
             workspace=AsyncMock(),

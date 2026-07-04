@@ -161,7 +161,7 @@ def _reload_mcp_module(monkeypatch: pytest.MonkeyPatch, dotted: str) -> ModuleTy
                     "resume",
                     "i_am_idle",
                 ],
-                "do_tools": ["commit", "note", "say", "dm", "evidence"],
+                "do_tools": ["commit", "note", "dm", "evidence"],
                 "read_tools": [],
                 "write_tools": [],
                 "bash_allowed": True,

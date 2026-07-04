@@ -11,7 +11,6 @@ Commits use conventional format with traceability:
 Task: {task-id}
 Root: {root-task-id}
 Agent: {agent-slug}
-Session: {session-id}
 
 Links:
 - Task: {api}/tasks/{task-id}

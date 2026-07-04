@@ -615,7 +615,6 @@ class MentorService:
             IndexType.REVIEWS: "Code Reviews",
             IndexType.DOCUMENTATION: "Documentation",
             IndexType.ERRORS: "Error Patterns",
-            IndexType.CONVERSATIONS: "Conversations",
         }
 
         by_type: dict[IndexType, list[SearchResult]] = {}

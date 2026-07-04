@@ -12,8 +12,6 @@ from uuid import uuid4
 from roboco.exceptions import (
     AgentError,
     AuthenticationError,
-    ChannelAccessDeniedError,
-    ChannelError,
     DatabaseError,
     GitCommandError,
     GitError,
@@ -24,7 +22,6 @@ from roboco.exceptions import (
     PermissionDeniedError,
     RobocoError,
     ServiceError,
-    SessionClosedError,
     TaskError,
     TaskLifecycleError,
     ValidationError,
@@ -192,55 +189,6 @@ def test_agent_error_no_agent_id() -> None:
 
 def test_agent_error_with_extra_details() -> None:
     err = AgentError("x", agent_id="a1", details={"k": "v"})
-    assert err.details["k"] == "v"
-
-
-def test_channel_error_with_uuid() -> None:
-    cid = uuid4()
-    err = ChannelError("nope", channel_id=cid)
-    assert err.details["channel_id"] == str(cid)
-
-
-def test_channel_error_no_channel_id() -> None:
-    err = ChannelError("nope")
-    assert err.details["channel_id"] is None
-
-
-def test_channel_error_with_extra_details() -> None:
-    err = ChannelError("x", channel_id="c1", details={"k": "v"})
-    assert err.details["k"] == "v"
-
-
-def test_channel_access_denied_error() -> None:
-    err = ChannelAccessDeniedError(channel_id="c1", agent_id="a1", access_type="write")
-    assert err.code == "CHANNEL_ACCESS_DENIED"
-    assert err.details["access_type"] == "write"
-
-
-def test_channel_access_denied_error_default_access_type() -> None:
-    err = ChannelAccessDeniedError(channel_id="c1", agent_id="a1")
-    assert err.details["access_type"] == "read"
-
-
-def test_channel_access_denied_error_with_details() -> None:
-    err = ChannelAccessDeniedError(channel_id="c1", agent_id="a1", details={"k": "v"})
-    assert err.details["k"] == "v"
-
-
-def test_session_closed_error_default_reason() -> None:
-    sid = uuid4()
-    err = SessionClosedError(session_id=sid)
-    assert err.code == "SESSION_CLOSED"
-    assert err.details["session_id"] == str(sid)
-
-
-def test_session_closed_error_custom_reason() -> None:
-    err = SessionClosedError(session_id="s1", reason="Timeout")
-    assert err.message == "Timeout"
-
-
-def test_session_closed_error_with_details() -> None:
-    err = SessionClosedError(session_id="s1", details={"k": "v"})
     assert err.details["k"] == "v"
 
 

@@ -29,7 +29,7 @@ It runs in its own `agent-secretary` container, reusing the Intake chat machiner
 
 ## What You CANNOT Do
 
-- Talk to agents directly — no `say`, `dm`, or `notify` (human-only). To reach a channel, use `submit_directive(kind="relay_message")`
+- Talk to agents directly — no `dm` or `notify` (human-only). To reach agents, use `submit_directive(kind="relay_message")` (delivers via notification)
 - Call lifecycle verbs — you have none
 - Write code or docs, or run git operations
 - Fire a high-impact directive without the CEO's confirmation (see the gate)
@@ -41,7 +41,7 @@ It runs in its own `agent-secretary` container, reusing the Intake chat machiner
 
 | Kind | Payload | Confirmation |
 |------|---------|--------------|
-| `relay_message` | `channel`, `text` | Runs directly |
+| `relay_message` | `target`, `text` | Runs directly (delivers via notification) |
 | `update_charter` | `charter` | Queued for the CEO |
 | `control_task` | `task_id`, `action` (`start`/`cancel`/`override`/`edit`), `status?` (for `override`), `fields?` (for `edit`) | Queued for the CEO |
 | `approve_pitch` | `pitch_id`, `notes?` | Queued for the CEO |

@@ -83,7 +83,7 @@ Each role can communicate with:
 |------|---------------------|
 | CEO | Everyone |
 | Board | CEO, other board, Main PM |
-| Auditor | Everyone (silent read all) |
+| Auditor | Read-only oversight via task/audit state; no agent comms |
 | PR Reviewer | Read-only; posts one change-request on the PR itself, no agent comms |
 | Main PM | CEO, Board, Cell PMs |
 | Cell PM | Main PM, cell members |

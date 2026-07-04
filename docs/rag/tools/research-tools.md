@@ -34,7 +34,7 @@ Only works with providers that support content extraction (Tavily, Exa) — the 
 
 Web research is external, unverified-by-the-org information — treat it accordingly:
 
-1. **Always cite the URL** for any fact you rely on in a decision, a `delegate` description, or a `dm`/`say` message.
+1. **Always cite the URL** for any fact you rely on in a decision, a `delegate` description, or a `dm` message.
 2. **Persist key findings** with `note(scope="reflect", ...)` so the source survives beyond your own context window and the team keeps it, not just you.
 3. Do not treat a search `answer` or a fetched page as ground truth about RoboCo itself — it is about the outside world (competitors, libraries, market trends), not this codebase.
 

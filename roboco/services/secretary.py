@@ -29,7 +29,7 @@ from roboco.services.base import (
     ValidationError,
 )
 from roboco.services.company_goals import get_company_goals_service
-from roboco.services.messaging import get_messaging_service
+from roboco.services.notification import NotificationService
 from roboco.services.pitch import get_pitch_service
 from roboco.services.repositories.query_helpers import get_agent_by_slug
 from roboco.services.task import get_task_service
@@ -54,10 +54,9 @@ _UNSET: Any = object()
 _MAX_PROGRESS_UPDATES = 50
 
 _CEO_ID = AGENTS["ceo"].uuid
-_ANNOUNCE_CHANNEL = "announcements"
 
 _REQUIRED_PAYLOAD: dict[DirectiveKind, tuple[str, ...]] = {
-    DirectiveKind.RELAY_MESSAGE: ("channel", "text"),
+    DirectiveKind.RELAY_MESSAGE: ("text",),
     DirectiveKind.ANNOUNCE: ("text",),
     DirectiveKind.UPDATE_CHARTER: ("charter",),
     DirectiveKind.APPROVE_PITCH: ("pitch_id",),
@@ -245,15 +244,12 @@ class SecretaryService(BaseService):
 
     async def _execute(self, kind: DirectiveKind, payload: dict[str, Any]) -> str:
         if kind in (DirectiveKind.RELAY_MESSAGE, DirectiveKind.ANNOUNCE):
-            channel = (
-                _ANNOUNCE_CHANNEL
-                if kind is DirectiveKind.ANNOUNCE
-                else str(payload["channel"])
+            # Channels are retired — a CEO announcement now reaches agents via
+            # the notification inbox they actually drain, not a dead channel.
+            await NotificationService().send_broadcast_notification(
+                from_agent=_CEO_ID, text=str(payload["text"])
             )
-            await get_messaging_service(self.session).post_to_channel(
-                agent_id=_CEO_ID, channel_slug=channel, content=str(payload["text"])
-            )
-            return f"posted to #{channel}"
+            return "broadcast to all agents"
         if kind is DirectiveKind.UPDATE_CHARTER:
             await get_company_goals_service(self.session).upsert(
                 dict(payload["charter"]), updated_by=_CEO_ID

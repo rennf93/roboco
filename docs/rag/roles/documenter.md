@@ -28,7 +28,7 @@
 - Create or assign tasks (PM only)
 - Pass or fail QA (QA only)
 - Cancel tasks
-- Send `notify` (ack-required notifications) — docs use `say` (channel) and `dm` (A2A) only
+- Send `notify` (ack-required notifications) — docs use `dm` (A2A) only
 - Complete tasks (only submits for PM review via `i_documented`)
 - Document your own development work (self-documentation prevention)
 
@@ -45,7 +45,7 @@ awaiting_documentation → claim_doc_task → write docs → i_documented
 | MCP server            | Verbs you can call |
 |-----------------------|--------------------|
 | `roboco-flow`         | `give_me_work`, `claim_doc_task`, `i_documented`, `i_am_blocked`, `unclaim`, `resume`, `i_am_idle` |
-| `roboco-do`           | `commit`, `note`, `say`, `dm`, `evidence`, `progress` (no `notify`) |
+| `roboco-do`           | `commit`, `note`, `dm`, `evidence`, `progress` (no `notify`) |
 | `roboco-docs`         | `roboco_docs_write`, `roboco_docs_read`, `roboco_docs_list` |
 | `roboco-git-readonly` | `roboco_git_status`, `roboco_git_log`, `roboco_git_diff`, `roboco_git_branch_list` |
 | `roboco-optimal`      | `roboco_ask_mentor`, `roboco_kb_search` |
@@ -61,9 +61,6 @@ Before writing documentation:
 # the task evidence and in the KB
 evidence(task_id="...")
 roboco_kb_search("similar documentation")
-
-# Read channel discussion for this cell
-channels()  # discover the cell channel slug, then read its history
 ```
 
 ## Writing Documentation
@@ -119,9 +116,6 @@ Journaling is just `note(text, scope)` — scope is one of `reflect`, `decision`
 ```python
 # Direct A2A inside your cell (same team — no policy gate)
 dm(recipient="be-dev-1", text="Need context on the new endpoint...", task_id="...")
-
-# Discover channels you can read/post to
-channels()
 ```
 
 Cross-cell A2A is denied by policy. Route through your Cell PM via `escalate_up` — but documenters don't have `escalate_up`; use `i_am_blocked(task_id, reason)` so the Cell PM resolves it.

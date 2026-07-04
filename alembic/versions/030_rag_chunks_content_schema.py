@@ -9,7 +9,7 @@ reshapes them and every ingest/search/list fails with
 ``column "content" of relation "chunks_<type>" does not exist``.
 
 These tables hold derived chunks AND non-rebuildable agent knowledge
-(journals, decisions, errors, learnings, reviews, conversations) that a docs
+(journals, decisions, errors, learnings, reviews) that a docs
 reindex cannot regenerate, so this migration ALTERs in place — renaming
 ``text`` -> ``content`` and adding ``created_at`` — rather than dropping data.
 The legacy ``chunk_index`` / integer ``id`` columns are left untouched: the
@@ -44,7 +44,6 @@ depends_on = None
 CHUNK_TABLES = (
     "chunks_code",
     "chunks_documentation",
-    "chunks_conversations",
     "chunks_journals",
     "chunks_errors",
     "chunks_standards",

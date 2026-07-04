@@ -241,7 +241,7 @@ export function useAgentDefinitions() {
 /**
  * Register the live `/api/agents` roster into the display-name resolver
  * (agent-utils). Mount once near the app root so every surface that resolves an
- * assignee (task table, task detail, journals, communications, commits) shows
+ * assignee (task table, task detail, journals, commits) shows
  * the real agent name instead of a raw UUID, and never drifts as agents are
  * added backend-side. Returns nothing — it's a side-effecting sync.
  */

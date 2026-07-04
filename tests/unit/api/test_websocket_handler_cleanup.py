@@ -19,9 +19,7 @@ from fastapi import WebSocketDisconnect
 from roboco.api.websocket import (
     ConnectionManager,
     agent_stream,
-    channel_stream,
     notification_stream,
-    session_stream,
     system_stream,
 )
 
@@ -103,26 +101,8 @@ async def test_notification_stream_disconnects_on_non_disconnect_exception(
 
 
 # ---------------------------------------------------------------------------
-# channel / agent / session handlers (same pattern, distinct subscription sets)
+# agent handler (same pattern, distinct subscription set)
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_channel_stream_disconnects_on_non_disconnect_exception(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-
-    channel_id = uuid4()
-    agent_id = uuid4()
-    mgr = ConnectionManager()
-    ws = _mock_ws_for_receive(RuntimeError("anyio closed"))
-    ws.query_params = {"agent_id": str(agent_id)}
-    monkeypatch.setattr("roboco.api.websocket.manager", mgr)
-
-    with pytest.raises(RuntimeError):
-        await channel_stream(ws, channel_id)
-
-    assert ws not in mgr.channel_connections.get(channel_id, set())
 
 
 @pytest.mark.asyncio
@@ -144,27 +124,6 @@ async def test_agent_stream_disconnects_on_non_disconnect_exception(
         await agent_stream(ws, target_id)
 
     assert ws not in mgr.agent_connections.get(target_id, set())
-
-
-@pytest.mark.asyncio
-async def test_session_stream_disconnects_on_non_disconnect_exception(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-
-    session_id = uuid4()
-    agent_id = uuid4()
-    mgr = ConnectionManager()
-    ws = _mock_ws_for_receive(RuntimeError("anyio closed"))
-    ws.query_params = {"agent_id": str(agent_id)}
-    monkeypatch.setattr(
-        "roboco.api.websocket.validate_agent_exists", AsyncMock(return_value=True)
-    )
-    monkeypatch.setattr("roboco.api.websocket.manager", mgr)
-
-    with pytest.raises(RuntimeError):
-        await session_stream(ws, session_id)
-
-    assert ws not in mgr.session_connections.get(session_id, set())
 
 
 @pytest.mark.asyncio

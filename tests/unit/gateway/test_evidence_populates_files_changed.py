@@ -32,7 +32,6 @@ def _deps_for_evidence(
     return ContentActionsDeps(
         task=task_svc,
         git=git_svc,
-        messaging=AsyncMock(),
         a2a=AsyncMock(),
         journal=AsyncMock(),
         workspace=workspace_svc,

@@ -28,7 +28,6 @@ depends_on = None
 CHUNK_TABLES = (
     "chunks_code",
     "chunks_documentation",
-    "chunks_conversations",
     "chunks_journals",
     "chunks_errors",
     "chunks_standards",

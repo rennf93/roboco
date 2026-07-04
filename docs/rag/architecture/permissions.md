@@ -67,7 +67,7 @@ Sending notifications means calling the `notify(target, text, priority)` content
 | qa | No | - |
 | documenter | No | - |
 
-Non-senders (developer, qa, documenter, auditor) still communicate via `say(channel, text)` for channel posts and `dm(recipient, text)` for direct agent-to-agent messages — those are not ack-required notifications. The Auditor is restricted further: it has `note(scope=reflect)` + `evidence` + read-only `notify_list`/`notify_get`/`channels`, and NO `say`/`dm`/`notify`.
+Non-senders (developer, qa, documenter, auditor) still communicate via `dm(recipient, text)` for direct agent-to-agent messages — those are not ack-required notifications. The Auditor is restricted further: it has `note(scope=reflect)` + `evidence` + read-only `notify_list`/`notify_get`, and NO `dm`/`notify`.
 
 ## Task-Creator Roles
 

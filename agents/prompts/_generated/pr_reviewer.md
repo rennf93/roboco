@@ -14,6 +14,7 @@
 | `post_pr_review` | `post_pr_review(task_id: UUID, body: str, event: str = 'REQUEST_CHANGES', findings: list[str | Any] = PydanticUndefined)` |
 | `pr_fail` | `pr_fail(task_id: UUID, issues: list[str])` |
 | `pr_pass` | `pr_pass(task_id: UUID, notes: str)` |
+| `unclaim` | `unclaim(task_id: UUID)` |
 
 ### Content (do) tools
 
@@ -23,4 +24,3 @@
 | `evidence` | `evidence(task_id: UUID)` |
 | `notify_list` | `notify_list(unread_only: bool = True, pending_ack_only: bool = False, limit: int = 20)` |
 | `notify_get` | `notify_get(notification_id: UUID)` |
-| `channels` | `channels()` |

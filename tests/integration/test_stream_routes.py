@@ -264,14 +264,3 @@ async def test_get_my_permissions(stream_client: dict) -> None:
         "/api/stream/permissions", headers=_HDR
     )
     assert response.status_code == HTTPStatus.OK
-
-
-@pytest.mark.asyncio
-async def test_check_channel_permission(stream_client: dict) -> None:
-    response = await stream_client["client"].get(
-        "/api/stream/permissions/channel/backend-cell", headers=_HDR
-    )
-    assert response.status_code == HTTPStatus.OK
-    body = response.json()
-    assert "can_read" in body
-    assert "can_write" in body

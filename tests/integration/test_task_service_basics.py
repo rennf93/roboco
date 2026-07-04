@@ -742,12 +742,13 @@ async def test_cancel_pending_task(task_setup: dict) -> None:
 
 
 @pytest.mark.asyncio
-async def test_activate_without_session_raises(task_setup: dict) -> None:
-    """Activating a task without a linked session raises ValueError."""
+async def test_activate_succeeds_without_session(task_setup: dict) -> None:
+    """Backlog activation no longer requires a linked discussion session —
+    the session subsystem is retired; coordination rides task state."""
     svc = task_setup["svc"]
     task = await svc.create(_req(task_setup, status=TaskStatus.BACKLOG))
-    with pytest.raises(ValueError, match="no linked session"):
-        await svc.activate(task.id, agent_role="cell_pm")
+    activated = await svc.activate(task.id, agent_role="cell_pm")
+    assert activated.status == TaskStatus.PENDING
 
 
 # ---------------------------------------------------------------------------
@@ -1703,27 +1704,6 @@ async def test_list_pending_includes_tasks_when_deps_completed(
     pending = await svc.list_pending(team=Team.BACKEND)
     pending_ids = {t.id for t in pending}
     assert blocked.id in pending_ids
-
-
-# ---------------------------------------------------------------------------
-# _inherit_parent_session
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_inherit_parent_session_no_primary_returns_none(
-    task_setup: dict,
-) -> None:
-    """When parent has no primary session, child inherits nothing."""
-    svc = task_setup["svc"]
-    parent = await svc.create(_req(task_setup))
-    child_id = uuid4()
-    result = await svc._inherit_parent_session(
-        task_id=child_id,
-        parent_task_id=parent.id,
-        created_by=task_setup["agent_id"],
-    )
-    assert result is None
 
 
 # ---------------------------------------------------------------------------

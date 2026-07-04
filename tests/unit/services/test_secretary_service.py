@@ -24,9 +24,6 @@ def _session() -> MagicMock:
 
 
 def _patch(monkeypatch: pytest.MonkeyPatch) -> dict[str, MagicMock]:
-    msg = MagicMock()
-    msg.post_to_channel = AsyncMock()
-    monkeypatch.setattr(sec_module, "get_messaging_service", lambda _s: msg)
     goals = MagicMock()
     goals.upsert = AsyncMock()
     monkeypatch.setattr(sec_module, "get_company_goals_service", lambda _s: goals)
@@ -45,11 +42,12 @@ def _patch(monkeypatch: pytest.MonkeyPatch) -> dict[str, MagicMock]:
     monkeypatch.setattr(sec_module, "get_agent_by_slug", agent_lookup)
     notifier = MagicMock()
     notifier.send_ack_notification = AsyncMock()
+    notifier.send_broadcast_notification = AsyncMock()
     monkeypatch.setattr(
         "roboco.services.notification.NotificationService", lambda: notifier
     )
+    monkeypatch.setattr(sec_module, "NotificationService", lambda: notifier)
     return {
-        "msg": msg,
         "goals": goals,
         "pitch": pitch,
         "task": task,
@@ -74,12 +72,11 @@ async def test_relay_executes_directly(monkeypatch: pytest.MonkeyPatch) -> None:
     svc = SecretaryService(_session())
     row = await svc.submit_directive(
         DirectiveKind.RELAY_MESSAGE,
-        {"channel": "all-hands", "text": "standup at 10"},
+        {"text": "standup at 10"},
         uuid4(),
     )
     assert row.status == DirectiveStatus.EXECUTED.value
-    svcs["msg"].post_to_channel.assert_awaited_once()
-    svcs["notifier"].send_ack_notification.assert_not_awaited()
+    svcs["notifier"].send_broadcast_notification.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -144,7 +141,7 @@ async def test_announce_queues_then_confirm_posts(
     monkeypatch.setattr(svc, "get_directive", AsyncMock(return_value=row))
     out = await svc.confirm_directive(row.id, uuid4())
     assert out.status == DirectiveStatus.EXECUTED.value
-    svcs["msg"].post_to_channel.assert_awaited_once()
+    svcs["notifier"].send_broadcast_notification.assert_awaited_once()
 
 
 @pytest.mark.asyncio

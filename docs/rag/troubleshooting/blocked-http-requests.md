@@ -12,7 +12,7 @@ The guard never returns which rule or signature matched, by design, so the 400/4
 
 ## What Gets Flagged
 
-Generic WAF signatures (SQL injection, XSS, path traversal, suspicious URL patterns) are excluded from scanning on the free-text body fields of `note` / `commit` / `say` / `dm`, so normal code, SQL, diffs, file paths, and URLs in those bodies are safe from that layer. Three custom validators scan those same bodies regardless of that exclusion:
+Generic WAF signatures (SQL injection, XSS, path traversal, suspicious URL patterns) are excluded from scanning on the free-text body fields of `note` / `commit` / `dm`, so normal code, SQL, diffs, file paths, and URLs in those bodies are safe from that layer. Three custom validators scan those same bodies regardless of that exclusion:
 
 - Prompt-injection detection
 - Secret-exfil detection — literal credential-shaped strings (`sk-ant-...`, `ghp_...`, postgres connection URLs) or phrasing like "reveal your api keys"
@@ -20,7 +20,7 @@ Generic WAF signatures (SQL injection, XSS, path traversal, suspicious URL patte
 
 ## Solution: Hygiene Rules
 
-Follow these when composing `note` / `commit` / `say` / `dm` bodies or any fetch-type payload, regardless of whether enforcement is currently active:
+Follow these when composing `note` / `commit` / `dm` bodies or any fetch-type payload, regardless of whether enforcement is currently active:
 
 1. Never paste real secrets or credentials (API keys, tokens, DB connection strings) into a request body, even inside a code snippet or diff.
 2. Never aim a fetch/HTTP-call body at an internal service host (`roboco-*`) or a cloud metadata endpoint (`169.254.169.254`).

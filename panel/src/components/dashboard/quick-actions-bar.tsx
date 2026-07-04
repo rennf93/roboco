@@ -2,14 +2,7 @@
 
 import { Button } from "@/components/ui/button";
 import { CreateTaskDialog } from "@/components/tasks/create-task-dialog";
-import {
-  Users,
-  Megaphone,
-  BookOpen,
-  Shield,
-  Sparkles,
-  Bot,
-} from "lucide-react";
+import { Users, BookOpen, Shield, Sparkles, Bot } from "lucide-react";
 import Link from "next/link";
 
 export function QuickActionsBar() {
@@ -35,13 +28,6 @@ export function QuickActionsBar() {
         <Button variant="outline">
           <Bot className="h-4 w-4 mr-2" />
           Secretary
-        </Button>
-      </Link>
-
-      <Link href="/communications" prefetch={false}>
-        <Button variant="outline">
-          <Megaphone className="h-4 w-4 mr-2" />
-          Broadcast Message
         </Button>
       </Link>
 

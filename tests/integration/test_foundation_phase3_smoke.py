@@ -7,9 +7,7 @@ import inspect
 
 import pytest
 from roboco import agents_config
-from roboco.agents_config import CHANNEL_ACCESS
 from roboco.foundation import identity
-from roboco.foundation.policy import communications
 from roboco.foundation.policy.agent_loop import (
     DEFAULT_BUDGET,
     VERB_RETRY_LIMITS,
@@ -20,7 +18,6 @@ from roboco.foundation.policy.communications import (
     Priority,
 )
 from roboco.models.base import NotificationType
-from roboco.seeds.initial_data import DEFAULT_CHANNELS
 from roboco.services.gateway import content_actions
 from roboco.services.gateway.envelope import Envelope
 
@@ -36,18 +33,6 @@ def test_notification_perms_module_removed() -> None:
 def test_agents_config_notification_permissions_removed() -> None:
     """The contradictory NOTIFICATION_PERMISSIONS dict is gone."""
     assert not hasattr(agents_config, "NOTIFICATION_PERMISSIONS")
-
-
-def test_channel_access_derives_from_foundation() -> None:
-    """agents_config.CHANNEL_ACCESS keys match foundation.CHANNELS exactly."""
-    assert set(CHANNEL_ACCESS.keys()) == set(communications.CHANNELS.keys())
-
-
-def test_seed_default_channels_derive_from_foundation() -> None:
-    """seeds.DEFAULT_CHANNELS slugs match foundation.CHANNELS."""
-    seed_slugs = {ch["slug"] for ch in DEFAULT_CHANNELS}
-    foundation_slugs = set(communications.CHANNELS.keys())
-    assert seed_slugs == foundation_slugs
 
 
 def test_notify_sender_roles_includes_ceo_excludes_auditor() -> None:
@@ -94,12 +79,14 @@ def test_envelope_circuit_open_kind_distinct_from_tracing_gap() -> None:
     assert env_co.as_dict()["error"] != env_tg.as_dict()["error"]
 
 
-def test_auditor_silent_runtime_guard_in_say_dm() -> None:
-    """Spec §5.5: auditor say/dm refused at runtime (defense in depth)."""
+def test_auditor_silent_runtime_guard_in_dm() -> None:
+    """Spec §5.5: auditor dm refused at runtime (defense in depth).
+
+    say() was retired with the channels/messaging subsystem; dm() (A2A) is
+    the sole surviving agent-comms verb this guard still needs to cover.
+    """
     # The actual guard test lives in tests/unit/gateway/test_auditor_silent_guard.py.
     # Smoke gate verifies the guard exists by checking the source for the
     # specific role-check pattern.
-    say_source = inspect.getsource(content_actions.ContentActions.say)
     dm_source = inspect.getsource(content_actions.ContentActions.dm)
-    assert "auditor" in say_source.lower(), "say() missing auditor runtime guard"
     assert "auditor" in dm_source.lower(), "dm() missing auditor runtime guard"

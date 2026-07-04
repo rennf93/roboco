@@ -34,7 +34,7 @@
 15. engines-heal-ciwatch-depupdate
 16. release-manager
 17. org-memory-playbooks
-18. messaging-notification
+18. notification
 19. a2a-audit-journal-permissions
 20. conventions-service-validator
 21. intake-secretary
@@ -143,7 +143,6 @@ flowchart TD
   SV --> SV2["GitService"]
   SV --> SV3["WorkSessionService"]
   SV --> SV4["WorkspaceService"]
-  SV --> SV5["Messaging"]
   SV --> SV6["Notification"]
   SV --> SV7["Optimal RAG"]
   SV --> SV8["Journal Audit Permissions"]
@@ -157,7 +156,6 @@ flowchart TD
   OM --> OM2["briefings injection"]
   OM --> OM3["playbooks"]
   RT --> CO["Comms"]
-  CO --> CO1["channels"]
   CO --> CO2["A2A"]
   CO --> CO3["notifications dedup"]
   RT --> PA["Panel"]
@@ -191,8 +189,6 @@ erDiagram
     TASK ||--o{ TASK : "parent_task_id / subtasks"
     TASK ||--o{ TASK_CELL_PROJECT : "root-subtask map"
     TASK ||--o{ PLAYBOOK : "draft→approved→indexed (050)"
-    CHANNEL ||--o{ MESSAGE : "channel_id"
-    SESSION ||--o{ MESSAGE : "session_id"
     AGENT ||--o{ MESSAGE : "sender"
     AGENT ||--o{ NOTIFICATION : "to_agents / from_agent"
     AGENT ||--o{ JOURNAL : "owner"
@@ -484,13 +480,13 @@ graph LR
 | workspace | Doc's "fresh claim `git reset --hard`" narrative diverges from the post-F123 worktree model (by design) — doc drift to reconcile. |
 | choreographer | Verb table omits `sync_branch` from the developer list (added since baseline). Otherwise matches. |
 | pr-gate-review | None material. |
-| gateway-support | Auditor surface doc under-states `notify_list`/`notify_get` + `channels` (additive, consistent with footnote). PM coordinator-skip lives in Choreographer not `claim_guards.py`. |
+| gateway-support | Auditor surface doc under-states `notify_list`/`notify_get` (additive, consistent with footnote). PM coordinator-skip lives in Choreographer not `claim_guards.py`. |
 | orchestrator | None material (well-instrumented). |
 | runtime-providers | `ClaudeCodeProvider` is dead reference code; its "default" label in CLAUDE.md is misleading. |
 | engines-heal-ciwatch-depupdate | Minor framing: engines consume telemetry via `MultiProjectCITelemetrySource`, not `GitService` directly. Engine does not enforce `awaiting_ceo_approval` itself. |
 | release-manager | None material. |
 | org-memory-playbooks | None material. |
-| messaging-notification | None material. |
+| notification | None material. |
 | a2a-audit-journal-permissions | Doc lists `PermissionsService` (plural); actual class is `PermissionService` (singular). Legacy A2A-protocol path (`create_a2a_notification` / `TASK_ASSIGNED` re-spawn) undocumented. `AuditService.has_recent_tracing_gap` undocumented. |
 | conventions-service-validator | None material (all doc claims match code). |
 | intake-secretary | None material. |

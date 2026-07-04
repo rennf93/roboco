@@ -2,17 +2,16 @@
 
 ## Overview
 
-Agents collaborate directly through two content tools on the `roboco-do` MCP server: `dm` for agent-to-agent messages and `say` for channel posts. Use `channels()` to discover the channels you can post to.
+Agents collaborate directly through the `dm` content tool on the `roboco-do` MCP server, with `read_a2a` to read what you were sent. There is no `roboco_agent_*` or `roboco_a2a_*` tool — A2A is just `dm` + `read_a2a`.
 
 **Key:** A2A is about *existing* tasks, NOT task creation. Pass the `task_id` you're collaborating on so the message is linked to it.
 
 ## Flow
 
 ```
-1. Discover → channels()  lists the channels visible to you
-2. Reach out → dm(recipient, text, task_id)  for a direct message
-            → say(channel, text, task_id)    to post to your cell channel
-3. Receive  → notify_list() / notify_get(id)  to read your inbox
+1. Reach out → dm(recipient, text, task_id)      for a direct message
+2. Receive   → read_a2a()                        to read incoming A2A message bodies
+             → notify_list() / notify_get(id)    to read your notify inbox
 ```
 
 ## Direct Messages (same cell only)
@@ -32,22 +31,19 @@ Cross-cell `dm` is **denied by policy**. If you need something from another cell
 
 `dm(recipient="ceo", ...)` follows a different rule than same-cell DM: you can never *open* a CEO conversation (only reply inside one the CEO already started), and once it's open you get at most one reply per CEO message before you must wait for the CEO to post again. See `docs/rag/tools/a2a-tools.md` for the full contract and the exact refusal messages.
 
-## Channel Posts
+## Receiving Messages — `read_a2a`
+
+Your claim briefing surfaces incoming A2A under `unread_a2a` — each entry shows the sender and a preview of their latest message. To read the full bodies (and clear them):
 
 ```python
-# Visible to your whole cell
-say(
-    channel="backend-cell",
-    text="Started on <task> — anyone hit the Redis failover path before?",
-    task_id="<task>",
-)
+read_a2a()      # -> {"messages": [{from_agent, content, created_at}, ...]}
 ```
 
-Call `channels()` first if you're unsure of the exact slug — it returns the channels you're allowed to post to, so you don't have to guess.
+`read_a2a()` returns only INCOMING messages (never your own sends) and marks them read. It also clears `i_am_idle()`'s unread-A2A soft-block.
 
 ## Task Creation Rules
 
-**Only PMs create tasks** (via the `delegate` verb). Regular agents cannot create work from a `dm` or `say`.
+**Only PMs create tasks** (via the `delegate` verb). Regular agents cannot create work from a `dm`.
 
 If a conversation surfaces work that needs a new task:
 1. Escalate to your Cell PM: `escalate_up(task_id, reason="Needs a subtask for X")`
@@ -55,8 +51,8 @@ If a conversation surfaces work that needs a new task:
 
 ## Permissions
 
-Most roles can `dm` (same-cell) and `say` to their channels, plus read their inbox with `notify_list` / `notify_get`.
+Most roles can `dm` (same-cell) and read incoming messages with `read_a2a`, plus check their notify inbox with `notify_list` / `notify_get`.
 
-The **Auditor** is a silent observer: it can read (`notify_list`, `notify_get`, `channels`) but has **no** `say`, `dm`, or `notify` — it never communicates outwardly.
+The **Auditor** is a silent observer: it can read (`notify_list`, `notify_get`) but has **no** `dm` or `notify` — it never communicates outwardly.
 
-Only PMs and the Board can send ack-required `notify` signals; regular agents use `say` and `dm` only.
+Only PMs and the Board can send ack-required `notify` signals; regular agents use `dm` only.

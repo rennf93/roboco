@@ -21,7 +21,6 @@ def _make_deps(**overrides: AsyncMock) -> ContentActionsDeps:
     return ContentActionsDeps(
         task=task,
         git=git,
-        messaging=overrides.get("messaging", AsyncMock()),
         a2a=overrides.get("a2a", AsyncMock()),
         journal=overrides.get("journal", AsyncMock()),
         workspace=overrides.get("workspace", AsyncMock()),

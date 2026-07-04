@@ -62,17 +62,14 @@ export function useMetrics() {
     queryKey: dashboardKeys.metrics(),
     queryFn: async (): Promise<MetricsSummary> => {
       // Fetch all metrics in parallel, including real agent status
-      const [velocity, blockers, communication, agentStatus] =
-        await Promise.all([
-          dashboardApi.getVelocityMetrics(),
-          dashboardApi.getBlockerMetrics(),
-          dashboardApi.getCommunicationMetrics(),
-          dashboardApi.getAgentStatus(),
-        ]);
+      const [velocity, blockers, agentStatus] = await Promise.all([
+        dashboardApi.getVelocityMetrics(),
+        dashboardApi.getBlockerMetrics(),
+        dashboardApi.getAgentStatus(),
+      ]);
       return {
         velocity,
         blockers,
-        communication,
         agents: {
           total_agents: agentStatus?.total_agents ?? 0,
           running: agentStatus?.by_state?.running ?? 0,

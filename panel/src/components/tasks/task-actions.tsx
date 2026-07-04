@@ -31,7 +31,6 @@ import {
   Pencil,
   Trash2,
   Clock,
-  MessageSquare,
 } from "lucide-react";
 import { toast } from "sonner";
 import { EditTaskDialog } from "./edit-task-dialog";
@@ -138,7 +137,6 @@ export function TaskActions({
 
   // Check if task is in backlog (needs PM activation)
   const isBacklog = task.status === TaskStatus.BACKLOG;
-  const hasSessions = task.sessions && task.sessions.length > 0;
 
   return (
     <>
@@ -164,15 +162,6 @@ export function TaskActions({
                 <Clock className="h-4 w-4 mr-2" />
                 Awaiting PM Activation
               </DropdownMenuItem>
-              {!hasSessions && (
-                <DropdownMenuItem
-                  disabled
-                  className="text-muted-foreground text-xs"
-                >
-                  <MessageSquare className="h-4 w-4 mr-2" />
-                  Needs session created
-                </DropdownMenuItem>
-              )}
               <DropdownMenuSeparator />
             </>
           )}

@@ -362,6 +362,34 @@ class NotificationService:
             )
         )
 
+    async def send_broadcast_notification(
+        self,
+        *,
+        from_agent: UUID | str,
+        text: str,
+        subject: str | None = None,
+    ) -> None:
+        """Broadcast a company-wide announcement to every agent's inbox.
+
+        The channel-era ANNOUNCE / RELAY_MESSAGE directives posted to a channel
+        no agent read; this delivers to the notification inbox agents DO drain.
+        Recipients are every non-human agent in the roster.
+        """
+        from roboco.foundation.identity import AGENTS
+
+        recipients = [slug for slug, row in AGENTS.items() if not row.is_human]
+        subject = (subject or text.split("\n", 1)[0])[:200] or "Announcement"
+        await self._create_notification(
+            CreateNotificationParams(
+                notification_type=NotificationType.BROADCAST,
+                priority=NotificationPriority.NORMAL,
+                from_agent=str(from_agent),
+                to_agents=recipients,
+                subject=subject,
+                body=text,
+            )
+        )
+
     async def send_a2a_notification(
         self,
         task_id: str,

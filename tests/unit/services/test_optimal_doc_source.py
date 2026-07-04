@@ -19,7 +19,6 @@ from uuid import uuid4
 
 import pytest
 from roboco.models.optimal import (
-    IndexConversationParams,
     IndexJournalEntryParams,
     IndexReviewParams,
     IndexType,
@@ -68,7 +67,6 @@ def _service_with_stub_plugin() -> _StubOptimalService:
     plugin.ingest = AsyncMock()
     svc._plugins = {
         IndexType.JOURNALS: plugin,
-        IndexType.CONVERSATIONS: plugin,
         IndexType.REVIEWS: plugin,
     }
     svc._initialized = True
@@ -113,31 +111,6 @@ async def test_index_journal_entry_succeeds_with_real_entry_id() -> None:
         task_id=uuid4(),
     )
     await svc.index_journal_entry(params)
-
-
-@pytest.mark.asyncio
-async def test_index_conversation_raises_when_session_id_missing() -> None:
-    """``session_id`` is typed UUID (required) but the old code coerced
-    falsy values to ``'unknown'``. Reject explicitly so the caller fixes
-    the missing flush instead of writing junk doc-sources.
-
-    A real caller would have to bypass the dataclass type contract for
-    this to fire (e.g. ``cast(UUID, None)``); we simulate that with a
-    ``SimpleNamespace`` so we don't have to reach inside a frozen-style
-    dataclass to clobber a field.
-    """
-    svc = _service_with_stub_plugin()
-    fake_params = SimpleNamespace(
-        content="hello",
-        channel_id=uuid4(),
-        session_id=None,  # the runtime bug we now reject
-        agent_id=uuid4(),
-        task_id=None,
-        message_type=None,
-    )
-
-    with pytest.raises(ValueError, match="session_id is required"):
-        await svc.index_conversation(cast("IndexConversationParams", fake_params))
 
 
 @pytest.mark.asyncio

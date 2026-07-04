@@ -243,7 +243,6 @@ def _gateway_actions(
     deps = ContentActionsDeps(
         task=task,
         git=MagicMock(),
-        messaging=MagicMock(),
         a2a=MagicMock(),
         journal=MagicMock(),
         workspace=MagicMock(),

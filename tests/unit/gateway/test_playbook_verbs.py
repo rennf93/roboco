@@ -54,7 +54,6 @@ def _actions(role: str) -> ContentActions:
     deps = ContentActionsDeps(
         task=task,
         git=MagicMock(),
-        messaging=MagicMock(),
         a2a=MagicMock(),
         journal=MagicMock(),
         workspace=MagicMock(),

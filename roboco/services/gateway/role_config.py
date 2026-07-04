@@ -34,78 +34,67 @@ class RoleConfig:
 # Wave 1 receivers — every role with inbox access gets notify_list/get/ack for
 # notifications and read_messages for A2A, so `i_am_idle()`'s unread soft-block
 # is satisfiable rather than a permanent dead-end.
-_NOTIFY_RECEIVER = ("notify_list", "notify_get", "notify_ack", "read_messages")
-# Wave 2 — channel discovery. Every role gets `channels()` so the LLM stops
-# inventing slugs ("backend-dev", "backend") that don't exist.
-_CHANNEL_DISCOVERY = ("channels",)
+_NOTIFY_RECEIVER = (
+    "notify_list",
+    "notify_get",
+    "notify_ack",
+    "read_messages",
+    "read_a2a",
+)
 
 _DEV_FLOW = spec.intents_for_role(spec.Role.DEVELOPER)
 _DEV_DO = (
     "commit",
     "note",
-    "say",
     "dm",
     "evidence",
     "progress",
     "pr_update",
     "draft_playbook",
     *_NOTIFY_RECEIVER,
-    *_CHANNEL_DISCOVERY,
 )
 
 _QA_FLOW = spec.intents_for_role(spec.Role.QA)
 _QA_DO = (
     "note",
-    "say",
     "dm",
     "evidence",
     "draft_playbook",
     *_NOTIFY_RECEIVER,
-    *_CHANNEL_DISCOVERY,
 )
 
 _DOC_FLOW = spec.intents_for_role(spec.Role.DOCUMENTER)
 _DOC_DO = (
     "commit",
     "note",
-    "say",
     "dm",
     "evidence",
     "progress",
     "pr_update",
     "draft_playbook",
     *_NOTIFY_RECEIVER,
-    *_CHANNEL_DISCOVERY,
 )
 
 _CELL_PM_FLOW = spec.intents_for_role(spec.Role.CELL_PM)
 _CELL_PM_DO = (
     "note",
-    "say",
     "dm",
     "notify",
     "evidence",
-    "open_session",
-    "link_session",
     "pr_update",
     "draft_playbook",
     *_NOTIFY_RECEIVER,
-    *_CHANNEL_DISCOVERY,
 )
 
 _MAIN_PM_FLOW = spec.intents_for_role(spec.Role.MAIN_PM)
 _MAIN_PM_DO = (
     "note",
-    "say",
     "dm",
     "notify",
     "evidence",
-    "open_session",
-    "link_session",
     "pr_update",
     "draft_playbook",
     *_NOTIFY_RECEIVER,
-    *_CHANNEL_DISCOVERY,
 )
 
 _PRODUCT_OWNER_FLOW = spec.intents_for_role(spec.Role.PRODUCT_OWNER)
@@ -113,13 +102,10 @@ _HEAD_MARKETING_FLOW = spec.intents_for_role(spec.Role.HEAD_MARKETING)
 _BOARD_DO = (
     "note",
     "pitch",
-    "say",
     "dm",
     "notify",
     "evidence",
-    "open_session",  # Board can open strategic sessions but not link arbitrary
     *_NOTIFY_RECEIVER,
-    *_CHANNEL_DISCOVERY,
 )
 
 # Product Owner only (v1 — HoM stays a reviewer via the normal board gate when
@@ -132,7 +118,7 @@ _PRODUCT_OWNER_DO = (
 
 _AUDITOR_FLOW = spec.intents_for_role(spec.Role.AUDITOR)
 # Auditor reads, does not chat or escalate. notify_list/get for inbox visibility;
-# no ack (silent observer — wouldn't ack notifications). channels for read map.
+# no ack (silent observer — wouldn't ack notifications).
 # The Auditor is the playbook quality gate — a deliberate, bounded expansion of
 # its surface (approve/reject/archive are KB curation actions, not agent comms,
 # so the no-say/no-dm restriction is preserved).
@@ -144,7 +130,6 @@ _AUDITOR_DO = (
     "archive_playbook",
     "notify_list",
     "notify_get",
-    *_CHANNEL_DISCOVERY,
 )
 
 # PR reviewer: a read-only reviewer of inbound external/fork PRs. Flow verbs come
@@ -152,7 +137,7 @@ _AUDITOR_DO = (
 # records findings (note/evidence); the change-request is posted server-side, so
 # it has no outward agent comms (no say/dm).
 _PR_REVIEWER_FLOW = spec.intents_for_role(spec.Role.PR_REVIEWER)
-_PR_REVIEWER_DO = ("note", "evidence", "notify_list", "notify_get", *_CHANNEL_DISCOVERY)
+_PR_REVIEWER_DO = ("note", "evidence", "notify_list", "notify_get")
 
 _PROMPTER_FLOW = spec.intents_for_role(
     spec.Role.PROMPTER

@@ -31,7 +31,7 @@
 - Pass or fail QA → QA only
 - Complete a task / merge a PR → PMs only
 - Cancel tasks
-- Send `notify` (ack-required notifications) — devs use `say` (channel) and `dm` (A2A) only
+- Send `notify` (ack-required notifications) — devs use `dm` (A2A) only
 - Run shell git (`git commit`, `git push`, `git checkout`, etc.) — blocked by the bash-guard hook
 
 ## Task Flow (gateway verbs)
@@ -59,7 +59,7 @@ i_am_idle()                    → no work in your queue right now
 | MCP server            | Verbs you can call |
 |-----------------------|--------------------|
 | `roboco-flow`         | `give_me_work`, `i_will_work_on`, `open_pr`, `i_am_done`, `i_am_blocked`, `unclaim`, `resume`, `sync_branch`, `i_am_idle` |
-| `roboco-do`           | `commit`, `note`, `say`, `dm`, `evidence` |
+| `roboco-do`           | `commit`, `note`, `dm`, `evidence` |
 | `roboco-git-readonly` | `roboco_git_status`, `roboco_git_log`, `roboco_git_diff`, `roboco_git_branch_list` |
 | `roboco-optimal`      | `roboco_ask_mentor`, `roboco_kb_search` |
 
@@ -102,9 +102,6 @@ When the architectural-conventions standard is enabled, `i_am_done` is refused o
 ```python
 # Direct A2A inside your cell (same team — no policy gate)
 dm(recipient="be-qa", text="Quick sanity check: ...", task_id="...")
-
-# Channel post (visible to cell)
-say(channel="backend-cell", text="Started on task X — anyone hit Y before?")
 ```
 
 Cross-cell A2A is denied by policy. Route through your Cell PM via `escalate_up(task_id, reason)`.

@@ -47,20 +47,9 @@ class AuditorReport(BaseModel):
     sent_at: datetime | None = None
 
 
-class ChannelFeed(BaseModel):
-    """Live feed status for a channel."""
-
-    id: UUID
-    name: str
-    status: str  # streaming, idle, offline
-    last_activity: datetime | None
-    message_count_24h: int
-
-
 class AuditorDashboard(BaseModel):
     """Complete auditor dashboard data."""
 
-    live_feeds: list[ChannelFeed]
     flagged_items: list[AuditorFlag]
     metrics: dict[str, Any]
     audit_queue: list[dict[str, Any]]

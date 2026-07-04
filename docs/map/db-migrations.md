@@ -10,7 +10,7 @@ The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for 
 | `roboco/db/__init__.py` | Re-exports `Base`, session helpers, `bootstrap_database`, table classes. |
 | `roboco/db/base.py` | `Base` (DeclarativeBase + naming convention), `get_engine`, `get_session_factory`, `get_db` (FastAPI dep), `get_db_context`, `run_migrations`, `init_db`, `_db_has_*` probes. Stamps a pre-Alembic DB at 001 then upgrades head. |
 | `roboco/db/tables.py` | All 37 ORM table classes (single module). |
-| `roboco/db/seed.py` | `bootstrap_database()` — runs `init_db` then seeds agents, channels, groups, initial messages. |
+| `roboco/db/seed.py` | `bootstrap_database()` — runs `init_db` then seeds agents. |
 | `alembic/env.py` | Async Alembic env; imports `roboco.db.tables` to register metadata, overrides `sqlalchemy.url` from settings, `compare_type` + `compare_server_default` on. |
 | `alembic.ini` | Standard config; `script_location=alembic`, `prepend_sys_path=.`, no URL (set in env.py). |
 | `alembic/versions/` | 59 migration files 001..059 (two share number 026 — chained, not a collision). |
@@ -25,7 +25,7 @@ The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for 
 | `get_db_context` | fn | db/base.py | Out-of-request async session context. |
 | `init_db` | fn | db/base.py:180 | Boot entry: stamp pre-Alembic DB at 001 then `run_migrations`. |
 | `run_migrations` | fn | db/base.py:141 | Runs `alembic upgrade head` via `command.upgrade` in a thread. |
-| `bootstrap_database` | fn | db/seed.py:282 | `init_db` + seed default agents/channels/groups/messages. |
+| `bootstrap_database` | fn | db/seed.py:282 | `init_db` + seed default agents. |
 | `TaskTable` | class | tables.py:157 | Core task entity (largest table, drives lifecycle). |
 | `WorkSessionTable` | class | tables.py:798 | Per-claim session; single-active enforced by 047 partial-unique index. |
 | `AgentTable` | class | tables.py:95 | Agent identity, role, team, model provider assignment. |
@@ -47,7 +47,7 @@ The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for 
 
 | Num | File | What it adds/changes |
 |-----|------|---------------------|
-| 001 | 001_initial_schema.py | All initial tables (agents, tasks, work_sessions, channels, sessions, messages, notifications, journals, audit_log, a2a_*). |
+| 001 | 001_initial_schema.py | All initial tables (agents, tasks, work_sessions, notifications, journals, audit_log, a2a_*); also originally created channels/sessions/messages, later dropped by the comms-teardown migration. |
 | 002 | 002_persistence_tables.py | Persistence tables + `NotificationType.APPROVAL`. |
 | 003 | 003_blocker_resolver_type.py | `tasks.blocker_resolver_type` + `blockerresolvertype` enum. |
 | 004 | 004_provider_routing.py | `provider_configs` + `model_assignments`; `modelprovider`/`assignmentscope` enums (create_type=False). |
@@ -129,7 +129,7 @@ graph LR
 ```
 Migration chain 001..059
 ├── Initial schema
-│   └── 001 initial schema (agents, tasks, work_sessions, channels, sessions, messages, notifications, journals, audit_log, a2a_*)
+│   └── 001 initial schema (agents, tasks, work_sessions, notifications, journals, audit_log, a2a_*; also originally channels/sessions/messages, later dropped by the comms-teardown migration)
 ├── Persistence
 │   └── 002 persistence tables + NotificationType.APPROVAL
 ├── Blocker metadata

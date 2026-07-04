@@ -17,19 +17,13 @@ import pytest
 import pytest_asyncio
 from roboco.db.tables import (
     AgentTable,
-    ChannelTable,
-    GroupTable,
     ProjectTable,
-    SessionTable,
-    SessionTaskTable,
     WorkSessionTable,
 )
 from roboco.exceptions import TaskLifecycleError
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import (
-    ChannelType,
     Complexity,
-    SessionStatus,
     SubstituteReason,
     TaskNature,
     TaskStatus,
@@ -44,7 +38,6 @@ from roboco.services.task import (
     TaskService,
 )
 from roboco.services.work_session import WorkSessionService
-from sqlalchemy import select
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -124,85 +117,6 @@ async def test_activate_raises_when_not_in_backlog(task_setup: dict) -> None:
     task = await svc.create(_req(task_setup))  # PENDING
     with pytest.raises(ValueError, match="not in BACKLOG"):
         await svc.activate(task.id, agent_role="cell_pm")
-
-
-async def _seed_session_for_task(
-    db_session: AsyncSession, task_id: Any, agent_id: Any, *, is_primary: bool
-) -> Any:
-    """Seed a Channel/Group/Session/Link for a task to satisfy FK constraints."""
-
-    channel = ChannelTable(
-        id=uuid4(),
-        name="c",
-        slug=f"c-{uuid4().hex[:8]}",
-        type=ChannelType.CELL,
-    )
-    db_session.add(channel)
-    await db_session.flush()
-    group = GroupTable(
-        id=uuid4(),
-        name="g",
-        channel_id=channel.id,
-        members=[agent_id],
-    )
-    db_session.add(group)
-    await db_session.flush()
-    session = SessionTable(
-        id=uuid4(),
-        group_id=group.id,
-        status=SessionStatus.ACTIVE,
-    )
-    db_session.add(session)
-    await db_session.flush()
-    link = SessionTaskTable(
-        session_id=session.id,
-        task_id=task_id,
-        is_primary=is_primary,
-        relationship_type="primary",
-        added_by=agent_id,
-    )
-    db_session.add(link)
-    await db_session.flush()
-    return session
-
-
-@pytest.mark.asyncio
-async def test_activate_succeeds_when_session_linked(
-    task_setup: dict, db_session: AsyncSession
-) -> None:
-    svc = task_setup["svc"]
-    task = await svc.create(_req(task_setup, status=TaskStatus.BACKLOG))
-    await _seed_session_for_task(
-        db_session, task.id, task_setup["agent_id"], is_primary=True
-    )
-    out = await svc.activate(task.id, agent_role="cell_pm")
-    assert out.status == TaskStatus.PENDING
-
-
-# ---------------------------------------------------------------------------
-# _inherit_parent_session — primary case
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_inherit_parent_session_with_primary_creates_link(
-    task_setup: dict, db_session: AsyncSession
-) -> None:
-    svc = task_setup["svc"]
-    parent = await svc.create(_req(task_setup))
-    session = await _seed_session_for_task(
-        db_session, parent.id, task_setup["agent_id"], is_primary=True
-    )
-    # Create the child — _inherit_parent_session is called during create
-    child = await svc.create(_req(task_setup, parent_task_id=parent.id))
-    # Verify a link was created for child
-    result = await db_session.execute(
-        select(SessionTaskTable).where(SessionTaskTable.task_id == child.id)
-    )
-    inherited = result.scalar_one_or_none()
-    assert inherited is not None
-    assert inherited.session_id == session.id
-    assert inherited.is_primary is False
 
 
 # ---------------------------------------------------------------------------

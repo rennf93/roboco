@@ -29,7 +29,6 @@ def _make_deps(**overrides: object) -> ContentActionsDeps:
     base: dict[str, object] = {
         "task": AsyncMock(),
         "git": AsyncMock(),
-        "messaging": AsyncMock(),
         "a2a": AsyncMock(),
         "journal": AsyncMock(),
         "workspace": AsyncMock(),

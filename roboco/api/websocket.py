@@ -2,9 +2,9 @@
 WebSocket Handlers
 
 Real-time communication via WebSocket connections for:
-- Channel streams (all messages in a channel)
 - Agent streams (individual agent output)
-- Session streams (messages in a session)
+- Notification streams (per-agent formal notifications)
+- System stream (operator-wide: rate limits, usage, A2A live view)
 
 Security Note:
     WebSocket connections validate agent_id via query params and verify
@@ -100,20 +100,14 @@ class ConnectionManager:
     Manages WebSocket connections organized by type and ID.
 
     Supports:
-    - Channel subscriptions
     - Agent output streams
-    - Session streams
+    - Notification streams
+    - The operator-wide system stream
     """
 
     def __init__(self) -> None:
-        # channel_id -> set of websockets
-        self.channel_connections: dict[UUID, set[WebSocket]] = {}
-
         # agent_id -> set of websockets
         self.agent_connections: dict[UUID, set[WebSocket]] = {}
-
-        # session_id -> set of websockets
-        self.session_connections: dict[UUID, set[WebSocket]] = {}
 
         # agent_id -> set of websockets (for notifications)
         self.notification_connections: dict[UUID, set[WebSocket]] = {}
@@ -171,19 +165,6 @@ class ConnectionManager:
                 self.disconnect(ws)
                 return
 
-    async def connect_channel(
-        self, websocket: WebSocket, channel_id: UUID, agent_id: UUID
-    ) -> None:
-        """Connect to a channel stream."""
-        await websocket.accept()
-
-        if channel_id not in self.channel_connections:
-            self.channel_connections[channel_id] = set()
-
-        self.channel_connections[channel_id].add(websocket)
-        self.connection_agents[websocket] = agent_id
-        self._register_sender(websocket)
-
     async def connect_agent(
         self, websocket: WebSocket, target_agent_id: UUID, viewer_agent_id: UUID
     ) -> None:
@@ -195,19 +176,6 @@ class ConnectionManager:
 
         self.agent_connections[target_agent_id].add(websocket)
         self.connection_agents[websocket] = viewer_agent_id
-        self._register_sender(websocket)
-
-    async def connect_session(
-        self, websocket: WebSocket, session_id: UUID, agent_id: UUID
-    ) -> None:
-        """Connect to a session stream."""
-        await websocket.accept()
-
-        if session_id not in self.session_connections:
-            self.session_connections[session_id] = set()
-
-        self.session_connections[session_id].add(websocket)
-        self.connection_agents[websocket] = agent_id
         self._register_sender(websocket)
 
     async def connect_notifications(self, websocket: WebSocket, agent_id: UUID) -> None:
@@ -229,16 +197,8 @@ class ConnectionManager:
 
     def disconnect(self, websocket: WebSocket) -> None:
         """Remove a websocket from all subscriptions."""
-        # Remove from channel connections
-        for connections in self.channel_connections.values():
-            connections.discard(websocket)
-
         # Remove from agent connections
         for connections in self.agent_connections.values():
-            connections.discard(websocket)
-
-        # Remove from session connections
-        for connections in self.session_connections.values():
             connections.discard(websocket)
 
         # Remove from notification connections
@@ -296,33 +256,11 @@ class ConnectionManager:
         except Exception as exc:  # transport closed / cancelled
             log.debug("WebSocket send failed", error=str(exc))
 
-    async def broadcast_to_channel(
-        self, channel_id: UUID, message: dict[str, Any]
-    ) -> None:
-        """Broadcast a message to all channel subscribers."""
-        connections = self.channel_connections.get(channel_id, set())
-        if not connections:
-            return
-        data = json.dumps(message, default=str)
-        for conn in connections:
-            self._enqueue_or_send(conn, data)
-
     async def broadcast_to_agent_watchers(
         self, agent_id: UUID, message: dict[str, Any]
     ) -> None:
         """Broadcast a message to all watching an agent's stream."""
         connections = self.agent_connections.get(agent_id, set())
-        if not connections:
-            return
-        data = json.dumps(message, default=str)
-        for conn in connections:
-            self._enqueue_or_send(conn, data)
-
-    async def broadcast_to_session(
-        self, session_id: UUID, message: dict[str, Any]
-    ) -> None:
-        """Broadcast a message to all session subscribers."""
-        connections = self.session_connections.get(session_id, set())
         if not connections:
             return
         data = json.dumps(message, default=str)
@@ -336,10 +274,6 @@ class ConnectionManager:
         data = json.dumps(message, default=str)
         for conn in self.system_connections:
             self._enqueue_or_send(conn, data)
-
-    def get_channel_subscriber_count(self, channel_id: UUID) -> int:
-        """Get number of subscribers to a channel."""
-        return len(self.channel_connections.get(channel_id, set()))
 
     def get_agent_watcher_count(self, agent_id: UUID) -> int:
         """Get number of watchers of an agent's stream."""
@@ -371,74 +305,6 @@ async def validate_agent_exists(agent_id: UUID | str) -> bool:
 # =============================================================================
 # WebSocket Routes
 # =============================================================================
-
-
-@router.websocket("/channels/{channel_id}")
-async def channel_stream(
-    websocket: WebSocket,
-    channel_id: UUID,
-) -> None:
-    """
-    WebSocket endpoint for channel message streams.
-
-    Clients receive real-time messages for the channel.
-    """
-    # Verify the panel/CEO token before any subject lookup.
-    if not await _require_panel_token(websocket):
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-        return
-    # Get agent ID from query params (or auth in production)
-    agent_id_str = websocket.query_params.get("agent_id")
-    if not agent_id_str:
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-        return
-
-    try:
-        agent_id = UUID(agent_id_str)
-    except ValueError:
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-        return
-
-    await manager.connect_channel(websocket, channel_id, agent_id)
-
-    try:
-        # Send connection confirmation
-        await websocket.send_json(
-            {
-                "type": "connected",
-                "channel_id": str(channel_id),
-                "subscriber_count": manager.get_channel_subscriber_count(channel_id),
-            }
-        )
-
-        # Keep connection alive and handle incoming messages
-        while True:
-            data = await asyncio.wait_for(
-                websocket.receive_text(), timeout=IDLE_TIMEOUT_SECONDS
-            )
-
-            # Handle ping/pong for keepalive
-            if data == "ping":
-                await websocket.send_text("pong")
-                continue
-
-            # Handle other client messages if needed
-            # For now, channels are primarily for receiving
-
-    except WebSocketDisconnect:
-        # Clean client-initiated disconnect — handled here for clarity; the
-        # finally below also disconnects (idempotent) to cover every other
-        # exit path (anyio closed-resource, CancelledError, transport errors).
-        pass
-    except TimeoutError:
-        # Idle timeout — the client has been silent for IDLE_TIMEOUT_SECONDS
-        # (likely a half-open socket from a dead container). Fall through to
-        # the finally so the socket is removed from every subscription set.
-        log.warning(
-            "WebSocket idle timeout — disconnecting", timeout=IDLE_TIMEOUT_SECONDS
-        )
-    finally:
-        manager.disconnect(websocket)
 
 
 @router.websocket("/agents/{agent_id}")
@@ -480,69 +346,6 @@ async def agent_stream(
                 "type": "connected",
                 "agent_id": str(agent_id),
                 "watcher_count": manager.get_agent_watcher_count(agent_id),
-            }
-        )
-
-        while True:
-            data = await asyncio.wait_for(
-                websocket.receive_text(), timeout=IDLE_TIMEOUT_SECONDS
-            )
-            if data == "ping":
-                await websocket.send_text("pong")
-
-    except WebSocketDisconnect:
-        # Clean client-initiated disconnect — handled here for clarity; the
-        # finally below also disconnects (idempotent) to cover every other
-        # exit path (anyio closed-resource, CancelledError, transport errors).
-        pass
-    except TimeoutError:
-        # Idle timeout — the client has been silent for IDLE_TIMEOUT_SECONDS
-        # (likely a half-open socket from a dead container). Fall through to
-        # the finally so the socket is removed from every subscription set.
-        log.warning(
-            "WebSocket idle timeout — disconnecting", timeout=IDLE_TIMEOUT_SECONDS
-        )
-    finally:
-        manager.disconnect(websocket)
-
-
-@router.websocket("/sessions/{session_id}")
-async def session_stream(
-    websocket: WebSocket,
-    session_id: UUID,
-) -> None:
-    """
-    WebSocket endpoint for session message streams.
-
-    Clients receive real-time messages for a specific session.
-    """
-    # Verify the panel/CEO token before any subject lookup.
-    if not await _require_panel_token(websocket):
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-        return
-    agent_id_str = websocket.query_params.get("agent_id")
-    if not agent_id_str:
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-        return
-
-    try:
-        agent_id = UUID(agent_id_str)
-    except ValueError:
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-        return
-
-    # Validate agent exists in database
-    if not await validate_agent_exists(agent_id):
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-        return
-
-    await manager.connect_session(websocket, session_id, agent_id)
-
-    try:
-        await websocket.send_json(
-            {
-                "type": "connected",
-                "session_id": str(session_id),
             }
         )
 

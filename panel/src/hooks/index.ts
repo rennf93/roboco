@@ -2,7 +2,6 @@ export * from "./use-tasks";
 export * from "./use-rate-limit-websocket";
 export * from "./use-rate-limit-sync";
 export * from "./use-agents";
-export * from "./use-channels";
 export * from "./use-notifications";
 // Re-export dashboard hooks excluding duplicates from use-agents
 export {

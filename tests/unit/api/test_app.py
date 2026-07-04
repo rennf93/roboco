@@ -63,10 +63,6 @@ def test_create_app_registers_all_router_prefixes() -> None:
     # Spot-check a representative path from each prefix group.
     expected_prefixes = [
         "/api/agents",
-        "/api/channels",
-        "/api/groups",
-        "/api/sessions",
-        "/api/messages",
         "/api/notifications",
         "/api/stream",
         "/api/optimal",

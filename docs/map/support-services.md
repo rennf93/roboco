@@ -4,7 +4,7 @@ Slice key: `support-services` Repo root: `/Users/renzof/Documents/GitHub/ZZZ/rob
 
 ## Purpose
 
-Cross-cutting support layer beneath the delivery services: the service-base/error hierarchy every service inherits, Fernet crypto + UUID converters, the Redis-Streams event bus + workflow trigger handlers, the static seed data that bootstraps agents/channels/memberships, infrastructure health probes, the runtime-editable settings/feature-flag store, agent-record lookups, per-project Python interpreter resolution, provider-config CRUD + per-agent model routing, proactive knowledge injection, and raw-stream transcription buffering. None of these own the task lifecycle; they are the plumbing the lifecycle services, orchestrator, and API routes compose on top.
+Cross-cutting support layer beneath the delivery services: the service-base/error hierarchy every service inherits, Fernet crypto + UUID converters, the Redis-Streams event bus + workflow trigger handlers, the static seed data that bootstraps agents, infrastructure health probes, the runtime-editable settings/feature-flag store, agent-record lookups, per-project Python interpreter resolution, provider-config CRUD + per-agent model routing, proactive knowledge injection, and raw-stream transcription buffering. None of these own the task lifecycle; they are the plumbing the lifecycle services, orchestrator, and API routes compose on top.
 
 ## Files
 
@@ -25,7 +25,7 @@ Cross-cutting support layer beneath the delivery services: the service-base/erro
 | `roboco/events/handlers.py` | Workflow trigger handlers (task status → notifications, QA result, blocker, question, auditor spawn) + `register_default_handlers` | 419 |
 | `roboco/events/stream_bus.py` | `StreamEventBus`: Redis Streams durable event bus with consumer groups, ACK, pending recovery, periodic reclaim loop, dead-letter for undecodable messages | 604 |
 | `roboco/seeds/__init__.py` | Re-exports seed constants | 25 |
-| `roboco/seeds/initial_data.py` | Static seed data (agents, channels, memberships, initial messages) derived from `foundation` catalogs | 332 |
+| `roboco/seeds/initial_data.py` | Static seed data (agents) derived from `foundation` catalogs | 332 |
 | `roboco/utils/__init__.py` | Re-exports crypto + converter helpers | 23 |
 | `roboco/utils/converters.py` | `InvalidIdentifierError` + `require_uuid` / `to_python_uuid` / `to_python_uuid_list` + `repo_key` | 99 |
 | `roboco/utils/crypto.py` | Fernet `encrypt_token` / `decrypt_token` / `is_encryption_configured` + `EncryptionError` | 111 |
@@ -87,9 +87,6 @@ Cross-cutting support layer beneath the delivery services: the service-base/erro
 | `register_default_handlers` | func | `events/handlers.py:372` | Subscribes all default handlers on the bus |
 | `set_event_context` / `get_event_context` | funcs | `events/handlers.py:26,37` | DI of `notification_service` + `orchestrator` into module-global `_context` |
 | `DEFAULT_AGENTS` | const | `seeds/initial_data.py:156` | Composed from `foundation.AGENTS` + presentation names; system sentinel appended literally (team=None) |
-| `DEFAULT_CHANNELS` | const | `seeds/initial_data.py:57` | Composed from `foundation.policy.communications.CHANNELS` + display names |
-| `CHANNEL_MEMBERSHIPS` | const | `seeds/initial_data.py:224` | Per-channel member slugs derived from `CHANNELS.read_roles` + team_scope |
-| `AUDITOR_SILENT_ACCESS` | const | `seeds/initial_data.py:229` | Channels where AUDITOR ∈ `silent_roles` |
 | `AGENT_UUIDS` / `CEO_AGENT_ID` | consts | `seeds/initial_data.py:83,173` | String-keyed UUID map for legacy consumers |
 | `encrypt_token` / `decrypt_token` | funcs | `utils/crypto.py:40,67` | Fernet symmetric encrypt/decrypt; `EncryptionError` on empty/bad key |
 | `is_encryption_configured` | func | `utils/crypto.py:102` | True iff `settings.encryption_key` yields a valid Fernet |
@@ -106,11 +103,11 @@ Cross-cutting support layer beneath the delivery services: the service-base/erro
 
 **Events.** `bootstrap.py:92` calls `init_event_bus()` → `init_stream_event_bus` → `connect()` + `recover_pending()` (reclaims idle ≥60s messages from crashed consumers via `xclaim`). `register_default_handlers` subscribes task/session/handoff/QA/blocker/question/auditor handlers. Publishers call `bus.publish(Event)` → `xadd` to `roboco:stream:{category}` (trimmed to 10000). `start_listening` spawns both `_listen_loop` and `_reclaim_loop`; the reclaim loop re-runs `recover_pending` every 60s so a runtime handler failure is retried without waiting for a restart. `_listen_loop` blocks on `xreadgroup` (count=10, block=5000); `_handle_message` first tries `Event.from_json` in its own try/except — an undecodable payload (unknown `EventType`, bad UUID/timestamp, malformed JSON) is dead-lettered to `DEAD_LETTER_STREAM` then ACKed so a poison pill never wedges the stream. Successfully decoded events are dispatched via `asyncio.gather` with a per-(event.id, handler) SET-NX idempotency guard (`_run_handler_guarded`), and the message is ACKed only if every handler succeeded — failed handlers leave the message pending for the reclaim loop. `_run_handler_guarded` catches `BaseException` (including `asyncio.CancelledError`) so a mid-flight cancellation clears the idempotency marker and allows replay. Handlers use the injected `_context` (notification_service + orchestrator).
 
-**Proactive injection.** `TaskService.claim_task` (`services/task.py:2548`) and `MessagingService` (`services/messaging.py:797`) lazily `get_proactive_service()`, which singleton-inits with `OptimalService`. `on_task_claimed` runs five best-effort RAG searches (similar tasks, learnings, standards, decisions, known issues), each in its own try/except, builds a `ContextPackage` + summary. The `code_patterns` field is retained in `ContextPackage` for API/schema back-compat but is always empty — `_find_code_patterns` was removed. `api/routes/optimal.py:1255` exposes `get_context_for_task`/`get_context_for_session` which own DB lookups so routes don't query directly.
+**Proactive injection.** `TaskService.claim_task` (`services/task.py:2548`) lazily calls `get_proactive_service()`, which singleton-inits with `OptimalService`. `on_task_claimed` runs five best-effort RAG searches (similar tasks, learnings, standards, decisions, known issues), each in its own try/except, builds a `ContextPackage` + summary. The `code_patterns` field is retained in `ContextPackage` for API/schema back-compat but is always empty — `_find_code_patterns` was removed. `api/routes/optimal.py:1255` exposes `get_context_for_task`/`get_context_for_session` which own DB lookups so routes don't query directly.
 
 **Transcription.** `api/app.py:124` constructs `TranscriptionService()` at lifespan; `ExtractionService` (`services/extraction.py`) composes it. `process_chunk` appends to the per-(agent,connection) `StreamBuffer`; when `is_ready_for_extraction` (min chars / idle threshold / max chars) it returns the buffer for extraction. A `_periodic_flush` background task wakes every `flush_interval_seconds` and pushes ready buffers to registered callbacks.
 
-**Seeds.** `db/seed.py` iterates `DEFAULT_AGENTS` / `DEFAULT_CHANNELS` / `CHANNEL_MEMBERSHIPS` to populate the DB on bootstrap; `foundation/_validate_lifecycle.py:237` validates against `DEFAULT_AGENTS`. All three derive from `foundation.AGENTS` / `foundation.policy.communications.CHANNELS` so adding an agent/channel is a single foundation edit.
+**Seeds.** `db/seed.py` iterates `DEFAULT_AGENTS` to populate the DB on bootstrap; `foundation/_validate_lifecycle.py:237` validates against `DEFAULT_AGENTS`. It derives from `foundation.AGENTS` so adding an agent is a single foundation edit.
 
 **Toolchain.** `WorkspaceService` (`services/workspace.py:1308`) calls `resolve_target_python(workspace)` to pick the interpreter for `uv --python` when provisioning a target project's clone.
 
@@ -195,7 +192,7 @@ support-services
 │   └── stream_bus.py      # Redis Streams durable bus (xadd/xreadgroup/xack/xclaim)
 ├── seeds/
 │   ├── __init__.py
-│   └── initial_data.py    # DEFAULT_AGENTS/CHANNELS/MEMBERSHIPS from foundation
+│   └── initial_data.py    # DEFAULT_AGENTS from foundation
 └── utils/
     ├── __init__.py
     ├── converters.py      # UUID coercion
@@ -215,7 +212,7 @@ support-services
 - `roboco.models.optimal` (`IndexType`, `QueryContext`, `SearchResult`) — `proactive`
 - `roboco.models.message.RawStream`, `roboco.models.transcription.*` — `transcription`
 - `roboco.agents_config.get_agent_role` — `llm`
-- `roboco.foundation.identity` + `roboco.foundation.policy.communications` — `seeds`
+- `roboco.foundation.identity` — `seeds`
 - `roboco.services.optimal.get_optimal_service` — `proactive` (lazy)
 - `roboco.logging.get_logger` — `crypto`
 
@@ -242,9 +239,9 @@ support-services
 | `resolve_target_python` | `services/workspace.py:1308` | Workspace provisioning (clone/claim) |
 | `init_event_bus` / `register_default_handlers` / `set_event_context` | `bootstrap.py:92-96` | App bootstrap |
 | `bus.publish` / `publish_task_event` | services, orchestrator, websocket_bridge | Status transitions, live events |
-| `get_proactive_service` | `services/task.py:2548`, `services/messaging.py:797`, `api/routes/optimal.py:1257` | claim_task, session start, `/api/optimal/context` |
+| `get_proactive_service` | `services/task.py:2548`, `api/routes/optimal.py:1257` | claim_task, `/api/optimal/context` |
 | `TranscriptionService` | `api/app.py:124`, `services/extraction.py` | Lifespan construct; extraction pipeline |
-| `DEFAULT_AGENTS` / `DEFAULT_CHANNELS` / `CHANNEL_MEMBERSHIPS` | `db/seed.py`, `foundation/_validate_lifecycle.py` | DB bootstrap + lifecycle validation |
+| `DEFAULT_AGENTS` | `db/seed.py`, `foundation/_validate_lifecycle.py` | DB bootstrap + lifecycle validation |
 | `encrypt_token` / `decrypt_token` | `provider`, `llm` (via ProviderService), ProjectService | Token persist / read |
 
 ## Config Flags
@@ -291,7 +288,6 @@ Other settings read here: `transcript_retention_days` (int, ≥1; read by orches
 - **`ProactiveKnowledgeService._find_code_patterns` was removed** (`proactive.py`) — the dead method, its call in `build_context_package`, the `"Found N code patterns"` summary line, and the count were all deleted. `ContextPackage.code_patterns` is retained as an always-empty field for API/schema back-compat (serialized in `to_dict`; docstring marks it deprecated). Do not rely on it being populated.
 - **`ProactiveKnowledgeService` singleton lazy-inits `OptimalService`** (`proactive.py:537`) — the first `get_proactive_service()` call triggers `get_optimal_service()` which may do embedding-model setup; call it early or expect latency on first claim.
 - **Seeds `system` sentinel is appended literally with `team=None`** (`seeds/initial_data.py:144`) — the postgres `team` enum has no `system` value, so seeding it through the normal path would fail. Don't add `system` to `_AGENT_PRESENTATION` expecting it to flow through `_build_default_agents`.
-- **`_TEAM_SCOPED_ROLES` is duplicated** in `seeds/initial_data.py:180` vs `agents_config._TEAM_SCOPED_ROLES` — kept duplicated to avoid a circular import (agents_config imports `AGENT_UUIDS` from seeds). Edit both together.
 - **`require_uuid` raises `InvalidIdentifierError` (a `ValueError` subclass), not `NotFoundError`** (`utils/converters.py:38`) — callers in `llm.py` use it on `provider.id` which is a PK and never None in practice, but a None would surface as a 500-class error not a 404. The typed subclass allows callers to handle a bad identifier distinctly from other exceptions; existing `except ValueError` handlers are unaffected.
 - **`encrypt_token` rejects empty strings** (`crypto.py:53`) — the provider/project token convention is `""` = clear to NULL, handled at the service layer (`_apply_auth_token_change` checks `clear_auth_token`/`not data.auth_token` before calling encrypt); never pass `""` directly to `encrypt_token`.
 - **`check_redis` opens a fresh client each call and closes it** (`health.py:27`) — fine for a health probe, but don't reuse the pattern for hot paths.
@@ -299,7 +295,7 @@ Other settings read here: `transcript_retention_days` (int, ≥1; read by orches
 ## Drift from CLAUDE.md
 
 - **`services/settings.py:46` `FEATURE_FLAGS`** includes `rag_auto_update_enabled` ("RAG auto-update") and `transcript_prune_enabled` ("Transcript pruning") which are **NOT** listed in the CLAUDE.md "Feature Flags / company-in-a-box" enumeration (that list names web research, strategy engine, pitch provisioning, external/internal PR review, toolchain match, conventions, gateway-health, multi-repo CI-watch, dependency-update bot, gated release manager, organizational memory loop, and the self-heal flags). Two flags exist in code with no CLAUDE.md mention.
-- **`services/proactive.py`** (`ProactiveKnowledgeService`) — an entire service that injects RAG context on task-claim / session-start — is **not mentioned anywhere in CLAUDE.md**. The org-memory loop (`ROBOCO_ORG_MEMORY_ENABLED`, `_briefing_for` institutional_memory) is documented, but that is a separate, newer system; `proactive.py` predates and overlaps with it yet remains present and wired (`task.py:2548`, `messaging.py:797`, `optimal.py:1257`).
+- **`services/proactive.py`** (`ProactiveKnowledgeService`) — an entire service that injects RAG context on task-claim / session-start — is **not mentioned anywhere in CLAUDE.md**. The org-memory loop (`ROBOCO_ORG_MEMORY_ENABLED`, `_briefing_for` institutional_memory) is documented, but that is a separate, newer system; `proactive.py` predates and overlaps with it yet remains present and wired (`task.py:2548`, `optimal.py:1257`).
 - **`services/transcription.py`** (`TranscriptionService`) — the raw-LLM-stream buffering layer between WebSocket and the extraction pipeline — is **not mentioned in CLAUDE.md**. CLAUDE.md documents WebSocket streams and the extraction target (ExtractedMessages) but not the transcription buffer service.
 - **`services/llm.py:316` `derive_mode`** returns `"grok"` for a single GLOBAL GROK assignment; CLAUDE.md's provider table lists `GROK` as a `ModelProvider` and documents the Grok CLI provider, and `apply_mode` supports `"grok"` — consistent. No drift here, noted for completeness.
 - **`events/handlers.py:332` `handle_auditor_spawn`** spawns the auditor on `TASK_BLOCKED`/`TASK_CANCELLED`/`TASK_AWAITING_CEO_APPROVAL`; CLAUDE.md says "The Auditor sees all" and is a "silent observer" but does not describe the event-driven one-shot spawn on exceptional lifecycle events. Minor doc gap, not a contradiction.
@@ -329,7 +325,6 @@ No files in this slice changed between `fd10cc86` and `HEAD`, so there are no *r
 | `probe_ollama_tags` leaks raw exception text into error string | `services/llm.py:86-92` | Generic `except Exception` puts `str(exc)` in the returned error, surfaced to the panel/UI — minor info disclosure. | low |
 | `TranscriptionService` sync callbacks can stall the flush task | `services/transcription.py:57,233` | `register_callback` takes a sync `Callable` invoked without `await` inside the async `_periodic_flush`; a blocking callback blocks all buffer flushing. | medium |
 | `get_ready_buffers` never removes buffers → unbounded growth | `services/transcription.py:208` | Iterates and yields ready buffers without clearing; only `_flush_all` (shutdown) clears. A long-running orchestrator with many sessions accumulates buffers unless callers `flush_buffer` after extraction. | medium |
-| `_TEAM_SCOPED_ROLES` duplicated across seeds and agents_config | `seeds/initial_data.py:180` | Duplicated to avoid a circular import; editing one without the other silently desyncs channel membership expansion vs runtime permission scoping. | low |
 | `apply_persisted_feature_flags` mutates shared `settings` singleton unsynchronized | `services/settings.py:163` | Runs once at lifespan (safe), but any future caller that re-invokes it mid-serve could race concurrent flag reads. | low |
 | ~~`ProactiveKnowledgeService._find_code_patterns` vestigial~~ | `services/proactive.py` | **FIXED** (321e68d7): method removed; `ContextPackage.code_patterns` retained as always-empty for back-compat. | ~~low~~ |
 | `require_uuid` raises untyped `ValueError` not `NotFoundError` | `utils/converters.py:38` | **FIXED** (6b441e42): now raises `InvalidIdentifierError(ValueError)` — typed, backward-compatible. A None/bad identifier still surfaces as a 500-class error (not 404), but callers can now handle it distinctly. | low |

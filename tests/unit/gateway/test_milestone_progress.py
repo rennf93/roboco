@@ -29,7 +29,6 @@ async def test_record_milestone_progress_calls_add_progress() -> None:
         journal=AsyncMock(),
         audit=AsyncMock(),
         evidence_repo=AsyncMock(),
-        messaging=AsyncMock(),
     )
     c = Choreographer(deps)
 
@@ -59,7 +58,6 @@ async def test_record_milestone_progress_swallows_errors() -> None:
         journal=AsyncMock(),
         audit=AsyncMock(),
         evidence_repo=AsyncMock(),
-        messaging=AsyncMock(),
     )
     c = Choreographer(deps)
 

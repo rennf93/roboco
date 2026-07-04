@@ -549,27 +549,6 @@ def propose_roadmap(cycle_goal: str, items: list[dict[str, Any]]) -> dict[str, A
     )
 
 
-def say(channel: str, text: str, task_id: str | None = None) -> dict[str, Any]:
-    """Post to a channel. task_id auto-injected if you have an active task.
-
-    Args:
-        channel: Channel slug WITHOUT leading `#`. Valid values:
-            - Cell channels: `backend-cell`, `frontend-cell`, `uxui-cell`
-            - Cross-cell: `dev-all`, `qa-all`, `pm-all`, `doc-all`
-            - Management: `main-pm-board`, `board-private`
-            - Broadcast: `announcements`, `all-hands`
-            Write access varies by role — gateway returns `not_authorized` if
-            you cannot write to the requested channel; the error lists which
-            channels you can write to.
-        text: Message body.
-        task_id: Optional; auto-filled from your active task if omitted.
-    """
-    return _post(
-        "/api/v1/do/say",
-        {"channel": channel, "text": text, "task_id": task_id},
-    )
-
-
 def dm(
     recipient: str,
     text: str,
@@ -702,60 +681,6 @@ def progress(
     return _post("/api/v1/do/progress", body)
 
 
-def open_session(
-    task_id: str,
-    channel: str,
-    topic: str,
-    relationship_type: str = "discussion",
-    group_id: str | None = None,
-) -> dict[str, Any]:
-    """PM creates a discussion session linked to a task.
-
-    Args:
-        task_id: UUID of the task this session discusses.
-        channel: Channel slug without `#` (e.g. ``backend-cell``).
-        topic: Short topic for the session (≤200 chars).
-        relationship_type: ``discussion`` | ``planning`` | ``review`` |
-            ``retrospective``.
-        group_id: Optional UUID to place the session under a specific group.
-
-    Populates the panel's Sessions tab. Only PM-or-up roles can open sessions
-    — devs / QA / docs participate via channels and DMs.
-    """
-    return _post(
-        "/api/v1/do/open_session",
-        {
-            "task_id": task_id,
-            "channel": channel,
-            "topic": topic,
-            "relationship_type": relationship_type,
-            "group_id": group_id,
-        },
-    )
-
-
-def link_session(
-    session_id: str,
-    task_id: str,
-    is_primary: bool = False,
-    relationship_type: str = "discussion",
-) -> dict[str, Any]:
-    """Link an existing session to a task (idempotent).
-
-    Use when an existing discussion now covers a new task too. You must
-    own the task you're linking; cross-agent linking is denied.
-    """
-    return _post(
-        "/api/v1/do/link_session",
-        {
-            "session_id": session_id,
-            "task_id": task_id,
-            "is_primary": is_primary,
-            "relationship_type": relationship_type,
-        },
-    )
-
-
 def notify_list(
     unread_only: bool = True,
     pending_ack_only: bool = False,
@@ -796,16 +721,6 @@ def notify_ack(notification_id: str) -> dict[str, Any]:
         "/api/v1/do/notify_ack",
         {"notification_id": notification_id},
     )
-
-
-def channels() -> dict[str, Any]:
-    """List the channel slugs you can read / write.
-
-    Use this BEFORE ``say(channel=...)`` if you're unsure of the slug —
-    inventing slugs returns ``Channel not found``. Returns
-    ``{writable: [...], readable: [...]}``.
-    """
-    return _post("/api/v1/do/channels", {})
 
 
 def pr_update(
@@ -855,6 +770,15 @@ def read_messages() -> dict[str, Any]:
     return _post("/api/v1/do/read_messages", {})
 
 
+def read_a2a() -> dict[str, Any]:
+    """Read the bodies of your unread A2A direct messages (and mark them read).
+
+    Unlike ``read_messages`` (which only clears the unread counter), this
+    returns what other agents actually said to you so you can act on it.
+    """
+    return _post("/api/v1/do/read_a2a", {})
+
+
 # ---------- Tool registry ----------
 #
 # Maps the tool name an agent calls (matches manifest entries and the
@@ -865,19 +789,16 @@ _TOOLS: dict[str, Any] = {
     "note": note,
     "pitch": pitch,
     "propose_roadmap": propose_roadmap,
-    "say": say,
     "dm": dm,
     "notify": notify,
     "evidence": evidence,
     "progress": progress,
-    "open_session": open_session,
-    "link_session": link_session,
     "notify_list": notify_list,
     "notify_get": notify_get,
     "notify_ack": notify_ack,
-    "channels": channels,
     "pr_update": pr_update,
     "read_messages": read_messages,
+    "read_a2a": read_a2a,
     "draft_playbook": draft_playbook,
     "approve_playbook": approve_playbook,
     "reject_playbook": reject_playbook,

@@ -72,78 +72,6 @@ async def _handle_notification_sent(event: Event) -> None:
         )
 
 
-async def _handle_session_event(event: Event) -> None:
-    """Handle session lifecycle events and forward to WebSocket."""
-    data = event.data
-
-    session_id_str = data.get("session_id")
-    if not session_id_str:
-        return
-
-    try:
-        session_id = UUID(session_id_str)
-    except ValueError:
-        return
-
-    connections = manager.session_connections.get(session_id, set())
-    if not connections:
-        return
-
-    # Forward event to session subscribers
-    event_payload = {
-        "type": f"session.{event.type.value.split('.')[-1]}",
-        "session_id": session_id_str,
-        "data": data,
-    }
-
-    await manager.broadcast_to_session(session_id, event_payload)
-    logger.debug(
-        "Session event forwarded to WebSocket",
-        event_type=event.type.value,
-        session_id=session_id_str,
-    )
-
-
-async def _handle_message_event(event: Event) -> None:
-    """Forward a MESSAGE_SENT event to the channel + session WebSocket streams.
-
-    The service publishes MESSAGE_SENT on every persisted send; this builds the
-    ``message.new`` payload the panel's channel/session stream filters on and
-    fans it out to both subscribers so a live chat view updates without a
-    manual refresh. Either id missing/unparseable → no-op (defensive).
-    """
-    data = event.data
-    session_id_str = data.get("session_id")
-    channel_id_str = data.get("channel_id")
-    if not session_id_str or not channel_id_str:
-        return
-    try:
-        session_id = UUID(session_id_str)
-        channel_id = UUID(channel_id_str)
-    except ValueError:
-        return
-
-    payload = {
-        "type": "message.new",
-        "message_id": data.get("message_id"),
-        "session_id": session_id_str,
-        "channel_id": channel_id_str,
-        "agent_id": data.get("agent_id"),
-        "content": data.get("content", ""),
-        "message_type": data.get("message_type", "dialogue"),
-        "is_reply": bool(data.get("is_reply")),
-        "reply_to": data.get("reply_to"),
-        "timestamp": data.get("timestamp"),
-    }
-    await manager.broadcast_to_session(session_id, payload)
-    await manager.broadcast_to_channel(channel_id, payload)
-    logger.debug(
-        "Message event forwarded to WebSocket",
-        message_id=data.get("message_id"),
-        session_id=session_id_str,
-    )
-
-
 async def _handle_agent_event(event: Event) -> None:
     """Handle agent lifecycle events and forward to WebSocket."""
     data = event.data
@@ -244,11 +172,6 @@ def register_websocket_bridge_handlers() -> None:
     bus.subscribe(EventType.NOTIFICATION_SENT, _handle_notification_sent)
     bus.subscribe(EventType.NOTIFICATION_ACKED, _handle_notification_sent)
 
-    # Session events -> WebSocket
-    bus.subscribe(EventType.SESSION_CREATED, _handle_session_event)
-    bus.subscribe(EventType.SESSION_CLOSED, _handle_session_event)
-    bus.subscribe(EventType.SESSION_TIMEOUT, _handle_session_event)
-
     # Agent events -> WebSocket
     bus.subscribe(EventType.AGENT_SPAWNED, _handle_agent_event)
     bus.subscribe(EventType.AGENT_STOPPED, _handle_agent_event)
@@ -262,9 +185,6 @@ def register_websocket_bridge_handlers() -> None:
 
     # Usage events -> system WebSocket (panel dashboard)
     bus.subscribe(EventType.USAGE_SNAPSHOT, _handle_usage_event)
-
-    # Message delivery -> channel + session WebSocket streams (live chat)
-    bus.subscribe(EventType.MESSAGE_SENT, _handle_message_event)
 
     # A2A live chat -> operator system WebSocket (CEO live view)
     bus.subscribe(EventType.A2A_MESSAGE_SENT, _handle_a2a_message_event)

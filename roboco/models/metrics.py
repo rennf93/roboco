@@ -106,7 +106,6 @@ class AgentMetrics:
     tasks_completed_week: int
     current_task_id: UUID | None
     avg_completion_hours: float | None
-    messages_sent_week: int
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -117,7 +116,6 @@ class AgentMetrics:
             if self.current_task_id
             else None,
             "avg_completion_hours": self.avg_completion_hours,
-            "messages_sent_week": self.messages_sent_week,
         }
 
 

@@ -9,7 +9,7 @@ The metrics & observability slice is the read-only measurement layer of RoboCo: 
 | Path | Role | approx LOC |
 |---|---|---|
 | `roboco/services/metrics.py` | `MetricsService` — velocity, blockers, team/agent metrics, health, cycle-time/bottleneck/rework/scorecard observability | 905 |
-| `roboco/services/dashboard.py` | `DashboardService` — auditor flags/reports (in-memory singleton), CEO overview, channel feeds, audit queue, agent status, recent activity | 457 |
+| `roboco/services/dashboard.py` | `DashboardService` — auditor flags/reports (in-memory singleton), CEO overview, audit queue, agent status, recent activity | 457 |
 | `roboco/services/cockpit.py` | `CockpitService` — read-only CEO "is the business winning?" summary (goals+delivery+spend+signals) | 97 |
 | `roboco/services/usage.py` | `UsageService` — token usage summary, time-series, by-agent/team/model, projection, cache efficiency, today summary, recent sessions | 478 |
 | `roboco/services/usage_events.py` | `UsageSnapshot` dataclass + `publish_usage_snapshot` — publishes USAGE_SNAPSHOT to the StreamEventBus | 52 |
@@ -29,7 +29,6 @@ The metrics & observability slice is the read-only measurement layer of RoboCo: 
 | `MetricsService.get_team_metrics` | method | metrics.py:229 | Per-team active/completed/blocked + doc-coverage (dev_notes proxy) |
 | `MetricsService.get_all_team_metrics` | method | metrics.py:322 | Loop over BACKEND/FRONTEND/UX_UI |
 | `MetricsService.get_agent_metrics` | method | metrics.py:333 | Per-agent weekly completed, avg hours, messages |
-| `MetricsService.get_communication_volume` | method | metrics.py:402 | Messages by type, active channels, notifications in window |
 | `MetricsService.get_health_status` | method | metrics.py:487 | ok/slow/critical from blocked ratio + stale-active heuristic |
 | `MetricsService._determine_health_status` | method | metrics.py:451 | Threshold logic (CRITICAL_BLOCKED_RATIO=0.3, SLOW=0.15, STALE=5) |
 | `MetricsService.get_cycle_time_by_stage` | method | metrics.py:529 | Per-stage dwell reconstructed from `audit_log` `task.<status>` events via LEAD window; excludes named qa_fail/pr_fail |
@@ -42,12 +41,11 @@ The metrics & observability slice is the read-only measurement layer of RoboCo: 
 | `MetricsService._avg_cycle_hours` | method | metrics.py:869 | Avg started→completed hours for completed tasks |
 | `_as_hours` | func | metrics.py:47 | Coerce SQL epoch aggregate to rounded float (avoids Decimal→JSON string crash) |
 | `ACTIVE_STATUSES` | const | metrics.py:61 | CLAIMED/IN_PROGRESS/VERIFYING/AWAITING_QA (BLOCKED excluded — note) |
-| `DashboardService` | class | dashboard.py:58 | Auditor flags/reports + CEO overview + channel/agent/activity feeds |
+| `DashboardService` | class | dashboard.py:58 | Auditor flags/reports + CEO overview + agent/activity feeds |
 | `_DashboardStorageHolder` | class | dashboard.py:35 | Process-singleton in-memory flag/report store |
 | `get_storage` / `reset_storage` | func | dashboard.py:41/48 | Singleton accessor + test reset |
 | `DashboardService.create_flag/get_flags/resolve_flag` | methods | dashboard.py:87/102/124 | Auditor flag CRUD over in-memory store |
 | `DashboardService.create_report/send_report` | methods | dashboard.py:146/184 | Auditor report CRUD + send marking |
-| `DashboardService.get_channel_feeds` | method | dashboard.py:203 | Per-channel streaming/idle/offline status |
 | `DashboardService.get_audit_queue` | method | dashboard.py:241 | Blocked + awaiting-QA tasks as queue items |
 | `DashboardService.get_team_health_list` | method | dashboard.py:279 | Health for BACKEND/FRONTEND/UX_UI/BOARD |
 | `DashboardService.get_key_metrics` | method | dashboard.py:299 | Velocity + doc coverage + blockers summary |
@@ -140,7 +138,7 @@ metrics-observability
 │   └── pricing.py             # _PRICING table, _lookup_prices, calculate_cost, _is_anthropic_model
 ├── roboco/services/
 │   ├── metrics.py             # MetricsService (velocity/blockers/team/agent/comm/health/observability)
-│   ├── dashboard.py           # DashboardService + _DashboardStorageHolder (flags/reports/CEO/channel/queue)
+│   ├── dashboard.py           # DashboardService + _DashboardStorageHolder (flags/reports/CEO/queue)
 │   ├── cockpit.py             # CockpitService (summary/signals)
 │   ├── usage.py               # UsageService (summary/series/by-dim/projection/cache/today/sessions)
 │   ├── usage_events.py        # UsageSnapshot + publish_usage_snapshot
@@ -152,7 +150,7 @@ metrics-observability
 ## Dependencies
 
 **Internal (roboco):**
-- `roboco.db.tables` — `AgentSpawnSessionTable`, `DailyUsageRollupTable`, `AgentTable`, `AuditLogTable`, `TaskTable`, `MessageTable`, `NotificationTable`, `ChannelTable`
+- `roboco.db.tables` — `AgentSpawnSessionTable`, `DailyUsageRollupTable`, `AgentTable`, `AuditLogTable`, `TaskTable`, `NotificationTable`
 - `roboco.models.base` — `TaskStatus`, `Team`, `AgentStatus`
 - `roboco.models.metrics` — all metric result schemas (VelocityMetrics, StageTiming, ReworkReport, Scorecard, …)
 - `roboco.models.dashboard` — `FlagData`, `ReportData`, `DashboardStorage`, `CreateFlagParams`, …

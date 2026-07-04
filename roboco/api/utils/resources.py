@@ -67,7 +67,7 @@ async def get_by_field_or_404[T](
     Get a resource by a field value or raise 404.
 
     Usage:
-        channel = await get_by_field_or_404(db, ChannelTable, "slug", slug, "Channel")
+        project = await get_by_field_or_404(db, ProjectTable, "slug", slug, "Project")
 
     Args:
         db: Database session
@@ -162,7 +162,7 @@ def require_membership(
     Require that the agent is a member.
 
     Usage:
-        require_membership(channel.members, agent_id, "channel")
+        require_membership(group.members, agent_id, "group")
 
     Args:
         members: List of member UUIDs (Python UUID, str, or SQLAlchemy UUID)
