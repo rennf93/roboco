@@ -22,9 +22,12 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import structlog
 
 from roboco.config import settings
 from roboco.services import minio_client
+
+log = structlog.get_logger(__name__)
 
 
 class RemotionRendererError(Exception):
@@ -151,7 +154,19 @@ class RemotionRenderer:
         path = out_dir / f"{render_key}-{orientation}.mp4"
         path.write_bytes(mp4_bytes)
         if minio_client.get_client() is not None:
-            minio_client.put_object(mp4_bytes, path.name)
+            # MinIO is a durable COPY, not the render's source of truth — local
+            # disk is. The serve route falls back to FileResponse on S3Error, so
+            # a failed PUT (MinIO down, full disk, transient 5xx) must never fail
+            # the render or it'd retry-loop a task whose local file is already
+            # fine. Log and continue; the next render re-attempts the PUT.
+            try:
+                minio_client.put_object(mp4_bytes, path.name)
+            except Exception as exc:  # durable copy, never fatal to the render
+                log.warning(
+                    "minio put failed; render kept on local disk",
+                    key=path.name,
+                    error=str(exc),
+                )
         return str(path)
 
 

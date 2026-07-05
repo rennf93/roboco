@@ -221,3 +221,36 @@ async def test_save_puts_to_minio_when_configured(
     data, key = put_calls[0]
     assert key == "task-77-vertical.mp4"
     assert data == b"fake-mp4-bytes"
+
+
+@pytest.mark.asyncio
+async def test_save_swallows_minio_put_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed MinIO PUT (MinIO down, transient 5xx) must not fail the render —
+    local disk is the source of truth and the serve route falls back to
+    FileResponse on S3Error. _save logs and returns the local path; the local
+    file is written. Mocks only."""
+    out_dir = tmp_path / "out"
+    monkeypatch.setattr(cfg, "video_output_dir", str(out_dir))
+
+    minio_client._reset_client()
+    monkeypatch.setattr(minio_client, "get_client", object)  # guard passes
+
+    def failing_put_object(_data: bytes, _key: str) -> None:
+        raise RuntimeError("minio unreachable")
+
+    monkeypatch.setattr(minio_client, "put_object", failing_put_object)
+
+    try:
+        # _save is a sync @staticmethod; call it directly (no httpx needed).
+        path = RemotionRenderer._save(
+            b"fake-mp4-bytes", render_key="task-88", orientation="square"
+        )
+    finally:
+        minio_client._reset_client()
+
+    saved = Path(path)
+    assert saved.exists()
+    assert saved.read_bytes() == b"fake-mp4-bytes"
+    assert saved.name == "task-88-square.mp4"
