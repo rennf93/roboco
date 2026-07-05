@@ -7,7 +7,11 @@
 # Base stage
 # =============================================================================
 FROM node:22-alpine AS base
-RUN corepack enable pnpm
+# Activate the exact version panel/package.json pins (packageManager: pnpm@11.10.0)
+# rather than trusting corepack's bundled default — a future node:22-alpine that
+# ships a different pnpm would silently change the build's package manager.
+# prepare --activate pins the shim to 11.10.0 so corepack and packageManager agree.
+RUN corepack enable pnpm && corepack prepare pnpm@11.10.0 --activate
 
 # =============================================================================
 # Build stage
@@ -18,22 +22,19 @@ WORKDIR /app
 # pnpm 11 prompts for confirmation on modules-purge unless told this is CI.
 ENV CI=true
 
-# Copy package manifests first (for layer caching)
-COPY panel/package.json panel/pnpm-lock.yaml ./
+# Copy package manifests first (for layer caching). pnpm-workspace.yaml
+# carries the `allowBuilds` map (sharp, unrs-resolver) — without it pnpm 11
+# hard-errors with [ERR_PNPM_IGNORED_BUILDS] (exit 1) on sharp's postinstall.
+COPY panel/package.json panel/pnpm-lock.yaml panel/pnpm-workspace.yaml ./
 
 # Install dependencies with shamefully-hoist to flatten node_modules
-# (prevents symlink issues with styled-jsx and other peer deps).
-#
-# pnpm 11 hard-errors on packages with install scripts unless explicitly
-# approved. `sharp` and `unrs-resolver` both ship platform-specific
-# prebuilt binaries via @img/sharp-* and napi-postinstall, so the install
-# scripts are verification-only — skipping them is safe at runtime.
-# `strictDepBuilds=false` downgrades the hard error to a warning while
-# keeping the install reproducible against the frozen lockfile.
+# (prevents symlink issues with styled-jsx and other peer deps). With the
+# allowBuilds approval in pnpm-workspace.yaml, sharp and unrs-resolver run
+# their postinstall scripts and install their platform-specific binaries —
+# no strictDepBuilds downgrade needed.
 RUN pnpm install \
     --frozen-lockfile \
-    --shamefully-hoist \
-    --config.strictDepBuilds=false
+    --shamefully-hoist
 
 # Copy panel source code
 COPY panel/ ./

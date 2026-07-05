@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+from roboco.config import settings as cfg
 from roboco.services.gateway.content_actions import ContentActions, ContentActionsDeps
 
 
@@ -177,3 +178,142 @@ async def test_propose_feature_spotlight_materializes_new_draft_task(
         feature_title="Organizational Memory Loop",
         body="Did you know RoboCo agents learn from every completed task?",
     )
+
+
+# --------------------------------------------------------------------------- #
+# wants_video companion — additive, default-False, best-effort
+# --------------------------------------------------------------------------- #
+
+
+def _mock_spotlight_materialization(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Wire an open exploration + a materializing XEngine, mirroring the happy
+    path above, so wants_video tests only need to stub the video engine."""
+    agent_id = uuid4()
+    exploration = _FakeTask(assigned_to=agent_id)
+    task_svc = MagicMock()
+    task_svc.list_open_feature_explorations = AsyncMock(return_value=[exploration])
+    monkeypatch.setattr("roboco.services.task.get_task_service", lambda _s: task_svc)
+
+    materialized = _FakeTask(assigned_to=agent_id)
+    x_engine = MagicMock()
+    x_engine.is_feature_seen = AsyncMock(return_value=False)
+    x_engine.materialize_feature_spotlight = AsyncMock(return_value=materialized)
+    monkeypatch.setattr("roboco.services.x_engine.get_x_engine", lambda _s: x_engine)
+    return agent_id
+
+
+def _mock_video_engine(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    video_engine = MagicMock()
+    video_engine.open_video_task = AsyncMock(return_value=MagicMock())
+    monkeypatch.setattr(
+        "roboco.services.video_engine.get_video_engine", lambda _s: video_engine
+    )
+    return video_engine
+
+
+def _enable_video(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cfg, "video_engine_enabled", True)
+    monkeypatch.setattr(cfg, "video_on_spotlight", True)
+
+
+@pytest.mark.asyncio
+async def test_propose_feature_spotlight_wants_video_opens_video_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_video(monkeypatch)
+    agent_id = _mock_spotlight_materialization(monkeypatch)
+    video_engine = _mock_video_engine(monkeypatch)
+
+    env = await _actions("head_marketing").propose_feature_spotlight(
+        agent_id=agent_id, **_valid_kwargs(), wants_video=True
+    )
+
+    assert env.error is None
+    video_engine.open_video_task.assert_awaited_once()
+    kwargs = video_engine.open_video_task.call_args.kwargs
+    assert kwargs["occasion"] == "spotlight org-memory"
+    assert kwargs["platforms"] == ["x", "tiktok"]
+    expected_brief = (
+        "Organizational Memory Loop: Did you know RoboCo agents learn from "
+        "every completed task?"
+    )
+    assert kwargs["brief"] == expected_brief
+    assert kwargs["script"] == expected_brief  # falls back — no video_script given
+
+
+@pytest.mark.asyncio
+async def test_propose_feature_spotlight_wants_video_uses_explicit_script(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _enable_video(monkeypatch)
+    agent_id = _mock_spotlight_materialization(monkeypatch)
+    video_engine = _mock_video_engine(monkeypatch)
+
+    env = await _actions("head_marketing").propose_feature_spotlight(
+        agent_id=agent_id,
+        **_valid_kwargs(),
+        wants_video=True,
+        video_script="Custom voiceover script",
+    )
+
+    assert env.error is None
+    kwargs = video_engine.open_video_task.call_args.kwargs
+    assert kwargs["script"] == "Custom voiceover script"
+    assert kwargs["brief"] != "Custom voiceover script"  # brief is always title:body
+
+
+@pytest.mark.asyncio
+async def test_propose_feature_spotlight_default_wants_video_false_skips_video(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Default False -> byte-for-byte unchanged spotlight behavior: the video
+    engine is never even looked up."""
+    _enable_video(monkeypatch)
+    agent_id = _mock_spotlight_materialization(monkeypatch)
+    video_engine = _mock_video_engine(monkeypatch)
+
+    env = await _actions("head_marketing").propose_feature_spotlight(
+        agent_id=agent_id, **_valid_kwargs()
+    )
+
+    assert env.error is None
+    assert env.status == "feature_spotlight_proposed"
+    video_engine.open_video_task.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_propose_feature_spotlight_wants_video_but_flags_off_skips_video(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cfg, "video_engine_enabled", False)
+    monkeypatch.setattr(cfg, "video_on_spotlight", False)
+    agent_id = _mock_spotlight_materialization(monkeypatch)
+    video_engine = _mock_video_engine(monkeypatch)
+
+    env = await _actions("head_marketing").propose_feature_spotlight(
+        agent_id=agent_id, **_valid_kwargs(), wants_video=True
+    )
+
+    assert env.error is None
+    video_engine.open_video_task.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_propose_feature_spotlight_video_failure_does_not_break_spotlight(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Best-effort: a video-engine blow-up must not surface as an error on the
+    spotlight verb — the spotlight draft already materialized."""
+    _enable_video(monkeypatch)
+    agent_id = _mock_spotlight_materialization(monkeypatch)
+    monkeypatch.setattr(
+        "roboco.services.video_engine.get_video_engine",
+        MagicMock(side_effect=RuntimeError("video-engine boom")),
+    )
+
+    env = await _actions("head_marketing").propose_feature_spotlight(
+        agent_id=agent_id, **_valid_kwargs(), wants_video=True
+    )
+
+    assert env.error is None
+    assert env.status == "feature_spotlight_proposed"

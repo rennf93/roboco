@@ -447,6 +447,10 @@ clean:
 	@find . | grep -E "(__pycache__|\.pyc|\.pyo|\.pytest_cache|\.ruff_cache|\.mypy_cache|data/|site/)" | xargs rm -rf
 	@cd panel && rm -rf node_modules/ && rm -rf .next/ && rm -rf logs/ && rm -rf coverage/
 	@cd ..
+	@cd motion && rm -rf node_modules/
+	@cd ..
+	@cd remotion-renderer && rm -rf node_modules/
+	@cd ..
 
 # Security
 .PHONY: panel-token

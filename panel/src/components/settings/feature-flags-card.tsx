@@ -20,6 +20,7 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { XCredentialsForm } from "@/components/settings/x-credentials-card";
+import { TikTokCredentialsForm } from "@/components/settings/tiktok-credentials-card";
 import { cn } from "@/lib/utils";
 import { Flag, ChevronDown, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
@@ -68,11 +69,18 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
     "Weekly: the Product Owner explores the company's projects and proposes a themed cycle of 3-7 roadmap items — you approve or reject each one individually; approved items land in the backlog and nothing auto-starts.",
   fable_mode_enabled:
     "Compose the Fable behavioral doctrine into every agent's system prompt and install the matching turn-discipline/honesty/verification hooks at spawn (both Claude Code and grok runtimes). Off by default; spawn path is byte-for-byte unchanged.",
+  video_engine_enabled:
+    "Master switch for the video-generation engine — a UX/UI dev authors a bespoke Remotion composition per trigger, then a render pass produces the 9:16/1:1 MP4 and holds it here as a draft. Even when on, distribution needs an explicit per-clip approval below; set X / TikTok credentials to post.",
+  video_on_release:
+    "Also open a video-authoring task when a release publishes. Off by default even with video_engine_enabled on.",
+  video_on_spotlight:
+    "Also open a video-authoring task when you approve a feature-spotlight draft that requests one. Off by default even with video_engine_enabled on.",
 };
 
 export function FeatureFlagsCard() {
   const queryClient = useQueryClient();
   const [xCredsOpen, setXCredsOpen] = useState(false);
+  const [tiktokCredsOpen, setTiktokCredsOpen] = useState(false);
 
   const { data, isLoading } = useQuery({
     queryKey: ["feature-flags"],
@@ -124,12 +132,13 @@ export function FeatureFlagsCard() {
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           {flags.map((flag) => {
             const isXEngine = flag.key === "x_engine_enabled";
+            const isVideoEngine = flag.key === "video_engine_enabled";
             return (
               <div
                 key={flag.key}
                 className={cn(
                   "rounded-lg border p-4",
-                  isXEngine && "md:col-span-2",
+                  (isXEngine || isVideoEngine) && "md:col-span-2",
                 )}
               >
                 <div className="flex items-start justify-between gap-4">
@@ -173,6 +182,31 @@ export function FeatureFlagsCard() {
                     </CollapsibleTrigger>
                     <CollapsibleContent className="pt-3">
                       <XCredentialsForm />
+                    </CollapsibleContent>
+                  </Collapsible>
+                )}
+                {isVideoEngine && (
+                  <Collapsible
+                    open={tiktokCredsOpen}
+                    onOpenChange={setTiktokCredsOpen}
+                    className="mt-3"
+                  >
+                    <CollapsibleTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="w-full justify-between px-2 text-muted-foreground"
+                      >
+                        <span className="text-sm">TikTok credentials</span>
+                        {tiktokCredsOpen ? (
+                          <ChevronDown className="h-4 w-4" />
+                        ) : (
+                          <ChevronRight className="h-4 w-4" />
+                        )}
+                      </Button>
+                    </CollapsibleTrigger>
+                    <CollapsibleContent className="pt-3">
+                      <TikTokCredentialsForm />
                     </CollapsibleContent>
                   </Collapsible>
                 )}

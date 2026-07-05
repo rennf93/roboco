@@ -103,6 +103,33 @@ services:
         echo "=== All models ready! ==="
 
   # ==========================================================================
+  # Remotion Renderer - sidecar for the video-generation engine (bundles +
+  # renders motion/ compositions to MP4). Mirrors the ollama sidecar pattern:
+  # a plain HTTP service the orchestrator talks to, nothing more. Harmless
+  # when idle — it only renders when POSTed; the video_engine_* feature
+  # flags gate whether the orchestrator ever sends it work. No DB access, no
+  # git, no credentials — it only ever reads what it's POSTed.
+  # ==========================================================================
+  remotion-renderer:
+    build:
+      context: .
+      dockerfile: docker/remotion.Dockerfile
+    image: roboco-remotion
+    container_name: roboco-remotion
+    restart: unless-stopped
+    networks:
+      - default
+    # Chrome headless rendering can crash under Docker's default 64MB
+    # /dev/shm ("Chrome crashed"); give it real shared memory.
+    shm_size: "1gb"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ==========================================================================
   # Agent Base Image Builder (specialized images built on-demand by orchestrator)
   # ==========================================================================
   agent-base-image:
@@ -320,6 +347,10 @@ services:
       ROBOCO_LOCAL_LLM_MODEL: glm-5.2:cloud
       ROBOCO_DEFAULT_EMBEDDING_MODEL: qwen3-embedding:0.6b
       ROBOCO_OLLAMA_BASE_URL: http://roboco-ollama:11434
+      # Remotion renderer sidecar (use container name). The video engine
+      # itself is default-off (video_engine_enabled); this just points the
+      # client at the sidecar for when it's armed.
+      ROBOCO_REMOTION_BASE_URL: http://roboco-remotion:3001
       # Host paths for spawning agent containers (required for Docker-in-Docker)
       # IMPORTANT: These must be ABSOLUTE paths on the host filesystem
       ROBOCO_HOST_PROJECT_DIR: ${ROBOCO_HOST_PROJECT_DIR:-/volume1/roboco}
@@ -398,6 +429,16 @@ services:
       #     the Product Owner, who proposes a themed cycle of roadmap items;
       #     the CEO approves each item individually into the backlog.
       ROBOCO_ROADMAP_ENGINE_ENABLED: ${ROBOCO_ROADMAP_ENGINE_ENABLED:-true}
+      # Video-generation engine: a UX/UI dev authors a bespoke Remotion video
+      # per release/spotlight/on-demand trigger through the normal delivery
+      # lifecycle; the render loop above renders it via the remotion-renderer
+      # sidecar and holds the clip as a CEO-approval draft — nothing
+      # auto-posts. Config default is OFF; ARMED here for the NAS deploy like
+      # the rest. Left OFF in docker-compose.registry.yml so the published
+      # default stays conservative until verified on a live run.
+      ROBOCO_VIDEO_ENGINE_ENABLED: ${ROBOCO_VIDEO_ENGINE_ENABLED:-true}
+      ROBOCO_VIDEO_ON_RELEASE: ${ROBOCO_VIDEO_ON_RELEASE:-true}
+      ROBOCO_VIDEO_ON_SPOTLIGHT: ${ROBOCO_VIDEO_ON_SPOTLIGHT:-true}
       # Fable-mode: composes the Fable behavioral doctrine into every agent's
       # system prompt + installs turn-discipline/honesty/verification hooks
       # at spawn (both runtimes). Config default is OFF; ARMED here for the
@@ -486,6 +527,9 @@ services:
       # each spawned agent write structured logs here so we can audit past
       # runs instead of relying on ephemeral `docker logs`.
       - ${ROBOCO_DATA_DIR:-./data}/logs:/data/logs
+      # Rendered MP4s from the video engine — persisted so renders survive
+      # container recreation (default ROBOCO_VIDEO_OUTPUT_DIR=/data/video-renders).
+      - ${ROBOCO_DATA_DIR:-./data}/video-renders:/data/video-renders
       # Per-agent SessionStart briefings (pre-rendered task context)
       - ${ROBOCO_DATA_DIR:-./data}/briefings:/app/briefings
       # Per-agent spawn manifests (role-scoped tool list) — written by the

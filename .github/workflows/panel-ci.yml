@@ -41,7 +41,9 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          # pnpm 11 (pinned in panel/package.json via packageManager) requires
+          # Node >=22.13; Node 20 makes `pnpm install` fail the engines check.
+          node-version: '22'
 
       - name: Enable corepack (pnpm)
         run: corepack enable

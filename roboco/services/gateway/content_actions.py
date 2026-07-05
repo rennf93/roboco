@@ -33,6 +33,8 @@ from roboco.services.x_client import MAX_TWEET_CHARS
 if TYPE_CHECKING:
     from uuid import UUID
 
+    from roboco.foundation.identity import Team
+
 
 logger = structlog.get_logger()
 
@@ -326,6 +328,13 @@ _DRAFT_PLAYBOOK_ROLES: frozenset[str] = frozenset(
     {"developer", "qa", "documenter", "cell_pm", "main_pm"}
 )
 _CURATE_PLAYBOOK_ROLES: frozenset[str] = frozenset({"auditor"})
+
+# propose_video's target-platform set + TikTok caption limit (the X caption
+# reuses MAX_TWEET_CHARS). No role frozenset here, unlike the sets above:
+# propose_video is gated on the caller's TEAM at runtime (_caller_team), not
+# role — Role.DEVELOPER doesn't distinguish a ux-dev from a be-dev/fe-dev.
+_VIDEO_PLATFORMS: frozenset[str] = frozenset({"x", "tiktok"})
+_MAX_TIKTOK_CAPTION_CHARS = 2200
 
 
 def _coerce_pitch_cells(target_cells: list[str]) -> list[Any]:
@@ -755,6 +764,22 @@ class ContentActions:
     async def _caller_role(self, agent_id: UUID) -> str:
         agent = await self.task.agent_for(agent_id)
         return str(agent.role) if agent is not None else ""
+
+    async def _caller_team(self, agent_id: UUID) -> Team | None:
+        """The caller's Team (or None), via the same agent_for lookup
+        _caller_role uses. Team-scoped verbs (propose_video) need this
+        instead of role: Role.DEVELOPER alone can't tell a ux-dev from a
+        be-dev/fe-dev — the team is the only signal that distinguishes them.
+        """
+        from roboco.foundation.identity import Team
+
+        agent = await self.task.agent_for(agent_id)
+        if agent is None or not agent.team:
+            return None
+        try:
+            return Team(agent.team)
+        except ValueError:
+            return None
 
     async def draft_playbook(
         self,
@@ -1242,12 +1267,20 @@ class ContentActions:
         feature_slug: str,
         feature_title: str,
         body: str,
+        wants_video: bool = False,
+        video_script: str = "",
     ) -> Envelope:
         """Head of Marketing authors ONE feature-spotlight draft.
 
         Validates role, field lengths, the 280-char tweet limit, and that the
         feature hasn't already been covered, then materializes the held X-queue
         draft and completes the caller's exploration task. One call per cycle.
+
+        ``wants_video`` optionally requests a companion video (gated on
+        ``video_engine_enabled AND video_on_spotlight``, on top of this
+        default-False param) — a best-effort side effect that never disturbs
+        the spotlight draft above. Defaults leave the flow byte-for-byte
+        unchanged.
         """
         role = await self._caller_role(agent_id)
         if role not in _FEATURE_SPOTLIGHT_ROLES:
@@ -1295,6 +1328,11 @@ class ContentActions:
             feature_title=feature_title,
             body=body,
         )
+        video_armed = settings.video_engine_enabled and settings.video_on_spotlight
+        if wants_video and video_armed:
+            await self._open_spotlight_video(
+                feature_slug, feature_title, body, video_script
+            )
         return Envelope.ok(
             status="feature_spotlight_proposed",
             task_id=str(new_task.id),
@@ -1302,6 +1340,154 @@ class ContentActions:
             context_briefing={
                 "feature_slug": feature_slug,
                 "feature_title": feature_title,
+            },
+        )
+
+    async def _open_spotlight_video(
+        self, feature_slug: str, feature_title: str, body: str, video_script: str
+    ) -> None:
+        """Best-effort: a spotlight video failure must never break the
+        spotlight draft that already materialized above. HoM decides *what*
+        (this brief); UX/UI later builds *how* (the composition)."""
+        try:
+            from roboco.services.video_engine import get_video_engine
+
+            feature_brief = f"{feature_title}: {body}"
+            await get_video_engine(self.task.session).open_video_task(
+                occasion=f"spotlight {feature_slug}",
+                script=video_script.strip() or feature_brief,
+                platforms=["x", "tiktok"],
+                brief=feature_brief,
+            )
+        except Exception as exc:
+            logger.warning("spotlight video draft failed (best-effort)", error=str(exc))
+
+    @classmethod
+    def _reject_caption(
+        cls, value: str, *, field: str, max_chars: int
+    ) -> Envelope | None:
+        """Soup + max-length check for one caption field, folded into a single
+        return point so ``_reject_video_fields`` (which calls this twice) stays
+        under the xenon/PLR0911 return-count budget."""
+        if rej := cls._reject_soup(value, field=field, min_chars=8):
+            return rej
+        if len(value) > max_chars:
+            return Envelope.invalid_state(
+                message=(
+                    f"{field} is {len(value)} chars, over the {max_chars}-char limit"
+                ),
+                remediate=f"shorten {field} to {max_chars} characters or fewer",
+                context_briefing={},
+            )
+        return None
+
+    @classmethod
+    def _reject_video_fields(
+        cls,
+        composition_id: str,
+        x_caption: str,
+        tiktok_caption: str,
+        platforms: list[str],
+    ) -> Envelope | None:
+        """Soup + limit + platform-set validation for a video draft's fields,
+        collapsed into one caller-side check (keeps propose_video's return-
+        statement count under the xenon/PLR0911 budget)."""
+        if rej := cls._reject_soup(composition_id, field="composition_id", min_chars=2):
+            return rej
+        if rej := cls._reject_caption(
+            x_caption, field="x_caption", max_chars=MAX_TWEET_CHARS
+        ):
+            return rej
+        if rej := cls._reject_caption(
+            tiktok_caption, field="tiktok_caption", max_chars=_MAX_TIKTOK_CAPTION_CHARS
+        ):
+            return rej
+        if not platforms or not set(platforms) <= _VIDEO_PLATFORMS:
+            return Envelope.invalid_state(
+                message=(
+                    f"platforms {platforms!r} must be a non-empty subset of "
+                    f"{sorted(_VIDEO_PLATFORMS)}"
+                ),
+                remediate="pass platforms as a non-empty list from {'x','tiktok'}",
+                context_briefing={},
+            )
+        return None
+
+    async def propose_video(
+        self,
+        *,
+        agent_id: UUID,
+        composition_id: str,
+        x_caption: str,
+        tiktok_caption: str,
+        platforms: list[str],
+        input_props: dict[str, Any] | None = None,
+    ) -> Envelope:
+        """UX/UI dev proposes a video's composition ref + captions.
+
+        Metadata-only — NO render, no sidecar/HTTP call: rendering happens
+        later in an orchestrator-async loop, off this path (the do-tool
+        transport has a fixed 30s timeout a real render would blow through).
+
+        Gated on the caller's TEAM, not role (v1: UX/UI only) — every dev's
+        manifest carries this tool, so the runtime check here is the real
+        gate. Validates the caption limits + platform set, then MERGES the
+        fields onto the caller's open authoring task's ``video_draft``
+        marker, preserving the occasion/script/brief the video engine seeded
+        it with. commit + open_pr afterward sends the composition through
+        the normal PR-review gate.
+        """
+        from roboco.foundation.identity import Team
+
+        team = await self._caller_team(agent_id)
+        if team is not Team.UX_UI:
+            team_label = team.value if team is not None else "none"
+            return Envelope.not_authorized(
+                message=(
+                    f"team {team_label!r} cannot propose video metadata; only "
+                    "UX/UI authors video compositions"
+                ),
+                remediate="this verb is UX/UI-only",
+                context_briefing={},
+            )
+        if rej := self._reject_video_fields(
+            composition_id, x_caption, tiktok_caption, platforms
+        ):
+            return rej
+
+        from roboco.services.task import VIDEO_SOURCE, get_task_service
+
+        task_svc = get_task_service(self.task.session)
+        task = await task_svc.get_active_task_for_agent(agent_id)
+        if task is None or task.source != VIDEO_SOURCE:
+            return Envelope.invalid_state(
+                message="no active video-authoring task assigned to you",
+                remediate=(
+                    "propose_video runs against the video task you're actively "
+                    "working on; claim your assigned authoring task first"
+                ),
+                context_briefing={},
+            )
+        existing = markers.get_video_draft(task) or {}
+        markers.set_video_draft(
+            task,
+            {
+                **existing,
+                "composition_id": composition_id,
+                "input_props": input_props or {},
+                "x_caption": x_caption,
+                "tiktok_caption": tiktok_caption,
+                "platforms": platforms,
+            },
+        )
+        await self.task.session.flush()
+        return Envelope.ok(
+            status="video_proposed",
+            task_id=str(task.id),
+            next="commit your composition, then open_pr to send it through the PR gate",
+            context_briefing={
+                "composition_id": composition_id,
+                "platforms": platforms,
             },
         )
 

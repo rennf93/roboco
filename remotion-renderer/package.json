@@ -1,0 +1,26 @@
+{
+  "name": "remotion-renderer",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "pnpm@11.10.0",
+  "description": "Sidecar HTTP service: untars a motion/ composition source, bundles it, renders one MP4 cut with Remotion, and streams the bytes back. Credential-free, git-free — reads only what it's POSTed.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@remotion/bundler": "^4.0.0",
+    "@remotion/fonts": "^4.0.0",
+    "@remotion/renderer": "^4.0.0",
+    "express": "^5.0.0",
+    "express-rate-limit": "^8.5.2",
+    "multer": "^2.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "remotion": "^4.0.0",
+    "tar": "^7.0.0"
+  }
+}

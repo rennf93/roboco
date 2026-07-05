@@ -79,6 +79,40 @@ def test_transition_note_roundtrip_keyed_by_event() -> None:
     assert m.get_transition_note(t, "never_set") is None
 
 
+def test_video_draft_roundtrip() -> None:
+    t = _task()
+    assert m.get_video_draft(t) is None
+    m.set_video_draft(
+        t,
+        {
+            "occasion": "release v1.0.0",
+            "script": "Here's what shipped...",
+            "platforms": ["x", "tiktok"],
+            "brief": "Announce the release",
+        },
+    )
+    draft = m.get_video_draft(t)
+    assert draft is not None
+    assert draft["occasion"] == "release v1.0.0"
+    assert draft["platforms"] == ["x", "tiktok"]
+
+
+def test_video_draft_extended_not_replaced() -> None:
+    """The render pass extends the authoring marker rather than clobbering it —
+    the caller is responsible for spreading the existing dict (set_video_draft
+    itself just reassigns whatever payload it is given)."""
+    t = _task()
+    m.set_video_draft(t, {"occasion": "spotlight: org-memory", "script": "x"})
+    existing = m.get_video_draft(t) or {}
+    m.set_video_draft(
+        t, {**existing, "mp4_paths": {"vertical": "a.mp4", "square": "b.mp4"}}
+    )
+    draft = m.get_video_draft(t)
+    assert draft is not None
+    assert draft["occasion"] == "spotlight: org-memory"
+    assert draft["mp4_paths"] == {"vertical": "a.mp4", "square": "b.mp4"}
+
+
 def test_documenter_self_heal_head_supersede() -> None:
     t = _task()
     m.set_documenter(t, "doc-uuid")

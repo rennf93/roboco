@@ -2272,3 +2272,33 @@ class XSeenFeatureTable(Base):
     seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
     )
+
+
+# =============================================================================
+# TIKTOK ACCOUNT TABLES
+# =============================================================================
+
+
+class TikTokCredentialsTable(Base):
+    """Singleton row holding the Fernet-encrypted TikTok OAuth2 secrets
+    (mirrors ``XCredentialsTable``). Unlike X's OAuth 1.0a secrets,
+    access_token/refresh_token rotate on refresh — ``TikTokCredentialsService.
+    update_tokens`` is the narrower write for that path; client_key/
+    client_secret never change post-setup. Never read by an agent — decrypted
+    only server-side, by ``tiktok_client``."""
+
+    __tablename__ = "tiktok_credentials"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    client_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    client_secret_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    access_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    refresh_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
+    )

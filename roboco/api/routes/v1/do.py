@@ -27,6 +27,7 @@ from roboco.api.schemas.v1.do import (
     ProgressRequest,
     ProposeFeatureSpotlightRequest,
     ProposeRoadmapRequest,
+    ProposeVideoRequest,
     PRUpdateRequest,
     ReadMessagesRequest,
     RejectPlaybookRequest,
@@ -172,6 +173,31 @@ async def do_propose_feature_spotlight(
         feature_slug=body.feature_slug,
         feature_title=body.feature_title,
         body=body.body,
+        wants_video=body.wants_video,
+        video_script=body.video_script,
+    )
+    return envelope_to_response(env, request)
+
+
+@router.post("/propose_video")
+@guard_deco.rate_limit(requests=20, window=60)
+@guard_deco.max_request_size(size_bytes=65536)
+@guard_deco.custom_validation(secret_exfil_validator)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
+async def do_propose_video(
+    request: Request,
+    body: ProposeVideoRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.propose_video(
+        agent_id=x_agent_id,
+        composition_id=body.composition_id,
+        x_caption=body.x_caption,
+        tiktok_caption=body.tiktok_caption,
+        platforms=body.platforms,
+        input_props=body.input_props,
     )
     return envelope_to_response(env, request)
 

@@ -32,3 +32,11 @@ export type {
 } from "./x";
 export { roadmapApi } from "./roadmap";
 export type { RoadmapCycle, RoadmapItem, RoadmapItemActionResult } from "./roadmap";
+export { videoApi, videoMediaUrl } from "./video";
+export type {
+  VideoCut,
+  VideoPost,
+  VideoPostExecuteResult,
+  VideoRequestResult,
+  TikTokCredentialsStatus,
+} from "./video";
