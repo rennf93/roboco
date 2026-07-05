@@ -84,6 +84,30 @@ def put_object(data: bytes, key: str) -> None:
     )
 
 
+def stat_object(key: str) -> None:
+    """Eager existence/readiness probe — raises if the object is missing or
+    MinIO is down, so the serve route can fall back to ``FileResponse`` BEFORE
+    starting a ``StreamingResponse`` it can no longer take back.
+
+    ``get_object_stream`` is a lazy generator: its ``client.get_object`` call
+    runs on the first ``next()``, i.e. after the route has returned and
+    Starlette has started streaming — an ``S3Error`` there is uncatchable. This
+    probe runs eagerly inside the route's ``try/except`` so the fallback
+    actually fires. No-op when unconfigured (the route checks ``get_client()``
+    first; this is defensive).
+
+    ponytail: stat-then-get is two round trips; a mid-stream failure after a
+    successful stat is a rare race (object deleted / MinIO blips between the
+    two calls) the CEO can retry — accept, or merge into one eager get_object
+    returning the open response for a single round trip if preview latency
+    ever matters.
+    """
+    client = get_client()
+    if client is None:
+        return
+    client.stat_object(bucket_name=settings.minio_bucket, object_name=key)
+
+
 def get_object_stream(key: str) -> Iterator[bytes]:
     """Yield object bytes from `settings.minio_bucket`/`key` for `StreamingResponse`.
 
@@ -102,4 +126,4 @@ def get_object_stream(key: str) -> Iterator[bytes]:
         response.release_conn()
 
 
-__all__ = ["S3Error", "get_client", "get_object_stream", "put_object"]
+__all__ = ["S3Error", "get_client", "get_object_stream", "put_object", "stat_object"]
