@@ -22,7 +22,7 @@ Config fields, the `minio` dependency, and the compose services (`minio` + `mini
 
 ## Planned end state (later chunks)
 
-- **Deployment note.** `docs/deploy/deployment.mdx` operator note: optional `mc cp --recursive` backfill of existing renders into MinIO, how to point a dev env at MinIO, and the default-off state. Deferred to chunk 5.
+- (none — the deployment note landed in chunk 5; see docs.roboco.tech/deploy/deployment)
 
 ## Why not presigned URLs
 
