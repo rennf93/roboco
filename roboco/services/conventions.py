@@ -13,6 +13,7 @@ on are pure.
 
 from __future__ import annotations
 
+import asyncio
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -87,7 +88,11 @@ class ConventionsService(BaseService):
     ) -> ConventionsStandard:
         """Return the effective standard for ``project`` at its current HEAD."""
         pid = self._pid(project)
-        root, head = self._resolve(project, workspace)
+        # _resolve runs `git rev-parse` and _read_committed_standard/_derive
+        # walk the filesystem + parse yaml — all sync I/O. Offload to a thread
+        # so the shared API event loop stays responsive during conventions reads
+        # (reachable from GET /api/projects/{id}/conventions and the spawn path).
+        root, head = await asyncio.to_thread(self._resolve, project, workspace)
         cached = await self._cache_get(pid, head)
         # A cached ``degraded`` row is not trusted: a degraded file may have
         # been repaired in place at the same (stale) head key, and serving the
@@ -95,7 +100,9 @@ class ConventionsService(BaseService):
         if cached is not None and cached.status != "degraded":
             return ConventionsStandard.model_validate(cached.effective_map)
 
-        file_standard, status = self._read_committed_standard(root)
+        file_standard, status = await asyncio.to_thread(
+            self._read_committed_standard, root
+        )
         if status == "degraded":
             last_good = await self._latest_ok_map(pid)
             if last_good is not None:
@@ -103,7 +110,9 @@ class ConventionsService(BaseService):
                 # repaired in place), so never pin it — re-derive next call.
                 return last_good
 
-        mapping = effective_map(self._derive(root), file_standard)
+        mapping = effective_map(
+            await asyncio.to_thread(self._derive, root), file_standard
+        )
         if status != "degraded":
             await self._cache_put(pid, head, mapping, status)
         return mapping
@@ -185,8 +194,8 @@ class ConventionsService(BaseService):
         if last_good is not None:
             mapping = last_good
         else:
-            root, _ = self._resolve(project, workspace)
-            mapping = self._derive(root)
+            root, _ = await asyncio.to_thread(self._resolve, project, workspace)
+            mapping = await asyncio.to_thread(self._derive, root)
         return await self._publish(
             project, render_yaml(mapping), restore=True, workspace=workspace
         )
@@ -215,11 +224,13 @@ class ConventionsService(BaseService):
         resolvable workspace at all.
         """
         pid = self._pid(project)
-        root, head = self._resolve(project, workspace)
+        root, head = await asyncio.to_thread(self._resolve, project, workspace)
         if root is None:
             status = "unknown"
         else:
-            _file_standard, status = self._read_committed_standard(root)
+            _file_standard, status = await asyncio.to_thread(
+                self._read_committed_standard, root
+            )
         last_ok = await self._latest_ok_row(pid)
         return ConventionsHealth(
             status=status,
