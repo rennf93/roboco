@@ -5,6 +5,7 @@ Environment-based settings using Pydantic Settings.
 """
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field, computed_field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -1015,23 +1016,45 @@ class Settings(BaseSettings):
     )
 
     # ==========================================================================
-    # Fable-mode (opus-fable-playbook adoption) — DEFAULT OFF
+    # Fable-mode (opus-fable-playbook + ponytail build-laziness adoption) — DEFAULT OFF
     # ==========================================================================
     # Composes the Fable 5 behavioral doctrine into every agent's system prompt
     # (compose_prompt's fable_doctrine_layer) and installs the matching
     # turn-discipline/honesty/verification hooks at spawn on both runtimes
     # (ClaudeCodeProvider's per-agent settings.json; grok's write_grok_hooks).
-    # Source: github.com/rennf93/opus-fable-playbook (MIT), vendored at
-    # agents/prompts/doctrine/fable.md. Off by default; the spawn path is
+    # Bundled under the same flag: ponytail_doctrine_layer composes the
+    # ponytail "lazy senior dev" build-laziness doctrine (role-scoped —
+    # developers get the full ladder at doctrine/ponytail.md, other roles get
+    # the ethos-only cut at doctrine/ponytail-ethos.md). Ponytail is prompt-
+    # only (no hooks), so bundling adds no grok/hook surface.
+    # Sources: github.com/rennf93/opus-fable-playbook (MIT), vendored at
+    # agents/prompts/doctrine/fable.md; ponytail plugin (MIT, Copyright (c)
+    # 2026 DietrichGebert), vendored trimmed at agents/prompts/doctrine/
+    # ponytail.md (+ ethos sibling). Off by default; the spawn path is
     # byte-for-byte unchanged when off.
     fable_mode_enabled: bool = Field(
         default=False,
         description=(
-            "Master switch for opus-fable-playbook adoption: the Fable "
-            "doctrine ambient layer in every composed system prompt, plus "
-            "the matching turn-discipline/honesty/verification hooks "
-            "installed at spawn (Claude Code settings.json + grok "
-            "~/.grok/hooks). Off => spawn path byte-for-byte unchanged."
+            "Master switch for opus-fable-playbook + ponytail build-laziness "
+            "adoption: the Fable doctrine ambient layer in every composed "
+            "system prompt, plus the matching turn-discipline/honesty/"
+            "verification hooks installed at spawn (Claude Code settings.json "
+            "+ grok ~/.grok/hooks), AND the role-scoped Ponytail build-"
+            "laziness doctrine (developers get the full ladder, other roles "
+            "get the ethos-only cut; prompt-only, no hooks). Off => spawn "
+            "path byte-for-byte unchanged."
+        ),
+    )
+    ponytail_intensity: Literal["lite", "full", "ultra"] = Field(
+        default="full",
+        description=(
+            "Operative intensity for the developer Ponytail doctrine (env "
+            "ROBOCO_PONYTAIL_INTENSITY, default 'full'). 'lite' = build what's "
+            "asked, name the lazier alternative; 'full' = ladder enforced "
+            "(default); 'ultra' = YAGNI extremist, deletion before addition, "
+            "challenge the requirement. Applied to developers only; "
+            "non-developers run a fixed restrained stance regardless. A "
+            "string value, NOT a feature flag — no FEATURE_FLAGS entry."
         ),
     )
 
