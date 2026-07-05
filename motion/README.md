@@ -25,7 +25,7 @@ The render-truth check happens on the sidecar, against the merged code.
 ```ts
 type ReleaseAnnouncementProps = {
   script: string; // one or two sentences — the voiceover-style hook
-  version: string; // e.g. "0.18.0" — rendered as "v0.18.0"
+  version: string; // e.g. "0.19.0" — rendered as "v0.19.0"
   highlights: string[]; // shipped-feature bullets; only the first 4 render
   orientation: "vertical" | "square";
 };

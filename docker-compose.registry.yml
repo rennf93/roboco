@@ -289,6 +289,12 @@ services:
       ROBOCO_SELF_HEAL_ORIGINATE_ENABLED: ${ROBOCO_SELF_HEAL_ORIGINATE_ENABLED:-false}
       ROBOCO_SELF_HEAL_PROJECT_SLUG: ${ROBOCO_SELF_HEAL_PROJECT_SLUG:-roboco-api}
       ROBOCO_SELF_HEAL_CI_WORKFLOW: ${ROBOCO_SELF_HEAL_CI_WORKFLOW:-ci.yml}
+      # Video engine (Remotion): NAS-default-on, OFF in public registry —
+      # heavier optional feature. Arm via .env + uncomment the video-renders
+      # bind mount above so renders persist.
+      ROBOCO_VIDEO_ENGINE_ENABLED: ${ROBOCO_VIDEO_ENGINE_ENABLED:-false}
+      ROBOCO_VIDEO_ON_RELEASE: ${ROBOCO_VIDEO_ON_RELEASE:-false}
+      ROBOCO_VIDEO_ON_SPOTLIGHT: ${ROBOCO_VIDEO_ON_SPOTLIGHT:-false}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${CLAUDE_AUTH_DIR:-${HOME}/.claude}:/root/.claude
@@ -305,9 +311,9 @@ services:
       # Per-agent GROK usage capture (usage.json -> finalizer).
       - ${ROBOCO_DATA_DIR:-./data}/grok-usage:/data/grok-usage
       - ${ROBOCO_DATA_DIR:-./data}/logs:/data/logs
-      # Rendered MP4s from the video engine — persisted so renders survive
-      # container recreation (default ROBOCO_VIDEO_OUTPUT_DIR=/data/video-renders).
-      - ${ROBOCO_DATA_DIR:-./data}/video-renders:/data/video-renders
+      # video engine: NAS-only bind mount, off by default in public registry.
+      # Uncomment + set ROBOCO_VIDEO_ENGINE_ENABLED=true in .env to arm.
+      # - ${ROBOCO_DATA_DIR:-./data}/video-renders:/data/video-renders
       - ${ROBOCO_DATA_DIR:-./data}/briefings:/app/briefings
       - ${ROBOCO_DATA_DIR:-./data}/manifests:/app/manifests
     depends_on:
