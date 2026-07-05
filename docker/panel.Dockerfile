@@ -7,7 +7,11 @@
 # Base stage
 # =============================================================================
 FROM node:22-alpine AS base
-RUN corepack enable pnpm
+# Activate the exact version panel/package.json pins (packageManager: pnpm@11.10.0)
+# rather than trusting corepack's bundled default — a future node:22-alpine that
+# ships a different pnpm would silently change the build's package manager.
+# prepare --activate pins the shim to 11.10.0 so corepack and packageManager agree.
+RUN corepack enable pnpm && corepack prepare pnpm@11.10.0 --activate
 
 # =============================================================================
 # Build stage

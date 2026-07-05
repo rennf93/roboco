@@ -31,7 +31,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
-RUN corepack enable pnpm
+# Activate the exact version remotion-renderer/package.json pins
+# (packageManager: pnpm@11.10.0) rather than trusting corepack's bundled
+# default — a future node:22-alpine shipping a different pnpm would silently
+# change the build's package manager.
+RUN corepack enable pnpm && corepack prepare pnpm@11.10.0 --activate
 
 WORKDIR /app
 

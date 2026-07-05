@@ -2,10 +2,11 @@
   "name": "remotion-renderer",
   "version": "1.0.0",
   "private": true,
+  "packageManager": "pnpm@11.10.0",
   "description": "Sidecar HTTP service: untars a motion/ composition source, bundles it, renders one MP4 cut with Remotion, and streams the bytes back. Credential-free, git-free — reads only what it's POSTed.",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13"
   },
   "scripts": {
     "start": "node server.js"
