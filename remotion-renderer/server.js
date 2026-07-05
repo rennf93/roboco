@@ -8,6 +8,7 @@
 // orchestrator POSTs to it.
 import express from "express";
 import multer from "multer";
+import rateLimit from "express-rate-limit";
 import { createReadStream } from "node:fs";
 import { renderComposition, UnknownCompositionError } from "./render.js";
 
@@ -24,11 +25,25 @@ const upload = multer({
 
 const app = express();
 
+// This sidecar is container-network-only (no published ports) with a single
+// trusted caller (the orchestrator), which already renders cuts serially.
+// The limiter is not the primary control — it's a cheap ceiling against a
+// runaway retry storm or a misbehaving caller tying up Chrome headless +
+// the render temp dir. 30/min is well above any legitimate render rate
+// (each render takes seconds, ~a few calls/min) so it never blocks real use.
+const renderLimiter = rateLimit({
+  windowMs: 60_000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "rate limit: too many render requests" },
+});
+
 app.get("/health", (_req, res) => {
   res.status(200).json({ status: "ok" });
 });
 
-app.post("/render", upload.single("source"), async (req, res) => {
+app.post("/render", renderLimiter, upload.single("source"), async (req, res) => {
   const body = req.body ?? {};
   const compositionId = body.composition_id;
   const orientation = body.orientation;
