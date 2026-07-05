@@ -956,6 +956,32 @@ class Settings(BaseSettings):
             "The sidecar never writes here directly — it only returns bytes."
         ),
     )
+    # MinIO object storage for rendered MP4s. Empty endpoint = disabled (the
+    # media route falls back to FileResponse from the local video-renders dir).
+    # Armed in the NAS compose; intentionally left OFF in the registry compose.
+    minio_endpoint: str = Field(
+        default="",
+        description=(
+            "MinIO endpoint, e.g. http://roboco-minio:9000. Empty = disabled "
+            "(FileResponse fallback)."
+        ),
+    )
+    minio_access_key: str = Field(
+        default="",
+        description="MinIO access key. Required when minio_endpoint is set.",
+    )
+    minio_secret_key: str = Field(
+        default="",
+        description="MinIO secret key. Required when minio_endpoint is set.",
+    )
+    minio_bucket: str = Field(
+        default="roboco-video-renders",
+        description="MinIO bucket for rendered videos.",
+    )
+    minio_region: str = Field(
+        default="us-east-1",
+        description="MinIO region.",
+    )
 
     # Board roadmap engine — weekly, the Product Owner explores the company's
     # projects and proposes a themed cycle of roadmap items; the CEO approves
