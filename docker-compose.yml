@@ -429,6 +429,16 @@ services:
       #     the Product Owner, who proposes a themed cycle of roadmap items;
       #     the CEO approves each item individually into the backlog.
       ROBOCO_ROADMAP_ENGINE_ENABLED: ${ROBOCO_ROADMAP_ENGINE_ENABLED:-true}
+      # Video-generation engine: a UX/UI dev authors a bespoke Remotion video
+      # per release/spotlight/on-demand trigger through the normal delivery
+      # lifecycle; the render loop above renders it via the remotion-renderer
+      # sidecar and holds the clip as a CEO-approval draft — nothing
+      # auto-posts. Config default is OFF; ARMED here for the NAS deploy like
+      # the rest. Left OFF in docker-compose.registry.yml so the published
+      # default stays conservative until verified on a live run.
+      ROBOCO_VIDEO_ENGINE_ENABLED: ${ROBOCO_VIDEO_ENGINE_ENABLED:-true}
+      ROBOCO_VIDEO_ON_RELEASE: ${ROBOCO_VIDEO_ON_RELEASE:-true}
+      ROBOCO_VIDEO_ON_SPOTLIGHT: ${ROBOCO_VIDEO_ON_SPOTLIGHT:-true}
       # Fable-mode: composes the Fable behavioral doctrine into every agent's
       # system prompt + installs turn-discipline/honesty/verification hooks
       # at spawn (both runtimes). Config default is OFF; ARMED here for the

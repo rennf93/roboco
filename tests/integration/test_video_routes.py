@@ -29,10 +29,11 @@ from roboco.services.tiktok_credentials import get_tiktok_credentials_service
 from roboco.services.video_post_service import XVideoPostResult
 from roboco.services.x_credentials import get_x_credentials_service
 from roboco.services.x_video_client import LiveXVideoPoster
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+    from pathlib import Path
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -104,7 +105,10 @@ async def _seed_agent(session: AsyncSession, role: AgentRole, slug: str) -> Agen
 
 
 async def _seed_draft(
-    session: AsyncSession, *, platforms: list[str] | None = None
+    session: AsyncSession,
+    *,
+    platforms: list[str] | None = None,
+    mp4_paths: dict[str, str] | None = None,
 ) -> TaskTable:
     """A held ``video_post`` draft — the approve/reject/list queue basis."""
     system = await _seed_agent(session, AgentRole.SYSTEM, "system")
@@ -144,7 +148,9 @@ async def _seed_draft(
             "occasion": "release 1.0",
             "script": "script",
             "platforms": platforms if platforms is not None else ["x"],
-            "mp4_paths": {
+            "mp4_paths": mp4_paths
+            if mp4_paths is not None
+            else {
                 "square": "/render/out/1-square.mp4",
                 "vertical": "/render/out/1-vertical.mp4",
             },
@@ -208,13 +214,25 @@ async def test_request_video_opens_authoring_task(
     body = resp.json()
     assert body["status"] == "opened"
     assert body["task_id"] is not None
-    # The route commits (mirrors the X route), so identity/field checks on the
-    # specific created row — not a global open-list count — keep this robust
-    # against other committed rows in the shared session-scoped test DB.
-    task = await db_session.get(TaskTable, UUID(body["task_id"]))
-    assert task is not None
-    assert task.source == VIDEO_SOURCE
-    assert task.status == TaskStatus.PENDING
+    try:
+        # The route commits (mirrors the X route), so identity/field checks on
+        # the specific created row — not a global open-list count — keep this
+        # robust against other committed rows in the shared session-scoped
+        # test DB.
+        task = await db_session.get(TaskTable, UUID(body["task_id"]))
+        assert task is not None
+        assert task.source == VIDEO_SOURCE
+        assert task.status == TaskStatus.PENDING
+    finally:
+        # The route's commit durably persists this task past this test's own
+        # rollback teardown — a non-terminal source=video row left behind
+        # pollutes every later test in this session that counts open video
+        # tasks (test_video_engine.py / test_video_render_loop.py), so it
+        # must be deleted explicitly, not just rolled back.
+        await db_session.execute(
+            delete(TaskTable).where(TaskTable.id == UUID(body["task_id"]))
+        )
+        await db_session.commit()
 
 
 @pytest.mark.asyncio
@@ -270,6 +288,51 @@ async def test_list_posts_returns_open_draft(
     assert body[0]["task_id"] == str(task.id)
     assert body[0]["occasion"] == "release 1.0"
     assert body[0]["platforms"] == ["x"]
+    assert body[0]["mp4_paths"] == {
+        "square": "/render/out/1-square.mp4",
+        "vertical": "/render/out/1-vertical.mp4",
+    }
+
+
+@pytest.mark.asyncio
+async def test_media_returns_the_rendered_cut(
+    db_session: AsyncSession, ceo_client: AsyncClient, tmp_path: Path
+) -> None:
+    vertical = tmp_path / "clip-vertical.mp4"
+    vertical.write_bytes(b"fake-mp4-bytes-vertical")
+    task = await _seed_draft(
+        db_session,
+        mp4_paths={"vertical": str(vertical), "square": str(tmp_path / "missing.mp4")},
+    )
+    resp = await ceo_client.get(f"/api/video/posts/{task.id}/media?cut=vertical")
+    assert resp.status_code == HTTPStatus.OK
+    assert resp.headers["content-type"] == "video/mp4"
+    assert resp.content == b"fake-mp4-bytes-vertical"
+
+
+@pytest.mark.asyncio
+async def test_media_bad_cut_is_400(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    task = await _seed_draft(db_session)
+    resp = await ceo_client.get(f"/api/video/posts/{task.id}/media?cut=diagonal")
+    assert resp.status_code == HTTPStatus.BAD_REQUEST
+
+
+@pytest.mark.asyncio
+async def test_media_missing_task_is_404(ceo_client: AsyncClient) -> None:
+    resp = await ceo_client.get(f"/api/video/posts/{uuid4()}/media?cut=vertical")
+    assert resp.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_media_unrendered_cut_is_404(
+    db_session: AsyncSession, ceo_client: AsyncClient
+) -> None:
+    """The seeded draft's paths never exist on disk — a 404, not a crash."""
+    task = await _seed_draft(db_session)
+    resp = await ceo_client.get(f"/api/video/posts/{task.id}/media?cut=square")
+    assert resp.status_code == HTTPStatus.NOT_FOUND
 
 
 @pytest.mark.asyncio
@@ -280,14 +343,22 @@ async def test_approve_without_credentials_fails_gracefully(
     builds real (Null) posters and the approve completes without raising —
     just with nothing posted."""
     task = await _seed_draft(db_session, platforms=["x", "tiktok"])
-    with _LOCKED[0], _LOCKED[1]:
-        resp = await ceo_client.post(f"/api/video/posts/{task.id}/approve", json={})
-    assert resp.status_code == HTTPStatus.OK
-    body = resp.json()
-    assert body["status"] == "post_failed"
-    assert body["posted"] == {}
-    await db_session.refresh(task)
-    assert task.status == TaskStatus.PENDING  # never advanced without a real post
+    try:
+        with _LOCKED[0], _LOCKED[1]:
+            resp = await ceo_client.post(f"/api/video/posts/{task.id}/approve", json={})
+        assert resp.status_code == HTTPStatus.OK
+        body = resp.json()
+        assert body["status"] == "post_failed"
+        assert body["posted"] == {}
+        await db_session.refresh(task)
+        assert task.status == TaskStatus.PENDING  # never advanced without a real post
+    finally:
+        # The approve route commits durably even on a post_failed outcome, so
+        # this non-terminal source=video_post row survives this test's own
+        # rollback teardown — left behind, it pollutes every later test in
+        # this session that counts open video tasks.
+        await db_session.execute(delete(TaskTable).where(TaskTable.id == task.id))
+        await db_session.commit()
 
 
 @pytest.mark.asyncio
@@ -433,7 +504,7 @@ async def test_set_tiktok_credentials_partial_is_400(ceo_client: AsyncClient) ->
 @pytest.mark.asyncio
 async def test_non_ceo_is_forbidden(db_session: AsyncSession) -> None:
     await _seed(db_session)
-    await _seed_draft(db_session)
+    task = await _seed_draft(db_session)
     app = _build_app(db_session, AgentRole.DEVELOPER, uuid4())
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -442,8 +513,10 @@ async def test_non_ceo_is_forbidden(db_session: AsyncSession) -> None:
             json={"occasion": "occ", "brief": "brief", "platforms": ["x"]},
         )
         list_resp = await client.get("/api/video/posts")
+        media_resp = await client.get(f"/api/video/posts/{task.id}/media?cut=vertical")
         creds_resp = await client.get("/api/tiktok/credentials")
     assert request_resp.status_code == HTTPStatus.FORBIDDEN
     assert list_resp.status_code == HTTPStatus.FORBIDDEN
+    assert media_resp.status_code == HTTPStatus.FORBIDDEN
     assert creds_resp.status_code == HTTPStatus.FORBIDDEN
     app.dependency_overrides.clear()

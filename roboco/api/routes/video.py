@@ -5,10 +5,12 @@ API never returns plaintext)."""
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
+from fastapi.responses import FileResponse
 
 from roboco.api.deps import CurrentAgentContext, DbSession, require_ceo_role
 from roboco.api.schemas.video import (
@@ -24,6 +26,7 @@ from roboco.api.schemas.video import (
 from roboco.config import settings
 from roboco.foundation.policy.content import markers
 from roboco.security import guard_deco
+from roboco.services.task import VIDEO_POST_SOURCE, get_task_service
 from roboco.services.tiktok_client import build_tiktok_poster
 from roboco.services.tiktok_credentials import (
     TikTokCredentialsValidationError,
@@ -45,6 +48,8 @@ if TYPE_CHECKING:
 
 router = APIRouter()
 tiktok_router = APIRouter()
+
+_VALID_CUTS = ("vertical", "square")
 
 
 def _require_ceo(agent: CurrentAgentContext) -> None:
@@ -111,6 +116,7 @@ def _to_response(task: TaskTable) -> VideoPostResponse:
         x_caption=draft.get("x_caption"),
         tiktok_caption=draft.get("tiktok_caption"),
         reject_reason=markers.get_video_reject_reason(task),
+        mp4_paths=dict(draft.get("mp4_paths") or {}),
     )
 
 
@@ -136,6 +142,36 @@ async def list_video_posts(
     _require_ceo(agent)
     tasks = await get_video_post_service(db).list_held_video_posts()
     return [_to_response(t) for t in tasks]
+
+
+@router.get("/posts/{task_id}/media")
+async def get_video_post_media(
+    task_id: UUID,
+    cut: str,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> FileResponse:
+    """Serve one rendered MP4 cut of a held video_post draft — the panel
+    preview player's ``src``. 404s on a missing task/cut/file; 400 on a
+    ``cut`` outside {vertical, square}."""
+    _require_ceo(agent)
+    if cut not in _VALID_CUTS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"cut must be one of {_VALID_CUTS!r}",
+        )
+    task = await get_task_service(db).get(task_id)
+    if task is None or task.source != VIDEO_POST_SOURCE:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No such video draft"
+        )
+    draft = markers.get_video_draft(task) or {}
+    mp4_path = (draft.get("mp4_paths") or {}).get(cut)
+    if not mp4_path or not Path(mp4_path).is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"No rendered {cut} cut"
+        )
+    return FileResponse(mp4_path, media_type="video/mp4")
 
 
 @router.post("/posts/{task_id}/approve", response_model=VideoPostExecuteResponse)

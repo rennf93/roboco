@@ -37,6 +37,7 @@ class VideoPostResponse(BaseModel):
     x_caption: str | None = None
     tiktok_caption: str | None = None
     reject_reason: str | None = None
+    mp4_paths: dict[str, str] = Field(default_factory=dict)
 
 
 class VideoPostApproveRequest(BaseModel):

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **RoboCo video engine (default-off).** With `ROBOCO_VIDEO_ENGINE_ENABLED`, a release/feature-spotlight/on-demand CEO trigger opens a normal, assigned UX/UI authoring task (balanced across the two ux-devs) instead of a held draft — the dev builds a Remotion composition under `motion/` and proposes its composition id + per-platform captions via the team-gated `propose_video` do-tool, then ships it through the standard commit/PR/QA/doc/review lifecycle. Once that task completes, an orchestrator render loop tars the merged `motion/` source to a new credential-free `remotion-renderer` sidecar, renders both the 9:16 and 1:1 MP4 cuts, and materializes a held `video_post` draft (mirroring the X-post/release-proposal shape: Secretary-owned, skipped by every dispatcher). The CEO previews, edits, approves, or rejects each draft in a new panel video queue; approving posts the rendered clip to X (native video, v2 media upload) and/or TikTok (inbox upload) under a heartbeat-renewed lock and is idempotent — an already-posted draft is a no-op. `ROBOCO_VIDEO_ON_RELEASE` / `ROBOCO_VIDEO_ON_SPOTLIGHT` gate the two automatic triggers independently of the CEO's on-demand `POST /video/request`; TikTok's OAuth2 secrets live Fernet-encrypted alongside the existing X credentials, and every unconfigured leg (renderer, X, TikTok) degrades to a graceful no-op rather than a crash.
+
 ## [0.18.0] - 2026-07-04
 
 ### Added
