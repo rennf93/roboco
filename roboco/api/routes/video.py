@@ -58,6 +58,25 @@ def _require_ceo(agent: CurrentAgentContext) -> None:
     require_ceo_role(agent.role, action="view or act on the video engine")
 
 
+def _resolve_video_cut(task: TaskTable, cut: str) -> Path:
+    """Resolve the on-disk MP4 path for ``cut`` off the task's held draft, or
+    404. The ``is_relative_to`` confinement check stays even though the MinIO
+    key is a basename (traversal-proof) — it also guards the ``FileResponse``
+    fallback path that reads ``mp4_path`` straight from disk."""
+    draft = markers.get_video_draft(task) or {}
+    mp4_path = (draft.get("mp4_paths") or {}).get(cut)
+    if not mp4_path or not Path(mp4_path).is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"No rendered {cut} cut"
+        )
+    output_dir = Path(settings.video_output_dir).resolve()
+    if not Path(mp4_path).resolve().is_relative_to(output_dir):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"No rendered {cut} cut"
+        )
+    return Path(mp4_path)
+
+
 @router.post("/request", response_model=VideoRequestResponse)
 @guard_deco.rate_limit(requests=20, window=60)
 @guard_deco.block_clouds()
@@ -176,22 +195,8 @@ async def get_video_post_media(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="No such video draft"
         )
-    draft = markers.get_video_draft(task) or {}
-    mp4_path = (draft.get("mp4_paths") or {}).get(cut)
-    if not mp4_path or not Path(mp4_path).is_file():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=f"No rendered {cut} cut"
-        )
-    output_dir = Path(settings.video_output_dir).resolve()
-    if not Path(mp4_path).resolve().is_relative_to(output_dir):
-        # Defense-in-depth: a mp4_paths entry pointing outside the configured
-        # render dir is refused even though the file exists on disk. The key
-        # is a basename so traversal is impossible, but the check is cheap and
-        # also protects the poster path which still reads mp4_path from disk.
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=f"No rendered {cut} cut"
-        )
-    key = Path(mp4_path).name
+    mp4_path = _resolve_video_cut(task, cut)
+    key = mp4_path.name
     if minio_client.get_client() is not None:
         try:
             # Eager probe so a missing object / down MinIO raises HERE — the
