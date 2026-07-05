@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from roboco.api.deps import CurrentAgentContext, DbSession, require_ceo_role
 from roboco.api.schemas.video import (
@@ -26,6 +26,7 @@ from roboco.api.schemas.video import (
 from roboco.config import settings
 from roboco.foundation.policy.content import markers
 from roboco.security import guard_deco
+from roboco.services import minio_client
 from roboco.services.task import VIDEO_POST_SOURCE, get_task_service
 from roboco.services.tiktok_client import build_tiktok_poster
 from roboco.services.tiktok_credentials import (
@@ -144,16 +145,25 @@ async def list_video_posts(
     return [_to_response(t) for t in tasks]
 
 
-@router.get("/posts/{task_id}/media")
+@router.get("/posts/{task_id}/media", response_model=None)
 async def get_video_post_media(
     task_id: UUID,
     cut: str,
     db: DbSession,
     agent: CurrentAgentContext,
-) -> FileResponse:
+) -> StreamingResponse | FileResponse:
     """Serve one rendered MP4 cut of a held video_post draft — the panel
     preview player's ``src``. 404s on a missing task/cut/file; 400 on a
-    ``cut`` outside {vertical, square}."""
+    ``cut`` outside {vertical, square}.
+
+    When MinIO is configured (``minio_endpoint`` set) the route streams the
+    object from MinIO via ``minio_client.get_object_stream`` (key = the
+    basename of ``mp4_path``). Auth stays end-to-end — ``_require_ceo`` is
+    kept, no presigned URLs, no redirect — so the panel's axios-blob flow is
+    unchanged (same URL, headers, body — just chunked). Falls back to
+    ``FileResponse`` from the local render dir when MinIO is unconfigured OR
+    on ``S3Error`` (old renders not yet in MinIO / MinIO down). The local file
+    existence + confinement checks stay as defense-in-depth."""
     _require_ceo(agent)
     if cut not in _VALID_CUTS:
         raise HTTPException(
@@ -174,10 +184,24 @@ async def get_video_post_media(
     output_dir = Path(settings.video_output_dir).resolve()
     if not Path(mp4_path).resolve().is_relative_to(output_dir):
         # Defense-in-depth: a mp4_paths entry pointing outside the configured
-        # render dir is refused even though the file exists on disk.
+        # render dir is refused even though the file exists on disk. The key
+        # is a basename so traversal is impossible, but the check is cheap and
+        # also protects the poster path which still reads mp4_path from disk.
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"No rendered {cut} cut"
         )
+    key = Path(mp4_path).name
+    if minio_client.get_client() is not None:
+        try:
+            return StreamingResponse(
+                minio_client.get_object_stream(key),
+                media_type="video/mp4",
+            )
+        except Exception:
+            # NoSuchKey (old render not yet in MinIO) or MinIO down — fall
+            # back to the local file, which is the source of truth. Auth
+            # already passed; this is purely a storage-read fallback.
+            pass
     return FileResponse(mp4_path, media_type="video/mp4")
 
 
