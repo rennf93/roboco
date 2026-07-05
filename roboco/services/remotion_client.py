@@ -24,6 +24,7 @@ from typing import Any
 import httpx
 
 from roboco.config import settings
+from roboco.services import minio_client
 
 
 class RemotionRendererError(Exception):
@@ -136,11 +137,21 @@ class RemotionRenderer:
 
     @staticmethod
     def _save(mp4_bytes: bytes, *, render_key: str, orientation: str) -> str:
-        """Write MP4 bytes under video_output_dir at a task-scoped path."""
+        """Write MP4 bytes under video_output_dir at a task-scoped path.
+
+        Durable copy to MinIO when configured. Local disk stays the source of
+        truth for the poster publish path (x_video_client/tiktok_client read
+        mp4_path from disk), so this is an additive PUT, not a replacement.
+        Key = basename, already ``{render_key}-{orientation}.mp4`` — no
+        schema/marker change. ``_save`` is wrapped in ``asyncio.to_thread`` by
+        ``render()``, so the sync ``put_object`` call runs in that thread.
+        """
         out_dir = Path(settings.video_output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / f"{render_key}-{orientation}.mp4"
         path.write_bytes(mp4_bytes)
+        if minio_client.get_client() is not None:
+            minio_client.put_object(mp4_bytes, path.name)
         return str(path)
 
 

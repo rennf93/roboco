@@ -16,13 +16,12 @@ Rendered MP4s are written to a host bind mount (`ROBOCO_VIDEO_OUTPUT_DIR`, defau
 
 Armed in the NAS compose (`docker-compose.yml` / `docker-compose.yaml`); intentionally omitted from `docker-compose.registry.yml` (NAS default-on, registry default-off).
 
-## Current state (0.19.0 chunk 2 — client module landed)
+## Current state (0.19.0 chunk 3 — write path landed)
 
-Config fields, the `minio` dependency, and the compose services (`minio` + `minio-init`) are landed (chunk 1). Chunk 2 adds `roboco/services/minio_client.py` — a singleton `Minio` with an unconfigured guard (`get_client()` returns `None` when `minio_endpoint` is empty), plus `put_object` and `get_object_stream`. With `minio_endpoint` empty, no code path *consumes* MinIO yet — the existing `FileResponse` media-serve path is byte-for-byte unchanged. The `minio` service runs on the `data` network only (off the agent mesh); the orchestrator reaches it via its `data` NIC. Host ports `19000:9000` / `19001:9001` are published for debugging only.
+Config fields, the `minio` dependency, and the compose services (`minio` + `minio-init`) are landed (chunk 1). Chunk 2 adds `roboco/services/minio_client.py` — a singleton `Minio` with an unconfigured guard (`get_client()` returns `None` when `minio_endpoint` is empty), plus `put_object` and `get_object_stream`. Chunk 3 wires the write path: `remotion_client._save` keeps the local write (the poster publish path in `x_video_client.py` / `tiktok_client.py` still reads `Path(mp4_path).read_bytes()`) and adds a MinIO `put_object` after it, guarded by `settings.minio_endpoint`. Key = `Path(mp4_path).name` (already `{render_key}-{orientation}.mp4`) — no schema change, no new marker field. With `minio_endpoint` empty, no code path *consumes* MinIO yet — the existing `FileResponse` media-serve path is byte-for-byte unchanged. The `minio` service runs on the `data` network only (off the agent mesh); the orchestrator reaches it via its `data` NIC. Host ports `19000:9000` / `19001:9001` are published for debugging only.
 
 ## Planned end state (later chunks)
 
-- **Write path.** `remotion_client._save` keeps the local write (the poster publish path in `x_video_client.py` / `tiktok_client.py` still reads `Path(mp4_path).read_bytes()`) and adds a MinIO `put_object` after it, guarded by `settings.minio_endpoint`. Key = `Path(mp4_path).name` (already `{render_key}-{orientation}.mp4`) — no schema change, no new marker field.
 - **Serve path.** The media route (`roboco/api/routes/video.py`) keeps `_require_ceo(agent)` and returns a `StreamingResponse` wrapping `minio_client.get_object_stream(key)` when configured, falling back to `FileResponse` when unconfigured OR on `S3Error` (old renders not yet in MinIO). The key is the basename, so the existing confinement check stays as defense-in-depth.
 
 ## Why not presigned URLs
