@@ -609,6 +609,8 @@ async def test_media_serves_from_minio_when_configured(
     _patch_task_service(monkeypatch, _make_task(str(vertical), task_id))
     # non-None sentinel so the route takes the MinIO branch.
     monkeypatch.setattr(minio_client, "get_client", lambda: True)
+    # The route probes stat_object eagerly before streaming; stub it to pass.
+    monkeypatch.setattr(minio_client, "stat_object", lambda _key: None)
     monkeypatch.setattr(minio_client, "get_object_stream", _minio_stream)
 
     # CEO 200 — streamed from MinIO.
@@ -652,4 +654,42 @@ async def test_media_falls_back_to_local_file_when_minio_unconfigured(
         assert resp.status_code == HTTPStatus.OK
         assert resp.headers["content-type"] == "video/mp4"
         assert resp.content == b"local-file-bytes"
+    app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_media_falls_back_to_local_file_when_minio_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S3Error fallback: when MinIO is configured but the object is missing
+    (NoSuchKey — an old render not yet in MinIO) or MinIO is down, the route's
+    eager ``stat_object`` probe raises, the ``try/except`` catches it, and the
+    route serves the local file via ``FileResponse``. ``get_object_stream`` is
+    never called. No DB / no real MinIO."""
+    monkeypatch.setattr(cfg, "video_output_dir", str(tmp_path))
+    vertical = tmp_path / "clip-vertical.mp4"
+    vertical.write_bytes(b"local-file-bytes")
+    task_id = uuid4()
+    _patch_task_service(monkeypatch, _make_task(str(vertical), task_id))
+    monkeypatch.setattr(minio_client, "get_client", lambda: True)
+
+    def _stat_raises(_key: str) -> None:
+        raise RuntimeError("minio NoSuchKey / down")
+
+    monkeypatch.setattr(minio_client, "stat_object", _stat_raises)
+
+    # If the route wrongly takes the MinIO stream branch, this would be called
+    # and the assertion below would fail — guard against a regression.
+    def _stream_must_not_be_called(_key: str) -> object:
+        pytest.fail("get_object_stream must not be called when stat_object raises")
+
+    monkeypatch.setattr(minio_client, "get_object_stream", _stream_must_not_be_called)
+
+    app = _build_app(None, AgentRole.CEO, uuid4())  # type: ignore[arg-type]
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(f"/api/video/posts/{task_id}/media?cut=vertical")
+        assert resp.status_code == HTTPStatus.OK
+        assert resp.headers["content-type"] == "video/mp4"
+        assert resp.content == b"local-file-bytes"  # FileResponse fallback, not MinIO
     app.dependency_overrides.clear()

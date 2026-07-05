@@ -193,15 +193,22 @@ async def get_video_post_media(
     key = Path(mp4_path).name
     if minio_client.get_client() is not None:
         try:
-            return StreamingResponse(
-                minio_client.get_object_stream(key),
-                media_type="video/mp4",
-            )
+            # Eager probe so a missing object / down MinIO raises HERE — the
+            # fallback below catches it. get_object_stream is a lazy generator,
+            # so wrapping StreamingResponse(...) alone wouldn't catch S3Error:
+            # it fires on the first next(), after Starlette has started
+            # streaming and the response is no longer take-back-able.
+            minio_client.stat_object(key)
         except Exception:
             # NoSuchKey (old render not yet in MinIO) or MinIO down — fall
             # back to the local file, which is the source of truth. Auth
             # already passed; this is purely a storage-read fallback.
             pass
+        else:
+            return StreamingResponse(
+                minio_client.get_object_stream(key),
+                media_type="video/mp4",
+            )
     return FileResponse(mp4_path, media_type="video/mp4")
 
 
