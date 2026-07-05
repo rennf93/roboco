@@ -47,7 +47,10 @@ ENV CI=true
 # dependency here runs at request time — bundle()/renderMedia() execute
 # live per /render call — so there's no separate build output to discard
 # and no multi-stage split.
-COPY remotion-renderer/package.json remotion-renderer/pnpm-lock.yaml ./
+# pnpm-workspace.yaml carries the `allowBuilds: esbuild: true` approval —
+# without it pnpm 11 hard-errors with [ERR_PNPM_IGNORED_BUILDS] (exit 1)
+# because esbuild's postinstall is unapproved, breaking the image build.
+COPY remotion-renderer/package.json remotion-renderer/pnpm-lock.yaml remotion-renderer/pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 
 # Pre-warm Chrome Headless Shell at build time so the container's first
