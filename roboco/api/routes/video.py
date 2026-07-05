@@ -5,6 +5,7 @@ API never returns plaintext)."""
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -198,7 +199,7 @@ async def get_video_post_media(
             # so wrapping StreamingResponse(...) alone wouldn't catch S3Error:
             # it fires on the first next(), after Starlette has started
             # streaming and the response is no longer take-back-able.
-            minio_client.stat_object(key)
+            await asyncio.to_thread(minio_client.stat_object, key)
         except Exception:
             # NoSuchKey (old render not yet in MinIO) or MinIO down — fall
             # back to the local file, which is the source of truth. Auth
