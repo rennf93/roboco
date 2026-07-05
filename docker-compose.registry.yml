@@ -295,6 +295,11 @@ services:
       ROBOCO_VIDEO_ENGINE_ENABLED: ${ROBOCO_VIDEO_ENGINE_ENABLED:-false}
       ROBOCO_VIDEO_ON_RELEASE: ${ROBOCO_VIDEO_ON_RELEASE:-false}
       ROBOCO_VIDEO_ON_SPOTLIGHT: ${ROBOCO_VIDEO_ON_SPOTLIGHT:-false}
+      # MinIO object storage for rendered videos is intentionally omitted from
+      # this registry compose (NAS default-on, registry default-off — the
+      # established pattern). The minio/minio-init services are absent here and
+      # ROBOCO_MINIO_* is left unset, so minio_endpoint defaults to empty and the
+      # media route falls back to FileResponse. Arm via a custom override file.
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${CLAUDE_AUTH_DIR:-${HOME}/.claude}:/root/.claude

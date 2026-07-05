@@ -48,6 +48,55 @@ services:
       retries: 5
 
   # ==========================================================================
+  # MinIO - Object storage for rendered videos (NAS default-on; registry OFF)
+  # ==========================================================================
+  minio:
+    image: minio/minio:latest
+    container_name: roboco-minio
+    restart: unless-stopped
+    # data-only network — keeps MinIO off the agent mesh; the multi-homed
+    # orchestrator reaches it via its data NIC. Host ports for debugging.
+    networks:
+      - data
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${ROBOCO_MINIO_ACCESS_KEY:-minio}
+      MINIO_ROOT_PASSWORD: ${ROBOCO_MINIO_SECRET_KEY:-minio123}
+    ports:
+      - "19000:9000"
+      - "19001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # MinIO bucket init - one-shot, mirrors the ollama-init pattern: depends on
+  # minio healthy, creates the bucket idempotently, then exits. `|| true`
+  # covers re-runs (bucket already exists).
+  minio-init:
+    image: minio/mc:latest
+    container_name: roboco-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - data
+    entrypoint: ["/bin/sh", "-c"]
+    # Note: $$ escapes $ for docker-compose variable substitution so the
+    # container's own env vars reach mc.
+    command:
+      - mc alias set local http://roboco-minio:9000 $$ROBOCO_MINIO_ACCESS_KEY $$ROBOCO_MINIO_SECRET_KEY && mc mb -p local/$$ROBOCO_MINIO_BUCKET || true
+    environment:
+      ROBOCO_MINIO_ACCESS_KEY: ${ROBOCO_MINIO_ACCESS_KEY:-minio}
+      ROBOCO_MINIO_SECRET_KEY: ${ROBOCO_MINIO_SECRET_KEY:-minio123}
+      ROBOCO_MINIO_BUCKET: ${ROBOCO_MINIO_BUCKET:-roboco-video-renders}
+    restart: "no"
+
+  # ==========================================================================
   # Ollama - Local LLM and Embedding Server
   # ==========================================================================
   ollama:
@@ -351,6 +400,14 @@ services:
       # itself is default-off (video_engine_enabled); this just points the
       # client at the sidecar for when it's armed.
       ROBOCO_REMOTION_BASE_URL: http://roboco-remotion:3001
+      # MinIO object storage for rendered videos (use container name). Empty
+      # endpoint = disabled (FileResponse fallback); armed here for the NAS
+      # deploy, left OFF in docker-compose.registry.yml.
+      ROBOCO_MINIO_ENDPOINT: http://roboco-minio:9000
+      ROBOCO_MINIO_ACCESS_KEY: ${ROBOCO_MINIO_ACCESS_KEY:-minio}
+      ROBOCO_MINIO_SECRET_KEY: ${ROBOCO_MINIO_SECRET_KEY:-minio123}
+      ROBOCO_MINIO_BUCKET: ${ROBOCO_MINIO_BUCKET:-roboco-video-renders}
+      ROBOCO_MINIO_REGION: ${ROBOCO_MINIO_REGION:-us-east-1}
       # Host paths for spawning agent containers (required for Docker-in-Docker)
       # IMPORTANT: These must be ABSOLUTE paths on the host filesystem
       ROBOCO_HOST_PROJECT_DIR: ${ROBOCO_HOST_PROJECT_DIR:-/volume1/roboco}
@@ -605,3 +662,8 @@ networks:
   # ports keep working.
   data:
     name: roboco_data
+
+volumes:
+  # Named volume for MinIO — keeps rendered-video storage out of the
+  # ${ROBOCO_DATA_DIR} bind-mount sprawl; docker-managed durable store.
+  minio-data:

@@ -39,6 +39,8 @@ dependencies = [
     "passlib[bcrypt]",  # Password hashing
     "tenacity",  # Retry logic
     "structlog",  # Structured logging
+    # Storage
+    "minio",  # Object storage client for rendered videos (sync, to_thread-wrapped)
     # Streaming
     "sse-starlette",  # Server-Sent Events for A2A streaming
     # Direct imports (promoted from transitive)

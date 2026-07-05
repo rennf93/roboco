@@ -5,6 +5,7 @@ sub-router. CEO-only throughout."""
 from __future__ import annotations
 
 from http import HTTPStatus
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
@@ -14,6 +15,7 @@ import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from roboco.api.deps import get_agent_context, get_db
+from roboco.api.routes import video as video_module
 from roboco.api.routes.video import router as video_router
 from roboco.api.routes.video import tiktok_router
 from roboco.config import settings as cfg
@@ -23,6 +25,7 @@ from roboco.foundation.policy.content import markers
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType
 from roboco.models.permissions import AgentContext
+from roboco.services import minio_client
 from roboco.services.heartbeat_mutex import HeartbeatMutex
 from roboco.services.task import VIDEO_POST_SOURCE, VIDEO_SOURCE, get_task_service
 from roboco.services.tiktok_credentials import get_tiktok_credentials_service
@@ -542,4 +545,151 @@ async def test_non_ceo_is_forbidden(db_session: AsyncSession) -> None:
     assert list_resp.status_code == HTTPStatus.FORBIDDEN
     assert media_resp.status_code == HTTPStatus.FORBIDDEN
     assert creds_resp.status_code == HTTPStatus.FORBIDDEN
+    app.dependency_overrides.clear()
+
+
+# --- MinIO serve path (chunk 4) — unit-style, no DB / no real MinIO ------------
+# These two tests monkeypatch ``get_task_service`` in the video routes module
+# so they run without postgres (the ``db_session``-based tests above are
+# skipped when Postgres is unreachable). Mocks only — no testcontainers.
+
+
+def _stub_task_service_factory(task: object) -> object:
+    """A ``get_task_service``-shaped stub (the real one is a sync factory
+    returning a service with an async ``.get``). Patched in place of
+    ``video_module.get_task_service`` so the route runs without postgres."""
+
+    class _Svc:
+        async def get(self, _task_id: UUID) -> object:
+            return task
+
+    return _Svc()
+
+
+def _make_task(mp4_path: str, task_id: UUID) -> SimpleNamespace:
+    """A minimal task-shaped stub carrying the video_draft marker the route
+    reads — enough for the media route, no DB row needed."""
+    return SimpleNamespace(
+        id=task_id,
+        source=VIDEO_POST_SOURCE,
+        orchestration_markers={"video_draft": {"mp4_paths": {"vertical": mp4_path}}},
+    )
+
+
+def _patch_task_service(monkeypatch: pytest.MonkeyPatch, task: object) -> None:
+    monkeypatch.setattr(
+        video_module,
+        "get_task_service",
+        lambda _db: _stub_task_service_factory(task),
+    )
+
+
+def _minio_stream(_key: str) -> object:
+    """Stub ``get_object_stream`` yielding fixed bytes for ``StreamingResponse``."""
+    return iter([b"minio-stream-bytes"])
+
+
+@pytest.mark.asyncio
+async def test_media_serves_from_minio_when_configured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Configured serve path: when MinIO is configured, the media route streams
+    the object via ``minio_client.get_object_stream`` (key = basename) and the
+    panel-preview URL/headers stay identical. ``_require_ceo`` still 403s a
+    non-CEO agent. No DB / no real MinIO — ``get_task_service`` is stubbed so
+    the route runs without postgres."""
+    # A real local file so the route's is_file() + confinement checks pass.
+    # The served bytes come from the stubbed MinIO stream below, NOT this
+    # file — that's what proves the MinIO path was taken rather than the
+    # FileResponse fallback.
+    monkeypatch.setattr(cfg, "video_output_dir", str(tmp_path))
+    vertical = tmp_path / "clip-vertical.mp4"
+    vertical.write_bytes(b"local-file-bytes")
+    task_id = uuid4()
+    _patch_task_service(monkeypatch, _make_task(str(vertical), task_id))
+    # non-None sentinel so the route takes the MinIO branch.
+    monkeypatch.setattr(minio_client, "get_client", lambda: True)
+    # The route probes stat_object eagerly before streaming; stub it to pass.
+    monkeypatch.setattr(minio_client, "stat_object", lambda _key: None)
+    monkeypatch.setattr(minio_client, "get_object_stream", _minio_stream)
+
+    # CEO 200 — streamed from MinIO.
+    app = _build_app(None, AgentRole.CEO, uuid4())  # type: ignore[arg-type]
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(f"/api/video/posts/{task_id}/media?cut=vertical")
+        assert resp.status_code == HTTPStatus.OK
+        assert resp.headers["content-type"] == "video/mp4"
+        assert resp.content == b"minio-stream-bytes"
+    app.dependency_overrides.clear()
+
+    # Non-CEO 403 — _require_ceo still gates end-to-end (no presigned URL).
+    app = _build_app(None, AgentRole.DEVELOPER, uuid4())  # type: ignore[arg-type]
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(f"/api/video/posts/{task_id}/media?cut=vertical")
+        assert resp.status_code == HTTPStatus.FORBIDDEN
+    app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_media_falls_back_to_local_file_when_minio_unconfigured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unconfigured fallback: with ``get_client`` returning None
+    (``minio_endpoint`` empty), the media route serves the local file via
+    ``FileResponse`` — the body equals the local file's bytes. No DB / no
+    real MinIO."""
+    monkeypatch.setattr(cfg, "video_output_dir", str(tmp_path))
+    vertical = tmp_path / "clip-vertical.mp4"
+    vertical.write_bytes(b"local-file-bytes")
+    task_id = uuid4()
+    _patch_task_service(monkeypatch, _make_task(str(vertical), task_id))
+    monkeypatch.setattr(minio_client, "get_client", lambda: None)
+
+    app = _build_app(None, AgentRole.CEO, uuid4())  # type: ignore[arg-type]
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(f"/api/video/posts/{task_id}/media?cut=vertical")
+        assert resp.status_code == HTTPStatus.OK
+        assert resp.headers["content-type"] == "video/mp4"
+        assert resp.content == b"local-file-bytes"
+    app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_media_falls_back_to_local_file_when_minio_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S3Error fallback: when MinIO is configured but the object is missing
+    (NoSuchKey — an old render not yet in MinIO) or MinIO is down, the route's
+    eager ``stat_object`` probe raises, the ``try/except`` catches it, and the
+    route serves the local file via ``FileResponse``. ``get_object_stream`` is
+    never called. No DB / no real MinIO."""
+    monkeypatch.setattr(cfg, "video_output_dir", str(tmp_path))
+    vertical = tmp_path / "clip-vertical.mp4"
+    vertical.write_bytes(b"local-file-bytes")
+    task_id = uuid4()
+    _patch_task_service(monkeypatch, _make_task(str(vertical), task_id))
+    monkeypatch.setattr(minio_client, "get_client", lambda: True)
+
+    def _stat_raises(_key: str) -> None:
+        raise RuntimeError("minio NoSuchKey / down")
+
+    monkeypatch.setattr(minio_client, "stat_object", _stat_raises)
+
+    # If the route wrongly takes the MinIO stream branch, this would be called
+    # and the assertion below would fail — guard against a regression.
+    def _stream_must_not_be_called(_key: str) -> object:
+        pytest.fail("get_object_stream must not be called when stat_object raises")
+
+    monkeypatch.setattr(minio_client, "get_object_stream", _stream_must_not_be_called)
+
+    app = _build_app(None, AgentRole.CEO, uuid4())  # type: ignore[arg-type]
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get(f"/api/video/posts/{task_id}/media?cut=vertical")
+        assert resp.status_code == HTTPStatus.OK
+        assert resp.headers["content-type"] == "video/mp4"
+        assert resp.content == b"local-file-bytes"  # FileResponse fallback, not MinIO
     app.dependency_overrides.clear()

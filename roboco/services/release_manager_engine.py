@@ -22,6 +22,7 @@ Correctness is deterministic: the readiness audit lives in code
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -227,7 +228,12 @@ class ReleaseManagerEngine(BaseService):
         )
         conclusion = (ci or {}).get("conclusion")
         today = datetime.now(UTC).strftime("%Y-%m-%d")
-        snapshot = gather_snapshot(Path(root), master_ci_conclusion=conclusion)
+        # gather_snapshot runs multiple sync `subprocess.run` git calls + a
+        # filesystem walk; offload so the shared API event loop isn't blocked
+        # while the release-manager background loop assesses.
+        snapshot = await asyncio.to_thread(
+            gather_snapshot, Path(root), master_ci_conclusion=conclusion
+        )
         return assess(snapshot, today=today)
 
 
