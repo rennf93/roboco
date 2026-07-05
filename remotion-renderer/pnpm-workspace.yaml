@@ -1,2 +1,10 @@
 allowBuilds:
   esbuild: true
+  puppeteer: true
+minimumReleaseAgeExclude:
+  - '@hyperframes/core@0.7.36'
+  - '@hyperframes/engine@0.7.36'
+  - '@hyperframes/lint@0.7.36'
+  - '@hyperframes/parsers@0.7.36'
+  - '@hyperframes/producer@0.7.36'
+  - '@hyperframes/studio-server@0.7.36'

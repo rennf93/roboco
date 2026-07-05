@@ -1,57 +1,24 @@
-// untar -> bundle (cached per source sha256) -> getCompositions ->
-// renderMedia. Bundling is the expensive webpack step; the orchestrator
-// calls POST /render twice per video (once per orientation) with the
-// *same* tarball, so caching the bundle by content hash means the second
-// call skips straight to getCompositions/renderMedia instead of
-// re-bundling identical source (a documented Remotion anti-pattern).
+// untar -> write per-render props.js -> HyperFrames createRenderJob +
+// executeRenderJob. HyperFrames has no webpack bundling step (it loads the
+// HTML directly in headless Chrome and captures frames via the beginFrame
+// API), so the bundle-cache machinery the old Remotion path carried is gone
+// — every /render call extracts its own temp dir, renders, and cleans up.
 //
-// Only the bundle (the webpack-compiled serveUrl + its extracted source
-// dir) is cached, across requests, until evicted. The per-request render
-// OUTPUT (the rendered mp4) is never cached — every render call produces
-// its own temp file that the caller cleans up once it has streamed the
-// response.
-import { bundle } from "@remotion/bundler";
-import { getCompositions, renderMedia } from "@remotion/renderer";
-import { createHash } from "node:crypto";
-import { mkdtemp, rm, symlink } from "node:fs/promises";
+// The per-request render OUTPUT (the rendered mp4) is never cached — every
+// render call produces its own temp file the caller cleans up once it has
+// streamed the response.
+import { createRenderJob, executeRenderJob } from "@hyperframes/producer";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import * as tar from "tar";
 
-const MAX_CACHED_BUNDLES = 8;
-
-/** Root for both the extracted-source AND webpack-bundle-output temp dirs,
- * so both halves of one cache entry are easy to spot as a pair on disk. */
-const BUNDLE_TMP_ROOT = tmpdir();
-
-/** sha256(tar bytes) -> Promise<{serveUrl, sourceDir, bundleDir}>,
- * oldest-first (Map preserves insertion order; re-inserting a key moves it
- * to the end). */
-const bundleCache = new Map();
-
-function markRecentlyUsed(sha, promise) {
-  bundleCache.delete(sha);
-  bundleCache.set(sha, promise);
-}
-
-async function evictExcess() {
-  while (bundleCache.size > MAX_CACHED_BUNDLES) {
-    const oldestSha = bundleCache.keys().next().value;
-    const promise = bundleCache.get(oldestSha);
-    bundleCache.delete(oldestSha);
-    try {
-      const { sourceDir, bundleDir } = await promise;
-      await Promise.all([
-        rm(sourceDir, { recursive: true, force: true }),
-        rm(bundleDir, { recursive: true, force: true }),
-      ]);
-    } catch {
-      // Best-effort: a failed bundle was never cached with real dirs, and
-      // a stat/rm race on an already-gone temp dir is harmless either way.
-    }
-  }
-}
+const FPS = 30;
+const DIMENSIONS = {
+  vertical: { width: 1080, height: 1920 },
+  square: { width: 1080, height: 1080 },
+};
 
 async function extractTar(tarBuffer, destDir) {
   await new Promise((resolve, reject) => {
@@ -62,78 +29,15 @@ async function extractTar(tarBuffer, destDir) {
   });
 }
 
-/** The extracted motion/ ships no node_modules (never committed/tarred).
- * Symlink this sidecar's own pre-installed remotion/react/etc so webpack's
- * module resolution finds them without a per-render `npm install` —
- * motion/'s package.json is kept version-aligned with this image's
- * dependencies by construction (both pin the same `remotion` major). */
-async function linkSharedNodeModules(motionDir) {
-  const target = path.join(process.cwd(), "node_modules");
-  const linkPath = path.join(motionDir, "node_modules");
-  await symlink(target, linkPath, "dir");
-}
-
-/**
- * @param {Buffer} tarBuffer
- * @param {string} sha sha256(tarBuffer), already computed by the caller —
- *   threaded through so the bundle-output dir can be named after the same
- *   content hash as the source dir, making an evicted pair easy to
- *   correlate on disk.
- */
-async function buildBundle(tarBuffer, sha) {
-  const workDir = await mkdtemp(path.join(BUNDLE_TMP_ROOT, "remotion-src-"));
-  // bundle({entryPoint}) with no `outDir` silently creates its OWN temp dir
-  // (a fresh `remotion-webpack-bundle-*` under the OS tmpdir, ~19MB of
-  // webpack output) that Remotion never cleans up and we'd otherwise never
-  // learn the path of. Naming it ourselves means we can track + reclaim it
-  // exactly like sourceDir below.
-  const bundleDir = path.join(BUNDLE_TMP_ROOT, `remotion-webpack-bundle-${sha}`);
-  try {
-    await extractTar(tarBuffer, workDir);
-    const motionDir = path.join(workDir, "motion");
-    await linkSharedNodeModules(motionDir);
-    const entryPoint = path.join(motionDir, "src", "index.ts");
-    const serveUrl = await bundle({ entryPoint, outDir: bundleDir });
-    return { serveUrl, sourceDir: workDir, bundleDir };
-  } catch (err) {
-    await Promise.all([
-      rm(workDir, { recursive: true, force: true }).catch(() => {}),
-      rm(bundleDir, { recursive: true, force: true }).catch(() => {}),
-    ]);
-    throw err;
-  }
-}
-
-async function getOrCreateBundle(tarBuffer) {
-  const sha = createHash("sha256").update(tarBuffer).digest("hex");
-
-  const existing = bundleCache.get(sha);
-  if (existing) {
-    markRecentlyUsed(sha, existing);
-    const { serveUrl } = await existing;
-    return serveUrl;
-  }
-
-  const bundlePromise = buildBundle(tarBuffer, sha);
-  bundleCache.set(sha, bundlePromise);
-
-  try {
-    const { serveUrl } = await bundlePromise;
-    await evictExcess();
-    return serveUrl;
-  } catch (err) {
-    bundleCache.delete(sha);
-    throw err;
-  }
-}
-
-/** Thrown when `composition_id` isn't one of what Root.tsx actually
- * registers — server.js maps this to a 400 instead of the generic 500 a
- * deep-in-renderMedia failure would otherwise produce. */
+/** Thrown when the requested orientation's HTML file isn't present in the
+ * composition dir — server.js maps this to a 400 instead of the generic 500
+ * a deep-in-executeRenderJob failure would otherwise produce. The known
+ * ids are the `<orientation>.html` files actually on disk (vertical.html /
+ * square.html), so the error names what the caller can use. */
 export class UnknownCompositionError extends Error {
   constructor(compositionId, knownIds) {
     super(
-      `Unknown composition_id "${compositionId}". Registered: ${
+      `Unknown composition_id/orientation "${compositionId}". Available: ${
         knownIds.length ? knownIds.join(", ") : "(none)"
       }`,
     );
@@ -146,7 +50,8 @@ export class UnknownCompositionError extends Error {
  * Render one composition/orientation cut. Returns the temp mp4 path plus a
  * cleanup callback the caller MUST invoke once the response has been sent
  * (streamed bytes, not returned in-memory, so a large render never holds
- * the whole file in RAM twice).
+ * the whole file in RAM twice). The callback also removes the temp extract
+ * dir — the caller never needs to know it existed.
  */
 export async function renderComposition({
   tarBuffer,
@@ -154,51 +59,77 @@ export async function renderComposition({
   inputProps,
   orientation,
 }) {
-  const serveUrl = await getOrCreateBundle(tarBuffer);
-
-  // The one Remotion v4 fact that makes two aspect ratios work from one
-  // timeline: there is no width/height render parameter. The identical
-  // inputProps object (here: the caller's props merged with `orientation`)
-  // goes to both getCompositions and renderMedia; calculateMetadata on
-  // the composition itself branches on inputProps.orientation to pick the
-  // frame (1080x1920 vs 1080x1080 for ReleaseAnnouncement).
-  const mergedProps = { ...inputProps, orientation };
-
-  // getCompositions() evaluates the *actual* Root.tsx this request's tar
-  // bundled (never a stale/hardcoded id list) — its returned entries are
-  // renderMedia-ready composition objects, so finding by id here also
-  // replaces the old selectComposition() call rather than duplicating a
-  // second Root evaluation.
-  const compositions = await getCompositions(serveUrl, {
-    inputProps: mergedProps,
-  });
-  const composition = compositions.find((c) => c.id === compositionId);
-  if (!composition) {
-    throw new UnknownCompositionError(
-      compositionId,
-      compositions.map((c) => c.id),
-    );
-  }
-
-  const outDir = await mkdtemp(path.join(tmpdir(), "remotion-out-"));
-  const outputLocation = path.join(outDir, "render.mp4");
-
+  const extractDir = await mkdtemp(path.join(tmpdir(), "hyperframes-src-"));
+  let outDir;
   try {
-    await renderMedia({
-      composition,
-      serveUrl,
-      codec: "h264",
-      outputLocation,
-      inputProps: mergedProps,
-      chromiumOptions: { enableMultiProcessOnLinux: true },
+    await extractTar(tarBuffer, extractDir);
+    const compositionDir = path.join(
+      extractDir,
+      "motion",
+      "compositions",
+      compositionId,
+    );
+    const htmlPath = path.join(compositionDir, `${orientation}.html`);
+    // ponytail: readdir is the smallest thing that fails if the dir is
+    // missing OR the orientation file is missing — one stat-vs-readdir
+    // branch collapsed into a single listing used for the 400 error.
+    let knownIds;
+    try {
+      const entries = await readdir(compositionDir);
+      knownIds = entries
+        .filter((name) => name === "vertical.html" || name === "square.html")
+        .sort();
+    } catch {
+      knownIds = [];
+    }
+    if (!knownIds.includes(`${orientation}.html`)) {
+      throw new UnknownCompositionError(compositionId, knownIds);
+    }
+
+    // The HTML files <script src="props.js"></script> reads this — set up by
+    // Task T2, but the sidecar must write the file per render so the HTML
+    // picks up per-release content + orientation.
+    const propsJs =
+      `window.__PROPS__ = ${JSON.stringify(inputProps ?? {})}; ` +
+      `window.__ORIENTATION__ = ${JSON.stringify(orientation)};`;
+    await writeFile(path.join(compositionDir, "props.js"), propsJs);
+
+    const { width, height } = DIMENSIONS[orientation];
+    outDir = await mkdtemp(path.join(tmpdir(), "hyperframes-out-"));
+    const outputLocation = path.join(outDir, "render.mp4");
+
+    const job = createRenderJob({
+      inputPath: htmlPath,
+      outputPath: outputLocation,
+      width,
+      height,
+      fps: FPS,
     });
+    try {
+      await executeRenderJob(job, (progress) => {
+        console.log(
+          `hyperframes-renderer: ${compositionId}/${orientation} ${Math.round(
+            progress.percent * 100,
+          )}%`,
+        );
+      });
+    } catch (err) {
+      await rm(outDir, { recursive: true, force: true }).catch(() => {});
+      throw err;
+    }
+
+    return {
+      outputLocation,
+      cleanup: () =>
+        Promise.all([
+          rm(outDir, { recursive: true, force: true }).catch(() => {}),
+          rm(extractDir, { recursive: true, force: true }).catch(() => {}),
+        ]),
+    };
   } catch (err) {
-    await rm(outDir, { recursive: true, force: true }).catch(() => {});
+    // On any pre-render failure the out dir was never created — only the
+    // extract dir needs reclaiming. Re-throw so server.js maps it to 4xx/5xx.
+    await rm(extractDir, { recursive: true, force: true }).catch(() => {});
     throw err;
   }
-
-  return {
-    outputLocation,
-    cleanup: () => rm(outDir, { recursive: true, force: true }).catch(() => {}),
-  };
 }
