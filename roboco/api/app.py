@@ -55,6 +55,7 @@ from roboco.api.routes.v1 import flow_main_pm as flow_main_pm_module
 from roboco.api.routes.v1 import flow_pr_reviewer as flow_pr_reviewer_module
 from roboco.api.routes.v1 import flow_qa as flow_qa_module
 from roboco.api.routes.video import router as video_router
+from roboco.api.routes.video import tiktok_router
 from roboco.api.routes.work_session import router as work_session_router
 from roboco.api.routes.x import router as x_router
 from roboco.api.websocket import router as ws_router
@@ -360,6 +361,14 @@ def create_app() -> FastAPI:
         video_router,
         prefix=f"{api_prefix}/video",
         tags=["Video"],
+    )
+
+    # TikTok credentials — write-only OAuth2 secrets for the video engine's
+    # inbox-upload poster (mirrors /x/credentials).
+    app.include_router(
+        tiktok_router,
+        prefix=f"{api_prefix}/tiktok",
+        tags=["TikTok"],
     )
 
     # Pitches — Board proposals + CEO approve -> auto-provision origination path.
