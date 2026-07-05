@@ -527,6 +527,9 @@ services:
       # each spawned agent write structured logs here so we can audit past
       # runs instead of relying on ephemeral `docker logs`.
       - ${ROBOCO_DATA_DIR:-./data}/logs:/data/logs
+      # Rendered MP4s from the video engine — persisted so renders survive
+      # container recreation (default ROBOCO_VIDEO_OUTPUT_DIR=/data/video-renders).
+      - ${ROBOCO_DATA_DIR:-./data}/video-renders:/data/video-renders
       # Per-agent SessionStart briefings (pre-rendered task context)
       - ${ROBOCO_DATA_DIR:-./data}/briefings:/app/briefings
       # Per-agent spawn manifests (role-scoped tool list) — written by the
