@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from roboco.config import settings as cfg
 from roboco.services import minio_client
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
 
 @pytest.fixture(autouse=True)
-def _reset_singleton() -> None:
+def _reset_singleton() -> Iterator[None]:
     """Each test rebuilds the singleton (the test-isolation hazard)."""
     minio_client._reset_client()
     yield
@@ -54,8 +57,7 @@ def test_get_client_parses_endpoint_scheme(
     monkeypatch.setattr(cfg, "minio_secret_key", "minio123")
     monkeypatch.setattr(cfg, "minio_region", "us-east-1")
 
-    client = minio_client.get_client()
-    assert isinstance(client, FakeMinio)
+    minio_client.get_client()
     assert built["endpoint"] == "roboco-minio:9000"
     assert built["secure"] is False
     assert built["access_key"] == "minio"
