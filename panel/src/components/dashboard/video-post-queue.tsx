@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { videoApi, videoMediaUrl } from "@/lib/api";
+import { videoApi } from "@/lib/api";
 import type { VideoCut, VideoPost, VideoPostExecuteResult } from "@/lib/api/video";
 import {
   Card,
@@ -84,7 +84,30 @@ function VideoPostRow({
   const [editTiktok, setEditTiktok] = useState(post.platforms.includes("tiktok"));
   const [xCaption, setXCaption] = useState(post.x_caption ?? "");
   const [tiktokCaption, setTiktokCaption] = useState(post.tiktok_caption ?? "");
+  const [videoSrc, setVideoSrc] = useState<string | null>(null);
   const meta = sourceMeta();
+
+  // A native <video src> GET doesn't carry axios's auth headers, so fetch
+  // the cut as a Blob (through axios) and drive <video> off an object URL
+  // instead. Re-fetches on cut change; always revokes the previous URL.
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl: string | null = null;
+    videoApi
+      .getMediaBlob(post.task_id, cut)
+      .then((blob) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setVideoSrc(objectUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setVideoSrc(null);
+      });
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [post.task_id, cut]);
 
   const xOverLimit = editX && xCaption.length > MAX_X_CAPTION_CHARS;
   const tiktokOverLimit =
@@ -129,7 +152,7 @@ function VideoPostRow({
           key={`${post.task_id}-${cut}`}
           controls
           className="mx-auto max-h-96 w-full rounded-md bg-black object-contain"
-          src={videoMediaUrl(post.task_id, cut)}
+          src={videoSrc ?? undefined}
         >
           Your browser does not support embedded video.
         </video>

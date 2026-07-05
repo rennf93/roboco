@@ -8,7 +8,7 @@ const { resolveApproveRef } = vi.hoisted(() => ({
   resolveApproveRef: { current: null as null | ((v: unknown) => void) },
 }));
 
-const { listPosts, approve, reject, requestVideo, videoMediaUrl } = vi.hoisted(
+const { listPosts, approve, reject, requestVideo, getMediaBlob } = vi.hoisted(
   () => ({
     listPosts: vi.fn(
       async () =>
@@ -39,15 +39,14 @@ const { listPosts, approve, reject, requestVideo, videoMediaUrl } = vi.hoisted(
       task_id: "v-2",
       detail: "Video-authoring task opened.",
     })),
-    videoMediaUrl: vi.fn(
-      (taskId: string, cut: string) => `/api/video/posts/${taskId}/media?cut=${cut}`,
+    getMediaBlob: vi.fn(
+      async () => new Blob(["fake-mp4-bytes"], { type: "video/mp4" }),
     ),
   }),
 );
 
 vi.mock("@/lib/api", () => ({
-  videoApi: { listPosts, approve, reject, requestVideo },
-  videoMediaUrl,
+  videoApi: { listPosts, approve, reject, requestVideo, getMediaBlob },
 }));
 
 import { VideoPostQueue } from "../video-post-queue";
@@ -65,7 +64,15 @@ describe("VideoPostQueue", () => {
     approve.mockClear();
     reject.mockClear();
     requestVideo.mockClear();
+    getMediaBlob.mockClear();
     resolveApproveRef.current = null;
+    // jsdom has no Blob URL implementation. Distinct URLs per call so a
+    // revoke can be asserted against the specific (stale) one it replaced.
+    let objectUrlCount = 0;
+    globalThis.URL.createObjectURL = vi.fn(
+      () => `blob:mock-url-${++objectUrlCount}`,
+    );
+    globalThis.URL.revokeObjectURL = vi.fn();
   });
   afterEach(() => {
     vi.clearAllMocks();
@@ -80,16 +87,32 @@ describe("VideoPostQueue", () => {
     expect(screen.getByDisplayValue("New RoboCo drop!")).toBeInTheDocument();
   });
 
-  it("switches the preview src between the 9:16 and 1:1 cuts", async () => {
+  it("fetches the preview clip as a blob via axios and drives <video> off an object URL", async () => {
     render(withQueryClient(<VideoPostQueue />));
     await screen.findByText("release");
 
-    const video = document.querySelector("video");
-    expect(video?.getAttribute("src")).toContain("cut=vertical");
+    await waitFor(() =>
+      expect(getMediaBlob).toHaveBeenCalledWith("v-1", "vertical"),
+    );
+    await waitFor(() =>
+      expect(document.querySelector("video")?.getAttribute("src")).toBe(
+        "blob:mock-url-1",
+      ),
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "1:1" }));
-    expect(document.querySelector("video")?.getAttribute("src")).toContain(
-      "cut=square",
+    await waitFor(() =>
+      expect(getMediaBlob).toHaveBeenCalledWith("v-1", "square"),
+    );
+    await waitFor(() =>
+      expect(document.querySelector("video")?.getAttribute("src")).toBe(
+        "blob:mock-url-2",
+      ),
+    );
+    // The stale cut's object URL is revoked once the new one takes over —
+    // this is the leak-prevention path FIX 1 exists for.
+    expect(globalThis.URL.revokeObjectURL).toHaveBeenCalledWith(
+      "blob:mock-url-1",
     );
   });
 

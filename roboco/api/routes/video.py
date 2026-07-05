@@ -171,6 +171,13 @@ async def get_video_post_media(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"No rendered {cut} cut"
         )
+    output_dir = Path(settings.video_output_dir).resolve()
+    if not Path(mp4_path).resolve().is_relative_to(output_dir):
+        # Defense-in-depth: a mp4_paths entry pointing outside the configured
+        # render dir is refused even though the file exists on disk.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"No rendered {cut} cut"
+        )
     return FileResponse(mp4_path, media_type="video/mp4")
 
 

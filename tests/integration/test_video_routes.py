@@ -296,8 +296,12 @@ async def test_list_posts_returns_open_draft(
 
 @pytest.mark.asyncio
 async def test_media_returns_the_rendered_cut(
-    db_session: AsyncSession, ceo_client: AsyncClient, tmp_path: Path
+    db_session: AsyncSession,
+    ceo_client: AsyncClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(cfg, "video_output_dir", str(tmp_path))
     vertical = tmp_path / "clip-vertical.mp4"
     vertical.write_bytes(b"fake-mp4-bytes-vertical")
     task = await _seed_draft(
@@ -308,6 +312,25 @@ async def test_media_returns_the_rendered_cut(
     assert resp.status_code == HTTPStatus.OK
     assert resp.headers["content-type"] == "video/mp4"
     assert resp.content == b"fake-mp4-bytes-vertical"
+
+
+@pytest.mark.asyncio
+async def test_media_outside_output_dir_is_404(
+    db_session: AsyncSession,
+    ceo_client: AsyncClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A mp4_paths entry that resolves outside video_output_dir is refused
+    even though the file exists on disk — defense-in-depth against any
+    future writer of mp4_paths."""
+    outside = tmp_path / "outside" / "clip-vertical.mp4"
+    outside.parent.mkdir(parents=True)
+    outside.write_bytes(b"fake-mp4-bytes")
+    monkeypatch.setattr(cfg, "video_output_dir", str(tmp_path / "confined"))
+    task = await _seed_draft(db_session, mp4_paths={"vertical": str(outside)})
+    resp = await ceo_client.get(f"/api/video/posts/{task.id}/media?cut=vertical")
+    assert resp.status_code == HTTPStatus.NOT_FOUND
 
 
 @pytest.mark.asyncio

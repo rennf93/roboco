@@ -21,6 +21,7 @@ export interface VideoPost {
   x_caption?: string | null;
   tiktok_caption?: string | null;
   reject_reason?: string | null;
+  mp4_paths?: Record<string, string>;
 }
 
 export interface VideoPostExecuteResult {
@@ -39,12 +40,13 @@ export interface TikTokCredentialsStatus {
   has_credentials: boolean;
 }
 
-// NOTE: the committed `VideoPostResponse` (roboco/api/schemas/video.py)
-// doesn't yet return the draft's `mp4_paths`, and no route serves the
-// rendered bytes — the design doc (docs/internal/specs/2026-07-04-video-
-// generation-remotion-design.md) calls for "a GET /video/posts/{id}/media
-// route (nginx -> orchestrator)". This points at that route so the preview
-// is wired correctly the moment the backend adds it; until then it 404s.
+// GET /video/posts/{id}/media (roboco/api/routes/video.py) serves one
+// rendered MP4 cut; VideoPost.mp4_paths (above) carries the server-side
+// paths per cut. This builds that route's URL — but a native
+// <video src> pointed straight at it 401s (a plain <video> GET carries none
+// of axios's X-Agent-ID/X-Agent-Role headers), so the panel instead fetches
+// the bytes via videoApi.getMediaBlob (axios) and drives <video> off an
+// object URL. Kept for any direct-link use (e.g. opening the raw file).
 export function videoMediaUrl(taskId: string, cut: VideoCut): string {
   return `${API_URL}/video/posts/${taskId}/media?cut=${cut}`;
 }
@@ -52,6 +54,16 @@ export function videoMediaUrl(taskId: string, cut: VideoCut): string {
 export const videoApi = {
   listPosts: async (): Promise<VideoPost[]> => {
     const { data } = await api.get<VideoPost[]>("/video/posts");
+    return data;
+  },
+  // Fetches the rendered cut as a Blob via axios (carrying the auth headers
+  // a plain <video src> GET can't) so the caller can drive <video> off an
+  // object URL instead of pointing it at the route directly.
+  getMediaBlob: async (taskId: string, cut: VideoCut): Promise<Blob> => {
+    const { data } = await api.get<Blob>(`/video/posts/${taskId}/media`, {
+      params: { cut },
+      responseType: "blob",
+    });
     return data;
   },
   approve: async (
