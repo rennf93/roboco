@@ -16,9 +16,9 @@ Rendered MP4s are written to a host bind mount (`ROBOCO_VIDEO_OUTPUT_DIR`, defau
 
 Armed in the NAS compose (`docker-compose.yml` / `docker-compose.yaml`); intentionally omitted from `docker-compose.registry.yml` (NAS default-on, registry default-off).
 
-## Current state (0.19.0 chunk 1 — scaffolding)
+## Current state (0.19.0 chunk 2 — client module landed)
 
-Config fields, the `minio` dependency, and the compose services (`minio` + `minio-init`) are landed. With `minio_endpoint` empty, no code path consumes MinIO yet — the existing `FileResponse` media-serve path is byte-for-byte unchanged. The `minio` service runs on the `data` network only (off the agent mesh); the orchestrator reaches it via its `data` NIC. Host ports `19000:9000` / `19001:9001` are published for debugging only.
+Config fields, the `minio` dependency, and the compose services (`minio` + `minio-init`) are landed (chunk 1). Chunk 2 adds `roboco/services/minio_client.py` — a singleton `Minio` with an unconfigured guard (`get_client()` returns `None` when `minio_endpoint` is empty), plus `put_object` and `get_object_stream`. With `minio_endpoint` empty, no code path *consumes* MinIO yet — the existing `FileResponse` media-serve path is byte-for-byte unchanged. The `minio` service runs on the `data` network only (off the agent mesh); the orchestrator reaches it via its `data` NIC. Host ports `19000:9000` / `19001:9001` are published for debugging only.
 
 ## Planned end state (later chunks)
 
