@@ -277,6 +277,56 @@ async def test_push_fails_loud_when_branch_absent_local_and_origin() -> None:
 
 
 @pytest.mark.asyncio
+async def test_push_force_uses_force_with_lease_not_bare_force() -> None:
+    """push(force=True) must use --force-with-lease, not bare --force.
+
+    Bare --force silently overwrites a concurrent remote advance; --force-with-lease
+    fails fast instead of clobbering someone else's commits.
+    """
+    svc = _service()
+    _bind(svc, "_token_for_workspace", AsyncMock(return_value=None))
+    calls: list[list[str]] = []
+
+    async def _run_git(_ws: object, args: list[str], **_kw: object) -> MagicMock:
+        calls.append(args)
+        res = MagicMock()
+        res.returncode = 0
+        res.stdout = "0" if args[:2] == ["rev-list", "--count"] else ""
+        return res
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+
+    await svc.push(Path("/tmp/ws"), force=True, branch="feature/backend/TASK")
+
+    push_args = next(a for a in calls if a and a[0] == "push")
+    assert "--force-with-lease" in push_args
+    assert "--force" not in push_args
+
+
+@pytest.mark.asyncio
+async def test_push_no_force_has_neither_flag() -> None:
+    """push(force=False) carries neither --force nor --force-with-lease."""
+    svc = _service()
+    _bind(svc, "_token_for_workspace", AsyncMock(return_value=None))
+    calls: list[list[str]] = []
+
+    async def _run_git(_ws: object, args: list[str], **_kw: object) -> MagicMock:
+        calls.append(args)
+        res = MagicMock()
+        res.returncode = 0
+        res.stdout = "0" if args[:2] == ["rev-list", "--count"] else ""
+        return res
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+
+    await svc.push(Path("/tmp/ws"), force=False, branch="feature/backend/TASK")
+
+    push_args = next(a for a in calls if a and a[0] == "push")
+    assert "--force-with-lease" not in push_args
+    assert "--force" not in push_args
+
+
+@pytest.mark.asyncio
 async def test_pr_head_is_task_branch_not_current() -> None:
     """The PR head is the task's recorded branch, not the workspace checkout."""
     task = MagicMock(branch_name="feature/frontend/TASK")

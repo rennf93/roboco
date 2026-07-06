@@ -1415,7 +1415,9 @@ class GitService(BaseService):
 
         args = ["push", "-u", "origin", branch]
         if force:
-            args.insert(1, "--force")
+            # --force-with-lease fails fast on a concurrent remote advance
+            # instead of silently clobbering someone else's commits.
+            args.insert(1, "--force-with-lease")
 
         try:
             await self._run_git(
