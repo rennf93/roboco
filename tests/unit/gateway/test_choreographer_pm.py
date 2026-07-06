@@ -1035,3 +1035,57 @@ async def test_cell_pm_complete_idempotent_when_pr_already_merged_to_target() ->
     assert not git_svc.pr_merge.called, (
         "cell_pm_complete re-issued git.pr_merge on an already-merged PR"
     )
+
+
+# ---------------------------------------------------------------------------
+# H6: cell_pm_complete survives parent-advance failure
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cell_pm_complete_survives_parent_advance_failure() -> None:
+    """_maybe_advance_parent_to_pm_review throws after the leaf is completed.
+    The verb must NOT 500 — the completion is committed; the side-effect
+    failure is logged and the envelope carries a warning."""
+    from unittest.mock import patch
+
+    pm_id = uuid4()
+    task_id = uuid4()
+    parent_id = uuid4()
+    t = MagicMock(
+        id=task_id,
+        status="awaiting_pm_review",
+        assigned_to=pm_id,
+        pr_number=8,
+        branch_name="feature/backend/abc--def",
+        parent_task_id=parent_id,
+        team="backend",
+    )
+    after = MagicMock(**{**t.__dict__, "status": "completed"})
+    parent = MagicMock(
+        id=parent_id, branch_name="feature/main_pm/abc", parent_task_id=None
+    )
+    task_svc = AsyncMock()
+    task_svc.get.side_effect = lambda tid: parent if tid == parent_id else t
+    task_svc.all_subtasks_terminal.return_value = True
+    task_svc.cell_pm_complete.return_value = after
+    git_svc = AsyncMock()
+    git_svc.is_pr_merged_for_task.return_value = False
+    git_svc.pr_merge.return_value = {"merge_commit_sha": "merge-abc"}
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
+    journal_svc.has_reflect_for_task.return_value = True
+    deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    with patch.object(
+        c,
+        "_maybe_advance_parent_to_pm_review",
+        new=AsyncMock(side_effect=RuntimeError("advance down")),
+    ):
+        env = await c.cell_pm_complete(pm_id, task_id, notes="reviewed and approved")
+    body = env.as_dict()
+    assert body.get("error") is None, body
+    assert body.get("warning") is not None
+    assert "advance" in body["warning"].lower()

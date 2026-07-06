@@ -324,3 +324,55 @@ async def test_i_documented_not_assigned_returns_not_authorized() -> None:
 
     env = await c.i_documented(doc_id, task_id, notes="x" * 50, files=["x.md"])
     assert env.as_dict()["error"] == "not_authorized"
+
+
+# ---------------------------------------------------------------------------
+# H6: i_documented survives handoff failure
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_i_documented_survives_handoff_failure() -> None:
+    """_handoff_to_cell_pm throws after the runner commits the docs-complete
+    transition. The verb must NOT 500 — the transition is committed; the
+    side-effect failure is logged and the envelope carries a warning."""
+    from unittest.mock import patch
+
+    doc_id = uuid4()
+    task_id = uuid4()
+    t = _doc_owned_task(task_id, doc_id)
+    after = MagicMock(
+        id=task_id,
+        status="awaiting_pm_review",
+        assigned_to=doc_id,
+        team="backend",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = t
+    task_svc.agent_for.return_value = _doc_agent_mock(doc_id)
+    task_svc.docs_complete.return_value = after
+    task_svc.cell_pm_for_team.return_value = MagicMock(id=uuid4())
+    task_svc.session = MagicMock()
+    task_svc.session.flush = AsyncMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
+    a2a_svc = AsyncMock()
+    journal_svc = AsyncMock()
+    journal_svc.has_reflect_for_task.return_value = True
+    deps = _make_deps(task=task_svc, a2a=a2a_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    notes = "Wrote backend/guides/feature-x.md with usage examples and config notes."
+    files = ["backend/guides/feature-x.md"]
+    with patch.object(
+        c, "_handoff_to_cell_pm", new=AsyncMock(side_effect=RuntimeError("handoff down"))
+    ):
+        env = await c.i_documented(doc_id, task_id, notes=notes, files=files)
+    body = env.as_dict()
+    assert body.get("error") is None, body
+    assert body.get("warning") is not None
+    assert "handoff" in body["warning"].lower()

@@ -37,6 +37,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
+import structlog
+
 from roboco.config import settings
 from roboco.foundation.policy import lifecycle as spec_module
 from roboco.foundation.policy import tracing as _tr
@@ -44,6 +46,8 @@ from roboco.foundation.policy.content import markers
 from roboco.models.task import DocRef
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import build_evidence_for_task
+
+logger = structlog.get_logger()
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -525,13 +529,29 @@ class DocMixin(_Base):
                 verb="i_documented",
             )
 
-        await self._handoff_to_cell_pm(doc_agent_id, task_id, t)
-        return Envelope.ok(
+        warning: str | None = None
+        try:
+            await self._handoff_to_cell_pm(doc_agent_id, task_id, t)
+        except Exception as exc:
+            logger.warning(
+                "i_documented side-effect failed - transition committed, "
+                "PM handoff did not fire",
+                task_id=str(task_id),
+                error=str(exc),
+            )
+            warning = (
+                f"Docs-complete transition committed but the PM handoff "
+                f"failed ({exc}). Re-issue the notification via dm."
+            )
+        env = Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
             next=spec_module._INTENT_VERBS["i_documented"].next_hint(t),
             context_briefing=briefing,
         ).with_introspection(task=t, role=role_str)
+        if warning:
+            env.warning = warning
+        return env
 
     async def _ensure_doc_branch_pushed(
         self, doc_agent_id: UUID, task_id: UUID, briefing: Any

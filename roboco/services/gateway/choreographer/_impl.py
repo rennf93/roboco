@@ -6227,14 +6227,32 @@ class Choreographer:
         # parent task: if the parent's subtasks are all terminal, hand the
         # parent off to the cell_pm for that team so it gets respawned for
         # the next stage (cell-PM PR merge or main-PM hand-off).
+        warning: str | None = None
         if leaf_parent_id is not None:
-            await self._maybe_advance_parent_to_pm_review(leaf_parent_id, leaf_team)
-        return Envelope.ok(
+            try:
+                await self._maybe_advance_parent_to_pm_review(leaf_parent_id, leaf_team)
+            except Exception as exc:
+                logger.warning(
+                    "cell_pm_complete side-effect failed - leaf completed, "
+                    "parent advance did not fire",
+                    task_id=str(task_id),
+                    parent_task_id=str(leaf_parent_id),
+                    error=str(exc),
+                )
+                warning = (
+                    f"Leaf completed but advancing the parent to PM review "
+                    f"failed ({exc}). The parent will be re-advanced on the "
+                    f"next dispatch tick."
+                )
+        env = Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
             next=spec_module._INTENT_VERBS["complete"].next_hint(t),
             context_briefing=await self._briefing_for(pm_agent_id, task_id),
         ).with_introspection(task=t, role="cell_pm")
+        if warning:
+            env.warning = warning
+        return env
 
     async def _resolve_merge_conflict_on_complete(
         self,

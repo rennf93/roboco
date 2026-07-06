@@ -48,6 +48,10 @@ class Envelope:
     # tool-discovery envelopes).
     current_state: str | None = None
     valid_next_verbs: list[str] | None = None
+    # Post-runner side-effect warning — set when the transition committed
+    # but a best-effort handoff (a2a / reassign / parent-advance) failed.
+    # The agent re-issues the notification; the task state is already advanced.
+    warning: str | None = None
 
     @classmethod
     def ok(
@@ -267,6 +271,8 @@ class Envelope:
             "current_state": self.current_state,
             "valid_next_verbs": self.valid_next_verbs,
         }
+        if self.warning is not None:
+            out["warning"] = self.warning
         if self.error is not None:
             out["message"] = self.message
             out["remediate"] = self.remediate
