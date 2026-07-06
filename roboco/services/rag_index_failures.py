@@ -154,18 +154,22 @@ async def _reindex(optimal: Any, doc_source: str, payload: dict[str, Any]) -> No
 
 async def _reindex_journal_entry(optimal: Any, payload: dict[str, Any]) -> None:
     """Replay a journal-entry index (and its learning recording if applicable)."""
-    await optimal.index_journal_entry(
-        IndexJournalEntryParams(
-            content=payload["content"],
-            entry_type=payload["entry_type"],
-            entry_id=UUID(payload["entry_id"]),
-            agent_id=UUID(payload["agent_id"]) if payload.get("agent_id") else None,
-            task_id=UUID(payload["task_id"]) if payload.get("task_id") else None,
-            tags=list(payload.get("tags") or []),
+    # Mirrors the original path (journal._schedule_rag_index): private
+    # reflections stay out of the shared JOURNALS corpus; a private
+    # learning is still recorded, just non-shareable.
+    is_private = bool(payload.get("is_private"))
+    if not is_private:
+        await optimal.index_journal_entry(
+            IndexJournalEntryParams(
+                content=payload["content"],
+                entry_type=payload["entry_type"],
+                entry_id=UUID(payload["entry_id"]),
+                agent_id=UUID(payload["agent_id"]) if payload.get("agent_id") else None,
+                task_id=UUID(payload["task_id"]) if payload.get("task_id") else None,
+                tags=list(payload.get("tags") or []),
+            )
         )
-    )
-    # A learning entry also records into the LEARNINGS index unless private.
-    if payload["entry_type"] == "learning" and not payload.get("is_private"):
+    if payload["entry_type"] == "learning":
         from roboco.services.optimal_brain.indexes.learnings import (
             RecordLearningParams as _JournalLearningParams,
         )
@@ -176,7 +180,7 @@ async def _reindex_journal_entry(optimal: Any, payload: dict[str, Any]) -> None:
                 category="journal_learning",
                 agent_id=UUID(payload["agent_id"]) if payload.get("agent_id") else None,
                 task_id=UUID(payload["task_id"]) if payload.get("task_id") else None,
-                shareable=True,
+                shareable=not is_private,
                 tags=list(payload.get("tags") or []),
             )
         )

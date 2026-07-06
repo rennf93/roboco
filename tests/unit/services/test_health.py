@@ -15,7 +15,7 @@ import pytest
 from roboco.api.routes.health import health_check
 from roboco.db.tables import RagIndexFailureTable
 from roboco.services.health import check_database, check_redis
-from roboco.services.rag_index_failures import reclaim_due
+from roboco.services.rag_index_failures import _reindex_journal_entry, reclaim_due
 
 _EXPECTED_FAILURES = 3
 _BUMPED_ATTEMPTS = 3
@@ -243,3 +243,91 @@ async def test_reclaim_due_bumps_attempts_on_failure() -> None:
     # attempts bumped to 3
     assert db_row.attempts == _BUMPED_ATTEMPTS
     assert db_row.next_retry_at is not None
+
+
+# ---------------------------------------------------------------------------
+# _reindex_journal_entry — is_private guard (C1 review fix)
+# A dead-letter replay must mirror the original path: a private entry is
+# never indexed into the shared JOURNALS corpus, but a private learning is
+# still recorded into LEARNINGS as non-shareable.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reindex_private_learning_not_indexed_but_recorded() -> None:
+    """A private learning entry is NOT indexed into JOURNALS but IS recorded
+    into LEARNINGS with shareable=False (regression for C1 leak)."""
+
+    entry_id = str(uuid4())
+    agent_id = str(uuid4())
+    payload = {
+        "content": "private reflection",
+        "entry_type": "learning",
+        "entry_id": entry_id,
+        "agent_id": agent_id,
+        "task_id": None,
+        "tags": ["reflect"],
+        "is_private": True,
+    }
+
+    optimal = MagicMock()
+    optimal.index_journal_entry = AsyncMock()
+    optimal.record_learning = AsyncMock()
+
+    await _reindex_journal_entry(optimal, payload)
+
+    optimal.index_journal_entry.assert_not_awaited()
+    optimal.record_learning.assert_awaited_once()
+    recorded = optimal.record_learning.await_args.args[0]
+    assert recorded.shareable is False
+    assert recorded.content == "private reflection"
+
+
+@pytest.mark.asyncio
+async def test_reindex_non_private_learning_indexed_and_shareable() -> None:
+    """A non-private learning entry is indexed into JOURNALS AND recorded
+    into LEARNINGS with shareable=True (the original happy path)."""
+
+    payload = {
+        "content": "shared lesson",
+        "entry_type": "learning",
+        "entry_id": str(uuid4()),
+        "agent_id": str(uuid4()),
+        "task_id": None,
+        "tags": [],
+        "is_private": False,
+    }
+
+    optimal = MagicMock()
+    optimal.index_journal_entry = AsyncMock()
+    optimal.record_learning = AsyncMock()
+
+    await _reindex_journal_entry(optimal, payload)
+
+    optimal.index_journal_entry.assert_awaited_once()
+    optimal.record_learning.assert_awaited_once()
+    assert optimal.record_learning.await_args.args[0].shareable is True
+
+
+@pytest.mark.asyncio
+async def test_reindex_private_general_not_indexed_not_recorded() -> None:
+    """A private non-learning entry is neither indexed nor recorded."""
+
+    payload = {
+        "content": "private note",
+        "entry_type": "general",
+        "entry_id": str(uuid4()),
+        "agent_id": None,
+        "task_id": None,
+        "tags": [],
+        "is_private": True,
+    }
+
+    optimal = MagicMock()
+    optimal.index_journal_entry = AsyncMock()
+    optimal.record_learning = AsyncMock()
+
+    await _reindex_journal_entry(optimal, payload)
+
+    optimal.index_journal_entry.assert_not_awaited()
+    optimal.record_learning.assert_not_awaited()
