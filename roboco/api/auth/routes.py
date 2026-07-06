@@ -15,6 +15,7 @@ from fastapi import APIRouter, FastAPI
 from fastapi_users import FastAPIUsers
 
 from roboco.api.auth.backend import auth_backend
+from roboco.api.auth.login_limit import LoginRateLimiter
 from roboco.api.auth.manager import get_user_manager
 from roboco.config import settings
 from roboco.db.tables import UserTable
@@ -37,4 +38,10 @@ def mount_cloud_auth(app: FastAPI, prefix: str) -> None:
         return
     app.include_router(
         fastapi_users_app.get_auth_router(auth_backend), prefix=prefix, tags=["Auth"]
+    )
+    app.add_middleware(
+        LoginRateLimiter,
+        prefix=prefix,
+        max_attempts=settings.login_max_attempts,
+        window=60,
     )

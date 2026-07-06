@@ -390,6 +390,7 @@ class Settings(BaseSettings):
             "window logs out."
         ),
     )
+    login_max_attempts: int = 10
 
     @model_validator(mode="after")
     def _validate_cloud_auth(self) -> "Settings":
