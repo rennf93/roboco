@@ -874,11 +874,14 @@ class Choreographer:
             company_goals=company_goals,
         )
         briefing = build_context_briefing(inputs)
-        memory = heavy.get("institutional_memory", [])
-        if memory:
+        memory_block = heavy.get("institutional_memory")
+        if memory_block is not None:
             # "What the company already knows about work like this" — distilled
             # lessons + approved playbooks, pushed so the agent never has to ask.
-            briefing = {**briefing, "institutional_memory": memory}
+            # The block always carries ``institutional_memory_status`` so an agent
+            # can tell "searched, nothing" (below_floor / empty) from "search broke"
+            # (error) from "subsystem off" (disabled); lessons is empty unless ok.
+            briefing = {**briefing, "institutional_memory": memory_block}
         if include_ac_coverage and task_id is not None:
             coverage = await self.task.parent_ac_coverage(task_id)
             if coverage:
@@ -946,15 +949,22 @@ class Choreographer:
 
     async def _institutional_memory(
         self, agent_id: UUID, task: Any | None
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, Any]:
         """Org-memory keystone: top-K relevant past lessons/playbooks for this
         claim, role-shaped and relevance-floored. Empty unless
         ``org_memory_enabled`` and a task is in hand (nothing to query on
-        otherwise). Best-effort — never breaks the briefing."""
+        otherwise). Best-effort — never breaks the briefing.
+
+        Returns ``{"status": ..., "lessons": [...]}`` where status is one of
+        ``disabled`` (subsystem off / no task — ponytail: both mean no search ran),
+        ``error`` (search raised), ``empty`` (search yielded nothing),
+        ``below_floor`` (searched, nothing met the floor), ``ok`` (lessons
+        injected). Lessons is empty unless status is ``ok`` — the status is
+        additive, the injection behavior is unchanged."""
         from roboco.config import settings as _settings
 
         if not _settings.org_memory_enabled or task is None:
-            return []
+            return {"status": "disabled", "lessons": []}
         agent = await self.task.agent_for(agent_id)
         role = str(agent.role) if agent is not None else ""
         title = str(getattr(task, "title", "") or "")
@@ -966,12 +976,15 @@ class Choreographer:
         else:
             task_type = str(raw_type)
         query = shape_memory_query(role, title, task_type)
-        memory: list[dict[str, Any]] = await self._deps.evidence_repo.similar_memory(
+        result = await self._deps.evidence_repo.similar_memory(
             query=query,
             top_k=_settings.org_memory_top_k,
             min_score=_settings.org_memory_min_score,
         )
-        return memory
+        return {
+            "status": str(result.get("status", "error")),
+            "lessons": list(result.get("items", [])),
+        }
 
     # PM coordinator roles plan + delegate many roots in parallel; the actual
     # work then runs in the delegated children/cells, not in the PM's own hands.
