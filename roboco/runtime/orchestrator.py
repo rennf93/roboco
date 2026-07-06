@@ -10345,6 +10345,9 @@ Start now: evidence(task_id="{task_id}")
     _PM_RESPAWN_MAX_UNPRODUCTIVE = _AGENT_LOOP_BUDGET.pm_respawn_max_unproductive
     _PM_RESPAWN_MAX_TRACING_RESETS = _AGENT_LOOP_BUDGET.pm_respawn_max_tracing_resets
     _PM_RESPAWN_MAX_REVISIT_RESETS = _AGENT_LOOP_BUDGET.pm_respawn_max_revisit_resets
+    _PM_RESPAWN_TRIP_COOLDOWN_SECONDS = (
+        _AGENT_LOOP_BUDGET.pm_respawn_trip_cooldown_seconds
+    )
 
     def _respawn_status_change_resets(
         self,
@@ -10474,12 +10477,38 @@ Start now: evidence(task_id="{task_id}")
                 task_status=current_status,
                 tracing_resets=resets,
             )
+        # Already tripped on a PREVIOUS tick (notified flipped): the count is
+        # frozen past the threshold and last_check is frozen at the trip tick,
+        # so a deploy that fixed the underlying loop (auth/prompt/schema) can
+        # self-heal after a cooldown instead of wedging until manual DB
+        # surgery. A still-wedged task re-trips after the threshold (bounded
+        # re-burn: ~3 spawns per cooldown window); a fixed one advances and
+        # the status-change path fully resets the counter.
+        if record["count"] > self._PM_RESPAWN_MAX_UNPRODUCTIVE and record.get(
+            "notified"
+        ):
+            # Cooldown elapsed -> reset count=1 and let the spawn through (the
+            # underlying loop may have been fixed by a deploy); still within
+            # the cooldown -> keep gating. last_check is frozen at the trip
+            # tick (this branch returns before the increment below updates it).
+            elapsed: bool = (now - record["last_check"]).total_seconds() > (
+                self._PM_RESPAWN_TRIP_COOLDOWN_SECONDS
+            )
+            if elapsed:
+                record["count"] = 1
+                record["last_check"] = now
+                record["notified"] = False
+                self._schedule_respawn_persist(
+                    agent_slug, str(task_id), self._pm_respawn_tracker[key]
+                )
+            return not elapsed
         record["count"] += 1
         record["last_check"] = now
         self._schedule_respawn_persist(
             agent_slug, str(task_id), self._pm_respawn_tracker[key]
         )
-        if record["count"] > self._PM_RESPAWN_MAX_UNPRODUCTIVE:
+        tripped: bool = record["count"] > self._PM_RESPAWN_MAX_UNPRODUCTIVE
+        if tripped:
             logger.warning(
                 "PM respawn loop detected — skipping spawn",
                 agent_id=agent_slug,
@@ -10500,8 +10529,7 @@ Start now: evidence(task_id="{task_id}")
                     agent_slug, str(task_id), self._pm_respawn_tracker[key]
                 )
                 await self._notify_stuck_agent(agent_slug, task_id, current_status)
-            return True
-        return False
+        return tripped
 
     async def _notify_stuck_agent(
         self, agent_slug: str, task_id: str, task_status: str | None
