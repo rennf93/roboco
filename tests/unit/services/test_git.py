@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -1066,3 +1066,97 @@ async def test_is_pr_merged_for_task_none_treated_as_merged() -> None:
     with _patch_project_service(fake_project):
         out = await svc.is_pr_merged_for_task(fake_task.id)
     assert out is True
+
+
+# ---------------------------------------------------------------------------
+# L1: actor_agent_id threading + narrowed created_by fallback
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_workspace_agent_id_no_created_by_fallback_when_actor_none() -> None:
+    """_resolve_workspace_agent_id(None) must NOT fall back to created_by.
+
+    A PM who created the task but never cloned the project's workspace
+    would 404 on get_workspace(PM-id). With the actor unset we prefer
+    None (project.workspace_path) over a creator who has no clone.
+    """
+    pm_id = uuid4()
+    task = MagicMock(assigned_to=None, created_by=pm_id)
+    assert GitService._resolve_workspace_agent_id(task, None) is None
+
+
+def test_resolve_workspace_agent_id_actor_precedes_assigned_and_creator() -> None:
+    """The threaded actor wins over assigned_to and created_by."""
+    actor = uuid4()
+    assignee = uuid4()
+    creator = uuid4()
+    task = MagicMock(assigned_to=assignee, created_by=creator)
+    assert GitService._resolve_workspace_agent_id(task, actor) == actor
+
+
+def test_resolve_workspace_agent_id_assigned_to_used_when_actor_none() -> None:
+    """assigned_to is still the fallback when the actor is unset."""
+    assignee = uuid4()
+    creator = uuid4()
+    task = MagicMock(assigned_to=assignee, created_by=creator)
+    assert GitService._resolve_workspace_agent_id(task, None) == assignee
+
+
+@pytest.mark.asyncio
+async def test_update_pr_for_task_threads_actor_agent_id() -> None:
+    """update_pr_for_task forwards actor_agent_id to workspace resolution.
+
+    A PM (not the assignee) editing the PR must resolve to the PM's own
+    workspace, not fall back to assigned_to/created_by. The actor is the
+    agent who actually performed the action — the verb layer passes it.
+    """
+    pm_id = uuid4()
+    task = MagicMock(
+        id=uuid4(),
+        project_id=uuid4(),
+        pr_number=7,
+        pr_url="https://github.com/acme/repo/pull/7",
+        assigned_to=uuid4(),
+        created_by=uuid4(),
+    )
+
+    svc = _service()
+    captured: dict[str, object] = {}
+
+    async def _capture_workspace(_slug: str, agent_id: UUID | None = None) -> Path:
+        captured["agent_id"] = agent_id
+        return Path("/tmp/ws")
+
+    _bind(svc, "get_workspace", AsyncMock(side_effect=_capture_workspace))
+    _bind(svc, "_parse_github_remote", MagicMock(return_value=("acme", "repo")))
+    _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
+
+    fake_task_service = MagicMock()
+    fake_task_service.get = AsyncMock(return_value=task)
+    fake_project = MagicMock(slug="roboco")
+
+    patch_resp = MagicMock()
+    patch_resp.status_code = 200
+    patch_resp.is_success = True
+    patch_resp.json.return_value = {"number": 7, "html_url": task.pr_url}
+    patch_resp.text = ""
+    fake_client = MagicMock()
+    fake_client.__aenter__ = AsyncMock(return_value=fake_client)
+    fake_client.__aexit__ = AsyncMock(return_value=False)
+    fake_client.patch = AsyncMock(return_value=patch_resp)
+    fake_client.post = AsyncMock()
+
+    with (
+        patch("roboco.services.git.get_task_service", return_value=fake_task_service),
+        _patch_project_service(fake_project),
+        patch("roboco.services.git.httpx.AsyncClient", return_value=fake_client),
+    ):
+        await svc.update_pr_for_task(
+            UUID(str(task.id)),
+            title="t",
+            body=None,
+            reviewers=None,
+            actor_agent_id=pm_id,
+        )
+
+    assert captured["agent_id"] == pm_id

@@ -2549,6 +2549,7 @@ class GitService(BaseService):
         title: str | None = None,
         body: str | None = None,
         reviewers: list[str] | None = None,
+        actor_agent_id: UUID | None = None,
     ) -> dict[str, Any]:
         """Update an open PR's title/body and/or request reviewers.
 
@@ -2556,6 +2557,11 @@ class GitService(BaseService):
         through `_patch_pr_title_body` (when title or body is set) and
         `_post_pr_reviewers` (when reviewers is set). Either or both run;
         the verb layer guarantees at least one is provided.
+
+        ``actor_agent_id`` is the agent who actually performed the action
+        (e.g. a PM editing a dev's PR); it is threaded through to
+        workspace resolution so a creator who never cloned the project
+        is never selected as the workspace owner.
 
         Returns a dict with `pr_number`, `pr_url`, and a `updated_fields`
         list naming which of title/body/reviewers actually went out.
@@ -2574,7 +2580,7 @@ class GitService(BaseService):
         if project is None:
             raise NotFoundError("Project for task", str(task.id))
 
-        workspace_agent_id = self._resolve_workspace_agent_id(task, None)
+        workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
         workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
         owner, repo = self._parse_github_remote(workspace)
         git_token = await self._get_project_token_or_raise(project.slug)
@@ -3304,17 +3310,20 @@ class GitService(BaseService):
     ) -> UUID | None:
         """Workspace-agent resolution priority.
 
-        actor_agent_id → task.assigned_to → task.created_by → None.
+        actor_agent_id → task.assigned_to → None. The creator is NOT
+        consulted: a PM who created the task but never cloned the
+        project's workspace would 404 on get_workspace(PM-id), so
+        falling back to created_by manufactures a broken lookup.
+        Callers without a real actor get None (project.workspace_path).
         Centralised so push_branch/create_pr/commit/diff/pr_target/pr_merge
         share one chain — and individual methods stay below the
         cyclomatic-complexity gate (xenon B).
         """
-        candidate = actor_agent_id or (
-            UUID(str(task.assigned_to)) if task.assigned_to is not None else None
-        )
-        if candidate is None and task.created_by:
-            candidate = UUID(str(task.created_by))
-        return candidate
+        if actor_agent_id is not None:
+            return actor_agent_id
+        if task.assigned_to is not None:
+            return UUID(str(task.assigned_to))
+        return None
 
     async def _workspace_for_branch(
         self,
