@@ -25,6 +25,7 @@ import structlog
 from mcp.server.fastmcp import FastMCP
 from pydantic import BeforeValidator
 
+from roboco.agents_config import get_agent_team
 from roboco.foundation.policy.content.validators import coerce_str_list
 
 # A ``list[str]`` field that tolerates the Claude SDK's XML-ish tool-input
@@ -260,11 +261,22 @@ def _build_headers() -> dict[str, str]:
     every log line and the audit row carry the same id and the agent
     receives it back on the envelope.
     """
-    return {
+    # X-Agent-Token (HMAC over id:role:team, issued by the orchestrator at
+    # spawn) and X-Agent-Team must travel with every flow verb or the API's
+    # ROBOCO_AGENT_AUTH_REQUIRED gate 401s with "Missing X-Agent-Token" —
+    # the same headers ApiClient injects for the other MCP servers.
+    headers = {
         "X-Agent-ID": AGENT_ID,
         "X-Agent-Role": AGENT_ROLE,
         "X-Correlation-ID": str(uuid.uuid4()),
     }
+    team = get_agent_team(AGENT_ID)
+    if team:
+        headers["X-Agent-Team"] = team
+    token = os.environ.get("ROBOCO_AGENT_TOKEN")
+    if token:
+        headers["X-Agent-Token"] = token
+    return headers
 
 
 def _post(path: str, body: dict[str, Any]) -> dict[str, Any]:

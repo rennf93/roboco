@@ -23,6 +23,8 @@ import httpx
 import structlog
 from mcp.server.fastmcp import FastMCP
 
+from roboco.agents_config import get_agent_team
+
 ORCHESTRATOR_URL = os.environ.get(
     "ROBOCO_ORCHESTRATOR_URL",
     "http://roboco-orchestrator:8000",
@@ -226,11 +228,21 @@ def _build_headers() -> dict[str, str]:
     orchestrator's middleware can bind it to structlog and the audit row,
     and the envelope echoes it back to the agent.
     """
-    return {
+    # X-Agent-Token + X-Agent-Team must travel with every do verb or the
+    # API's ROBOCO_AGENT_AUTH_REQUIRED gate 401s — mirrors flow_server and
+    # the ApiClient header path used by the other MCP servers.
+    headers = {
         "X-Agent-ID": AGENT_ID,
         "X-Agent-Role": AGENT_ROLE,
         "X-Correlation-ID": str(uuid.uuid4()),
     }
+    team = get_agent_team(AGENT_ID)
+    if team:
+        headers["X-Agent-Team"] = team
+    token = os.environ.get("ROBOCO_AGENT_TOKEN")
+    if token:
+        headers["X-Agent-Token"] = token
+    return headers
 
 
 def _post(path: str, body: dict[str, Any]) -> dict[str, Any]:
