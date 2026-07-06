@@ -8447,17 +8447,50 @@ class TaskService(BaseService):
         agent_id: UUID,
         task_id: UUID,
         expected_status: TaskStatus,
+        enforce_competing_claimant: bool = True,
     ) -> TaskTable | None:
         """Claim-without-transition for QA / Documenter review states.
 
         Status stays at expected_status (it's a review state, not an
         active dev state). Sets assigned_to + claimed_by + claimed_at so
         the gateway can route subsequent verbs to the right agent.
+
+        The row is locked ``FOR UPDATE`` so concurrent claim attempts
+        serialize at the DB level, mirroring ``claim`` and ``pr_gate_claim``:
+        a second claimant sees the first's committed ``active_claimant_id``
+        and returns None instead of overwriting it (last-write-wins would
+        otherwise actor-mismatch the first claimant's later pass_review /
+        fail_review / i_documented).
+
+        ``enforce_competing_claimant`` defaults True (QA/doc path). The
+        ``pr_gate_claim`` path passes False — it carries its own
+        role-scoped guard that only blocks a competing PR_REVIEWER claim;
+        a PM owning the root (non-reviewer claim) is intentionally
+        overridable by the first reviewer.
         """
-        task = await self.get(task_id)
+        lock_result = await self.session.execute(
+            select(TaskTable)
+            .where(TaskTable.id == task_id)
+            .with_for_update(of=TaskTable)
+        )
+        task = lock_result.scalar_one_or_none()
         if task is None:
             return None
         if task.status != expected_status:
+            return None
+        existing = to_python_uuid(task.active_claimant_id)
+        if (
+            enforce_competing_claimant
+            and existing is not None
+            and existing != agent_id
+        ):
+            self.log.warning(
+                "qa_or_doc_claim rejected - task already claimed by another agent",
+                task_id=str(task_id),
+                expected_status=expected_status.value,
+                existing_claimant=str(existing),
+                requesting_agent=str(agent_id),
+            )
             return None
         now = datetime.now(UTC)
         task.assigned_to = cast("Any", agent_id)
@@ -8614,7 +8647,10 @@ class TaskService(BaseService):
                 )
                 return None
         return await self._qa_or_doc_claim(
-            reviewer_agent_id, task_id, TaskStatus.AWAITING_PR_REVIEW
+            reviewer_agent_id,
+            task_id,
+            TaskStatus.AWAITING_PR_REVIEW,
+            enforce_competing_claimant=False,
         )
 
     async def submit_for_review(

@@ -1829,3 +1829,65 @@ async def test_add_dependency_rejects_cycle(db_session: "AsyncSession") -> None:
     await svc.add_dependency(b, c)
     with pytest.raises(ConflictError, match="cycle"):
         await svc.add_dependency(c, a)
+
+
+# ---------------------------------------------------------------------------
+# M19: _qa_or_doc_claim must lock the task row FOR UPDATE
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_qa_claim_serializes_concurrent_claimants(db_session: "AsyncSession") -> None:
+    """Two QA agents race-claiming the same awaiting_qa task: without FOR UPDATE
+    both pass the status check and overwrite claimed_by (last-write-wins); the
+    first claimant's later pass_review actor-mismatches. With FOR UPDATE the
+    second claim sees the first's committed claim and returns None."""
+    from roboco.db.tables import TaskTable
+    from roboco.services.task import get_task_service
+
+    tid = uuid4()
+    await _seed_minimal_task(db_session, tid)
+    # Bump the seeded task into awaiting_qa with a PR open.
+    from sqlalchemy import select as _select
+
+    row = (await db_session.execute(_select(TaskTable).where(TaskTable.id == tid))).scalar_one()
+    row.status = TaskStatus.AWAITING_QA
+    row.pr_number = 1
+    row.pr_created = True
+    await db_session.flush()
+
+    qa_a, qa_b = uuid4(), uuid4()
+    for aid in (qa_a, qa_b):
+        db_session.add(
+            AgentTable(
+                id=aid,
+                name=f"QA-{aid.hex[:4]}",
+                slug=f"qa-{aid.hex[:8]}",
+                role=AgentRole.QA,
+                team=Team.BACKEND,
+                status=AgentStatus.ACTIVE,
+                model_config={},
+                system_prompt="qa",
+                capabilities=[],
+                permissions={},
+                metrics={},
+            )
+        )
+    await db_session.flush()
+
+    svc = get_task_service(db_session)
+    first = await svc.qa_claim(qa_a, tid)
+    assert first is not None
+    assert to_uuid(first.active_claimant_id) == qa_a
+    second = await svc.qa_claim(qa_b, tid)
+    assert second is None, (
+        "second QA claimant overwrote the first's claimed_by — FOR UPDATE missing"
+    )
+
+
+def to_uuid(v: object) -> UUID | None:
+    if v is None:
+        return None
+    if isinstance(v, UUID):
+        return v
+    return UUID(str(v))
