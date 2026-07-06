@@ -169,14 +169,21 @@ def _agent_api_headers(agent_uuid: str, role: str) -> dict[str, str]:
     gate — a hand-built ``{X-Agent-ID, X-Agent-Role}`` dict 401s with
     "Missing X-Agent-Token" under auth-required (F038/F039 — the same gap the
     system-headers helper closes for the system identity).
+
+    The token is attached only when ``ROBOCO_AGENT_AUTH_SECRET`` is set: the
+    dev-mode middleware rejects a presented-but-unverifiable token (the
+    ``UNSIGNED`` sentinel) with 401 "signature mismatch" while accepting a
+    missing token, so sending ``UNSIGNED`` would turn a clean dev self-call
+    into a 401. With the secret armed the token is signed and verifies.
     """
-    from roboco.agents_config import issue_agent_token
+    from roboco.agents_config import _auth_secret, issue_agent_token
 
     team = get_agent_team(agent_uuid) or ""
     headers = {"X-Agent-ID": agent_uuid, "X-Agent-Role": role}
     if team:
         headers["X-Agent-Team"] = team
-    headers["X-Agent-Token"] = issue_agent_token(agent_uuid, role, team)
+    if _auth_secret():
+        headers["X-Agent-Token"] = issue_agent_token(agent_uuid, role, team)
     return headers
 
 

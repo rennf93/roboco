@@ -221,11 +221,10 @@ async def test_open_video_task_no_op_when_project_not_opted_in(
 ) -> None:
     await _seed(db_session)
     # Flip the per-project opt-in back off — the global flag stays on.
-    await db_session.execute(
-        ProjectTable.__table__.update()
-        .where(ProjectTable.__table__.c.slug == SLUG)
-        .values(video_engine_enabled=False)
-    )
+    project = (
+        await db_session.execute(select(ProjectTable).where(ProjectTable.slug == SLUG))
+    ).scalar_one()
+    project.video_engine_enabled = False
     await db_session.flush()
     _enable(monkeypatch)
     engine = video_engine_module.VideoEngine(db_session)

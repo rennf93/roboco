@@ -82,3 +82,18 @@ def test_agent_api_headers_carry_signed_token_and_team(
     token = headers["X-Agent-Token"]
     assert token and token != "UNSIGNED"
     assert verify_agent_token(token, be_pm_uuid, role, team)
+
+
+def test_agent_api_headers_omit_token_when_secret_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Dev mode: with no secret set, issue_agent_token returns the UNSIGNED
+    # sentinel, but the dev-mode middleware rejects a presented-but-unverifiable
+    # token with 401 "signature mismatch" while accepting a missing token.
+    # Sending UNSIGNED would 401 the cell-PM auto-submit self-call in every dev
+    # run (the e2e test_auto_submit_cuts_the_pm_turn regression), so the token
+    # header is omitted entirely when the secret is unset.
+    monkeypatch.delenv("ROBOCO_AGENT_AUTH_SECRET", raising=False)
+    be_pm = _foundation.AGENTS["be-pm"]
+    headers = _agent_api_headers(str(be_pm.uuid), be_pm.role.value)
+    assert "X-Agent-Token" not in headers
