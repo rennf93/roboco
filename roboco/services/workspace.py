@@ -256,35 +256,6 @@ def _ensure_lock_for(project_slug: str, agent_slug: str) -> asyncio.Lock:
     return lock
 
 
-def _inject_token_into_url(git_url: str, token: str | None) -> str:
-    """
-    Inject GitHub PAT into HTTPS git URL for authentication.
-
-    Args:
-        git_url: Original git URL (SSH or HTTPS)
-        token: GitHub PAT (if None, returns original URL)
-
-    Returns:
-        URL with embedded token for HTTPS, or original URL for SSH
-
-    Example:
-        https://github.com/org/repo.git -> https://TOKEN@github.com/org/repo.git
-    """
-    if not token:
-        return git_url
-
-    # Only inject for HTTPS URLs
-    if not git_url.startswith("https://"):
-        return git_url
-
-    # Check if token already present
-    if "@" in git_url.split("//")[1].split("/", maxsplit=1)[0]:
-        return git_url
-
-    # Inject token: https://github.com -> https://TOKEN@github.com
-    return re.sub(r"^https://", f"https://{token}@", git_url)
-
-
 class WorkspaceError(Exception):
     """Raised when workspace operations fail."""
 

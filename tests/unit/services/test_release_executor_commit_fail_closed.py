@@ -18,7 +18,8 @@ def _ctx() -> _ReleaseContext:
         slug="roboco",
         default_branch="master",
         root=Path("/tmp/roboco-release-f012"),
-        auth_url="https://x@github.com/o/roboco",
+        git_url="https://github.com/o/roboco",
+        git_prefix=[],
         ci_workflow=None,
     )
 
@@ -32,7 +33,8 @@ class _FakeGitOps(_GitReleaseOps):
         self._slug = ctx.slug
         self._default_branch = ctx.default_branch
         self._root = ctx.root
-        self._auth_url = ctx.auth_url
+        self._git_url = ctx.git_url
+        self._git_prefix = ctx.git_prefix
         self._ci_workflow = ctx.ci_workflow
         self._script = list(script)
         self.calls: list[tuple[str, ...]] = []

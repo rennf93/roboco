@@ -8,6 +8,7 @@ call sequence; the production git/gh ops is exercised live (CEO-gated).
 
 from __future__ import annotations
 
+import base64
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
@@ -287,7 +288,8 @@ async def test_wait_for_ci_scoped_to_release_commit_not_branch_latest(
         slug="roboco-api",
         default_branch="master",
         root=tmp_path,
-        auth_url="x",
+        git_url="x",
+        git_prefix=[],
         ci_workflow="ci.yml",
     )
     ops = _GitReleaseOps(session=MagicMock(), ctx=ctx)
@@ -315,3 +317,122 @@ def test_release_ci_workflow_decoupled_from_self_heal_setting(
     # An empty release setting never falls through to None — always the default.
     monkeypatch.setattr(settings, "release_ci_workflow", "")
     assert _resolve_release_ci_workflow() == "ci.yml"
+
+
+# --------------------------------------------------------------------------- #
+# H11: the PAT must never appear in a git subprocess argv. The release clone
+# and the release push carry the token via ``-c http.extraheader=Authorization:
+# Basic <base64(x-access-token:TOKEN)>`` and a bare URL — never URL-embedded.
+# --------------------------------------------------------------------------- #
+
+
+def _basic_auth(token: str) -> str:
+    return base64.b64encode(f"x-access-token:{token}".encode()).decode()
+
+
+class _DoneProc:
+    """A subprocess that completes immediately with a fixed rc + stdout."""
+
+    def __init__(self, out: bytes = b"", returncode: int = 0) -> None:
+        self.returncode = returncode
+        self._out = out
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        return (self._out, b"")
+
+    def kill(self) -> None:
+        return None
+
+    async def wait(self) -> int:
+        return self.returncode
+
+
+@pytest.mark.asyncio
+async def test_release_clone_argv_uses_extraheader_not_url_token(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """H11: the release-clone argv carries the PAT via ``-c http.extraheader``,
+    never URL-embedded (``/proc/<pid>/cmdline`` would expose a URL token)."""
+    token = "ghp_SECRETCLONE"
+    git_url = "https://github.com/org/roboco.git"
+    expected_basic = _basic_auth(token)
+    git_prefix = ["-c", f"http.extraheader=Authorization: Basic {expected_basic}"]
+    captured: list[list[str]] = []
+
+    async def _exec(*args: str, **_kwargs: object) -> _DoneProc:
+        captured.append(list(args))
+        return _DoneProc()
+
+    monkeypatch.setattr(re.asyncio, "create_subprocess_exec", _exec)
+    monkeypatch.setattr(settings, "workspaces_root", str(tmp_path))
+
+    await re._prepare_release_clone("roboco-api", git_url, git_prefix, "master")
+
+    clone_argv = next(a for a in captured if "clone" in a)
+    assert f"https://{token}@" not in " ".join(clone_argv), (
+        f"raw token leaked into clone argv URL: {clone_argv}"
+    )
+    assert token not in clone_argv, f"raw token in clone argv: {clone_argv}"
+    assert git_url in clone_argv, f"bare git_url missing from clone argv: {clone_argv}"
+    assert "-c" in clone_argv
+    c_idx = clone_argv.index("-c")
+    assert (
+        clone_argv[c_idx + 1]
+        == f"http.extraheader=Authorization: Basic {expected_basic}"
+    )
+    assert "clone" in clone_argv[c_idx + 2 :]
+
+
+@pytest.mark.asyncio
+async def test_release_push_argv_uses_extraheader_not_url_token(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """H11: the release push argv carries the PAT via ``-c http.extraheader``
+    and pushes to the bare URL — never ``https://TOKEN@host/...``."""
+    token = "ghp_SECRETPUSH"
+    git_url = "https://github.com/org/roboco.git"
+    expected_basic = _basic_auth(token)
+    git_prefix = ["-c", f"http.extraheader=Authorization: Basic {expected_basic}"]
+    captured: list[list[str]] = []
+
+    # commit_and_push issues: add -A, commit -S -m, rev-parse HEAD, push.
+    responses = iter(
+        [
+            _DoneProc(b""),  # add -A
+            _DoneProc(b""),  # commit
+            _DoneProc(b"deadbeef\n"),  # rev-parse HEAD
+            _DoneProc(b"ok"),  # push
+        ]
+    )
+
+    async def _exec(*args: str, **_kwargs: object) -> _DoneProc:
+        captured.append(list(args))
+        return next(responses)
+
+    monkeypatch.setattr(re.asyncio, "create_subprocess_exec", _exec)
+
+    ctx = _ReleaseContext(
+        slug="roboco-api",
+        default_branch="master",
+        root=tmp_path,
+        git_url=git_url,
+        git_prefix=git_prefix,
+        ci_workflow=None,
+    )
+    ops = _GitReleaseOps(session=MagicMock(), ctx=ctx)
+    sha = await ops.commit_and_push("0.13.0")
+    assert sha == "deadbeef"
+
+    push_argv = next(a for a in captured if "push" in a)
+    assert f"https://{token}@" not in " ".join(push_argv), (
+        f"raw token leaked into push argv URL: {push_argv}"
+    )
+    assert token not in push_argv, f"raw token in push argv: {push_argv}"
+    assert git_url in push_argv, f"bare git_url missing from push argv: {push_argv}"
+    assert "-c" in push_argv
+    c_idx = push_argv.index("-c")
+    assert (
+        push_argv[c_idx + 1]
+        == f"http.extraheader=Authorization: Basic {expected_basic}"
+    )
+    assert "push" in push_argv[c_idx + 2 :]
