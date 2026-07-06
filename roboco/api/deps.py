@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import os
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, cast
 from uuid import UUID
 
 import structlog
@@ -133,31 +133,33 @@ OrchestratorDep = Annotated[AgentOrchestrator, Depends(get_orchestrator)]
 
 async def get_current_agent_id(
     db: DbSession,
+    response: Response,
     x_agent_id: Annotated[str | None, Header()] = None,
+    x_agent_role: Annotated[str | None, Header()] = None,
+    x_agent_team: Annotated[str | None, Header()] = None,
+    x_agent_token: Annotated[str | None, Header()] = None,
+    roboco_session: Annotated[str | None, Cookie(alias=SESSION_COOKIE_NAME)] = None,
 ) -> UUID:
-    """
-    Get the current agent ID from request headers.
-
-    Accepts either a UUID string or agent slug (e.g., "be-dev-1").
-    In production, this would validate a JWT token and extract the agent ID.
-    For now, we use a simple header-based approach for development.
-
-    Args:
-        x_agent_id: Agent ID (UUID or slug) from X-Agent-ID header
-        db: Database session for slug resolution
-
-    Returns:
-        UUID of the current agent
-
-    Raises:
-        HTTPException: If agent ID is missing or invalid/not found
-    """
+    """Resolve the caller's agent id. Dev (header-trust) keeps the historical
+    slug/UUID resolution unchanged; under cloud auth the request must present a
+    valid agent HMAC token or a CEO session cookie — a bare X-Agent-ID is a
+    spoof and is rejected (see _cloud_auth_agent_context)."""
+    if settings.cloud_auth_enabled:
+        ctx = await _cloud_auth_agent_context(
+            db,
+            response,
+            x_agent_id,
+            x_agent_role,
+            x_agent_team,
+            x_agent_token,
+            roboco_session,
+        )
+        return ctx.agent_id
     if not x_agent_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing X-Agent-ID header",
         )
-
     return await resolve_agent_id(x_agent_id, db)
 
 
@@ -166,23 +168,28 @@ CurrentAgentId = Annotated[UUID, Depends(get_current_agent_id)]
 
 
 async def get_current_agent_slug(
+    db: DbSession,
+    response: Response,
     x_agent_id: Annotated[str | None, Header()] = None,
+    x_agent_role: Annotated[str | None, Header()] = None,
+    x_agent_team: Annotated[str | None, Header()] = None,
+    x_agent_token: Annotated[str | None, Header()] = None,
+    roboco_session: Annotated[str | None, Cookie(alias=SESSION_COOKIE_NAME)] = None,
 ) -> str:
-    """
-    Get the current agent slug from request headers.
-
-    Unlike get_current_agent_id, this returns the slug directly without
-    resolving to UUID. Useful for A2A where we work with agent slugs.
-
-    Args:
-        x_agent_id: Agent slug from X-Agent-ID header
-
-    Returns:
-        Agent slug string
-
-    Raises:
-        HTTPException: If agent ID header is missing
-    """
+    """Return the caller's agent slug. Dev: the header verbatim. Cloud auth:
+    the slug from the dual-path gate (a verified agent token resolves the real
+    slug; a CEO cookie resolves to 'ceo')."""
+    if settings.cloud_auth_enabled:
+        ctx = await _cloud_auth_agent_context(
+            db,
+            response,
+            x_agent_id,
+            x_agent_role,
+            x_agent_team,
+            x_agent_token,
+            roboco_session,
+        )
+        return cast("str", ctx.slug)
     if not x_agent_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
