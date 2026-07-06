@@ -972,6 +972,7 @@ class AgentOrchestrator:
         # the spawn gate + reaper see them as live immediately (no double-spawn,
         # no over-reap). Inert when nothing is running. Must run before the
         # dispatcher/reaper loops launch below.
+        await self._heal_stale_agent_tokens()
         await self._readopt_running_agents()
 
         # Orphan sandbox sweep: a sandbox whose owning agent container didn't
@@ -9782,6 +9783,97 @@ Start now: evidence(task_id="{task_id}")
                 slug=slug,
             )
             return None
+
+    async def _read_container_auth_env(
+        self, container_name: str
+    ) -> tuple[str, str, str] | None:
+        """Read (token, agent_id, role) from a running agent container's env.
+
+        Returns None on any probe failure or missing var so the caller can
+        skip the container (best-effort — the reaper still covers it).
+        """
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "docker",
+                "exec",
+                container_name,
+                "printenv",
+                "ROBOCO_AGENT_TOKEN",
+                "ROBOCO_AGENT_ID",
+                "ROBOCO_AGENT_ROLE",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await proc.communicate()
+        except Exception:
+            return None
+        if proc.returncode != 0:
+            return None
+        token: str | None = None
+        agent_id_env: str | None = None
+        role_env: str | None = None
+        for line in stdout.decode("utf-8", "replace").splitlines():
+            if line.startswith("ROBOCO_AGENT_TOKEN="):
+                token = line[len("ROBOCO_AGENT_TOKEN=") :]
+            elif line.startswith("ROBOCO_AGENT_ID="):
+                agent_id_env = line[len("ROBOCO_AGENT_ID=") :]
+            elif line.startswith("ROBOCO_AGENT_ROLE="):
+                role_env = line[len("ROBOCO_AGENT_ROLE=") :]
+        if not token or not agent_id_env or not role_env:
+            return None
+        return token, agent_id_env, role_env
+
+    async def _heal_stale_agent_tokens(self) -> int:
+        """Kill running agent containers whose ROBOCO_AGENT_TOKEN no longer
+        verifies against the current ``ROBOCO_AGENT_AUTH_SECRET``.
+
+        A token is baked into the container env at spawn (``_append_agent_auth_env``
+        signs with the orchestrator's secret at that moment). If the secret later
+        drifts — a `.env` change, a compose recreate that reloads the
+        orchestrator's env without recreating the agent containers, an image
+        redeploy — the surviving agent keeps sending its old token and the
+        middleware 401s every verb with "signature mismatch". The container stays
+        alive (heartbeating), so the reaper never reclaims it and no fresh agent
+        spawns: the fleet stalls. This self-heals it at startup by killing each
+        stale-token container so the normal dispatch re-spawns it with a freshly
+        signed token.
+
+        Inert when the secret is unset (dev): ``verify_agent_token`` fails for
+        every token without a secret, so the heal would kill the whole fleet —
+        gated to prod-only. Best-effort: a probe failure leaves the container
+        alone (the reaper's own liveness path still covers it).
+        """
+        from roboco.agents_config import _auth_secret, verify_agent_token
+
+        if not _auth_secret():
+            return 0
+        killed = 0
+        for slug in AGENT_IMAGES:
+            try:
+                is_running, _ = await self._inspect_container_state(
+                    f"roboco-agent-{slug}"
+                )
+            except Exception:
+                continue
+            if not is_running:
+                continue
+            env = await self._read_container_auth_env(f"roboco-agent-{slug}")
+            if env is None:
+                continue
+            token, agent_id_env, role_env = env
+            team = get_agent_team(agent_id_env) or ""
+            if verify_agent_token(token, agent_id_env, role_env, team):
+                continue
+            logger.warning(
+                "Killing agent with a stale auth token at startup; the reaper "
+                "will re-spawn it with a freshly signed token",
+                slug=slug,
+            )
+            await self._remove_container(f"roboco-agent-{slug}", teardown_sandbox=False)
+            killed += 1
+        if killed:
+            logger.info("Healed stale agent tokens at startup", count=killed)
+        return killed
 
     async def _readopt_running_agents(self) -> int:
         """Re-adopt still-running agent containers into ``_instances`` at startup.
