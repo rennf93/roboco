@@ -296,10 +296,17 @@ class LiveTikTokPoster(TikTokPoster):
             access_token=str(access_token),
             refresh_token=str(refresh_token),
         )
-        await get_tiktok_credentials_service(self._session).update_tokens(
-            access_token=self._creds.access_token,
-            refresh_token=self._creds.refresh_token,
-        )
+        # Commit in an independent session — TikTok already invalidated the old
+        # refresh_token, so a lock-loss rollback of the caller's txn must not
+        # discard the rotation (permanent credential lockout).
+        from roboco.db.base import get_session_factory
+
+        async with get_session_factory()() as fresh:
+            await get_tiktok_credentials_service(fresh).update_tokens(
+                access_token=self._creds.access_token,
+                refresh_token=self._creds.refresh_token,
+            )
+            await fresh.commit()
 
     @staticmethod
     def _parse_json(resp: httpx.Response, context: str) -> dict[str, Any]:

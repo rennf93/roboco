@@ -25,11 +25,14 @@ from roboco.services.tiktok_credentials import (
     get_tiktok_credentials_service,
 )
 from roboco.services.video_post_service import NullTikTokPoster
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    from sqlalchemy.ext.asyncio import AsyncSession
 
 TWO = 2
 FOUR = 4
@@ -218,17 +221,26 @@ async def test_upload_publish_failed_status_is_graceful(
 
 @pytest.mark.asyncio
 async def test_upload_refreshes_and_persists_rotated_token_on_401(
-    tmp_path: Path, db_session: AsyncSession
+    tmp_path: Path, _test_database_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A 401 on the Bearer-authed init call triggers one refresh + retry; the
     rotated access/refresh token pair must land in the DB row — not just be
     held in the poster's in-memory creds."""
-    await get_tiktok_credentials_service(db_session).set_credentials(
-        client_key=_CREDS.client_key,
-        client_secret=_CREDS.client_secret,
-        access_token=_CREDS.access_token,
-        refresh_token=_CREDS.refresh_token,
+    engine = create_async_engine(_test_database_url, future=True)
+    factory = async_sessionmaker(
+        bind=engine, class_=AsyncSession, expire_on_commit=False
     )
+    monkeypatch.setattr("roboco.db.base.get_session_factory", lambda: factory)
+
+    async with factory() as setup:
+        await get_tiktok_credentials_service(setup).set_credentials(
+            client_key=_CREDS.client_key,
+            client_secret=_CREDS.client_secret,
+            access_token=_CREDS.access_token,
+            refresh_token=_CREDS.refresh_token,
+        )
+        await setup.commit()
+
     init_auth_headers: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -255,36 +267,47 @@ async def test_upload_refreshes_and_persists_rotated_token_on_401(
 
     transport = httpx.MockTransport(handler)
     http_client = httpx.AsyncClient(transport=transport)
-    poster = LiveTikTokPoster(
-        _CREDS, session=db_session, timeout=5.0, client=http_client
-    )
-    result = await poster.upload_to_inbox(
-        mp4_path=_write_clip(tmp_path, b"short"), caption="x"
-    )
+    async with factory() as caller:
+        poster = LiveTikTokPoster(
+            _CREDS, session=caller, timeout=5.0, client=http_client
+        )
+        result = await poster.upload_to_inbox(
+            mp4_path=_write_clip(tmp_path, b"short"), caption="x"
+        )
     await http_client.aclose()
 
     assert result.uploaded is True
     assert init_auth_headers == ["Bearer at-test", "Bearer at-rotated"]
 
-    stored = await get_tiktok_credentials_service(db_session).get_decrypted()
-    assert stored is not None
-    assert stored.access_token == "at-rotated"
-    assert stored.refresh_token == "rt-rotated"
-    assert stored.client_key == _CREDS.client_key  # untouched by the refresh
+    async with factory() as check:
+        stored = await get_tiktok_credentials_service(check).get_decrypted()
+        assert stored is not None
+        assert stored.access_token == "at-rotated"
+        assert stored.refresh_token == "rt-rotated"
+        assert stored.client_key == _CREDS.client_key  # untouched by the refresh
+    await engine.dispose()
 
 
 @pytest.mark.asyncio
 async def test_refresh_falls_back_to_current_refresh_token_when_response_omits_it(
-    tmp_path: Path, db_session: AsyncSession
+    tmp_path: Path, _test_database_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """TikTok doesn't always rotate the refresh_token — when the grant
     response omits it, the previous one must be kept, not nulled out."""
-    await get_tiktok_credentials_service(db_session).set_credentials(
-        client_key=_CREDS.client_key,
-        client_secret=_CREDS.client_secret,
-        access_token=_CREDS.access_token,
-        refresh_token=_CREDS.refresh_token,
+    engine = create_async_engine(_test_database_url, future=True)
+    factory = async_sessionmaker(
+        bind=engine, class_=AsyncSession, expire_on_commit=False
     )
+    monkeypatch.setattr("roboco.db.base.get_session_factory", lambda: factory)
+
+    async with factory() as setup:
+        await get_tiktok_credentials_service(setup).set_credentials(
+            client_key=_CREDS.client_key,
+            client_secret=_CREDS.client_secret,
+            access_token=_CREDS.access_token,
+            refresh_token=_CREDS.refresh_token,
+        )
+        await setup.commit()
 
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -304,16 +327,83 @@ async def test_refresh_falls_back_to_current_refresh_token_when_response_omits_i
 
     transport = httpx.MockTransport(handler)
     http_client = httpx.AsyncClient(transport=transport)
-    poster = LiveTikTokPoster(
-        _CREDS, session=db_session, timeout=5.0, client=http_client
-    )
-    result = await poster.upload_to_inbox(
-        mp4_path=_write_clip(tmp_path, b"x"), caption="x"
-    )
+    async with factory() as caller:
+        poster = LiveTikTokPoster(
+            _CREDS, session=caller, timeout=5.0, client=http_client
+        )
+        result = await poster.upload_to_inbox(
+            mp4_path=_write_clip(tmp_path, b"x"), caption="x"
+        )
     await http_client.aclose()
 
     assert result.uploaded is True
-    stored = await get_tiktok_credentials_service(db_session).get_decrypted()
-    assert stored is not None
-    assert stored.access_token == "at-rotated"
-    assert stored.refresh_token == _CREDS.refresh_token  # unchanged, fallback
+    async with factory() as check:
+        stored = await get_tiktok_credentials_service(check).get_decrypted()
+        assert stored is not None
+        assert stored.access_token == "at-rotated"
+        assert stored.refresh_token == _CREDS.refresh_token  # unchanged, fallback
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_refresh_commits_rotated_tokens_independently_of_caller_session(
+    _test_database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lock-loss rollback of the caller's session must not discard the
+    rotated tokens. TikTok already invalidated the old refresh_token, so a
+    rollback that drops the rotation is a permanent credential lockout —
+    `_refresh` must commit in an independent session.
+    """
+    engine = create_async_engine(_test_database_url, future=True)
+    factory = async_sessionmaker(
+        bind=engine, class_=AsyncSession, expire_on_commit=False
+    )
+    monkeypatch.setattr("roboco.db.base.get_session_factory", lambda: factory)
+
+    # Seed the singleton row with refresh_token="OLD" and commit so the fresh
+    # session opened inside _refresh can see it.
+    async with factory() as setup:
+        await get_tiktok_credentials_service(setup).set_credentials(
+            client_key="ck",
+            client_secret="cs",
+            access_token="at-old",
+            refresh_token="OLD",
+        )
+        await setup.commit()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/oauth/token/")
+        form = dict(httpx.QueryParams(request.content.decode()))
+        assert form["grant_type"] == "refresh_token"
+        assert form["refresh_token"] == "OLD"
+        return httpx.Response(
+            200, json={"access_token": "at-new", "refresh_token": "NEW"}
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    # Caller session — separate from the fresh session _refresh commits in.
+    async with factory() as caller:
+        poster = LiveTikTokPoster(
+            TikTokCredentialsData(
+                client_key="ck",
+                client_secret="cs",
+                access_token="at-old",
+                refresh_token="OLD",
+            ),
+            session=caller,
+            timeout=5.0,
+            client=http_client,
+        )
+        await poster._refresh(http_client)
+        # Simulate the lock-loss rollback in _approve_locked.
+        await caller.rollback()
+    await http_client.aclose()
+
+    # The persisted row must hold NEW, not OLD — the rollback must not have
+    # discarded the rotation.
+    async with factory() as check:
+        stored = await get_tiktok_credentials_service(check).get_decrypted()
+        assert stored is not None
+        assert stored.access_token == "at-new"
+        assert stored.refresh_token == "NEW"
+    await engine.dispose()
