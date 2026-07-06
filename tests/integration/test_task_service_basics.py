@@ -1039,6 +1039,67 @@ async def test_fail_qa_advances_to_needs_revision(
     assert failed.status == TaskStatus.NEEDS_REVISION
 
 
+@pytest.mark.asyncio
+async def test_pass_qa_clears_active_claimant_for_doc_claim(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    # M19 follow-on: pass_qa must clear the QA's active_claimant_id so the
+    # documenter's doc_claim isn't rejected by the competing-claimant guard.
+    # The direct REST route POST /pass-qa calls pass_qa directly, bypassing
+    # the qa_pass wrapper — the clear must live in the transition itself.
+    svc = task_setup["svc"]
+    qa_id = task_setup["agent_id"]
+    task = await svc.create(_req(task_setup))
+    task.status = TaskStatus.AWAITING_QA
+    task.pr_number = 42
+    task.pr_url = "https://github.com/x/y/pull/42"
+    task.assigned_to = qa_id
+    task.claimed_by = qa_id
+    task.active_claimant_id = qa_id
+    await db_session.flush()
+    passed = await svc.pass_qa(task.id, notes="LGTM", agent_role="qa")
+    assert passed is not None
+    assert passed.active_claimant_id is None
+    doc = AgentTable(
+        id=uuid4(),
+        name="Doc",
+        slug=f"be-doc-{uuid4().hex[:8]}",
+        role=AgentRole.DOCUMENTER,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="doc",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(doc)
+    await db_session.flush()
+    claimed = await svc.doc_claim(doc.id, task.id)
+    assert claimed is not None
+    assert to_uuid(claimed.active_claimant_id) == doc.id
+
+
+@pytest.mark.asyncio
+async def test_fail_qa_clears_active_claimant(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    # M19 follow-on: fail_qa must clear the QA's active_claimant_id. The
+    # direct REST route POST /fail-qa bypasses the qa_fail wrapper, so the
+    # clear must live in the transition itself.
+    svc = task_setup["svc"]
+    qa_id = task_setup["agent_id"]
+    task = await svc.create(_req(task_setup))
+    task.status = TaskStatus.AWAITING_QA
+    task.assigned_to = qa_id
+    task.claimed_by = qa_id
+    task.active_claimant_id = qa_id
+    await db_session.flush()
+    failed = await svc.fail_qa(task.id, notes="please fix X")
+    assert failed is not None
+    assert failed.active_claimant_id is None
+
+
 # ---------------------------------------------------------------------------
 # pass_qa returns None when not in valid status
 # ---------------------------------------------------------------------------

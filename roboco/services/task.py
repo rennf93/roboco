@@ -2316,6 +2316,18 @@ class TaskService(BaseService):
         )
         if restored is not None:
             return restored
+        # M19 follow-on: a non-blocked admin override into a review/queue
+        # state must clear any stale active_claimant_id, else the next
+        # legitimate claim (qa_claim/doc_claim) is rejected by the
+        # competing-claimant guard. _admin_out_of_blocked already handles
+        # the blocked->review path via _clear_claim_and_block_snapshot;
+        # this covers IN_PROGRESS->AWAITING_QA and similar direct admin
+        # jumps that bypass the gateway wrappers.
+        if (
+            new_status in _REVIEW_QUEUE_STATES
+            and from_status != TaskStatus.BLOCKED.value
+        ):
+            task.active_claimant_id = cast("Any", None)
         task.status = new_status
         await self.session.flush()
         self._emit_status_transition_audit(
@@ -4418,6 +4430,12 @@ class TaskService(BaseService):
         # Clear assignment so documenter can claim the task
         task.assigned_to = None
         task.claimed_by = None
+        # M19 follow-on: clear the QA's active claim so the documenter's
+        # doc_claim isn't rejected by the competing-claimant guard. The
+        # gateway wrapper qa_pass also clears this, but the direct REST
+        # route POST /pass-qa calls pass_qa directly — fix once at the
+        # shared transition so every caller is covered.
+        task.active_claimant_id = cast("Any", None)
         task.qa_verified = True
         # Reset docs so the documenter writes fresh docs for this cycle.
         # DO NOT reset pr_created — the PR exists pre-QA under the current
@@ -4484,6 +4502,11 @@ class TaskService(BaseService):
         if not (task.notes_structured or {}).get("qa"):
             task.qa_notes = notes
         task.qa_verified = False
+        # M19 follow-on: clear the QA's active claim. fail_qa reassigns to
+        # the original dev (who re-claims via the claim verb), but a stale
+        # QA id left on needs_revision is inconsistent and the direct REST
+        # route POST /fail-qa bypasses the qa_fail wrapper that cleared it.
+        task.active_claimant_id = cast("Any", None)
         # Use validated transition - QA role required per ROLE_RESTRICTED_TRANSITIONS
         self._validate_and_set_status(task, TaskStatus.NEEDS_REVISION, agent_role)
 
@@ -8611,19 +8634,17 @@ class TaskService(BaseService):
         documenter can claim cleanly.
         """
         task = await self.get(task_id)
-        if task is not None:
-            if (
-                task.claimed_by is not None
-                and to_python_uuid(task.claimed_by) != qa_agent_id
-            ):
-                self.log.warning(
-                    "qa_pass actor mismatch",
-                    task_id=str(task_id),
-                    qa_agent_id=str(qa_agent_id),
-                    claimed_by=str(task.claimed_by),
-                )
-            task.active_claimant_id = cast("Any", None)
-            await self.session.flush()
+        if (
+            task is not None
+            and task.claimed_by is not None
+            and to_python_uuid(task.claimed_by) != qa_agent_id
+        ):
+            self.log.warning(
+                "qa_pass actor mismatch",
+                task_id=str(task_id),
+                qa_agent_id=str(qa_agent_id),
+                claimed_by=str(task.claimed_by),
+            )
         return await self.pass_qa(task_id, notes=notes, agent_role="qa")
 
     async def qa_fail(
@@ -8655,10 +8676,6 @@ class TaskService(BaseService):
         if issues:
             issue_block = "[QA ISSUES]\n" + "\n".join(f"- {i}" for i in issues)
             task.dev_notes = _append_capped(task.dev_notes, issue_block)
-        # Clear active_claimant_id — fail_qa transitions back to
-        # needs_revision and reassigns to the original developer.
-        task.active_claimant_id = cast("Any", None)
-        await self.session.flush()
         return await self.fail_qa(task_id, notes=notes, agent_role="qa")
 
     async def _revision_pm_for_task(self, task: TaskTable) -> AgentTable | None:

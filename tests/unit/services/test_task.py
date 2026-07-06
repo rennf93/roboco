@@ -471,8 +471,6 @@ async def test_qa_pass_delegates_to_pass_qa() -> None:
     _bind(svc, "pass_qa", pass_qa_mock)
     await svc.qa_pass(qa_id, task_id, "looks good")
     pass_qa_mock.assert_awaited_once_with(task_id, notes="looks good", agent_role="qa")
-    # active_claimant_id cleared so the documenter can claim cleanly.
-    assert task.active_claimant_id is None
 
 
 @pytest.mark.asyncio
@@ -489,7 +487,6 @@ async def test_qa_fail_appends_issues_to_dev_notes() -> None:
     assert "missing test" in task.dev_notes
     assert "no docstring" in task.dev_notes
     fail_qa_mock.assert_awaited_once_with(task.id, notes="blocking", agent_role="qa")
-    assert task.active_claimant_id is None
 
 
 # ---------------------------------------------------------------------------
@@ -606,6 +603,46 @@ async def test_admin_set_status_non_blocked_is_bare_status_set() -> None:
     assert out is task
     assert task.status == TaskStatus.COMPLETED
     assert task.assigned_to == owner
+
+
+@pytest.mark.asyncio
+async def test_admin_set_status_into_review_queue_clears_active_claimant() -> None:
+    # M19 follow-on: a non-blocked admin override into a review/queue state
+    # must clear any stale active_claimant_id, else the next legitimate claim
+    # (qa_claim/doc_claim) is rejected by the competing-claimant guard. The
+    # blocked->review path is handled by _admin_out_of_blocked; this covers
+    # IN_PROGRESS->AWAITING_QA and similar direct admin jumps.
+    dev = uuid4()
+    task = _build_task(
+        status=TaskStatus.IN_PROGRESS,
+        assigned_to=dev,
+        claimed_by=dev,
+        active_claimant_id=dev,
+    )
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    out = await svc.admin_set_status(task.id, TaskStatus.AWAITING_QA)
+    assert out is task
+    assert task.status == TaskStatus.AWAITING_QA
+    assert task.active_claimant_id is None
+
+
+@pytest.mark.asyncio
+async def test_admin_set_status_non_review_queue_keeps_active_claimant() -> None:
+    # A non-review-queue admin override (e.g. -> IN_PROGRESS) must NOT clear
+    # the active claimant — the owner is still actively working it.
+    dev = uuid4()
+    task = _build_task(
+        status=TaskStatus.AWAITING_QA,
+        assigned_to=dev,
+        claimed_by=dev,
+        active_claimant_id=dev,
+    )
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    out = await svc.admin_set_status(task.id, TaskStatus.IN_PROGRESS)
+    assert out is task
+    assert task.active_claimant_id == dev
 
 
 @pytest.mark.asyncio
