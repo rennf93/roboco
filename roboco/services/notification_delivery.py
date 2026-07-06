@@ -305,13 +305,17 @@ class NotificationDeliveryService(BaseService):
         )
 
     async def sweep_expired_notifications(self) -> int:
-        """Log notifications past their `expires_at` that still require ACK.
+        """Re-escalate then log ack-required notifications past `expires_at`.
 
         `NotificationTable.expires_at` existed but nothing acted on it. This
-        sweep surfaces notifications that have become stale so an operator
-        (or an escalation follow-up) can decide what to do. We log rather
-        than auto-cancel because the notification is the record; rewriting
-        status would be ambiguous. Returns the count of stale items.
+        sweep surfaces notifications that have become stale. For an
+        ack-required row still unacked past the threshold, the recipient's
+        up-role (the PM's PM, or the CEO) is re-notified BEFORE the row is
+        logged as expired — so an inattentive PM can't both miss a blocker
+        and prevent anyone upstream from seeing it. Non-ack-required rows
+        and already-acked rows are not re-escalated. We log rather than
+        auto-cancel because the notification is the record; rewriting
+        status would be ambiguous. Returns the count of stale unacked items.
         """
         now = datetime.now(UTC)
         result = await self.session.execute(
@@ -325,10 +329,65 @@ class NotificationDeliveryService(BaseService):
         )
         stale = list(result.scalars().all())
 
-        unacked = [n for n in stale if not self._notification_is_fully_acked(n)]
+        # Python mirror of the SQL `requires_ack.is_(True)` predicate: defense
+        # in depth so a future query change can't silently re-escalate
+        # non-ack-required rows.
+        unacked = [
+            n
+            for n in stale
+            if n.requires_ack and not self._notification_is_fully_acked(n)
+        ]
         for n in unacked:
+            await self._re_escalate_unacked(n)
             self._log_expired_notification(n)
         return len(unacked)
+
+    async def _re_escalate_unacked(self, n: NotificationTable) -> None:
+        """Re-send an unacked ack-required notification to each non-acking
+        recipient's up-role before expiry. Best-effort: a missing chain,
+        target, or a dedup-suppressed re-fire is logged-and-skipped, never
+        raises — the expiry log still fires. The loop-prone dedup guard in
+        `_persist_and_deliver` caps repeat re-escalations within the 60s
+        window so a tight sweep loop can't flood the upstream role."""
+        acked = {str(a) for a in (n.acked_by or [])}
+        for recipient_id in n.to_agents or []:
+            if str(recipient_id) in acked:
+                continue
+            recipient = await self._get_agent_by_id(cast("UUID", recipient_id))
+            if not recipient or not recipient.slug:
+                continue
+            target_slug = get_escalation_target(recipient.slug)
+            if not target_slug:
+                continue
+            target = await self._get_agent_by_slug(target_slug)
+            if not target:
+                continue
+            notification = NotificationTable(
+                type=NotificationType.BLOCKER_ESCALATION,
+                priority=NotificationPriority.HIGH,
+                from_agent=cast("UUID", n.from_agent),
+                to_agents=[target.id],
+                subject=f"Re-escalation (unacked): {n.subject[:140]}",
+                body=(
+                    f"A notification addressed to {recipient.slug} was not "
+                    f"acknowledged before its expiry.\n\n"
+                    f"Original subject: {n.subject}\n\n"
+                    "Please review and act on the underlying issue."
+                ),
+                related_task_id=cast("UUID | None", n.related_task_id),
+                requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.BLOCKER_ESCALATION],
+                read_by=[],
+                acked_by=[],
+            )
+            try:
+                await self._persist_and_deliver(notification)
+            except Exception as e:
+                self.log.warning(
+                    "Re-escalation deliver failed",
+                    notification_id=str(n.id),
+                    target_slug=target_slug,
+                    error=str(e),
+                )
 
     async def get_pending_for_agent(
         self,
