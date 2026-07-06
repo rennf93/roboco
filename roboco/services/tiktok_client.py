@@ -6,9 +6,6 @@ refresh-token rotation. Mirrors ``x_client.py``'s Null/Live/build shape;
 ``NullTikTokPoster`` lives in ``video_post_service`` (the Protocol's home)
 and is re-exported here as the "no credentials" branch of
 ``build_tiktok_poster``.
-
-See docs/internal/specs/2026-07-04-video-generation-remotion-design.md §11.3
-for the verified sequence and constraints.
 """
 
 from __future__ import annotations
@@ -48,7 +45,7 @@ _INIT_URL = f"{_API_BASE}/post/publish/inbox/video/init/"
 _STATUS_URL = f"{_API_BASE}/post/publish/status/fetch/"
 _TOKEN_URL = f"{_API_BASE}/oauth/token/"
 
-# Asymmetric chunking (§11.3): every chunk 5-64 MB except the final one, which
+# Asymmetric chunking: every chunk 5-64 MB except the final one, which
 # absorbs the remainder up to 128 MB — a small dangling tail is folded into
 # one larger final PUT instead of being sent as its own tiny chunk.
 _CHUNK_SIZE_BYTES = 64 * 1024 * 1024
@@ -130,7 +127,7 @@ class LiveTikTokPoster(TikTokPoster):
     async def upload_to_inbox(
         self, *, mp4_path: str, caption: str
     ) -> TikTokUploadResult:
-        # Inbox-upload's init request carries only source_info (§11.3) — no
+        # Inbox-upload's init request carries only source_info — no
         # title/caption field exists on this endpoint; the creator composes
         # the post manually in-app. Kept in the signature only because the
         # TikTokPoster Protocol is shared with future direct-post modes.

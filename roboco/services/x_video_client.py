@@ -7,10 +7,8 @@ user-context signed, reusing ``x_client``'s signer — the same
 tweet. Mirrors ``x_client.py``'s Null/Live/build shape; ``NullXVideoPoster``
 itself lives in ``video_post_service`` (the Protocol's home) and is
 re-exported here as the "no credentials" branch of ``build_x_video_poster``.
-
-See docs/internal/specs/2026-07-04-video-generation-remotion-design.md §11.2
-for the verified sequence and constraints (no documented v2 chunk ceiling;
-this client chunks conservatively).
+The v2 media-upload API documents no hard chunk ceiling, so this client
+chunks conservatively.
 """
 
 from __future__ import annotations
@@ -45,7 +43,7 @@ _API_BASE = "https://api.x.com/2"
 _MEDIA_UPLOAD_URL = f"{_API_BASE}/media/upload"
 _TWEETS_URL = f"{_API_BASE}/tweets"
 _MEDIA_CATEGORY = "tweet_video"
-# Conservative chunk size — v2 documents no hard ceiling (§11.2); 4 MB keeps
+# Conservative chunk size — v2 documents no hard ceiling; 4 MB keeps
 # each append well within any reasonable request-body limit.
 _CHUNK_SIZE_BYTES = 4 * 1024 * 1024
 _STATUS_POLL_MAX_ATTEMPTS = 60

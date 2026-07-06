@@ -166,7 +166,9 @@ async def _seed_draft(
     return task
 
 
-def _build_app(db_session: AsyncSession, role: AgentRole, agent_id: UUID) -> FastAPI:
+def _build_app(
+    db_session: AsyncSession | None, role: AgentRole, agent_id: UUID
+) -> FastAPI:
     app = FastAPI()
     app.include_router(video_router, prefix="/api/video")
     app.include_router(tiktok_router, prefix="/api/tiktok")
@@ -614,7 +616,7 @@ async def test_media_serves_from_minio_when_configured(
     monkeypatch.setattr(minio_client, "get_object_stream", _minio_stream)
 
     # CEO 200 — streamed from MinIO.
-    app = _build_app(None, AgentRole.CEO, uuid4())  # type: ignore[arg-type]
+    app = _build_app(None, AgentRole.CEO, uuid4())
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get(f"/api/video/posts/{task_id}/media?cut=vertical")
@@ -624,7 +626,7 @@ async def test_media_serves_from_minio_when_configured(
     app.dependency_overrides.clear()
 
     # Non-CEO 403 — _require_ceo still gates end-to-end (no presigned URL).
-    app = _build_app(None, AgentRole.DEVELOPER, uuid4())  # type: ignore[arg-type]
+    app = _build_app(None, AgentRole.DEVELOPER, uuid4())
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get(f"/api/video/posts/{task_id}/media?cut=vertical")
@@ -647,7 +649,7 @@ async def test_media_falls_back_to_local_file_when_minio_unconfigured(
     _patch_task_service(monkeypatch, _make_task(str(vertical), task_id))
     monkeypatch.setattr(minio_client, "get_client", lambda: None)
 
-    app = _build_app(None, AgentRole.CEO, uuid4())  # type: ignore[arg-type]
+    app = _build_app(None, AgentRole.CEO, uuid4())
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get(f"/api/video/posts/{task_id}/media?cut=vertical")
@@ -685,7 +687,7 @@ async def test_media_falls_back_to_local_file_when_minio_missing(
 
     monkeypatch.setattr(minio_client, "get_object_stream", _stream_must_not_be_called)
 
-    app = _build_app(None, AgentRole.CEO, uuid4())  # type: ignore[arg-type]
+    app = _build_app(None, AgentRole.CEO, uuid4())
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get(f"/api/video/posts/{task_id}/media?cut=vertical")
