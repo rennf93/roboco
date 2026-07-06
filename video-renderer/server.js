@@ -14,6 +14,13 @@ import { renderComposition, UnknownCompositionError } from "./render.js";
 
 const PORT = Number(process.env.PORT ?? 3001);
 
+// composition_id flows into a path.join inside render.js
+// (extractDir/motion/compositions/<composition_id>); restrict it to a single
+// safe path segment so a ".." / "/" / absolute-path value can't escape the
+// composition dir (path traversal). The orchestrator only ever sends a real
+// composition id, but this is the trust boundary — validate here.
+const COMPOSITION_ID_RE = /^[A-Za-z0-9_-]+$/;
+
 // motion/ source (no node_modules, no build output) is a few hundred KB in
 // practice; this cap is generous headroom, not a tuned budget.
 const MAX_UPLOAD_BYTES = 256 * 1024 * 1024;
@@ -55,8 +62,15 @@ app.post("/render", renderLimiter, upload.single("source"), async (req, res) => 
       .json({ error: "missing 'source' file field (gzipped tar of motion/)" });
     return;
   }
-  if (!compositionId || typeof compositionId !== "string") {
-    res.status(400).json({ error: "missing 'composition_id' field" });
+  if (
+    typeof compositionId !== "string" ||
+    !compositionId.trim() ||
+    !COMPOSITION_ID_RE.test(compositionId)
+  ) {
+    res.status(400).json({
+      error:
+        "'composition_id' must be a non-empty string of letters, digits, '_' or '-'",
+    });
     return;
   }
   if (orientation !== "vertical" && orientation !== "square") {

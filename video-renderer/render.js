@@ -63,12 +63,22 @@ export async function renderComposition({
   let outDir;
   try {
     await extractTar(tarBuffer, extractDir);
-    const compositionDir = path.join(
+    // compositionId is validated to [A-Za-z0-9_-]+ at the HTTP boundary
+    // (server.js), so it can't escape compositionsRoot — but enforce it here
+    // too so render.js stays safe regardless of caller.
+    const compositionsRoot = path.resolve(
       extractDir,
       "motion",
       "compositions",
-      compositionId,
     );
+    const compositionDir = path.resolve(compositionsRoot, compositionId);
+    const compositionsRootWithSep = `${compositionsRoot}${path.sep}`;
+    if (
+      compositionDir !== compositionsRoot &&
+      !compositionDir.startsWith(compositionsRootWithSep)
+    ) {
+      throw new UnknownCompositionError(compositionId, []);
+    }
     const htmlPath = path.join(compositionDir, `${orientation}.html`);
     // ponytail: readdir is the smallest thing that fails if the dir is
     // missing OR the orientation file is missing — one stat-vs-readdir
