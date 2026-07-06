@@ -3155,3 +3155,86 @@ async def test_complete_allows_in_progress_on_leaf(
     svc = get_task_service(db_session)
     result = await svc.complete(leaf_id, agent_id=pm_id)
     assert result is not None and result.status == TaskStatus.COMPLETED
+
+
+# ---------------------------------------------------------------------------
+# H5: _unclaim_from_blocked must clear the stale pre-block snapshot
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unclaim_from_blocked_clears_pre_block_snapshot(
+    db_session: "AsyncSession",
+) -> None:
+    """A blocked task unclaimed back to the pool must not keep a stale
+    pre_block snapshot — a later re-block + unblock_with_restore would
+    restore the stale owner/status."""
+    from roboco.db.tables import TaskTable
+    from roboco.services.task import get_task_service
+
+    tid = uuid4()
+    owner = uuid4()
+    pm = AgentTable(
+        id=owner,
+        name="PM",
+        slug=f"be-pm-{uuid4().hex[:8]}",
+        role=AgentRole.CELL_PM,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="pm",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(pm)
+    await db_session.flush()
+    project = ProjectTable(
+        id=uuid4(),
+        name="H5",
+        slug=f"h5-{uuid4().hex[:6]}",
+        git_url="https://example.com/r.git",
+        assigned_cell=Team.BACKEND,
+        created_by=owner,
+    )
+    db_session.add(project)
+    await db_session.flush()
+    db_session.add(
+        TaskTable(
+            id=tid,
+            title="t",
+            description="d",
+            acceptance_criteria=["done"],
+            status=TaskStatus.BLOCKED,
+            priority=2,
+            task_type=TaskType.CODE,
+            nature=TaskNature.TECHNICAL,
+            estimated_complexity=Complexity.LOW,
+            team=Team.BACKEND,
+            confirmed_by_human=True,
+            assigned_to=owner,
+            active_claimant_id=owner,
+            claimed_by=owner,
+            project_id=project.id,
+            created_by=owner,
+            branch_name="feature/x",
+            pre_block_state=TaskStatus.IN_PROGRESS.value,
+            pre_block_assignee=owner,
+            pre_block_metadata={"reason": "stale"},
+        )
+    )
+    await db_session.flush()
+
+    svc = get_task_service(db_session)
+    await svc._unclaim_from_blocked(
+        (await db_session.execute(select(TaskTable).where(TaskTable.id == tid))).scalar_one()
+    )
+
+    row = (await db_session.execute(
+        select(TaskTable).where(TaskTable.id == tid)
+    )).scalar_one()
+    assert row.pre_block_state is None
+    assert row.pre_block_assignee is None
+    assert row.pre_block_metadata is None
+    assert row.blocker_resolver_type is None
+    assert row.blocker_raised_by is None

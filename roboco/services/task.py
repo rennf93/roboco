@@ -3907,6 +3907,16 @@ class TaskService(BaseService):
                 task.work_session_id, reason="agent-unclaim-from-blocked"
             )
             task.work_session_id = cast("Any", None)
+        # H5: clear the pre-block snapshot + blocker metadata. A blocked task
+        # unclaimed back to the pool must not carry a stale snapshot — a later
+        # re-claim + re-block + unblock_with_restore(restore=True) would
+        # restore from this stale snapshot (wrong owner/status). The snapshot
+        # is only meaningful while the block it captured is still active.
+        task.pre_block_state = None
+        task.pre_block_assignee = cast("Any", None)
+        task.pre_block_metadata = cast("Any", None)
+        task.blocker_resolver_type = None
+        task.blocker_raised_by = cast("Any", None)
         task.status = TaskStatus.PENDING
         task.assigned_to = cast("Any", None)
         task.claimed_by = cast("Any", None)
