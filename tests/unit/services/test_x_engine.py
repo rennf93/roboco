@@ -8,15 +8,29 @@ posts — asserted against a real Postgres DB.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock
+from uuid import UUID, uuid4
 
 import pytest
 from roboco.config import settings as cfg
-from roboco.db.tables import AgentTable, ProjectTable, XSeenFeatureTable
+from roboco.db.tables import (
+    AgentSpawnSessionTable,
+    AgentTable,
+    ProjectTable,
+    TaskTable,
+    XSeenFeatureTable,
+)
 from roboco.foundation import identity as _foundation
 from roboco.foundation.policy.content import markers
-from roboco.models.base import AgentRole, AgentStatus, Team
+from roboco.models.base import (
+    AgentRole,
+    AgentStatus,
+    TaskNature,
+    TaskType,
+    Team,
+)
 from roboco.models.base import TaskStatus as TS
 from roboco.services import x_engine as x_engine_module
 from roboco.services.company_goals import get_company_goals_service
@@ -512,6 +526,96 @@ async def test_feature_spotlight_dedupe_one_open_cycle(
     assert cycle.team == Team.BOARD
     assert cycle.source == X_FEATURE_EXPLORATION_SOURCE
     assert "spotlight" in cycle.title.lower()
+
+
+async def _seed_stale_exploration(
+    session: AsyncSession, *, age: timedelta, project_id: UUID
+) -> TaskTable:
+    """Insert a back-dated PENDING feature-exploration task (no live spawn)."""
+    stale = TaskTable(
+        id=uuid4(),
+        title="X feature-spotlight exploration",
+        description="stale seed",
+        acceptance_criteria=["x"],
+        status=TS.PENDING,
+        task_type=TaskType.ADMINISTRATIVE,
+        nature=TaskNature.NON_TECHNICAL,
+        project_id=project_id,
+        created_by=SYSTEM_UUID,
+        assigned_to=HOM_UUID,
+        team=Team.BOARD,
+        source=X_FEATURE_EXPLORATION_SOURCE,
+        confirmed_by_human=False,
+        created_at=datetime.now(UTC) - age,
+    )
+    session.add(stale)
+    await session.flush()
+    return stale
+
+
+@pytest.mark.asyncio
+async def test_feature_spotlight_re_arms_when_exploration_stale_and_spawnless(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale (age > 2x interval) exploration with no live HoM spawn is
+    CANCELLED and a fresh exploration is originated — the engine re-arms
+    instead of going silent forever."""
+    await _seed(db_session)
+    _enable(
+        monkeypatch,
+        x_feature_spotlight_enabled=True,
+        x_feature_spotlight_interval_seconds=3600,
+    )
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    project = await engine._roboco_project()
+    assert project is not None and project.id is not None
+    stale = await _seed_stale_exploration(
+        db_session, age=timedelta(seconds=3 * 3600), project_id=cast("UUID", project.id)
+    )
+    task = await engine.open_feature_spotlight_exploration()
+    assert task is not None  # re-armed
+    await db_session.refresh(stale)
+    assert stale.status == TS.CANCELLED  # stale one cancelled
+    open_cycles = await get_task_service(db_session).list_open_feature_explorations()
+    assert len(open_cycles) == ONE
+    assert open_cycles[0].id == task.id  # fresh one is the only open cycle
+
+
+@pytest.mark.asyncio
+async def test_feature_spotlight_re_arm_blocked_when_live_hom_spawn(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale exploration WITH a live HoM spawn is NOT cancelled — the
+    respawn breaker tripped but HoM is still working it, so re-arm blocks."""
+    await _seed(db_session)
+    _enable(
+        monkeypatch,
+        x_feature_spotlight_enabled=True,
+        x_feature_spotlight_interval_seconds=3600,
+    )
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    project = await engine._roboco_project()
+    assert project is not None and project.id is not None
+    stale = await _seed_stale_exploration(
+        db_session, age=timedelta(seconds=3 * 3600), project_id=cast("UUID", project.id)
+    )
+    db_session.add(
+        AgentSpawnSessionTable(
+            id=uuid4(),
+            agent_slug="head-marketing",
+            team="board",
+            role="head_marketing",
+            model="claude",
+            task_id=str(stale.id),
+            started_at=datetime.now(UTC),
+            ended_at=None,
+        )
+    )
+    await db_session.flush()
+    task = await engine.open_feature_spotlight_exploration()
+    assert task is None  # re-arm blocked
+    await db_session.refresh(stale)
+    assert stale.status == TS.PENDING  # not cancelled
 
 
 @pytest.mark.asyncio

@@ -21,13 +21,18 @@ from ``ReleaseProposalService.approve()``'s publish success branch;
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, cast
 
 import httpx
 from sqlalchemy import select
 
 from roboco.config import settings
-from roboco.db.tables import XSeenFeatureTable, XSeenMentionTable
+from roboco.db.tables import (
+    AgentSpawnSessionTable,
+    XSeenFeatureTable,
+    XSeenMentionTable,
+)
 from roboco.foundation import identity as _foundation
 from roboco.foundation.policy.content import markers
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
@@ -349,8 +354,10 @@ class XEngine(BaseService):
         if not client.configured:
             return None
         task_svc = get_task_service(self.session)
-        if await task_svc.list_open_feature_explorations():
-            return None  # one open cycle at a time
+        # Cancel a stale + spawnless exploration so the engine can re-arm; a
+        # fresh cycle or one with a live HoM spawn blocks (one open at a time).
+        if not await self._cancel_stale_exploration(task_svc):
+            return None
         if len(await task_svc.list_open_x_posts()) >= settings.x_max_open_posts:
             return None  # respect the shared held-draft cap
         project = await self._roboco_project()
@@ -362,6 +369,44 @@ class XEngine(BaseService):
         return await self._originate_feature_exploration(
             task_svc, cast("UUID", project.id)
         )
+
+    async def _cancel_stale_exploration(self, task_svc: TaskService) -> bool:
+        """Return False to block re-arm (fresh cycle or live HoM spawn); return
+        True to proceed — either no open exploration, or a stale+spawnless one
+        was just cancelled and a fresh one should be originated.
+        """
+        open_explorations = await task_svc.list_open_feature_explorations()
+        if not open_explorations:
+            return True  # nothing open; fall through to originate
+        stale = open_explorations[0]  # oldest-first
+        stale_age = datetime.now(UTC) - stale.created_at
+        if stale_age < timedelta(
+            seconds=2 * settings.x_feature_spotlight_interval_seconds
+        ):
+            return False  # one open cycle at a time; not yet stale
+        if await self._has_live_hom_spawn(cast("UUID", stale.id)):
+            return False  # HoM still working it; respawn breaker tripped but alive
+        # Stale + spawnless: the HoM spawn died without completing. Cancel and
+        # re-arm so a dead exploration can't gate the engine silent forever.
+        stale.status = TaskStatus.CANCELLED
+        await self.session.flush()
+        return True
+
+    async def _has_live_hom_spawn(self, task_id: UUID) -> bool:
+        """True if an agent spawn for ``task_id`` is still active (ended_at NULL).
+
+        The respawn breaker can trip while HoM is genuinely working — a live
+        spawn row means the agent is still running, so re-arm must block.
+        """
+        result = await self.session.execute(
+            select(AgentSpawnSessionTable)
+            .where(
+                AgentSpawnSessionTable.task_id == str(task_id),
+                AgentSpawnSessionTable.ended_at.is_(None),
+            )
+            .limit(1)
+        )
+        return result.scalars().first() is not None
 
     async def _originate_feature_exploration(
         self, task_svc: TaskService, project_id: UUID
