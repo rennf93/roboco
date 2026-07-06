@@ -899,3 +899,55 @@ async def test_rebase_onto_base_proceeds_on_clean_tree() -> None:
     assert calls[0] == ["status", "--porcelain"]
     assert ["fetch", "origin"] in calls
     assert ["rebase", "origin/master"] in calls
+
+
+# ---------------------------------------------------------------------------
+# _link_commit_to_task — flush; the runner commits (no out-of-band commit)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_link_commit_to_task_does_not_commit_session() -> None:
+    """_link_commit_to_task must flush but not commit out-of-band.
+
+    The verb runner owns the transaction boundary; an out-of-band commit
+    here would release the runner's savepoint and drag in pending
+    orchestrator state.
+    """
+    session = _make_session()
+    svc = GitService(session)
+
+    fake_task_service = MagicMock()
+    fake_task = MagicMock(work_session_id=uuid4())
+    fake_task_service.get = AsyncMock(return_value=fake_task)
+    fake_task_service.add_commit = AsyncMock()
+
+    fake_ws_service = MagicMock()
+    fake_ws_service.add_commit = AsyncMock()
+
+    with (
+        patch("roboco.services.git.get_task_service", return_value=fake_task_service),
+        patch(
+            "roboco.services.git.get_work_session_service",
+            return_value=fake_ws_service,
+        ),
+    ):
+        await svc._link_commit_to_task(uuid4(), "deadbeef", "msg", uuid4())
+
+    session.flush.assert_awaited()
+    session.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_link_commit_to_task_swallows_errors_without_commit() -> None:
+    """Even on failure the session is not committed by the link path."""
+    session = _make_session()
+    svc = GitService(session)
+
+    fake_task_service = MagicMock()
+    fake_task_service.get = AsyncMock(side_effect=RuntimeError("boom"))
+
+    with patch("roboco.services.git.get_task_service", return_value=fake_task_service):
+        await svc._link_commit_to_task(uuid4(), "deadbeef", "msg", uuid4())
+
+    session.commit.assert_not_awaited()

@@ -885,7 +885,7 @@ class GitService(BaseService):
                 await work_session_service.add_commit(
                     require_uuid(task.work_session_id), commit_hash
                 )
-            await self.session.commit()
+            await self.session.flush()
         except Exception as e:
             self.log.warning(
                 "Commit linking failed; commit present on branch but "
