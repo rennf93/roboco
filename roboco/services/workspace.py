@@ -1216,10 +1216,19 @@ class WorkspaceService:
         a PRIVATE repo — the refresh silently fails and the clone stays frozen at
         clone-time, never seeing commits merged afterwards. The read clone runs
         orchestrator-side and is never mounted into an agent container, so the
-        token is injected transiently into the fetch argv (mirroring the clone)
-        to keep a private repo current.
+        token is injected transiently via a per-call ``-c http.extraheader``
+        (mirroring ``_clone_repo``) — never URL-embedded into argv.
         """
-        auth_url = _inject_token_into_url(git_url, git_token)
+        fetch_prefix: list[str] = []
+        using_token = bool(git_token) and git_url.startswith("https://")
+        if using_token:
+            import base64
+
+            basic = base64.b64encode(f"x-access-token:{git_token}".encode()).decode()
+            fetch_prefix = [
+                "-c",
+                f"http.extraheader=Authorization: Basic {basic}",
+            ]
 
         def _git(*args: str) -> subprocess.CompletedProcess[str]:
             return subprocess.run(
@@ -1233,7 +1242,7 @@ class WorkspaceService:
         # Fetch tags: the release manager reads this same clone and derives
         # "commits since last release" from the newest tag — a tagless clone
         # makes git describe fail and it walks the entire history.
-        fetched = _git("fetch", "--tags", auth_url, default_branch)
+        fetched = _git(*fetch_prefix, "fetch", "--tags", git_url, default_branch)
         if fetched.returncode != 0:
             logger.warning(
                 "conventions read-clone fetch failed",

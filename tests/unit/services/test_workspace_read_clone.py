@@ -8,8 +8,10 @@ refresh actually advances the clone to a post-clone commit.
 
 from __future__ import annotations
 
+import base64
 import subprocess
 from typing import TYPE_CHECKING
+from unittest.mock import patch
 
 from roboco.services.workspace import WorkspaceService
 
@@ -92,3 +94,30 @@ def test_sync_read_clone_is_best_effort_on_unreachable_origin(tmp_path: Path) ->
     # A bogus origin must not raise — the refresh logs and leaves the clone as-is.
     WorkspaceService._sync_read_clone(clone, "file:///nonexistent/repo", "master", None)
     assert _git(clone, "rev-parse", "HEAD").stdout.strip() == head
+
+
+def test_sync_read_clone_with_token_uses_extraheader_not_url(tmp_path: Path) -> None:
+    """A private-repo refresh injects the PAT via ``-c http.extraheader``, never
+    URL-embedded into the fetch argv (mirrors the clone PAT-leak fix — H11)."""
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    token = "ghp_SECRETARGV"
+    git_url = "https://github.com/o/r"
+    captured: list[list[str]] = []
+
+    def _fake_run(argv: list[str], **_kw: object) -> subprocess.CompletedProcess[str]:
+        captured.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    with patch("roboco.services.workspace.subprocess.run", side_effect=_fake_run):
+        WorkspaceService._sync_read_clone(clone, git_url, "master", token)
+
+    fetch_argv = next(a for a in captured if "fetch" in a)
+    # Token never appears in argv...
+    assert token not in fetch_argv
+    assert f"https://{token}@" not in fetch_argv
+    # ...the bare URL is the fetch ref...
+    assert git_url in fetch_argv
+    # ...and the basic-auth extraheader carries the encoded token.
+    expected = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+    assert f"http.extraheader=Authorization: Basic {expected}" in fetch_argv
