@@ -15,7 +15,7 @@ from uuid import uuid4
 import pytest
 from roboco.config import settings
 from roboco.exceptions import GitCommandError, GitError
-from roboco.services.base import NotFoundError, UnauthorizedError
+from roboco.services.base import NotFoundError, UnauthorizedError, ValidationError
 from roboco.services.git import GitService
 
 if TYPE_CHECKING:
@@ -833,3 +833,69 @@ async def test_sync_target_branch_best_effort_returns_sha_on_success() -> None:
         Path("/tmp/ws"), "feature/backend/parent", "token"
     )
     assert result == "merged-tip-sha"
+
+
+# ---------------------------------------------------------------------------
+# rebase_onto_base — clean-tree gate (mirrors pull)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rebase_onto_base_refuses_dirty_worktree() -> None:
+    """Dirty worktree → ValidationError(DIRTY_WORKSPACE); tree untouched."""
+    svc = _service()
+    calls: list[list[str]] = []
+
+    async def _run_git(_ws: object, args: list[str], **_kw: object) -> MagicMock:
+        calls.append(args)
+        res = MagicMock()
+        res.returncode = 0
+        res.stdout = " M dirty.py\n" if args[:2] == ["status", "--porcelain"] else ""
+        return res
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+
+    with pytest.raises(ValidationError, match="DIRTY_WORKSPACE"):
+        await svc.rebase_onto_base(
+            Path("/tmp/ws"),
+            head_branch="feature/backend/h",
+            base_branch="master",
+            git_token="t",
+        )
+
+    # Only the status probe ran — no fetch/checkout/reset/rebase touched the tree.
+    assert calls == [["status", "--porcelain"]]
+
+
+@pytest.mark.asyncio
+async def test_rebase_onto_base_proceeds_on_clean_tree() -> None:
+    """Clean worktree → rebase runs; superseded when head has no unique commits."""
+    svc = _service()
+    calls: list[list[str]] = []
+
+    async def _run_git(_ws: object, args: list[str], **_kw: object) -> MagicMock:
+        calls.append(args)
+        res = MagicMock()
+        res.returncode = 0
+        if args[:2] == ["status", "--porcelain"]:
+            res.stdout = ""
+        elif args[:2] == ["rev-list", "--count"]:
+            res.stdout = "0"
+        else:
+            res.stdout = ""
+        return res
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+
+    result = await svc.rebase_onto_base(
+        Path("/tmp/ws"),
+        head_branch="feature/backend/h",
+        base_branch="master",
+        git_token="t",
+    )
+
+    assert result == {"status": "superseded"}
+    # Gate ran first, then the normal fetch/checkout/reset/rebase sequence.
+    assert calls[0] == ["status", "--porcelain"]
+    assert ["fetch", "origin"] in calls
+    assert ["rebase", "origin/master"] in calls

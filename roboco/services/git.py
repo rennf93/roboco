@@ -3863,7 +3863,19 @@ class GitService(BaseService):
         ``head_branch`` (with ``--force-with-lease``). The caller must ensure
         ``base_branch`` is not a protected/default branch — agents never
         rebase-merge into master.
+
+        Safety gate (mirrors :meth:`pull`): refuses on a dirty worktree so the
+        ``git reset --hard`` below can't discard uncommitted agent edits.
         """
+        status_result = await self._run_git(
+            workspace, ["status", "--porcelain"], check=False
+        )
+        if status_result.stdout.strip():
+            raise ValidationError(
+                "DIRTY_WORKSPACE: Cannot rebase with uncommitted changes. "
+                "Stage and commit (or stash) your changes before rebasing."
+            )
+
         await self._run_git(workspace, ["fetch", "origin"], token=git_token)
         await self._run_git(workspace, ["checkout", head_branch])
         await self._run_git(workspace, ["reset", "--hard", f"origin/{head_branch}"])
