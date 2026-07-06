@@ -1447,12 +1447,20 @@ class TaskService(BaseService):
         Source=VIDEO_SOURCE only (a held video_post draft is never itself
         rendered). composition_id/render_status live in the JSON marker, not
         a column, so the caller filters those in Python after this query.
+        Bounded to the most recent ``video_render_scan_limit`` rows so the
+        scan doesn't re-read the growing completed-history set every pass;
+        backed by ``ix_tasks_source_status_created``.
         """
+        from roboco.config import settings
+
         result = await self.session.execute(
-            select(TaskTable).where(
+            select(TaskTable)
+            .where(
                 TaskTable.source == VIDEO_SOURCE,
                 TaskTable.status == TaskStatus.COMPLETED,
             )
+            .order_by(TaskTable.created_at.desc())
+            .limit(settings.video_render_scan_limit)
         )
         return list(result.scalars().all())
 

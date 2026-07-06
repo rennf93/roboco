@@ -999,6 +999,16 @@ class Settings(BaseSettings):
             "authoring tasks with an unrendered composition)."
         ),
     )
+    video_render_scan_limit: int = Field(
+        default=200,
+        ge=1,
+        description=(
+            "Cap on how many completed video-authoring tasks the render "
+            "loop scans per pass; the composition_id/render_status filter "
+            "runs in Python on this bounded set. Backed by "
+            "ix_tasks_source_status_created."
+        ),
+    )
     video_output_dir: str = Field(
         default="/data/video-renders",
         description=(
