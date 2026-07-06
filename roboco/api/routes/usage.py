@@ -7,12 +7,12 @@ teams, and models. Supports period-based queries (24h, 7d, 30d).
 
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 
-from roboco.api.deps import DbSession
+from roboco.api.deps import DbSession, require_panel_token
 from roboco.services.usage import get_usage_service
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_panel_token)])
 
 _PeriodType = Literal["24h", "7d", "30d"]
 
