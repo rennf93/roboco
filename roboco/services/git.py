@@ -2642,6 +2642,7 @@ class GitService(BaseService):
         task_uuid: UUID,
         pr_number: int,
         pr_url: str,
+        audit_agent_id: UUID | None = None,
     ) -> None:
         """Task flags + work_session PR fields must commit together.
 
@@ -2653,7 +2654,10 @@ class GitService(BaseService):
         work_session_service = get_work_session_service(self.session)
         try:
             task = await task_service.mark_pr_created(
-                task_id=task_uuid, pr_number=pr_number, pr_url=pr_url
+                task_id=task_uuid,
+                pr_number=pr_number,
+                pr_url=pr_url,
+                audit_agent_id=audit_agent_id,
             )
             if task is None:
                 raise ServiceError(
@@ -2701,7 +2705,9 @@ class GitService(BaseService):
         ) = await self.create_pull_request(workspace, data)
 
         if data.task_id is not None:
-            await self._record_pr_atomically(data.task_id, pr_number, pr_url)
+            await self._record_pr_atomically(
+                data.task_id, pr_number, pr_url, audit_agent_id=agent_id
+            )
         return pr_number, pr_url, title, source_branch, target_branch
 
     async def _call_merge_api(

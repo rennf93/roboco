@@ -1980,3 +1980,60 @@ async def test_pass_qa_accepts_awaiting_qa(db_session: "AsyncSession") -> None:
     svc = get_task_service(db_session)
     result = await svc.pass_qa(tid, notes="ok")
     assert result is not None and result.status == TaskStatus.AWAITING_DOCUMENTATION
+
+
+# ---------------------------------------------------------------------------
+# L30: mark_pr_created passes audit_agent_id
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mark_pr_created_audit_attributed_to_developer(
+    db_session: "AsyncSession",
+) -> None:
+    """The awaiting_pm_review audit row from mark_pr_created must carry the
+    developer's agent_id, not NULL. The dev's claimed_by is already clear
+    by the time mark_pr_created runs (submit_for_qa cleared it), so the
+    caller must pass audit_agent_id explicitly."""
+    from roboco.db.tables import AuditLogTable, TaskTable
+    from roboco.services.task import get_task_service
+
+    tid = uuid4()
+    await _seed_minimal_task(db_session, tid)
+    from sqlalchemy import select as _select
+
+    row = (await db_session.execute(_select(TaskTable).where(TaskTable.id == tid))).scalar_one()
+    row.status = TaskStatus.AWAITING_DOCUMENTATION
+    row.docs_complete = True
+    row.pr_created = False
+    row.branch_name = "feature/x"
+    row.claimed_by = None  # already cleared by submit_for_qa
+    await db_session.flush()
+
+    dev_id = uuid4()
+    db_session.add(
+        AgentTable(
+            id=dev_id,
+            name="Dev",
+            slug=f"dev-{dev_id.hex[:8]}",
+            role=AgentRole.DEVELOPER,
+            team=Team.BACKEND,
+            status=AgentStatus.ACTIVE,
+            model_config={},
+            system_prompt="dev",
+            capabilities=[],
+            permissions={},
+            metrics={},
+        )
+    )
+    await db_session.flush()
+    svc = get_task_service(db_session)
+    await svc.mark_pr_created(tid, pr_number=7, pr_url="https://x", audit_agent_id=dev_id)
+    rows = (await db_session.execute(
+        _select(AuditLogTable).where(AuditLogTable.target_id == tid)
+    )).scalars().all()
+    transition = [r for r in rows if r.event_type == "task.awaiting_pm_review"]
+    assert transition, "no awaiting_pm_review audit row emitted"
+    assert transition[0].agent_id == dev_id, (
+        f"audit agent_id={transition[0].agent_id} != dev {dev_id} (L30)"
+    )

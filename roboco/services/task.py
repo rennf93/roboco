@@ -4805,6 +4805,7 @@ class TaskService(BaseService):
         task_id: UUID,
         pr_number: int,
         pr_url: str,
+        audit_agent_id: UUID | str | None = None,
     ) -> TaskTable | None:
         """
         Mark that developer has created a PR for the task.
@@ -4873,9 +4874,16 @@ class TaskService(BaseService):
         )
 
         if ready_for_pm:
-            # Both conditions met - transition to PM review using proper validation
+            # Capture the developer's UUID BEFORE clearing claimed_by so the
+            # awaiting_pm_review audit row is attributed to the dev who opened
+            # the PR, not NULL. Capture-before-mutate per Audit I30, mirroring
+            # submit_for_qa. The dev's claimed_by may already be None (cleared
+            # by submit_for_qa's handoff), so the explicit audit_agent_id from
+            # the caller wins.
+            captured_dev_id = audit_agent_id or to_python_uuid(task.claimed_by)
             self._validate_and_set_status(
-                task, TaskStatus.AWAITING_PM_REVIEW, "developer"
+                task, TaskStatus.AWAITING_PM_REVIEW, "developer",
+                audit_agent_id=captured_dev_id,
             )
             # Clear assignment so PM can claim the task for review
             task.assigned_to = None
