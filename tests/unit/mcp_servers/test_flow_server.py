@@ -162,6 +162,32 @@ def test_build_headers_carries_auth_token_and_team(
     assert "X-Correlation-ID" in headers
 
 
+def test_build_headers_omits_unsigned_token(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The orchestrator injects ROBOCO_AGENT_TOKEN=UNSIGNED when the HMAC
+    secret is unset at spawn. The middleware rejects a presented-but-unverifiable
+    token with 401 "signature mismatch" even in dev mode, so forwarding UNSIGNED
+    turns every flow verb (give_me_work / i_am_idle / ...) into a 401 — the live
+    pr_reviewer/i_am_idle signature-mismatch loop. Omit the header so dev (auth
+    not required) accepts the call."""
+    be_dev_1 = "00000000-0000-0000-0001-000000000001"
+    manifest = tmp_path / "tool-manifest.json"
+    manifest.write_text(json.dumps({**_FULL_MANIFEST, "agent_id": be_dev_1}))
+    monkeypatch.setenv("ROBOCO_AGENT_ID", be_dev_1)
+    monkeypatch.setenv("ROBOCO_AGENT_ROLE", "developer")
+    monkeypatch.setenv("ROBOCO_AGENT_TOKEN", "UNSIGNED")
+    monkeypatch.setenv("ROBOCO_ORCHESTRATOR_URL", "http://test-orchestrator:8000")
+    monkeypatch.setenv("ROBOCO_TOOL_MANIFEST_PATH", str(manifest))
+
+    import roboco.mcp.flow_server as srv
+
+    importlib.reload(srv)
+    headers = srv._build_headers()
+
+    assert "X-Agent-Token" not in headers
+
+
 def test_i_will_work_on_passes_plan(flow_module: types.ModuleType) -> None:
     fake_client = _make_fake_client({"status": "in_progress"})
 

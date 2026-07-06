@@ -240,7 +240,9 @@ def _build_headers() -> dict[str, str]:
     if team:
         headers["X-Agent-Team"] = team
     token = os.environ.get("ROBOCO_AGENT_TOKEN")
-    if token:
+    # See flow_server._build_headers: forwarding the "UNSIGNED" sentinel 401s
+    # even in dev mode; omit so a missing token is accepted in dev.
+    if token and token != "UNSIGNED":
         headers["X-Agent-Token"] = token
     return headers
 

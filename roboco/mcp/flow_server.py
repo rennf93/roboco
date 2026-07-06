@@ -274,7 +274,13 @@ def _build_headers() -> dict[str, str]:
     if team:
         headers["X-Agent-Team"] = team
     token = os.environ.get("ROBOCO_AGENT_TOKEN")
-    if token:
+    # The orchestrator injects "UNSIGNED" when ROBOCO_AGENT_AUTH_SECRET is
+    # unset at spawn. The middleware rejects a presented-but-unverifiable
+    # token with 401 "signature mismatch" even in dev mode, so forwarding
+    # UNSIGNED turns every flow verb into a 401. Omit the header instead —
+    # dev (auth not required) accepts a missing token; prod (auth required)
+    # 401s with "Missing X-Agent-Token", the clear respawn-with-secret signal.
+    if token and token != "UNSIGNED":
         headers["X-Agent-Token"] = token
     return headers
 

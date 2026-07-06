@@ -11,6 +11,7 @@ import os
 from typing import TYPE_CHECKING, Annotated, Any
 from uuid import UUID
 
+import structlog
 from fastapi import Cookie, Depends, Header, HTTPException, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -44,6 +45,8 @@ from roboco.services.repositories import resolve_agent_identity, resolve_agent_u
 from roboco.services.task import TaskService
 from roboco.services.work_session import WorkSessionService
 from roboco.services.workspace import WorkspaceService
+
+logger = structlog.get_logger()
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -245,6 +248,19 @@ def _check_agent_auth_token(
         x_agent_role,
         x_agent_team or "",
     ):
+        # Diagnose the mismatch: a stale token (secret rotated since spawn),
+        # an UNSIGNED sentinel forwarded by an older agent, or a genuine
+        # (id, role, team) drift all surface as the same "signature mismatch"
+        # 401. Log the inputs so the next failure pinpoints which.
+        logger.warning(
+            "Agent token rejected",
+            agent_id=x_agent_id,
+            agent_role=x_agent_role,
+            agent_team=x_agent_team,
+            token_present=bool(x_agent_token),
+            token_unsigned=x_agent_token == "UNSIGNED",
+            auth_required=_auth_required(),
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=(
