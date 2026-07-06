@@ -127,9 +127,14 @@ export async function renderComposition({
         ]),
     };
   } catch (err) {
-    // On any pre-render failure the out dir was never created — only the
-    // extract dir needs reclaiming. Re-throw so server.js maps it to 4xx/5xx.
+    // Reclaim whatever temp dirs exist. outDir is created at the mkdtemp
+    // above, so a sync throw from createRenderJob (post-mkdtemp, not
+    // awaited) leaves an empty outDir behind — reclaim it too. Re-throw
+    // so server.js maps the failure to 4xx/5xx.
     await rm(extractDir, { recursive: true, force: true }).catch(() => {});
+    if (outDir) {
+      await rm(outDir, { recursive: true, force: true }).catch(() => {});
+    }
     throw err;
   }
 }

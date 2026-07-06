@@ -24,7 +24,7 @@
           <li class="highlights__item"><span class="highlights__tick"></span><span class="highlights__text">Fable-mode adopted fleet-wide</span></li>
           <li class="highlights__item"><span class="highlights__tick"></span><span class="highlights__text">FE/UX-UI design bar shipped</span></li>
           <li class="highlights__item"><span class="highlights__tick"></span><span class="highlights__text">Feature spotlight goes live on X</span></li>
-          <li class="highlights__item"><span class="highlights__tick"></span><span class="highlights__text"></span></li>
+          <li class="highlights__item" style="display:none"><span class="highlights__tick"></span><span class="highlights__text"></span></li>
         </ul>
       </div>
 
@@ -68,6 +68,7 @@
           if (!textEl) continue;
           if (i < highlights.length && highlights[i]) {
             textEl.textContent = String(highlights[i]);
+            items[i].style.display = "";
           } else {
             items[i].style.display = "none";
           }
