@@ -1377,25 +1377,32 @@ class TaskService(BaseService):
         return list(result.scalars().all())
 
     async def list_open_dep_update_tasks(
-        self, git_url: str | None = None
+        self,
+        git_url: str | None = None,
+        *,
+        dep_update_command: str | None = None,
     ) -> list[TaskTable]:
         """Non-terminal dep_update tasks — the dedupe + open-cap basis.
 
-        Optionally scoped to one repo by ``git_url`` so a monorepo (several
-        cell-projects, one git_url) gets at most one open dependency-update task,
-        not one per cell-project. While an open task exists for a repo the bot
-        must not originate a second; the rolling open-task cap counts these.
-        The git_url scope is matched on the normalized repo key (case / ``.git``
-        / trailing ``/``), mirroring the orchestrator's poll-set collapse (#1267).
+        Optionally scoped to one repo by ``git_url`` and/or one
+        ``dep_update_command``. A monorepo with two distinct commands (different
+        ecosystems / lockfiles) gets one open task per command, not one for the
+        whole repo blocking the second. The git_url scope is matched on the
+        normalized repo key (case / ``.git`` / trailing ``/``), mirroring the
+        orchestrator's poll-set collapse (#1267).
         """
         stmt = select(TaskTable).where(
             TaskTable.source == DEP_UPDATE_SOURCE,
             TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
         )
-        if git_url is not None:
-            stmt = stmt.join(
-                ProjectTable, TaskTable.project_id == ProjectTable.id
-            ).where(_repo_key_expr(ProjectTable.git_url) == repo_key(git_url))
+        if git_url is not None or dep_update_command is not None:
+            stmt = stmt.join(ProjectTable, TaskTable.project_id == ProjectTable.id)
+            if git_url is not None:
+                stmt = stmt.where(
+                    _repo_key_expr(ProjectTable.git_url) == repo_key(git_url)
+                )
+            if dep_update_command is not None:
+                stmt = stmt.where(ProjectTable.dep_update_command == dep_update_command)
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
