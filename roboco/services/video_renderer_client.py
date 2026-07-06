@@ -1,4 +1,4 @@
-"""RemotionRenderer — HTTP client for the remotion-renderer sidecar.
+"""VideoRenderer — HTTP client for the video-renderer sidecar.
 
 No cross-container shared volume: the orchestrator tars the merged motion/
 source directory from its read-clone and POSTs it to the sidecar; the sidecar
@@ -7,9 +7,11 @@ this client writes to an orchestrator-local directory. The sidecar itself
 stays credential-free and git-free — it only ever sees a tarball plus a JSON
 side-channel of render parameters.
 
-`NullRemotionRenderer` (an unconfigured `remotion_base_url`) fails the same
-clean way an unreachable sidecar does — a `RemotionRendererError`, never a
-raw transport crash — mirroring the `NullXClient` graceful-degradation shape.
+An unconfigured ``video_renderer_base_url`` makes :func:`get_video_renderer`
+return a :class:`NullVideoRenderer` whose :meth:`render` raises a typed
+:class:`VideoRendererError` (never a raw transport crash) — fail-fast on a
+misconfigured sidecar is correct, and the render loop already handles it as a
+bounded retry.
 """
 
 from __future__ import annotations
@@ -30,11 +32,11 @@ from roboco.services import minio_client
 log = structlog.get_logger(__name__)
 
 
-class RemotionRendererError(Exception):
+class VideoRendererError(Exception):
     """A render call failed: unconfigured sidecar, unreachable, or non-2xx."""
 
 
-class RemotionRenderer:
+class VideoRenderer:
     """Tar the composition source, POST it to the sidecar, save the MP4."""
 
     def __init__(
@@ -66,12 +68,12 @@ class RemotionRenderer:
         an earlier, not-yet-posted draft's clip.
 
         Fails fast (no tar, no network attempt) when unconfigured — the same
-        guard covers both ``NullRemotionRenderer`` and a directly-constructed
-        ``RemotionRenderer(base_url="")``.
+        guard covers both ``NullVideoRenderer`` and a directly-constructed
+        ``VideoRenderer(base_url="")``.
         """
         if not self._base_url:
-            raise RemotionRendererError(
-                "remotion sidecar not configured (remotion_base_url unset)"
+            raise VideoRendererError(
+                "video-renderer sidecar not configured (video_renderer_base_url unset)"
             )
         tar_bytes = await asyncio.to_thread(self._tar_source, source_dir)
         mp4_bytes = await self._post(
@@ -131,9 +133,9 @@ class RemotionRenderer:
                 timeout=timeout,
             )
         except httpx.HTTPError as exc:
-            raise RemotionRendererError(f"render request failed: {exc}") from exc
+            raise VideoRendererError(f"render request failed: {exc}") from exc
         if not response.is_success:
-            raise RemotionRendererError(
+            raise VideoRendererError(
                 f"render failed: HTTP {response.status_code}: {response.text[:200]}"
             )
         return response.content
@@ -170,7 +172,7 @@ class RemotionRenderer:
         return str(path)
 
 
-class NullRemotionRenderer(RemotionRenderer):
+class NullVideoRenderer(VideoRenderer):
     """No sidecar configured — inherits render()'s empty-base_url guard, so
     every call raises immediately: no tar, no network call."""
 
@@ -178,9 +180,9 @@ class NullRemotionRenderer(RemotionRenderer):
         super().__init__(base_url="")
 
 
-def get_remotion_renderer() -> RemotionRenderer:
-    """RemotionRenderer bound to settings.remotion_base_url; Null when unset."""
-    base_url = settings.remotion_base_url.strip()
+def get_video_renderer() -> VideoRenderer:
+    """VideoRenderer bound to settings.video_renderer_base_url; Null when unset."""
+    base_url = settings.video_renderer_base_url.strip()
     if not base_url:
-        return NullRemotionRenderer()
-    return RemotionRenderer(base_url=base_url)
+        return NullVideoRenderer()
+    return VideoRenderer(base_url=base_url)

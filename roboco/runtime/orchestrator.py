@@ -7696,14 +7696,14 @@ Start by:
         """Render the vertical + square cuts from the roboco project's merged
         read-clone's motion/ dir; returns {"vertical": path, "square": path}.
         ``render_key`` (the source task id) scopes each cut's output path."""
-        from roboco.services.remotion_client import get_remotion_renderer
+        from roboco.services.video_renderer_client import get_video_renderer
         from roboco.services.workspace import get_workspace_service
 
         slug = (settings.self_heal_project_slug or "roboco-api").strip()
         workspace = await get_workspace_service(db).ensure_read_clone(slug)
         motion_dir = str(workspace / "motion")
         input_props = draft.get("input_props") or {}
-        renderer = get_remotion_renderer()
+        renderer = get_video_renderer()
         cuts: dict[str, str] = {}
         for orientation in ("vertical", "square"):
             cuts[orientation] = await renderer.render(

@@ -1,4 +1,4 @@
-"""RemotionRenderer coverage: tar/post/save happy path against a mocked httpx
+"""VideoRenderer coverage: tar/post/save happy path against a mocked httpx
 transport, plus unconfigured/unreachable graceful failure (never a crash).
 """
 
@@ -10,11 +10,11 @@ import httpx
 import pytest
 from roboco.config import settings as cfg
 from roboco.services import minio_client
-from roboco.services.remotion_client import (
-    NullRemotionRenderer,
-    RemotionRenderer,
-    RemotionRendererError,
-    get_remotion_renderer,
+from roboco.services.video_renderer_client import (
+    NullVideoRenderer,
+    VideoRenderer,
+    VideoRendererError,
+    get_video_renderer,
 )
 
 
@@ -44,7 +44,7 @@ async def test_render_posts_tar_and_saves_mp4(
 
     transport = httpx.MockTransport(handler)
     http_client = httpx.AsyncClient(transport=transport)
-    renderer = RemotionRenderer(base_url="http://fake-remotion", client=http_client)
+    renderer = VideoRenderer(base_url="http://fake-video-renderer", client=http_client)
 
     path = await renderer.render(
         source_dir=str(source),
@@ -55,7 +55,7 @@ async def test_render_posts_tar_and_saves_mp4(
     )
     await http_client.aclose()
 
-    assert captured["url"] == "http://fake-remotion/render"
+    assert captured["url"] == "http://fake-video-renderer/render"
     assert str(captured["content_type"]).startswith("multipart/form-data")
     body = captured["body"]
     assert isinstance(body, bytes)
@@ -84,9 +84,9 @@ async def test_render_non_success_response_raises_clear_error(
 
     transport = httpx.MockTransport(handler)
     http_client = httpx.AsyncClient(transport=transport)
-    renderer = RemotionRenderer(base_url="http://fake-remotion", client=http_client)
+    renderer = VideoRenderer(base_url="http://fake-video-renderer", client=http_client)
 
-    with pytest.raises(RemotionRendererError, match="500"):
+    with pytest.raises(VideoRendererError, match="500"):
         await renderer.render(
             source_dir=str(source),
             composition_id="Intro",
@@ -109,9 +109,9 @@ async def test_render_unreachable_sidecar_raises_clear_error(
 
     transport = httpx.MockTransport(handler)
     http_client = httpx.AsyncClient(transport=transport)
-    renderer = RemotionRenderer(base_url="http://fake-remotion", client=http_client)
+    renderer = VideoRenderer(base_url="http://fake-video-renderer", client=http_client)
 
-    with pytest.raises(RemotionRendererError, match="render request failed"):
+    with pytest.raises(VideoRendererError, match="render request failed"):
         await renderer.render(
             source_dir=str(source),
             composition_id="Intro",
@@ -127,8 +127,8 @@ async def test_unconfigured_renderer_raises_without_network_call(
     tmp_path: Path,
 ) -> None:
     source = _make_source(tmp_path)
-    renderer = RemotionRenderer(base_url="")
-    with pytest.raises(RemotionRendererError, match="not configured"):
+    renderer = VideoRenderer(base_url="")
+    with pytest.raises(VideoRendererError, match="not configured"):
         await renderer.render(
             source_dir=str(source),
             composition_id="Intro",
@@ -141,8 +141,8 @@ async def test_unconfigured_renderer_raises_without_network_call(
 @pytest.mark.asyncio
 async def test_null_renderer_raises_without_network_call(tmp_path: Path) -> None:
     source = _make_source(tmp_path)
-    renderer = NullRemotionRenderer()
-    with pytest.raises(RemotionRendererError, match="not configured"):
+    renderer = NullVideoRenderer()
+    with pytest.raises(VideoRendererError, match="not configured"):
         await renderer.render(
             source_dir=str(source),
             composition_id="Intro",
@@ -152,21 +152,23 @@ async def test_null_renderer_raises_without_network_call(tmp_path: Path) -> None
         )
 
 
-def test_get_remotion_renderer_returns_null_when_unset(
+def test_get_video_renderer_returns_null_when_unset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(cfg, "remotion_base_url", "")
-    renderer = get_remotion_renderer()
-    assert isinstance(renderer, NullRemotionRenderer)
+    monkeypatch.setattr(cfg, "video_renderer_base_url", "")
+    renderer = get_video_renderer()
+    assert isinstance(renderer, NullVideoRenderer)
 
 
-def test_get_remotion_renderer_returns_real_client_when_set(
+def test_get_video_renderer_returns_real_client_when_set(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(cfg, "remotion_base_url", "http://roboco-remotion:3001")
-    renderer = get_remotion_renderer()
-    assert isinstance(renderer, RemotionRenderer)
-    assert not isinstance(renderer, NullRemotionRenderer)
+    monkeypatch.setattr(
+        cfg, "video_renderer_base_url", "http://roboco-video-renderer:3001"
+    )
+    renderer = get_video_renderer()
+    assert isinstance(renderer, VideoRenderer)
+    assert not isinstance(renderer, NullVideoRenderer)
 
 
 @pytest.mark.asyncio
@@ -196,7 +198,7 @@ async def test_save_puts_to_minio_when_configured(
 
     transport = httpx.MockTransport(handler)
     http_client = httpx.AsyncClient(transport=transport)
-    renderer = RemotionRenderer(base_url="http://fake-remotion", client=http_client)
+    renderer = VideoRenderer(base_url="http://fake-video-renderer", client=http_client)
 
     try:
         path = await renderer.render(
@@ -244,7 +246,7 @@ async def test_save_swallows_minio_put_failure(
 
     try:
         # _save is a sync @staticmethod; call it directly (no httpx needed).
-        path = RemotionRenderer._save(
+        path = VideoRenderer._save(
             b"fake-mp4-bytes", render_key="task-88", orientation="square"
         )
     finally:

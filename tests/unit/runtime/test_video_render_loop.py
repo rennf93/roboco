@@ -170,7 +170,7 @@ async def _make_completed_video_task(
 def _render_patches(renderer: _FakeRenderer, workspace: Any) -> Any:
     return (
         patch(
-            "roboco.services.remotion_client.get_remotion_renderer",
+            "roboco.services.video_renderer_client.get_video_renderer",
             lambda: renderer,
         ),
         patch(

@@ -178,7 +178,7 @@ def _render_completed_task(stack: E2EStack, task_id: UUID) -> None:
         ).scalar_one()
         with (
             patch(
-                "roboco.services.remotion_client.get_remotion_renderer",
+                "roboco.services.video_renderer_client.get_video_renderer",
                 _FakeRenderer,
             ),
             patch(

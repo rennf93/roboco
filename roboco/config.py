@@ -886,7 +886,7 @@ class Settings(BaseSettings):
         description="Seconds between feature-spotlight exploration cycles.",
     )
 
-    # Video generation (Remotion) — a UX/UI dev authors a bespoke motion-video
+    # Video generation (HyperFrames) — a UX/UI dev authors a bespoke motion-video
     # composition per release/spotlight/on-demand trigger through the normal
     # delivery lifecycle; a later render pass renders it to MP4 and holds the
     # clip as a CEO-approval draft (mirrors the X engine's held-draft shape).
@@ -934,10 +934,10 @@ class Settings(BaseSettings):
         gt=0,
         description="Per-request timeout for outbound video-engine HTTP calls.",
     )
-    remotion_base_url: str = Field(
-        default="http://roboco-remotion:3001",
+    video_renderer_base_url: str = Field(
+        default="http://roboco-video-renderer:3001",
         description=(
-            "Base URL of the remotion-renderer sidecar. The orchestrator tars "
+            "Base URL of the video-renderer sidecar. The orchestrator tars "
             "the merged motion/ source and POSTs it here; the sidecar returns "
             "MP4 bytes in the response (no cross-container shared volume)."
         ),
