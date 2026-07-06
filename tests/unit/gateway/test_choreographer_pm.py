@@ -306,6 +306,7 @@ async def test_cell_pm_complete_merges_then_completes() -> None:
     task_svc.all_subtasks_terminal.return_value = True
     task_svc.cell_pm_complete.return_value = after
     git_svc = AsyncMock()
+    git_svc.is_pr_merged_for_task.return_value = False
     git_svc.pr_merge.return_value = {"merged": True, "merge_commit_sha": "merge-abc"}
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
@@ -355,6 +356,7 @@ async def test_cell_pm_complete_does_not_500_when_complete_returns_none() -> Non
     task_svc.all_subtasks_terminal.return_value = True
     task_svc.cell_pm_complete.return_value = None  # complete() rejected
     git_svc = AsyncMock()
+    git_svc.is_pr_merged_for_task.return_value = False
     git_svc.pr_merge.return_value = {"merge_commit_sha": "merge-abc"}
     journal_svc = AsyncMock()
     journal_svc.has_decision_for_task.return_value = True
@@ -985,3 +987,51 @@ async def test_escalate_up_task_not_found() -> None:
 
     env = await c.escalate_up(pm_id, task_id, reason="needs cross-cell coordination")
     assert env.as_dict()["error"] == "not_found"
+
+
+# ---------------------------------------------------------------------------
+# H7: cell_pm_complete idempotent when PR already merged to target
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cell_pm_complete_idempotent_when_pr_already_merged_to_target() -> None:
+    """Re-issuing cell_pm_complete after the PR is already merged to the
+    target must not call git.pr_merge again (which would 405) and must not
+    500. It should complete the task or surface invalid_state cleanly."""
+    pm_id = uuid4()
+    task_id = uuid4()
+    parent_id = uuid4()
+    t = MagicMock(
+        id=task_id,
+        status="awaiting_pm_review",
+        assigned_to=pm_id,
+        pr_number=8,
+        branch_name="feature/backend/abc--def",
+        parent_task_id=parent_id,
+        team="backend",
+    )
+    after = MagicMock(**{**t.__dict__, "status": "completed"})
+    parent = MagicMock(
+        id=parent_id, branch_name="feature/main_pm/abc", parent_task_id=None
+    )
+    task_svc = AsyncMock()
+    task_svc.get.side_effect = lambda tid: parent if tid == parent_id else t
+    task_svc.all_subtasks_terminal.return_value = True
+    task_svc.cell_pm_complete.return_value = after
+    git_svc = AsyncMock()
+    git_svc.is_pr_merged_for_task.return_value = True  # already merged
+    git_svc.pr_merge.return_value = {"merge_commit_sha": "merge-abc"}
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
+    journal_svc.has_reflect_for_task.return_value = True
+    deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.cell_pm_complete(pm_id, task_id, notes="re-issue after None complete")
+    body = env.as_dict()
+    assert body.get("error") is None or body.get("error") == "invalid_state", body
+    assert not git_svc.pr_merge.called, (
+        "cell_pm_complete re-issued git.pr_merge on an already-merged PR"
+    )

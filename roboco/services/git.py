@@ -3683,6 +3683,36 @@ class GitService(BaseService):
             return False
         return bool(resp.json().get("merged"))
 
+    async def is_pr_merged_for_task(self, task_id: UUID) -> bool:
+        """True if the task's PR is already merged on GitHub.
+
+        Idempotency check for ``cell_pm_complete`` re-issues: a re-issue after
+        a None-complete would otherwise 405 on the already-merged PR. Best-
+        effort False on any HTTP/lookup failure — the caller treats False as
+        'merge needed' and proceeds to ``pr_merge`` (which surfaces the real
+        error). Mirrors ``_pr_is_merged``'s fail-safe posture.
+        """
+        from sqlalchemy import select
+
+        from roboco.db.tables import TaskTable as _TaskTable
+
+        result = await self.session.execute(
+            select(_TaskTable).where(_TaskTable.id == task_id).limit(1)
+        )
+        task = result.scalar_one_or_none()
+        if task is None or not task.pr_number:
+            return False
+        project = await self._project_for_task(task)
+        if project is None:
+            return False
+        workspace_agent_id = self._resolve_workspace_agent_id(task, None)
+        workspace = await self.get_workspace(
+            project.slug, agent_id=workspace_agent_id
+        )
+        git_token = await self._get_project_token_or_raise(project.slug)
+        owner, repo = self._parse_github_remote(workspace)
+        return await self._pr_is_merged(owner, repo, task.pr_number, git_token)
+
     async def pr_merge(
         self,
         pr_number: int,

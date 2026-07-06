@@ -6125,7 +6125,15 @@ class Choreographer:
     async def cell_pm_complete(
         self, pm_agent_id: UUID, task_id: UUID, notes: str
     ) -> Envelope:
-        """Cell PM completes a task — auto-merges leaf PR into parent branch."""
+        """Cell PM completes a task — auto-merges leaf PR into parent branch.
+
+        Idempotent: if the PR is already merged to the target on GitHub,
+        skip the merge call and proceed straight to the transition. This
+        closes the H7 respawn loop where a re-issue after a None-complete
+        re-called pr_merge on an already-merged PR (405) and the remediate
+        hint told the agent to "re-issue pr_merge" which could never
+        succeed.
+        """
         t = await self.task.get(task_id)
         if t is None:
             return await self._emit_rejection(
@@ -6148,22 +6156,32 @@ class Choreographer:
         # change); for a cell task it is the root branch (feature/main_pm/…),
         # which parent_branch_for would have mis-derived as feature/<cellteam>/…
         target = await resolve_parent_branch(t, self.task)
-        try:
-            merge_result = await self.git.pr_merge(
-                t.pr_number,
-                target=target,
-                project_id=cast("UUID", t.project_id),
-                actor_agent_id=pm_agent_id,
-            )
-        except MergeConflictError as exc:
-            # A sibling landed overlapping work first, so this PR can't merge.
-            # Resolve it (rebase / close-superseded / escalate) instead of
-            # letting the failure re-block the task and respawn the PM forever.
-            return await self._resolve_merge_conflict_on_complete(
-                pm_agent_id, task_id, t, target, notes, exc
-            )
+        # H7: idempotent pre-check. If the PR is already merged to the
+        # target on GitHub, skip the GitHub merge call — a re-issue after
+        # a None-complete would otherwise 405 on the already-merged PR and
+        # respawn the PM forever against a remediate hint that can't succeed.
+        merge_commit: str | None = None
+        if t.pr_number:
+            already_merged = await self.git.is_pr_merged_for_task(task_id)
+            if not already_merged:
+                try:
+                    merge_result = await self.git.pr_merge(
+                        t.pr_number,
+                        target=target,
+                        project_id=cast("UUID", t.project_id),
+                        actor_agent_id=pm_agent_id,
+                    )
+                    merge_commit = merge_result.get("merge_commit_sha")
+                except MergeConflictError as exc:
+                    # A sibling landed overlapping work first, so this PR can't
+                    # merge. Resolve it (rebase / close-superseded / escalate)
+                    # instead of letting the failure re-block the task and
+                    # respawn the PM forever.
+                    return await self._resolve_merge_conflict_on_complete(
+                        pm_agent_id, task_id, t, target, notes, exc
+                    )
         return await self._finalize_cell_complete(
-            pm_agent_id, task_id, t, notes, merge_result.get("merge_commit_sha")
+            pm_agent_id, task_id, t, notes, merge_commit
         )
 
     async def _finalize_cell_complete(
