@@ -1891,3 +1891,44 @@ def to_uuid(v: object) -> UUID | None:
     if isinstance(v, UUID):
         return v
     return UUID(str(v))
+
+
+# ---------------------------------------------------------------------------
+# H4: docs_complete + mark_pr_created lock the task row FOR UPDATE
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_parallel_completion_race_single_transition(
+    db_session: "AsyncSession",
+) -> None:
+    """docs_complete and mark_pr_created race: both see ready_for_pm=True,
+    both transition to awaiting_pm_review, both emit audit rows. With FOR
+    UPDATE the second caller serializes behind the first and sees the
+    already-advanced status — it must NOT transition again."""
+    from roboco.db.tables import AuditLogTable, TaskTable
+    from roboco.services.task import get_task_service
+
+    tid = uuid4()
+    await _seed_minimal_task(db_session, tid)
+    from sqlalchemy import select as _select
+
+    row = (await db_session.execute(_select(TaskTable).where(TaskTable.id == tid))).scalar_one()
+    row.status = TaskStatus.AWAITING_DOCUMENTATION
+    row.docs_complete = True
+    row.pr_created = False
+    row.branch_name = "feature/x"
+    await db_session.flush()
+
+    svc = get_task_service(db_session)
+    t1 = await svc.mark_pr_created(tid, pr_number=42, pr_url="https://x")
+    assert t1 is not None and t1.status == TaskStatus.AWAITING_PM_REVIEW
+    t2 = await svc.docs_complete(tid, doc_notes="docs done")
+    rows = (await db_session.execute(
+        _select(AuditLogTable).where(AuditLogTable.target_id == tid)
+    )).scalars().all()
+    transitions = [r for r in rows if r.event_type == "task.awaiting_pm_review"]
+    assert len(transitions) <= 1, (
+        f"parallel completion emitted {len(transitions)} awaiting_pm_review "
+        "audit rows — FOR UPDATE missing"
+    )

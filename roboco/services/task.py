@@ -4580,7 +4580,12 @@ class TaskService(BaseService):
         Returns:
             The updated task or None if not allowed
         """
-        task = await self.get(task_id)
+        lock_result = await self.session.execute(
+            select(TaskTable)
+            .where(TaskTable.id == task_id)
+            .with_for_update(of=TaskTable)
+        )
+        task = lock_result.scalar_one_or_none()
         if not task:
             return None
 
@@ -4783,7 +4788,12 @@ class TaskService(BaseService):
         Returns:
             The updated task or None if not allowed
         """
-        task = await self.get(task_id)
+        lock_result = await self.session.execute(
+            select(TaskTable)
+            .where(TaskTable.id == task_id)
+            .with_for_update(of=TaskTable)
+        )
+        task = lock_result.scalar_one_or_none()
         if not task:
             return None
 
