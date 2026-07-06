@@ -1565,3 +1565,138 @@ async def test_update_skips_none_to_protect_partial_callers() -> None:
     assert result is task
     assert task.title == "updated"  # explicit, non-None value is applied
     assert task.acceptance_criteria == ["keep me"]  # None skipped, not wiped
+
+
+# ---------------------------------------------------------------------------
+# M20: admin_set_status terminal guard + skip revision bump under force
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_admin_set_status_refuses_terminal_to_non_terminal_without_force(
+    db_session,
+) -> None:
+    from uuid import uuid4
+
+    from roboco.db.tables import AgentTable, ProjectTable, TaskTable
+    from roboco.exceptions import TaskLifecycleError
+    from roboco.services.task import get_task_service
+
+    agent = AgentTable(
+        id=uuid4(),
+        name="A",
+        slug=f"a-{uuid4().hex[:8]}",
+        role=AgentRole.DEVELOPER,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="dev",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(agent)
+    await db_session.flush()
+    project = ProjectTable(
+        id=uuid4(),
+        name="P",
+        slug=f"p-{uuid4().hex[:6]}",
+        git_url="https://example.com/r.git",
+        assigned_cell=Team.BACKEND,
+        created_by=agent.id,
+    )
+    db_session.add(project)
+    await db_session.flush()
+    tid = uuid4()
+    db_session.add(
+        TaskTable(
+            id=tid,
+            title="t",
+            description="d",
+            acceptance_criteria=["done"],
+            status=TaskStatus.COMPLETED,
+            priority=2,
+            task_type=TaskType.CODE,
+            nature=TaskNature.TECHNICAL,
+            estimated_complexity=Complexity.LOW,
+            team=Team.BACKEND,
+            confirmed_by_human=True,
+            project_id=project.id,
+            created_by=agent.id,
+            branch_name="feature/x",
+            revision_count=2,
+        )
+    )
+    await db_session.flush()
+    svc = get_task_service(db_session)
+    with pytest.raises(TaskLifecycleError):
+        await svc.admin_set_status(tid, TaskStatus.NEEDS_REVISION)
+
+
+@pytest.mark.asyncio
+async def test_admin_set_status_force_allows_terminal_to_needs_revision_no_revision_bump(
+    db_session,
+) -> None:
+    from uuid import uuid4
+
+    from sqlalchemy import select as _select
+
+    from roboco.db.tables import AgentTable, ProjectTable, TaskTable
+    from roboco.services.task import get_task_service
+
+    agent = AgentTable(
+        id=uuid4(),
+        name="A",
+        slug=f"a-{uuid4().hex[:8]}",
+        role=AgentRole.DEVELOPER,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="dev",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(agent)
+    await db_session.flush()
+    project = ProjectTable(
+        id=uuid4(),
+        name="P",
+        slug=f"p-{uuid4().hex[:6]}",
+        git_url="https://example.com/r.git",
+        assigned_cell=Team.BACKEND,
+        created_by=agent.id,
+    )
+    db_session.add(project)
+    await db_session.flush()
+    tid = uuid4()
+    db_session.add(
+        TaskTable(
+            id=tid,
+            title="t",
+            description="d",
+            acceptance_criteria=["done"],
+            status=TaskStatus.COMPLETED,
+            priority=2,
+            task_type=TaskType.CODE,
+            nature=TaskNature.TECHNICAL,
+            estimated_complexity=Complexity.LOW,
+            team=Team.BACKEND,
+            confirmed_by_human=True,
+            project_id=project.id,
+            created_by=agent.id,
+            branch_name="feature/x",
+            revision_count=2,
+        )
+    )
+    await db_session.flush()
+    svc = get_task_service(db_session)
+    await svc.admin_set_status(tid, TaskStatus.NEEDS_REVISION, force=True, actor_id=agent.id)
+    row = (await db_session.execute(
+        _select(TaskTable).where(TaskTable.id == tid)
+    )).scalar_one()
+    assert row.status == TaskStatus.NEEDS_REVISION
+    assert row.revision_count == 2, (
+        "admin force terminal->needs_revision bumped revision_count — "
+        "admin recovery must not be counted as rework in metrics"
+    )

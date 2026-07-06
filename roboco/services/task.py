@@ -2291,6 +2291,26 @@ class TaskService(BaseService):
             if isinstance(task.status, TaskStatus)
             else str(task.status)
         )
+        # M20: refuse terminal -> non-terminal unless force=True. A COMPLETED/
+        # CANCELLED task resurrected to a live state re-enters dispatch and
+        # skews metrics (revision_count bumps on a forced needs_revision are
+        # admin recovery, not rework). The force flag is the explicit,
+        # audited bypass the route already requires for terminal hatch states.
+        terminal = {TaskStatus.COMPLETED, TaskStatus.CANCELLED}
+        from_is_terminal = TaskStatus(from_status) in terminal
+        to_is_terminal = new_status in terminal
+        if from_is_terminal and not to_is_terminal and not force:
+            raise TaskLifecycleError(
+                from_status,
+                new_status.value,
+                message=(
+                    f"admin_set_status refuses {from_status} -> "
+                    f"{new_status.value}: a terminal task cannot be resurrected "
+                    "without force=True (audited explicit bypass)."
+                ),
+                task_id=cast("Any", task.id),
+            )
+
         restored = await self._admin_out_of_blocked(
             task, from_status, new_status, actor_id=actor_id, actor_role=actor_role
         )
@@ -2305,6 +2325,17 @@ class TaskService(BaseService):
             agent_role=actor_role,
             audit_agent_id=actor_id,
         )
+        # M20: under a forced terminal -> needs_revision admin override, undo
+        # the revision_count bump _emit_status_transition_audit just applied.
+        # Admin recovery from a terminal state is not a rework cycle. Mirrors
+        # _apply_pre_block_restore's undo.
+        if (
+            force
+            and from_is_terminal
+            and new_status == TaskStatus.NEEDS_REVISION
+        ):
+            task.revision_count = max((task.revision_count or 1) - 1, 0)
+            await self.session.flush()
         if force:
             # #13: a distinct audit row marks the override as an explicit,
             # acknowledged bypass past the lifecycle gate — distinguishable
