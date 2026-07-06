@@ -245,7 +245,9 @@ def _check_agent_auth_token(
     # (so the panel / curl-for-debugging keep working), but any token
     # that IS presented is still verified — you can't bypass by
     # supplying an invalid token.
-    if _auth_required() and not x_agent_token:
+    # cloud_auth is the public-exposure signal; agent_auth_required is the
+    # fleet's own HMAC enforcement — either armed means a token is mandatory.
+    if (_auth_required() or settings.cloud_auth_enabled) and not x_agent_token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing X-Agent-Token header (auth required)",

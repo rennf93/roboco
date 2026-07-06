@@ -217,6 +217,53 @@ def test_check_agent_auth_token_valid_passes() -> None:
         _check_agent_auth_token("a", "developer", "backend", x_agent_token="good")
 
 
+def test_check_agent_auth_token_missing_under_cloud_auth_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cloud_auth on + agent_auth_required off: token still mandatory."""
+    from roboco.api import deps as _deps
+
+    monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", True)
+    monkeypatch.delenv("ROBOCO_AGENT_AUTH_REQUIRED", raising=False)
+    with pytest.raises(HTTPException) as exc:
+        _check_agent_auth_token("a", "developer", "backend", x_agent_token=None)
+    assert exc.value.status_code == _HTTP_401
+
+
+def test_check_agent_auth_token_valid_under_cloud_auth_passes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from roboco.api import deps as _deps
+
+    monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", True)
+    with patch("roboco.api.deps.verify_agent_token", return_value=True):
+        _check_agent_auth_token("a", "developer", "backend", x_agent_token="good")
+
+
+def test_check_agent_auth_token_dev_mode_no_token_passes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cloud_auth off + agent_auth_required off: dev unchanged."""
+    from roboco.api import deps as _deps
+
+    monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", False)
+    monkeypatch.delenv("ROBOCO_AGENT_AUTH_REQUIRED", raising=False)
+    _check_agent_auth_token("a", "developer", "backend", x_agent_token=None)
+
+
+def test_check_agent_auth_token_agent_auth_required_no_token_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cloud_auth off + agent_auth_required on: existing behavior unchanged."""
+    from roboco.api import deps as _deps
+
+    monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", False)
+    monkeypatch.setenv("ROBOCO_AGENT_AUTH_REQUIRED", "true")
+    with pytest.raises(HTTPException) as exc:
+        _check_agent_auth_token("a", "developer", "backend", x_agent_token=None)
+    assert exc.value.status_code == _HTTP_401
+
+
 # ---------------------------------------------------------------------------
 # _resolve_agent_identity
 # ---------------------------------------------------------------------------
