@@ -1,4 +1,4 @@
-// remotion-renderer — HTTP sidecar for the RoboCo video engine.
+// video-renderer — HTTP sidecar for the RoboCo video engine.
 //
 // POST /render accepts a gzipped tar of a motion/ composition source (arcname
 // "motion") plus {composition_id, orientation, input_props} form fields, and
@@ -86,7 +86,7 @@ app.post("/render", renderLimiter, upload.single("source"), async (req, res) => 
     res.setHeader("Content-Type", "video/mp4");
     const stream = createReadStream(outputLocation);
     stream.on("error", (err) => {
-      console.error("remotion-renderer: stream error", err);
+      console.error("video-renderer: stream error", err);
       if (!res.headersSent) {
         res.status(500);
       }
@@ -114,7 +114,7 @@ app.post("/render", renderLimiter, upload.single("source"), async (req, res) => 
       return;
     }
     const message = err instanceof Error ? err.message : String(err);
-    console.error("remotion-renderer: render failed", message);
+    console.error("video-renderer: render failed", message);
     res.status(500).json({ error: `render failed: ${message}` });
   }
 });
@@ -131,10 +131,10 @@ app.use((err, req, res, _next) => {
     return;
   }
   const message = err instanceof Error ? err.message : String(err);
-  console.error("remotion-renderer: unhandled error", message);
+  console.error("video-renderer: unhandled error", message);
   res.status(500).json({ error: "internal error" });
 });
 
 app.listen(PORT, () => {
-  console.log(`remotion-renderer listening on :${PORT}`);
+  console.log(`video-renderer listening on :${PORT}`);
 });

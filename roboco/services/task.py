@@ -579,7 +579,7 @@ X_FEATURE_SOURCE = "x_feature"
 X_SOURCES = (X_POST_SOURCE, X_REPLY_SOURCE, X_FEATURE_SOURCE)
 
 # Source tag for a video-authoring task: the VideoEngine assigns this to a
-# UX/UI dev to build a Remotion composition. Unlike X_SOURCES above it IS
+# UX/UI dev to build a HyperFrames composition. Unlike X_SOURCES above it IS
 # dispatched — a normal, pre-assigned delivery task like any other cell code
 # task — so it stays out of every held-source skip bucket.
 VIDEO_SOURCE = "video"

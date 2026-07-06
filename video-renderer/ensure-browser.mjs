@@ -1,7 +1,7 @@
 // Build-time only: verify Chrome Headless Shell is installed so a
 // container's first real render isn't also the first time it fetches a
 // browser. Run once as a Docker RUN step after `pnpm install` (see
-// docker/remotion.Dockerfile).
+// docker/video-renderer.Dockerfile).
 //
 // The actual download is performed by puppeteer's postinstall (approved in
 // pnpm-workspace.yaml), which lands chrome-headless-shell in

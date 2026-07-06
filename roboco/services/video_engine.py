@@ -6,7 +6,7 @@ CEO-scoped artifact" shape, but split across the real delivery lifecycle:
 
 * **Authoring task** (``source="video"``) — a normal, ASSIGNED delivery task
   (``confirmed_by_human=True``): the engine hands it straight to a ux-dev, who
-  authors a Remotion composition on a real branch through the standard
+  authors a HyperFrames composition on a real branch through the standard
   claim -> code -> PR -> merge path. NOT held and NOT in any dispatcher's
   skip bucket — it is a pre-assigned code task like any other.
 * **Held draft** (``source="video_post"``) — materialized once a render pass

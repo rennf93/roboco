@@ -1,7 +1,7 @@
 // untar -> write per-render props.js -> HyperFrames createRenderJob +
 // executeRenderJob. HyperFrames has no webpack bundling step (it loads the
 // HTML directly in headless Chrome and captures frames via the beginFrame
-// API), so the bundle-cache machinery the old Remotion path carried is gone
+// API), so the bundle-cache machinery the old path carried is gone
 // — every /render call extracts its own temp dir, renders, and cleans up.
 //
 // The per-request render OUTPUT (the rendered mp4) is never cached — every
