@@ -1268,16 +1268,29 @@ class WorkspaceService:
         # Create parent directories
         workspace.parent.mkdir(parents=True, exist_ok=True)
 
-        # Inject project-specific token for HTTPS URLs
-        auth_url = _inject_token_into_url(git_url, git_token)
+        # Inject project-specific token for HTTPS URLs. The token rides a
+        # per-call ``-c http.extraheader=Authorization: Basic …`` config
+        # (mirrors the fetch paths at :642 / :1889) so the PAT never lands
+        # in the clone argv — ``/proc/<pid>/cmdline`` would otherwise expose
+        # a URL-embedded token to any process on the host.
+        clone_prefix: list[str] = []
+        using_token = bool(git_token) and git_url.startswith("https://")
+        if using_token:
+            import base64
+
+            basic = base64.b64encode(f"x-access-token:{git_token}".encode()).decode()
+            clone_prefix = [
+                "-c",
+                f"http.extraheader=Authorization: Basic {basic}",
+            ]
 
         # Log without exposing token
         logger.info(
             "Cloning repository",
             workspace=str(workspace),
-            git_url=git_url,  # Log original URL, not auth URL
+            git_url=git_url,  # Log original URL, never the tokenized form
             branch=default_branch,
-            using_token=bool(git_token and auth_url != git_url),
+            using_token=using_token,
         )
 
         def _do_clone() -> subprocess.CompletedProcess[str]:
@@ -1293,11 +1306,12 @@ class WorkspaceService:
             return subprocess.run(
                 [
                     "git",
+                    *clone_prefix,
                     "clone",
                     "--branch",
                     default_branch,
                     "--no-tags",
-                    auth_url,
+                    git_url,
                     str(workspace),
                 ],
                 capture_output=True,
@@ -1307,19 +1321,15 @@ class WorkspaceService:
             )
 
         def _configure_git() -> None:
-            """Configure git author info + scrub embedded PAT from remote URL.
+            """Configure git author info for the clone.
 
-            The clone URL carries the PAT for authentication (`https://TOKEN@
-            github.com/...`), which `git clone` then writes into
-            `.git/config`. Leaving it there lets anyone with read access to
-            the workspace — including the agent inside its container — read
-            the token and exfiltrate or use it directly against GitHub,
-            bypassing the orchestrator's git service.
-
-            We keep push/fetch working by letting the orchestrator inject
-            the token just-in-time at the subprocess level (`-c
-            http.extraheader='Authorization: bearer TOKEN'`) when it needs
-            to hit origin; see GitService.
+            The clone URL is bare (no embedded PAT) — the token rode a
+            per-call ``-c http.extraheader`` config that git never writes
+            to ``.git/config``, so there is nothing to scrub. The
+            ``_assert_no_pat_leak`` sweep below is the belt-and-suspenders
+            check that the token never reached disk. Push/fetch against
+            origin re-inject the token just-in-time via the same
+            ``http.extraheader`` mechanism in GitService / the fetch paths.
             """
             name = agent.name if agent else "RoboCo Agent"
             slug = agent.slug if agent else "agent"
@@ -1348,15 +1358,6 @@ class WorkspaceService:
                 check=True,
                 capture_output=True,
             )
-
-            # Scrub embedded credentials from the remote URL.
-            if git_token and auth_url != git_url:
-                subprocess.run(
-                    ["git", "remote", "set-url", "origin", git_url],
-                    cwd=str(workspace),
-                    check=True,
-                    capture_output=True,
-                )
 
         def _assert_no_pat_leak() -> None:
             """Fail-fast if a PAT ended up anywhere under .git/ on disk.
