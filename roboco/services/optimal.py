@@ -17,6 +17,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 import structlog
 
@@ -876,6 +877,43 @@ class OptimalService:
             logger.warning(
                 "Playbook de-index (tracking row) failed; continuing",
                 playbook_id=playbook_id,
+                error=str(exc),
+            )
+
+    async def unindex_journal_entry(self, entry_id: UUID) -> None:
+        """De-index a journal entry from the JOURNALS index (best-effort).
+
+        The mirror of :meth:`index_journal_entry`: removes the entry's embedded
+        chunks from the vector store AND drops its tracking row, so a deleted
+        (or private) entry stops surfacing in RAG answers and agent briefings.
+        Idempotent — a never-indexed entry is a clean no-op. Failures are
+        logged and swallowed so a delete never errors on the index side.
+        """
+        from roboco.db import get_db_context
+        from roboco.services.repositories import IndexedDocumentRepository
+
+        source = f"roboco://journals/{entry_id}"
+        try:
+            plugin = self._get_plugin(IndexType.JOURNALS)
+            # JournalsIndexPlugin has no specialized delete; use the shared
+            # store delete-by-source (same as unindex_playbook's else-branch).
+            await plugin._require_store.delete_by_source(source)
+        except Exception as exc:
+            logger.warning(
+                "Journal de-index (vector store) failed; continuing",
+                entry_id=str(entry_id),
+                error=str(exc),
+            )
+            return
+
+        try:
+            async with get_db_context() as db:
+                repo = IndexedDocumentRepository(db)
+                await repo.delete_by_source(IndexType.JOURNALS.value, source)
+        except Exception as exc:
+            logger.warning(
+                "Journal de-index (tracking row) failed; continuing",
+                entry_id=str(entry_id),
                 error=str(exc),
             )
 
