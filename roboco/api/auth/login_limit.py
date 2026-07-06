@@ -36,7 +36,13 @@ class LoginRateLimiter(BaseHTTPMiddleware):
         # Only the login endpoint is limited; everything else passes through.
         if request.method != "POST" or request.url.path != f"{self.prefix}/login":
             return await call_next(request)
-        ip = request.client.host if request.client else "unknown"
+        # nginx is the single entry point; read the downstream client IP from
+        # X-Forwarded-For (first hop) / X-Real-IP, falling back to the peer.
+        ip = (
+            request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+            or request.headers.get("x-real-ip")
+            or (request.client.host if request.client else "unknown")
+        )
         key = f"auth:login:rl:{ip}"
         count = 0
         try:
