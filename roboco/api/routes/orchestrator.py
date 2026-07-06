@@ -7,11 +7,15 @@ API endpoints for managing the Agent Orchestrator.
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, status
 from guard_core.handlers.behavior_handler import BehaviorRule
 
+from roboco.agents_config import CEO_AGENT_ID, verify_agent_token
+from roboco.api.auth.backend import SESSION_COOKIE_NAME
+from roboco.api.auth.session import resolve_session_user
 from roboco.api.deps import (
     _check_agent_auth_token,
+    get_db,
     get_orchestrator,
     require_ceo_role,
     set_orchestrator,
@@ -23,6 +27,7 @@ from roboco.api.schemas.orchestrator import (
     SpawnAgentRequest,
     WaitingAgentResponse,
 )
+from roboco.config import settings
 from roboco.security import guard_deco, prompt_injection_validator
 
 _RUNAWAY_RULES = [
@@ -43,16 +48,39 @@ _RUNAWAY_RULES = [
 # MCP verbs, not these HTTP routes, so a developer token is correctly 403'd
 # here. The CEO role check itself delegates to ``require_ceo_role`` (#25 —
 # the single source of truth shared with the release routes).
-def _require_ceo(
+async def _require_ceo(
     x_agent_id: Annotated[str, Header(alias="X-Agent-ID")],
     x_agent_role: Annotated[str, Header(alias="X-Agent-Role")],
     x_agent_team: Annotated[str | None, Header(alias="X-Agent-Team")] = None,
     x_agent_token: Annotated[str | None, Header(alias="X-Agent-Token")] = None,
+    session_cookie: Annotated[str | None, Cookie(alias=SESSION_COOKIE_NAME)] = None,
 ) -> None:
     # Bind the role header to a verified token BEFORE trusting it (same
     # defense-in-depth contract as the v1 flow role guards in _role_dep.py).
-    _check_agent_auth_token(x_agent_id, x_agent_role, x_agent_team, x_agent_token)
-    require_ceo_role(x_agent_role, action="control the orchestrator")
+    if not settings.cloud_auth_enabled:
+        _check_agent_auth_token(x_agent_id, x_agent_role, x_agent_team, x_agent_token)
+        require_ceo_role(x_agent_role, action="control the orchestrator")
+        return
+    # cloud_auth on: CEO HMAC token OR CEO session cookie (panel path).
+    if x_agent_token:
+        if not verify_agent_token(x_agent_token, CEO_AGENT_ID, "ceo", ""):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid X-Agent-Token — signature mismatch.",
+            )
+        require_ceo_role(x_agent_role, action="control the orchestrator")
+        return
+    async for db in get_db():
+        user = await resolve_session_user(session_cookie, db)
+        if user is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=(
+                    "Cloud auth is enabled — a valid session "
+                    "or agent token is required."
+                ),
+            )
+        return
 
 
 router = APIRouter(dependencies=[Depends(_require_ceo)])
