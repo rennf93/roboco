@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 from roboco.models.work_session import WorkSessionStatus
+from roboco.services.base import ConflictError
 from roboco.services.work_session import WorkSessionService
 
 
@@ -159,3 +160,101 @@ async def test_merge_pr_does_not_resurrect_abandoned_session() -> None:
     assert ws.status == WorkSessionStatus.ABANDONED
     assert ws.merged_by is None
     session.flush.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# H10: create() must translate IntegrityError -> ConflictError
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_translates_integrity_error_to_conflict(
+    db_session, monkeypatch
+) -> None:
+    """Two agents racing a same-task active-session create: the 047 partial-
+    unique index fires IntegrityError on the loser's flush. The service must
+    re-raise as ConflictError so the choreographer's try/except lands a clean
+    invalid_state envelope instead of a 500."""
+    from roboco.db.tables import AgentTable, ProjectTable, TaskTable, WorkSessionTable
+    from roboco.models import AgentRole, AgentStatus, Team
+    from roboco.models.base import TaskStatus, TaskType, TaskNature, Complexity
+    from roboco.models.work_session import WorkSessionCreate
+    from roboco.services.work_session import get_work_session_service
+
+    agent = AgentTable(
+        id=uuid4(),
+        name="A",
+        slug=f"a-{uuid4().hex[:8]}",
+        role=AgentRole.DEVELOPER,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="dev",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(agent)
+    await db_session.flush()
+    project = ProjectTable(
+        id=uuid4(),
+        name="p",
+        slug=f"p-{uuid4().hex[:6]}",
+        git_url="git@x:y/z.git",
+        assigned_cell=Team.BACKEND,
+        created_by=agent.id,
+    )
+    db_session.add(project)
+    await db_session.flush()
+    tid = uuid4()
+    db_session.add(
+        TaskTable(
+            id=tid,
+            title="t",
+            description="d",
+            acceptance_criteria=["done"],
+            status=TaskStatus.IN_PROGRESS,
+            priority=2,
+            task_type=TaskType.CODE,
+            nature=TaskNature.TECHNICAL,
+            estimated_complexity=Complexity.LOW,
+            team=Team.BACKEND,
+            confirmed_by_human=True,
+            project_id=project.id,
+            created_by=agent.id,
+            branch_name="feature/x",
+        )
+    )
+    await db_session.flush()
+
+    existing = WorkSessionTable(
+        id=uuid4(),
+        project_id=project.id,
+        task_id=tid,
+        agent_id=agent.id,
+        branch_name="feature/x",
+        base_branch="master",
+        target_branch="master",
+        status=WorkSessionStatus.ACTIVE,
+    )
+    db_session.add(existing)
+    await db_session.flush()
+
+    svc = get_work_session_service(db_session)
+
+    async def _none(*a, **kw):
+        return None
+
+    monkeypatch.setattr(svc, "get_active_for_task_and_agent", _none)
+
+    with pytest.raises(ConflictError):
+        await svc.create(
+            WorkSessionCreate(
+                project_id=project.id,
+                task_id=tid,
+                agent_id=agent.id,
+                branch_name="feature/x",
+                base_branch="master",
+                target_branch="master",
+            )
+        )
