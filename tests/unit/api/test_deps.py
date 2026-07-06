@@ -108,7 +108,7 @@ def test_get_orchestrator_raises_503_when_unset() -> None:
 @pytest.mark.asyncio
 async def test_get_current_agent_id_raises_when_header_missing() -> None:
     with pytest.raises(HTTPException) as exc:
-        await get_current_agent_id(MagicMock(), x_agent_id=None)
+        await get_current_agent_id(MagicMock(), MagicMock(), x_agent_id=None)
     assert exc.value.status_code == _HTTP_401
 
 
@@ -119,20 +119,22 @@ async def test_get_current_agent_id_returns_uuid() -> None:
         "roboco.api.deps.resolve_agent_uuid",
         new=AsyncMock(return_value=expected),
     ):
-        out = await get_current_agent_id(MagicMock(), x_agent_id="be-dev-1")
+        out = await get_current_agent_id(
+            MagicMock(), MagicMock(), x_agent_id="be-dev-1"
+        )
     assert out == expected
 
 
 @pytest.mark.asyncio
 async def test_get_current_agent_slug_raises_when_header_missing() -> None:
     with pytest.raises(HTTPException) as exc:
-        await get_current_agent_slug(x_agent_id=None)
+        await get_current_agent_slug(MagicMock(), MagicMock(), x_agent_id=None)
     assert exc.value.status_code == _HTTP_401
 
 
 @pytest.mark.asyncio
 async def test_get_current_agent_slug_returns_header() -> None:
-    out = await get_current_agent_slug(x_agent_id="be-dev-1")
+    out = await get_current_agent_slug(MagicMock(), MagicMock(), x_agent_id="be-dev-1")
     assert out == "be-dev-1"
 
 
