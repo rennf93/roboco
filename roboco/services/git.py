@@ -4097,7 +4097,7 @@ class GitService(BaseService):
                 "log",
                 f"origin/{parent_branch}",
                 "--grep",
-                rf"\[{str(child.id)[:8]}\]",
+                rf"^\[{str(child.id)[:8]}\] ",
                 "--oneline",
                 "-1",
             ],
