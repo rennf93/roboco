@@ -2983,3 +2983,175 @@ async def test_resolve_pm_for_review_returns_none_when_parent_chain_unassigned(
     child = await svc.create(_req(task_setup, parent_task_id=parent.id))
     pm_id = await svc._resolve_pm_for_review(child)
     assert pm_id is None
+
+
+# ---------------------------------------------------------------------------
+# H3: complete() from IN_PROGRESS allowed only for leaf / branchless
+# ---------------------------------------------------------------------------
+
+
+async def _seed_pm_and_task(
+    db_session: "AsyncSession",
+    *,
+    status: TaskStatus,
+    tid: UUID,
+    parent_task_id: UUID | None = None,
+    branch_name: str = "feature/backend/cell",
+) -> UUID:
+    """Seed a PM + project + task and return the PM id."""
+    from roboco.db.tables import TaskTable
+
+    pm = AgentTable(
+        id=uuid4(),
+        name="PM",
+        slug=f"be-pm-{uuid4().hex[:8]}",
+        role=AgentRole.CELL_PM,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="pm",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(pm)
+    await db_session.flush()
+    project = ProjectTable(
+        id=uuid4(),
+        name="H3",
+        slug=f"h3-{uuid4().hex[:6]}",
+        git_url="https://example.com/r.git",
+        assigned_cell=Team.BACKEND,
+        created_by=pm.id,
+    )
+    db_session.add(project)
+    await db_session.flush()
+    db_session.add(
+        TaskTable(
+            id=tid,
+            title="t",
+            description="d",
+            acceptance_criteria=["done"],
+            status=status,
+            priority=2,
+            task_type=TaskType.PLANNING,
+            nature=TaskNature.TECHNICAL,
+            estimated_complexity=Complexity.LOW,
+            team=Team.BACKEND,
+            confirmed_by_human=True,
+            assigned_to=pm.id,
+            active_claimant_id=pm.id,
+            claimed_by=pm.id,
+            project_id=project.id,
+            created_by=pm.id,
+            parent_task_id=parent_task_id,
+            branch_name=branch_name,
+        )
+    )
+    await db_session.flush()
+    return pm.id
+
+
+@pytest.mark.asyncio
+async def test_complete_refuses_in_progress_on_assembled_cell_task(
+    db_session: "AsyncSession",
+) -> None:
+    """A PM owning a cell task (IN_PROGRESS, terminal subtask) must NOT be
+    able to complete() directly from IN_PROGRESS — that bypasses submit_up
+    and the entire PR-review gate."""
+    from roboco.db.tables import TaskTable
+    from roboco.services.task import get_task_service
+
+    pm_id = uuid4()
+    cell_id = uuid4()
+    child_id = uuid4()
+    pm = AgentTable(
+        id=pm_id,
+        name="PM",
+        slug=f"be-pm-{uuid4().hex[:8]}",
+        role=AgentRole.CELL_PM,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="pm",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(pm)
+    await db_session.flush()
+    project = ProjectTable(
+        id=uuid4(),
+        name="CellProj",
+        slug=f"cell-{uuid4().hex[:6]}",
+        git_url="https://example.com/r.git",
+        assigned_cell=Team.BACKEND,
+        created_by=pm.id,
+    )
+    db_session.add(project)
+    await db_session.flush()
+    db_session.add_all([
+        TaskTable(
+            id=cell_id,
+            title="cell",
+            description="d",
+            acceptance_criteria=["done"],
+            status=TaskStatus.IN_PROGRESS,
+            priority=2,
+            task_type=TaskType.PLANNING,
+            nature=TaskNature.TECHNICAL,
+            estimated_complexity=Complexity.LOW,
+            team=Team.BACKEND,
+            confirmed_by_human=True,
+            assigned_to=pm_id,
+            active_claimant_id=pm_id,
+            claimed_by=pm_id,
+            project_id=project.id,
+            created_by=pm_id,
+            branch_name="feature/backend/cell",
+        ),
+        TaskTable(
+            id=child_id,
+            title="child",
+            description="d",
+            acceptance_criteria=["done"],
+            status=TaskStatus.COMPLETED,
+            priority=2,
+            task_type=TaskType.CODE,
+            nature=TaskNature.TECHNICAL,
+            estimated_complexity=Complexity.LOW,
+            team=Team.BACKEND,
+            confirmed_by_human=True,
+            project_id=project.id,
+            created_by=pm_id,
+            parent_task_id=cell_id,
+            branch_name="feature/backend/cell--child",
+        ),
+    ])
+    await db_session.flush()
+
+    svc = get_task_service(db_session)
+    result = await svc.complete(cell_id, agent_id=pm_id)
+    assert result is None, (
+        "PM completed an assembled cell task from IN_PROGRESS, bypassing "
+        "submit_up + the PR-review gate (H3)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_complete_allows_in_progress_on_leaf(
+    db_session: "AsyncSession",
+) -> None:
+    """A leaf (no descendants) the PM owns at IN_PROGRESS completes — the
+    PM-self path stays open."""
+    from roboco.db.tables import TaskTable
+    from roboco.services.task import get_task_service
+
+    leaf_id = uuid4()
+    pm_id = await _seed_pm_and_task(
+        db_session, status=TaskStatus.IN_PROGRESS, tid=leaf_id,
+        branch_name="feature/backend/leaf",
+    )
+    svc = get_task_service(db_session)
+    result = await svc.complete(leaf_id, agent_id=pm_id)
+    assert result is not None and result.status == TaskStatus.COMPLETED

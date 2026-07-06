@@ -5001,6 +5001,32 @@ class TaskService(BaseService):
             return None
 
         all_descendants = await self.get_all_descendants(task_id)
+        # H3: a PM on an assembled cell/root task with terminal subtasks must go
+        # through submit_up (the PR-review gate), not complete() directly from
+        # IN_PROGRESS. Only a leaf (no descendants) or a branchless coordination
+        # root (no PR of its own — umbrella/product/cell-map root) may complete
+        # from IN_PROGRESS. The gateway `complete` verb already enforces
+        # source_statuses={AWAITING_PM_REVIEW}; this closes the service-layer
+        # bypass reachable via direct TaskService.complete() / cell_pm_complete.
+        if (
+            task.status == TaskStatus.IN_PROGRESS
+            and all_descendants
+            and not is_branchless_coordination(
+                project_id=task.project_id,
+                product_id=task.product_id,
+                batch_id=task.batch_id,
+                parent_task_id=task.parent_task_id,
+                has_cell_projects=bool(task.cell_projects),
+            )
+        ):
+            self.log.warning(
+                "Cannot complete from IN_PROGRESS - assembled task must go "
+                "through submit_up (PR-review gate)",
+                task_id=str(task_id),
+                descendant_count=len(all_descendants),
+            )
+            return None
+
         incomplete = [
             st
             for st in all_descendants
