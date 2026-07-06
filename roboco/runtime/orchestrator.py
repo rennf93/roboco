@@ -983,6 +983,14 @@ class AgentOrchestrator:
         # Note: Per-agent settings are now generated at spawn time
         # via _generate_agent_settings() - no shared settings needed
 
+        # A restart mid-execute orphans the release mutex in Redis (TTL 3000s,
+        # no heartbeat after death); sweep stale keys so a CEO retry doesn't
+        # hit already_in_progress for up to 50 min. Best-effort, inert if Redis
+        # is down or empty.
+        from roboco.services.release_proposal import sweep_orphan_release_locks
+
+        await sweep_orphan_release_locks()
+
         # Start background tasks
         self._health_task = asyncio.create_task(self._health_loop())
         self._dispatcher_task = asyncio.create_task(self._dispatcher_loop())
