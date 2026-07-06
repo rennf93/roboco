@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import os
-from typing import TYPE_CHECKING, Annotated, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any
 from uuid import UUID
 
 import structlog
@@ -189,7 +189,8 @@ async def get_current_agent_slug(
             x_agent_token,
             roboco_session,
         )
-        return cast("str", ctx.slug)
+        assert ctx.slug is not None  # cloud-auth ctx always carries a slug
+        return ctx.slug
     if not x_agent_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

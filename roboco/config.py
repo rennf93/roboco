@@ -390,7 +390,14 @@ class Settings(BaseSettings):
             "window logs out."
         ),
     )
-    login_max_attempts: int = 10
+    login_max_attempts: int = Field(
+        default=10,
+        ge=1,
+        description=(
+            "Max login attempts per IP within the 60s rolling window before "
+            "the cloud-auth login endpoint returns 429."
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate_cloud_auth(self) -> "Settings":
