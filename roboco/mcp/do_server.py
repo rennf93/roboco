@@ -592,12 +592,13 @@ def propose_video(
     """UX/UI dev: propose your video's composition + captions. Metadata only —
     this does NOT render (rendering happens later, off this path).
 
-    Call this exactly ONCE per authoring task, after building the Remotion
-    composition in motion/. Then commit + open_pr to send it through the
-    normal PR-review gate.
+    Call this exactly ONCE per authoring task, after building the HyperFrames
+    composition in motion/compositions/<id>/. Then commit + open_pr to send
+    it through the normal PR-review gate.
 
     Args:
-        composition_id: The Remotion composition id (must exist in motion/).
+        composition_id: The HyperFrames composition id (the directory name
+            under motion/compositions/, e.g. 'release-announcement').
         x_caption: X post text for this clip (<=280 chars).
         tiktok_caption: TikTok caption for this clip (<=2200 chars).
         platforms: Target platforms for this clip — any of 'x', 'tiktok'.

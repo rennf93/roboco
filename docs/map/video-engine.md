@@ -1,0 +1,47 @@
+## Purpose
+
+The RoboCo video engine: a default-off subsystem that authors bespoke short marketing videos (release announcements, feature spotlights, on-demand CEO briefs) and distributes them to X and TikTok — nothing renders or posts without the flags on, and nothing posts without an explicit per-clip CEO approval. It mirrors the `XEngine` / `ReleaseManagerEngine` held-artifact shape, but splits across the real delivery lifecycle: a normal ASSIGNED UX/UI authoring task ships the composition through the standard commit/PR/QA/doc/review gate, then an orchestrator render loop renders the merged `motion/` source via the credential-free `video-renderer` sidecar and materializes a held `video_post` draft for the CEO. Two task kinds (authoring + held post), one render pass between them.
+
+## Files
+
+| Path | Role | approx LOC |
+|---|---|---|
+| `roboco/services/video_engine.py` | `VideoEngine` — opens the ASSIGNED authoring task (`open_video_task`, balanced across `ux-dev-1`/`ux-dev-2`) and originates the held `video_post` draft once the render succeeds (`_originate_video_post`); release/spotlight/on-demand trigger wiring. | 324 |
+| `roboco/services/video_post_service.py` | `VideoPostService` — CEO approve/reject over the held post; the ONLY caller of the X-v2 and TikTok posters; runs the critical section under a heartbeat-renewed Redis mutex, commits each platform's posted-id durably before the next, idempotent on already-`COMPLETED`. | 507 |
+| `roboco/services/video_renderer_client.py` | `VideoRenderer` — tars the merged `motion/` dir, POSTs the tarball to the sidecar (`ROBOCO_VIDEO_RENDERER_BASE_URL`), saves the returned MP4s to `video_output_dir` and PUTs each to MinIO (`_save`). `NullVideoRenderer` raises on unconfigured so the render loop fails loud rather than silently no-op'ing a real trigger; `get_video_renderer()` factory. | 188 |
+| `roboco/services/minio_client.py` | Singleton `Minio` (minio-py) with an unconfigured guard (`get_client()` returns `None` when `minio_endpoint` empty); `put_object` / `get_object_stream` / `stat_object`, sync, call sites wrapped in `asyncio.to_thread`. | 129 |
+| `roboco/services/tiktok_client.py` | `TikTokPoster` — TikTok inbox-upload poster (v2 media, OAuth2 refresh). Fernet-encrypted singleton `tiktok_credentials` row (migration 062); agents never hold creds or egress. | 326 |
+| `roboco/services/x_video_client.py` | `XVideoPoster` — X v2 media upload + tweet poster. `NullXVideoPoster` makes the unconfigured leg a graceful no-op. | 266 |
+| `roboco/runtime/heartbeat_mutex.py` | `HeartbeatMutex` — Redis mutex with heartbeat-renewed TTL, shared with `ReleaseProposalService`'s release-execute lock shape; backs `VideoPostService.approve`'s long video-upload critical section. | — |
+| `roboco/mcp/do_server.py` `propose_video` | Do-tool the UX/UI dev calls exactly once per authoring task to stamp the `video_draft` marker (composition id + per-platform captions + input props); metadata-only, does not render. | — |
+| `roboco/services/gateway/content_actions.py` `propose_video` | Server-side action: team-gated (`_caller_team` rejects be-dev/fe-dev), resolves the caller's open video task, `markers.set_video_draft` with the metadata. | — |
+| `alembic/versions/062_tiktok_credentials.py` | Migration 062 — the `tiktok_credentials` singleton row (Fernet-encrypted OAuth2 secrets, all-or-nothing set/clear, mirroring the git-token / `x_credentials` pattern). | 44 |
+| `video-renderer/` | The sidecar: `server.js` (HTTP+tarball boundary), `render.js` (`@hyperframes/producer` `createRenderJob` + `executeRenderJob`, system `ffmpeg`, headless Chromium). Credential-free and git-free — reads only what's POSTed. | — |
+| `docker/video-renderer.Dockerfile` | Sidecar image (`roboco-video-renderer`): Node + Chromium + system `ffmpeg`; installs `@hyperframes/producer`. No RoboCo source, no creds. | — |
+
+## Data Flow
+
+DETECT → AUTHOR: a release publish (`ROBOCO_VIDEO_ON_RELEASE`), a CEO-approved feature-spotlight draft that requests one (`ROBOCO_VIDEO_ON_SPOTLIGHT`), or a CEO on-demand `POST /api/video/request` calls `VideoEngine.open_video_task`, which creates a normal ASSIGNED UX/UI authoring task (`source=video`, `confirmed_by_human=True`, balanced across the two ux-devs) — NOT held, NOT in any dispatcher's skip bucket. The assigned dev authors `motion/compositions/<id>/{vertical,square}.html` (HyperFrames render params on `<html>`), calls the `propose_video` do-tool exactly once (server-side `content_actions.propose_video` is team-gated and stamps `video_draft`), then `commit` + `open_pr` through the normal PR-review gate. The authoring task rides the standard QA/doc/review lifecycle to `completed`.
+
+RENDER: once the authoring task is `completed`, the orchestrator's `_video_render_loop` (bounded retry, `_MAX_VIDEO_RENDER_ATTEMPTS`) resolves the project's read-clone at the merged HEAD, tars the `motion/` dir, and POSTs it to the credential-free `video-renderer` sidecar (`ROBOCO_VIDEO_RENDERER_BASE_URL`). The sidecar untars, runs `@hyperframes/producer`'s `createRenderJob` + `executeRenderJob` per orientation (headless Chrome + system `ffmpeg`, `ROBOCO_VIDEO_RENDER_TIMEOUT_SECONDS` per render), and streams both 9:16 and 1:1 MP4s back. `VideoRenderer` saves them to `ROBOCO_VIDEO_OUTPUT_DIR` (`_save` also PUTs each to MinIO when `minio_endpoint` is set, non-fatal). On success `VideoEngine._originate_video_post` materializes a held `video_post` draft (`source=video_post`, `confirmed_by_human=False`, Secretary-owned, skipped by every dispatcher) carrying `mp4_paths` (`{vertical, square}` absolute paths) + the per-platform captions.
+
+CEO ACT: `GET /api/video/posts` lists held drafts (including `mp4_paths`); `GET /api/video/posts/{id}/media?cut=vertical|square` streams the MP4 bytes for the preview player (CEO-gated, falls back to `FileResponse` on `S3Error`/unconfigured MinIO). The CEO edits captions and approves/rejects in the panel's `video-post-queue.tsx`. `POST /api/video/posts/{id}/approve` is the ONLY caller of `XVideoPoster` / `TikTokPoster`: it acquires `HeartbeatMutex`, re-reads the committed task state inside the lock, commits `COMPLETED` before releasing (so a concurrent approve can't double-post), commits each platform's posted-id durably before attempting the next (a partial failure never re-posts an already-succeeded platform on retry), and is idempotent (an already-`COMPLETED` draft returns the stored ids without calling a poster). `POST /api/video/posts/{id}/reject` cancels the draft with a reason.
+
+## Config Flags
+
+- `ROBOCO_VIDEO_ENGINE_ENABLED` — master switch; off = no video-authoring task is ever opened and no render/post happens. Panel-toggleable.
+- `ROBOCO_VIDEO_ON_RELEASE` / `ROBOCO_VIDEO_ON_SPOTLIGHT` — sub-switches for the two automatic triggers, independent of the master switch and of the CEO's on-demand `POST /video/request`.
+- `ROBOCO_VIDEO_RENDER_INTERVAL_SECONDS` / `ROBOCO_VIDEO_RENDER_TIMEOUT_SECONDS` / `ROBOCO_VIDEO_REQUEST_TIMEOUT_SECONDS` / `ROBOCO_VIDEO_OUTPUT_DIR` — render loop cadence, per-render deadline, sidecar HTTP deadline, MP4 output dir (bind-mounted in all three compose files so renders survive container recreation).
+- `ROBOCO_VIDEO_RENDERER_BASE_URL` — the sidecar endpoint (default `http://roboco-video-renderer:3001`).
+- `ROBOCO_MINIO_*` — MinIO object storage (default-off; `video_renderer_client._save` PUTs each render after the local write; serve route streams via `StreamingResponse` with `FileResponse` fallback).
+
+## Health
+
+Default-off, CEO-gated at two independent points (the flags, then per-clip approval). The held-draft shape mirrors the XEngine / ReleaseManagerEngine pattern, so the dispatchers never see it. The render pass is bounded retry with `_MAX_VIDEO_RENDER_ATTEMPTS` and a per-render deadline; `NullVideoRenderer` raises on unconfigured so a misflagged trigger fails loud rather than silently no-op'ing. The approve critical section is heartbeat-mutex protected so a double-click can't double-post and a partial platform failure is recoverable. TikTok's OAuth2 secrets live Fernet-encrypted in a singleton row (migration 062); agents never hold creds or egress — `VideoPostService.approve` is the only caller of the posters.
+
+## Related
+
+- `docs/rag/architecture/video-engine.md` — the user-facing architecture doc
+- `docs/rag/architecture/minio-storage.md` — the decoupled-durable render storage
+- `docs/map/release-manager.md` — the sibling held-artifact engine whose lock shape `VideoPostService.approve` mirrors
+- `docs/map/engines-heal-ciwatch-depupdate.md` — the other default-off originate-and-stop engines

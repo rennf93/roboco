@@ -132,7 +132,7 @@ Identity binding at spawn: agents_config.issue_agent_token(agent_id, role, team)
 
 Injection guard (runtime, per turn): IntakeDriver.send_turn calls detect_injection(text) before sending to the model; on a match it emits an error chunk with refusal_message(reason) and returns without forwarding. The grok one-shot entrypoint runs `python -m roboco.agent_sdk.prompt_guard <text>` and refuses start (exit 1) on a match. The same five patterns run in docker/scripts/user-prompt-hook.sh for non-SDK Claude sessions.
 
-Callers: orchestrator.py:2971 (compose_prompt), orchestrator.py:3018/3029 (conventions_ambient_layer), intake_driver.py:374-377 (detect_injection/refusal_message). Callees from this slice: roboco.foundation.identity (AGENTS/Role/Team/slugs_for_team), roboco.foundation.policy.communications (NOTIFY_SENDER_ROLES), roboco.seeds.initial_data (AGENT_UUIDS/CEO_AGENT_ID), roboco.services.conventions (get_conventions_service), roboco.config.settings, roboco.models.base (NotificationType/Priority).
+Callers: orchestrator.py:3238 (compose_prompt), orchestrator.py:3265/3299 (conventions_ambient_layer), intake_driver.py:379-382 (detect_injection/refusal_message). Callees from this slice: roboco.foundation.identity (AGENTS/Role/Team/slugs_for_team), roboco.foundation.policy.communications (NOTIFY_SENDER_ROLES), roboco.seeds.initial_data (AGENT_UUIDS/CEO_AGENT_ID), roboco.services.conventions (get_conventions_service), roboco.config.settings, roboco.models.base (NotificationType/Priority).
 
 ## Mermaid
 ```mermaid
@@ -224,9 +224,9 @@ prompts-roles-taxonomy slice
 
 | Name | File | Trigger |
 |---|---|---|
-| orchestrator._generate_prompt | roboco/runtime/orchestrator.py | Called per agent spawn to compose + write the system-prompt .md file; calls compose_prompt (line 2971) |
-| orchestrator._resolve_conventions_ambient | roboco/runtime/orchestrator.py | Async, called from the spawn path before _generate_prompt to resolve the optional ambient block; calls conventions_ambient_layer (line 3029) |
-| IntakeDriver.send_turn | roboco/agent_sdk/intake_driver.py | Per interactive turn (Intake/Secretary Claude-SDK and Grok sessions); calls detect_injection before forwarding to the model (line 374) |
+| orchestrator._generate_prompt | roboco/runtime/orchestrator.py | Called per agent spawn to compose + write the system-prompt .md file; calls compose_prompt (line 3238) |
+| orchestrator._resolve_conventions_ambient | roboco/runtime/orchestrator.py | Async, called from the spawn path before _generate_prompt to resolve the optional ambient block; calls conventions_ambient_layer (line 3299) |
+| IntakeDriver.send_turn | roboco/agent_sdk/intake_driver.py | Per interactive turn (Intake/Secretary Claude-SDK and Grok sessions); calls detect_injection before forwarding to the model (line 379) |
 | python -m roboco.agent_sdk.prompt_guard | roboco/agent_sdk/prompt_guard.py | CLI invoked by the grok one-shot entrypoint on ROBOCO_INITIAL_PROMPT; exit 1 denies start |
 | make lifecycle | scripts/build_lifecycle_artifacts.py | Developer/CI target regenerating _generated/lifecycle-*.md; CI gates on git diff --exit-code |
 | scripts/regenerate_verb_tables.py | scripts/regenerate_verb_tables.py | Developer target regenerating _generated/<role>.md + verbs.md after role_config/schema changes |
@@ -260,7 +260,7 @@ prompts-roles-taxonomy slice
 - CLAUDE.md Project Overview states '25 AI agents + 1 human CEO', but agents/prompts/base.md line 3 says '22 AI agents + 1 human CEO'. The base prompt agent count is stale relative to CLAUDE.md (memory notes a 20->22 update on 2026-06-16; CLAUDE.md later moved to 25). A spawned agent reads '22' in its system prompt while the org chart it sees has 25.
 - CLAUDE.md's verb-surface table lists `i_am_blocked` for the qa and documenter roles. The role prompts qa.md and documenter.md ONLY added the i_am_blocked verb row in commit 15effce0 (this slice's baseline diff) — before that the role prompts omitted it even though the gateway accepted it. The prompts are now aligned, but the documenter.md circuit-breaker section previously explicitly said 'you don't have an i_am_blocked verb', which was false vs the gateway and vs CLAUDE.md. Fixed in 15effce0.
 - CLAUDE.md says the lifecycle is defined in roboco/foundation/policy/lifecycle.py with a shim at roboco/enforcement/task_lifecycle.py. _base.py:_lifecycle_layer (line 187-200) docstring says the lifecycle fragment is regenerated from `roboco/lifecycle/spec.py` by `make lifecycle`. The actual source path the regenerator uses is roboco/lifecycle/spec.py (per the docstring), which is not mentioned in CLAUDE.md's lifecycle section — minor doc-path drift, not behavioral.
-- CLAUDE.md describes the prompt composition as 'base + role + team + identity prompts' and an ambient 'Architectural Standard' block at spawn. The actual compose_prompt order (line 239-248) is tool-directive + lifecycle + base + role + autogen-verbs + team + identity + ambient — i.e. THREE additional layers (tool-directive, lifecycle, autogen-verbs) not named in CLAUDE.md's composition description. CLAUDE.md undersells the actual layer stack.
+- CLAUDE.md describes the prompt composition as 'base + role + team + identity prompts' and an ambient 'Architectural Standard' block at spawn. The actual compose_prompt order (line 295-306) is tool-directive + lifecycle + base + fable + ponytail + role + autogen-verbs + team + identity + ambient — i.e. FIVE additional layers (tool-directive, lifecycle, fable, ponytail, autogen-verbs) not named in CLAUDE.md's composition description. CLAUDE.md undersells the actual layer stack.
 - Identity files declare `role: pm` / `role: board` (e.g. identities/main-pm.md, identities/product-owner.md) which do not match the canonical AgentRole enum values (main_pm, cell_pm, product_owner, head_marketing, auditor) that CLAUDE.md and agents_config use. The pipeline ignores this label so it is cosmetic, but it is inconsistent with the canonical taxonomy CLAUDE.md documents.
 
 
