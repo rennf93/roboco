@@ -16,7 +16,7 @@ import asyncio
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from uuid import UUID
 
 import structlog
@@ -43,6 +43,7 @@ from roboco.services.optimal_brain.indexes import (
     ReviewsIndexPlugin,
     StandardsIndexPlugin,
 )
+from roboco.services.optimal_brain.indexes.base import IngestResult
 from roboco.services.optimal_brain.indexes.learnings import (
     RecordLearningParams as LearningParams,
 )
@@ -50,9 +51,6 @@ from roboco.services.optimal_brain.indexes.playbooks import IndexPlaybookParams
 from roboco.services.optimal_brain.indexes.reviews import (
     RecordReviewParams as ReviewParams,
 )
-
-if TYPE_CHECKING:
-    from roboco.services.optimal_brain.indexes.base import IngestResult
 
 logger = structlog.get_logger()
 
@@ -808,8 +806,14 @@ class OptimalService:
             },
         )
 
-    async def index_playbook(self, params: IndexPlaybookParams) -> None:
-        """Index an approved playbook into the PLAYBOOKS index (best-effort)."""
+    async def index_playbook(self, params: IndexPlaybookParams) -> IngestResult:
+        """Index an approved playbook into the PLAYBOOKS index (best-effort).
+
+        Returns the ``IngestResult`` so the caller can stamp a durable
+        ``indexed_ok`` flag only on a successful embed — never on a swallowed
+        failure (the pre-M23 gap that left approved playbooks absent from the
+        corpus after a mid-approval Ollama outage).
+        """
         plugin = self._get_plugin(IndexType.PLAYBOOKS)
         if isinstance(plugin, PlaybooksIndexPlugin):
             result = await plugin.index_playbook(params)
@@ -824,7 +828,7 @@ class OptimalService:
                 playbook_id=params.playbook_id,
                 error=result.error,
             )
-            return
+            return result
         await self._track_indexed_document(
             IndexType.PLAYBOOKS,
             source=f"roboco://playbooks/{params.playbook_id}",
@@ -837,6 +841,7 @@ class OptimalService:
                 "tags": params.tags,
             },
         )
+        return result
 
     async def unindex_playbook(self, playbook_id: str) -> None:
         """De-index a playbook from the PLAYBOOKS index (best-effort).

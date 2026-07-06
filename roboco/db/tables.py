@@ -765,6 +765,15 @@ class PlaybookTable(Base):
     archived_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Durable index-state: False on the approve status flip, set True only
+    # after a successful index_playbook. A startup reconcile re-indexes
+    # APPROVED rows left False by a mid-approval embedder outage.
+    indexed_ok: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    indexed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class SecretaryDirectiveTable(Base):

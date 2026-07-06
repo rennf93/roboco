@@ -28,17 +28,26 @@ from __future__ import annotations
 
 import hashlib
 from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
 import pytest
-from roboco.db.tables import AgentTable, IndexedDocumentTable, NotificationTable
+from roboco.config import settings
+from roboco.db.tables import (
+    AgentTable,
+    IndexedDocumentTable,
+    NotificationTable,
+    PlaybookTable,
+)
 from roboco.models import NotificationPriority, NotificationType
-from roboco.models.base import AgentRole, AgentStatus, Team
+from roboco.models.base import AgentRole, AgentStatus, PlaybookStatus, Team
 from roboco.models.notification import CreateNotificationParams
 from roboco.models.optimal import IndexType
 from roboco.services.notification import NotificationService
 from roboco.services.optimal import OptimalService
+from roboco.services.optimal_brain.indexes.base import IngestResult
 from roboco.services.optimal_brain.vector_store import VectorStore
+from roboco.services.playbook import PlaybookService
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -237,3 +246,83 @@ async def test_h12_dedup_does_not_drop_new_recipient(e2e_stack: E2EStack) -> Non
     assert set(first.to_agents) == {be_pm}
     assert set(second.to_agents) == {be_pm, main_pm}
     assert main_pm in second.to_agents, "main-pm was dropped by dedup overlap"
+
+
+# ---------------------------------------------------------------------------
+# M23 — startup reconcile re-indexes APPROVED-but-unindexed playbooks
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_m23_approved_unindexed_reconcile(e2e_stack: E2EStack) -> None:
+    """M23 end-to-end: an APPROVED playbook left ``indexed_ok=False`` by a
+    mid-approval Ollama outage is found by the startup reconcile, re-indexed
+    through the real ``index_approved`` path, and stamped
+    ``indexed_ok=True``/``indexed_at`` in the DB. Proves the cross-layer
+    wiring (the reconcile query → the service → the durable flag) without a
+    live embedder (the optimal service is stubbed)."""
+    from roboco.db import base as db_base
+    from roboco.db.base import get_db_context
+
+    # Rebind the lazy engine to this test's loop (see H12 for the rationale).
+    db_base._DbHolder.engine = None
+    db_base._DbHolder.session_factory = None
+
+    approver = uuid4()
+    creator = uuid4()
+    pb_id = uuid4()
+
+    # 1. Seed an APPROVED playbook with indexed_ok=False (the outage state).
+    async with get_db_context() as session:
+        pb = PlaybookTable(
+            id=pb_id,
+            title="M23 reconcile smoke",
+            slug=f"m23-reconcile-smoke-{pb_id.hex[:12]}",
+            problem="An Ollama restart mid-approval left this row unindexed.",
+            procedure="1. Re-index on startup.\n2. Stamp indexed_ok=True.",
+            tags=["backend"],
+            team="backend",
+            scope="org",
+            source_task_ids=[],
+            status=PlaybookStatus.APPROVED.value,
+            created_by=creator,
+            approved_by=approver,
+            indexed_ok=False,
+            indexed_at=None,
+        )
+        session.add(pb)
+        await session.commit()
+
+    # 2. Stub the optimal service so index_playbook reports success without a
+    #    live embedder. The reconcile calls get_optimal_service() internally.
+    optimal = MagicMock()
+    optimal.index_playbook = AsyncMock(
+        return_value=IngestResult(doc_id=str(pb_id), chunk_count=2, success=True)
+    )
+    with (
+        patch(
+            "roboco.services.optimal.get_optimal_service",
+            AsyncMock(return_value=optimal),
+        ),
+        patch.object(settings, "org_memory_enabled", True),
+    ):
+        async with get_db_context() as session:
+            svc = PlaybookService(session)
+            count = await svc.reconcile_unindexed_approved()
+
+    assert count == 1, "reconcile should have re-indexed the one unindexed row"
+
+    # 3. Assert the durable flag flipped in the DB.
+    engine = create_async_engine(e2e_stack.db_url, future=True)
+    try:
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with factory() as session:
+            row = (
+                await session.execute(
+                    select(PlaybookTable).where(PlaybookTable.id == pb_id)
+                )
+            ).scalar_one()
+        assert row.indexed_ok is True, "indexed_ok not stamped after reconcile"
+        assert row.indexed_at is not None, "indexed_at not stamped after reconcile"
+    finally:
+        await engine.dispose()

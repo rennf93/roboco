@@ -66,6 +66,7 @@ from roboco.security import apply_guard, guarded_lifespan
 from roboco.services.extraction import ExtractionPipeline, ExtractionService
 from roboco.services.learning import get_learning_service
 from roboco.services.optimal import close_optimal_service, get_optimal_service
+from roboco.services.playbook import PlaybookService
 from roboco.services.settings import apply_persisted_feature_flags
 from roboco.services.transcription import TranscriptionService
 
@@ -79,6 +80,28 @@ class _AppServices:
 
     transcription: TranscriptionService | None = None
     extraction: ExtractionPipeline | None = None
+
+
+async def _reconcile_unindexed_playbooks(app: FastAPI) -> None:
+    """Re-index APPROVED playbooks left ``indexed_ok=False`` by a failed
+    post-commit embed (e.g. an Ollama restart mid-approval-burst). Best-effort:
+    a failure here never blocks startup — rows stay unindexed and the next
+    startup retries them. Skipped when RAG is disabled (no optimal) or the
+    org-memory loop is off (the index is inert).
+    """
+    if app.state.optimal is None or not settings.org_memory_enabled:
+        return
+    try:
+        async with get_session_factory()() as session:
+            svc = PlaybookService(session)
+            reconciled = await svc.reconcile_unindexed_approved()
+        if reconciled:
+            logger.info(
+                "Playbook reconcile: re-indexed unindexed approved",
+                count=reconciled,
+            )
+    except Exception as e:
+        logger.warning("Playbook reconcile failed; continuing", error=str(e))
 
 
 @asynccontextmanager
@@ -163,6 +186,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             logger.info("LearningPropagationService initialized")
         except Exception as e:
             logger.warning("LearningPropagationService init failed", error=str(e))
+
+    # Re-index APPROVED playbooks left unindexed by a failed post-commit embed
+    # (e.g. an Ollama restart mid-approval-burst). Best-effort: a failure here
+    # never blocks startup — the rows stay APPROVED-but-indexed_ok=False and
+    # the next startup retries them. Skipped when RAG is disabled.
+    await _reconcile_unindexed_playbooks(app)
 
     logger.info("All services initialized, API ready")
 
