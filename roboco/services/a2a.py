@@ -1423,8 +1423,15 @@ class A2AService:
         conversation_id: UUID,
         agent_slug: str,
     ) -> None:
-        """Mark all messages in conversation as read by agent."""
+        """Mark all unread incoming messages in conversation as read by agent.
+
+        Collect-then-mark: only the unread rows seen at call time are stamped,
+        so a message arriving mid-call stays unread rather than being silently
+        consumed. The unread counter is recomputed from the DB after the stamp.
+        """
         from datetime import UTC, datetime
+
+        from sqlalchemy import update
 
         result = await self.session.execute(
             select(A2AConversationTable).where(
@@ -1439,33 +1446,34 @@ class A2AService:
         if agent_slug not in (conv.agent_a, conv.agent_b):
             return
 
-        # Reset unread count
-        if agent_slug == conv.agent_a:
-            conv.unread_by_a = 0
-        else:
-            conv.unread_by_b = 0
-
-        # Mark messages as read using SQLAlchemy update statement
-        from sqlalchemy import update
-
-        stmt = (
-            update(A2AMessageTable)
-            .where(A2AMessageTable.conversation_id == conversation_id)
-            .where(A2AMessageTable.from_agent != agent_slug)
-            .where(A2AMessageTable.read_at.is_(None))
-            .values(read_at=datetime.now(UTC))
+        rows = await self.session.execute(
+            select(A2AMessageTable.id).where(
+                A2AMessageTable.conversation_id == conversation_id,
+                A2AMessageTable.from_agent != agent_slug,
+                A2AMessageTable.read_at.is_(None),
+            )
         )
-        await self.session.execute(stmt)
-
+        msg_ids = [r for (r,) in rows.all()]
+        if msg_ids:
+            await self.session.execute(
+                update(A2AMessageTable)
+                .where(A2AMessageTable.id.in_(msg_ids))
+                .values(read_at=datetime.now(UTC))
+            )
+        await self._reset_unread_counter(conversation_id, agent_slug)
         await self.session.flush()
 
     async def mark_all_read(self, agent_id: UUID) -> int:
         """Mark every conversation with unread-for-this-agent as read.
 
-        Agent-keyed bulk form of ``mark_read``: zeroes the agent's per-side
-        unread counter and stamps ``read_at`` on the inbound messages across all
-        its conversations. Returns the number cleared. Lets an agent satisfy
+        Agent-keyed bulk form of ``mark_read``: stamps ``read_at`` on the
+        inbound messages across all its conversations and recomputes each
+        counter from the DB. Returns the number cleared. Lets an agent satisfy
         ``i_am_idle``'s unread-A2A soft-block in one call.
+
+        Collect-then-mark (mirrors ``get_unread_messages``): only the unread
+        rows seen at call time are stamped, so a message arriving mid-call
+        stays unread rather than being silently consumed.
         """
         from datetime import UTC, datetime
 
@@ -1485,18 +1493,23 @@ class A2AService:
         convs = list(result.scalars().all())
         if not convs:
             return 0
-        for conv in convs:
-            if conv.agent_a == slug:
-                conv.unread_by_a = 0
-            else:
-                conv.unread_by_b = 0
-        await self.session.execute(
-            update(A2AMessageTable)
-            .where(A2AMessageTable.conversation_id.in_([c.id for c in convs]))
-            .where(A2AMessageTable.from_agent != slug)
-            .where(A2AMessageTable.read_at.is_(None))
-            .values(read_at=datetime.now(UTC))
+        conv_ids = [c.id for c in convs]
+        rows = await self.session.execute(
+            select(A2AMessageTable.id).where(
+                A2AMessageTable.conversation_id.in_(conv_ids),
+                A2AMessageTable.from_agent != slug,
+                A2AMessageTable.read_at.is_(None),
+            )
         )
+        msg_ids = [r for (r,) in rows.all()]
+        if msg_ids:
+            await self.session.execute(
+                update(A2AMessageTable)
+                .where(A2AMessageTable.id.in_(msg_ids))
+                .values(read_at=datetime.now(UTC))
+            )
+        for cid in conv_ids:
+            await self._reset_unread_counter(cast("UUID", cid), slug)
         await self.session.flush()
         return len(convs)
 
