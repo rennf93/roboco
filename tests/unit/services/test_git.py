@@ -12,9 +12,10 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+import httpx
 import pytest
 from roboco.config import settings
-from roboco.exceptions import GitCommandError, GitError
+from roboco.exceptions import GitCommandError, GitError, MergeConflictError
 from roboco.services.base import NotFoundError, UnauthorizedError, ValidationError
 from roboco.services.git import GitService
 
@@ -951,3 +952,117 @@ async def test_link_commit_to_task_swallows_errors_without_commit() -> None:
         await svc._link_commit_to_task(uuid4(), "deadbeef", "msg", uuid4())
 
     session.commit.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# M38: _pr_is_merged returns None on httpx.HTTPError (indeterminate, not
+# False). Callers treat None as "assume merged" and fall through to the
+# already-merged cleanup path instead of raising MergeConflictError / GitError
+# and respawning the PM against an already-merged PR.
+# ---------------------------------------------------------------------------
+
+
+def _httpx_raising_client() -> MagicMock:
+    """An AsyncClient whose GET raises httpx.HTTPError (network indeterminate)."""
+    fake_client = MagicMock()
+    fake_client.__aenter__ = AsyncMock(return_value=fake_client)
+    fake_client.__aexit__ = AsyncMock(return_value=False)
+    fake_client.get = AsyncMock(side_effect=httpx.HTTPError("network indeterminate"))
+    return fake_client
+
+
+@pytest.mark.asyncio
+async def test_pr_is_merged_returns_none_on_httpx_error() -> None:
+    """On httpx.HTTPError the lookup is indeterminate -> None, not False."""
+    svc = _service()
+    with patch(
+        "roboco.services.git.httpx.AsyncClient",
+        return_value=_httpx_raising_client(),
+    ):
+        out = await svc._pr_is_merged("acme", "repo", 11, "tok")
+    assert out is None
+
+
+@pytest.mark.asyncio
+async def test_merge_with_retry_none_does_not_raise_merge_conflict() -> None:
+    """Agent merge path: indeterminate (None) falls through, not conflict."""
+    svc = _service()
+    _bind(svc, "_first_allowed_merge_method", AsyncMock(return_value=None))
+    # 405 -> disambiguation path -> _pr_is_merged returns None -> fall through.
+    resp_405 = MagicMock(is_success=False, status_code=405, text="not allowed")
+    _bind(svc, "_call_merge_api", AsyncMock(return_value=resp_405))
+    _bind(svc, "_pr_is_merged", AsyncMock(return_value=None))
+
+    ctx = GitService._MergeContext(
+        owner="acme",
+        repo="repo",
+        pr_number=11,
+        git_token="tok",
+        workspace=Path("/tmp/ws"),
+        target="feature/main_pm/root1",
+    )
+    # None must NOT raise MergeConflictError; it returns the failed resp
+    # (idempotent-success fall-through, same as the already-merged True path).
+    out = await svc._merge_with_retry(ctx)
+    assert out is resp_405
+
+
+@pytest.mark.asyncio
+async def test_merge_with_retry_false_raises_merge_conflict() -> None:
+    """A real False (PR not merged) still raises MergeConflictError."""
+    svc = _service()
+    _bind(svc, "_first_allowed_merge_method", AsyncMock(return_value=None))
+    resp_405 = MagicMock(is_success=False, status_code=405, text="not mergeable")
+    _bind(svc, "_call_merge_api", AsyncMock(return_value=resp_405))
+    _bind(svc, "_pr_is_merged", AsyncMock(return_value=False))
+
+    ctx = GitService._MergeContext(
+        owner="acme",
+        repo="repo",
+        pr_number=11,
+        git_token="tok",
+        workspace=Path("/tmp/ws"),
+        target="feature/main_pm/root1",
+    )
+    with pytest.raises(MergeConflictError):
+        await svc._merge_with_retry(ctx)
+
+
+@pytest.mark.asyncio
+async def test_merge_pull_request_none_does_not_raise_git_error() -> None:
+    """CEO merge path: indeterminate (None) falls through to cleanup, not GitError."""
+    svc = _service()
+    _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
+    _bind(svc, "_parse_github_remote", MagicMock(return_value=("acme", "repo")))
+    _bind(svc, "_first_allowed_merge_method", AsyncMock(return_value=None))
+    _bind(svc, "_delete_pr_branch_best_effort", AsyncMock())
+    _bind(svc, "_sync_target_branch", AsyncMock(return_value="abc123sha"))
+    _bind(svc, "_project_default_branch", AsyncMock(return_value="master"))
+    resp_405 = MagicMock(is_success=False, status_code=405, text="not allowed")
+    _bind(svc, "_call_merge_api", AsyncMock(return_value=resp_405))
+    _bind(svc, "_pr_is_merged", AsyncMock(return_value=None))
+
+    out = await svc.merge_pull_request(Path("/tmp/ws"), 11, "squash", "roboco")
+    assert out == ("master", "abc123sha")
+
+
+@pytest.mark.asyncio
+async def test_is_pr_merged_for_task_none_treated_as_merged() -> None:
+    """is_pr_merged_for_task coerces None -> True so choreographer skips pr_merge."""
+    project_id = uuid4()
+    fake_task = MagicMock(project_id=project_id, pr_number=11, parent_task_id=None)
+    fake_project = MagicMock(slug="roboco")
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = fake_task
+
+    svc = _service(execute_returns=result)
+    _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
+    _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
+    _bind(svc, "_parse_github_remote", MagicMock(return_value=("acme", "repo")))
+    _bind(svc, "_project_for_task", AsyncMock(return_value=fake_project))
+    _bind(svc, "_resolve_workspace_agent_id", MagicMock(return_value=None))
+    _bind(svc, "_pr_is_merged", AsyncMock(return_value=None))
+
+    with _patch_project_service(fake_project):
+        out = await svc.is_pr_merged_for_task(fake_task.id)
+    assert out is True

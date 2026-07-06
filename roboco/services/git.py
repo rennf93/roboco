@@ -2999,21 +2999,23 @@ class GitService(BaseService):
             # mirroring the agent-facing _merge_with_retry. Without this a
             # CEO retry raised GitError on the very master-merge path only the
             # CEO owns, surfacing a spurious failure for an action that had
-            # already succeeded.
-            if await self._pr_is_merged(owner, repo, pr_number, git_token):
-                self.log.info(
-                    "PR already merged on GitHub; treating as idempotent success",
-                    owner=owner,
-                    repo=repo,
-                    pr=pr_number,
-                    status_code=resp.status_code,
-                )
-            else:
+            # already succeeded. None (HTTPError — indeterminate) is treated
+            # as "assume merged" so a network blip can't surface a spurious
+            # failure on the CEO-only master-merge path.
+            merged = await self._pr_is_merged(owner, repo, pr_number, git_token)
+            if merged is False:
                 raise GitError(
                     f"GitHub API refused PR merge ({resp.status_code}):"
                     f" {resp.text[:200]}",
                     {"owner": owner, "repo": repo, "pr": pr_number},
                 )
+            self.log.info(
+                "PR already merged on GitHub; treating as idempotent success",
+                owner=owner,
+                repo=repo,
+                pr=pr_number,
+                status_code=resp.status_code,
+            )
 
         await self._delete_pr_branch_best_effort(owner, repo, pr_number, git_token)
 
@@ -3647,31 +3649,39 @@ class GitService(BaseService):
             # cycle, a sibling, or the CEO already landed it) is idempotent
             # success — NOT a conflict to rebase/escalate. Treating it as one is
             # the cell_pm_complete block<->unblock respawn loop, so disambiguate
-            # before raising.
-            if await self._pr_is_merged(
+            # before raising. None (HTTPError — indeterminate) is treated as
+            # "assume merged" so a network blip can't respawn the PM against an
+            # already-merged PR; only a clean False is a real conflict.
+            merged = await self._pr_is_merged(
                 ctx.owner, ctx.repo, ctx.pr_number, ctx.git_token
-            ):
-                return resp
-            # A real merge refusal (typically 405 "not mergeable") means the
-            # branch conflicts with the base — a sibling landed overlapping work
-            # first. Raise the specific subclass so the completion path can
-            # rebase / close-superseded / escalate instead of respawn-looping.
-            raise MergeConflictError(
-                f"GitHub API refused PR merge ({resp.status_code}): {resp.text[:200]}",
-                {"owner": ctx.owner, "repo": ctx.repo, "pr": ctx.pr_number},
             )
+            if merged is False:
+                # A real merge refusal (typically 405 "not mergeable") means the
+                # branch conflicts with the base — a sibling landed overlapping
+                # work first. Raise the specific subclass so the completion path
+                # can rebase / close-superseded / escalate instead of
+                # respawn-looping.
+                raise MergeConflictError(
+                    f"GitHub API refused PR merge ({resp.status_code}):"
+                    f" {resp.text[:200]}",
+                    {"owner": ctx.owner, "repo": ctx.repo, "pr": ctx.pr_number},
+                )
+            return resp
         return resp
 
     async def _pr_is_merged(
         self, owner: str, repo: str, pr_number: int, git_token: str
-    ) -> bool:
+    ) -> bool | None:
         """True if PR ``pr_number`` is already merged on GitHub.
 
         Disambiguates an already-merged PR from a genuine conflict (both surface
         as a 405 on the merge PUT): an already-merged PR is idempotent success,
-        not something to rebase/escalate. Best-effort — returns False on any
-        error so an indeterminate state falls through to the existing conflict
-        handling rather than masking a real failure.
+        not something to rebase/escalate. Returns ``None`` on an
+        ``httpx.HTTPError`` so an indeterminate lookup is NOT mistaken for a
+        clean "not merged" — callers treat ``None`` as "assume merged" and
+        fall through to the already-merged cleanup path instead of raising a
+        conflict and respawning the PM against an already-merged PR. A
+        non-success response is still False (GitHub answered, just not merged).
         """
         try:
             async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
@@ -3684,7 +3694,7 @@ class GitService(BaseService):
                     },
                 )
         except httpx.HTTPError:
-            return False
+            return None
         if not resp.is_success:
             return False
         return bool(resp.json().get("merged"))
@@ -3693,10 +3703,12 @@ class GitService(BaseService):
         """True if the task's PR is already merged on GitHub.
 
         Idempotency check for ``cell_pm_complete`` re-issues: a re-issue after
-        a None-complete would otherwise 405 on the already-merged PR. Best-
-        effort False on any HTTP/lookup failure — the caller treats False as
-        'merge needed' and proceeds to ``pr_merge`` (which surfaces the real
-        error). Mirrors ``_pr_is_merged``'s fail-safe posture.
+        a None-complete would otherwise 405 on the already-merged PR. An
+        indeterminate ``_pr_is_merged`` (``None`` on ``httpx.HTTPError``) is
+        treated as "assume merged" → ``True`` so the choreographer skips the
+        merge call instead of 405-ing into a respawn loop on an already-merged
+        PR. A clean False (GitHub answered, not merged) returns False — the
+        caller proceeds to ``pr_merge``, which surfaces the real error.
         """
         from sqlalchemy import select
 
@@ -3715,7 +3727,8 @@ class GitService(BaseService):
         workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
         git_token = await self._get_project_token_or_raise(project.slug)
         owner, repo = self._parse_github_remote(workspace)
-        return await self._pr_is_merged(owner, repo, task.pr_number, git_token)
+        merged = await self._pr_is_merged(owner, repo, task.pr_number, git_token)
+        return True if merged is None else bool(merged)
 
     async def pr_merge(
         self,
