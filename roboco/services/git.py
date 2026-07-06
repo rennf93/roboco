@@ -3712,9 +3712,7 @@ class GitService(BaseService):
         if project is None:
             return False
         workspace_agent_id = self._resolve_workspace_agent_id(task, None)
-        workspace = await self.get_workspace(
-            project.slug, agent_id=workspace_agent_id
-        )
+        workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
         git_token = await self._get_project_token_or_raise(project.slug)
         owner, repo = self._parse_github_remote(workspace)
         return await self._pr_is_merged(owner, repo, task.pr_number, git_token)

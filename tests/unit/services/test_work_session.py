@@ -7,9 +7,12 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
-from roboco.models.work_session import WorkSessionStatus
+from roboco.db.tables import AgentTable, ProjectTable, TaskTable, WorkSessionTable
+from roboco.models import AgentRole, AgentStatus, Team
+from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType
+from roboco.models.work_session import WorkSessionCreate, WorkSessionStatus
 from roboco.services.base import ConflictError
-from roboco.services.work_session import WorkSessionService
+from roboco.services.work_session import WorkSessionService, get_work_session_service
 
 
 def _service() -> WorkSessionService:
@@ -175,12 +178,6 @@ async def test_create_translates_integrity_error_to_conflict(
     unique index fires IntegrityError on the loser's flush. The service must
     re-raise as ConflictError so the choreographer's try/except lands a clean
     invalid_state envelope instead of a 500."""
-    from roboco.db.tables import AgentTable, ProjectTable, TaskTable, WorkSessionTable
-    from roboco.models import AgentRole, AgentStatus, Team
-    from roboco.models.base import TaskStatus, TaskType, TaskNature, Complexity
-    from roboco.models.work_session import WorkSessionCreate
-    from roboco.services.work_session import get_work_session_service
-
     agent = AgentTable(
         id=uuid4(),
         name="A",
@@ -242,7 +239,7 @@ async def test_create_translates_integrity_error_to_conflict(
 
     svc = get_work_session_service(db_session)
 
-    async def _none(*a, **kw):
+    async def _none(*_a, **_kw):
         return None
 
     monkeypatch.setattr(svc, "get_active_for_task_and_agent", _none)

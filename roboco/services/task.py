@@ -2329,11 +2329,7 @@ class TaskService(BaseService):
         # the revision_count bump _emit_status_transition_audit just applied.
         # Admin recovery from a terminal state is not a rework cycle. Mirrors
         # _apply_pre_block_restore's undo.
-        if (
-            force
-            and from_is_terminal
-            and new_status == TaskStatus.NEEDS_REVISION
-        ):
+        if force and from_is_terminal and new_status == TaskStatus.NEEDS_REVISION:
             task.revision_count = max((task.revision_count or 1) - 1, 0)
             await self.session.flush()
         if force:
@@ -4363,6 +4359,10 @@ class TaskService(BaseService):
         # The original developer is preserved in quick_context
         task.assigned_to = None
         task.claimed_by = None
+        # The dev's active claim ends at submit-for-QA — clear it so the
+        # QA claim's competing-claimant guard doesn't see the dev as a
+        # rival claimant and reject the legitimate review claim.
+        task.active_claimant_id = cast("Any", None)
         task.self_verified = True
         self._validate_and_set_status(
             task,
@@ -4882,7 +4882,9 @@ class TaskService(BaseService):
             # the caller wins.
             captured_dev_id = audit_agent_id or to_python_uuid(task.claimed_by)
             self._validate_and_set_status(
-                task, TaskStatus.AWAITING_PM_REVIEW, "developer",
+                task,
+                TaskStatus.AWAITING_PM_REVIEW,
+                "developer",
                 audit_agent_id=captured_dev_id,
             )
             # Clear assignment so PM can claim the task for review
@@ -8560,11 +8562,7 @@ class TaskService(BaseService):
         if task.status != expected_status:
             return None
         existing = to_python_uuid(task.active_claimant_id)
-        if (
-            enforce_competing_claimant
-            and existing is not None
-            and existing != agent_id
-        ):
+        if enforce_competing_claimant and existing is not None and existing != agent_id:
             self.log.warning(
                 "qa_or_doc_claim rejected - task already claimed by another agent",
                 task_id=str(task_id),

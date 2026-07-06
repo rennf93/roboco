@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -1047,8 +1047,6 @@ async def test_cell_pm_complete_survives_parent_advance_failure() -> None:
     """_maybe_advance_parent_to_pm_review throws after the leaf is completed.
     The verb must NOT 500 — the completion is committed; the side-effect
     failure is logged and the envelope carries a warning."""
-    from unittest.mock import patch
-
     pm_id = uuid4()
     task_id = uuid4()
     parent_id = uuid4()

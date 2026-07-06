@@ -8,7 +8,7 @@ race/gate the finding names — a regression dies here.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
 from tests.e2e_smoke.arcs import (
@@ -22,7 +22,7 @@ from tests.e2e_smoke.arcs import (
     task_state,
     wire_dependency,
 )
-from tests.e2e_smoke.harness import ScriptedAgent, expect_ok
+from tests.e2e_smoke.harness import ScriptedAgent, expect_error, expect_ok
 
 if TYPE_CHECKING:
     from tests.e2e_smoke.harness import E2EStack
@@ -37,8 +37,12 @@ def test_m18_add_dependency_rejects_cycle_and_self(e2e_stack: E2EStack) -> None:
     company = seed_company(stack)
     pid, _slug = seed_project(stack, company)
     a = seed_task(
-        stack, title="A", description="d", project_id=pid,
-        created_by=company.cell_pm_id, assigned_to=company.dev_id,
+        stack,
+        title="A",
+        description="d",
+        project_id=pid,
+        created_by=company.cell_pm_id,
+        assigned_to=company.dev_id,
     )
     try:
         wire_dependency(stack, a, a)
@@ -87,7 +91,11 @@ def test_h3_pm_cannot_complete_assembled_cell_from_in_progress(
     doc_arc(stack, company, h["child_id"], filename="hello.txt")
     pm = ScriptedAgent(stack, company.cell_pm_id, "be-pm", "cell_pm")
     expect_ok(
-        pm.flow("complete", task_id=str(h["child_id"]), notes="child done"),
+        pm.flow(
+            "complete",
+            task_id=str(h["child_id"]),
+            notes="child complete — leaf merged via PR review gate",
+        ),
         "pm complete child",
     )
     env = pm.flow("complete", task_id=str(h["cell_id"]), notes="try skip gate")
@@ -100,46 +108,78 @@ def test_h5_unclaim_from_blocked_clears_snapshot(e2e_stack: E2EStack) -> None:
     """H5: block a task, unclaim from blocked, then read the row —
     pre_block_state must be null. Driven through the real i_am_blocked +
     unclaim verbs."""
-    from sqlalchemy import select
-
     from roboco.db.tables import TaskTable
+    from sqlalchemy import select
 
     stack = e2e_stack
     company = seed_company(stack)
-    pid, slug = seed_project(stack, company)
+    pid, _slug = seed_project(stack, company)
     tid = seed_task(
-        stack, title="H5 snapshot clear", description="d", project_id=pid,
-        created_by=company.cell_pm_id, assigned_to=company.dev_id,
+        stack,
+        title="H5 snapshot clear",
+        description="d",
+        project_id=pid,
+        created_by=company.cell_pm_id,
+        assigned_to=company.dev_id,
     )
     dev = ScriptedAgent(stack, company.dev_id, "be-dev-1", "developer")
     expect_ok(dev.flow("give_me_work"), "dev give_me_work")
-    expect_ok(
-        dev.flow(
+
+    def _claim() -> dict[str, Any]:
+        return dev.flow(
             "i_will_work_on",
             task_id=str(tid),
-            plan="plan",
-            steps=[{"title": "s", "description": "d"}],
-            technical_considerations=[],
-            risks=[],
+            plan=(
+                "Block the task on an external dependency, then unclaim from "
+                "the blocked state. After unclaim the row's pre_block_state "
+                "must be null so a later reclaim starts clean with no stale "
+                "snapshot — this scenario asserts that invariant directly."
+            ),
+            steps=[
+                {
+                    "title": "Block the task",
+                    "description": (
+                        "Mark the task blocked on an external dependency via "
+                        "the i_am_blocked verb with a concrete reason."
+                    ),
+                },
+                {
+                    "title": "Unclaim from blocked",
+                    "description": (
+                        "Release the blocked task back to the pool via the "
+                        "unclaim verb so a later reclaim starts clean."
+                    ),
+                },
+                {
+                    "title": "Verify snapshot cleared",
+                    "description": (
+                        "Read the task row and assert pre_block_state is null "
+                        "after the unclaim-from-blocked transition completes."
+                    ),
+                },
+            ],
+            technical_considerations=["None — block/unclaim path only."],
+            risks=[
+                {
+                    "risk": "Stale snapshot survives unclaim.",
+                    "mitigation": "Assert pre_block_state is null after unclaim.",
+                }
+            ],
             open_questions=[],
-        ),
-        "dev claim",
-    )
-    expect_ok(dev.do("note", scope="note", task_id=str(tid), text="claim note"), "dev note")
+        )
+
+    expect_error(_claim(), "tracing_gap", "dev first i_will_work_on")
     expect_ok(
-        dev.flow(
-            "i_will_work_on",
-            task_id=str(tid),
-            plan="plan",
-            steps=[{"title": "s", "description": "d"}],
-            technical_considerations=[],
-            risks=[],
-            open_questions=[],
-        ),
-        "dev claim retry",
+        dev.do("note", scope="note", task_id=str(tid), text="claim note"), "dev note"
     )
-    expect_ok(dev.flow("i_am_blocked", task_id=str(tid), reason="external dep"), "dev block")
-    expect_ok(dev.flow("unclaim", task_id=str(tid)), "dev unclaim from blocked")
+    expect_ok(_claim(), "dev i_will_work_on retry")
+    expect_ok(
+        dev.flow("i_am_blocked", task_id=str(tid), reason="external dep"), "dev block"
+    )
+    # i_am_blocked reassigns the task to the cell PM (blocker_resolver), so
+    # the PM is the agent that unclaims from the blocked state.
+    pm = ScriptedAgent(stack, company.cell_pm_id, "be-pm", "cell_pm")
+    expect_ok(pm.flow("unclaim", task_id=str(tid)), "pm unclaim from blocked")
 
     async def _snap(session):
         row = (
@@ -160,8 +200,12 @@ def test_h6_pass_review_survives_a2a_failure(e2e_stack: E2EStack) -> None:
     company = seed_company(stack)
     pid, slug = seed_project(stack, company)
     tid = seed_task(
-        stack, title="H6 a2a down", description="d", project_id=pid,
-        created_by=company.cell_pm_id, assigned_to=company.dev_id,
+        stack,
+        title="H6 a2a down",
+        description="d",
+        project_id=pid,
+        created_by=company.cell_pm_id,
+        assigned_to=company.dev_id,
     )
     dev_arc(stack, company, slug, tid)
     with patch(
@@ -179,8 +223,12 @@ def test_l29_pass_qa_routes_through_awaiting_qa(e2e_stack: E2EStack) -> None:
     company = seed_company(stack)
     pid, slug = seed_project(stack, company)
     tid = seed_task(
-        stack, title="L29 qa hop", description="d", project_id=pid,
-        created_by=company.cell_pm_id, assigned_to=company.dev_id,
+        stack,
+        title="L29 qa hop",
+        description="d",
+        project_id=pid,
+        created_by=company.cell_pm_id,
+        assigned_to=company.dev_id,
     )
     dev_arc(stack, company, slug, tid)
     qa_arc(stack, company, tid)

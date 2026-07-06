@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -336,8 +336,6 @@ async def test_i_documented_survives_handoff_failure() -> None:
     """_handoff_to_cell_pm throws after the runner commits the docs-complete
     transition. The verb must NOT 500 — the transition is committed; the
     side-effect failure is logged and the envelope carries a warning."""
-    from unittest.mock import patch
-
     doc_id = uuid4()
     task_id = uuid4()
     t = _doc_owned_task(task_id, doc_id)
@@ -369,7 +367,9 @@ async def test_i_documented_survives_handoff_failure() -> None:
     notes = "Wrote backend/guides/feature-x.md with usage examples and config notes."
     files = ["backend/guides/feature-x.md"]
     with patch.object(
-        c, "_handoff_to_cell_pm", new=AsyncMock(side_effect=RuntimeError("handoff down"))
+        c,
+        "_handoff_to_cell_pm",
+        new=AsyncMock(side_effect=RuntimeError("handoff down")),
     ):
         env = await c.i_documented(doc_id, task_id, notes=notes, files=files)
     body = env.as_dict()

@@ -14,7 +14,7 @@ from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
-from roboco.db.tables import AgentTable, ProjectTable
+from roboco.db.tables import AgentTable, AuditLogTable, ProjectTable, TaskTable
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import (
     Complexity,
@@ -23,7 +23,8 @@ from roboco.models.base import (
     TaskType,
 )
 from roboco.models.task import TaskCreateRequest
-from roboco.services.task import SoftBlockInfo, TaskService
+from roboco.services.base import ConflictError
+from roboco.services.task import SoftBlockInfo, TaskService, get_task_service
 from sqlalchemy import select
 
 if TYPE_CHECKING:
@@ -1754,9 +1755,7 @@ async def test_get_active_count_zero_for_unknown(task_setup: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _seed_minimal_task(
-    db_session: "AsyncSession", tid: UUID
-) -> UUID:
+async def _seed_minimal_task(db_session: AsyncSession, tid: UUID) -> UUID:
     agent = AgentTable(
         id=uuid4(),
         name="Dev",
@@ -1782,7 +1781,6 @@ async def _seed_minimal_task(
     )
     db_session.add(project)
     await db_session.flush()
-    from roboco.db.tables import TaskTable
 
     db_session.add(
         TaskTable(
@@ -1804,9 +1802,9 @@ async def _seed_minimal_task(
 
 
 @pytest.mark.asyncio
-async def test_add_dependency_rejects_self_reference(db_session: "AsyncSession") -> None:
-    from roboco.services.base import ConflictError
-    from roboco.services.task import get_task_service
+async def test_add_dependency_rejects_self_reference(
+    db_session: AsyncSession,
+) -> None:
 
     tid = uuid4()
     await _seed_minimal_task(db_session, tid)
@@ -1816,9 +1814,7 @@ async def test_add_dependency_rejects_self_reference(db_session: "AsyncSession")
 
 
 @pytest.mark.asyncio
-async def test_add_dependency_rejects_cycle(db_session: "AsyncSession") -> None:
-    from roboco.services.base import ConflictError
-    from roboco.services.task import get_task_service
+async def test_add_dependency_rejects_cycle(db_session: AsyncSession) -> None:
 
     a, b, c = uuid4(), uuid4(), uuid4()
     await _seed_minimal_task(db_session, a)
@@ -1837,20 +1833,21 @@ async def test_add_dependency_rejects_cycle(db_session: "AsyncSession") -> None:
 
 
 @pytest.mark.asyncio
-async def test_qa_claim_serializes_concurrent_claimants(db_session: "AsyncSession") -> None:
+async def test_qa_claim_serializes_concurrent_claimants(
+    db_session: AsyncSession,
+) -> None:
     """Two QA agents race-claiming the same awaiting_qa task: without FOR UPDATE
     both pass the status check and overwrite claimed_by (last-write-wins); the
     first claimant's later pass_review actor-mismatches. With FOR UPDATE the
     second claim sees the first's committed claim and returns None."""
-    from roboco.db.tables import TaskTable
-    from roboco.services.task import get_task_service
 
     tid = uuid4()
     await _seed_minimal_task(db_session, tid)
     # Bump the seeded task into awaiting_qa with a PR open.
-    from sqlalchemy import select as _select
 
-    row = (await db_session.execute(_select(TaskTable).where(TaskTable.id == tid))).scalar_one()
+    row = (
+        await db_session.execute(select(TaskTable).where(TaskTable.id == tid))
+    ).scalar_one()
     row.status = TaskStatus.AWAITING_QA
     row.pr_number = 1
     row.pr_created = True
@@ -1900,20 +1897,19 @@ def to_uuid(v: object) -> UUID | None:
 
 @pytest.mark.asyncio
 async def test_parallel_completion_race_single_transition(
-    db_session: "AsyncSession",
+    db_session: AsyncSession,
 ) -> None:
     """docs_complete and mark_pr_created race: both see ready_for_pm=True,
     both transition to awaiting_pm_review, both emit audit rows. With FOR
     UPDATE the second caller serializes behind the first and sees the
     already-advanced status — it must NOT transition again."""
-    from roboco.db.tables import AuditLogTable, TaskTable
-    from roboco.services.task import get_task_service
 
     tid = uuid4()
     await _seed_minimal_task(db_session, tid)
-    from sqlalchemy import select as _select
 
-    row = (await db_session.execute(_select(TaskTable).where(TaskTable.id == tid))).scalar_one()
+    row = (
+        await db_session.execute(select(TaskTable).where(TaskTable.id == tid))
+    ).scalar_one()
     row.status = TaskStatus.AWAITING_DOCUMENTATION
     row.docs_complete = True
     row.pr_created = False
@@ -1923,10 +1919,16 @@ async def test_parallel_completion_race_single_transition(
     svc = get_task_service(db_session)
     t1 = await svc.mark_pr_created(tid, pr_number=42, pr_url="https://x")
     assert t1 is not None and t1.status == TaskStatus.AWAITING_PM_REVIEW
-    t2 = await svc.docs_complete(tid, doc_notes="docs done")
-    rows = (await db_session.execute(
-        _select(AuditLogTable).where(AuditLogTable.target_id == tid)
-    )).scalars().all()
+    await svc.docs_complete(tid, doc_notes="docs done")
+    rows = (
+        (
+            await db_session.execute(
+                select(AuditLogTable).where(AuditLogTable.target_id == tid)
+            )
+        )
+        .scalars()
+        .all()
+    )
     transitions = [r for r in rows if r.event_type == "task.awaiting_pm_review"]
     assert len(transitions) <= 1, (
         f"parallel completion emitted {len(transitions)} awaiting_pm_review "
@@ -1940,18 +1942,17 @@ async def test_parallel_completion_race_single_transition(
 
 
 @pytest.mark.asyncio
-async def test_pass_qa_refuses_in_progress(db_session: "AsyncSession") -> None:
+async def test_pass_qa_refuses_in_progress(db_session: AsyncSession) -> None:
     """The gateway enforces AWAITING_QA; the service must match — an
     in_progress QA claim must not pass_qa directly (the audit journey
     would skip the task.awaiting_qa row, breaking QA dwell metrics)."""
-    from roboco.db.tables import TaskTable
-    from roboco.services.task import get_task_service
 
     tid = uuid4()
     await _seed_minimal_task(db_session, tid)
-    from sqlalchemy import select as _select
 
-    row = (await db_session.execute(_select(TaskTable).where(TaskTable.id == tid))).scalar_one()
+    row = (
+        await db_session.execute(select(TaskTable).where(TaskTable.id == tid))
+    ).scalar_one()
     row.status = TaskStatus.IN_PROGRESS
     row.pr_number = 1
     row.pr_created = True
@@ -1963,15 +1964,14 @@ async def test_pass_qa_refuses_in_progress(db_session: "AsyncSession") -> None:
 
 
 @pytest.mark.asyncio
-async def test_pass_qa_accepts_awaiting_qa(db_session: "AsyncSession") -> None:
-    from roboco.db.tables import TaskTable
-    from roboco.services.task import get_task_service
+async def test_pass_qa_accepts_awaiting_qa(db_session: AsyncSession) -> None:
 
     tid = uuid4()
     await _seed_minimal_task(db_session, tid)
-    from sqlalchemy import select as _select
 
-    row = (await db_session.execute(_select(TaskTable).where(TaskTable.id == tid))).scalar_one()
+    row = (
+        await db_session.execute(select(TaskTable).where(TaskTable.id == tid))
+    ).scalar_one()
     row.status = TaskStatus.AWAITING_QA
     row.pr_number = 1
     row.pr_created = True
@@ -1989,20 +1989,19 @@ async def test_pass_qa_accepts_awaiting_qa(db_session: "AsyncSession") -> None:
 
 @pytest.mark.asyncio
 async def test_mark_pr_created_audit_attributed_to_developer(
-    db_session: "AsyncSession",
+    db_session: AsyncSession,
 ) -> None:
     """The awaiting_pm_review audit row from mark_pr_created must carry the
     developer's agent_id, not NULL. The dev's claimed_by is already clear
     by the time mark_pr_created runs (submit_for_qa cleared it), so the
     caller must pass audit_agent_id explicitly."""
-    from roboco.db.tables import AuditLogTable, TaskTable
-    from roboco.services.task import get_task_service
 
     tid = uuid4()
     await _seed_minimal_task(db_session, tid)
-    from sqlalchemy import select as _select
 
-    row = (await db_session.execute(_select(TaskTable).where(TaskTable.id == tid))).scalar_one()
+    row = (
+        await db_session.execute(select(TaskTable).where(TaskTable.id == tid))
+    ).scalar_one()
     row.status = TaskStatus.AWAITING_DOCUMENTATION
     row.docs_complete = True
     row.pr_created = False
@@ -2028,10 +2027,18 @@ async def test_mark_pr_created_audit_attributed_to_developer(
     )
     await db_session.flush()
     svc = get_task_service(db_session)
-    await svc.mark_pr_created(tid, pr_number=7, pr_url="https://x", audit_agent_id=dev_id)
-    rows = (await db_session.execute(
-        _select(AuditLogTable).where(AuditLogTable.target_id == tid)
-    )).scalars().all()
+    await svc.mark_pr_created(
+        tid, pr_number=7, pr_url="https://x", audit_agent_id=dev_id
+    )
+    rows = (
+        (
+            await db_session.execute(
+                select(AuditLogTable).where(AuditLogTable.target_id == tid)
+            )
+        )
+        .scalars()
+        .all()
+    )
     transition = [r for r in rows if r.event_type == "task.awaiting_pm_review"]
     assert transition, "no awaiting_pm_review audit row emitted"
     assert transition[0].agent_id == dev_id, (

@@ -14,7 +14,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
-from roboco.db.tables import AuditLogTable
+from roboco.db.tables import AgentTable, AuditLogTable, ProjectTable, TaskTable
+from roboco.exceptions import TaskLifecycleError
 from roboco.models.base import (
     AgentRole,
     AgentStatus,
@@ -26,7 +27,8 @@ from roboco.models.base import (
     Team,
 )
 from roboco.models.task import TaskCreateRequest
-from roboco.services.task import GatewayAgentView, TaskService
+from roboco.services.task import GatewayAgentView, TaskService, get_task_service
+from sqlalchemy import select
 
 
 def _build_task(**overrides: object) -> MagicMock:
@@ -411,9 +413,12 @@ async def test_mark_agent_idle_sets_status_idle() -> None:
 
 @pytest.mark.asyncio
 async def test_qa_claim_sets_assignment_on_awaiting_qa() -> None:
-    task = _build_task(status=TaskStatus.AWAITING_QA)
-    svc = TaskService(MagicMock(flush=AsyncMock()))
-    _bind(svc, "get", AsyncMock(return_value=task))
+    task = _build_task(status=TaskStatus.AWAITING_QA, active_claimant_id=None)
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = task
+    session = MagicMock(flush=AsyncMock())
+    session.execute = AsyncMock(return_value=result)
+    svc = TaskService(session)
     qa_id = uuid4()
     out = await svc.qa_claim(qa_id, task.id)
     assert out is task
@@ -424,18 +429,26 @@ async def test_qa_claim_sets_assignment_on_awaiting_qa() -> None:
 
 @pytest.mark.asyncio
 async def test_qa_claim_rejects_wrong_status() -> None:
-    task = _build_task(status=TaskStatus.IN_PROGRESS)
-    svc = TaskService(MagicMock(flush=AsyncMock()))
-    _bind(svc, "get", AsyncMock(return_value=task))
+    task = _build_task(status=TaskStatus.IN_PROGRESS, active_claimant_id=None)
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = task
+    session = MagicMock(flush=AsyncMock())
+    session.execute = AsyncMock(return_value=result)
+    svc = TaskService(session)
     out = await svc.qa_claim(uuid4(), task.id)
     assert out is None
 
 
 @pytest.mark.asyncio
 async def test_doc_claim_sets_assignment_on_awaiting_documentation() -> None:
-    task = _build_task(status=TaskStatus.AWAITING_DOCUMENTATION)
-    svc = TaskService(MagicMock(flush=AsyncMock()))
-    _bind(svc, "get", AsyncMock(return_value=task))
+    task = _build_task(
+        status=TaskStatus.AWAITING_DOCUMENTATION, active_claimant_id=None
+    )
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = task
+    session = MagicMock(flush=AsyncMock())
+    session.execute = AsyncMock(return_value=result)
+    svc = TaskService(session)
     doc_id = uuid4()
     out = await svc.doc_claim(doc_id, task.id)
     assert out is task
@@ -1576,12 +1589,6 @@ async def test_update_skips_none_to_protect_partial_callers() -> None:
 async def test_admin_set_status_refuses_terminal_to_non_terminal_without_force(
     db_session,
 ) -> None:
-    from uuid import uuid4
-
-    from roboco.db.tables import AgentTable, ProjectTable, TaskTable
-    from roboco.exceptions import TaskLifecycleError
-    from roboco.services.task import get_task_service
-
     agent = AgentTable(
         id=uuid4(),
         name="A",
@@ -1634,16 +1641,9 @@ async def test_admin_set_status_refuses_terminal_to_non_terminal_without_force(
 
 
 @pytest.mark.asyncio
-async def test_admin_set_status_force_allows_terminal_to_needs_revision_no_revision_bump(
+async def test_admin_set_status_force_no_revision_bump(
     db_session,
 ) -> None:
-    from uuid import uuid4
-
-    from sqlalchemy import select as _select
-
-    from roboco.db.tables import AgentTable, ProjectTable, TaskTable
-    from roboco.services.task import get_task_service
-
     agent = AgentTable(
         id=uuid4(),
         name="A",
@@ -1691,12 +1691,15 @@ async def test_admin_set_status_force_allows_terminal_to_needs_revision_no_revis
     )
     await db_session.flush()
     svc = get_task_service(db_session)
-    await svc.admin_set_status(tid, TaskStatus.NEEDS_REVISION, force=True, actor_id=agent.id)
-    row = (await db_session.execute(
-        _select(TaskTable).where(TaskTable.id == tid)
-    )).scalar_one()
+    await svc.admin_set_status(
+        tid, TaskStatus.NEEDS_REVISION, force=True, actor_id=agent.id
+    )
+    row = (
+        await db_session.execute(select(TaskTable).where(TaskTable.id == tid))
+    ).scalar_one()
     assert row.status == TaskStatus.NEEDS_REVISION
-    assert row.revision_count == 2, (
+    expected_revision_count = 2
+    assert row.revision_count == expected_revision_count, (
         "admin force terminal->needs_revision bumped revision_count — "
         "admin recovery must not be counted as rework in metrics"
     )

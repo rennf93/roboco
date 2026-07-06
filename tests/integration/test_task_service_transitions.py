@@ -19,6 +19,7 @@ from roboco.db.tables import (
     JournalEntryTable,
     ProductTable,
     ProjectTable,
+    TaskTable,
     WorkSessionTable,
 )
 from roboco.events import EventType
@@ -36,7 +37,7 @@ from roboco.models.task import TaskCreateRequest
 from roboco.models.work_session import WorkSessionStatus
 from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.base import NotFoundError
-from roboco.services.task import SoftBlockInfo, TaskService
+from roboco.services.task import SoftBlockInfo, TaskService, get_task_service
 from sqlalchemy import Table, select
 
 if TYPE_CHECKING:
@@ -2991,7 +2992,7 @@ async def test_resolve_pm_for_review_returns_none_when_parent_chain_unassigned(
 
 
 async def _seed_pm_and_task(
-    db_session: "AsyncSession",
+    db_session: AsyncSession,
     *,
     status: TaskStatus,
     tid: UUID,
@@ -2999,7 +3000,6 @@ async def _seed_pm_and_task(
     branch_name: str = "feature/backend/cell",
 ) -> UUID:
     """Seed a PM + project + task and return the PM id."""
-    from roboco.db.tables import TaskTable
 
     pm = AgentTable(
         id=uuid4(),
@@ -3054,13 +3054,11 @@ async def _seed_pm_and_task(
 
 @pytest.mark.asyncio
 async def test_complete_refuses_in_progress_on_assembled_cell_task(
-    db_session: "AsyncSession",
+    db_session: AsyncSession,
 ) -> None:
     """A PM owning a cell task (IN_PROGRESS, terminal subtask) must NOT be
     able to complete() directly from IN_PROGRESS — that bypasses submit_up
     and the entire PR-review gate."""
-    from roboco.db.tables import TaskTable
-    from roboco.services.task import get_task_service
 
     pm_id = uuid4()
     cell_id = uuid4()
@@ -3090,44 +3088,46 @@ async def test_complete_refuses_in_progress_on_assembled_cell_task(
     )
     db_session.add(project)
     await db_session.flush()
-    db_session.add_all([
-        TaskTable(
-            id=cell_id,
-            title="cell",
-            description="d",
-            acceptance_criteria=["done"],
-            status=TaskStatus.IN_PROGRESS,
-            priority=2,
-            task_type=TaskType.PLANNING,
-            nature=TaskNature.TECHNICAL,
-            estimated_complexity=Complexity.LOW,
-            team=Team.BACKEND,
-            confirmed_by_human=True,
-            assigned_to=pm_id,
-            active_claimant_id=pm_id,
-            claimed_by=pm_id,
-            project_id=project.id,
-            created_by=pm_id,
-            branch_name="feature/backend/cell",
-        ),
-        TaskTable(
-            id=child_id,
-            title="child",
-            description="d",
-            acceptance_criteria=["done"],
-            status=TaskStatus.COMPLETED,
-            priority=2,
-            task_type=TaskType.CODE,
-            nature=TaskNature.TECHNICAL,
-            estimated_complexity=Complexity.LOW,
-            team=Team.BACKEND,
-            confirmed_by_human=True,
-            project_id=project.id,
-            created_by=pm_id,
-            parent_task_id=cell_id,
-            branch_name="feature/backend/cell--child",
-        ),
-    ])
+    db_session.add_all(
+        [
+            TaskTable(
+                id=cell_id,
+                title="cell",
+                description="d",
+                acceptance_criteria=["done"],
+                status=TaskStatus.IN_PROGRESS,
+                priority=2,
+                task_type=TaskType.PLANNING,
+                nature=TaskNature.TECHNICAL,
+                estimated_complexity=Complexity.LOW,
+                team=Team.BACKEND,
+                confirmed_by_human=True,
+                assigned_to=pm_id,
+                active_claimant_id=pm_id,
+                claimed_by=pm_id,
+                project_id=project.id,
+                created_by=pm_id,
+                branch_name="feature/backend/cell",
+            ),
+            TaskTable(
+                id=child_id,
+                title="child",
+                description="d",
+                acceptance_criteria=["done"],
+                status=TaskStatus.COMPLETED,
+                priority=2,
+                task_type=TaskType.CODE,
+                nature=TaskNature.TECHNICAL,
+                estimated_complexity=Complexity.LOW,
+                team=Team.BACKEND,
+                confirmed_by_human=True,
+                project_id=project.id,
+                created_by=pm_id,
+                parent_task_id=cell_id,
+                branch_name="feature/backend/cell--child",
+            ),
+        ]
+    )
     await db_session.flush()
 
     svc = get_task_service(db_session)
@@ -3140,16 +3140,16 @@ async def test_complete_refuses_in_progress_on_assembled_cell_task(
 
 @pytest.mark.asyncio
 async def test_complete_allows_in_progress_on_leaf(
-    db_session: "AsyncSession",
+    db_session: AsyncSession,
 ) -> None:
     """A leaf (no descendants) the PM owns at IN_PROGRESS completes — the
     PM-self path stays open."""
-    from roboco.db.tables import TaskTable
-    from roboco.services.task import get_task_service
 
     leaf_id = uuid4()
     pm_id = await _seed_pm_and_task(
-        db_session, status=TaskStatus.IN_PROGRESS, tid=leaf_id,
+        db_session,
+        status=TaskStatus.IN_PROGRESS,
+        tid=leaf_id,
         branch_name="feature/backend/leaf",
     )
     svc = get_task_service(db_session)
@@ -3164,13 +3164,11 @@ async def test_complete_allows_in_progress_on_leaf(
 
 @pytest.mark.asyncio
 async def test_unclaim_from_blocked_clears_pre_block_snapshot(
-    db_session: "AsyncSession",
+    db_session: AsyncSession,
 ) -> None:
     """A blocked task unclaimed back to the pool must not keep a stale
     pre_block snapshot — a later re-block + unblock_with_restore would
     restore the stale owner/status."""
-    from roboco.db.tables import TaskTable
-    from roboco.services.task import get_task_service
 
     tid = uuid4()
     owner = uuid4()
@@ -3227,12 +3225,14 @@ async def test_unclaim_from_blocked_clears_pre_block_snapshot(
 
     svc = get_task_service(db_session)
     await svc._unclaim_from_blocked(
-        (await db_session.execute(select(TaskTable).where(TaskTable.id == tid))).scalar_one()
+        (
+            await db_session.execute(select(TaskTable).where(TaskTable.id == tid))
+        ).scalar_one()
     )
 
-    row = (await db_session.execute(
-        select(TaskTable).where(TaskTable.id == tid)
-    )).scalar_one()
+    row = (
+        await db_session.execute(select(TaskTable).where(TaskTable.id == tid))
+    ).scalar_one()
     assert row.pre_block_state is None
     assert row.pre_block_assignee is None
     assert row.pre_block_metadata is None

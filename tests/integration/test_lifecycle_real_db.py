@@ -167,6 +167,10 @@ class _StubGit:
             "merge_commit_sha": uuid4().hex[:40],
         }
 
+    async def is_pr_merged_for_task(self, task_id: UUID) -> bool:
+        del task_id
+        return False
+
 
 def _mock_evidence_repo() -> Any:
     repo = AsyncMock()
