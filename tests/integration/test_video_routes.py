@@ -173,7 +173,10 @@ def _build_app(
     app.include_router(video_router, prefix="/api/video")
     app.include_router(tiktok_router, prefix="/api/tiktok")
 
-    async def _override_db() -> AsyncIterator[AsyncSession]:
+    async def _override_db() -> AsyncIterator[AsyncSession | None]:
+        # DB-independent tests pass db_session=None and monkeypatch the task
+        # service so the route never awaits the session — yielding None is
+        # safe because the route body uses the patched service, not get_db.
         yield db_session
 
     async def _override_agent() -> AgentContext:
