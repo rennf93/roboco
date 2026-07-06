@@ -124,6 +124,7 @@ async def _seed(session: AsyncSession) -> None:
                 assigned_cell=Team.BACKEND,
                 created_by=SYSTEM_UUID,
                 is_active=True,
+                video_engine_enabled=True,
             )
         )
     await session.flush()

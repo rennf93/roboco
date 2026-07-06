@@ -72,6 +72,7 @@ async def _seed(session: AsyncSession) -> None:
                 assigned_cell=Team.BACKEND,
                 created_by=SYSTEM_UUID,
                 is_active=True,
+                video_engine_enabled=True,
             )
         )
     await session.flush()
@@ -215,6 +216,27 @@ async def test_open_video_task_unresolvable_project_opens_nothing(
 
 
 @pytest.mark.asyncio
+async def test_open_video_task_no_op_when_project_not_opted_in(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await _seed(db_session)
+    # Flip the per-project opt-in back off — the global flag stays on.
+    await db_session.execute(
+        ProjectTable.__table__.update()
+        .where(ProjectTable.__table__.c.slug == SLUG)
+        .values(video_engine_enabled=False)
+    )
+    await db_session.flush()
+    _enable(monkeypatch)
+    engine = video_engine_module.VideoEngine(db_session)
+    task = await engine.open_video_task(
+        occasion="release v1.0.0", script="s", platforms=["x"], brief="b"
+    )
+    assert task is None
+    assert await get_task_service(db_session).list_open_video_posts() == []
+
+
+@pytest.mark.asyncio
 async def test_open_video_task_insert_error_returns_none_session_usable(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -255,6 +277,7 @@ async def test_open_video_task_insert_error_returns_none_session_usable(
                 assigned_cell=Team.BACKEND,
                 created_by=SYSTEM_UUID,
                 is_active=True,
+                video_engine_enabled=True,
             )
         )
     await db_session.flush()

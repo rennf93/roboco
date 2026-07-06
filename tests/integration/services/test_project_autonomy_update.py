@@ -61,6 +61,7 @@ async def test_update_sets_autonomy_opt_ins(db_session: AsyncSession) -> None:
             ci_watch_workflow="ci.yml",
             dep_update_command="uv lock --upgrade",
             dep_update_paths=["uv.lock"],
+            video_engine_enabled=True,
         ),
     )
 
@@ -70,3 +71,4 @@ async def test_update_sets_autonomy_opt_ins(db_session: AsyncSession) -> None:
     assert reloaded.ci_watch_workflow == "ci.yml"
     assert reloaded.dep_update_command == "uv lock --upgrade"
     assert reloaded.dep_update_paths == ["uv.lock"]
+    assert reloaded.video_engine_enabled is True

@@ -500,6 +500,14 @@ class ProjectTable(Base):
     )
     ci_watch_workflow: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
+    # Video-engine opt-in. The global ROBOCO_VIDEO_ENGINE_ENABLED flag arms the
+    # subsystem; a project opts in via video_engine_enabled before any
+    # authoring task opens against its motion/ dir. Default-off, mirroring
+    # ci_watch_enabled (migration 048).
+    video_engine_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
+    )
+
     # Dependency-update bot opt-in. A project participates only when
     # dep_update_command is set (e.g. "uv lock --upgrade"); dep_update_paths are
     # the lockfile globs the probe inspects (null → infer uv.lock/pnpm-lock.yaml).
