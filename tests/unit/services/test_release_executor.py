@@ -297,6 +297,103 @@ async def test_wait_for_ci_scoped_to_release_commit_not_branch_latest(
     assert ok is True
 
 
+@pytest.mark.asyncio
+async def test_wait_for_ci_polls_through_rerun(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A completed non-success conclusion on the release sha must not abort the
+    poll — a failed first attempt while a GitHub re-run is still in_progress
+    (excluded from the status=completed filter) can still flip the same
+    head_sha to success. Only ``conclusion == "success"`` returns True; loop
+    exhaustion returns False."""
+    commit_sha = "release_commit_abc"
+    seq = ["failure", "failure", "success"]
+    expected_polls = len(seq)
+    calls = {"n": 0}
+
+    async def _fake_get_ci(_slug: str, **kwargs: object) -> dict[str, str]:
+        i = min(calls["n"], len(seq) - 1)
+        calls["n"] += 1
+        return {
+            "head_sha": kwargs.get("head_sha", commit_sha),
+            "conclusion": seq[i],
+            "run_url": "u",
+            "run_name": "n",
+            "branch": "master",
+            "completed_at": "t",
+        }
+
+    monkeypatch.setattr(
+        "roboco.services.git.get_git_service",
+        lambda _session: SimpleNamespace(get_latest_ci_conclusion=_fake_get_ci),
+    )
+    monkeypatch.setattr(re, "_CI_MAX_POLLS", 5)
+
+    async def _no_sleep(_secs: float) -> None:
+        return None
+
+    monkeypatch.setattr(re.asyncio, "sleep", _no_sleep)
+
+    ctx = _ReleaseContext(
+        slug="roboco-api",
+        default_branch="master",
+        root=tmp_path,
+        git_url="x",
+        git_prefix=[],
+        ci_workflow="ci.yml",
+    )
+    ops = _GitReleaseOps(session=MagicMock(), ctx=ctx)
+    ok = await ops.wait_for_ci(commit_sha)
+    assert ok is True
+    assert calls["n"] == expected_polls
+
+
+@pytest.mark.asyncio
+async def test_wait_for_ci_exhausts_window_on_persistent_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A definitive failure that never re-runs waits the full window then
+    returns False — keeps polling, never early-returns on non-success."""
+    commit_sha = "release_commit_abc"
+    max_polls = 3
+    calls = {"n": 0}
+
+    async def _fake_get_ci(_slug: str, **kwargs: object) -> dict[str, str]:
+        calls["n"] += 1
+        return {
+            "head_sha": kwargs.get("head_sha", commit_sha),
+            "conclusion": "failure",
+            "run_url": "u",
+            "run_name": "n",
+            "branch": "master",
+            "completed_at": "t",
+        }
+
+    monkeypatch.setattr(
+        "roboco.services.git.get_git_service",
+        lambda _session: SimpleNamespace(get_latest_ci_conclusion=_fake_get_ci),
+    )
+    monkeypatch.setattr(re, "_CI_MAX_POLLS", max_polls)
+
+    async def _no_sleep(_secs: float) -> None:
+        return None
+
+    monkeypatch.setattr(re.asyncio, "sleep", _no_sleep)
+
+    ctx = _ReleaseContext(
+        slug="roboco-api",
+        default_branch="master",
+        root=tmp_path,
+        git_url="x",
+        git_prefix=[],
+        ci_workflow="ci.yml",
+    )
+    ops = _GitReleaseOps(session=MagicMock(), ctx=ctx)
+    ok = await ops.wait_for_ci(commit_sha)
+    assert ok is False
+    assert calls["n"] == max_polls
+
+
 def test_release_ci_workflow_decoupled_from_self_heal_setting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

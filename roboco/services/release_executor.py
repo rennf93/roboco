@@ -375,9 +375,10 @@ class _GitReleaseOps:
                 conclusion = (ci.get("conclusion") or "").lower()
                 if conclusion == "success":
                     return True
-                if conclusion:
-                    logger.warning("release CI not green", conclusion=conclusion)
-                    return False
+                # A non-success on the same sha may be a failed first attempt
+                # while a re-run is still in_progress (GitHub's
+                # status=completed filter excludes it). Keep polling through
+                # the window; only loop exhaustion returns False.
             await asyncio.sleep(_CI_POLL_INTERVAL_SECONDS)
         logger.warning("release CI poll timed out", sha=commit_sha)
         return False
