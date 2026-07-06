@@ -63,7 +63,16 @@ class RegressionObservation:
 
 
 def _fingerprint(signal_name: str) -> str:
-    """Stable short hash of the signal (which already encodes the repo)."""
+    """Stable short hash of the signal (which already encodes the repo).
+
+    By-design per-signal, NOT per-regression-run: the dedup's purpose is one
+    open fix task per regression signal, so a persistently-red CI signal
+    doesn't open a second task every cycle. A second distinct regression that
+    shares the same ``signal_name`` folds into the first's open task —
+    accepted because they share a signal root; widening to per-run (e.g.
+    mixing in a timestamp) would defeat the dedup and re-spam the backlog
+    each tick. Do not "fix" this into a per-run hash.
+    """
     return hashlib.sha256(signal_name.encode("utf-8")).hexdigest()[:16]
 
 
