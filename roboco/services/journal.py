@@ -358,6 +358,18 @@ class JournalService(BaseService):
                     entry_id=str(params.entry_id),
                     error=str(e),
                 )
+                # Persist to the dead-letter so a janitor can re-index later;
+                # never blocks the caller's commit (own session, best-effort).
+                from roboco.services.rag_index_failures import (
+                    _serialize_journal_payload,
+                    persist_failure,
+                )
+
+                await persist_failure(
+                    "journal_entry",
+                    _serialize_journal_payload(params, is_private=is_private),
+                    e,
+                )
 
         try:
             task = asyncio.create_task(_index())

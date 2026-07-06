@@ -9,7 +9,8 @@ from uuid import UUID, uuid4
 
 import pytest
 from roboco.models.base import JournalEntryType
-from roboco.services.journal import JournalService
+from roboco.models.optimal import IndexJournalEntryParams
+from roboco.services.journal import JournalService, drain_rag_index_tasks
 
 
 def _service_with_count(count: int) -> JournalService:
@@ -263,6 +264,92 @@ async def test_delete_entry_deindexes_after_commit() -> None:
     assert out is True
     session.commit.assert_awaited_once()
     optimal.unindex_journal_entry.assert_awaited_once_with(entry_id)
+
+
+# ---------------------------------------------------------------------------
+# _schedule_rag_index — dead-letter on embedder failure
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_schedule_rag_index_dead_letters_on_failure() -> None:
+    """An embedder failure (e.g. Ollama 429) is persisted to the rag_index_failures
+    dead-letter instead of dropped. The fire-and-forget posture is preserved:
+    _schedule_rag_index returns without awaiting the index, and the caller's
+    commit is never blocked."""
+    session = MagicMock()
+    session.commit = AsyncMock()
+    svc = JournalService(session)
+
+    optimal = MagicMock()
+    optimal.index_journal_entry = AsyncMock(side_effect=RuntimeError("ollama 429"))
+    optimal.record_learning = AsyncMock(return_value=None)
+
+    params = IndexJournalEntryParams(
+        content="lesson learned",
+        entry_type=JournalEntryType.GENERAL.value,
+        entry_id=uuid4(),
+        agent_id=uuid4(),
+        task_id=uuid4(),
+        tags=["t"],
+    )
+
+    with (
+        patch(
+            "roboco.services.optimal.get_optimal_service",
+            AsyncMock(return_value=optimal),
+        ),
+        patch(
+            "roboco.services.rag_index_failures.persist_failure",
+            new=AsyncMock(),
+        ) as mock_persist,
+    ):
+        # Fire-and-forget: returns synchronously, does not await the index.
+        svc._schedule_rag_index(params, is_private=False)
+        await drain_rag_index_tasks()
+
+    # The failure was dead-lettered, not just logged.
+    mock_persist.assert_awaited_once()
+    call_args = mock_persist.await_args
+    assert call_args is not None
+    assert call_args.args[0] == "journal_entry"
+    payload = call_args.args[1]
+    assert payload["entry_id"] == str(params.entry_id)
+    assert payload["is_private"] is False
+    # The caller's commit was never touched by the index path.
+    session.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_schedule_rag_index_no_dead_letter_on_success() -> None:
+    """A successful index write does not persist a dead-letter row."""
+    session = MagicMock()
+    svc = JournalService(session)
+
+    optimal = MagicMock()
+    optimal.index_journal_entry = AsyncMock(return_value=None)
+    optimal.record_learning = AsyncMock(return_value=None)
+
+    params = IndexJournalEntryParams(
+        content="ok",
+        entry_type=JournalEntryType.GENERAL.value,
+        entry_id=uuid4(),
+    )
+
+    with (
+        patch(
+            "roboco.services.optimal.get_optimal_service",
+            AsyncMock(return_value=optimal),
+        ),
+        patch(
+            "roboco.services.rag_index_failures.persist_failure",
+            new=AsyncMock(),
+        ) as mock_persist,
+    ):
+        svc._schedule_rag_index(params, is_private=False)
+        await drain_rag_index_tasks()
+
+    mock_persist.assert_not_awaited()
 
 
 @pytest.mark.asyncio

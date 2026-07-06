@@ -27,6 +27,7 @@ from roboco.models.base import (
     Team,
 )
 from roboco.models.task import TaskCreateRequest
+from roboco.services.learning import LearningType
 from roboco.services.task import GatewayAgentView, TaskService, get_task_service
 from sqlalchemy import select
 
@@ -1740,3 +1741,59 @@ async def test_admin_set_status_force_no_revision_bump(
         "admin force terminal->needs_revision bumped revision_count — "
         "admin recovery must not be counted as rework in metrics"
     )
+
+
+# ---------------------------------------------------------------------------
+# _extract_completion_learnings — dead-letter on record_learning failure
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_extract_completion_learnings_dead_letters_on_failure() -> None:
+    """A record_learning failure (embedder down) is persisted to the
+    rag_index_failures dead-letter instead of dropped. The caller's commit
+    is never blocked — the dead-letter uses its own session."""
+    svc = TaskService(MagicMock())
+
+    task = MagicMock(spec=TaskTable)
+    task.id = uuid4()
+    task.title = "do thing"
+    task.team = Team.BACKEND
+    task.started_at = datetime.now(UTC)
+    task.completed_at = datetime.now(UTC)
+    task.estimated_complexity = Complexity.MEDIUM
+    task.commits = []
+    task.dev_notes = "notes"
+    task.qa_notes = None
+    task.assigned_to = uuid4()
+    task.acceptance_criteria = ["ac1"]
+
+    learning_svc = MagicMock()
+    learning_svc.record_learning = AsyncMock(side_effect=RuntimeError("embedder 429"))
+
+    async def _fake_completion_learnings_for(
+        _snapshot: object, _ac: object
+    ) -> list[tuple[str, LearningType]]:
+        return [("a lesson", LearningType.SOLUTION)]
+
+    _bind(svc, "_completion_learnings_for", _fake_completion_learnings_for)
+
+    with (
+        patch(
+            "roboco.services.learning.get_learning_service",
+            AsyncMock(return_value=learning_svc),
+        ),
+        patch(
+            "roboco.services.rag_index_failures.persist_failure",
+            new=AsyncMock(),
+        ) as mock_persist,
+    ):
+        await svc._extract_completion_learnings(task, agent_id=None)
+
+    mock_persist.assert_awaited_once()
+    call_args = mock_persist.await_args
+    assert call_args is not None
+    assert call_args.args[0] == "completion_learning"
+    payload = call_args.args[1]
+    assert payload["content"] == "a lesson"
+    assert payload["learning_type"] == LearningType.SOLUTION.value

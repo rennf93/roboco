@@ -3106,10 +3106,7 @@ class TaskService(BaseService):
         self, task: TaskTable, agent_id: UUID | None
     ) -> None:
         """Extract and record learnings from a completed task (fire-and-forget)."""
-        from roboco.services.learning import (
-            RecordLearningParams,
-            get_learning_service,
-        )
+        from roboco.services.learning import get_learning_service
 
         # Extract data before session detaches
         task_id = task.id
@@ -3139,17 +3136,21 @@ class TaskService(BaseService):
             learnings = await self._completion_learnings_for(
                 snapshot, acceptance_criteria
             )
+            scope_str = scope.value if hasattr(scope, "value") else str(scope)
             for content, ltype in learnings:
-                await learning_svc.record_learning(
-                    RecordLearningParams(
-                        agent_id=to_python_uuid(assigned_to) or agent_id or UUID(int=0),
-                        agent_role="developer",
-                        content=content,
-                        learning_type=ltype,
-                        scope=scope,
-                        task_id=to_python_uuid(task_id),
-                        tags=["auto-extracted", task_team or "general"],
-                    )
+                await self._record_one_completion_learning(
+                    learning_svc,
+                    content,
+                    ltype,
+                    {
+                        "scope_str": scope_str,
+                        "agent_id": to_python_uuid(assigned_to)
+                        or agent_id
+                        or UUID(int=0),
+                        "task_id": to_python_uuid(task_id),
+                        "task_team": task_team,
+                        "log_task_id": task_id,
+                    },
                 )
             if learnings:
                 self.log.info(
@@ -3162,6 +3163,54 @@ class TaskService(BaseService):
                 "Failed to extract learnings",
                 task_id=str(task_id),
                 error=str(e),
+            )
+
+    async def _record_one_completion_learning(
+        self,
+        learning_svc: Any,
+        content: str,
+        ltype: Any,
+        ctx: dict[str, Any],
+    ) -> None:
+        """Record one completion learning, dead-lettering an embedder failure."""
+        from roboco.services.learning import RecordLearningParams
+
+        tags = ["auto-extracted", ctx["task_team"] or "general"]
+        agent_id = ctx["agent_id"]
+        task_id = ctx["task_id"]
+        try:
+            await learning_svc.record_learning(
+                RecordLearningParams(
+                    agent_id=agent_id,
+                    agent_role="developer",
+                    content=content,
+                    learning_type=ltype,
+                    scope=ctx["scope_str"],
+                    task_id=task_id,
+                    tags=tags,
+                )
+            )
+        except Exception as e:
+            self.log.warning(
+                "Failed to record completion learning (dead-lettered)",
+                task_id=str(ctx["log_task_id"]),
+                error=str(e),
+            )
+            from roboco.services.rag_index_failures import persist_failure
+
+            ltype_str = ltype.value if hasattr(ltype, "value") else str(ltype)
+            await persist_failure(
+                "completion_learning",
+                {
+                    "content": content,
+                    "agent_id": str(agent_id),
+                    "agent_role": "developer",
+                    "learning_type": ltype_str,
+                    "scope": ctx["scope_str"],
+                    "task_id": str(task_id) if task_id else None,
+                    "tags": list(tags),
+                },
+                e,
             )
 
     def _determine_learning_scope(self, team: str | None) -> Any:

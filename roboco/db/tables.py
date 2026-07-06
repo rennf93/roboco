@@ -2319,3 +2319,38 @@ class TikTokCredentialsTable(Base):
     updated_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), onupdate=lambda: datetime.now(UTC), nullable=True
     )
+
+
+# =============================================================================
+# RAG INDEX DEAD-LETTER
+# =============================================================================
+
+
+class RagIndexFailureTable(Base):
+    """Dead-letter for fire-and-forget RAG index writes that dropped on failure.
+
+    ``_schedule_rag_index`` (journal) and ``_extract_completion_learnings``
+    (task) index off the critical path: an embedder 429 after retries was
+    swallowed + logged, leaving the entry invisible to ``optimal.search`` /
+    ``similar_memory`` though it lived in the DB. A failure here is persisted
+    instead of dropped; a startup janitor reclaims due rows with backoff — on
+    success the row is deleted, on failure ``attempts`` bumps and
+    ``next_retry_at`` advances. Best-effort: a failed index never blocks the
+    caller's commit.
+    """
+
+    __tablename__ = "rag_index_failures"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    doc_source: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    last_error: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+    next_retry_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
