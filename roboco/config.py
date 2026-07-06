@@ -4,6 +4,7 @@ RoboCo Configuration
 Environment-based settings using Pydantic Settings.
 """
 
+import os
 from functools import lru_cache
 from typing import Literal
 
@@ -397,6 +398,20 @@ class Settings(BaseSettings):
             raise ValueError(
                 "ROBOCO_CLOUD_AUTH_SECRET is required when "
                 "ROBOCO_CLOUD_AUTH_ENABLED=true."
+            )
+        # nginx injects ROBOCO_PANEL_AGENT_TOKEN as a CEO-signed HMAC header on
+        # every /api/ request. Under cloud auth that token is an alternative
+        # human-auth tier that bypasses the login cookie — layering both is a
+        # public-exposure footgun. Refuse to start; the operator must unset it.
+        if (
+            self.cloud_auth_enabled
+            and os.environ.get("ROBOCO_PANEL_AGENT_TOKEN", "").strip()
+        ):
+            raise ValueError(
+                "ROBOCO_CLOUD_AUTH_ENABLED=true is incompatible with a set "
+                "ROBOCO_PANEL_AGENT_TOKEN (nginx CEO-token injection bypasses "
+                "the login cookie). Unset ROBOCO_PANEL_AGENT_TOKEN for a "
+                "publicly-exposed cloud-auth deploy."
             )
         return self
 
