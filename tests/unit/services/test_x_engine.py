@@ -21,6 +21,7 @@ from roboco.db.tables import (
     ProjectTable,
     TaskTable,
     XSeenFeatureTable,
+    XSeenMentionTable,
 )
 from roboco.foundation import identity as _foundation
 from roboco.foundation.policy.content import markers
@@ -461,6 +462,140 @@ async def test_engine_never_calls_post_tweet(
     await engine.run_cycle()
     await engine.draft_release_post(version=_VERSION, highlights=[])
     assert client.posted == []
+
+
+@pytest.mark.asyncio
+async def test_low_engagement_mention_not_marked_seen(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mention below the engagement floor is filtered out and NOT permanently
+    marked seen — a later viral re-fetch can still draft it."""
+    await _seed(db_session)
+    _enable(monkeypatch, x_mentions_min_engagement=5)
+    _mock_local_model(monkeypatch, "reply")
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    project = await engine._roboco_project()
+    await engine._process_mentions(
+        [_mention("low1", engagement=1)], project=project, open_count=0
+    )
+    assert await db_session.get(XSeenMentionTable, "low1") is None
+
+
+@pytest.mark.asyncio
+async def test_meaningful_mention_marked_seen_before_originate(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A meaningful mention is marked seen only when it actually gets drafted."""
+    await _seed(db_session)
+    _enable(monkeypatch)
+    _mock_local_model(monkeypatch, "reply")
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    project = await engine._roboco_project()
+    await engine._process_mentions(
+        [_mention("ok1", engagement=1)], project=project, open_count=0
+    )
+    assert await db_session.get(XSeenMentionTable, "ok1") is not None
+
+
+class _FakeRedis:
+    """Minimal fake backing ``get`` / ``set`` / ``aclose`` for the cursor."""
+
+    def __init__(self, initial: dict[str, bytes] | None = None) -> None:
+        self._store: dict[str, bytes] = dict(initial or {})
+
+    async def get(self, name: str) -> bytes | None:
+        return self._store.get(name)
+
+    async def set(self, name: str, value: str) -> bool:
+        self._store[name] = value.encode() if isinstance(value, str) else value
+        return True
+
+    async def aclose(self) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_run_cycle_passes_since_id_cursor_and_persists_new_max(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The persisted since_id cursor is passed to fetch_mentions and the highest
+    fetched id is written back, so a burst >50 between ticks isn't dropped."""
+    await _seed(db_session)
+    _enable(monkeypatch)
+    _mock_local_model(monkeypatch, "reply")
+
+    captured: dict[str, object] = {}
+
+    class _RecordingClient(_FakeClient):
+        async def fetch_mentions(
+            self, since_id: str | None, max_results: int
+        ) -> list[XMention]:
+            _ = max_results
+            captured["since_id"] = since_id
+            return [_mention("500"), _mention("750"), _mention("300")]
+
+    fake = _FakeRedis({"roboco:x_mentions:since_id": b"999"})
+    monkeypatch.setattr(x_engine_module.redis, "from_url", lambda _url: fake)
+    engine = x_engine_module.XEngine(db_session, client=_RecordingClient())
+    await engine.run_cycle()
+
+    assert captured["since_id"] == "999"
+    assert fake._store["roboco:x_mentions:since_id"] == b"750"
+
+
+@pytest.mark.asyncio
+async def test_run_cycle_starts_from_none_when_no_cursor(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """First-ever cycle (no persisted cursor) fetches with since_id=None."""
+    await _seed(db_session)
+    _enable(monkeypatch)
+    _mock_local_model(monkeypatch, "reply")
+
+    captured: dict[str, object] = {}
+
+    class _RecordingClient(_FakeClient):
+        async def fetch_mentions(
+            self, since_id: str | None, max_results: int
+        ) -> list[XMention]:
+            _ = max_results
+            captured["since_id"] = since_id
+            return [_mention("100")]
+
+    fake = _FakeRedis()
+    monkeypatch.setattr(x_engine_module.redis, "from_url", lambda _url: fake)
+    engine = x_engine_module.XEngine(db_session, client=_RecordingClient())
+    await engine.run_cycle()
+
+    assert captured["since_id"] is None
+    assert fake._store["roboco:x_mentions:since_id"] == b"100"
+
+
+@pytest.mark.asyncio
+async def test_run_cycle_redis_failure_is_best_effort(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Redis outage fetching/setting the cursor must not crash the cycle."""
+
+    class _BoomRedis:
+        async def get(self, _name: str) -> bytes | None:
+            raise ConnectionError("redis down")
+
+        async def set(self, _name: str, _value: str) -> bool:
+            raise ConnectionError("redis down")
+
+        async def aclose(self) -> None:
+            return None
+
+    await _seed(db_session)
+    _enable(monkeypatch)
+    _mock_local_model(monkeypatch, "reply")
+    monkeypatch.setattr(x_engine_module.redis, "from_url", lambda _url: _BoomRedis())
+    engine = x_engine_module.XEngine(
+        db_session, client=_FakeClient(mentions=[_mention("m1")])
+    )
+    result = await engine.run_cycle()  # must not raise
+    assert len(result) == ONE
 
 
 # --------------------------------------------------------------------------- #
