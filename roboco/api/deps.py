@@ -280,10 +280,11 @@ def _check_agent_auth_token(
         )
 
 
-def require_panel_token(
+async def require_panel_token(
     x_agent_token: Annotated[str | None, Header(alias="X-Agent-Token")] = None,
+    session_cookie: Annotated[str | None, Cookie(alias=SESSION_COOKIE_NAME)] = None,
 ) -> None:
-    """Panel (CEO) HMAC gate for the live-chat bridges.
+    """Panel (CEO) HMAC gate for the live-chat bridges (dual-path).
 
     The HTTP analog of the WS ``_require_panel_token``: the panel is the only
     caller of the live intake/secretary chat, nginx injects the CEO-signed
@@ -293,17 +294,43 @@ def require_panel_token(
     (``ROBOCO_AGENT_AUTH_REQUIRED`` unset) a missing token is allowed; a
     presented-but-forged token is still rejected, matching
     ``_check_agent_auth_token`` and the WS gate.
+
+    When ``settings.cloud_auth_enabled``, a valid CEO session cookie is also
+    accepted (the panel is cookie-only under cloud auth). Off => unchanged.
     """
-    if _auth_required() and not x_agent_token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing X-Agent-Token header (auth required)",
-        )
-    if x_agent_token and not verify_agent_token(x_agent_token, CEO_AGENT_ID, "ceo", ""):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid X-Agent-Token — signature mismatch.",
-        )
+    if not settings.cloud_auth_enabled:
+        if _auth_required() and not x_agent_token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Missing X-Agent-Token header (auth required)",
+            )
+        if x_agent_token and not verify_agent_token(
+            x_agent_token, CEO_AGENT_ID, "ceo", ""
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid X-Agent-Token — signature mismatch.",
+            )
+        return
+    # cloud_auth on: CEO HMAC token OR CEO session cookie.
+    if x_agent_token:
+        if not verify_agent_token(x_agent_token, CEO_AGENT_ID, "ceo", ""):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid X-Agent-Token — signature mismatch.",
+            )
+        return
+    async for db in get_db():
+        user = await resolve_session_user(session_cookie, db)
+        if user is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=(
+                    "Cloud auth is enabled — a valid session "
+                    "or agent token is required."
+                ),
+            )
+        return
 
 
 async def _resolve_agent_identity(

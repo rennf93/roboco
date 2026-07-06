@@ -265,6 +265,122 @@ def test_check_agent_auth_token_agent_auth_required_no_token_raises(
 
 
 # ---------------------------------------------------------------------------
+# require_panel_token — cloud_auth dual path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_require_panel_token_cloud_auth_no_token_no_cookie_rejects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from roboco.api import deps as _deps
+
+    monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", True)
+    monkeypatch.delenv("ROBOCO_AGENT_AUTH_REQUIRED", raising=False)
+    with pytest.raises(HTTPException) as exc:
+        await _deps.require_panel_token(x_agent_token=None, session_cookie=None)
+    assert exc.value.status_code == _HTTP_401
+
+
+@pytest.mark.asyncio
+async def test_require_panel_token_cloud_auth_valid_token_passes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from roboco.api import deps as _deps
+
+    monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", True)
+    with patch("roboco.api.deps.verify_agent_token", return_value=True):
+        await _deps.require_panel_token(x_agent_token="good", session_cookie=None)
+
+
+@pytest.mark.asyncio
+async def test_require_panel_token_cloud_auth_forged_token_rejects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from roboco.api import deps as _deps
+
+    monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", True)
+    with (
+        patch("roboco.api.deps.verify_agent_token", return_value=False),
+        pytest.raises(HTTPException) as exc,
+    ):
+        await _deps.require_panel_token(x_agent_token="bad", session_cookie=None)
+    assert exc.value.status_code == _HTTP_401
+
+
+@pytest.mark.asyncio
+async def test_require_panel_token_cloud_auth_valid_cookie_passes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from roboco.api import deps as _deps
+
+    monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", True)
+
+    async def _fake_db():
+        yield MagicMock()
+
+    with (
+        patch("roboco.api.deps.get_db", new=_fake_db),
+        patch(
+            "roboco.api.deps.resolve_session_user",
+            new=AsyncMock(return_value=MagicMock()),
+        ),
+    ):
+        await _deps.require_panel_token(x_agent_token=None, session_cookie="good")
+
+
+@pytest.mark.asyncio
+async def test_require_panel_token_cloud_auth_invalid_cookie_rejects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from roboco.api import deps as _deps
+
+    monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", True)
+
+    async def _fake_db():
+        yield MagicMock()
+
+    with (
+        patch("roboco.api.deps.get_db", new=_fake_db),
+        patch(
+            "roboco.api.deps.resolve_session_user",
+            new=AsyncMock(return_value=None),
+        ),
+        pytest.raises(HTTPException) as exc,
+    ):
+        await _deps.require_panel_token(x_agent_token=None, session_cookie="bogus")
+    assert exc.value.status_code == _HTTP_401
+
+
+@pytest.mark.asyncio
+async def test_require_panel_token_dev_mode_no_token_passes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cloud_auth off + agent_auth_required off: dev unchanged."""
+    from roboco.api import deps as _deps
+
+    monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", False)
+    monkeypatch.delenv("ROBOCO_AGENT_AUTH_REQUIRED", raising=False)
+    await _deps.require_panel_token(x_agent_token=None, session_cookie=None)
+
+
+@pytest.mark.asyncio
+async def test_require_panel_token_dev_mode_forged_token_rejects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cloud_auth off + agent_auth_required off: forged token still rejected."""
+    from roboco.api import deps as _deps
+
+    monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", False)
+    with (
+        patch("roboco.api.deps.verify_agent_token", return_value=False),
+        pytest.raises(HTTPException) as exc,
+    ):
+        await _deps.require_panel_token(x_agent_token="bad", session_cookie=None)
+    assert exc.value.status_code == _HTTP_401
+
+
+# ---------------------------------------------------------------------------
 # _resolve_agent_identity
 # ---------------------------------------------------------------------------
 
