@@ -6,12 +6,21 @@ git-backed assess() is covered in test_release_readiness_audit.py (Task 3).
 
 from __future__ import annotations
 
+import subprocess
+from typing import TYPE_CHECKING
+
+import pytest
 from roboco.services.release_readiness import (
     CommitInfo,
+    _commits_since,
+    _run_git,
     classify_changes,
     derive_bump,
     next_version,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _commit(subject: str, body: str = "", labels: tuple[str, ...] = ()) -> CommitInfo:
@@ -88,3 +97,43 @@ def test_pr_label_fallback_classifies_unconventional_subject() -> None:
 def test_breaking_label_drives_major_even_on_unconventional_subject() -> None:
     changes = classify_changes([_commit("Big rework", labels=("breaking",))])
     assert derive_bump(changes) == "major"
+
+
+# --- _run_git: a hung git child must bubble a clear error, not hang silently ---
+
+
+def test_run_git_timeout_raises_runtime_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def _hang(*_a: object, **_kw: object) -> object:
+        raise subprocess.TimeoutExpired(cmd=["git"], timeout=30)
+
+    monkeypatch.setattr(subprocess, "run", _hang)
+    with pytest.raises(RuntimeError, match="timed out after 30s"):
+        _run_git(tmp_path, ["log"])
+
+
+# --- _commits_since: an embedded \x1f in a body must stay in the body field ---
+
+
+def test_commits_since_preserves_field_sep_in_body(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    sha = "deadbeef"
+    subject = "feat: a thing (#1)"
+    body = "BREAKING CHANGE: drops\x1fold api"
+    raw = f"{sha}\x1f{subject}\x1f{body}\x1e"
+
+    def _fake_run_git(_root: Path, args: list[str]) -> str:
+        # Only the log call is expected; return the crafted raw record.
+        assert args[0] == "log"
+        return raw
+
+    monkeypatch.setattr("roboco.services.release_readiness._run_git", _fake_run_git)
+    commits = _commits_since(tmp_path, tag=None)
+    assert len(commits) == 1
+    [commit] = commits
+    assert commit.sha == sha
+    assert commit.subject == subject
+    assert commit.body == body  # the embedded \x1f is preserved
+    assert commit.pr_number == 1
