@@ -50,8 +50,8 @@ WORKDIR /app
 ENV CI=true
 
 # Install dependencies first (layer caching). Unlike the panel image, every
-# dependency here runs at request time — bundle()/renderMedia() execute
-# live per /render call — so there's no separate build output to discard
+# dependency here runs at request time — createRenderJob()/executeRenderJob()
+# execute live per /render call — so there's no separate build output to discard
 # and no multi-stage split.
 # pnpm-workspace.yaml carries the `allowBuilds: esbuild: true` approval —
 # without it pnpm 11 hard-errors with [ERR_PNPM_IGNORED_BUILDS] (exit 1)
