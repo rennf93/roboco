@@ -8,10 +8,14 @@ empty, so every surviving key is an orphan.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, cast
 from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
+
+if TYPE_CHECKING:
+    import asyncio
 from roboco.services import release_proposal as rp
 from roboco.services.release_proposal import sweep_orphan_release_locks
 
@@ -63,7 +67,7 @@ async def test_sweep_deletes_orphan_release_locks() -> None:
     await fake.set(in_flight_key, "livetoken")
 
     rp._INFLIGHT_APPROVES.clear()
-    rp._INFLIGHT_APPROVES[in_flight_id] = object()  # type: ignore[assignment]
+    rp._INFLIGHT_APPROVES[in_flight_id] = cast("asyncio.Task[None]", object())
 
     with patch("roboco.services.release_proposal.redis.from_url", return_value=fake):
         await rp.sweep_orphan_release_locks()
