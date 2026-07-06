@@ -819,6 +819,9 @@ class AgentOrchestrator:
         self._roadmap_engine_task: asyncio.Task | None = None
         self._x_feature_spotlight_task: asyncio.Task | None = None
         self._video_render_task: asyncio.Task | None = None
+        # per-engine-loop heartbeat (monotonic last-success, interval) so
+        # _check_loop_liveness can alert when a cycle task dies silently.
+        self._loop_heartbeats: dict[str, tuple[float, float]] = {}
         # Provider registry: maps a ModelProvider to a dedicated AgentProvider
         # backend. Only providers needing a non-Claude-Code runtime are
         # registered (currently GROK, which speaks the OpenAI protocol). Agents
@@ -939,6 +942,22 @@ class AgentOrchestrator:
         # actually lifted) resets the count for the next episode.
         self._grok_last_park_at: datetime | None = None
         self._grok_repark_count: int = 0
+
+    def _record_loop_heartbeat(self, name: str, interval: float) -> None:
+        self._loop_heartbeats[name] = (time.monotonic(), interval)
+
+    def _check_loop_liveness(self) -> None:
+        now = time.monotonic()
+        heartbeats = getattr(self, "_loop_heartbeats", {})
+        for name, (last_success, interval) in heartbeats.items():
+            stall = now - last_success
+            if stall > 2 * interval:
+                logger.warning(
+                    "engine loop stalled past 2x interval",
+                    loop=name,
+                    stall_seconds=int(stall),
+                    interval=interval,
+                )
 
     # =========================================================================
     # LIFECYCLE
@@ -7210,6 +7229,7 @@ Start by:
                 continue
             if not is_running:
                 await self._handle_stopped_container(agent_id, instance, exit_code)
+        self._check_loop_liveness()
 
     async def _notify_agent_stranded(
         self,
@@ -7408,12 +7428,14 @@ Start by:
             )
 
         interval = settings.self_heal_interval_seconds
+        self._record_loop_heartbeat("self_heal", interval)
         while self._running:
             try:
                 await asyncio.sleep(interval)
                 async with get_db_context() as db:
                     await get_self_heal_engine(db).run_cycle()
                     await db.commit()
+                self._record_loop_heartbeat("self_heal", interval)
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -7432,10 +7454,12 @@ Start by:
         if not settings.ci_watch_enabled:
             return
         interval = settings.ci_watch_interval_seconds
+        self._record_loop_heartbeat("ci_watch", interval)
         while self._running:
             try:
                 await asyncio.sleep(interval)
                 await self._run_ci_watch_cycle()
+                self._record_loop_heartbeat("ci_watch", interval)
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -7520,10 +7544,12 @@ Start by:
         if not settings.dep_update_enabled:
             return
         interval = settings.dep_update_interval_seconds
+        self._record_loop_heartbeat("dep_update", interval)
         while self._running:
             try:
                 await asyncio.sleep(interval)
                 await self._run_dep_update_cycle()
+                self._record_loop_heartbeat("dep_update", interval)
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -7561,10 +7587,12 @@ Start by:
         if not settings.release_manager_enabled:
             return
         interval = settings.release_manager_interval_seconds
+        self._record_loop_heartbeat("release_manager", interval)
         while self._running:
             try:
                 await asyncio.sleep(interval)
                 await self._run_release_manager_cycle()
+                self._record_loop_heartbeat("release_manager", interval)
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -7652,10 +7680,12 @@ Start by:
         if not (settings.x_engine_enabled and settings.x_feature_spotlight_enabled):
             return
         interval = settings.x_feature_spotlight_interval_seconds
+        self._record_loop_heartbeat("x_feature_spotlight", interval)
         while self._running:
             try:
                 await asyncio.sleep(interval)
                 await self._run_x_feature_spotlight_cycle()
+                self._record_loop_heartbeat("x_feature_spotlight", interval)
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -7681,10 +7711,12 @@ Start by:
         if not settings.video_engine_enabled:
             return
         interval = settings.video_render_interval_seconds
+        self._record_loop_heartbeat("video_render", interval)
         while self._running:
             try:
                 await asyncio.sleep(interval)
                 await self._run_video_render_cycle()
+                self._record_loop_heartbeat("video_render", interval)
             except asyncio.CancelledError:
                 break
             except Exception:
