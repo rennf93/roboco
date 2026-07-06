@@ -107,6 +107,10 @@ panel/.env.*.local
 # motion/ (Remotion compositions) + remotion-renderer (its render sidecar)
 motion/node_modules/
 remotion-renderer/node_modules/
+# hyperframes lint/preview generates index.html in each composition dir —
+# regenerated locally as needed, not tracked (the sidecar renders
+# <orientation>.html directly, never index.html)
+motion/compositions/*/index.html
 # Internal-only: strategy/scratch/reference dumps — never publish
 docs/internal/
 .pnpm-store/
