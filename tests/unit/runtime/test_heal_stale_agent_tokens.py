@@ -122,3 +122,41 @@ async def test_heal_skips_when_env_probe_fails(
 
     assert n == 0
     orch._remove_container.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_heal_kills_slug_env_container_with_slug_signed_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pre-fix container carries a slug ROBOCO_AGENT_ID + a slug-signed token.
+
+    The MCP servers send X-Agent-ID as the UUID (gateway v1 parses it as
+    Annotated[UUID]), so the middleware verifies the token against the UUID
+    — a slug-signed token 401s. The heal must verify against the UUID too:
+    a slug-signed token is stale wrt the UUID identity and the container must
+    be killed so it respawns with a UUID-signed token. Verifying against the
+    container-env slug would PASS and leave the stale container 401ing.
+    """
+    secret = secrets.token_hex(32)
+    monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", secret)
+    orch = _orch()
+    be_dev_1_slug = "be-dev-1"
+    # Token signed over the slug (the pre-fix _append_agent_auth_env behaviour).
+    slug_signed_token = issue_agent_token(be_dev_1_slug, "developer", "backend")
+
+    async def inspect(name: str) -> tuple[bool, int | None]:
+        return (name == "roboco-agent-be-dev-1", 0)
+
+    orch._inspect_container_state = AsyncMock(side_effect=inspect)
+    orch._read_container_auth_env = AsyncMock(
+        return_value=(slug_signed_token, be_dev_1_slug, "developer")
+    )
+    removed: list[str] = []
+    orch._remove_container = AsyncMock(
+        side_effect=lambda name, **_: removed.append(name)
+    )
+
+    n = await orch._heal_stale_agent_tokens()
+
+    assert n == 1
+    assert removed == ["roboco-agent-be-dev-1"]

@@ -2593,7 +2593,12 @@ class AgentOrchestrator:
             "-v",
             f"{hosts['mcp_config']}:/app/mcp-config.json:ro",
             "-e",
-            f"ROBOCO_AGENT_ID={config.agent_id}",
+            # Auth identity is the agent's UUID, not its slug: the MCP servers
+            # forward X-Agent-ID as the UUID (gateway v1 endpoints parse it as
+            # Annotated[UUID]) and the HMAC token is signed over the same value,
+            # so the container env the SDK server inherits must match or its
+            # direct API calls 401 with "signature mismatch".
+            f"ROBOCO_AGENT_ID={AGENT_UUIDS.get(config.agent_id, config.agent_id)}",
             "-e",
             f"ROBOCO_AGENT_ROLE={role}",
             "-e",
@@ -2721,7 +2726,13 @@ class AgentOrchestrator:
 
         _role = _get_role(config.agent_id)
         _team = _get_team(config.agent_id) or ""
-        _token = issue_agent_token(config.agent_id, _role, _team)
+        # Sign over the UUID, not the slug: every in-container caller (MCP
+        # servers via the manifest env, SDK server via this container env)
+        # sends X-Agent-ID as the UUID, so the HMAC payload must be the UUID
+        # or the middleware rejects with "signature mismatch". AGENT_UUIDS
+        # maps slug→UUID; fall back to the slug for custom agents not seeded.
+        _agent_uuid = AGENT_UUIDS.get(config.agent_id, config.agent_id)
+        _token = issue_agent_token(_agent_uuid, _role, _team)
         cmd.extend(["-e", f"ROBOCO_AGENT_TOKEN={_token}"])
 
     @staticmethod
@@ -9862,7 +9873,18 @@ Start now: evidence(task_id="{task_id}")
                 continue
             token, agent_id_env, role_env = env
             team = get_agent_team(agent_id_env) or ""
-            if verify_agent_token(token, agent_id_env, role_env, team):
+            # Verify against the UUID the MCP servers actually send as
+            # X-Agent-ID, not the container-env ROBOCO_AGENT_ID (a slug on
+            # pre-fix containers). A stale container spawned before the
+            # slug→UUID fix carries a slug-signed token + a slug
+            # ROBOCO_AGENT_ID, so verifying against the slug would PASS and
+            # leave the stale container running (its MCP server still 401s
+            # sending the UUID). Resolving to the UUID makes the heal reject
+            # the slug-signed token and kill the container so it respawns
+            # with a UUID-signed one. AGENT_UUIDS is slug→UUID keyed, so a
+            # UUID input falls back to itself.
+            agent_uuid = AGENT_UUIDS.get(agent_id_env, agent_id_env)
+            if verify_agent_token(token, agent_uuid, role_env, team):
                 continue
             logger.warning(
                 "Killing agent with a stale auth token at startup; the reaper "
