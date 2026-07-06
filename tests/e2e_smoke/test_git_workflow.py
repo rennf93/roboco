@@ -1,4 +1,4 @@
-"""Git-workflow smoke scenarios for the Phase 4 hardening batch.
+"""Git-workflow smoke scenarios for the 0.19.0 hardening batch.
 
 Cross-layer wiring for three findings that the brief deferred here:
 
@@ -22,6 +22,12 @@ Cross-layer wiring for three findings that the brief deferred here:
   ``MergeConflictError`` and respawning the PM against an already-merged PR.
   Drives ``_pr_is_merged`` with a mocked ``httpx.AsyncClient`` that raises,
   then drives ``_merge_with_retry`` with ``_pr_is_merged`` stubbed to ``None``.
+
+H8 (the ``rebase_onto_base`` clean-tree gate) is NOT exercised here — a real
+clean-tree gate needs a dirty agent worktree, which the harness's
+session-scoped workspace contamination makes infeasible without polluting
+other scenarios. H8 is unit-covered by
+``tests/unit/services/test_git_rebase.py``.
 
 Deviations from a true end-to-end exercise (noted): the smoke harness's git
 origin is local-protocol (tokenless), so H11 cannot exercise a real
@@ -225,9 +231,11 @@ async def test_m37_concurrent_merge_pr_single_write(e2e_stack: E2EStack) -> None
                 return result, merger
 
         # Both fire together: without FOR UPDATE each session's SELECT sees
-        # ACTIVE and both write their own merger. With FOR UPDATE B's SELECT
-        # blocks on A's row lock until A commits, then reads COMPLETED and
-        # no-ops — only A's merger is recorded.
+        # ACTIVE and both write their own merger. With FOR UPDATE one
+        # caller's SELECT blocks on the other's row lock until it commits,
+        # then reads COMPLETED and no-ops — exactly one merger is recorded.
+        # Which caller wins the lock is non-deterministic, so the assertions
+        # below check the invariant, not the winner.
         res_a, res_b = await asyncio.gather(_call(merger_a_id), _call(merger_b_id))
     finally:
         await engine.dispose()
@@ -236,12 +244,11 @@ async def test_m37_concurrent_merge_pr_single_write(e2e_stack: E2EStack) -> None
     b_row, b_merger = res_b
     assert a_row is not None
     assert b_row is not None
-    assert a_row.status == WorkSessionStatus.COMPLETED
-    assert b_row.status == WorkSessionStatus.COMPLETED
-    # Exactly one caller wrote — A recorded itself; B did not overwrite.
-    assert a_row.merged_by == a_merger
-    assert b_row.merged_by == a_merger
-    assert b_row.merged_by != b_merger
+    # Both resolved COMPLETED; both report the same committed merger.
+    assert a_row.status == b_row.status == WorkSessionStatus.COMPLETED
+    winner = a_row.merged_by
+    assert winner in (a_merger, b_merger)
+    assert b_row.merged_by == winner
 
 
 # ---------------------------------------------------------------------------

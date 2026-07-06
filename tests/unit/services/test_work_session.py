@@ -324,24 +324,23 @@ async def test_merge_pr_concurrent_calls_serialize_one_write(
 
     # Both fire together: without FOR UPDATE, each session's SELECT sees the
     # last committed (ACTIVE) row and both write their own merger. With FOR
-    # UPDATE, B's SELECT blocks on A's row lock until A commits, then reads
-    # COMPLETED and no-ops — only A's merger is recorded.
+    # UPDATE, one caller's SELECT blocks on the other's row lock until it
+    # commits, then reads COMPLETED and no-ops — exactly one merger is
+    # recorded. Which caller wins the lock is non-deterministic, so the
+    # assertions below check the invariant, not the winner.
     res_a, res_b = await asyncio.gather(_call(merger_a), _call(merger_b))
     await engine.dispose()
 
     a_row, a_merger = res_a
     b_row, b_merger = res_b
 
-    # Exactly one caller wrote — A merged, B saw COMPLETED and no-ops.
+    # Both resolved COMPLETED; both report the same committed merger.
     assert a_row is not None
     assert b_row is not None
-    assert a_row.status == WorkSessionStatus.COMPLETED
-    assert b_row.status == WorkSessionStatus.COMPLETED
-    # A recorded itself as the merger; B did not overwrite with merger_b.
-    assert a_row.merged_by == a_merger
-    assert b_row.merged_by == a_merger
-    # B no-op'd: its merged_by matches the committed A value, not merger_b.
-    assert b_row.merged_by != b_merger
+    assert a_row.status == b_row.status == WorkSessionStatus.COMPLETED
+    winner = a_row.merged_by
+    assert winner in (a_merger, b_merger)
+    assert b_row.merged_by == winner
 
 
 # ---------------------------------------------------------------------------
