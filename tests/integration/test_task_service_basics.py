@@ -1747,3 +1747,85 @@ async def test_get_active_count_zero_for_unknown(task_setup: dict) -> None:
     svc = task_setup["svc"]
     count = await svc.get_active_count(uuid4())
     assert count == 0
+
+
+# ---------------------------------------------------------------------------
+# add_dependency cycle / self-reference (M18)
+# ---------------------------------------------------------------------------
+
+
+async def _seed_minimal_task(
+    db_session: "AsyncSession", tid: UUID
+) -> UUID:
+    agent = AgentTable(
+        id=uuid4(),
+        name="Dev",
+        slug=f"be-dev-{uuid4().hex[:8]}",
+        role=AgentRole.DEVELOPER,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="dev",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(agent)
+    await db_session.flush()
+    project = ProjectTable(
+        id=uuid4(),
+        name="M-Proj",
+        slug=f"m-proj-{uuid4().hex[:8]}",
+        git_url="https://example.com/r.git",
+        assigned_cell=Team.BACKEND,
+        created_by=agent.id,
+    )
+    db_session.add(project)
+    await db_session.flush()
+    from roboco.db.tables import TaskTable
+
+    db_session.add(
+        TaskTable(
+            id=tid,
+            title="t",
+            description="d",
+            acceptance_criteria=["ac"],
+            status=TaskStatus.PENDING,
+            priority=2,
+            task_type=TaskType.CODE,
+            nature=TaskNature.TECHNICAL,
+            project_id=project.id,
+            created_by=agent.id,
+            team=Team.BACKEND,
+        )
+    )
+    await db_session.flush()
+    return project.id
+
+
+@pytest.mark.asyncio
+async def test_add_dependency_rejects_self_reference(db_session: "AsyncSession") -> None:
+    from roboco.services.base import ConflictError
+    from roboco.services.task import get_task_service
+
+    tid = uuid4()
+    await _seed_minimal_task(db_session, tid)
+    svc = get_task_service(db_session)
+    with pytest.raises(ConflictError, match="self"):
+        await svc.add_dependency(tid, tid)
+
+
+@pytest.mark.asyncio
+async def test_add_dependency_rejects_cycle(db_session: "AsyncSession") -> None:
+    from roboco.services.base import ConflictError
+    from roboco.services.task import get_task_service
+
+    a, b, c = uuid4(), uuid4(), uuid4()
+    await _seed_minimal_task(db_session, a)
+    await _seed_minimal_task(db_session, b)
+    await _seed_minimal_task(db_session, c)
+    svc = get_task_service(db_session)
+    await svc.add_dependency(a, b)
+    await svc.add_dependency(b, c)
+    with pytest.raises(ConflictError, match="cycle"):
+        await svc.add_dependency(c, a)

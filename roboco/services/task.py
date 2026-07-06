@@ -6647,15 +6647,53 @@ class TaskService(BaseService):
         `_unblock_dependents` once the dependency reaches a terminal state.
         Used for cross-cell sequencing — the frontend cell waits on the UX/UI
         design before it dispatches.
+
+        Rejects a self-reference and any edge that would close a cycle (the
+        reverse path already reaches the dependent) — a cycle deadlocks both
+        tasks (`_unblock_dependents` never fires).
         """
         if depends_on_id == task_id:
-            return
+            raise ConflictError(
+                f"task {task_id} cannot depend on itself",
+                resource_type="task_dependency",
+            )
         task = await self.get(task_id)
         if task is None:
             return
-        if depends_on_id not in task.dependency_ids:
-            task.dependency_ids = [*task.dependency_ids, depends_on_id]
-            await self.session.flush()
+        if depends_on_id in task.dependency_ids:
+            return  # idempotent re-add
+        if await self._would_create_cycle(task_id, depends_on_id):
+            raise ConflictError(
+                f"adding {depends_on_id} as a dependency of {task_id} would "
+                "close a dependency cycle",
+                resource_type="task_dependency",
+            )
+        task.dependency_ids = [*task.dependency_ids, depends_on_id]
+        await self.session.flush()
+
+    async def _would_create_cycle(self, task_id: UUID, depends_on_id: UUID) -> bool:
+        """True if ``depends_on_id`` already (transitively) depends on ``task_id``.
+
+        Adding ``task_id -> depends_on_id`` when ``depends_on_id -> ... -> task_id``
+        already exists would close a loop. BFS over ``dependency_ids`` edges.
+        # ponytail: O(V+E) per add_dependency; fine for current task-graph
+        # sizes. If a single parent ever carries thousands of siblings, move
+        # to an incremental dominator check.
+        """
+        seen: set[UUID] = set()
+        frontier: list[UUID] = [depends_on_id]
+        while frontier:
+            current = frontier.pop()
+            if current == task_id:
+                return True
+            if current in seen:
+                continue
+            seen.add(current)
+            row = await self.get(current)
+            if row is None:
+                continue
+            frontier.extend(row.dependency_ids or [])
+        return False
 
     async def wire_sibling_collision_dag(self, parent_task_id: UUID) -> None:
         """Wire the dev-task collision DAG (multi-level sequencing edge kind 3).
