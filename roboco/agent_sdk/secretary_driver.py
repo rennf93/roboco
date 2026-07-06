@@ -25,6 +25,8 @@ from typing import Any
 
 import httpx
 
+from roboco.agents_config import get_agent_team
+
 _TIMEOUT = 30.0
 _SECRETARY_BASE_TOOLS: tuple[str, ...] = ("Read", "Grep", "Glob")
 
@@ -36,10 +38,14 @@ def _api_base() -> str:
 
 
 def _headers() -> dict[str, str]:
+    agent_id = os.environ.get("ROBOCO_AGENT_ID", "")
     headers = {
-        "X-Agent-ID": os.environ.get("ROBOCO_AGENT_ID", ""),
+        "X-Agent-ID": agent_id,
         "X-Agent-Role": os.environ.get("ROBOCO_AGENT_ROLE", "secretary"),
     }
+    team = get_agent_team(agent_id)
+    if team:
+        headers["X-Agent-Team"] = team
     token = os.environ.get("ROBOCO_AGENT_TOKEN")
     if token:
         headers["X-Agent-Token"] = token

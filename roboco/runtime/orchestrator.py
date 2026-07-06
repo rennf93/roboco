@@ -162,6 +162,24 @@ def _system_api_headers() -> dict[str, str]:
     }
 
 
+def _agent_api_headers(agent_uuid: str, role: str) -> dict[str, str]:
+    """Headers for the orchestrator's internal self-API calls acting as a
+    specific agent (the cell-PM auto-submit). Adds the signed ``X-Agent-Token``
+    + ``X-Agent-Team`` so the call passes the ``ROBOCO_AGENT_AUTH_REQUIRED``
+    gate — a hand-built ``{X-Agent-ID, X-Agent-Role}`` dict 401s with
+    "Missing X-Agent-Token" under auth-required (F038/F039 — the same gap the
+    system-headers helper closes for the system identity).
+    """
+    from roboco.agents_config import issue_agent_token
+
+    team = get_agent_team(agent_uuid) or ""
+    headers = {"X-Agent-ID": agent_uuid, "X-Agent-Role": role}
+    if team:
+        headers["X-Agent-Team"] = team
+    headers["X-Agent-Token"] = issue_agent_token(agent_uuid, role, team)
+    return headers
+
+
 # Consecutive failed recovery probes before the CEO is notified once per episode.
 _CEO_NOTIFY_THRESHOLD = 10
 # Consecutive strategy-engine cycle failures before the CEO is notified once
@@ -10986,7 +11004,7 @@ Start now: evidence(task_id="{task_id}")
         try:
             resp = await client.post(
                 f"{self._api_url}/v1/flow/{role_path}/{verb}",
-                headers={"X-Agent-ID": pm_uuid, "X-Agent-Role": role},
+                headers=_agent_api_headers(pm_uuid, role),
                 json={"task_id": task_id, "notes": notes},
             )
             body = resp.json()
