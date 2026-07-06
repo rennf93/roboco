@@ -4416,7 +4416,7 @@ class AgentOrchestrator:
                     agent_token=issue_agent_token(
                         agent_uuid,
                         "secretary",
-                        AGENTS[SECRETARY_AGENT_ID].team.value,
+                        get_agent_team(SECRETARY_AGENT_ID) or "",
                     ),
                     provider_base_url=route.base_url,
                     provider_auth_token=route.auth_token,
