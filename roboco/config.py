@@ -4,11 +4,13 @@ RoboCo Configuration
 Environment-based settings using Pydantic Settings.
 """
 
+import ipaddress
 import os
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import urlparse
 
-from pydantic import Field, computed_field, model_validator
+from pydantic import Field, computed_field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -172,6 +174,30 @@ class Settings(BaseSettings):
         default="http://roboco-ollama:11434/v1",
         description="Base URL for local LLM (Ollama OpenAI-compat API)",
     )
+
+    @field_validator("local_llm_base_url")
+    @classmethod
+    def _local_llm_base_url_internal_only(cls, v: str) -> str:
+        # The fire-and-forget hot path (distillation, RAG synthesis, X/video
+        # drafting) reads this verbatim. Reject non-internal hosts so a one-line
+        # env mistake can't route quiet generation through a paid cloud LLM.
+        host = (urlparse(v).hostname or "").lower()
+        if not host:
+            raise ValueError("local_llm_base_url must have a host")
+        if host in {"localhost", "127.0.0.1", "::1", "roboco-ollama"}:
+            return v
+        if host.endswith(".svc.cluster.local"):
+            return v
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            raise ValueError(
+                f"local_llm_base_url host {host!r} is not an internal address"
+            ) from None
+        if ip.is_private or ip.is_loopback:
+            return v
+        raise ValueError(f"local_llm_base_url host {host!r} is not an internal address")
+
     ollama_base_url: str = Field(
         default="http://roboco-ollama:11434",
         description="Base URL for Ollama native API (embeddings, model mgmt)",
