@@ -116,15 +116,15 @@ services:
         echo "=== All models ready! ==="
 
   # --------------------------------------------------------------------------
-  # Remotion Renderer - sidecar for the video-generation engine (bundles +
-  # renders motion/ compositions to MP4). Harmless when idle — it only
-  # renders when POSTed; the video_engine_* feature flags (off by default in
-  # this compose) gate whether the orchestrator ever sends it work. No DB
-  # access, no git, no credentials.
+  # Video Renderer - sidecar for the video-generation engine (renders
+  # motion/ compositions to MP4 with HyperFrames). Harmless when idle — it
+  # only renders when POSTed; the video_engine_* feature flags (off by
+  # default in this compose) gate whether the orchestrator ever sends it
+  # work. No DB access, no git, no credentials.
   # --------------------------------------------------------------------------
-  remotion-renderer:
-    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-remotion:${ROBOCO_VERSION:-latest}
-    container_name: roboco-remotion
+  video-renderer:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-video-renderer:${ROBOCO_VERSION:-latest}
+    container_name: roboco-video-renderer
     restart: unless-stopped
     networks:
       - default
@@ -249,10 +249,10 @@ services:
       ROBOCO_LOCAL_LLM_MODEL: glm-5.2:cloud
       ROBOCO_DEFAULT_EMBEDDING_MODEL: qwen3-embedding:0.6b
       ROBOCO_OLLAMA_BASE_URL: http://roboco-ollama:11434
-      # Remotion renderer sidecar (use container name). The video engine
+      # Video renderer sidecar (use container name). The video engine
       # itself is default-off (video_engine_enabled); this just points the
       # client at the sidecar for when it's armed.
-      ROBOCO_REMOTION_BASE_URL: http://roboco-remotion:3001
+      ROBOCO_VIDEO_RENDERER_BASE_URL: http://roboco-video-renderer:3001
       # Spawn the PRE-BUILT agent images from the same registry instead of
       # building them from source (the orchestrator pulls any it lacks).
       ROBOCO_AGENT_IMAGE_REGISTRY: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}
@@ -289,7 +289,7 @@ services:
       ROBOCO_SELF_HEAL_ORIGINATE_ENABLED: ${ROBOCO_SELF_HEAL_ORIGINATE_ENABLED:-false}
       ROBOCO_SELF_HEAL_PROJECT_SLUG: ${ROBOCO_SELF_HEAL_PROJECT_SLUG:-roboco-api}
       ROBOCO_SELF_HEAL_CI_WORKFLOW: ${ROBOCO_SELF_HEAL_CI_WORKFLOW:-ci.yml}
-      # Video engine (Remotion): NAS-default-on, OFF in public registry —
+      # Video engine (HyperFrames): NAS-default-on, OFF in public registry —
       # heavier optional feature. Arm via .env + uncomment the video-renders
       # bind mount above so renders persist.
       ROBOCO_VIDEO_ENGINE_ENABLED: ${ROBOCO_VIDEO_ENGINE_ENABLED:-false}

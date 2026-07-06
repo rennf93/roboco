@@ -104,9 +104,9 @@ panel/tsconfig.tsbuildinfo
 panel/.env.local
 panel/.env.*.local
 
-# motion/ (Remotion compositions) + remotion-renderer (its render sidecar)
+# motion/ (HyperFrames compositions) + video-renderer (its render sidecar)
 motion/node_modules/
-remotion-renderer/node_modules/
+video-renderer/node_modules/
 # hyperframes lint/preview generates index.html in each composition dir —
 # regenerated locally as needed, not tracked (the sidecar renders
 # <orientation>.html directly, never index.html)

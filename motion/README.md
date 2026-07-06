@@ -1,6 +1,6 @@
 # motion
 
-In-repo [HyperFrames](https://github.com/heygen-com/hyperframes) composition package. UX/UI devs author bespoke marketing-video compositions here on a normal delivery branch; once a composition merges, the orchestrator's render loop tars this directory and POSTs it to the `remotion-renderer` sidecar (T1 rewrote its render core to `@hyperframes/producer`), which renders the HTML to MP4 with Chromium. This package never renders itself — its own gate (`pnpm test`) is static: a vitest HTML-structure smoke against the authored files. The render-truth check happens on the sidecar, against the merged files.
+In-repo [HyperFrames](https://github.com/heygen-com/hyperframes) composition package. UX/UI devs author bespoke marketing-video compositions here on a normal delivery branch; once a composition merges, the orchestrator's render loop tars this directory and POSTs it to the `video-renderer` sidecar (T1 rewrote its render core to `@hyperframes/producer`), which renders the HTML to MP4 with Chromium. This package never renders itself — its own gate (`pnpm test`) is static: a vitest HTML-structure smoke against the authored files. The render-truth check happens on the sidecar, against the merged files.
 
 ## Adding a composition
 

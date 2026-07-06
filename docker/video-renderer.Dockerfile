@@ -1,18 +1,23 @@
-# remotion-renderer sidecar — untars a motion/ composition source, bundles
-# it, renders one MP4 cut with Remotion, and streams the bytes back.
+# video-renderer sidecar — untars a motion/ composition source, renders one
+# MP4 cut with HyperFrames, and streams the bytes back.
 #
 # Debian (not Alpine): musl slows renders past 10s and has known Chrome
-# Headless Shell compatibility issues (verified against Remotion's own
-# Docker guidance). FFmpeg is bundled inside @remotion/renderer since v4 —
-# no system ffmpeg package here.
+# Headless Shell compatibility issues (verified against upstream
+# headless-Chrome Docker guidance). HyperFrames' @hyperframes/producer
+# encodes via a system ffmpeg binary — unlike @remotion/renderer (which
+# bundled ffmpeg), the producer shells out to ffmpeg on PATH, so install
+# it here.
 #
 # Build context is the project root, like every other service under
 # docker/ — paths below are relative to the repo root.
 FROM node:22-bookworm-slim
 
-# Chrome/Puppeteer runtime libraries — Remotion's documented Debian
-# dependency list for headless rendering. A missing one surfaces as an
-# opaque Puppeteer "Target closed" crash, not a clear missing-library error.
+# Chrome/Puppeteer runtime libraries — the documented Debian dependency
+# list for headless rendering (per Puppeteer/Chrome guidance). A missing
+# one surfaces as an opaque Puppeteer "Target closed" crash, not a clear
+# missing-library error.
+# ffmpeg: required by @hyperframes/producer's local render mode — see top
+# comment; without it renders fail with "FFmpeg not found".
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libnss3 \
     libdbus-1-3 \
@@ -28,10 +33,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpango-1.0-0 \
     libcairo2 \
     libcups2 \
+    ffmpeg \
     ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
-# Activate the exact version remotion-renderer/package.json pins
+# Activate the exact version video-renderer/package.json pins
 # (packageManager: pnpm@11.10.0) rather than trusting corepack's bundled
 # default — a future node:22-alpine shipping a different pnpm would silently
 # change the build's package manager.
@@ -50,15 +56,15 @@ ENV CI=true
 # pnpm-workspace.yaml carries the `allowBuilds: esbuild: true` approval —
 # without it pnpm 11 hard-errors with [ERR_PNPM_IGNORED_BUILDS] (exit 1)
 # because esbuild's postinstall is unapproved, breaking the image build.
-COPY remotion-renderer/package.json remotion-renderer/pnpm-lock.yaml remotion-renderer/pnpm-workspace.yaml ./
+COPY video-renderer/package.json video-renderer/pnpm-lock.yaml video-renderer/pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 
 # Pre-warm Chrome Headless Shell at build time so the container's first
 # real render isn't also the first time it downloads a browser.
-COPY remotion-renderer/ensure-browser.mjs ./
+COPY video-renderer/ensure-browser.mjs ./
 RUN node ensure-browser.mjs
 
-COPY remotion-renderer/server.js remotion-renderer/render.js ./
+COPY video-renderer/server.js video-renderer/render.js ./
 
 EXPOSE 3001
 ENV PORT=3001

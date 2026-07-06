@@ -449,7 +449,7 @@ clean:
 	@cd ..
 	@cd motion && rm -rf node_modules/
 	@cd ..
-	@cd remotion-renderer && rm -rf node_modules/
+	@cd video-renderer && rm -rf node_modules/
 	@cd ..
 
 # Security

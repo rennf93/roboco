@@ -90,7 +90,7 @@ jobs:
           declare -A IMAGES=(
             [roboco-orchestrator]=docker/orchestrator.Dockerfile
             [roboco-panel]=docker/panel.Dockerfile
-            [roboco-remotion]=docker/remotion.Dockerfile
+            [roboco-video-renderer]=docker/video-renderer.Dockerfile
             [roboco-agent-pm]=docker/agent-pm.Dockerfile
             [roboco-agent-dev-be]=docker/agent-dev-be.Dockerfile
             [roboco-agent-dev-fe]=docker/agent-dev-fe.Dockerfile
