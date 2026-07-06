@@ -67,6 +67,15 @@ def _chunk_dsn(db_url: str) -> str:
 
 @pytest.mark.asyncio
 async def test_c3_deleted_journal_unindexed(e2e_stack: E2EStack) -> None:
+    from roboco.db import base as db_base
+
+    # Rebind the app's lazy engine to this test's loop (see H12 for the
+    # rationale): unindex_journal_entry's tracking-row delete routes through
+    # get_db_context, whose lazy engine was bound to the e2e stack's uvicorn
+    # thread loop on import.
+    db_base._DbHolder.engine = None
+    db_base._DbHolder.session_factory = None
+
     entry_id = uuid4()
     source = f"roboco://journals/{entry_id}"
     source_hash = hashlib.sha256(source.encode()).hexdigest()
