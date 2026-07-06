@@ -4413,7 +4413,11 @@ class AgentOrchestrator:
                     cli_model=cli_model,
                     api_url=api_url,
                     agent_uuid=agent_uuid,
-                    agent_token=issue_agent_token(agent_uuid, "secretary", ""),
+                    agent_token=issue_agent_token(
+                        agent_uuid,
+                        "secretary",
+                        AGENTS[SECRETARY_AGENT_ID].team.value,
+                    ),
                     provider_base_url=route.base_url,
                     provider_auth_token=route.auth_token,
                     provider_type=route.provider_type.value,
