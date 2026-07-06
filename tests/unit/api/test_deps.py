@@ -12,6 +12,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
+from roboco.api import deps as _deps
 from roboco.api.deps import (
     _auth_required,
     _check_agent_auth_token,
@@ -221,8 +222,6 @@ def test_check_agent_auth_token_missing_under_cloud_auth_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """cloud_auth on + agent_auth_required off: token still mandatory."""
-    from roboco.api import deps as _deps
-
     monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", True)
     monkeypatch.delenv("ROBOCO_AGENT_AUTH_REQUIRED", raising=False)
     with pytest.raises(HTTPException) as exc:
@@ -233,8 +232,6 @@ def test_check_agent_auth_token_missing_under_cloud_auth_raises(
 def test_check_agent_auth_token_valid_under_cloud_auth_passes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from roboco.api import deps as _deps
-
     monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", True)
     with patch("roboco.api.deps.verify_agent_token", return_value=True):
         _check_agent_auth_token("a", "developer", "backend", x_agent_token="good")
@@ -244,8 +241,6 @@ def test_check_agent_auth_token_dev_mode_no_token_passes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """cloud_auth off + agent_auth_required off: dev unchanged."""
-    from roboco.api import deps as _deps
-
     monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", False)
     monkeypatch.delenv("ROBOCO_AGENT_AUTH_REQUIRED", raising=False)
     _check_agent_auth_token("a", "developer", "backend", x_agent_token=None)
@@ -255,8 +250,6 @@ def test_check_agent_auth_token_agent_auth_required_no_token_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """cloud_auth off + agent_auth_required on: existing behavior unchanged."""
-    from roboco.api import deps as _deps
-
     monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", False)
     monkeypatch.setenv("ROBOCO_AGENT_AUTH_REQUIRED", "true")
     with pytest.raises(HTTPException) as exc:
@@ -273,8 +266,6 @@ def test_check_agent_auth_token_agent_auth_required_no_token_raises(
 async def test_require_panel_token_cloud_auth_no_token_no_cookie_rejects(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from roboco.api import deps as _deps
-
     monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", True)
     monkeypatch.delenv("ROBOCO_AGENT_AUTH_REQUIRED", raising=False)
     with pytest.raises(HTTPException) as exc:
@@ -286,8 +277,6 @@ async def test_require_panel_token_cloud_auth_no_token_no_cookie_rejects(
 async def test_require_panel_token_cloud_auth_valid_token_passes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from roboco.api import deps as _deps
-
     monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", True)
     with patch("roboco.api.deps.verify_agent_token", return_value=True):
         await _deps.require_panel_token(x_agent_token="good", session_cookie=None)
@@ -297,8 +286,6 @@ async def test_require_panel_token_cloud_auth_valid_token_passes(
 async def test_require_panel_token_cloud_auth_forged_token_rejects(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from roboco.api import deps as _deps
-
     monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", True)
     with (
         patch("roboco.api.deps.verify_agent_token", return_value=False),
@@ -312,8 +299,6 @@ async def test_require_panel_token_cloud_auth_forged_token_rejects(
 async def test_require_panel_token_cloud_auth_valid_cookie_passes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from roboco.api import deps as _deps
-
     monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", True)
 
     async def _fake_db():
@@ -333,8 +318,6 @@ async def test_require_panel_token_cloud_auth_valid_cookie_passes(
 async def test_require_panel_token_cloud_auth_invalid_cookie_rejects(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from roboco.api import deps as _deps
-
     monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", True)
 
     async def _fake_db():
@@ -357,8 +340,6 @@ async def test_require_panel_token_dev_mode_no_token_passes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """cloud_auth off + agent_auth_required off: dev unchanged."""
-    from roboco.api import deps as _deps
-
     monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", False)
     monkeypatch.delenv("ROBOCO_AGENT_AUTH_REQUIRED", raising=False)
     await _deps.require_panel_token(x_agent_token=None, session_cookie=None)
@@ -369,8 +350,6 @@ async def test_require_panel_token_dev_mode_forged_token_rejects(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """cloud_auth off + agent_auth_required off: forged token still rejected."""
-    from roboco.api import deps as _deps
-
     monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", False)
     with (
         patch("roboco.api.deps.verify_agent_token", return_value=False),

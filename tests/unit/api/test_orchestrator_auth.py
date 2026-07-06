@@ -16,6 +16,8 @@ import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from roboco.agents_config import issue_agent_token
+from roboco.api import deps as _deps
+from roboco.api.auth.backend import SESSION_COOKIE_NAME
 from roboco.api.deps import _ServiceHolder, set_orchestrator
 from roboco.api.routes.orchestrator import router as orch_router
 
@@ -189,7 +191,6 @@ async def test_dev_mode_missing_token_still_succeeds(
     Preserves the panel/operator flow in dev exactly as F003/F004 did."""
     monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", _SECRET)
     monkeypatch.delenv("ROBOCO_AGENT_AUTH_REQUIRED", raising=False)
-    from roboco.api import deps as _deps
 
     monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", False)
     client, orch = orch_client
@@ -214,7 +215,6 @@ async def test_cloud_auth_forged_ceo_header_no_token_no_cookie_rejected(
     """cloud_auth on: bare X-Agent-Role: ceo with no token/cookie is a spoof."""
     monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", _SECRET)
     monkeypatch.delenv("ROBOCO_AGENT_AUTH_REQUIRED", raising=False)
-    from roboco.api import deps as _deps
 
     monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", True)
     client, orch = orch_client
@@ -233,7 +233,6 @@ async def test_cloud_auth_valid_ceo_token_passes(
 ) -> None:
     monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", _SECRET)
     monkeypatch.delenv("ROBOCO_AGENT_AUTH_REQUIRED", raising=False)
-    from roboco.api import deps as _deps
 
     monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", True)
     client, orch = orch_client
@@ -258,8 +257,6 @@ async def test_cloud_auth_valid_session_cookie_passes(
     """Panel path: a valid CEO session cookie reaches the orchestrator."""
     monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", _SECRET)
     monkeypatch.delenv("ROBOCO_AGENT_AUTH_REQUIRED", raising=False)
-    from roboco.api import deps as _deps
-    from roboco.api.auth.backend import SESSION_COOKIE_NAME
 
     monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", True)
     client, orch = orch_client
@@ -287,8 +284,6 @@ async def test_cloud_auth_invalid_session_cookie_rejected(
 ) -> None:
     monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", _SECRET)
     monkeypatch.delenv("ROBOCO_AGENT_AUTH_REQUIRED", raising=False)
-    from roboco.api import deps as _deps
-    from roboco.api.auth.backend import SESSION_COOKIE_NAME
 
     monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", True)
     client, orch = orch_client
