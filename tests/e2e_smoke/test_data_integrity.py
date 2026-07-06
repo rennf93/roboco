@@ -1,7 +1,8 @@
-"""C3 data-integrity smoke: deleting a journal entry de-indexes its RAG chunks.
+"""Data-integrity smoke scenarios.
 
-The full chain: a journal entry is indexed (chunks in ``chunks_journals`` +
-an ``indexed_documents`` tracking row), then ``OptimalService.unindex_journal_entry``
+C3: deleting a journal entry de-indexes its RAG chunks. The full chain: a
+journal entry is indexed (chunks in ``chunks_journals`` + an
+``indexed_documents`` tracking row), then ``OptimalService.unindex_journal_entry``
 runs against a real pgvector store + the real tracking-row repository, and
 both the chunks and the tracking row are gone. This proves the C3 fix's
 cross-layer wiring end-to-end (no orphaned chunks bleeding into RAG answers).
@@ -14,17 +15,28 @@ with a real ``VectorStore`` against the test DB wrapped in a minimal
 ``OptimalService`` — exercising the exact pgvector + tracking-row deletes
 the production path runs. The ``delete_entry`` call site is covered by
 ``tests/unit/services/test_journal.py``.
+
+H12: notification dedup must not drop a notification whose recipient set
+OVERLAPS but is NOT EQUAL to an existing unacked one's. The ``notify`` do-tool
+takes a single recipient and the notifications REST router is not mounted in
+the smoke harness, so this smoke drives ``NotificationService._create_notification``
+directly against the e2e DB — exercising the real ``_duplicate_unacked_exists``
+SQL predicate + real ``NotificationTable`` insert path (the production path).
 """
 
 from __future__ import annotations
 
 import hashlib
 from typing import TYPE_CHECKING, Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
-from roboco.db.tables import IndexedDocumentTable
+from roboco.db.tables import AgentTable, IndexedDocumentTable, NotificationTable
+from roboco.models import NotificationPriority, NotificationType
+from roboco.models.base import AgentRole, AgentStatus, Team
+from roboco.models.notification import CreateNotificationParams
 from roboco.models.optimal import IndexType
+from roboco.services.notification import NotificationService
 from roboco.services.optimal import OptimalService
 from roboco.services.optimal_brain.vector_store import VectorStore
 from sqlalchemy import select
@@ -34,6 +46,7 @@ if TYPE_CHECKING:
     from tests.e2e_smoke.harness import E2EStack
 
 _SMOKE_DIM = 4  # tiny embedding dim — the table is created fresh per run
+_EXPECTED_H12_ROWS = 2  # first (be-pm) + second (be-pm, main-pm) both persist
 
 
 def _chunk_dsn(db_url: str) -> str:
@@ -124,3 +137,103 @@ async def test_c3_deleted_journal_unindexed(e2e_stack: E2EStack) -> None:
             await engine.dispose()
     finally:
         await store.close()
+
+
+# ---------------------------------------------------------------------------
+# H12 — notification dedup must not drop a notification with an
+# overlapping-but-not-equal recipient set (main-pm learns)
+# ---------------------------------------------------------------------------
+
+
+def _seed_sender_agent() -> AgentTable:
+    return AgentTable(
+        name="cell-pm smoke",
+        slug="cell-pm-smoke",
+        role=AgentRole.CELL_PM,
+        team=Team.BACKEND,
+        status=AgentStatus.OFFLINE,
+        model_config={},
+        system_prompt="",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+
+
+async def _seed_sender(session: Any) -> UUID:
+    from sqlalchemy import delete
+
+    # Idempotent: clear any prior smoke sender so the unique slug holds.
+    await session.execute(delete(AgentTable).where(AgentTable.slug == "cell-pm-smoke"))
+    agent = _seed_sender_agent()
+    session.add(agent)
+    await session.flush()
+    return UUID(str(agent.id))
+
+
+async def _list_notifications(session: Any, sender_id: UUID) -> list[NotificationTable]:
+    result = await session.execute(
+        select(NotificationTable)
+        .where(NotificationTable.from_agent == sender_id)
+        .order_by(NotificationTable.timestamp)
+    )
+    return list(result.scalars().all())
+
+
+@pytest.mark.asyncio
+async def test_h12_dedup_does_not_drop_new_recipient(e2e_stack: E2EStack) -> None:
+    """H12(a) end-to-end: a blocker sent to {be-pm, main-pm} after an unacked
+    one to {be-pm} alone must STILL reach main-pm. Pre-fix the overlap
+    predicate dropped the entire second notification for ALL recipients."""
+    from roboco.db import base as db_base
+    from roboco.db.base import get_db_context
+
+    # Prior smoke tests in the same session (C3) call get_db_context, binding
+    # the app's lazy engine to their event loop. pytest-asyncio gives each
+    # test its own loop, so reusing that engine raises "attached to a
+    # different loop". Drop the holder so this test's first get_db_context
+    # binds a fresh engine to THIS loop.
+    db_base._DbHolder.engine = None
+    db_base._DbHolder.session_factory = None
+
+    # Seed the sender agent through the app's own DB context (same engine the
+    # service uses), so the lazy engine binds once and stays alive for the
+    # service calls below.
+    async with get_db_context() as session:
+        sender_id = await _seed_sender(session)
+        await session.commit()
+
+    be_pm = uuid4()
+    main_pm = uuid4()
+    params_first = CreateNotificationParams(
+        notification_type=NotificationType.ALERT,
+        priority=NotificationPriority.HIGH,
+        from_agent="cell-pm-smoke",
+        to_agents=[str(be_pm)],
+        subject="Blocker on T1",
+        body="first blocker — be-pm only",
+    )
+    params_second = CreateNotificationParams(
+        notification_type=NotificationType.ALERT,
+        priority=NotificationPriority.HIGH,
+        from_agent="cell-pm-smoke",
+        to_agents=[str(be_pm), str(main_pm)],
+        subject="Blocker on T1",
+        body="second blocker — be-pm + main-pm",
+    )
+
+    svc = NotificationService()
+    await svc._create_notification(params_first)
+    await svc._create_notification(params_second)
+
+    async with get_db_context() as session:
+        rows = await _list_notifications(session, sender_id)
+
+    assert len(rows) == _EXPECTED_H12_ROWS, (
+        f"expected both notifications persisted (overlap≠equal must NOT "
+        f"suppress); got {len(rows)} row(s)"
+    )
+    first, second = rows
+    assert set(first.to_agents) == {be_pm}
+    assert set(second.to_agents) == {be_pm, main_pm}
+    assert main_pm in second.to_agents, "main-pm was dropped by dedup overlap"

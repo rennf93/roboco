@@ -29,7 +29,10 @@ from roboco.events import Event, EventType, get_event_bus
 from roboco.foundation.policy.communications import ACK_REQUIRED_BY_TYPE
 from roboco.models.base import AgentRole, NotificationPriority, NotificationType
 from roboco.services.base import BaseService, NotFoundError
-from roboco.services.notification_dedup import all_recipients_recently_notified
+from roboco.services.notification_dedup import (
+    all_recipients_recently_notified,
+    clear_dedup_key,
+)
 from roboco.utils.converters import require_uuid
 
 if TYPE_CHECKING:
@@ -946,6 +949,7 @@ class NotificationDeliveryService(BaseService):
             from_agent=cast("UUID | None", notification.from_agent),
             recipients=cast("list[UUID]", notification.to_agents),
             related_task_id=cast("UUID | None", notification.related_task_id),
+            subject=notification.subject,
         ):
             _log.info(
                 "Suppressed re-fire notification (loop-prone, recent window)",
@@ -1076,6 +1080,18 @@ class NotificationDeliveryService(BaseService):
             notification.read_by = [*notification.read_by, agent_id]
 
         await self.session.flush()
+        # Drop the per-recipient Redis dedup key so a post-ack re-send of the
+        # same notification is not suppressed by a stale 60s window. The key
+        # is per (type, sender, recipient, task, subject); only loop-prone
+        # types carry one, and clear_dedup_key is a no-op fail-open for the
+        # rest. Best-effort: a Redis miss never blocks the ack.
+        await clear_dedup_key(
+            ntype=notification.type,
+            from_agent=cast("UUID", notification.from_agent),
+            recipient=agent_id,
+            related_task_id=cast("UUID | None", notification.related_task_id),
+            subject=notification.subject,
+        )
         return notification
 
     async def mark_read_for_recipient(
