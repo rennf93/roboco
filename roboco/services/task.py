@@ -4396,13 +4396,11 @@ class TaskService(BaseService):
         if not task:
             return None
 
-        # Accept tasks QA is actively working on (claimed or in_progress)
-        # as well as awaiting_qa (for direct pass without starting)
-        valid_statuses = {
-            TaskStatus.AWAITING_QA,
-            TaskStatus.CLAIMED,
-            TaskStatus.IN_PROGRESS,
-        }
+        # L29: the gateway `claim_review` keeps the task at AWAITING_QA so the
+        # QA agent works the review from there; a direct service call from
+        # CLAIMED/IN_PROGRESS is no longer accepted — the audit journey would
+        # skip the task.awaiting_qa row and break QA dwell metrics.
+        valid_statuses = {TaskStatus.AWAITING_QA}
         if task.status not in valid_statuses:
             return None
 
@@ -4476,12 +4474,10 @@ class TaskService(BaseService):
         if not task:
             return None
 
-        # Accept tasks QA is actively working on
-        valid_statuses = {
-            TaskStatus.AWAITING_QA,
-            TaskStatus.CLAIMED,
-            TaskStatus.IN_PROGRESS,
-        }
+        # L29: fail_qa accepts AWAITING_QA only — mirrors pass_qa. The gateway
+        # `fail_review` verb already enforces source_statuses={AWAITING_QA};
+        # this closes the direct-service leak.
+        valid_statuses = {TaskStatus.AWAITING_QA}
         if task.status not in valid_statuses:
             return None
 

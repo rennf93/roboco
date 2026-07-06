@@ -1932,3 +1932,51 @@ async def test_parallel_completion_race_single_transition(
         f"parallel completion emitted {len(transitions)} awaiting_pm_review "
         "audit rows — FOR UPDATE missing"
     )
+
+
+# ---------------------------------------------------------------------------
+# L29: pass_qa / fail_qa accept AWAITING_QA only
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pass_qa_refuses_in_progress(db_session: "AsyncSession") -> None:
+    """The gateway enforces AWAITING_QA; the service must match — an
+    in_progress QA claim must not pass_qa directly (the audit journey
+    would skip the task.awaiting_qa row, breaking QA dwell metrics)."""
+    from roboco.db.tables import TaskTable
+    from roboco.services.task import get_task_service
+
+    tid = uuid4()
+    await _seed_minimal_task(db_session, tid)
+    from sqlalchemy import select as _select
+
+    row = (await db_session.execute(_select(TaskTable).where(TaskTable.id == tid))).scalar_one()
+    row.status = TaskStatus.IN_PROGRESS
+    row.pr_number = 1
+    row.pr_created = True
+    await db_session.flush()
+
+    svc = get_task_service(db_session)
+    result = await svc.pass_qa(tid, notes="ok")
+    assert result is None, "pass_qa accepted IN_PROGRESS — no awaiting_qa hop (L29)"
+
+
+@pytest.mark.asyncio
+async def test_pass_qa_accepts_awaiting_qa(db_session: "AsyncSession") -> None:
+    from roboco.db.tables import TaskTable
+    from roboco.services.task import get_task_service
+
+    tid = uuid4()
+    await _seed_minimal_task(db_session, tid)
+    from sqlalchemy import select as _select
+
+    row = (await db_session.execute(_select(TaskTable).where(TaskTable.id == tid))).scalar_one()
+    row.status = TaskStatus.AWAITING_QA
+    row.pr_number = 1
+    row.pr_created = True
+    await db_session.flush()
+
+    svc = get_task_service(db_session)
+    result = await svc.pass_qa(tid, notes="ok")
+    assert result is not None and result.status == TaskStatus.AWAITING_DOCUMENTATION
