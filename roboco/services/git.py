@@ -3336,10 +3336,10 @@ class GitService(BaseService):
         """Get a workspace where this branch can be operated on.
 
         Resolves the workspace via ``_resolve_workspace_agent_id`` (the
-        actor → assignee → creator fallback chain). Without it, post-
-        handoff calls (e.g. pr_target on a task whose assigned_to was
-        cleared by submit_qa) raise ValidationError when
-        project.workspace_path is unset.
+        actor → assignee → None fallback, with project.workspace_path as
+        the final fallback). Without it, post-handoff calls (e.g.
+        pr_target on a task whose assigned_to was cleared by submit_qa)
+        raise ValidationError when project.workspace_path is unset.
         """
         task = await self._task_for_branch(branch_name)
         if task is None:
@@ -4266,9 +4266,10 @@ class GitService(BaseService):
     ) -> str:
         """Return the current target (base) branch of an open PR.
 
-        Workspace resolution mirrors pr_merge: actor → assigned_to →
-        created_by. Lets the Main PM call pr_target after
-        ``submit_qa`` has cleared ``assigned_to`` without ValidationError.
+        Workspace resolution mirrors pr_merge: actor → assigned_to → None
+        (project.workspace_path as the final fallback). Lets the Main PM
+        call pr_target after ``submit_qa`` has cleared ``assigned_to``
+        without ValidationError.
 
         ``pr_number`` alone is ambiguous across projects (GitHub numbers PRs
         per-repo, but ``tasks.pr_number`` stores the bare integer with no repo
