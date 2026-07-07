@@ -57,6 +57,7 @@ from roboco.foundation.policy.agent_loop import DEFAULT_BUDGET as _AGENT_LOOP_BU
 from roboco.foundation.policy.batch import is_branchless_coordination
 from roboco.foundation.policy.content import markers as _markers
 from roboco.models import AgentRole, Team
+from roboco.models.base import ModelProvider
 from roboco.models.runtime import (
     MODEL_MAP,
     ROLE_EFFORT_MAP,
@@ -5720,8 +5721,19 @@ class AgentOrchestrator:
         Tries the agent SDK's ``/usage/status`` first; on a zero/miss falls
         back to the durable transcript (the SDK can report zero mid-run, the
         same race the finalize path handles). Returns ``None`` when neither
-        source has any usage yet.
+        source has any usage yet. GROK has no SDK server or Claude transcript,
+        so it routes to its ``usage.json`` — the same early return the finalize
+        path uses, so live USAGE_SNAPSHOT reflects grok agents mid-run too.
         """
+        instance = self._instances.get(agent_id)
+        is_grok = (
+            instance is not None
+            and instance.config is not None
+            and instance.config.provider_type == ModelProvider.GROK.value
+        )
+        if is_grok:
+            tokens = self._grok_usage_tokens(agent_id)
+            return tokens if any(tokens) else None
         tokens = await self._fetch_agent_tokens(client, agent_id)
         if tokens is not None:
             return tokens
