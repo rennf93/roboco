@@ -13,6 +13,7 @@ import type {
   AuditorFlag,
   AuditorReport,
   FlagSeverity,
+  OrchestratorStatus,
 } from "@/types";
 
 export const dashboardKeys = {
@@ -58,14 +59,23 @@ export function useCeoOverview() {
 }
 
 export function useMetrics() {
+  const queryClient = useQueryClient();
   return useQuery({
     queryKey: dashboardKeys.metrics(),
     queryFn: async (): Promise<MetricsSummary> => {
-      // Fetch all metrics in parallel, including real agent status
+      // M40: agent counts come from the useAgentStatus 10s poll cache, not a
+      // third fetch here; fetchQuery dedupes against the in-flight poll on a
+      // cold cache.
       const [velocity, blockers, agentStatus] = await Promise.all([
         dashboardApi.getVelocityMetrics(),
         dashboardApi.getBlockerMetrics(),
-        dashboardApi.getAgentStatus(),
+        queryClient.getQueryData<OrchestratorStatus>(
+          dashboardKeys.agentStatus(),
+        ) ??
+          (await queryClient.fetchQuery({
+            queryKey: dashboardKeys.agentStatus(),
+            queryFn: () => dashboardApi.getAgentStatus(),
+          })),
       ]);
       return {
         velocity,
