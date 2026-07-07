@@ -11,6 +11,7 @@ from roboco.api.schemas.v1.flow import (
     DelegateRequest,
     IWillPlanRequest,
     IWillWorkOnRequest,
+    SubTaskCreate,
 )
 from roboco.models.base import Complexity
 
@@ -181,7 +182,7 @@ def test_i_will_plan_request_rejects_overlong_subtask_title() -> None:
             task_id=uuid4(),
             plan="plan",
             approach="a" * 150,
-            sub_tasks=[{"title": "t" * 201, "description": "d" * 30}],
+            sub_tasks=[SubTaskCreate(title="t" * 201, description="d" * 30)],
         )
 
 
@@ -191,7 +192,7 @@ def test_i_will_plan_request_rejects_overlong_subtask_description() -> None:
             task_id=uuid4(),
             plan="plan",
             approach="a" * 150,
-            sub_tasks=[{"title": "ok title", "description": "d" * 601}],
+            sub_tasks=[SubTaskCreate(title="ok title", description="d" * 601)],
         )
 
 
@@ -202,7 +203,7 @@ def test_i_will_plan_request_rejects_thin_subtask_description() -> None:
             task_id=uuid4(),
             plan="plan",
             approach="a" * 150,
-            sub_tasks=[{"title": "ok title", "description": "too short"}],
+            sub_tasks=[SubTaskCreate(title="ok title", description="too short")],
         )
 
 
