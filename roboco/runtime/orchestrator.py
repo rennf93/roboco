@@ -10555,6 +10555,71 @@ Start now: evidence(task_id="{task_id}")
         )
         return False
 
+    async def _pm_tracing_gap_reset(
+        self,
+        agent_slug: str,
+        task_id: Any,
+        record: dict[str, Any],
+        current_status: Any,
+        now: datetime,
+    ) -> bool:
+        """Reset the strike counter when the PM made a rule-following retry.
+
+        A tracing_gap normally means the agent is advancing through a verb
+        chain, so reset — but only up to ``_PM_RESPAWN_MAX_TRACING_RESETS``.
+        A task whose every respawn trips the same gap is wedged, not
+        progressing, so cap the resets and let strikes accrue once the
+        budget is exhausted. Returns True when the counter was reset.
+        """
+        if not await self._pm_made_rule_following_retry(agent_slug, task_id, record):
+            return False
+        resets = record.get("tracing_resets", 0)
+        if resets < self._PM_RESPAWN_MAX_TRACING_RESETS:
+            record["tracing_resets"] = resets + 1
+            record["count"] = 1
+            record["last_check"] = now
+            record["notified"] = False
+            self._schedule_respawn_persist(agent_slug, str(task_id), record)
+            return True
+        logger.warning(
+            "PM respawn tracing_gap reset budget exhausted — "
+            "treating recurring gap as a stuck loop",
+            agent_id=agent_slug,
+            task_id=task_id,
+            task_status=current_status,
+            tracing_resets=resets,
+        )
+        return False
+
+    def _pm_cooldown_gate(
+        self,
+        agent_slug: str,
+        task_id: Any,
+        record: dict[str, Any],
+        now: datetime,
+    ) -> bool | None:
+        """Self-heal a previously-tripped gate after a cooldown.
+
+        Returns True to keep gating, False to let the spawn through after a
+        cooldown reset, or None when the gate hasn't tripped yet (caller
+        continues to the increment path). last_check is frozen at the trip
+        tick; this branch returns before the increment below updates it.
+        """
+        if not (
+            record["count"] > self._PM_RESPAWN_MAX_UNPRODUCTIVE
+            and record.get("notified")
+        ):
+            return None
+        elapsed: bool = (now - record["last_check"]).total_seconds() > (
+            self._PM_RESPAWN_TRIP_COOLDOWN_SECONDS
+        )
+        if elapsed:
+            record["count"] = 1
+            record["last_check"] = now
+            record["notified"] = False
+            self._schedule_respawn_persist(agent_slug, str(task_id), record)
+        return not elapsed
+
     async def _pm_respawn_should_gate(
         self, agent_slug: str, task: dict[str, Any]
     ) -> bool:
@@ -10605,33 +10670,13 @@ Start now: evidence(task_id="{task_id}")
             self._respawn_status_change_resets(key, record, current_status, now)
         ):
             return False
-        # Same status as last spawn — could be a stuck loop OR a
-        # rule-following retry. A tracing_gap normally means the agent is
-        # advancing through a verb chain, so reset the strike counter — but
-        # only up to a bound. A task whose EVERY respawn trips the same gap is
-        # wedged, not progressing (e.g. the unblock journal-decision gate a
-        # cold-respawned PM can never satisfy), so cap the resets and let
-        # strikes accrue once the budget is exhausted. Without this cap the
-        # gate never fires for a tracing_gap loop and respawns run forever.
-        if await self._pm_made_rule_following_retry(agent_slug, task_id, record):
-            resets = record.get("tracing_resets", 0)
-            if resets < self._PM_RESPAWN_MAX_TRACING_RESETS:
-                record["tracing_resets"] = resets + 1
-                record["count"] = 1
-                record["last_check"] = now
-                record["notified"] = False
-                self._schedule_respawn_persist(
-                    agent_slug, str(task_id), self._pm_respawn_tracker[key]
-                )
-                return False
-            logger.warning(
-                "PM respawn tracing_gap reset budget exhausted — "
-                "treating recurring gap as a stuck loop",
-                agent_id=agent_slug,
-                task_id=task_id,
-                task_status=current_status,
-                tracing_resets=resets,
-            )
+        # ponytail: helpers hold the two resettable sub-loops (tracing-gap,
+        # cooldown); main fn just routes. Inline again if either grows a
+        # second distinct reset path.
+        if await self._pm_tracing_gap_reset(
+            agent_slug, task_id, record, current_status, now
+        ):
+            return False
         # Already tripped on a PREVIOUS tick (notified flipped): the count is
         # frozen past the threshold and last_check is frozen at the trip tick,
         # so a deploy that fixed the underlying loop (auth/prompt/schema) can
@@ -10639,29 +10684,12 @@ Start now: evidence(task_id="{task_id}")
         # surgery. A still-wedged task re-trips after the threshold (bounded
         # re-burn: ~3 spawns per cooldown window); a fixed one advances and
         # the status-change path fully resets the counter.
-        if record["count"] > self._PM_RESPAWN_MAX_UNPRODUCTIVE and record.get(
-            "notified"
-        ):
-            # Cooldown elapsed -> reset count=1 and let the spawn through (the
-            # underlying loop may have been fixed by a deploy); still within
-            # the cooldown -> keep gating. last_check is frozen at the trip
-            # tick (this branch returns before the increment below updates it).
-            elapsed: bool = (now - record["last_check"]).total_seconds() > (
-                self._PM_RESPAWN_TRIP_COOLDOWN_SECONDS
-            )
-            if elapsed:
-                record["count"] = 1
-                record["last_check"] = now
-                record["notified"] = False
-                self._schedule_respawn_persist(
-                    agent_slug, str(task_id), self._pm_respawn_tracker[key]
-                )
-            return not elapsed
+        gate = self._pm_cooldown_gate(agent_slug, task_id, record, now)
+        if gate is not None:
+            return gate
         record["count"] += 1
         record["last_check"] = now
-        self._schedule_respawn_persist(
-            agent_slug, str(task_id), self._pm_respawn_tracker[key]
-        )
+        self._schedule_respawn_persist(agent_slug, str(task_id), record)
         tripped: bool = record["count"] > self._PM_RESPAWN_MAX_UNPRODUCTIVE
         if tripped:
             logger.warning(
@@ -10680,9 +10708,7 @@ Start now: evidence(task_id="{task_id}")
             # an overseer once so a wedged agent isn't silently stranded.
             if not record.get("notified"):
                 record["notified"] = True
-                self._schedule_respawn_persist(
-                    agent_slug, str(task_id), self._pm_respawn_tracker[key]
-                )
+                self._schedule_respawn_persist(agent_slug, str(task_id), record)
                 await self._notify_stuck_agent(agent_slug, task_id, current_status)
         return tripped
 

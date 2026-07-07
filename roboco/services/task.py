@@ -151,6 +151,12 @@ _REVIEW_QUEUE_STATES: frozenset[TaskStatus] = frozenset(
     }
 )
 
+# Terminal hatch states — admin_set_status refuses a terminal -> non-terminal
+# resurrection unless force=True. Shared by the admin override helpers.
+_TERMINAL_STATES: frozenset[TaskStatus] = frozenset(
+    {TaskStatus.COMPLETED, TaskStatus.CANCELLED}
+)
+
 
 # Board / advisory roles review and advise; they never own or execute a
 # descendant code task. Handing one to them (e.g. via the main_pm→product_owner
@@ -2311,20 +2317,7 @@ class TaskService(BaseService):
         # skews metrics (revision_count bumps on a forced needs_revision are
         # admin recovery, not rework). The force flag is the explicit,
         # audited bypass the route already requires for terminal hatch states.
-        terminal = {TaskStatus.COMPLETED, TaskStatus.CANCELLED}
-        from_is_terminal = TaskStatus(from_status) in terminal
-        to_is_terminal = new_status in terminal
-        if from_is_terminal and not to_is_terminal and not force:
-            raise TaskLifecycleError(
-                from_status,
-                new_status.value,
-                message=(
-                    f"admin_set_status refuses {from_status} -> "
-                    f"{new_status.value}: a terminal task cannot be resurrected "
-                    "without force=True (audited explicit bypass)."
-                ),
-                task_id=cast("Any", task.id),
-            )
+        self._refuse_terminal_resurrection(task, from_status, new_status, force)
 
         restored = await self._admin_out_of_blocked(
             task, from_status, new_status, actor_id=actor_id, actor_role=actor_role
@@ -2352,39 +2345,13 @@ class TaskService(BaseService):
             agent_role=actor_role,
             audit_agent_id=actor_id,
         )
-        # M20: under a forced terminal -> needs_revision admin override, undo
-        # the revision_count bump _emit_status_transition_audit just applied.
-        # Admin recovery from a terminal state is not a rework cycle. Mirrors
-        # _apply_pre_block_restore's undo.
-        if force and from_is_terminal and new_status == TaskStatus.NEEDS_REVISION:
-            task.revision_count = max((task.revision_count or 1) - 1, 0)
-            await self.session.flush()
         if force:
-            # #13: a distinct audit row marks the override as an explicit,
-            # acknowledged bypass past the lifecycle gate — distinguishable
-            # from the in-band transition row above in the audit journey.
-            from roboco.db.tables import AuditLogTable
-
-            agent_uuid_force: UUID | None = None
-            if actor_id is not None:
-                try:
-                    agent_uuid_force = UUID(str(actor_id))
-                except (ValueError, AttributeError):
-                    agent_uuid_force = None
-            self.session.add(
-                AuditLogTable(
-                    event_type="task.admin_override",
-                    agent_id=agent_uuid_force,
-                    target_type="task",
-                    target_id=task.id,
-                    severity="warning",
-                    details={
-                        "from_status": from_status,
-                        "to_status": new_status.value,
-                        "agent_role": actor_role,
-                        "forced": True,
-                    },
-                )
+            await self._apply_forced_override_effects(
+                task,
+                from_status=from_status,
+                new_status=new_status,
+                actor_id=actor_id,
+                actor_role=actor_role,
             )
         self.log.info(
             "Task status set via admin override",
@@ -9161,6 +9128,78 @@ class TaskService(BaseService):
                     "agent_role": actor_role,
                     "forced": False,
                     "restore": True,
+                },
+            )
+        )
+
+    def _refuse_terminal_resurrection(
+        self,
+        task: TaskTable,
+        from_status: str,
+        new_status: TaskStatus,
+        force: bool,
+    ) -> None:
+        """M20: raise on terminal -> non-terminal unless force=True. A COMPLETED/
+        CANCELLED task resurrected to a live state re-enters dispatch and skews
+        metrics; the force flag is the explicit, audited bypass.
+        """
+        if (
+            TaskStatus(from_status) in _TERMINAL_STATES
+            and new_status not in _TERMINAL_STATES
+            and not force
+        ):
+            raise TaskLifecycleError(
+                from_status,
+                new_status.value,
+                message=(
+                    f"admin_set_status refuses {from_status} -> "
+                    f"{new_status.value}: a terminal task cannot be resurrected "
+                    "without force=True (audited explicit bypass)."
+                ),
+                task_id=cast("Any", task.id),
+            )
+
+    async def _apply_forced_override_effects(
+        self,
+        task: TaskTable,
+        from_status: str,
+        new_status: TaskStatus,
+        actor_id: str | UUID | None,
+        actor_role: str | None,
+    ) -> None:
+        """Side-effects specific to a ``force=True`` admin override.
+
+        M20: undo the revision_count bump ``_emit_status_transition_audit``
+        just applied under a forced terminal -> needs_revision override (admin
+        recovery, not rework). #13: emit the distinct audit row marking the
+        override as an acknowledged bypass past the lifecycle gate.
+        """
+        if (
+            TaskStatus(from_status) in _TERMINAL_STATES
+            and new_status == TaskStatus.NEEDS_REVISION
+        ):
+            task.revision_count = max((task.revision_count or 1) - 1, 0)
+            await self.session.flush()
+        from roboco.db.tables import AuditLogTable
+
+        agent_uuid: UUID | None = None
+        if actor_id is not None:
+            try:
+                agent_uuid = UUID(str(actor_id))
+            except (ValueError, AttributeError):
+                agent_uuid = None
+        self.session.add(
+            AuditLogTable(
+                event_type="task.admin_override",
+                agent_id=agent_uuid,
+                target_type="task",
+                target_id=task.id,
+                severity="warning",
+                details={
+                    "from_status": from_status,
+                    "to_status": new_status.value,
+                    "agent_role": actor_role,
+                    "forced": True,
                 },
             )
         )

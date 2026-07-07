@@ -224,6 +224,18 @@ def _py_decorator_is_route(decorator: Node) -> bool:
     return obj_name in _ROUTER_OBJECTS or method in _HTTP_METHODS
 
 
+def _attr_call_hits_db(fn: Node) -> bool:
+    method = _text(fn.child_by_field_name("attribute"))
+    if method not in _DB_METHODS:
+        return False
+    if method not in _AMBIGUOUS_DB_METHODS:
+        return True
+    obj = fn.child_by_field_name("object")
+    obj_name = _text(obj) if obj is not None and obj.type == "identifier" else ""
+    # non-session receiver (seen_tags.add, cache.add) — not DB
+    return obj_name in _SESSION_HANDLES
+
+
 def _body_hits_db(func: Node) -> bool:
     body = func.child_by_field_name("body")
     if body is None:
@@ -232,22 +244,9 @@ def _body_hits_db(func: Node) -> bool:
         fn = call.child_by_field_name("function")
         if fn is None:
             continue
-        if fn.type == "attribute":
-            method = _text(fn.child_by_field_name("attribute"))
-            if method in _DB_METHODS:
-                if method in _AMBIGUOUS_DB_METHODS:
-                    obj = fn.child_by_field_name("object")
-                    obj_name = (
-                        _text(obj)
-                        if obj is not None and obj.type == "identifier"
-                        else ""
-                    )
-                    if obj_name in _SESSION_HANDLES:
-                        return True
-                    # non-session receiver (seen_tags.add, cache.add) — not DB
-                else:
-                    return True
-        elif fn.type == "identifier" and _text(fn) in _DB_CONSTRUCTS:
+        if (fn.type == "attribute" and _attr_call_hits_db(fn)) or (
+            fn.type == "identifier" and _text(fn) in _DB_CONSTRUCTS
+        ):
             return True
     return False
 

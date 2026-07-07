@@ -30,34 +30,37 @@ class LoginRateLimiter(BaseHTTPMiddleware):
         self.max_attempts = max_attempts
         self.window = window
 
+    def _client_ip(self, request: Request) -> str:
+        # nginx is the single entry point; read the downstream client IP from
+        # X-Forwarded-For (first hop) / X-Real-IP, falling back to the peer.
+        return (
+            request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+            or request.headers.get("x-real-ip")
+            or (request.client.host if request.client else "unknown")
+        )
+
+    async def _bump(self, key: str, conn: redis.Redis) -> int:
+        count = await conn.incr(key)
+        if count == 1:
+            await conn.expire(key, self.window)
+        return count
+
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
         # Only the login endpoint is limited; everything else passes through.
         if request.method != "POST" or request.url.path != f"{self.prefix}/login":
             return await call_next(request)
-        # nginx is the single entry point; read the downstream client IP from
-        # X-Forwarded-For (first hop) / X-Real-IP, falling back to the peer.
-        ip = (
-            request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-            or request.headers.get("x-real-ip")
-            or (request.client.host if request.client else "unknown")
-        )
-        key = f"auth:login:rl:{ip}"
-        count = 0
+        key = f"auth:login:rl:{self._client_ip(request)}"
         try:
             # Test seam: a fake injected via app.state.login_redis. Production
             # leaves it unset and opens its own per-request connection.
             injected = getattr(request.app.state, "login_redis", None)
             if injected is not None:
-                count = await injected.incr(key)
-                if count == 1:
-                    await injected.expire(key, self.window)
+                count = await self._bump(key, injected)
             else:
                 async with redis.from_url(settings.redis_url) as conn:
-                    count = await conn.incr(key)
-                    if count == 1:
-                        await conn.expire(key, self.window)
+                    count = await self._bump(key, conn)
         except Exception:
             # Redis down: fail open. Login is already password-gated; a hard
             # 500 on a redis outage is worse than a relaxed limit.

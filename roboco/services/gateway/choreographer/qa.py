@@ -581,29 +581,7 @@ class QAMixin(_Base):
                 verb="pass_review",
             )
 
-        warning: str | None = None
-        doc_agent = await self.task.documenter_for_team(t.team)
-        if doc_agent is not None:
-            try:
-                await self.task.reassign(task_id, doc_agent.id)
-                await self.a2a.send(
-                    from_agent=qa_agent_id,
-                    to_agent=doc_agent.id,
-                    skill="documentation",
-                    task_id=task_id,
-                    body=f"QA passed task {t.id}. PR: {t.pr_url}. Please document.",
-                )
-            except Exception as exc:
-                logger.warning(
-                    "pass_review side-effect failed - transition committed, "
-                    "handoff did not fire",
-                    task_id=str(task_id),
-                    error=str(exc),
-                )
-                warning = (
-                    f"QA-pass transition committed but the documenter handoff "
-                    f"failed ({exc}). Re-issue the notification via dm."
-                )
+        warning = await self._pass_review_documenter_handoff(qa_agent_id, task_id, t)
         env = Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
@@ -613,6 +591,40 @@ class QAMixin(_Base):
         if warning:
             env.warning = warning
         return env
+
+    async def _pass_review_documenter_handoff(
+        self, qa_agent_id: UUID, task_id: UUID, t: Any
+    ) -> str | None:
+        """Best-effort reassign + a2a-notify the team's documenter.
+
+        Returns a warning string when the side-effect failed (the QA-pass
+        transition is already committed at this point), else None. Pulled
+        out of ``pass_review`` to keep it under the cyclomatic bound.
+        """
+        doc_agent = await self.task.documenter_for_team(t.team)
+        if doc_agent is None:
+            return None
+        try:
+            await self.task.reassign(task_id, doc_agent.id)
+            await self.a2a.send(
+                from_agent=qa_agent_id,
+                to_agent=doc_agent.id,
+                skill="documentation",
+                task_id=task_id,
+                body=f"QA passed task {t.id}. PR: {t.pr_url}. Please document.",
+            )
+        except Exception as exc:
+            logger.warning(
+                "pass_review side-effect failed - transition committed, "
+                "handoff did not fire",
+                task_id=str(task_id),
+                error=str(exc),
+            )
+            return (
+                f"QA-pass transition committed but the documenter handoff "
+                f"failed ({exc}). Re-issue the notification via dm."
+            )
+        return None
 
     async def fail_review(
         self, qa_agent_id: UUID, task_id: UUID, issues: list[str]

@@ -79,23 +79,35 @@ class DepUpdateEngine(BaseService):
                     cap=settings.dep_update_max_open_tasks,
                 )
                 break
-            if not await self._eligible(project, open_keys):
+            task = await self._open_for_project(task_svc, project, open_keys)
+            if task is None:
                 continue
-            task = await self._open_task(task_svc, project)
             created.append(task)
             open_count += 1
-            open_keys.add(
-                (
-                    repo_key(str(project.git_url or "")),
-                    str(project.dep_update_command or "").strip(),
-                )
-            )
-            self.log.info(
-                "dep-update task opened",
-                task_id=str(task.id),
-                project=str(getattr(project, "slug", "")),
-            )
         return created
+
+    async def _open_for_project(
+        self,
+        task_svc: TaskService,
+        project: Any,
+        open_keys: set[tuple[str, str]],
+    ) -> TaskTable | None:
+        """Open a dep-update task for ``project`` if due; dedupe via ``open_keys``."""
+        if not await self._eligible(project, open_keys):
+            return None
+        task = await self._open_task(task_svc, project)
+        open_keys.add(
+            (
+                repo_key(str(project.git_url or "")),
+                str(project.dep_update_command or "").strip(),
+            )
+        )
+        self.log.info(
+            "dep-update task opened",
+            task_id=str(task.id),
+            project=str(getattr(project, "slug", "")),
+        )
+        return task
 
     async def _eligible(self, project: Any, open_keys: set[tuple[str, str]]) -> bool:
         """True when ``project`` has a command, no open task yet, and updates.

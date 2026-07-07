@@ -353,41 +353,47 @@ class NotificationDeliveryService(BaseService):
         for recipient_id in n.to_agents or []:
             if str(recipient_id) in acked:
                 continue
-            recipient = await self._get_agent_by_id(cast("UUID", recipient_id))
-            if not recipient or not recipient.slug:
-                continue
-            target_slug = get_escalation_target(recipient.slug)
-            if not target_slug:
-                continue
-            target = await self._get_agent_by_slug(target_slug)
-            if not target:
-                continue
-            notification = NotificationTable(
-                type=NotificationType.BLOCKER_ESCALATION,
-                priority=NotificationPriority.HIGH,
-                from_agent=cast("UUID", n.from_agent),
-                to_agents=[target.id],
-                subject=f"Re-escalation (unacked): {n.subject[:140]}",
-                body=(
-                    f"A notification addressed to {recipient.slug} was not "
-                    f"acknowledged before its expiry.\n\n"
-                    f"Original subject: {n.subject}\n\n"
-                    "Please review and act on the underlying issue."
-                ),
-                related_task_id=cast("UUID | None", n.related_task_id),
-                requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.BLOCKER_ESCALATION],
-                read_by=[],
-                acked_by=[],
+            await self._re_escalate_recipient(n, cast("UUID", recipient_id))
+
+    async def _re_escalate_recipient(
+        self, n: NotificationTable, recipient_id: UUID
+    ) -> None:
+        """Resolve one recipient's up-role and re-fire the escalation."""
+        recipient = await self._get_agent_by_id(recipient_id)
+        if not recipient or not recipient.slug:
+            return
+        target_slug = get_escalation_target(recipient.slug)
+        if not target_slug:
+            return
+        target = await self._get_agent_by_slug(target_slug)
+        if not target:
+            return
+        notification = NotificationTable(
+            type=NotificationType.BLOCKER_ESCALATION,
+            priority=NotificationPriority.HIGH,
+            from_agent=cast("UUID", n.from_agent),
+            to_agents=[target.id],
+            subject=f"Re-escalation (unacked): {n.subject[:140]}",
+            body=(
+                f"A notification addressed to {recipient.slug} was not "
+                f"acknowledged before its expiry.\n\n"
+                f"Original subject: {n.subject}\n\n"
+                "Please review and act on the underlying issue."
+            ),
+            related_task_id=cast("UUID | None", n.related_task_id),
+            requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.BLOCKER_ESCALATION],
+            read_by=[],
+            acked_by=[],
+        )
+        try:
+            await self._persist_and_deliver(notification)
+        except Exception as e:
+            self.log.warning(
+                "Re-escalation deliver failed",
+                notification_id=str(n.id),
+                target_slug=target_slug,
+                error=str(e),
             )
-            try:
-                await self._persist_and_deliver(notification)
-            except Exception as e:
-                self.log.warning(
-                    "Re-escalation deliver failed",
-                    notification_id=str(n.id),
-                    target_slug=target_slug,
-                    error=str(e),
-                )
 
     async def get_pending_for_agent(
         self,

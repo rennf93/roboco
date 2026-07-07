@@ -106,6 +106,32 @@ def issue_agent_token(
     return f"{pb}.{sig}"
 
 
+def _verify_expiring_token(
+    token: str,
+    secret: bytes,
+    expected: tuple[str, str, str],
+    now: float | None,
+) -> bool:
+    """Verify the ``{payload}.{sig}`` expiring form against an (id,role,team)."""
+    pb, _, sig = token.rpartition(".")
+    expected_sig = hmac.new(secret, pb.encode("ascii"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected_sig, sig):
+        return False
+    try:
+        payload = json.loads(_b64url_decode(pb))
+    except (ValueError, KeyError):
+        return False
+    exp = payload.get("exp")
+    if not isinstance(exp, (int, float)):
+        return False
+    when = now if now is not None else time.time()
+    return (
+        payload.get("id"),
+        payload.get("role"),
+        payload.get("team"),
+    ) == expected and exp > when
+
+
 def verify_agent_token(
     token: str,
     agent_id: str,
@@ -125,23 +151,12 @@ def verify_agent_token(
     if not secret or not token or token == "UNSIGNED":
         return False
     if "." in token:
-        pb, _, sig = token.rpartition(".")
-        expected_sig = hmac.new(secret, pb.encode("ascii"), hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(expected_sig, sig):
-            return False
-        try:
-            payload = json.loads(_b64url_decode(pb))
-        except (ValueError, KeyError):
-            return False
-        exp = payload.get("exp")
-        if not isinstance(exp, (int, float)):
-            return False
-        return (
-            payload.get("id") == (agent_id or "").strip().lower()
-            and payload.get("role") == (role or "").strip().lower()
-            and payload.get("team") == (team or "").strip().lower()
-            and exp > (now if now is not None else time.time())
+        expected_id = (
+            (agent_id or "").strip().lower(),
+            (role or "").strip().lower(),
+            (team or "").strip().lower(),
         )
+        return _verify_expiring_token(token, secret, expected_id, now)
     expected = hmac.new(
         secret, _signing_payload(agent_id, role, team), hashlib.sha256
     ).hexdigest()
