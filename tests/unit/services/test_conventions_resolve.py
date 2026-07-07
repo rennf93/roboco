@@ -5,7 +5,9 @@ from __future__ import annotations
 import subprocess
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
+from unittest.mock import patch
 
+import pytest
 from roboco.services.conventions import ConventionsService
 
 if TYPE_CHECKING:
@@ -66,3 +68,27 @@ def test_resolve_no_workspace_returns_none_root() -> None:
 
 def test_head_sha_at_non_git_returns_none(tmp_path: Path) -> None:
     assert ConventionsService._head_sha_at(tmp_path) is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_workspace_force_refetches() -> None:
+    """resolve_workspace must pass force=True so conventions reads always see
+    the current default-branch HEAD (no 30s stale-map window after a merge)."""
+    captured: dict[str, object] = {}
+
+    class _FakeWS:
+        async def ensure_read_clone(self, slug: str, *, force: bool = False) -> Path:
+            captured["slug"] = slug
+            captured["force"] = force
+            return cast("Path", "/fake-clone")
+
+    project = SimpleNamespace(slug="p", workspace_path=None, head_commit=None)
+    with patch(
+        "roboco.services.workspace.get_workspace_service",
+        return_value=_FakeWS(),
+    ):
+        root = await _svc().resolve_workspace(cast("ProjectTable", project))
+
+    assert root == "/fake-clone"
+    assert captured["slug"] == "p"
+    assert captured["force"] is True

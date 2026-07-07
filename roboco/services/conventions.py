@@ -314,7 +314,7 @@ class ConventionsService(BaseService):
 
         try:
             return await get_workspace_service(self.session).ensure_read_clone(
-                project.slug
+                project.slug, force=True
             )
         except Exception as exc:
             self.log.warning(

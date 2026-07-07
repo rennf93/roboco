@@ -1101,7 +1101,9 @@ class WorkspaceService:
                 error=str(exc),
             )
 
-    async def ensure_read_clone(self, project_slug: str) -> Path:
+    async def ensure_read_clone(
+        self, project_slug: str, *, force: bool = False
+    ) -> Path:
         """Ensure a project-level read clone pinned to the default branch's HEAD.
 
         The architectural-conventions standard is read from the committed
@@ -1112,6 +1114,9 @@ class WorkspaceService:
         ``origin/<default_branch>``, which makes destructive refresh safe. This
         is what lets the standard work for a project created before the standard
         existed: no manually-configured ``workspace_path`` is required.
+
+        ``force`` bypasses the 30s refresh TTL (conventions reads must reflect
+        the current default-branch HEAD, not a stale one).
         """
         from roboco.services.project import get_project_service
 
@@ -1128,7 +1133,7 @@ class WorkspaceService:
             if self._is_workspace_healthy(workspace):
                 now = _monotonic()
                 last = _read_clone_synced.get(str(workspace), -math.inf)
-                if (now - last) >= _READ_CLONE_FETCH_TTL_SECONDS:
+                if force or (now - last) >= _READ_CLONE_FETCH_TTL_SECONDS:
                     token = await self._read_clone_token(project_service, project_slug)
                     await asyncio.to_thread(self._prune_broken_refs, workspace)
                     await asyncio.to_thread(

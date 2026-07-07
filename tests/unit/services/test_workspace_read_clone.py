@@ -10,9 +10,12 @@ from __future__ import annotations
 
 import base64
 import subprocess
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+from roboco.services import workspace as ws_mod
 from roboco.services.workspace import WorkspaceService
 
 if TYPE_CHECKING:
@@ -121,3 +124,102 @@ def test_sync_read_clone_with_token_uses_extraheader_not_url(tmp_path: Path) -> 
     # ...and the basic-auth extraheader carries the encoded token.
     expected = base64.b64encode(f"x-access-token:{token}".encode()).decode()
     assert f"http.extraheader=Authorization: Basic {expected}" in fetch_argv
+
+
+# --- ensure_read_clone force-refetch (M45) -------------------------------------
+# The 30s refresh TTL on the conventions read clone means a conventions commit
+# that merges to the default branch within 30s leaves the clone's HEAD stale,
+# so the sha-keyed conventions cache serves a stale map. `force=True` bypasses
+# the TTL so conventions reads always see the current default-branch HEAD.
+
+
+def _read_clone_service(tmp_path: Path) -> WorkspaceService:
+    svc = WorkspaceService(MagicMock())
+    object.__setattr__(svc, "root", tmp_path)
+    return svc
+
+
+def _read_clone_workspace(svc: WorkspaceService, slug: str) -> Path:
+    workspace = svc.root / slug / "_meta" / "conventions"
+    (workspace / ".git" / "objects").mkdir(parents=True)
+    (workspace / ".git" / "HEAD").write_text("ref: refs/heads/master\n")
+    return workspace
+
+
+@pytest.mark.asyncio
+async def test_ensure_read_clone_force_bypasses_ttl(tmp_path: Path) -> None:
+    """force=True fetches even when the workspace was just synced (within TTL)."""
+    svc = _read_clone_service(tmp_path)
+    slug = "p"
+    workspace = _read_clone_workspace(svc, slug)
+    project = SimpleNamespace(
+        slug=slug, default_branch="master", git_url="https://example/o/r"
+    )
+    project_service = MagicMock()
+    project_service.get_by_slug = AsyncMock(return_value=project)
+    fetched: list[Path] = []
+
+    def _fake_sync(root: Path, *_a: object, **_k: object) -> None:
+        fetched.append(root)
+
+    # Pre-seed the synced map to "just now" so the TTL branch would skip.
+    ws_mod._read_clone_synced[str(workspace)] = ws_mod._monotonic()
+    try:
+        with (
+            patch(
+                "roboco.services.project.get_project_service",
+                return_value=project_service,
+            ),
+            patch.object(WorkspaceService, "_is_workspace_healthy", return_value=True),
+            patch.object(
+                WorkspaceService,
+                "_read_clone_token",
+                new=staticmethod(AsyncMock(return_value=None)),
+            ),
+            patch.object(WorkspaceService, "_prune_broken_refs", return_value=None),
+            patch.object(WorkspaceService, "_sync_read_clone", side_effect=_fake_sync),
+        ):
+            await svc.ensure_read_clone(slug, force=True)
+    finally:
+        ws_mod._read_clone_synced.pop(str(workspace), None)
+
+    assert fetched, "force=True must fetch even within the 30s TTL"
+
+
+@pytest.mark.asyncio
+async def test_ensure_read_clone_default_respects_ttl(tmp_path: Path) -> None:
+    """Default force=False skips the fetch when the workspace was just synced."""
+    svc = _read_clone_service(tmp_path)
+    slug = "p"
+    workspace = _read_clone_workspace(svc, slug)
+    project = SimpleNamespace(
+        slug=slug, default_branch="master", git_url="https://example/o/r"
+    )
+    project_service = MagicMock()
+    project_service.get_by_slug = AsyncMock(return_value=project)
+    fetched: list[Path] = []
+
+    def _fake_sync(root: Path, *_a: object, **_k: object) -> None:
+        fetched.append(root)
+
+    ws_mod._read_clone_synced[str(workspace)] = ws_mod._monotonic()
+    try:
+        with (
+            patch(
+                "roboco.services.project.get_project_service",
+                return_value=project_service,
+            ),
+            patch.object(WorkspaceService, "_is_workspace_healthy", return_value=True),
+            patch.object(
+                WorkspaceService,
+                "_read_clone_token",
+                new=staticmethod(AsyncMock(return_value=None)),
+            ),
+            patch.object(WorkspaceService, "_prune_broken_refs", return_value=None),
+            patch.object(WorkspaceService, "_sync_read_clone", side_effect=_fake_sync),
+        ):
+            await svc.ensure_read_clone(slug)
+    finally:
+        ws_mod._read_clone_synced.pop(str(workspace), None)
+
+    assert not fetched, "default force=False must skip the fetch within the TTL"
