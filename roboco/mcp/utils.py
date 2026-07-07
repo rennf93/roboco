@@ -44,7 +44,7 @@ def _get_agent_headers(agent_id: str) -> dict[str, str]:
     if team:
         headers["X-Agent-Team"] = team
     token = os.environ.get("ROBOCO_AGENT_TOKEN")
-    if token:
+    if token and token != "UNSIGNED":
         headers["X-Agent-Token"] = token
     return headers
 

@@ -1016,6 +1016,7 @@ export interface Project {
   // Autonomous maintenance opt-in
   ci_watch_enabled: boolean;
   ci_watch_workflow: string | null;
+  video_engine_enabled: boolean;
   dep_update_command: string | null;
   dep_update_paths: string[] | null;
   sandbox_services: string[] | null;
@@ -1064,6 +1065,7 @@ export interface ProjectUpdate {
   // Autonomous maintenance opt-in
   ci_watch_enabled?: boolean;
   ci_watch_workflow?: string;
+  video_engine_enabled?: boolean;
   dep_update_command?: string;
   dep_update_paths?: string[];
   sandbox_services?: string[];

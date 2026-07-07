@@ -5,9 +5,9 @@ and are read by the backend (e.g. the transcript-retention prune sweep) with a
 ``roboco.config`` default as the fallback when a key is unset.
 """
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
-from roboco.api.deps import DbSession
+from roboco.api.deps import DbSession, require_panel_token
 from roboco.api.schemas.settings import (
     FeatureFlag,
     FeatureFlagsResponse,
@@ -22,7 +22,7 @@ from roboco.services.settings import (
     get_settings_service,
 )
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_panel_token)])
 
 
 @router.get("", response_model=SettingsResponse)

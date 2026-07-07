@@ -48,6 +48,10 @@ class Envelope:
     # tool-discovery envelopes).
     current_state: str | None = None
     valid_next_verbs: list[str] | None = None
+    # Post-runner side-effect warning — set when the transition committed
+    # but a best-effort handoff (a2a / reassign / parent-advance) failed.
+    # The agent re-issues the notification; the task state is already advanced.
+    warning: str | None = None
 
     @classmethod
     def ok(
@@ -153,8 +157,22 @@ class Envelope:
         )
 
     @classmethod
-    def not_found(cls, *, message: str) -> Envelope:
-        return cls(error="not_found", message=message, context_briefing={})
+    def not_found(
+        cls,
+        *,
+        message: str,
+        remediate: str = (
+            "Re-fetch the task via give_me_work / resume and re-issue "
+            "the verb against fresh state."
+        ),
+        context_briefing: dict[str, Any] | None = None,
+    ) -> Envelope:
+        return cls(
+            error="not_found",
+            message=message,
+            remediate=remediate,
+            context_briefing=context_briefing or {},
+        )
 
     @classmethod
     def circuit_open(
@@ -267,6 +285,8 @@ class Envelope:
             "current_state": self.current_state,
             "valid_next_verbs": self.valid_next_verbs,
         }
+        if self.warning is not None:
+            out["warning"] = self.warning
         if self.error is not None:
             out["message"] = self.message
             out["remediate"] = self.remediate

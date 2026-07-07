@@ -9,7 +9,7 @@ itself is the contrast case, since it dispatches normally), the REAL
 ``propose_video`` do-tool via the REAL do_server registry (mirrors
 ``test_feature_spotlight.py``'s guard against a verb wired at
 role_config/content_actions but dropped from ``do_server._TOOLS``), the REAL
-render -> materialize chain (only the remotion-renderer sidecar client + the
+render -> materialize chain (only the video-renderer sidecar client + the
 workspace read-clone are mocked — the external-I/O boundary), and the REAL
 ``VideoPostService.approve`` (only the X-v2 + TikTok posters are mocked)
 including its already-posted idempotency.
@@ -141,7 +141,7 @@ def _seed_completed_authoring_task(stack: E2EStack, project_id: Any) -> UUID:
 
 
 class _FakeRenderer:
-    """Stands in for the remotion-renderer sidecar: returns a deterministic
+    """Stands in for the video-renderer sidecar: returns a deterministic
     path per orientation, no tar/HTTP anywhere."""
 
     async def render(
@@ -178,7 +178,7 @@ def _render_completed_task(stack: E2EStack, task_id: UUID) -> None:
         ).scalar_one()
         with (
             patch(
-                "roboco.services.remotion_client.get_remotion_renderer",
+                "roboco.services.video_renderer_client.get_video_renderer",
                 _FakeRenderer,
             ),
             patch(

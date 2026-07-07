@@ -5,15 +5,15 @@ Thin HTTP plumbing over `AgentService`: validate inputs, convert
 `NotFoundError` to 404, shape responses. No DB access in this module.
 """
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from roboco.api.deps import DbSession
+from roboco.api.deps import DbSession, require_panel_token
 from roboco.api.schemas.agents import AgentResponse, agent_to_response
 from roboco.models import AgentRole, Team
 from roboco.services.agent import get_agent_service
 from roboco.services.base import NotFoundError
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_panel_token)])
 
 
 @router.get("")

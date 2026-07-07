@@ -21,13 +21,19 @@ from ``ReleaseProposalService.approve()``'s publish success branch;
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, cast
 
 import httpx
+import redis.asyncio as redis
 from sqlalchemy import select
 
 from roboco.config import settings
-from roboco.db.tables import XSeenFeatureTable, XSeenMentionTable
+from roboco.db.tables import (
+    AgentSpawnSessionTable,
+    XSeenFeatureTable,
+    XSeenMentionTable,
+)
 from roboco.foundation import identity as _foundation
 from roboco.foundation.policy.content import markers
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
@@ -266,7 +272,15 @@ class XEngine(BaseService):
         if open_count >= settings.x_max_open_posts:
             self.log.info("x-engine: open-post cap reached; skipping mentions cycle")
             return []
-        mentions = await client.fetch_mentions(since_id=None, max_results=50)
+        since_id = await self._since_id_get()
+        mentions = await client.fetch_mentions(since_id=since_id, max_results=50)
+        if mentions:
+            # Snowflake ids are numeric; int max is correct across varying
+            # lengths (string max would mis-order "999" > "1000"). Non-numeric
+            # ids (test fixtures) leave the cursor untouched.
+            numeric = [int(m.id) for m in mentions if m.id and m.id.isdigit()]
+            if numeric:
+                await self._since_id_set(str(max(numeric)))
         project = await self._roboco_project()
         return await self._process_mentions(mentions, project, open_count)
 
@@ -274,7 +288,9 @@ class XEngine(BaseService):
         self, mentions: list[XMention], project: ProjectTable | None, open_count: int
     ) -> list[TaskTable]:
         """Filter/dedup each mention and originate held reply drafts, honoring
-        the per-cycle and open-post caps."""
+        the per-cycle and open-post caps. A mention below the engagement floor
+        is skipped without being marked seen, so a later viral re-fetch can
+        still draft it."""
         originated: list[TaskTable] = []
         for mention in mentions:
             if len(originated) >= settings.x_mentions_max_per_cycle:
@@ -283,7 +299,6 @@ class XEngine(BaseService):
                 break
             if not mention.id or await self._already_seen(mention.id):
                 continue
-            await self._mark_seen(mention.id)
             if not _is_meaningful(mention, settings.x_mentions_min_engagement):
                 continue
             if project is None or project.id is None:
@@ -291,10 +306,39 @@ class XEngine(BaseService):
                     "x-engine: RoboCo project not resolvable; skipping mentions cycle"
                 )
                 break
+            await self._mark_seen(mention.id)
             originated.append(
                 await self._originate_reply(mention, cast("UUID", project.id))
             )
         return originated
+
+    async def _since_id_get(self) -> str | None:
+        """Best-effort read of the persisted mentions cursor; None on miss or
+        Redis failure (a failed read just fetches from the top this cycle)."""
+        try:
+            conn = redis.from_url(settings.redis_url)
+            try:
+                v = await conn.get("roboco:x_mentions:since_id")
+                if v is None:
+                    return None
+                return v.decode() if isinstance(v, bytes) else str(v)
+            finally:
+                await conn.aclose()
+        except Exception as exc:
+            self.log.warning("x-engine: since_id read failed (redis): %s", exc)
+            return None
+
+    async def _since_id_set(self, since_id: str) -> None:
+        """Best-effort persist of the highest fetched mention id; a Redis
+        failure logs and does not raise (the seen-set still dedups)."""
+        try:
+            conn = redis.from_url(settings.redis_url)
+            try:
+                await conn.set("roboco:x_mentions:since_id", since_id)
+            finally:
+                await conn.aclose()
+        except Exception as exc:
+            self.log.warning("x-engine: since_id persist failed (redis): %s", exc)
 
     async def _originate_reply(self, mention: XMention, project_id: UUID) -> TaskTable:
         body = await self._draft_reply_body(mention)
@@ -349,8 +393,10 @@ class XEngine(BaseService):
         if not client.configured:
             return None
         task_svc = get_task_service(self.session)
-        if await task_svc.list_open_feature_explorations():
-            return None  # one open cycle at a time
+        # Cancel a stale + spawnless exploration so the engine can re-arm; a
+        # fresh cycle or one with a live HoM spawn blocks (one open at a time).
+        if not await self._cancel_stale_exploration(task_svc):
+            return None
         if len(await task_svc.list_open_x_posts()) >= settings.x_max_open_posts:
             return None  # respect the shared held-draft cap
         project = await self._roboco_project()
@@ -362,6 +408,44 @@ class XEngine(BaseService):
         return await self._originate_feature_exploration(
             task_svc, cast("UUID", project.id)
         )
+
+    async def _cancel_stale_exploration(self, task_svc: TaskService) -> bool:
+        """Return False to block re-arm (fresh cycle or live HoM spawn); return
+        True to proceed — either no open exploration, or a stale+spawnless one
+        was just cancelled and a fresh one should be originated.
+        """
+        open_explorations = await task_svc.list_open_feature_explorations()
+        if not open_explorations:
+            return True  # nothing open; fall through to originate
+        stale = open_explorations[0]  # oldest-first
+        stale_age = datetime.now(UTC) - stale.created_at
+        if stale_age < timedelta(
+            seconds=2 * settings.x_feature_spotlight_interval_seconds
+        ):
+            return False  # one open cycle at a time; not yet stale
+        if await self._has_live_hom_spawn(cast("UUID", stale.id)):
+            return False  # HoM still working it; respawn breaker tripped but alive
+        # Stale + spawnless: the HoM spawn died without completing. Cancel and
+        # re-arm so a dead exploration can't gate the engine silent forever.
+        stale.status = TaskStatus.CANCELLED
+        await self.session.flush()
+        return True
+
+    async def _has_live_hom_spawn(self, task_id: UUID) -> bool:
+        """True if an agent spawn for ``task_id`` is still active (ended_at NULL).
+
+        The respawn breaker can trip while HoM is genuinely working — a live
+        spawn row means the agent is still running, so re-arm must block.
+        """
+        result = await self.session.execute(
+            select(AgentSpawnSessionTable)
+            .where(
+                AgentSpawnSessionTable.task_id == str(task_id),
+                AgentSpawnSessionTable.ended_at.is_(None),
+            )
+            .limit(1)
+        )
+        return result.scalars().first() is not None
 
     async def _originate_feature_exploration(
         self, task_svc: TaskService, project_id: UUID

@@ -44,6 +44,7 @@ from roboco.agent_sdk.models import (
 from roboco.agent_sdk.transcript_usage import (
     sum_transcript_usage as _sum_transcript_usage,
 )
+from roboco.agents_config import get_agent_team
 from roboco.foundation.policy.agent_loop import DEFAULT_BUDGET as _BUDGET
 from roboco.foundation.policy.agent_loop import retry_limit_for
 from roboco.services.gateway.envelope import Envelope
@@ -52,8 +53,32 @@ logger = structlog.get_logger()
 
 # Environment configuration
 AGENT_ID = os.environ.get("ROBOCO_AGENT_ID", "unknown")
+AGENT_ROLE = os.environ.get("ROBOCO_AGENT_ROLE", "developer")
 MAIN_API_URL = os.environ.get("ROBOCO_API_URL", "http://roboco-orchestrator:8000")
 SDK_PORT = int(os.environ.get("ROBOCO_SDK_PORT", "9000"))
+
+
+def _agent_headers() -> dict[str, str]:
+    """Headers for the SDK server's direct calls to the orchestrator API.
+
+    Mirrors flow_server/do_server ``_build_headers``: ``X-Agent-Token`` (HMAC
+    over id:role:team, injected by the orchestrator at spawn) and
+    ``X-Agent-Team`` must travel with every call, or the API's
+    ``ROBOCO_AGENT_AUTH_REQUIRED`` gate 401s with "Missing X-Agent-Token" /
+    signature mismatch. Without this the session-end post-mortem flush, the
+    A2A persistence/fallback, and the auto-substitute call all fail when auth
+    is armed.
+    """
+    headers = {"X-Agent-ID": AGENT_ID, "X-Agent-Role": AGENT_ROLE}
+    team = get_agent_team(AGENT_ID)
+    if team:
+        headers["X-Agent-Team"] = team
+    token = os.environ.get("ROBOCO_AGENT_TOKEN")
+    # See flow_server._build_headers: forwarding the "UNSIGNED" sentinel 401s
+    # even in dev mode; omit so a missing token is accepted in dev.
+    if token and token != "UNSIGNED":
+        headers["X-Agent-Token"] = token
+    return headers
 
 
 # =============================================================================
@@ -171,7 +196,7 @@ async def _persist_received_message(msg: A2AMessage) -> None:
                     "initial_message": msg.content,
                     "requires_response": False,
                 },
-                headers={"X-Agent-ID": AGENT_ID},
+                headers=_agent_headers(),
                 timeout=5.0,
             )
             # Note: 409 conflict is ok - conversation already exists
@@ -269,10 +294,7 @@ async def _create_notification_fallback(req: SendRequest) -> None:
                         "urgent": req.urgent,
                     },
                 },
-                headers={
-                    "X-Agent-ID": AGENT_ID,
-                    "X-Agent-Role": "developer",  # SDK doesn't know role
-                },
+                headers=_agent_headers(),
                 timeout=10.0,
             )
             logger.info(
@@ -672,13 +694,12 @@ async def terminal_force_substitute() -> dict[str, str]:
     current task on behalf of the agent when Stop is allowed despite no
     terminal tool having been called.
     """
-    role = os.environ.get("ROBOCO_AGENT_ROLE", "developer")
     try:
         async with httpx.AsyncClient() as client:
             await client.post(
                 f"{MAIN_API_URL}/api/tasks/auto-substitute",
                 json={"reason": "stopped_without_transition"},
-                headers={"X-Agent-ID": AGENT_ID, "X-Agent-Role": role},
+                headers=_agent_headers(),
                 timeout=5.0,
             )
         logger.warning(
@@ -855,10 +876,7 @@ async def journal_post_mortem(req: PostMortemRequest) -> dict[str, str]:
             await client.post(
                 f"{MAIN_API_URL}/api/journals/me/entries",
                 json=payload,
-                headers={
-                    "X-Agent-ID": AGENT_ID,
-                    "X-Agent-Role": os.environ.get("ROBOCO_AGENT_ROLE", "developer"),
-                },
+                headers=_agent_headers(),
                 timeout=5.0,
             )
     except Exception as e:

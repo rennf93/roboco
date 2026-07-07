@@ -8,8 +8,9 @@ lockfiles (read-only, in a throwaway clone) and, if so, open one
 * **Default OFF** (``dep_update_enabled``) — the loop never starts.
 * **Never self-deploys** — it only OPENS a task; the upgrade still ships through
   the normal gates (dev -> QA -> PR review -> the CEO's merge).
-* **Bounded + deduped per repo** — at most one open dep_update task per repo
-  (keyed on ``git_url``), plus per-cycle and rolling open-task caps.
+* **Bounded + deduped per (repo, command)** — at most one open dep_update
+  task per ``(git_url, dep_update_command)`` (a monorepo with two distinct
+  commands gets one per command), plus per-cycle and rolling open-task caps.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from roboco.services.task import (
     get_task_service,
 )
 from roboco.services.workspace import get_workspace_service
+from roboco.utils.converters import repo_key
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -55,7 +57,18 @@ class DepUpdateEngine(BaseService):
         if not settings.dep_update_enabled:
             return []
         task_svc = get_task_service(self.session)
-        open_count = len(await task_svc.list_open_dep_update_tasks())
+        # One fetch for both the rolling cap and the per-(repo, command) dedup.
+        # TaskTable.project is lazy="joined", so the project row rides along
+        # without N extra loads.
+        open_tasks = await task_svc.list_open_dep_update_tasks()
+        open_count = len(open_tasks)
+        open_keys: set[tuple[str, str]] = {
+            (
+                repo_key(str(getattr(t.project, "git_url", "") or "")),
+                str(getattr(t.project, "dep_update_command", None) or "").strip(),
+            )
+            for t in open_tasks
+        }
         created: list[TaskTable] = []
         for project in projects:
             if len(created) >= settings.dep_update_max_per_cycle:
@@ -66,22 +79,41 @@ class DepUpdateEngine(BaseService):
                     cap=settings.dep_update_max_open_tasks,
                 )
                 break
-            if not await self._eligible(task_svc, project):
+            task = await self._open_for_project(task_svc, project, open_keys)
+            if task is None:
                 continue
-            task = await self._open_task(task_svc, project)
             created.append(task)
             open_count += 1
-            self.log.info(
-                "dep-update task opened",
-                task_id=str(task.id),
-                project=str(getattr(project, "slug", "")),
-            )
         return created
 
-    async def _eligible(self, task_svc: TaskService, project: Any) -> bool:
+    async def _open_for_project(
+        self,
+        task_svc: TaskService,
+        project: Any,
+        open_keys: set[tuple[str, str]],
+    ) -> TaskTable | None:
+        """Open a dep-update task for ``project`` if due; dedupe via ``open_keys``."""
+        if not await self._eligible(project, open_keys):
+            return None
+        task = await self._open_task(task_svc, project)
+        open_keys.add(
+            (
+                repo_key(str(project.git_url or "")),
+                str(project.dep_update_command or "").strip(),
+            )
+        )
+        self.log.info(
+            "dep-update task opened",
+            task_id=str(task.id),
+            project=str(getattr(project, "slug", "")),
+        )
+        return task
+
+    async def _eligible(self, project: Any, open_keys: set[tuple[str, str]]) -> bool:
         """True when ``project`` has a command, no open task yet, and updates.
 
-        Cheap checks first (command set, per-``git_url`` dedupe), then the
+        Cheap checks first (command set, per-``(repo, command)`` dedupe via the
+        in-memory ``open_keys`` set built once in ``run_cycle``), then the
         expensive read-only probe — so a project that's already covered or
         opted out never pays for a clone.
         """
@@ -89,7 +121,11 @@ class DepUpdateEngine(BaseService):
             return False
         if getattr(project, "id", None) is None:
             return False
-        if await task_svc.list_open_dep_update_tasks(git_url=project.git_url):
+        key = (
+            repo_key(str(project.git_url or "")),
+            str(project.dep_update_command or "").strip(),
+        )
+        if key in open_keys:
             return False
         return await self._workspace.dry_upgrade_changes_lockfile(project)
 

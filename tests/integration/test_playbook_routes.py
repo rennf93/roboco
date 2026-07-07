@@ -12,10 +12,12 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from roboco.api.deps import get_agent_context, get_db
 from roboco.api.routes.playbooks import router as playbooks_router
+from roboco.db.tables import PlaybookTable
 from roboco.models import AgentRole
 from roboco.models.permissions import AgentContext
 from roboco.models.playbook import PlaybookCreate
 from roboco.services.playbook import PlaybookService
+from sqlalchemy import select as _select
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -125,6 +127,14 @@ async def test_approve_already_approved_is_409(
     pid = await _seed_draft(db_session, title="Once only")
     first = await auditor_client.post(f"/api/playbooks/{pid}/approve")
     assert first.status_code == HTTPStatus.OK
+    # M23: an APPROVED-but-unindexed playbook is re-approvable (the retry
+    # path); the 409 only fires once the row is durably indexed. Simulate a
+    # successful post-commit index so the second approve hits the guard.
+    row = (
+        await db_session.execute(_select(PlaybookTable).where(PlaybookTable.id == pid))
+    ).scalar_one()
+    row.indexed_ok = True
+    await db_session.flush()
     second = await auditor_client.post(f"/api/playbooks/{pid}/approve")
     assert second.status_code == HTTPStatus.CONFLICT
 

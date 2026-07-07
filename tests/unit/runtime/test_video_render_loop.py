@@ -124,6 +124,7 @@ async def _seed(session: AsyncSession) -> None:
                 assigned_cell=Team.BACKEND,
                 created_by=SYSTEM_UUID,
                 is_active=True,
+                video_engine_enabled=True,
             )
         )
     await session.flush()
@@ -170,7 +171,7 @@ async def _make_completed_video_task(
 def _render_patches(renderer: _FakeRenderer, workspace: Any) -> Any:
     return (
         patch(
-            "roboco.services.remotion_client.get_remotion_renderer",
+            "roboco.services.video_renderer_client.get_video_renderer",
             lambda: renderer,
         ),
         patch(
@@ -208,7 +209,7 @@ async def test_loop_returns_immediately_when_disabled(
 
 
 @pytest.mark.asyncio
-async def test_run_cycle_processes_each_completed_task_and_commits() -> None:
+async def test_run_cycle_commits_per_task() -> None:
     orch = _orch()
     task_a = MagicMock()
     task_b = MagicMock()
@@ -226,11 +227,12 @@ async def test_run_cycle_processes_each_completed_task_and_commits() -> None:
         call(db, task_a),
         call(db, task_b),
     ]
-    db.commit.assert_awaited_once()
+    # one commit per task — never one trailing commit after the loop
+    assert db.commit.await_count == TWO
 
 
 @pytest.mark.asyncio
-async def test_run_cycle_with_no_completed_tasks_still_commits() -> None:
+async def test_run_cycle_with_no_completed_tasks_does_not_commit() -> None:
     orch = _orch()
     db = MagicMock()
     db.commit = AsyncMock()
@@ -243,7 +245,43 @@ async def test_run_cycle_with_no_completed_tasks_still_commits() -> None:
     ):
         await orch._run_video_render_cycle()
     orch._render_video_task.assert_not_awaited()
+    db.commit.assert_not_awaited()  # nothing rendered → nothing to durably persist
+
+
+@pytest.mark.asyncio
+async def test_run_cycle_commits_before_mid_cycle_raise_so_prior_render_durable() -> (
+    None
+):
+    """A raise mid-cycle must not roll back prior renders: each render is
+    committed before the next is attempted, so the committed
+    render_status='rendered' is the idempotency key the next scan skips
+    (instead of re-rendering + re-originating a second held video_post draft).
+    """
+    orch = _orch()
+    task_a = MagicMock()
+    task_b = MagicMock()
+    db = MagicMock()
+    db.commit = AsyncMock()
+    task_svc = MagicMock()
+    task_svc.list_completed_video_tasks = AsyncMock(return_value=[task_a, task_b])
+
+    async def _render(_db: Any, task: Any) -> None:
+        if task is task_b:
+            raise RuntimeError("B blew up")
+
+    orch._render_video_task = AsyncMock(side_effect=_render)
+    with (
+        patch("roboco.db.get_db_context", _db_ctx(db)),
+        patch("roboco.services.task.get_task_service", return_value=task_svc),
+        pytest.raises(RuntimeError, match="B blew up"),
+    ):
+        await orch._run_video_render_cycle()
+    # A's commit happened BEFORE B raised — exactly one commit, A is durable
     db.commit.assert_awaited_once()
+    assert orch._render_video_task.await_args_list == [
+        call(db, task_a),
+        call(db, task_b),
+    ]
 
 
 # --------------------------------------------------------------------------- #

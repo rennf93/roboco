@@ -15,12 +15,13 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from roboco.api.deps import require_panel_token
 from roboco.api.schemas.system import RateLimitEntry, RateLimitListResponse
 from roboco.services.gateway.rate_limit_tracker import RateLimitStateTracker
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_panel_token)])
 
 
 def _resume_at(hit_at: str | None, retry_after: float | None) -> str | None:

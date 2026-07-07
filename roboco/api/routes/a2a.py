@@ -396,6 +396,7 @@ async def subscribe_to_task(
 async def get_task(
     task_id: str,
     db: DbSession,
+    _agent: CurrentAgentContext,
     _history_length: int | None = Query(
         None, alias="historyLength", description="Number of history turns to include"
     ),
@@ -420,6 +421,7 @@ async def get_task(
 @router.get("/tasks")
 async def list_tasks(
     db: DbSession,
+    _agent: CurrentAgentContext,
     page_size: int = Query(20, alias="pageSize", ge=1, le=100),
     page_token: str | None = Query(None, alias="pageToken"),
     _filter_str: str | None = Query(None, alias="filter"),

@@ -14,6 +14,7 @@ import {
   SortField,
   SortDirection,
 } from "@/components/tasks";
+import type { TaskFilters as TaskApiFilters } from "@/lib/api/tasks";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { RefreshCw } from "lucide-react";
@@ -159,7 +160,7 @@ function TasksPageContent() {
     [updateParams],
   );
 
-  // Fetch all tasks and filter client-side for multi-select
+  // Fetch tasks (server-filtered for single-select status/team) + client-side multi-select extras
   // Debounced server-side search: title + description + id prefix. The
   // old client-side title-only filter hid description/id matches the
   // server now returns, so it is gone.
@@ -168,9 +169,15 @@ function TasksPageContent() {
     const handle = setTimeout(() => setDebouncedQuery(searchQuery), 300);
     return () => clearTimeout(handle);
   }, [searchQuery]);
-  const { data: tasks, isLoading, error, refetch } = useTasks(
-    debouncedQuery ? { q: debouncedQuery } : undefined,
-  );
+  // Server-side filter: /tasks/summary accepts one status + one team. Single
+  // selection rides the server; multi-select filters the extras client-side.
+  const filters: TaskApiFilters | undefined = {
+    limit: 500,
+    ...(debouncedQuery ? { q: debouncedQuery } : {}),
+    ...(statusFilter.length === 1 ? { status: statusFilter[0] } : {}),
+    ...(teamFilter.length === 1 ? { team: teamFilter[0] } : {}),
+  };
+  const { data: tasks, isLoading, error, refetch } = useTasks(filters);
 
   // Projects + products: power the Project/Product filter options + name display.
   const { data: projects } = useProjects();
@@ -196,18 +203,20 @@ function TasksPageContent() {
     [products],
   );
 
-  // Filter tasks based on multi-select filters
+  // Client-side filter for fields the backend doesn't accept (task_type,
+  // project, product) plus multi-select extras (status/team when > 1 — the
+  // single-selection case is already applied server-side).
   const filteredTasks = useMemo(() => {
     if (!tasks) return [];
 
     return tasks.filter((task) => {
-      // Status filter (if any selected, task must match one of them)
-      if (statusFilter.length > 0 && !statusFilter.includes(task.status)) {
+      // Status: server pre-filtered the single-select case.
+      if (statusFilter.length > 1 && !statusFilter.includes(task.status)) {
         return false;
       }
 
-      // Team filter (if any selected, task must match one of them)
-      if (teamFilter.length > 0 && !teamFilter.includes(task.team)) {
+      // Team: server pre-filtered the single-select case.
+      if (teamFilter.length > 1 && !teamFilter.includes(task.team)) {
         return false;
       }
 

@@ -55,3 +55,17 @@ class TestEnvelopeError:
     def test_not_authorized(self) -> None:
         env = Envelope.not_authorized(message="role mismatch", remediate="claim first")
         assert env.as_dict()["error"] == "not_authorized"
+
+    def test_not_found_envelope_has_default_remediate(self) -> None:
+        env = Envelope.not_found(message="task gone")
+        assert env.error == "not_found"
+        assert env.remediate  # non-empty default
+        assert env.remediate != ""
+
+    def test_not_found_envelope_remediate_overrideable(self) -> None:
+        env = Envelope.not_found(message="task gone", remediate="custom remedy")
+        assert env.remediate == "custom remedy"
+
+    def test_not_found_envelope_accepts_context_briefing(self) -> None:
+        env = Envelope.not_found(message="task gone", context_briefing={"k": "v"})
+        assert env.context_briefing == {"k": "v"}

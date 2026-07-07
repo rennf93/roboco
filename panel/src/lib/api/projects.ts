@@ -90,6 +90,7 @@ export const projectsApi = {
         quality_command: project.quality_command ?? null,
         ci_watch_enabled: false,
         ci_watch_workflow: null,
+        video_engine_enabled: false,
         dep_update_command: null,
         dep_update_paths: null,
         sandbox_services: null,

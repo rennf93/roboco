@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 from roboco.config import Settings
 
 
@@ -67,3 +68,61 @@ def test_cloud_auth_enabled_with_secret_succeeds() -> None:
 def test_cloud_auth_cookie_max_age_defaults_to_30_days() -> None:
     s = Settings()
     assert s.cloud_auth_cookie_max_age == 30 * 24 * 60 * 60
+
+
+def test_cloud_auth_rejects_panel_agent_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ROBOCO_CLOUD_AUTH_ENABLED", "true")
+    monkeypatch.setenv("ROBOCO_CLOUD_AUTH_SECRET", "x" * 32)
+    monkeypatch.setenv("ROBOCO_PANEL_AGENT_TOKEN", "some-signed-token")
+    with pytest.raises(ValueError, match="ROBOCO_PANEL_AGENT_TOKEN"):
+        Settings()
+
+
+def test_cloud_auth_ok_without_panel_agent_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ROBOCO_CLOUD_AUTH_ENABLED", "true")
+    monkeypatch.setenv("ROBOCO_CLOUD_AUTH_SECRET", "x" * 32)
+    monkeypatch.delenv("ROBOCO_PANEL_AGENT_TOKEN", raising=False)
+    s = Settings()
+    assert s.cloud_auth_enabled is True
+
+
+# ---------------------------------------------------------------------------
+# local_llm_base_url — internal-host guard (H13)
+# ---------------------------------------------------------------------------
+
+
+def test_local_llm_base_url_default_accepted() -> None:
+    s = Settings()
+    assert s.local_llm_base_url == "http://roboco-ollama:11434/v1"
+
+
+def test_local_llm_base_url_localhost_accepted() -> None:
+    s = Settings(local_llm_base_url="http://localhost:11434")
+    assert s.local_llm_base_url == "http://localhost:11434"
+
+
+def test_local_llm_base_url_rfc1918_accepted() -> None:
+    s = Settings(local_llm_base_url="http://10.0.0.5:11434")
+    assert s.local_llm_base_url == "http://10.0.0.5:11434"
+
+
+def test_local_llm_base_url_ipv6_loopback_accepted() -> None:
+    s = Settings(local_llm_base_url="http://[::1]:11434")
+    assert s.local_llm_base_url == "http://[::1]:11434"
+
+
+def test_local_llm_base_url_cluster_local_accepted() -> None:
+    s = Settings(local_llm_base_url="http://ollama.default.svc.cluster.local:11434")
+    assert s.local_llm_base_url == "http://ollama.default.svc.cluster.local:11434"
+
+
+def test_local_llm_base_url_public_rejected() -> None:
+    with pytest.raises(ValidationError):
+        Settings(local_llm_base_url="https://api.openai.com/v1")
+
+
+def test_local_llm_base_url_missing_host_rejected() -> None:
+    with pytest.raises(ValidationError):
+        Settings(local_llm_base_url="http://")

@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
+from roboco.agents_config import (
+    get_agent_team,
+    issue_agent_token,
+    verify_agent_token,
+)
+from roboco.foundation.identity import AGENTS
 from roboco.runtime.orchestrator import (
     SECRETARY_AGENT_ID,
     AgentOrchestrator,
     _SecretaryRunSpec,
 )
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def _spec() -> _SecretaryRunSpec:
@@ -57,3 +67,27 @@ def test_resolve_secretary_host_paths_has_claude_and_prompt() -> None:
     assert "claude" in paths
     assert "prompt" in paths
     assert SECRETARY_AGENT_ID in str(paths["prompt"])
+
+
+def test_secretary_token_signs_over_real_team_not_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The secretary token must verify against the (id, role, team) the
+    secretary driver actually sends. secretary_driver._headers sends
+    X-Agent-Team = get_agent_team(uuid) = the secretary's real team ("board"),
+    so the token issued at spawn (orchestrator _spawn_secretary_container) must
+    be signed over that same team — not "" — or every /api/secretary/* call
+    401s with "signature mismatch" under ROBOCO_AGENT_AUTH_REQUIRED.
+    """
+    monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", "x" * 32)
+    secretary = AGENTS[SECRETARY_AGENT_ID]
+    agent_uuid = str(secretary.uuid)
+    team = secretary.team.value
+    assert team  # the bug was signing "" — the secretary IS on a team
+
+    token = issue_agent_token(agent_uuid, "secretary", team)  # mirrors spawn line
+    # secretary_driver._headers sends X-Agent-ID=uuid, role=secretary,
+    # X-Agent-Team=get_agent_team(uuid).
+    agent_team = get_agent_team(agent_uuid)
+    assert agent_team is not None
+    assert verify_agent_token(token, agent_uuid, "secretary", agent_team)

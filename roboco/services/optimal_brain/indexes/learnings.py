@@ -141,10 +141,12 @@ class LearningsIndexPlugin(BaseIndexPlugin):
         """
         import hashlib
 
-        # Generate learning ID
+        # Hash the FULL content so distinct lessons with a matching fixed
+        # prefix ("Problem: …") don't collide on learning_id — a collision
+        # makes replace_on_reingest delete the first lesson's chunks.
         content_hash = hashlib.md5(
-            params.content[:100].encode(), usedforsecurity=False
-        ).hexdigest()[:12]
+            params.content.encode(), usedforsecurity=False
+        ).hexdigest()[:16]
         learning_id = f"lrn-{content_hash}"
 
         # Build enriched content

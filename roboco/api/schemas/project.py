@@ -47,6 +47,7 @@ class ProjectResponse(BaseModel):
     # Autonomous maintenance opt-in
     ci_watch_enabled: bool = False
     ci_watch_workflow: str | None = None
+    video_engine_enabled: bool = False
     dep_update_command: str | None = None
     dep_update_paths: list[str] | None = None
     sandbox_services: list[str] | None = None
@@ -140,6 +141,7 @@ class ProjectUpdateRequest(BaseModel):
     # Autonomous maintenance opt-in
     ci_watch_enabled: bool | None = None
     ci_watch_workflow: str | None = None
+    video_engine_enabled: bool | None = None
     dep_update_command: str | None = None
     dep_update_paths: list[str] | None = None
     sandbox_services: list[str] | None = None
@@ -226,6 +228,7 @@ def project_to_response(project: "ProjectTable") -> ProjectResponse:
         quality_command=project.quality_command,
         ci_watch_enabled=bool(project.ci_watch_enabled),
         ci_watch_workflow=project.ci_watch_workflow,
+        video_engine_enabled=bool(project.video_engine_enabled),
         dep_update_command=project.dep_update_command,
         dep_update_paths=project.dep_update_paths,
         sandbox_services=project.sandbox_services,

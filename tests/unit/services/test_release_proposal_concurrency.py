@@ -432,6 +432,60 @@ async def test_already_published_closes_proposal_not_wedges_open() -> None:
 
 
 @pytest.mark.asyncio
+async def test_one_redis_client_per_approve_not_per_heartbeat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """L34: the ~40 heartbeat ticks each opened their own ``redis.from_url``
+    pool (one per tick). A single shared client cached on the service is opened
+    once per approve and closed once in ``approve()``'s finally."""
+    monkeypatch.setattr(rp, "_RELEASE_LOCK_HEARTBEAT_SECONDS", 0.001)
+
+    task = _task()
+    fake_redis = _FakeRedis()
+    published = ReleaseResult(
+        status="published",
+        version="0.13.0",
+        files_changed=["pyproject.toml"],
+        commit_sha="abc",
+        release_url="https://x",
+        detail="ok",
+    )
+
+    async def _slow_execute(_report: Any) -> ReleaseResult:
+        # Yield for several heartbeat ticks so a per-tick client would show up.
+        await asyncio.sleep(0.05)
+        return published
+
+    w = _wire(task, _REPORT, published, fake_redis)
+    w["executor"].execute = AsyncMock(side_effect=_slow_execute)
+    # Replace the redis.from_url patch with a counting mock so we can assert the
+    # call count after the approve completes.
+    from_mock = MagicMock(return_value=fake_redis)
+    w["patches"][4] = patch(
+        "roboco.services.release_proposal.redis.from_url", new=from_mock
+    )
+    svc = ReleaseProposalService(_session())
+
+    with (
+        w["patches"][0],
+        w["patches"][1],
+        w["patches"][2],
+        w["patches"][3],
+        w["patches"][4],
+    ):
+        result = await svc.approve(task.id)
+
+    assert result is not None
+    assert result.status == "published"
+    # At least 2 heartbeats landed during the 50ms execute (proves the loop ran
+    # and would have opened per-tick clients pre-fix). The shared client means
+    # from_url is called exactly once for the whole approve.
+    _min_heartbeats = 2
+    assert len(fake_redis.expire_calls) >= _min_heartbeats
+    assert from_mock.call_count == 1
+
+
+@pytest.mark.asyncio
 async def test_heartbeat_lock_loss_cancels_execute_fail_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

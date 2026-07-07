@@ -19,6 +19,7 @@ from roboco.db.tables import (
     JournalEntryTable,
     ProductTable,
     ProjectTable,
+    TaskTable,
     WorkSessionTable,
 )
 from roboco.events import EventType
@@ -36,7 +37,7 @@ from roboco.models.task import TaskCreateRequest
 from roboco.models.work_session import WorkSessionStatus
 from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.base import NotFoundError
-from roboco.services.task import SoftBlockInfo, TaskService
+from roboco.services.task import SoftBlockInfo, TaskService, get_task_service
 from sqlalchemy import Table, select
 
 if TYPE_CHECKING:
@@ -2983,3 +2984,257 @@ async def test_resolve_pm_for_review_returns_none_when_parent_chain_unassigned(
     child = await svc.create(_req(task_setup, parent_task_id=parent.id))
     pm_id = await svc._resolve_pm_for_review(child)
     assert pm_id is None
+
+
+# ---------------------------------------------------------------------------
+# H3: complete() from IN_PROGRESS allowed only for leaf / branchless
+# ---------------------------------------------------------------------------
+
+
+async def _seed_pm_and_task(
+    db_session: AsyncSession,
+    *,
+    status: TaskStatus,
+    tid: UUID,
+    parent_task_id: UUID | None = None,
+    branch_name: str = "feature/backend/cell",
+) -> UUID:
+    """Seed a PM + project + task and return the PM id."""
+
+    pm = AgentTable(
+        id=uuid4(),
+        name="PM",
+        slug=f"be-pm-{uuid4().hex[:8]}",
+        role=AgentRole.CELL_PM,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="pm",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(pm)
+    await db_session.flush()
+    project = ProjectTable(
+        id=uuid4(),
+        name="H3",
+        slug=f"h3-{uuid4().hex[:6]}",
+        git_url="https://example.com/r.git",
+        assigned_cell=Team.BACKEND,
+        created_by=pm.id,
+    )
+    db_session.add(project)
+    await db_session.flush()
+    db_session.add(
+        TaskTable(
+            id=tid,
+            title="t",
+            description="d",
+            acceptance_criteria=["done"],
+            status=status,
+            priority=2,
+            task_type=TaskType.PLANNING,
+            nature=TaskNature.TECHNICAL,
+            estimated_complexity=Complexity.LOW,
+            team=Team.BACKEND,
+            confirmed_by_human=True,
+            assigned_to=pm.id,
+            active_claimant_id=pm.id,
+            claimed_by=pm.id,
+            project_id=project.id,
+            created_by=pm.id,
+            parent_task_id=parent_task_id,
+            branch_name=branch_name,
+        )
+    )
+    await db_session.flush()
+    return cast("UUID", pm.id)
+
+
+@pytest.mark.asyncio
+async def test_complete_refuses_in_progress_on_assembled_cell_task(
+    db_session: AsyncSession,
+) -> None:
+    """A PM owning a cell task (IN_PROGRESS, terminal subtask) must NOT be
+    able to complete() directly from IN_PROGRESS — that bypasses submit_up
+    and the entire PR-review gate."""
+
+    pm_id = uuid4()
+    cell_id = uuid4()
+    child_id = uuid4()
+    pm = AgentTable(
+        id=pm_id,
+        name="PM",
+        slug=f"be-pm-{uuid4().hex[:8]}",
+        role=AgentRole.CELL_PM,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="pm",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(pm)
+    await db_session.flush()
+    project = ProjectTable(
+        id=uuid4(),
+        name="CellProj",
+        slug=f"cell-{uuid4().hex[:6]}",
+        git_url="https://example.com/r.git",
+        assigned_cell=Team.BACKEND,
+        created_by=pm.id,
+    )
+    db_session.add(project)
+    await db_session.flush()
+    db_session.add_all(
+        [
+            TaskTable(
+                id=cell_id,
+                title="cell",
+                description="d",
+                acceptance_criteria=["done"],
+                status=TaskStatus.IN_PROGRESS,
+                priority=2,
+                task_type=TaskType.PLANNING,
+                nature=TaskNature.TECHNICAL,
+                estimated_complexity=Complexity.LOW,
+                team=Team.BACKEND,
+                confirmed_by_human=True,
+                assigned_to=pm_id,
+                active_claimant_id=pm_id,
+                claimed_by=pm_id,
+                project_id=project.id,
+                created_by=pm_id,
+                branch_name="feature/backend/cell",
+            ),
+            TaskTable(
+                id=child_id,
+                title="child",
+                description="d",
+                acceptance_criteria=["done"],
+                status=TaskStatus.COMPLETED,
+                priority=2,
+                task_type=TaskType.CODE,
+                nature=TaskNature.TECHNICAL,
+                estimated_complexity=Complexity.LOW,
+                team=Team.BACKEND,
+                confirmed_by_human=True,
+                project_id=project.id,
+                created_by=pm_id,
+                parent_task_id=cell_id,
+                branch_name="feature/backend/cell--child",
+            ),
+        ]
+    )
+    await db_session.flush()
+
+    svc = get_task_service(db_session)
+    result = await svc.complete(cell_id, agent_id=pm_id)
+    assert result is None, (
+        "PM completed an assembled cell task from IN_PROGRESS, bypassing "
+        "submit_up + the PR-review gate (H3)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_complete_allows_in_progress_on_leaf(
+    db_session: AsyncSession,
+) -> None:
+    """A leaf (no descendants) the PM owns at IN_PROGRESS completes — the
+    PM-self path stays open."""
+
+    leaf_id = uuid4()
+    pm_id = await _seed_pm_and_task(
+        db_session,
+        status=TaskStatus.IN_PROGRESS,
+        tid=leaf_id,
+        branch_name="feature/backend/leaf",
+    )
+    svc = get_task_service(db_session)
+    result = await svc.complete(leaf_id, agent_id=pm_id)
+    assert result is not None and result.status == TaskStatus.COMPLETED
+
+
+# ---------------------------------------------------------------------------
+# H5: _unclaim_from_blocked must clear the stale pre-block snapshot
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unclaim_from_blocked_clears_pre_block_snapshot(
+    db_session: AsyncSession,
+) -> None:
+    """A blocked task unclaimed back to the pool must not keep a stale
+    pre_block snapshot — a later re-block + unblock_with_restore would
+    restore the stale owner/status."""
+
+    tid = uuid4()
+    owner = uuid4()
+    pm = AgentTable(
+        id=owner,
+        name="PM",
+        slug=f"be-pm-{uuid4().hex[:8]}",
+        role=AgentRole.CELL_PM,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="pm",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(pm)
+    await db_session.flush()
+    project = ProjectTable(
+        id=uuid4(),
+        name="H5",
+        slug=f"h5-{uuid4().hex[:6]}",
+        git_url="https://example.com/r.git",
+        assigned_cell=Team.BACKEND,
+        created_by=owner,
+    )
+    db_session.add(project)
+    await db_session.flush()
+    db_session.add(
+        TaskTable(
+            id=tid,
+            title="t",
+            description="d",
+            acceptance_criteria=["done"],
+            status=TaskStatus.BLOCKED,
+            priority=2,
+            task_type=TaskType.CODE,
+            nature=TaskNature.TECHNICAL,
+            estimated_complexity=Complexity.LOW,
+            team=Team.BACKEND,
+            confirmed_by_human=True,
+            assigned_to=owner,
+            active_claimant_id=owner,
+            claimed_by=owner,
+            project_id=project.id,
+            created_by=owner,
+            branch_name="feature/x",
+            pre_block_state=TaskStatus.IN_PROGRESS.value,
+            pre_block_assignee=owner,
+            pre_block_metadata={"reason": "stale"},
+        )
+    )
+    await db_session.flush()
+
+    svc = get_task_service(db_session)
+    await svc._unclaim_from_blocked(
+        (
+            await db_session.execute(select(TaskTable).where(TaskTable.id == tid))
+        ).scalar_one()
+    )
+
+    row = (
+        await db_session.execute(select(TaskTable).where(TaskTable.id == tid))
+    ).scalar_one()
+    assert row.pre_block_state is None
+    assert row.pre_block_assignee is None
+    assert row.pre_block_metadata is None
+    assert row.blocker_resolver_type is None
+    assert row.blocker_raised_by is None

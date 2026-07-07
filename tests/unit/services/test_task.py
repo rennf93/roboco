@@ -7,14 +7,17 @@ session boundary and checks the method's contract.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
-from roboco.db.tables import AuditLogTable
+from roboco.config import settings
+from roboco.db.tables import AgentTable, AuditLogTable, ProjectTable, TaskTable
+from roboco.exceptions import TaskLifecycleError
+from roboco.foundation.policy.content import markers
 from roboco.models.base import (
     AgentRole,
     AgentStatus,
@@ -26,7 +29,17 @@ from roboco.models.base import (
     Team,
 )
 from roboco.models.task import TaskCreateRequest
-from roboco.services.task import GatewayAgentView, TaskService
+from roboco.services.learning import LearningType
+from roboco.services.task import (
+    VIDEO_SOURCE,
+    GatewayAgentView,
+    TaskService,
+    get_task_service,
+)
+from sqlalchemy import select
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 
 def _build_task(**overrides: object) -> MagicMock:
@@ -411,9 +424,12 @@ async def test_mark_agent_idle_sets_status_idle() -> None:
 
 @pytest.mark.asyncio
 async def test_qa_claim_sets_assignment_on_awaiting_qa() -> None:
-    task = _build_task(status=TaskStatus.AWAITING_QA)
-    svc = TaskService(MagicMock(flush=AsyncMock()))
-    _bind(svc, "get", AsyncMock(return_value=task))
+    task = _build_task(status=TaskStatus.AWAITING_QA, active_claimant_id=None)
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = task
+    session = MagicMock(flush=AsyncMock())
+    session.execute = AsyncMock(return_value=result)
+    svc = TaskService(session)
     qa_id = uuid4()
     out = await svc.qa_claim(qa_id, task.id)
     assert out is task
@@ -424,18 +440,26 @@ async def test_qa_claim_sets_assignment_on_awaiting_qa() -> None:
 
 @pytest.mark.asyncio
 async def test_qa_claim_rejects_wrong_status() -> None:
-    task = _build_task(status=TaskStatus.IN_PROGRESS)
-    svc = TaskService(MagicMock(flush=AsyncMock()))
-    _bind(svc, "get", AsyncMock(return_value=task))
+    task = _build_task(status=TaskStatus.IN_PROGRESS, active_claimant_id=None)
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = task
+    session = MagicMock(flush=AsyncMock())
+    session.execute = AsyncMock(return_value=result)
+    svc = TaskService(session)
     out = await svc.qa_claim(uuid4(), task.id)
     assert out is None
 
 
 @pytest.mark.asyncio
 async def test_doc_claim_sets_assignment_on_awaiting_documentation() -> None:
-    task = _build_task(status=TaskStatus.AWAITING_DOCUMENTATION)
-    svc = TaskService(MagicMock(flush=AsyncMock()))
-    _bind(svc, "get", AsyncMock(return_value=task))
+    task = _build_task(
+        status=TaskStatus.AWAITING_DOCUMENTATION, active_claimant_id=None
+    )
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = task
+    session = MagicMock(flush=AsyncMock())
+    session.execute = AsyncMock(return_value=result)
+    svc = TaskService(session)
     doc_id = uuid4()
     out = await svc.doc_claim(doc_id, task.id)
     assert out is task
@@ -458,8 +482,6 @@ async def test_qa_pass_delegates_to_pass_qa() -> None:
     _bind(svc, "pass_qa", pass_qa_mock)
     await svc.qa_pass(qa_id, task_id, "looks good")
     pass_qa_mock.assert_awaited_once_with(task_id, notes="looks good", agent_role="qa")
-    # active_claimant_id cleared so the documenter can claim cleanly.
-    assert task.active_claimant_id is None
 
 
 @pytest.mark.asyncio
@@ -476,7 +498,6 @@ async def test_qa_fail_appends_issues_to_dev_notes() -> None:
     assert "missing test" in task.dev_notes
     assert "no docstring" in task.dev_notes
     fail_qa_mock.assert_awaited_once_with(task.id, notes="blocking", agent_role="qa")
-    assert task.active_claimant_id is None
 
 
 # ---------------------------------------------------------------------------
@@ -593,6 +614,46 @@ async def test_admin_set_status_non_blocked_is_bare_status_set() -> None:
     assert out is task
     assert task.status == TaskStatus.COMPLETED
     assert task.assigned_to == owner
+
+
+@pytest.mark.asyncio
+async def test_admin_set_status_into_review_queue_clears_active_claimant() -> None:
+    # M19 follow-on: a non-blocked admin override into a review/queue state
+    # must clear any stale active_claimant_id, else the next legitimate claim
+    # (qa_claim/doc_claim) is rejected by the competing-claimant guard. The
+    # blocked->review path is handled by _admin_out_of_blocked; this covers
+    # IN_PROGRESS->AWAITING_QA and similar direct admin jumps.
+    dev = uuid4()
+    task = _build_task(
+        status=TaskStatus.IN_PROGRESS,
+        assigned_to=dev,
+        claimed_by=dev,
+        active_claimant_id=dev,
+    )
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    out = await svc.admin_set_status(task.id, TaskStatus.AWAITING_QA)
+    assert out is task
+    assert task.status == TaskStatus.AWAITING_QA
+    assert task.active_claimant_id is None
+
+
+@pytest.mark.asyncio
+async def test_admin_set_status_non_review_queue_keeps_active_claimant() -> None:
+    # A non-review-queue admin override (e.g. -> IN_PROGRESS) must NOT clear
+    # the active claimant — the owner is still actively working it.
+    dev = uuid4()
+    task = _build_task(
+        status=TaskStatus.AWAITING_QA,
+        assigned_to=dev,
+        claimed_by=dev,
+        active_claimant_id=dev,
+    )
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    _bind(svc, "get", AsyncMock(return_value=task))
+    out = await svc.admin_set_status(task.id, TaskStatus.IN_PROGRESS)
+    assert out is task
+    assert task.active_claimant_id == dev
 
 
 @pytest.mark.asyncio
@@ -1565,3 +1626,324 @@ async def test_update_skips_none_to_protect_partial_callers() -> None:
     assert result is task
     assert task.title == "updated"  # explicit, non-None value is applied
     assert task.acceptance_criteria == ["keep me"]  # None skipped, not wiped
+
+
+# ---------------------------------------------------------------------------
+# M20: admin_set_status terminal guard + skip revision bump under force
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_admin_set_status_refuses_terminal_to_non_terminal_without_force(
+    db_session: AsyncSession,
+) -> None:
+    agent = AgentTable(
+        id=uuid4(),
+        name="A",
+        slug=f"a-{uuid4().hex[:8]}",
+        role=AgentRole.DEVELOPER,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="dev",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(agent)
+    await db_session.flush()
+    project = ProjectTable(
+        id=uuid4(),
+        name="P",
+        slug=f"p-{uuid4().hex[:6]}",
+        git_url="https://example.com/r.git",
+        assigned_cell=Team.BACKEND,
+        created_by=agent.id,
+    )
+    db_session.add(project)
+    await db_session.flush()
+    tid = uuid4()
+    db_session.add(
+        TaskTable(
+            id=tid,
+            title="t",
+            description="d",
+            acceptance_criteria=["done"],
+            status=TaskStatus.COMPLETED,
+            priority=2,
+            task_type=TaskType.CODE,
+            nature=TaskNature.TECHNICAL,
+            estimated_complexity=Complexity.LOW,
+            team=Team.BACKEND,
+            confirmed_by_human=True,
+            project_id=project.id,
+            created_by=agent.id,
+            branch_name="feature/x",
+            revision_count=2,
+        )
+    )
+    await db_session.flush()
+    svc = get_task_service(db_session)
+    with pytest.raises(TaskLifecycleError):
+        await svc.admin_set_status(tid, TaskStatus.NEEDS_REVISION)
+
+
+@pytest.mark.asyncio
+async def test_admin_set_status_force_no_revision_bump(
+    db_session: AsyncSession,
+) -> None:
+    agent = AgentTable(
+        id=uuid4(),
+        name="A",
+        slug=f"a-{uuid4().hex[:8]}",
+        role=AgentRole.DEVELOPER,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="dev",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(agent)
+    await db_session.flush()
+    project = ProjectTable(
+        id=uuid4(),
+        name="P",
+        slug=f"p-{uuid4().hex[:6]}",
+        git_url="https://example.com/r.git",
+        assigned_cell=Team.BACKEND,
+        created_by=agent.id,
+    )
+    db_session.add(project)
+    await db_session.flush()
+    tid = uuid4()
+    db_session.add(
+        TaskTable(
+            id=tid,
+            title="t",
+            description="d",
+            acceptance_criteria=["done"],
+            status=TaskStatus.COMPLETED,
+            priority=2,
+            task_type=TaskType.CODE,
+            nature=TaskNature.TECHNICAL,
+            estimated_complexity=Complexity.LOW,
+            team=Team.BACKEND,
+            confirmed_by_human=True,
+            project_id=project.id,
+            created_by=agent.id,
+            branch_name="feature/x",
+            revision_count=2,
+        )
+    )
+    await db_session.flush()
+    svc = get_task_service(db_session)
+    await svc.admin_set_status(
+        tid, TaskStatus.NEEDS_REVISION, force=True, actor_id=cast("UUID", agent.id)
+    )
+    row = (
+        await db_session.execute(select(TaskTable).where(TaskTable.id == tid))
+    ).scalar_one()
+    assert row.status == TaskStatus.NEEDS_REVISION
+    expected_revision_count = 2
+    assert row.revision_count == expected_revision_count, (
+        "admin force terminal->needs_revision bumped revision_count — "
+        "admin recovery must not be counted as rework in metrics"
+    )
+
+
+# ---------------------------------------------------------------------------
+# _extract_completion_learnings — dead-letter on record_learning failure
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_extract_completion_learnings_dead_letters_on_failure() -> None:
+    """A record_learning failure (embedder down) is persisted to the
+    rag_index_failures dead-letter instead of dropped. The caller's commit
+    is never blocked — the dead-letter uses its own session."""
+    svc = TaskService(MagicMock())
+
+    task = MagicMock(spec=TaskTable)
+    task.id = uuid4()
+    task.title = "do thing"
+    task.team = Team.BACKEND
+    task.started_at = datetime.now(UTC)
+    task.completed_at = datetime.now(UTC)
+    task.estimated_complexity = Complexity.MEDIUM
+    task.commits = []
+    task.dev_notes = "notes"
+    task.qa_notes = None
+    task.assigned_to = uuid4()
+    task.acceptance_criteria = ["ac1"]
+
+    learning_svc = MagicMock()
+    learning_svc.record_learning = AsyncMock(side_effect=RuntimeError("embedder 429"))
+
+    async def _fake_completion_learnings_for(
+        _snapshot: object, _ac: object
+    ) -> list[tuple[str, LearningType]]:
+        return [("a lesson", LearningType.SOLUTION)]
+
+    _bind(svc, "_completion_learnings_for", _fake_completion_learnings_for)
+
+    with (
+        patch(
+            "roboco.services.learning.get_learning_service",
+            AsyncMock(return_value=learning_svc),
+        ),
+        patch(
+            "roboco.services.rag_index_failures.persist_failure",
+            new=AsyncMock(),
+        ) as mock_persist,
+    ):
+        await svc._extract_completion_learnings(task, agent_id=None)
+
+    mock_persist.assert_awaited_once()
+    call_args = mock_persist.await_args
+    assert call_args is not None
+    assert call_args.args[0] == "completion_learning"
+    payload = call_args.args[1]
+    assert payload["content"] == "a lesson"
+    assert payload["learning_type"] == LearningType.SOLUTION.value
+
+
+# ---------------------------------------------------------------------------
+# list_completed_video_tasks — bounded scan (M4)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_completed_video_tasks_bounded_to_scan_limit(
+    db_session: AsyncSession,
+) -> None:
+    """Render-loop scan basis must be bounded to ``video_render_scan_limit``.
+
+    Pre-fix returned every completed VIDEO_SOURCE task ever (unbounded). With
+    the bound + descending order, the ``video_render_scan_limit`` newest are
+    returned and the 50 unrendered newest (the ones the loop actually acts
+    on) are included.
+    """
+    scan_limit = settings.video_render_scan_limit
+    old_rendered_count = 250
+    new_unrendered_count = 50
+    assert scan_limit < old_rendered_count + new_unrendered_count, (
+        "test fixture assumes the scan limit is smaller than the seeded set"
+    )
+
+    system_agent = AgentTable(
+        id=uuid4(),
+        name="System",
+        slug=f"system-{uuid4().hex[:8]}",
+        role=AgentRole.SYSTEM,
+        team=None,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="system",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(system_agent)
+    await db_session.flush()
+
+    project = ProjectTable(
+        id=uuid4(),
+        name="Video Bounded Scan Test",
+        slug=f"video-bounded-{uuid4().hex[:8]}",
+        git_url="https://github.com/example/video-bounded.git",
+        default_branch="main",
+        protected_branches=["main"],
+        assigned_cell=Team.UX_UI,
+        created_by=system_agent.id,
+        is_active=True,
+    )
+    db_session.add(project)
+    await db_session.flush()
+
+    base = datetime(2026, 1, 1, tzinfo=UTC)
+    seeded_ids: list[Any] = []
+
+    # Older completed video tasks — render_status="rendered" (already handled
+    # by a prior render pass; the loop skips them in Python).
+    for i in range(old_rendered_count):
+        task = TaskTable(
+            id=uuid4(),
+            title=f"video-old-{i}",
+            description="older rendered video task",
+            acceptance_criteria=["criterion"],
+            status=TaskStatus.COMPLETED,
+            priority=2,
+            task_type=TaskType.CODE,
+            nature=TaskNature.TECHNICAL,
+            project_id=project.id,
+            branch_name=f"feature/ux-ui/OLD{i}",
+            source=VIDEO_SOURCE,
+            created_at=base + timedelta(minutes=i),
+            created_by=system_agent.id,
+            team=Team.UX_UI,
+            dependency_ids=[],
+            blocker_ids=[],
+            sequence=0,
+            estimated_complexity=Complexity.MEDIUM,
+        )
+        markers.set_video_draft(
+            task,
+            {
+                "composition_id": f"comp-old-{i}",
+                "render_status": "rendered",
+                "platforms": ["x"],
+            },
+        )
+        db_session.add(task)
+        seeded_ids.append(task.id)
+
+    # Newer completed video tasks — render_status unset (the loop's actual
+    # work queue). created_at after every older task so they sort newest
+    # under .order_by(created_at.desc()).
+    newest_ids: list[Any] = []
+    for i in range(new_unrendered_count):
+        task = TaskTable(
+            id=uuid4(),
+            title=f"video-new-{i}",
+            description="newest unrendered video task",
+            acceptance_criteria=["criterion"],
+            status=TaskStatus.COMPLETED,
+            priority=2,
+            task_type=TaskType.CODE,
+            nature=TaskNature.TECHNICAL,
+            project_id=project.id,
+            branch_name=f"feature/ux-ui/NEW{i}",
+            source=VIDEO_SOURCE,
+            created_at=base + timedelta(hours=10, minutes=i),
+            created_by=system_agent.id,
+            team=Team.UX_UI,
+            dependency_ids=[],
+            blocker_ids=[],
+            sequence=0,
+            estimated_complexity=Complexity.MEDIUM,
+        )
+        markers.set_video_draft(
+            task,
+            {"composition_id": f"comp-new-{i}", "platforms": ["x"]},
+        )
+        db_session.add(task)
+        newest_ids.append(task.id)
+
+    await db_session.commit()
+
+    svc = TaskService(db_session)
+    rows = await svc.list_completed_video_tasks()
+
+    assert len(rows) <= scan_limit, f"scan not bounded: returned {len(rows)}"
+    assert len(rows) == scan_limit, f"expected exactly the limit, got {len(rows)}"
+    # Newest-first ordering.
+    created_times = [r.created_at for r in rows]
+    assert created_times == sorted(created_times, reverse=True)
+    # The unrendered newest are all inside the bounded window.
+    returned_ids = {r.id for r in rows}
+    missing_new = set(newest_ids) - returned_ids
+    assert not missing_new, (
+        f"{len(missing_new)} newest unrendered tasks dropped by the bound"
+    )

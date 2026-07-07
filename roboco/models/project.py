@@ -128,6 +128,12 @@ class Project(TimestampMixin):
         default=None, description="Workflow file to scope the CI-watch signal to"
     )
 
+    # Video-engine opt-in (global ROBOCO_VIDEO_ENGINE_ENABLED arms the subsystem)
+    video_engine_enabled: bool = Field(
+        default=False,
+        description="Opt this project into the video engine (authoring into motion/)",
+    )
+
     # Dependency-update bot opt-in
     dep_update_command: str | None = Field(
         default=None,
@@ -207,6 +213,7 @@ class ProjectUpdate(RobocoBase):
     is_active: bool | None = None
     ci_watch_enabled: bool | None = None
     ci_watch_workflow: str | None = None
+    video_engine_enabled: bool | None = None
     dep_update_command: str | None = None
     dep_update_paths: list[str] | None = None
     sandbox_services: list[str] | None = None

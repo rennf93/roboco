@@ -8,6 +8,7 @@ approves — asserted here against a real Postgres DB.
 
 from __future__ import annotations
 
+import subprocess
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 
@@ -30,6 +31,8 @@ from roboco.services.release_readiness import (
 from roboco.services.task import RELEASE_MANAGER_SOURCE, TaskService, get_task_service
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
 SYSTEM_UUID = _foundation.AGENTS["system"].uuid
@@ -225,3 +228,133 @@ async def test_none_assessment_no_proposal(
     engine = ReleaseManagerEngine(db_session, assessor=_assessor(None))
     assert await engine.run_cycle() is None
     assert await get_task_service(db_session).list_open_release_proposals() == []
+
+
+# --- _production_assess: pass head_sha to the CI gate (M8) ---
+
+
+def _git(root: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(root), *args],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout
+
+
+def _read_clone_repo(tmp_path: Path) -> Path:
+    """A minimal git repo standing in for the read clone with a known HEAD."""
+    root = tmp_path / "read-clone"
+    root.mkdir()
+    _git(root, "init")
+    _git(root, "config", "user.name", "Test")
+    _git(root, "config", "user.email", "test@example.com")
+    (root / "pyproject.toml").write_text('version = "0.1.0"\n', encoding="utf-8")
+    (root / "CHANGELOG.md").write_text("## [Unreleased]\n", encoding="utf-8")
+    (root / "README.md").write_text("hi\n", encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-m", "feat: seed")
+    return root
+
+
+class _FakeProjectService:
+    def __init__(self, project: object) -> None:
+        self._project = project
+
+    async def get_by_slug(self, _slug: str) -> object:
+        return self._project
+
+
+@pytest.mark.asyncio
+async def test_production_assess_passes_head_sha_to_ci_gate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _enable(monkeypatch)
+    clone = _read_clone_repo(tmp_path)
+    head_sha = subprocess.run(
+        ["git", "-C", str(clone), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+    project = type("P", (), {"slug": SLUG, "git_url": "https://x/y.git"})()
+    monkeypatch.setattr(
+        "roboco.services.release_manager_engine.get_project_service",
+        lambda _session: _FakeProjectService(project),
+    )
+    monkeypatch.setattr(
+        "roboco.services.workspace.get_workspace_service",
+        lambda _session: type(
+            "WS",
+            (),
+            {"ensure_read_clone": AsyncMock(return_value=clone)},
+        )(),
+    )
+    captured: dict[str, object] = {}
+
+    async def _fake_ci(
+        _self: object, _slug: str, **_kwargs: object
+    ) -> dict[str, str] | None:
+        captured["head_sha"] = _kwargs.get("head_sha")
+        return {"conclusion": "success", "head_sha": str(_kwargs.get("head_sha") or "")}
+
+    monkeypatch.setattr(
+        "roboco.services.git.get_git_service",
+        lambda _session: type("GS", (), {"get_latest_ci_conclusion": _fake_ci})(),
+    )
+
+    engine = ReleaseManagerEngine(session=AsyncMock())  # real _production_assess
+    report = await engine._production_assess()
+    assert report is not None
+    assert captured["head_sha"] == head_sha
+    assert report.gate_state == "green"
+
+
+@pytest.mark.asyncio
+async def test_production_assess_head_unresolvable_passes_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _enable(monkeypatch)
+    # A non-git directory: `git rev-parse HEAD` fails, so head_sha is None.
+    bogus = tmp_path / "not-a-repo"
+    bogus.mkdir()
+    # gather_snapshot reads pyproject.toml + CHANGELOG.md before any git call;
+    # populate them so the snapshot build doesn't crash on file reads (git
+    # commands run with check=False and silently return "" on a non-repo).
+    (bogus / "pyproject.toml").write_text('version = "0.1.0"\n', encoding="utf-8")
+    (bogus / "CHANGELOG.md").write_text("## [Unreleased]\n", encoding="utf-8")
+
+    project = type("P", (), {"slug": SLUG, "git_url": "https://x/y.git"})()
+    monkeypatch.setattr(
+        "roboco.services.release_manager_engine.get_project_service",
+        lambda _session: _FakeProjectService(project),
+    )
+    monkeypatch.setattr(
+        "roboco.services.workspace.get_workspace_service",
+        lambda _session: type(
+            "WS",
+            (),
+            {"ensure_read_clone": AsyncMock(return_value=bogus)},
+        )(),
+    )
+    captured: dict[str, object] = {}
+
+    async def _fake_ci(
+        _self: object, _slug: str, **_kwargs: object
+    ) -> dict[str, str] | None:
+        captured["head_sha"] = _kwargs.get("head_sha")
+        return None  # no CI signal → unknown gate
+
+    monkeypatch.setattr(
+        "roboco.services.git.get_git_service",
+        lambda _session: type("GS", (), {"get_latest_ci_conclusion": _fake_ci})(),
+    )
+
+    engine = ReleaseManagerEngine(session=AsyncMock())
+    report = await engine._production_assess()
+    # head_sha=None flowed through; gate is unknown (a gap, no proposal).
+    assert captured["head_sha"] is None
+    assert report is not None
+    assert report.gate_state == "unknown"

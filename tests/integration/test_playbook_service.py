@@ -161,9 +161,37 @@ async def test_approve_survives_index_failure(
 async def test_approve_rejects_already_approved(db_session: AsyncSession) -> None:
     svc = PlaybookService(db_session)
     pb = await svc.draft(_create(title="Once"), created_by=uuid4())
-    await svc.approve(pb.id, approver_id=uuid4())
+    approved = await svc.approve(pb.id, approver_id=uuid4())
+    # Simulate a successful post-commit index so the row is durably indexed;
+    # a second approve on an already-indexed approved playbook is the
+    # conflict (M23: an APPROVED-but-unindexed row is re-approvable as a
+    # retry path, not a conflict).
+    approved.indexed_ok = True
+    await db_session.flush()
     with pytest.raises(ConflictError):
         await svc.approve(pb.id, approver_id=uuid4())
+
+
+@pytest.mark.asyncio
+async def test_approve_retry_unindexed_approved(
+    db_session: AsyncSession,
+) -> None:
+    """M23: an APPROVED playbook whose ``indexed_ok`` is still False (the
+    post-commit index write failed or never ran) is re-approvable — the
+    retry path the Auditor/CEO uses to re-run ``index_approved``. The status
+    and approval provenance are NOT re-stamped on retry."""
+    svc = PlaybookService(db_session)
+    approver = uuid4()
+    pb = await svc.draft(_create(title="Retry me"), created_by=uuid4())
+    first = await svc.approve(pb.id, approver_id=approver)
+    assert first.indexed_ok is False
+    first_stamped = first.approved_at
+    # A mid-approval Ollama outage leaves indexed_ok=False; re-approve is allowed.
+    second = await svc.approve(pb.id, approver_id=approver)
+    assert second.status == PlaybookStatus.APPROVED
+    # No re-stamp on retry — the approval provenance is preserved.
+    assert second.approved_at == first_stamped
+    assert second.indexed_ok is False
 
 
 @pytest.mark.asyncio

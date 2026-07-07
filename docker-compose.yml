@@ -152,19 +152,19 @@ services:
         echo "=== All models ready! ==="
 
   # ==========================================================================
-  # Remotion Renderer - sidecar for the video-generation engine (bundles +
-  # renders motion/ compositions to MP4). Mirrors the ollama sidecar pattern:
-  # a plain HTTP service the orchestrator talks to, nothing more. Harmless
-  # when idle — it only renders when POSTed; the video_engine_* feature
-  # flags gate whether the orchestrator ever sends it work. No DB access, no
-  # git, no credentials — it only ever reads what it's POSTed.
+  # Video Renderer - sidecar for the video-generation engine (renders
+  # motion/ compositions to MP4 with HyperFrames). Mirrors the ollama sidecar
+  # pattern: a plain HTTP service the orchestrator talks to, nothing more.
+  # Harmless when idle — it only renders when POSTed; the video_engine_*
+  # feature flags gate whether the orchestrator ever sends it work. No DB
+  # access, no git, no credentials — it only ever reads what it's POSTed.
   # ==========================================================================
-  remotion-renderer:
+  video-renderer:
     build:
       context: .
-      dockerfile: docker/remotion.Dockerfile
-    image: roboco-remotion
-    container_name: roboco-remotion
+      dockerfile: docker/video-renderer.Dockerfile
+    image: roboco-video-renderer
+    container_name: roboco-video-renderer
     restart: unless-stopped
     networks:
       - default
@@ -396,10 +396,10 @@ services:
       ROBOCO_LOCAL_LLM_MODEL: glm-5.2:cloud
       ROBOCO_DEFAULT_EMBEDDING_MODEL: qwen3-embedding:0.6b
       ROBOCO_OLLAMA_BASE_URL: http://roboco-ollama:11434
-      # Remotion renderer sidecar (use container name). The video engine
+      # Video renderer sidecar (use container name). The video engine
       # itself is default-off (video_engine_enabled); this just points the
       # client at the sidecar for when it's armed.
-      ROBOCO_REMOTION_BASE_URL: http://roboco-remotion:3001
+      ROBOCO_VIDEO_RENDERER_BASE_URL: http://roboco-video-renderer:3001
       # MinIO object storage for rendered videos (use container name). Empty
       # endpoint = disabled (FileResponse fallback); armed here for the NAS
       # deploy, left OFF in docker-compose.registry.yml.
@@ -486,9 +486,9 @@ services:
       #     the Product Owner, who proposes a themed cycle of roadmap items;
       #     the CEO approves each item individually into the backlog.
       ROBOCO_ROADMAP_ENGINE_ENABLED: ${ROBOCO_ROADMAP_ENGINE_ENABLED:-true}
-      # Video-generation engine: a UX/UI dev authors a bespoke Remotion video
+      # Video-generation engine: a UX/UI dev authors a bespoke HyperFrames video
       # per release/spotlight/on-demand trigger through the normal delivery
-      # lifecycle; the render loop above renders it via the remotion-renderer
+      # lifecycle; the render loop above renders it via the video-renderer
       # sidecar and holds the clip as a CEO-approval draft — nothing
       # auto-posts. Config default is OFF; ARMED here for the NAS deploy like
       # the rest. Left OFF in docker-compose.registry.yml so the published

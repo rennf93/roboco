@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 import pytest
-from roboco.db.tables import AgentTable, ProjectTable, TaskTable
+from roboco.db.tables import AgentTable, AuditLogTable, ProjectTable, TaskTable
 from roboco.foundation import identity as _foundation
 from roboco.foundation.policy.content import markers
 from roboco.models.base import (
@@ -290,3 +290,34 @@ async def test_list_open_cycles_excludes_completed(db_session: AsyncSession) -> 
     await svc.approve_item(_id(task), "item-0", created_by=CEO_UUID)
     open_after = await svc.list_open_cycles()
     assert task.id not in {t.id for t in open_after}
+
+
+@pytest.mark.asyncio
+async def test_maybe_complete_cycle_emits_audit(db_session: AsyncSession) -> None:
+    # All items terminal -> task completed + a task.completed audit row.
+    await _seed_project(db_session, "backend-svc")
+    task = await _seed_cycle(db_session, project_slug="backend-svc")
+    svc = _svc(db_session)
+    await svc.approve_item(_id(task), "item-0", created_by=CEO_UUID)
+    assert task.status == TS.PENDING  # one item still proposed
+    await svc.reject_item(_id(task), "item-1", "not now")
+    assert cast("TS", task.status) == TS.COMPLETED  # both items terminal
+
+    rows = (
+        (
+            await db_session.execute(
+                select(AuditLogTable).where(AuditLogTable.target_id == task.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    audit = [
+        r
+        for r in rows
+        if r.event_type == "task.completed"
+        or str(r.details.get("to_status", "")).lower() == "completed"
+    ]
+    assert audit, (
+        "expected a task.completed audit row for the PENDING -> COMPLETED transition"
+    )

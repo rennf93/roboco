@@ -89,6 +89,61 @@ def test_note_with_scope_reflect(do_module: Any) -> None:
     assert kwargs["json"]["scope"] == "reflect"
 
 
+def test_build_headers_carries_auth_token_and_team(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """do verbs must carry X-Agent-Token + X-Agent-Team or the API's
+    ROBOCO_AGENT_AUTH_REQUIRED gate 401s with "Missing X-Agent-Token" —
+    regression: the manual header dict omitted both, latent until auth was
+    armed on the NAS deploy."""
+    import importlib
+
+    be_dev_1 = "00000000-0000-0000-0001-000000000001"  # role=developer, team=backend
+    manifest = Path(tempfile.mkdtemp()) / "tool-manifest.json"
+    manifest.write_text(json.dumps({**_DO_TEST_MANIFEST, "agent_id": be_dev_1}))
+    monkeypatch.setenv("ROBOCO_AGENT_ID", be_dev_1)
+    monkeypatch.setenv("ROBOCO_AGENT_ROLE", "developer")
+    monkeypatch.setenv("ROBOCO_AGENT_TOKEN", "test-hmac-token")
+    monkeypatch.setenv("ROBOCO_ORCHESTRATOR_URL", "http://test-orchestrator:8000")
+    monkeypatch.setenv("ROBOCO_TOOL_MANIFEST_PATH", str(manifest))
+
+    import roboco.mcp.do_server as srv
+
+    importlib.reload(srv)
+    headers = srv._build_headers()
+
+    assert headers["X-Agent-ID"] == be_dev_1
+    assert headers["X-Agent-Role"] == "developer"
+    assert headers["X-Agent-Team"] == "backend"
+    assert headers["X-Agent-Token"] == "test-hmac-token"
+    assert "X-Correlation-ID" in headers
+
+
+def test_build_headers_omits_unsigned_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The orchestrator injects ROBOCO_AGENT_TOKEN=UNSIGNED when the HMAC
+    secret is unset at spawn. The middleware rejects a presented-but-unverifiable
+    token with 401 "signature mismatch" even in dev mode, so forwarding UNSIGNED
+    turns every do verb into a 401. Omit the header so dev (auth not required)
+    accepts the call; prod 401s with "Missing X-Agent-Token" instead."""
+    import importlib
+
+    be_dev_1 = "00000000-0000-0000-0001-000000000001"
+    manifest = Path(tempfile.mkdtemp()) / "tool-manifest.json"
+    manifest.write_text(json.dumps({**_DO_TEST_MANIFEST, "agent_id": be_dev_1}))
+    monkeypatch.setenv("ROBOCO_AGENT_ID", be_dev_1)
+    monkeypatch.setenv("ROBOCO_AGENT_ROLE", "developer")
+    monkeypatch.setenv("ROBOCO_AGENT_TOKEN", "UNSIGNED")
+    monkeypatch.setenv("ROBOCO_ORCHESTRATOR_URL", "http://test-orchestrator:8000")
+    monkeypatch.setenv("ROBOCO_TOOL_MANIFEST_PATH", str(manifest))
+
+    import roboco.mcp.do_server as srv
+
+    importlib.reload(srv)
+    headers = srv._build_headers()
+
+    assert "X-Agent-Token" not in headers
+
+
 def test_dm_posts_all_fields(do_module: Any) -> None:
     fake_client = MagicMock()
     fake_client.__enter__.return_value = fake_client

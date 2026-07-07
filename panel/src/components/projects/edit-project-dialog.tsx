@@ -76,6 +76,9 @@ function EditProjectForm({
   const [ciWatchWorkflow, setCiWatchWorkflow] = useState(
     project.ci_watch_workflow || "",
   );
+  const [videoEngineEnabled, setVideoEngineEnabled] = useState(
+    project.video_engine_enabled,
+  );
   const [depUpdateCommand, setDepUpdateCommand] = useState(
     project.dep_update_command || "",
   );
@@ -120,6 +123,7 @@ function EditProjectForm({
       quality_command: qualityCommand || undefined,
       ci_watch_enabled: ciWatchEnabled,
       ci_watch_workflow: ciWatchWorkflow || undefined,
+      video_engine_enabled: videoEngineEnabled,
       dep_update_command: depUpdateCommand || undefined,
       dep_update_paths: depUpdatePaths.trim()
         ? depUpdatePaths
@@ -408,6 +412,17 @@ function EditProjectForm({
                 Workflow file to scope the CI signal to. Leave blank to use the
                 engine default.
               </p>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <Label htmlFor="video_engine_enabled">
+                Video engine (author marketing videos into this project)
+              </Label>
+              <Switch
+                id="video_engine_enabled"
+                checked={videoEngineEnabled}
+                onCheckedChange={setVideoEngineEnabled}
+              />
             </div>
 
             <div className="grid gap-2">

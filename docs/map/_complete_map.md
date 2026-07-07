@@ -1,6 +1,6 @@
 # RoboCo — The Complete Map (2026-06-29)
 
-> Scope: full codebase, baseline `fd10cc862`..HEAD. The CEO suspects recent changes may have broken the system. This is the exhaustive record + drift/regression audit, built from 31 per-slice maps. Branch: `feature/metrics-granularity` (work merged into `master` via PRs #283 and #285), **NOT deployed**.
+> Scope: full codebase, baseline `fd10cc862`..HEAD. The CEO suspects recent changes may have broken the system. This is the exhaustive record + drift/regression audit, built from 32 per-slice maps. Branch: `feature/metrics-granularity` (work merged into `master` via PRs #283 and #285), **NOT deployed**.
 >
 > Verified range figures: `git log --oneline fd10cc862c2020b3f639cdb686d427b0198a2441..HEAD` returns **2 commits** on `master` (`15effce0` "Chore: 141 Gaps fill-in (#283)" and `3aff6e04` "Chore: Close gaps (#285)"), but the bundled diff is enormous — **577 files changed, +36,653/-4,214 lines** (verified via `git diff --stat`). The two PRs squash months of per-fix work (F0xx audit gaps, F123 worktrees, sequencing, pr_fail loop-closers, model rename, etc.) into two merge commits, so the effective change surface is far larger than the commit count implies. Earlier per-fix commits (e202ce39, 250be5c2, a957e4fa, 82541077, cf7603f3, e52fd05d, 919aa7e2, 12621a36, 9927d248, c03e76c4, 2f322286, c34e978f, 3a4a3fe5, 53d60da3) are ancestors of `15effce0` and are the substance of the gap-fill.
 
@@ -33,21 +33,22 @@
 14. runtime-providers
 15. engines-heal-ciwatch-depupdate
 16. release-manager
-17. org-memory-playbooks
-18. notification
-19. a2a-audit-journal-permissions
-20. conventions-service-validator
-21. intake-secretary
-22. product-strategy-research-pitch
-23. metrics-observability
-24. support-services
-25. mcp-servers
-26. api-core-websocket
-27. api-routes-schemas
-28. panel
-29. deployment-tooling
-30. tests
-31. prompts-roles-taxonomy
+17. video-engine
+18. org-memory-playbooks
+19. notification
+20. a2a-audit-journal-permissions
+21. conventions-service-validator
+22. intake-secretary
+23. product-strategy-research-pitch
+24. metrics-observability
+25. support-services
+26. mcp-servers
+27. api-core-websocket
+28. api-routes-schemas
+29. panel
+30. deployment-tooling
+31. tests
+32. prompts-roles-taxonomy
 
 ---
 

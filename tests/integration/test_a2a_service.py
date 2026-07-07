@@ -38,6 +38,7 @@ from roboco.services.a2a import _LIVE_VIEW_EXCERPT_CHARS, A2AService
 from roboco.services.gateway.evidence_repo import EvidenceRepo
 from sqlalchemy import select
 from sqlalchemy import select as _sel
+from sqlalchemy.sql.dml import Update
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -2134,3 +2135,128 @@ async def test_mark_all_read_clears_unread_for_agent(a2a_setup: dict) -> None:
 
     # Idempotent — nothing left unread for qa.
     assert await svc.mark_all_read(qa.id) == 0
+
+
+# mark_read / mark_all_read — collect-then-mark race coverage (M27)
+#
+# A send_chat_message committing between the counter-zero and the bulk UPDATE
+# used to insert a new read_at NULL row that the UPDATE then stamped as read —
+# the new message was silently consumed. The fix mirrors get_unread_messages:
+# SELECT the unread IDs first, UPDATE exactly those, recompute the counter from
+# the DB. These tests inject a racing message inside the UPDATE step and assert
+# the racing message stays unread (read_at NULL) and the counter reflects it.
+
+
+def _is_a2a_message_update(stmt: object) -> bool:
+    """True when ``stmt`` is the bulk ``UPDATE a2a_messages ...`` DML."""
+    if not isinstance(stmt, Update):
+        return False
+    table = getattr(stmt, "table", None)
+    return getattr(table, "name", None) == "a2a_messages"
+
+
+@pytest.mark.asyncio
+async def test_mark_read_racing_message_stays_unread(a2a_setup: dict) -> None:
+    """A message arriving mid-mark_read (after the SELECT, before the UPDATE)
+    must stay unread — the bulk UPDATE stamps only the rows seen at call time,
+    and the counter is recomputed from the DB so the new message is counted."""
+    svc: A2AService = a2a_setup["svc"]
+    db = a2a_setup["db"]
+    conv = await svc.get_or_create_conversation(
+        agent_a="be-dev-1", agent_b="be-qa", task_id=a2a_setup["task_id"]
+    )
+    conv_id = UUID(conv.id)
+    # dev is agent_a → dev's messages bump qa's unread (unread_by_b).
+    await svc.send_chat_message(conv_id, "be-dev-1", "first")
+
+    real_execute = db.execute
+    injected: list[str] = []
+
+    async def patched_execute(stmt: object, *args: object, **kwargs: object) -> object:
+        if not injected and _is_a2a_message_update(stmt):
+            # Race: a new incoming message lands right before the UPDATE runs.
+            await svc.send_chat_message(conv_id, "be-dev-1", "racing second")
+            injected.append("racing second")
+        return await real_execute(stmt, *args, **kwargs)
+
+    db.execute = patched_execute
+    try:
+        await svc.mark_read(conv_id, "be-qa")
+    finally:
+        db.execute = real_execute
+
+    assert injected, "test harness must fire the racing send before the UPDATE"
+
+    row = await db.get(A2AConversationTable, conv_id)
+    assert row is not None
+    msgs = (
+        (
+            await real_execute(
+                select(A2AMessageTable)
+                .where(A2AMessageTable.conversation_id == conv_id)
+                .order_by(A2AMessageTable.created_at)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    racing = [m for m in msgs if m.content == "racing second"]
+    first = [m for m in msgs if m.content == "first"]
+    assert racing and first
+    assert first[0].read_at is not None, "pre-race message must be marked read"
+    assert racing[0].read_at is None, "racing message must stay unread"
+    # Counter reflects the actual unread incoming count (1, the racing message).
+    assert row.unread_by_b == 1
+
+
+@pytest.mark.asyncio
+async def test_mark_all_read_racing_message_stays_unread(a2a_setup: dict) -> None:
+    """Same race for mark_all_read: a message arriving mid-call (after the
+    SELECT, before the bulk UPDATE) must stay unread and be reflected in the
+    recomputed counter, not silently consumed as read."""
+    svc: A2AService = a2a_setup["svc"]
+    db = a2a_setup["db"]
+    qa = a2a_setup["qa"]
+    conv = await svc.get_or_create_conversation(
+        agent_a="be-dev-1", agent_b="be-qa", task_id=a2a_setup["task_id"]
+    )
+    conv_id = UUID(conv.id)
+    await svc.send_chat_message(conv_id, "be-dev-1", "first")
+
+    real_execute = db.execute
+    injected: list[str] = []
+
+    async def patched_execute(stmt: object, *args: object, **kwargs: object) -> object:
+        if not injected and _is_a2a_message_update(stmt):
+            await svc.send_chat_message(conv_id, "be-dev-1", "racing second")
+            injected.append("racing second")
+        return await real_execute(stmt, *args, **kwargs)
+
+    db.execute = patched_execute
+    try:
+        cleared = await svc.mark_all_read(qa.id)
+    finally:
+        db.execute = real_execute
+
+    assert injected, "test harness must fire the racing send before the UPDATE"
+    assert cleared == 1
+
+    row = await db.get(A2AConversationTable, conv_id)
+    assert row is not None
+    msgs = (
+        (
+            await real_execute(
+                select(A2AMessageTable)
+                .where(A2AMessageTable.conversation_id == conv_id)
+                .order_by(A2AMessageTable.created_at)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    racing = [m for m in msgs if m.content == "racing second"]
+    first = [m for m in msgs if m.content == "first"]
+    assert racing and first
+    assert first[0].read_at is not None
+    assert racing[0].read_at is None, "racing message must stay unread"
+    assert row.unread_by_b == 1

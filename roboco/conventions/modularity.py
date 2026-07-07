@@ -55,6 +55,11 @@ _DB_METHODS = frozenset(
         "query",
     }
 )
+# `add`/`add_all`/`merge` are ambiguous (set.add, cache.add, etc.) — only a DB
+# hit when the receiver is a session handle. The other _DB_METHODS are unambiguous.
+_AMBIGUOUS_DB_METHODS = frozenset({"add", "add_all", "merge"})
+_SESSION_HANDLES = frozenset({"db", "session", "conn", "s"})
+
 _DB_CONSTRUCTS = frozenset({"select", "insert", "update", "delete"})
 
 # Data-fetching that belongs in a hook / query layer, not in a component body.
@@ -219,6 +224,18 @@ def _py_decorator_is_route(decorator: Node) -> bool:
     return obj_name in _ROUTER_OBJECTS or method in _HTTP_METHODS
 
 
+def _attr_call_hits_db(fn: Node) -> bool:
+    method = _text(fn.child_by_field_name("attribute"))
+    if method not in _DB_METHODS:
+        return False
+    if method not in _AMBIGUOUS_DB_METHODS:
+        return True
+    obj = fn.child_by_field_name("object")
+    obj_name = _text(obj) if obj is not None and obj.type == "identifier" else ""
+    # non-session receiver (seen_tags.add, cache.add) — not DB
+    return obj_name in _SESSION_HANDLES
+
+
 def _body_hits_db(func: Node) -> bool:
     body = func.child_by_field_name("body")
     if body is None:
@@ -227,10 +244,9 @@ def _body_hits_db(func: Node) -> bool:
         fn = call.child_by_field_name("function")
         if fn is None:
             continue
-        if fn.type == "attribute":
-            if _text(fn.child_by_field_name("attribute")) in _DB_METHODS:
-                return True
-        elif fn.type == "identifier" and _text(fn) in _DB_CONSTRUCTS:
+        if (fn.type == "attribute" and _attr_call_hits_db(fn)) or (
+            fn.type == "identifier" and _text(fn) in _DB_CONSTRUCTS
+        ):
             return True
     return False
 

@@ -12,6 +12,7 @@ from roboco.api.schemas.v1.flow import (
     IWillPlanRequest,
     IWillWorkOnRequest,
 )
+from roboco.models.base import Complexity
 
 
 def test_delegate_request_requires_task_type() -> None:
@@ -49,7 +50,7 @@ def test_delegate_request_accepts_explicit_task_type() -> None:
         team="backend",
         task_type="code",
         nature="technical",
-        estimated_complexity="medium",
+        estimated_complexity=Complexity.MEDIUM,
         acceptance_criteria=["returns 200"],
     )
     assert req.task_type == "code"
@@ -125,7 +126,7 @@ def test_delegate_request_flattens_sdk_nested_acceptance_criteria() -> None:
         team="backend",
         task_type="code",
         nature="technical",
-        estimated_complexity="medium",
+        estimated_complexity=Complexity.MEDIUM,
         acceptance_criteria=acceptance_criteria,
     )
     assert req.acceptance_criteria == [

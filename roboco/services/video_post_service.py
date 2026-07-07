@@ -59,6 +59,10 @@ class VideoCaptionTooLongError(ValueError):
     """The CEO's edited caption exceeds the platform's character limit."""
 
 
+class TaskAlreadyCompletedError(Exception):
+    """The task is already COMPLETED (posted publicly) and can't be rejected."""
+
+
 @dataclass(frozen=True)
 class XVideoPostResult:
     """The outcome of an `XVideoPoster.post_video` call."""
@@ -483,6 +487,10 @@ class VideoPostService(BaseService):
         task = await get_task_service(self.session).get(task_id)
         if task is None or task.source != VIDEO_POST_SOURCE:
             return None
+        if task.status == TaskStatus.COMPLETED:
+            raise TaskAlreadyCompletedError(
+                f"video post {task_id} already posted (COMPLETED); cannot be rejected"
+            )
         markers.set_video_reject_reason(task, reason)
         task.status = TaskStatus.CANCELLED
         await self.session.flush()

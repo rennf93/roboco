@@ -282,6 +282,7 @@ async def confirm_live_batch(
             agent.agent_id,
             project_ids=body.project_ids,
             route=body.route,
+            session_id=session_id,
         )
     except ServiceError as e:
         raise _translate_service_error(e) from e

@@ -18,6 +18,8 @@ from typing import Any
 import httpx
 from mcp.server.fastmcp import FastMCP
 
+from roboco.agents_config import get_agent_team
+
 ORCHESTRATOR_URL = os.environ.get(
     "ROBOCO_ORCHESTRATOR_URL",
     "http://roboco-orchestrator:8000",
@@ -25,7 +27,27 @@ ORCHESTRATOR_URL = os.environ.get(
 AGENT_ID = os.environ["ROBOCO_AGENT_ID"]
 AGENT_ROLE = os.environ["ROBOCO_AGENT_ROLE"]
 
-_HEADERS = {"X-Agent-ID": AGENT_ID, "X-Agent-Role": AGENT_ROLE}
+
+def _headers() -> dict[str, str]:
+    """Identity + HMAC token headers for the orchestrator git reads.
+
+    The git routes sit behind the same ``ROBOCO_AGENT_AUTH_REQUIRED`` gate as
+    the rest of ``/api/`` — a static ``{X-Agent-ID, X-Agent-Role}`` dict 401s
+    with "Missing X-Agent-Token" once auth is armed. Built per call (token is
+    stable per container, but mirroring flow/do/server keeps the pattern).
+    """
+    headers = {"X-Agent-ID": AGENT_ID, "X-Agent-Role": AGENT_ROLE}
+    team = get_agent_team(AGENT_ID)
+    if team:
+        headers["X-Agent-Team"] = team
+    token = os.environ.get("ROBOCO_AGENT_TOKEN")
+    # See flow_server._build_headers: forwarding the "UNSIGNED" sentinel 401s
+    # even in dev mode; omit so a missing token is accepted in dev.
+    if token and token != "UNSIGNED":
+        headers["X-Agent-Token"] = token
+    return headers
+
+
 _TIMEOUT = 15
 
 mcp = FastMCP("roboco-git-readonly")
@@ -41,7 +63,7 @@ def _get(path: str, params: dict[str, Any]) -> dict[str, Any]:
     """GET against the orchestrator with the agent's identity headers."""
     with httpx.Client(timeout=_TIMEOUT) as client:
         response = client.get(
-            f"{ORCHESTRATOR_URL}{path}", headers=_HEADERS, params=params
+            f"{ORCHESTRATOR_URL}{path}", headers=_headers(), params=params
         )
         response.raise_for_status()
         result: dict[str, Any] = response.json()

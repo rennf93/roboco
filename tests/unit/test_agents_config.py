@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json as _json
+from base64 import urlsafe_b64decode
 from collections import Counter
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from roboco.agents_config import (
     A2A_ALLOWED_PAIRS,
@@ -331,6 +333,93 @@ def test_panel_token_does_not_grant_other_roles_or_identities(
     tok = issue_panel_token()
     assert verify_agent_token(tok, CEO_AGENT_ID, "developer", "") is False
     assert verify_agent_token(tok, "be-dev-1", "ceo", "") is False
+
+
+# ---------------------------------------------------------------------------
+# Expiring token format (M35) — ttl_seconds ⇒ {payload}.{sig} with iat/exp
+# ---------------------------------------------------------------------------
+
+
+def _payload_of(token: str) -> dict[str, object]:
+    pb = token.split(".", 1)[0]
+    pad = "=" * (-len(pb) % 4)
+    return cast("dict[str, object]", _json.loads(urlsafe_b64decode(pb + pad)))
+
+
+def test_issue_agent_token_with_ttl_uses_expiring_format(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", "exp-secret")
+    tok = issue_agent_token("be-dev-1", "developer", "backend", ttl_seconds=3600)
+    assert "." in tok
+    payload = _payload_of(tok)
+    assert payload["id"] == "be-dev-1"
+    assert payload["role"] == "developer"
+    assert payload["team"] == "backend"
+    assert isinstance(payload["iat"], (int, float))
+    assert payload["exp"] == payload["iat"] + 3600
+
+
+def test_verify_accepts_unexpired_ttl_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", "exp-secret")
+    tok = issue_agent_token(
+        "be-dev-1", "developer", "backend", ttl_seconds=3600, now=1_000_000.0
+    )
+    assert (
+        verify_agent_token(tok, "be-dev-1", "developer", "backend", now=1_000_100.0)
+        is True
+    )
+
+
+def test_verify_rejects_expired_ttl_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", "exp-secret")
+    tok = issue_agent_token(
+        "be-dev-1", "developer", "backend", ttl_seconds=3600, now=1_000_000.0
+    )
+    # 1 second past exp → rejected.
+    assert (
+        verify_agent_token(tok, "be-dev-1", "developer", "backend", now=1_003_601.0)
+        is False
+    )
+
+
+def test_verify_ttl_token_rejects_tampered_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", "exp-secret")
+    tok = issue_agent_token("be-dev-1", "developer", "backend", ttl_seconds=3600)
+    pb, sig = tok.split(".", 1)
+    # Flip the first payload char's case — JSON base64url payloads start with
+    # "eyJ" (`{` → eyJ), so pb[0] is always alpha and the swap stays in-alphabet
+    # while changing the bytes the HMAC covers.
+    tampered = pb[0].swapcase() + pb[1:]
+    assert (
+        verify_agent_token(f"{tampered}.{sig}", "be-dev-1", "developer", "backend")
+        is False
+    )
+
+
+def test_verify_ttl_token_rejects_wrong_role(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", "exp-secret")
+    tok = issue_agent_token("be-dev-1", "developer", "backend", ttl_seconds=3600)
+    assert verify_agent_token(tok, "be-dev-1", "qa", "backend") is False
+
+
+def test_verify_ttl_token_rejects_wrong_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", "secret-a")
+    tok = issue_agent_token("be-dev-1", "developer", "backend", ttl_seconds=3600)
+    monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", "secret-b")
+    assert verify_agent_token(tok, "be-dev-1", "developer", "backend") is False
+
+
+def test_issue_agent_token_without_ttl_keeps_static_format(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Backward compat: no ttl_seconds ⇒ old 64-hex static digest (panel path)."""
+    monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", "static-secret")
+    tok = issue_agent_token("be-dev-1", "developer", "backend")
+    assert "." not in tok
+    assert len(tok) == _SHA256_HEX_LEN
 
 
 # ---------------------------------------------------------------------------

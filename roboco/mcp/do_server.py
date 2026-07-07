@@ -23,6 +23,8 @@ import httpx
 import structlog
 from mcp.server.fastmcp import FastMCP
 
+from roboco.agents_config import get_agent_team
+
 ORCHESTRATOR_URL = os.environ.get(
     "ROBOCO_ORCHESTRATOR_URL",
     "http://roboco-orchestrator:8000",
@@ -226,11 +228,23 @@ def _build_headers() -> dict[str, str]:
     orchestrator's middleware can bind it to structlog and the audit row,
     and the envelope echoes it back to the agent.
     """
-    return {
+    # X-Agent-Token + X-Agent-Team must travel with every do verb or the
+    # API's ROBOCO_AGENT_AUTH_REQUIRED gate 401s — mirrors flow_server and
+    # the ApiClient header path used by the other MCP servers.
+    headers = {
         "X-Agent-ID": AGENT_ID,
         "X-Agent-Role": AGENT_ROLE,
         "X-Correlation-ID": str(uuid.uuid4()),
     }
+    team = get_agent_team(AGENT_ID)
+    if team:
+        headers["X-Agent-Team"] = team
+    token = os.environ.get("ROBOCO_AGENT_TOKEN")
+    # See flow_server._build_headers: forwarding the "UNSIGNED" sentinel 401s
+    # even in dev mode; omit so a missing token is accepted in dev.
+    if token and token != "UNSIGNED":
+        headers["X-Agent-Token"] = token
+    return headers
 
 
 def _post(path: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -592,12 +606,13 @@ def propose_video(
     """UX/UI dev: propose your video's composition + captions. Metadata only —
     this does NOT render (rendering happens later, off this path).
 
-    Call this exactly ONCE per authoring task, after building the Remotion
-    composition in motion/. Then commit + open_pr to send it through the
-    normal PR-review gate.
+    Call this exactly ONCE per authoring task, after building the HyperFrames
+    composition in motion/compositions/<id>/. Then commit + open_pr to send
+    it through the normal PR-review gate.
 
     Args:
-        composition_id: The Remotion composition id (must exist in motion/).
+        composition_id: The HyperFrames composition id (the directory name
+            under motion/compositions/, e.g. 'release-announcement').
         x_caption: X post text for this clip (<=280 chars).
         tiktok_caption: TikTok caption for this clip (<=2200 chars).
         platforms: Target platforms for this clip — any of 'x', 'tiktok'.

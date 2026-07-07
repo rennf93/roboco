@@ -6,7 +6,7 @@ CEO-scoped artifact" shape, but split across the real delivery lifecycle:
 
 * **Authoring task** (``source="video"``) — a normal, ASSIGNED delivery task
   (``confirmed_by_human=True``): the engine hands it straight to a ux-dev, who
-  authors a Remotion composition on a real branch through the standard
+  authors a HyperFrames composition on a real branch through the standard
   claim -> code -> PR -> merge path. NOT held and NOT in any dispatcher's
   skip bucket — it is a pre-assigned code task like any other.
 * **Held draft** (``source="video_post"``) — materialized once a render pass
@@ -115,6 +115,31 @@ class VideoEngine(BaseService):
         slug = (settings.self_heal_project_slug or "roboco-api").strip()
         return await get_project_service(self.session).get_by_slug(slug)
 
+    async def _opted_in_project(self, occasion: str) -> ProjectTable | None:
+        """The RoboCo project if resolvable AND opted into video, else None.
+
+        Two skip reasons, both logged: unresolvable project (warning — a
+        config gap) vs. project not opted in (info — the operator hasn't
+        flipped the per-project ``video_engine_enabled`` toggle). The global
+        flag arms the subsystem; the project's flag opts this repo into
+        authoring against its ``motion/`` dir (mirrors ``ci_watch_enabled``).
+        """
+        project = await self._roboco_project()
+        if project is None or project.id is None:
+            self.log.warning(
+                "video-engine: RoboCo project not resolvable; skipping video task",
+                occasion=occasion,
+            )
+            return None
+        if not getattr(project, "video_engine_enabled", False):
+            self.log.info(
+                "video-engine: project not opted into video; skipping video task",
+                occasion=occasion,
+                project_slug=str(getattr(project, "slug", "")),
+            )
+            return None
+        return project
+
     @staticmethod
     def _select_ux_dev(open_tasks: list[TaskTable]) -> UUID:
         """Deterministically balance authoring assignment across the two ux-devs.
@@ -141,7 +166,8 @@ class VideoEngine(BaseService):
     ) -> TaskTable | None:
         """Originate ONE UX/UI authoring task for a bespoke video, or None.
 
-        No-ops when the flag is off, a task for this occasion is already open
+        No-ops when the global flag is off, the RoboCo project hasn't opted in
+        (``video_engine_enabled``), a task for this occasion is already open
         (authoring or held draft), the open cap is reached, or the RoboCo
         project isn't resolvable. The opened task is a normal, ASSIGNED
         delivery task (``source=VIDEO_SOURCE``, ``confirmed_by_human=True``)
@@ -162,12 +188,8 @@ class VideoEngine(BaseService):
                 occasion=occasion,
             )
             return None
-        project = await self._roboco_project()
-        if project is None or project.id is None:
-            self.log.warning(
-                "video-engine: RoboCo project not resolvable; skipping video task",
-                occasion=occasion,
-            )
+        project = await self._opted_in_project(occasion)
+        if project is None:
             return None
         from sqlalchemy.exc import SQLAlchemyError
 

@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en" data-composition-id="release-announcement" data-composition-duration="10" data-fps="30">
+  <head>
+    <meta charset="utf-8" />
+    <title>Release Announcement — vertical (1080×1920)</title>
+    <link rel="stylesheet" href="theme.css" />
+    <script src="props.js"></script>
+  </head>
+  <body>
+    <div id="stage" data-composition-id="release-announcement" data-width="1080" data-height="1920" data-start="0" data-duration="10" data-fps="30">
+      <!-- Scan line: thin hairline + travelling accent marker. The one
+           continuous ambient motion so the frame never goes fully static. -->
+      <div id="scan" class="scan clip" data-start="0" data-duration="10" data-track-index="0" style="top: 104px;">
+        <div class="scan__marker"></div>
+      </div>
+
+      <!-- Content anchored in the lower two-thirds, left-aligned. -->
+      <div class="content" style="--content-bottom: 148px;">
+        <div id="kicker" class="kicker clip" data-start="0" data-duration="10" data-track-index="1">New release</div>
+        <h1 id="headline" class="headline clip" data-start="0.267" data-duration="9.733" data-track-index="2">v0.19.0</h1>
+        <p id="script" class="script clip" data-start="0.8" data-duration="9.2" data-track-index="3">Ship day. Faster renders, sharper docs, one less thing to babysit.</p>
+        <ul id="highlights" class="highlights clip" data-start="1.667" data-duration="8.333" data-track-index="4">
+          <li class="highlights__item"><span class="highlights__tick"></span><span class="highlights__text">Fable-mode adopted fleet-wide</span></li>
+          <li class="highlights__item"><span class="highlights__tick"></span><span class="highlights__text">FE/UX-UI design bar shipped</span></li>
+          <li class="highlights__item"><span class="highlights__tick"></span><span class="highlights__text">Feature spotlight goes live on X</span></li>
+          <li class="highlights__item" style="display:none"><span class="highlights__tick"></span><span class="highlights__text"></span></li>
+        </ul>
+      </div>
+
+      <div id="outro" class="outro clip" data-start="7.667" data-duration="2.333" data-track-index="5">roboco.tech</div>
+    </div>
+
+    <script>
+      // Register the composition timeline metadata. Motion is driven by CSS
+      // keyframes (no GSAP — the render is offline, no CDN), but HyperFrames
+      // requires the registry entry to consider the composition valid.
+      window.__timelines = window.__timelines || {};
+      window.__timelines["release-announcement"] = {
+        id: "release-announcement",
+        duration: 10,
+        fps: 30,
+        animations: []
+      };
+
+      // Read sidecar-supplied props (props.js is overwritten at render time)
+      // and populate the DOM. Defensive: a missing prop leaves the placeholder
+      // text intact rather than throwing — a missing prop never crashes a render.
+      (function () {
+        var props = (window.__PROPS__ && typeof window.__PROPS__ === "object") ? window.__PROPS__ : {};
+
+        var version = props.version ? String(props.version) : "";
+        if (version && !version.startsWith("v")) version = "v" + version;
+        if (version) {
+          var headline = document.getElementById("headline");
+          if (headline) headline.textContent = version;
+        }
+
+        if (typeof props.script === "string" && props.script) {
+          var scriptEl = document.getElementById("script");
+          if (scriptEl) scriptEl.textContent = props.script;
+        }
+
+        var highlights = Array.isArray(props.highlights) ? props.highlights.slice(0, 4) : [];
+        var items = document.querySelectorAll(".highlights__item");
+        for (var i = 0; i < items.length; i++) {
+          var textEl = items[i].querySelector(".highlights__text");
+          if (!textEl) continue;
+          if (i < highlights.length && highlights[i]) {
+            textEl.textContent = String(highlights[i]);
+            items[i].style.display = "";
+          } else {
+            items[i].style.display = "none";
+          }
+        }
+      })();
+    </script>
+  </body>
+</html>

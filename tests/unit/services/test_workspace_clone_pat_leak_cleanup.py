@@ -8,6 +8,7 @@ leak on a valid ``.git`` health check.
 
 from __future__ import annotations
 
+import base64
 import subprocess
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
@@ -38,7 +39,7 @@ def _leak_side_effect(
     except clause fires."""
 
     def _impl(argv: list[str], **_kw: object) -> subprocess.CompletedProcess[str]:
-        if argv and argv[0] == "git" and len(argv) > 1 and argv[1] == "clone":
+        if argv and argv[0] == "git" and "clone" in argv:
             # git clone writes the auth URL into .git/config.
             cfg = workspace / ".git" / "config"
             cfg.parent.mkdir(parents=True, exist_ok=True)
@@ -109,3 +110,47 @@ async def test_clone_timeout_rmtrees_partial_workspace(tmp_path: Path) -> None:
         )
 
     assert not workspace.exists()
+
+
+@pytest.mark.asyncio
+async def test_clone_argv_carries_token_via_extraheader_not_url(tmp_path: Path) -> None:
+    """H11: the decrypted PAT must NOT appear in the clone argv (where
+    /proc/<pid>/cmdline would expose it). Instead the token rides a per-call
+    ``-c http.extraheader=Authorization: Basic <base64(x-access-token:token)>``
+    config and the clone URL stays bare."""
+    token = "ghp_SECRETARGV"
+    workspace = tmp_path / "ws-argv"
+    svc = _service()
+    captured: list[list[str]] = []
+
+    def _impl(argv: list[str], **_kw: object) -> subprocess.CompletedProcess[str]:
+        captured.append(list(argv))
+        # Pretend the clone succeeds and writes a bare-url .git/config.
+        if len(argv) > 1 and argv[1] == "clone":
+            cfg = workspace / ".git" / "config"
+            cfg.parent.mkdir(parents=True, exist_ok=True)
+            cfg.write_text('[remote "origin"]\n\turl = https://github.com/o/r\n')
+        return _completed(argv)
+
+    with patch("roboco.services.workspace.subprocess.run", side_effect=_impl):
+        await svc._clone_repo(
+            workspace,
+            git_url="https://github.com/o/r",
+            default_branch="master",
+            git_token=token,
+        )
+
+    clone_argv = next(a for a in captured if "clone" in a)
+    # The raw token must never appear anywhere in the clone argv.
+    assert token not in clone_argv
+    # The clone URL passed to git must be the bare URL (no embedded token).
+    assert "https://github.com/o/r" in clone_argv
+    assert f"https://{token}@github.com/o/r" not in clone_argv
+    # The per-call http.extraheader carries the base64 basic-auth value.
+    expected = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+    assert f"http.extraheader=Authorization: Basic {expected}" in clone_argv
+    # The -c flag precedes the clone subcommand.
+    assert "-c" in clone_argv
+    c_idx = clone_argv.index("-c")
+    assert clone_argv[c_idx + 1] == f"http.extraheader=Authorization: Basic {expected}"
+    assert "clone" in clone_argv[clone_argv.index("-c") + 2 :]

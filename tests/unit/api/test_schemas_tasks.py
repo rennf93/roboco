@@ -16,11 +16,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
 import pytest
+from roboco.api.schemas.docs import DocRefResponse
 from roboco.api.schemas.tasks import (
+    SubstituteRequest,
     TaskUpdate,
     _parse_uuid_list,
     convert_checkpoints,
     convert_commits,
+    convert_documents,
     convert_plan,
     convert_progress_updates,
     enrich_task_with_context,
@@ -318,6 +321,7 @@ def _stub_task(*, with_project: bool = False) -> Any:
         checkpoints=[],
         progress_updates=[],
         commits=[],
+        documents=[],
         dev_notes=None,
         qa_notes=None,
         auditor_notes=None,
@@ -398,6 +402,60 @@ def test_task_to_response_serializes_all_note_sections() -> None:
     assert resp.pr_reviewer_notes == "## Findings\n- looks good"
     assert resp.doc_notes == "Updated the README"
     assert resp.notes_structured == {"pr_review": {"verdict": "passed"}}
+
+
+def test_task_to_response_serializes_documents() -> None:
+    """TaskTable.documents (a JSON list of DocRef.model_dump() dicts) is
+    serialized into TaskResponse.documents as DocRefResponse instances."""
+    stub = _stub_task()
+    stub.documents = [
+        {
+            "path": "docs/x.md",
+            "title": "X",
+            "doc_type": "api",
+            "version": None,
+            "created_by": "be-dev-1",
+            "created_at": None,
+            "updated_by": None,
+            "updated_at": None,
+            "commit_status": "committed",
+        }
+    ]
+    fake_inspector = MagicMock()
+    fake_inspector.unloaded = {"project"}
+    with patch("roboco.api.schemas.tasks.sa_inspect", return_value=fake_inspector):
+        resp = task_to_response(stub)
+    assert resp.documents == [
+        DocRefResponse(
+            path="docs/x.md",
+            title="X",
+            doc_type="api",
+            version=None,
+            created_by="be-dev-1",
+            created_at=None,
+            updated_by=None,
+            updated_at=None,
+            commit_status="committed",
+        )
+    ]
+
+
+def test_task_to_response_documents_defaults_empty() -> None:
+    """A task with no documents serializes to an empty list, not None."""
+    stub = _stub_task()
+    stub.documents = []
+    fake_inspector = MagicMock()
+    fake_inspector.unloaded = {"project"}
+    with patch("roboco.api.schemas.tasks.sa_inspect", return_value=fake_inspector):
+        resp = task_to_response(stub)
+    assert resp.documents == []
+
+
+def test_convert_documents_defensive_on_malformed_row() -> None:
+    """A malformed legacy dict missing required fields still yields a
+    DocRefResponse (with empty-string defaults), never a 500."""
+    out = convert_documents([{"path": "docs/y.md"}])
+    assert out == [DocRefResponse(path="docs/y.md", title="", doc_type="")]
 
 
 def test_task_list_to_response_returns_list() -> None:
@@ -526,3 +584,15 @@ async def test_enrich_task_with_context_skips_project_when_not_requested() -> No
     enriched = await enrich_task_with_context(resp, db, include_project=False)
     assert enriched.work_session is not None
     assert enriched.project is None
+
+
+def test_substitute_request_has_no_suggested_role_or_team() -> None:
+    fields = SubstituteRequest.model_fields
+    assert "suggested_role" not in fields
+    assert "suggested_team" not in fields
+
+
+def test_substitute_request_keeps_reason_and_details() -> None:
+    fields = SubstituteRequest.model_fields
+    assert "reason" in fields
+    assert "details" in fields

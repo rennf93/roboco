@@ -17,7 +17,10 @@ const SESSION_COOKIE_NAME = "roboco_session";
 // starts on), not a stuck redirect.
 const STATUS_PROBE_TIMEOUT_MS = 1500;
 
-async function isCloudAuthEnabled(): Promise<boolean> {
+const PROBE_TTL_MS = 30_000;
+let lastKnown: { value: boolean; at: number } | null = null;
+
+export async function isCloudAuthEnabled(): Promise<boolean> {
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), STATUS_PROBE_TIMEOUT_MS);
@@ -26,18 +29,28 @@ async function isCloudAuthEnabled(): Promise<boolean> {
       cache: "no-store",
     });
     clearTimeout(timer);
-    if (!res.ok) return false;
-    const data = (await res.json()) as { cloud_auth_enabled?: boolean };
-    return data.cloud_auth_enabled === true;
+    if (res.ok) {
+      const data = (await res.json()) as { cloud_auth_enabled?: boolean };
+      const value = data.cloud_auth_enabled === true;
+      lastKnown = { value, at: Date.now() };
+      return value;
+    }
+    // Non-ok response: fall back to a fresh cache rather than fail open.
   } catch {
-    return false;
+    // Network/timeout: fall back to a fresh cache rather than fail open.
   }
+  if (lastKnown && Date.now() - lastKnown.at < PROBE_TTL_MS) {
+    return lastKnown.value;
+  }
+  // No fresh cache: the safe default is "off" (what every deploy starts on).
+  return false;
 }
 
 export async function proxy(request: NextRequest) {
   if (!(await isCloudAuthEnabled())) {
     return NextResponse.next();
   }
+  // UX redirect only — shields dashboard chrome from flashing before login. The API (/api/*) enforces auth independently; a stale cookie shows chrome then 401s on the first API call.
   if (!request.cookies.has(SESSION_COOKIE_NAME)) {
     return NextResponse.redirect(new URL("/login", request.url));
   }

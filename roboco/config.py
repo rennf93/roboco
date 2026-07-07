@@ -4,10 +4,13 @@ RoboCo Configuration
 Environment-based settings using Pydantic Settings.
 """
 
+import ipaddress
+import os
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import urlparse
 
-from pydantic import Field, computed_field, model_validator
+from pydantic import Field, computed_field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -171,6 +174,30 @@ class Settings(BaseSettings):
         default="http://roboco-ollama:11434/v1",
         description="Base URL for local LLM (Ollama OpenAI-compat API)",
     )
+
+    @field_validator("local_llm_base_url")
+    @classmethod
+    def _local_llm_base_url_internal_only(cls, v: str) -> str:
+        # The fire-and-forget hot path (distillation, RAG synthesis, X/video
+        # drafting) reads this verbatim. Reject non-internal hosts so a one-line
+        # env mistake can't route quiet generation through a paid cloud LLM.
+        host = (urlparse(v).hostname or "").lower()
+        if not host:
+            raise ValueError("local_llm_base_url must have a host")
+        if host in {"localhost", "127.0.0.1", "::1", "roboco-ollama"}:
+            return v
+        if host.endswith(".svc.cluster.local"):
+            return v
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            raise ValueError(
+                f"local_llm_base_url host {host!r} is not an internal address"
+            ) from None
+        if ip.is_private or ip.is_loopback:
+            return v
+        raise ValueError(f"local_llm_base_url host {host!r} is not an internal address")
+
     ollama_base_url: str = Field(
         default="http://roboco-ollama:11434",
         description="Base URL for Ollama native API (embeddings, model mgmt)",
@@ -384,9 +411,37 @@ class Settings(BaseSettings):
         ge=60,
         description=(
             "Session cookie lifetime in seconds (default 30 days). Sliding: "
-            "every authenticated request re-mints + re-sets the cookie, so an "
-            "active session never expires — only genuine inactivity past this "
-            "window logs out."
+            "the cookie is re-minted only near expiry (see "
+            "``cloud_auth_remint_threshold_seconds``), so an active session "
+            "never expires — only genuine inactivity past this window logs out."
+        ),
+    )
+    cloud_auth_remint_threshold_seconds: int = Field(
+        default=86400,
+        ge=60,
+        description=(
+            "Re-mint the sliding session cookie only when its exp is within "
+            "this many seconds of now (default 24h). Outside the window the "
+            "cookie is left untouched so a stolen cookie's expiry is fixed "
+            "rather than rolling forward with the legitimate user."
+        ),
+    )
+    login_max_attempts: int = Field(
+        default=10,
+        ge=1,
+        description=(
+            "Max login attempts per IP within the 60s rolling window before "
+            "the cloud-auth login endpoint returns 429."
+        ),
+    )
+    agent_token_ttl_seconds: int = Field(
+        default=604800,
+        ge=60,
+        description=(
+            "Lifetime in seconds of an agent auth token minted at spawn "
+            "(default 7 days). Each spawn mints a fresh token with this TTL "
+            "so a stolen token is bounded; the static panel token is "
+            "unaffected. Refresh happens on every respawn."
         ),
     )
 
@@ -397,6 +452,20 @@ class Settings(BaseSettings):
             raise ValueError(
                 "ROBOCO_CLOUD_AUTH_SECRET is required when "
                 "ROBOCO_CLOUD_AUTH_ENABLED=true."
+            )
+        # nginx injects ROBOCO_PANEL_AGENT_TOKEN as a CEO-signed HMAC header on
+        # every /api/ request. Under cloud auth that token is an alternative
+        # human-auth tier that bypasses the login cookie — layering both is a
+        # public-exposure footgun. Refuse to start; the operator must unset it.
+        if (
+            self.cloud_auth_enabled
+            and os.environ.get("ROBOCO_PANEL_AGENT_TOKEN", "").strip()
+        ):
+            raise ValueError(
+                "ROBOCO_CLOUD_AUTH_ENABLED=true is incompatible with a set "
+                "ROBOCO_PANEL_AGENT_TOKEN (nginx CEO-token injection bypasses "
+                "the login cookie). Unset ROBOCO_PANEL_AGENT_TOKEN for a "
+                "publicly-exposed cloud-auth deploy."
             )
         return self
 
@@ -886,7 +955,7 @@ class Settings(BaseSettings):
         description="Seconds between feature-spotlight exploration cycles.",
     )
 
-    # Video generation (Remotion) — a UX/UI dev authors a bespoke motion-video
+    # Video generation (HyperFrames) — a UX/UI dev authors a bespoke motion-video
     # composition per release/spotlight/on-demand trigger through the normal
     # delivery lifecycle; a later render pass renders it to MP4 and holds the
     # clip as a CEO-approval draft (mirrors the X engine's held-draft shape).
@@ -934,10 +1003,10 @@ class Settings(BaseSettings):
         gt=0,
         description="Per-request timeout for outbound video-engine HTTP calls.",
     )
-    remotion_base_url: str = Field(
-        default="http://roboco-remotion:3001",
+    video_renderer_base_url: str = Field(
+        default="http://roboco-video-renderer:3001",
         description=(
-            "Base URL of the remotion-renderer sidecar. The orchestrator tars "
+            "Base URL of the video-renderer sidecar. The orchestrator tars "
             "the merged motion/ source and POSTs it here; the sidecar returns "
             "MP4 bytes in the response (no cross-container shared volume)."
         ),
@@ -948,6 +1017,16 @@ class Settings(BaseSettings):
         description=(
             "Seconds between video-render loop passes (scans completed "
             "authoring tasks with an unrendered composition)."
+        ),
+    )
+    video_render_scan_limit: int = Field(
+        default=200,
+        ge=1,
+        description=(
+            "Cap on how many completed video-authoring tasks the render "
+            "loop scans per pass; the composition_id/render_status filter "
+            "runs in Python on this bounded set. Backed by "
+            "ix_tasks_source_status_created."
         ),
     )
     video_output_dir: str = Field(

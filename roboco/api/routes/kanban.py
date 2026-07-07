@@ -6,14 +6,14 @@ Role-specific kanban board views for task visualization.
 
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 
-from roboco.api.deps import DbSession
+from roboco.api.deps import DbSession, require_panel_token
 from roboco.models.base import Team
 from roboco.models.kanban import KanbanBoard
 from roboco.services.kanban import get_kanban_service
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_panel_token)])
 
 
 # =============================================================================

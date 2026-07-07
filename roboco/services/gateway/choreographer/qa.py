@@ -39,6 +39,8 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
+import structlog
+
 from roboco.config import settings
 from roboco.foundation.policy import lifecycle as spec_module
 from roboco.foundation.policy import tracing as _tr
@@ -47,6 +49,8 @@ from roboco.services.content_notes import apply_structured_note
 from roboco.services.gateway.choreographer._protocol import actor_context_fields
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import build_evidence_for_task
+
+logger = structlog.get_logger()
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -577,8 +581,30 @@ class QAMixin(_Base):
                 verb="pass_review",
             )
 
+        warning = await self._pass_review_documenter_handoff(qa_agent_id, task_id, t)
+        env = Envelope.ok(
+            status=str(t.status),
+            task_id=str(task_id),
+            next=spec_module._INTENT_VERBS["pass_review"].next_hint(t),
+            context_briefing=briefing,
+        ).with_introspection(task=t, role=role_str)
+        if warning:
+            env.warning = warning
+        return env
+
+    async def _pass_review_documenter_handoff(
+        self, qa_agent_id: UUID, task_id: UUID, t: Any
+    ) -> str | None:
+        """Best-effort reassign + a2a-notify the team's documenter.
+
+        Returns a warning string when the side-effect failed (the QA-pass
+        transition is already committed at this point), else None. Pulled
+        out of ``pass_review`` to keep it under the cyclomatic bound.
+        """
         doc_agent = await self.task.documenter_for_team(t.team)
-        if doc_agent is not None:
+        if doc_agent is None:
+            return None
+        try:
             await self.task.reassign(task_id, doc_agent.id)
             await self.a2a.send(
                 from_agent=qa_agent_id,
@@ -587,12 +613,18 @@ class QAMixin(_Base):
                 task_id=task_id,
                 body=f"QA passed task {t.id}. PR: {t.pr_url}. Please document.",
             )
-        return Envelope.ok(
-            status=str(t.status),
-            task_id=str(task_id),
-            next=spec_module._INTENT_VERBS["pass_review"].next_hint(t),
-            context_briefing=briefing,
-        ).with_introspection(task=t, role=role_str)
+        except Exception as exc:
+            logger.warning(
+                "pass_review side-effect failed - transition committed, "
+                "handoff did not fire",
+                task_id=str(task_id),
+                error=str(exc),
+            )
+            return (
+                f"QA-pass transition committed but the documenter handoff "
+                f"failed ({exc}). Re-issue the notification via dm."
+            )
+        return None
 
     async def fail_review(
         self, qa_agent_id: UUID, task_id: UUID, issues: list[str]

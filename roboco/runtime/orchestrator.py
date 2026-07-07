@@ -57,6 +57,7 @@ from roboco.foundation.policy.agent_loop import DEFAULT_BUDGET as _AGENT_LOOP_BU
 from roboco.foundation.policy.batch import is_branchless_coordination
 from roboco.foundation.policy.content import markers as _markers
 from roboco.models import AgentRole, Team
+from roboco.models.base import ModelProvider
 from roboco.models.runtime import (
     MODEL_MAP,
     ROLE_EFFORT_MAP,
@@ -162,6 +163,31 @@ def _system_api_headers() -> dict[str, str]:
     }
 
 
+def _agent_api_headers(agent_uuid: str, role: str) -> dict[str, str]:
+    """Headers for the orchestrator's internal self-API calls acting as a
+    specific agent (the cell-PM auto-submit). Adds the signed ``X-Agent-Token``
+    + ``X-Agent-Team`` so the call passes the ``ROBOCO_AGENT_AUTH_REQUIRED``
+    gate — a hand-built ``{X-Agent-ID, X-Agent-Role}`` dict 401s with
+    "Missing X-Agent-Token" under auth-required (F038/F039 — the same gap the
+    system-headers helper closes for the system identity).
+
+    The token is attached only when ``ROBOCO_AGENT_AUTH_SECRET`` is set: the
+    dev-mode middleware rejects a presented-but-unverifiable token (the
+    ``UNSIGNED`` sentinel) with 401 "signature mismatch" while accepting a
+    missing token, so sending ``UNSIGNED`` would turn a clean dev self-call
+    into a 401. With the secret armed the token is signed and verifies.
+    """
+    from roboco.agents_config import _auth_secret, issue_agent_token
+
+    team = get_agent_team(agent_uuid) or ""
+    headers = {"X-Agent-ID": agent_uuid, "X-Agent-Role": role}
+    if team:
+        headers["X-Agent-Team"] = team
+    if _auth_secret():
+        headers["X-Agent-Token"] = issue_agent_token(agent_uuid, role, team)
+    return headers
+
+
 # Consecutive failed recovery probes before the CEO is notified once per episode.
 _CEO_NOTIFY_THRESHOLD = 10
 # Consecutive strategy-engine cycle failures before the CEO is notified once
@@ -218,6 +244,20 @@ _ANTHROPIC_RATE_LIMIT_MARKERS: tuple[str, ...] = (
     "hit your session limit",
     "five_hour",
 )
+# ollama.com HTTP 429 body (the weekly glm-5.2:cloud limit surfaces here).
+# Specific to the API error formatter so an agent writing about limits can't
+# false-match and park the whole ollama fleet.
+_OLLAMA_RATE_LIMIT_MARKERS: tuple[str, ...] = ("rate limit exceeded",)
+
+# ponytail: marker map drives the detector — adding a provider later is a
+# table row, not a new branch. Grok is deliberately absent (exit-75 detector).
+_RATE_LIMIT_MARKERS_BY_PROVIDER: dict[str, tuple[str, ...]] = {
+    ModelProvider.ANTHROPIC.value: _ANTHROPIC_RATE_LIMIT_MARKERS,
+    ModelProvider.OLLAMA_CLOUD.value: _OLLAMA_RATE_LIMIT_MARKERS,
+}
+_OVERLOAD_MARKERS_BY_PROVIDER: dict[str, tuple[str, ...]] = {
+    ModelProvider.ANTHROPIC.value: _ANTHROPIC_OVERLOAD_MARKERS,
+}
 
 # The intake (prompter) agent: a single seeded, board-adjacent interviewer.
 # Unlike delivery agents it is never dispatched and runs ONE persistent
@@ -794,6 +834,9 @@ class AgentOrchestrator:
         self._roadmap_engine_task: asyncio.Task | None = None
         self._x_feature_spotlight_task: asyncio.Task | None = None
         self._video_render_task: asyncio.Task | None = None
+        # per-engine-loop heartbeat (monotonic last-success, interval) so
+        # _check_loop_liveness can alert when a cycle task dies silently.
+        self._loop_heartbeats: dict[str, tuple[float, float]] = {}
         # Provider registry: maps a ModelProvider to a dedicated AgentProvider
         # backend. Only providers needing a non-Claude-Code runtime are
         # registered (currently GROK, which speaks the OpenAI protocol). Agents
@@ -915,6 +958,22 @@ class AgentOrchestrator:
         self._grok_last_park_at: datetime | None = None
         self._grok_repark_count: int = 0
 
+    def _record_loop_heartbeat(self, name: str, interval: float) -> None:
+        self._loop_heartbeats[name] = (time.monotonic(), interval)
+
+    def _check_loop_liveness(self) -> None:
+        now = time.monotonic()
+        heartbeats = getattr(self, "_loop_heartbeats", {})
+        for name, (last_success, interval) in heartbeats.items():
+            stall = now - last_success
+            if stall > 2 * interval:
+                logger.warning(
+                    "engine loop stalled past 2x interval",
+                    loop=name,
+                    stall_seconds=int(stall),
+                    interval=interval,
+                )
+
     # =========================================================================
     # LIFECYCLE
     # =========================================================================
@@ -947,7 +1006,13 @@ class AgentOrchestrator:
         # the spawn gate + reaper see them as live immediately (no double-spawn,
         # no over-reap). Inert when nothing is running. Must run before the
         # dispatcher/reaper loops launch below.
+        await self._heal_stale_agent_tokens()
         await self._readopt_running_agents()
+
+        # Close agent_spawn_sessions rows left open by a prior orchestrator
+        # crash so usage/cost rollups (which filter ended_at IS NOT NULL) count
+        # their tokens. Running agents stay open for their live finalize.
+        await self._reconcile_orphan_spawn_sessions()
 
         # Orphan sandbox sweep: a sandbox whose owning agent container didn't
         # survive the restart (or a prior crash mid-teardown) is removed here
@@ -956,6 +1021,14 @@ class AgentOrchestrator:
 
         # Note: Per-agent settings are now generated at spawn time
         # via _generate_agent_settings() - no shared settings needed
+
+        # A restart mid-execute orphans the release mutex in Redis (TTL 3000s,
+        # no heartbeat after death); sweep stale keys so a CEO retry doesn't
+        # hit already_in_progress for up to 50 min. Best-effort, inert if Redis
+        # is down or empty.
+        from roboco.services.release_proposal import sweep_orphan_release_locks
+
+        await sweep_orphan_release_locks()
 
         # Start background tasks
         self._health_task = asyncio.create_task(self._health_loop())
@@ -2567,7 +2640,12 @@ class AgentOrchestrator:
             "-v",
             f"{hosts['mcp_config']}:/app/mcp-config.json:ro",
             "-e",
-            f"ROBOCO_AGENT_ID={config.agent_id}",
+            # Auth identity is the agent's UUID, not its slug: the MCP servers
+            # forward X-Agent-ID as the UUID (gateway v1 endpoints parse it as
+            # Annotated[UUID]) and the HMAC token is signed over the same value,
+            # so the container env the SDK server inherits must match or its
+            # direct API calls 401 with "signature mismatch".
+            f"ROBOCO_AGENT_ID={AGENT_UUIDS.get(config.agent_id, config.agent_id)}",
             "-e",
             f"ROBOCO_AGENT_ROLE={role}",
             "-e",
@@ -2695,7 +2773,18 @@ class AgentOrchestrator:
 
         _role = _get_role(config.agent_id)
         _team = _get_team(config.agent_id) or ""
-        _token = issue_agent_token(config.agent_id, _role, _team)
+        # Sign over the UUID, not the slug: every in-container caller (MCP
+        # servers via the manifest env, SDK server via this container env)
+        # sends X-Agent-ID as the UUID, so the HMAC payload must be the UUID
+        # or the middleware rejects with "signature mismatch". AGENT_UUIDS
+        # maps slug→UUID; fall back to the slug for custom agents not seeded.
+        _agent_uuid = AGENT_UUIDS.get(config.agent_id, config.agent_id)
+        _token = issue_agent_token(
+            _agent_uuid,
+            _role,
+            _team,
+            ttl_seconds=settings.agent_token_ttl_seconds,
+        )
         cmd.extend(["-e", f"ROBOCO_AGENT_TOKEN={_token}"])
 
     @staticmethod
@@ -4376,7 +4465,11 @@ class AgentOrchestrator:
                     cli_model=cli_model,
                     api_url=api_url,
                     agent_uuid=agent_uuid,
-                    agent_token=issue_agent_token(agent_uuid, "secretary", ""),
+                    agent_token=issue_agent_token(
+                        agent_uuid,
+                        "secretary",
+                        get_agent_team(SECRETARY_AGENT_ID) or "",
+                    ),
                     provider_base_url=route.base_url,
                     provider_auth_token=route.auth_token,
                     provider_type=route.provider_type.value,
@@ -5112,6 +5205,7 @@ class AgentOrchestrator:
                     last_status=record.get("last_status"),
                     last_check=record["last_check"],
                     tracing_resets=int(record.get("tracing_resets", 0)),
+                    revisit_resets=int(record.get("revisit_resets", 0)),
                     notified=bool(record.get("notified", False)),
                     updated_at=now,
                 )
@@ -5125,6 +5219,7 @@ class AgentOrchestrator:
                         "last_status": stmt.excluded.last_status,
                         "last_check": stmt.excluded.last_check,
                         "tracing_resets": stmt.excluded.tracing_resets,
+                        "revisit_resets": stmt.excluded.revisit_resets,
                         "notified": stmt.excluded.notified,
                         "updated_at": stmt.excluded.updated_at,
                     },
@@ -5652,8 +5747,19 @@ class AgentOrchestrator:
         Tries the agent SDK's ``/usage/status`` first; on a zero/miss falls
         back to the durable transcript (the SDK can report zero mid-run, the
         same race the finalize path handles). Returns ``None`` when neither
-        source has any usage yet.
+        source has any usage yet. GROK has no SDK server or Claude transcript,
+        so it routes to its ``usage.json`` — the same early return the finalize
+        path uses, so live USAGE_SNAPSHOT reflects grok agents mid-run too.
         """
+        instance = self._instances.get(agent_id)
+        is_grok = (
+            instance is not None
+            and instance.config is not None
+            and instance.config.provider_type == ModelProvider.GROK.value
+        )
+        if is_grok:
+            grok_tokens = self._grok_usage_tokens(agent_id)
+            return grok_tokens if any(grok_tokens) else None
         tokens = await self._fetch_agent_tokens(client, agent_id)
         if tokens is not None:
             return tokens
@@ -5778,7 +5884,10 @@ class AgentOrchestrator:
                     if not persisted:
                         continue
 
-                    tokens_input, tokens_output = tokens[0], tokens[1]
+                    tokens_input = tokens[0]
+                    tokens_output = tokens[1]
+                    tokens_cache_read = tokens[2]
+                    tokens_cache_write = tokens[3]
                     model = instance.config.model if instance.config else "unknown"
 
                     # Accumulate per-agent data for the aggregate snapshot.
@@ -5789,12 +5898,16 @@ class AgentOrchestrator:
                             model=model,
                             tokens_input=tokens_input,
                             tokens_output=tokens_output,
+                            tokens_cache_read=tokens_cache_read,
+                            tokens_cache_write=tokens_cache_write,
                         )
                         _usage_by_agent.append(
                             {
                                 "agent_id": agent_id,
                                 "input_tokens": tokens_input,
                                 "output_tokens": tokens_output,
+                                "cache_read_tokens": tokens_cache_read,
+                                "cache_write_tokens": tokens_cache_write,
                                 "model": model,
                                 "cost_estimate": agent_cost,
                             }
@@ -6404,6 +6517,7 @@ class AgentOrchestrator:
                 "last_status": norm,
                 "last_check": restore_now,
                 "tracing_resets": r.tracing_resets,
+                "revisit_resets": r.revisit_resets,
                 "notified": r.notified,
             }
         return restored, stale
@@ -7161,6 +7275,7 @@ Start by:
                 continue
             if not is_running:
                 await self._handle_stopped_container(agent_id, instance, exit_code)
+        self._check_loop_liveness()
 
     async def _notify_agent_stranded(
         self,
@@ -7359,12 +7474,14 @@ Start by:
             )
 
         interval = settings.self_heal_interval_seconds
+        self._record_loop_heartbeat("self_heal", interval)
         while self._running:
             try:
                 await asyncio.sleep(interval)
                 async with get_db_context() as db:
                     await get_self_heal_engine(db).run_cycle()
                     await db.commit()
+                self._record_loop_heartbeat("self_heal", interval)
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -7383,10 +7500,12 @@ Start by:
         if not settings.ci_watch_enabled:
             return
         interval = settings.ci_watch_interval_seconds
+        self._record_loop_heartbeat("ci_watch", interval)
         while self._running:
             try:
                 await asyncio.sleep(interval)
                 await self._run_ci_watch_cycle()
+                self._record_loop_heartbeat("ci_watch", interval)
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -7471,10 +7590,12 @@ Start by:
         if not settings.dep_update_enabled:
             return
         interval = settings.dep_update_interval_seconds
+        self._record_loop_heartbeat("dep_update", interval)
         while self._running:
             try:
                 await asyncio.sleep(interval)
                 await self._run_dep_update_cycle()
+                self._record_loop_heartbeat("dep_update", interval)
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -7512,10 +7633,12 @@ Start by:
         if not settings.release_manager_enabled:
             return
         interval = settings.release_manager_interval_seconds
+        self._record_loop_heartbeat("release_manager", interval)
         while self._running:
             try:
                 await asyncio.sleep(interval)
                 await self._run_release_manager_cycle()
+                self._record_loop_heartbeat("release_manager", interval)
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -7543,10 +7666,12 @@ Start by:
         if not (settings.x_engine_enabled and settings.x_replies_enabled):
             return
         interval = settings.x_mentions_interval_seconds
+        self._record_loop_heartbeat("x_mentions", interval)
         while self._running:
             try:
                 await asyncio.sleep(interval)
                 await self._run_x_mentions_cycle()
+                self._record_loop_heartbeat("x_mentions", interval)
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -7574,10 +7699,12 @@ Start by:
         if not settings.roadmap_engine_enabled:
             return
         interval = settings.roadmap_interval_seconds
+        self._record_loop_heartbeat("roadmap_engine", interval)
         while self._running:
             try:
                 await asyncio.sleep(interval)
                 await self._run_roadmap_engine_cycle()
+                self._record_loop_heartbeat("roadmap_engine", interval)
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -7603,10 +7730,12 @@ Start by:
         if not (settings.x_engine_enabled and settings.x_feature_spotlight_enabled):
             return
         interval = settings.x_feature_spotlight_interval_seconds
+        self._record_loop_heartbeat("x_feature_spotlight", interval)
         while self._running:
             try:
                 await asyncio.sleep(interval)
                 await self._run_x_feature_spotlight_cycle()
+                self._record_loop_heartbeat("x_feature_spotlight", interval)
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -7632,10 +7761,12 @@ Start by:
         if not settings.video_engine_enabled:
             return
         interval = settings.video_render_interval_seconds
+        self._record_loop_heartbeat("video_render", interval)
         while self._running:
             try:
                 await asyncio.sleep(interval)
                 await self._run_video_render_cycle()
+                self._record_loop_heartbeat("video_render", interval)
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -7643,7 +7774,13 @@ Start by:
 
     async def _run_video_render_cycle(self) -> None:
         """One render pass: render every completed authoring task carrying an
-        unrendered composition. Testable w/o the sleep."""
+        unrendered composition. Testable w/o the sleep.
+
+        commit per-task so a raise mid-cycle no longer rolls back prior
+        renders (and the next cycle no longer re-renders + re-originates a
+        second held video_post draft). The committed ``render_status=
+        "rendered"`` is the idempotency key the next scan skips.
+        """
         from roboco.db import get_db_context
         from roboco.services.task import get_task_service
 
@@ -7651,7 +7788,7 @@ Start by:
             tasks = await get_task_service(db).list_completed_video_tasks()
             for task in tasks:
                 await self._render_video_task(db, task)
-            await db.commit()
+                await db.commit()
 
     async def _render_video_task(self, db: Any, task: Any) -> None:
         """Render one completed authoring task's composition, or skip/retry/fail.
@@ -7696,14 +7833,14 @@ Start by:
         """Render the vertical + square cuts from the roboco project's merged
         read-clone's motion/ dir; returns {"vertical": path, "square": path}.
         ``render_key`` (the source task id) scopes each cut's output path."""
-        from roboco.services.remotion_client import get_remotion_renderer
+        from roboco.services.video_renderer_client import get_video_renderer
         from roboco.services.workspace import get_workspace_service
 
         slug = (settings.self_heal_project_slug or "roboco-api").strip()
         workspace = await get_workspace_service(db).ensure_read_clone(slug)
         motion_dir = str(workspace / "motion")
         input_props = draft.get("input_props") or {}
-        renderer = get_remotion_renderer()
+        renderer = get_video_renderer()
         cuts: dict[str, str] = {}
         for orientation in ("vertical", "square"):
             cuts[orientation] = await renderer.render(
@@ -8254,18 +8391,19 @@ Start by:
     ) -> str | None:
         """Provider to park if this dead run hit a persistent overload, else None.
 
-        Only the Anthropic path is matched: grok has its own exit-75 detector,
-        and other providers surface overloads differently. Returns None when
-        the feature is disabled, the agent isn't Anthropic, or the output holds
-        no overload marker. Gated so a misfire can be turned off without a
-        redeploy of the detection logic.
+        Data-driven by ``_OVERLOAD_MARKERS_BY_PROVIDER``: only providers with
+        specific overload markers are candidates, so grok (its own exit-75
+        detector) and unhandled providers stay on crash-retry. Returns the
+        matched provider value, or None when the feature is disabled, the
+        provider has no overload markers, or the output holds no marker.
         """
         if not settings.overload_break_enabled:
             return None
-        from roboco.models.base import ModelProvider
-
         provider_type = instance.config.provider_type if instance.config else None
-        if provider_type not in (None, ModelProvider.ANTHROPIC.value):
+        markers = (
+            _OVERLOAD_MARKERS_BY_PROVIDER.get(provider_type) if provider_type else None
+        )
+        if markers is None:
             return None
         tail = await self._tail_container_logs(f"roboco-agent-{agent_id}")
         # The SDK server writes model-API errors to /tmp/sdk-server.log, not
@@ -8274,8 +8412,8 @@ Start by:
         # crash-respawns straight back into it.
         transcript_tail = self._transcript_tail_text(agent_id)
         lowered = (tail + "\n" + transcript_tail).lower()
-        if any(marker in lowered for marker in _ANTHROPIC_OVERLOAD_MARKERS):
-            return ModelProvider.ANTHROPIC.value
+        if any(marker in lowered for marker in markers):
+            return provider_type
         return None
 
     async def _provider_rate_limit_park_target(
@@ -8283,18 +8421,22 @@ Start by:
     ) -> str | None:
         """Provider to park if this dead run hit a session/usage limit, else None.
 
-        Mirrors ``_provider_overload_park_target`` but matches the Claude session
-        ("5-hour") limit, which surfaces as a 429 the SDK does not retry — the
-        container exits with a 0-token rejection rather than an overload. Without
-        this it would crash-respawn straight back into the limit. Gated by the
-        same flag so a misfire is toggle-able without a redeploy.
+        Mirrors ``_provider_overload_park_target`` but matches the Claude
+        session ("5-hour") limit AND the ollama.com weekly limit
+        (``glm-5.2:cloud``), both of which surface as a 429 the SDK does not
+        retry. Data-driven by ``_RATE_LIMIT_MARKERS_BY_PROVIDER``; returns the
+        matched provider value or None. Gated so a misfire can be turned off
+        without a redeploy.
         """
         if not settings.overload_break_enabled:
             return None
-        from roboco.models.base import ModelProvider
-
         provider_type = instance.config.provider_type if instance.config else None
-        if provider_type not in (None, ModelProvider.ANTHROPIC.value):
+        markers = (
+            _RATE_LIMIT_MARKERS_BY_PROVIDER.get(provider_type)
+            if provider_type
+            else None
+        )
+        if markers is None:
             return None
         tail = await self._tail_container_logs(f"roboco-agent-{agent_id}")
         # The SDK server writes to /tmp/sdk-server.log, not stdout, so the
@@ -8302,8 +8444,8 @@ Start by:
         # Claude transcript on the host as well.
         transcript_tail = self._transcript_tail_text(agent_id)
         lowered = (tail + "\n" + transcript_tail).lower()
-        if any(marker in lowered for marker in _ANTHROPIC_RATE_LIMIT_MARKERS):
-            return ModelProvider.ANTHROPIC.value
+        if any(marker in lowered for marker in markers):
+            return provider_type
         return None
 
     async def _park_provider_unavailable(
@@ -9609,6 +9751,56 @@ Start now: evidence(task_id="{task_id}")
         except Exception as exc:
             logger.error("startup reconcile failed; continuing", error=str(exc))
 
+    async def _reconcile_orphan_spawn_sessions(self) -> int:
+        """Close agent_spawn_sessions rows left open by a prior crash.
+
+        usage.get_summary / get_time_series filter ``ended_at IS NOT NULL``,
+        so an open row whose container is gone is permanently excluded from
+        usage/cost rollups. Close each open session whose agent slug is NOT
+        in ``self._instances`` (the re-adopted running set) with
+        ``ended_at=now`` and ``exit_reason='abandoned'``. Running agents
+        stay open for their live finalize. Best-effort; never blocks startup.
+        """
+        try:
+            from sqlalchemy import select, update
+
+            from roboco.db.base import get_session_factory
+            from roboco.db.tables import AgentSpawnSessionTable
+        except ImportError:
+            return 0
+        try:
+            running = set(self._instances.keys())
+            session_factory = get_session_factory()
+            async with session_factory() as db:
+                rows = (
+                    (
+                        await db.execute(
+                            select(AgentSpawnSessionTable).where(
+                                AgentSpawnSessionTable.ended_at.is_(None)
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                orphans = [r for r in rows if r.agent_slug not in running]
+                if not orphans:
+                    return 0
+                now = datetime.now(UTC)
+                await db.execute(
+                    update(AgentSpawnSessionTable)
+                    .where(AgentSpawnSessionTable.id.in_([r.id for r in orphans]))
+                    .values(ended_at=now, exit_reason="abandoned")
+                )
+                await db.commit()
+            return len(orphans)
+        except Exception as exc:
+            logger.warning(
+                "Failed to reconcile orphan spawn sessions",
+                error=str(exc),
+            )
+            return 0
+
     async def _reconcile_with_service(self, svc: "TaskService") -> None:
         """Inner reconcile loop, parameterised by the TaskService to use.
 
@@ -9757,6 +9949,108 @@ Start now: evidence(task_id="{task_id}")
                 slug=slug,
             )
             return None
+
+    async def _read_container_auth_env(
+        self, container_name: str
+    ) -> tuple[str, str, str] | None:
+        """Read (token, agent_id, role) from a running agent container's env.
+
+        Returns None on any probe failure or missing var so the caller can
+        skip the container (best-effort — the reaper still covers it).
+        """
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "docker",
+                "exec",
+                container_name,
+                "printenv",
+                "ROBOCO_AGENT_TOKEN",
+                "ROBOCO_AGENT_ID",
+                "ROBOCO_AGENT_ROLE",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await proc.communicate()
+        except Exception:
+            return None
+        if proc.returncode != 0:
+            return None
+        token: str | None = None
+        agent_id_env: str | None = None
+        role_env: str | None = None
+        for line in stdout.decode("utf-8", "replace").splitlines():
+            if line.startswith("ROBOCO_AGENT_TOKEN="):
+                token = line[len("ROBOCO_AGENT_TOKEN=") :]
+            elif line.startswith("ROBOCO_AGENT_ID="):
+                agent_id_env = line[len("ROBOCO_AGENT_ID=") :]
+            elif line.startswith("ROBOCO_AGENT_ROLE="):
+                role_env = line[len("ROBOCO_AGENT_ROLE=") :]
+        if not token or not agent_id_env or not role_env:
+            return None
+        return token, agent_id_env, role_env
+
+    async def _heal_stale_agent_tokens(self) -> int:
+        """Kill running agent containers whose ROBOCO_AGENT_TOKEN no longer
+        verifies against the current ``ROBOCO_AGENT_AUTH_SECRET``.
+
+        A token is baked into the container env at spawn (``_append_agent_auth_env``
+        signs with the orchestrator's secret at that moment). If the secret later
+        drifts — a `.env` change, a compose recreate that reloads the
+        orchestrator's env without recreating the agent containers, an image
+        redeploy — the surviving agent keeps sending its old token and the
+        middleware 401s every verb with "signature mismatch". The container stays
+        alive (heartbeating), so the reaper never reclaims it and no fresh agent
+        spawns: the fleet stalls. This self-heals it at startup by killing each
+        stale-token container so the normal dispatch re-spawns it with a freshly
+        signed token.
+
+        Inert when the secret is unset (dev): ``verify_agent_token`` fails for
+        every token without a secret, so the heal would kill the whole fleet —
+        gated to prod-only. Best-effort: a probe failure leaves the container
+        alone (the reaper's own liveness path still covers it).
+        """
+        from roboco.agents_config import _auth_secret, verify_agent_token
+
+        if not _auth_secret():
+            return 0
+        killed = 0
+        for slug in AGENT_IMAGES:
+            try:
+                is_running, _ = await self._inspect_container_state(
+                    f"roboco-agent-{slug}"
+                )
+            except Exception:
+                continue
+            if not is_running:
+                continue
+            env = await self._read_container_auth_env(f"roboco-agent-{slug}")
+            if env is None:
+                continue
+            token, agent_id_env, role_env = env
+            team = get_agent_team(agent_id_env) or ""
+            # Verify against the UUID the MCP servers actually send as
+            # X-Agent-ID, not the container-env ROBOCO_AGENT_ID (a slug on
+            # pre-fix containers). A stale container spawned before the
+            # slug→UUID fix carries a slug-signed token + a slug
+            # ROBOCO_AGENT_ID, so verifying against the slug would PASS and
+            # leave the stale container running (its MCP server still 401s
+            # sending the UUID). Resolving to the UUID makes the heal reject
+            # the slug-signed token and kill the container so it respawns
+            # with a UUID-signed one. AGENT_UUIDS is slug→UUID keyed, so a
+            # UUID input falls back to itself.
+            agent_uuid = AGENT_UUIDS.get(agent_id_env, agent_id_env)
+            if verify_agent_token(token, agent_uuid, role_env, team):
+                continue
+            logger.warning(
+                "Killing agent with a stale auth token at startup; the reaper "
+                "will re-spawn it with a freshly signed token",
+                slug=slug,
+            )
+            await self._remove_container(f"roboco-agent-{slug}", teardown_sandbox=False)
+            killed += 1
+        if killed:
+            logger.info("Healed stale agent tokens at startup", count=killed)
+        return killed
 
     async def _readopt_running_agents(self) -> int:
         """Re-adopt still-running agent containers into ``_instances`` at startup.
@@ -10206,6 +10500,9 @@ Start now: evidence(task_id="{task_id}")
     _PM_RESPAWN_MAX_UNPRODUCTIVE = _AGENT_LOOP_BUDGET.pm_respawn_max_unproductive
     _PM_RESPAWN_MAX_TRACING_RESETS = _AGENT_LOOP_BUDGET.pm_respawn_max_tracing_resets
     _PM_RESPAWN_MAX_REVISIT_RESETS = _AGENT_LOOP_BUDGET.pm_respawn_max_revisit_resets
+    _PM_RESPAWN_TRIP_COOLDOWN_SECONDS = (
+        _AGENT_LOOP_BUDGET.pm_respawn_trip_cooldown_seconds
+    )
 
     def _respawn_status_change_resets(
         self,
@@ -10258,6 +10555,71 @@ Start now: evidence(task_id="{task_id}")
         )
         return False
 
+    async def _pm_tracing_gap_reset(
+        self,
+        agent_slug: str,
+        task_id: Any,
+        record: dict[str, Any],
+        current_status: Any,
+        now: datetime,
+    ) -> bool:
+        """Reset the strike counter when the PM made a rule-following retry.
+
+        A tracing_gap normally means the agent is advancing through a verb
+        chain, so reset — but only up to ``_PM_RESPAWN_MAX_TRACING_RESETS``.
+        A task whose every respawn trips the same gap is wedged, not
+        progressing, so cap the resets and let strikes accrue once the
+        budget is exhausted. Returns True when the counter was reset.
+        """
+        if not await self._pm_made_rule_following_retry(agent_slug, task_id, record):
+            return False
+        resets = record.get("tracing_resets", 0)
+        if resets < self._PM_RESPAWN_MAX_TRACING_RESETS:
+            record["tracing_resets"] = resets + 1
+            record["count"] = 1
+            record["last_check"] = now
+            record["notified"] = False
+            self._schedule_respawn_persist(agent_slug, str(task_id), record)
+            return True
+        logger.warning(
+            "PM respawn tracing_gap reset budget exhausted — "
+            "treating recurring gap as a stuck loop",
+            agent_id=agent_slug,
+            task_id=task_id,
+            task_status=current_status,
+            tracing_resets=resets,
+        )
+        return False
+
+    def _pm_cooldown_gate(
+        self,
+        agent_slug: str,
+        task_id: Any,
+        record: dict[str, Any],
+        now: datetime,
+    ) -> bool | None:
+        """Self-heal a previously-tripped gate after a cooldown.
+
+        Returns True to keep gating, False to let the spawn through after a
+        cooldown reset, or None when the gate hasn't tripped yet (caller
+        continues to the increment path). last_check is frozen at the trip
+        tick; this branch returns before the increment below updates it.
+        """
+        if not (
+            record["count"] > self._PM_RESPAWN_MAX_UNPRODUCTIVE
+            and record.get("notified")
+        ):
+            return None
+        elapsed: bool = (now - record["last_check"]).total_seconds() > (
+            self._PM_RESPAWN_TRIP_COOLDOWN_SECONDS
+        )
+        if elapsed:
+            record["count"] = 1
+            record["last_check"] = now
+            record["notified"] = False
+            self._schedule_respawn_persist(agent_slug, str(task_id), record)
+        return not elapsed
+
     async def _pm_respawn_should_gate(
         self, agent_slug: str, task: dict[str, Any]
     ) -> bool:
@@ -10308,39 +10670,28 @@ Start now: evidence(task_id="{task_id}")
             self._respawn_status_change_resets(key, record, current_status, now)
         ):
             return False
-        # Same status as last spawn — could be a stuck loop OR a
-        # rule-following retry. A tracing_gap normally means the agent is
-        # advancing through a verb chain, so reset the strike counter — but
-        # only up to a bound. A task whose EVERY respawn trips the same gap is
-        # wedged, not progressing (e.g. the unblock journal-decision gate a
-        # cold-respawned PM can never satisfy), so cap the resets and let
-        # strikes accrue once the budget is exhausted. Without this cap the
-        # gate never fires for a tracing_gap loop and respawns run forever.
-        if await self._pm_made_rule_following_retry(agent_slug, task_id, record):
-            resets = record.get("tracing_resets", 0)
-            if resets < self._PM_RESPAWN_MAX_TRACING_RESETS:
-                record["tracing_resets"] = resets + 1
-                record["count"] = 1
-                record["last_check"] = now
-                record["notified"] = False
-                self._schedule_respawn_persist(
-                    agent_slug, str(task_id), self._pm_respawn_tracker[key]
-                )
-                return False
-            logger.warning(
-                "PM respawn tracing_gap reset budget exhausted — "
-                "treating recurring gap as a stuck loop",
-                agent_id=agent_slug,
-                task_id=task_id,
-                task_status=current_status,
-                tracing_resets=resets,
-            )
+        # ponytail: helpers hold the two resettable sub-loops (tracing-gap,
+        # cooldown); main fn just routes. Inline again if either grows a
+        # second distinct reset path.
+        if await self._pm_tracing_gap_reset(
+            agent_slug, task_id, record, current_status, now
+        ):
+            return False
+        # Already tripped on a PREVIOUS tick (notified flipped): the count is
+        # frozen past the threshold and last_check is frozen at the trip tick,
+        # so a deploy that fixed the underlying loop (auth/prompt/schema) can
+        # self-heal after a cooldown instead of wedging until manual DB
+        # surgery. A still-wedged task re-trips after the threshold (bounded
+        # re-burn: ~3 spawns per cooldown window); a fixed one advances and
+        # the status-change path fully resets the counter.
+        gate = self._pm_cooldown_gate(agent_slug, task_id, record, now)
+        if gate is not None:
+            return gate
         record["count"] += 1
         record["last_check"] = now
-        self._schedule_respawn_persist(
-            agent_slug, str(task_id), self._pm_respawn_tracker[key]
-        )
-        if record["count"] > self._PM_RESPAWN_MAX_UNPRODUCTIVE:
+        self._schedule_respawn_persist(agent_slug, str(task_id), record)
+        tripped: bool = record["count"] > self._PM_RESPAWN_MAX_UNPRODUCTIVE
+        if tripped:
             logger.warning(
                 "PM respawn loop detected — skipping spawn",
                 agent_id=agent_slug,
@@ -10357,12 +10708,9 @@ Start now: evidence(task_id="{task_id}")
             # an overseer once so a wedged agent isn't silently stranded.
             if not record.get("notified"):
                 record["notified"] = True
-                self._schedule_respawn_persist(
-                    agent_slug, str(task_id), self._pm_respawn_tracker[key]
-                )
+                self._schedule_respawn_persist(agent_slug, str(task_id), record)
                 await self._notify_stuck_agent(agent_slug, task_id, current_status)
-            return True
-        return False
+        return tripped
 
     async def _notify_stuck_agent(
         self, agent_slug: str, task_id: str, task_status: str | None
@@ -10986,7 +11334,7 @@ Start now: evidence(task_id="{task_id}")
         try:
             resp = await client.post(
                 f"{self._api_url}/v1/flow/{role_path}/{verb}",
-                headers={"X-Agent-ID": pm_uuid, "X-Agent-Role": role},
+                headers=_agent_api_headers(pm_uuid, role),
                 json={"task_id": task_id, "notes": notes},
             )
             body = resp.json()
@@ -12276,6 +12624,10 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         tasks = await self._fetch_tasks(client, "pending")
 
         for task in tasks:
+            # never auto-block a CEO-held artifact (release_manager / x_post /
+            # video_post / ...); it sits PENDING by design until the CEO acts
+            if _is_held_ceo_source(task):
+                continue
             age = self._get_task_age(task)
             if age is None or age < timedelta(minutes=STUCK_THRESHOLD_MINUTES):
                 continue

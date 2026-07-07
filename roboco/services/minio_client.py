@@ -2,7 +2,7 @@
 
 A thin wrapper around a singleton `minio.Minio` built from settings. The client
 is sync (minio-py is sync); every call site wraps the call in
-`asyncio.to_thread` — same pattern as `remotion_client._save`.
+`asyncio.to_thread` — same pattern as `video_renderer_client._save`.
 
 Unconfigured guard: when `settings.minio_endpoint` is empty, `get_client()`
 returns `None`. The write/serve paths (chunks 3/4) check `get_client()` and
@@ -26,15 +26,12 @@ from roboco.config import settings
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-_client: Minio | None = None
-_initialised = False
+_cache: dict[str, Minio | None] = {}
 
 
 def _reset_client() -> None:
     """Test-only: drop the cached singleton so the next `get_client()` rebuilds."""
-    global _client, _initialised  # noqa: PLW0603 - singleton cache, by design
-    _client = None
-    _initialised = False
+    _cache.clear()
 
 
 def get_client() -> Minio | None:
@@ -44,25 +41,24 @@ def get_client() -> Minio | None:
     write/serve paths fall back to local disk. Settings are load-time, so a
     plain module-level singleton is fine (no runtime-config drift to guard).
     """
-    global _client, _initialised  # noqa: PLW0603 - singleton cache, by design
-    if _initialised:
-        return _client
-    _initialised = True
+    if "c" in _cache:
+        return _cache["c"]
     endpoint = settings.minio_endpoint.strip()
     if not endpoint:
-        _client = None
+        _cache["c"] = None
         return None
     parsed = urlparse(endpoint if "://" in endpoint else f"//{endpoint}")
     secure = parsed.scheme == "https"
     host = parsed.netloc or endpoint  # no scheme → use as-is
-    _client = Minio(
+    client = Minio(
         endpoint=host,
         access_key=settings.minio_access_key or None,
         secret_key=settings.minio_secret_key or None,
         secure=secure,
         region=settings.minio_region or None,
     )
-    return _client
+    _cache["c"] = client
+    return client
 
 
 def put_object(data: bytes, key: str) -> None:
