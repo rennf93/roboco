@@ -4,6 +4,8 @@ API Middleware
 Request/response middleware for logging, error handling, and correlation IDs.
 """
 
+import asyncio
+import json
 import time
 import uuid
 from collections.abc import Callable, Sequence
@@ -16,8 +18,10 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from roboco.api.schemas.common import ErrorCode
+from roboco.config import settings
 from roboco.exceptions import (
     AuthenticationError,
     InvalidStateError,
@@ -472,6 +476,91 @@ def setup_middleware(app: FastAPI) -> None:
     app.add_exception_handler(RateLimitError, rate_limit_exception_handler)
     app.add_exception_handler(Exception, generic_exception_handler)
 
-    # Middleware (added in reverse order due to LIFO)
+    # Middleware (added in reverse order due to LIFO): the LAST add_middleware
+    # call is the OUTERMOST. FlowVerbTimeoutMiddleware is added FIRST so it is
+    # the INNERMOST — closest to the routes — meaning correlation + logging
+    # still wrap the 504 it returns, AND its asyncio.timeout cancels the route
+    # coroutine + its get_db dependency directly (same task, reliable cancel).
+    app.add_middleware(FlowVerbTimeoutMiddleware)
     app.add_middleware(RequestLoggingMiddleware)
     app.add_middleware(CorrelationIdMiddleware)
+
+
+class FlowVerbTimeoutMiddleware:
+    """Pure-ASGI server-side timeout on gateway intent-verb requests.
+
+    A hung flow verb — e.g. ``claim()`` blocked on a ``SELECT ... FOR
+    UPDATE`` row lock held by a prior stuck transaction — would otherwise hold
+    its request transaction open indefinitely. uvicorn does not cancel the
+    endpoint coroutine on client disconnect, and ``get_db`` only rolled back
+    on ``Exception``, so the row lock was never released and every later
+    task-row write on that task wedged (the 2026-07-07
+    ``kimi-k2.7-code:cloud`` agent on task 79d686f0). This wraps each
+    ``/api/v1/flow/*`` request in ``asyncio.timeout``; on expiry the inner
+    app is cancelled (CancelledError propagates through ``get_db``, which now
+    rolls back, releasing the lock) and a clean retryable 504 envelope is
+    returned. Pure ASGI (not BaseHTTPMiddleware) so cancellation propagates
+    into the route coroutine without the spawned-task gap.
+
+    Reads (``evidence``) and journal writes (``note``) don't touch the task
+    row, so they are unaffected; only task-row writes route through ``claim``.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or not scope["path"].startswith("/api/v1/flow/"):
+            await self.app(scope, receive, send)
+            return
+        timeout = settings.flow_verb_timeout_seconds
+        started = False
+
+        async def send_wrapper(message: Any) -> None:
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            async with asyncio.timeout(timeout):
+                await self.app(scope, receive, send_wrapper)
+        except TimeoutError:
+            # The inner app was cancelled mid-verb; get_db has already rolled
+            # back (releasing the FOR UPDATE lock) by the time we get here.
+            if started:
+                # The route had already begun a response before the timeout
+                # fired — the client owns whatever was sent; we cannot start
+                # a new one. Rare for a hung verb (it hangs before responding).
+                return
+            body = json.dumps(
+                {
+                    "status": None,
+                    "task_id": None,
+                    "next": None,
+                    "evidence": {},
+                    "context_briefing": {},
+                    "error": "gateway_timeout",
+                    "message": (
+                        f"verb exceeded the {timeout:.0f}s server-side timeout; "
+                        "the request transaction was rolled back"
+                    ),
+                    "remediate": (
+                        "retry the verb; if it persists the underlying task "
+                        "may be wedged — escalate"
+                    ),
+                }
+            ).encode()
+            headers = [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode()),
+            ]
+            try:
+                await send(
+                    {"type": "http.response.start", "status": 504, "headers": headers}
+                )
+                await send({"type": "http.response.body", "body": body})
+            except Exception:
+                # Client may have already disconnected (the original trigger);
+                # the lock is released regardless. Nothing to do.
+                pass

@@ -1288,6 +1288,22 @@ class Settings(BaseSettings):
             "design — most git operations are sub-second."
         ),
     )
+    flow_verb_timeout_seconds: float = Field(
+        default=120.0,
+        ge=1.0,
+        description=(
+            "Server-side wall-clock timeout for a single gateway intent-verb "
+            "request (/api/v1/flow/*). A verb whose transaction hangs — e.g. "
+            "claim() blocked on a FOR UPDATE row lock held by a prior stuck "
+            "transaction — would otherwise hold its request transaction open "
+            "indefinitely: uvicorn does not cancel the endpoint coroutine on "
+            "client disconnect, so the row lock is never released and every "
+            "later task-row write on that task wedges. On expiry the inner "
+            "app is cancelled, get_db rolls back (releasing the lock), and a "
+            "retryable 504 envelope is returned. Generous by default so "
+            "legitimate verbs are unaffected."
+        ),
+    )
     git_commit_timeout_seconds: int = Field(
         default=180,
         ge=30,
