@@ -198,12 +198,23 @@ class RoadmapService(BaseService):
             status=TaskStatus.BACKLOG,
         )
 
-    @staticmethod
-    def _maybe_complete_cycle(task: TaskTable, payload: dict[str, Any]) -> None:
+    def _maybe_complete_cycle(self, task: TaskTable, payload: dict[str, Any]) -> None:
         """Complete the exploration task once every item is terminal."""
         items = payload.get("items") or []
         if items and all(it.get("status") in _TERMINAL_ITEM_STATUSES for it in items):
+            from_status = (
+                task.status.value
+                if isinstance(task.status, TaskStatus)
+                else str(task.status)
+            )
             task.status = TaskStatus.COMPLETED
+            get_task_service(self.session)._emit_status_transition_audit(
+                task,
+                from_status=from_status,
+                to_status=TaskStatus.COMPLETED.value,
+                agent_role=None,
+                audit_agent_id=None,
+            )
 
 
 def get_roadmap_service(session: AsyncSession) -> RoadmapService:
