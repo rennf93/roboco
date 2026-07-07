@@ -2,16 +2,17 @@
 
 Session lifetime ("no unexpected logouts"): the cookie's max-age is 30 days
 (config default), and it is SLIDING — api.deps.get_agent_context re-mints +
-re-sets the cookie on every authenticated request (see
-``_slide_session_cookie`` there), so an in-use session never lapses. Only
-genuine inactivity past cloud_auth_cookie_max_age logs out.
+re-sets the cookie only when the current cookie is near expiry (see
+``_slide_session_cookie`` in ``api.deps``), so a stolen cookie's expiry
+stays fixed instead of rolling with the legitimate user. Only genuine
+inactivity past cloud_auth_cookie_max_age logs out.
 """
 
 from __future__ import annotations
 
 import hashlib
 from typing import TYPE_CHECKING
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import jwt
 from fastapi_users import exceptions
@@ -77,6 +78,7 @@ class _SlidingSessionStrategy(JWTStrategy[UserTable, UUID]):
             "sub": str(user.id),
             "aud": self.token_audience,
             "pwd_fp": _password_fingerprint(user.hashed_password),
+            "jti": uuid4().hex,
         }
         return generate_jwt(
             data, self.encode_key, self.lifetime_seconds, algorithm=self.algorithm
