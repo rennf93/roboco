@@ -21,6 +21,7 @@ from fastapi import HTTPException, Response
 from fastapi_users.password import PasswordHelper
 from roboco.agents_config import CEO_AGENT_ID, issue_agent_token
 from roboco.api import websocket as ws_module
+from roboco.api.auth import revocation
 from roboco.api.auth.backend import SESSION_COOKIE_NAME, get_jwt_strategy
 from roboco.api.auth.routes import auth_status
 from roboco.api.auth.seed import ensure_seed_user
@@ -533,3 +534,45 @@ async def test_slide_remints_when_near_expiry(
     response = Response()
     await _slide_session_cookie(response, user, near_expired)
     assert "set-cookie" in {k.lower() for k in response.headers}
+
+
+# ---------------------------------------------------------------------------
+# M36b — Redis jti revocation: read_token rejects a revoked jti.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_read_token_rejects_revoked_jti(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "cloud_auth_enabled", True)
+    user = UserTable(
+        id=uuid4(),
+        email="ceo@roboco.test",
+        hashed_password=_password_helper.hash("pw"),
+    )
+    token = await get_jwt_strategy().write_token(user)
+    monkeypatch.setattr(revocation, "is_jti_revoked", AsyncMock(return_value=True))
+
+    manager = MagicMock()
+    manager.parse_id.return_value = user.id
+    manager.get = AsyncMock(return_value=user)
+    assert await get_jwt_strategy().read_token(token, manager) is None
+
+
+@pytest.mark.asyncio
+async def test_read_token_accepts_unrevoked_jti(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "cloud_auth_enabled", True)
+    user = UserTable(
+        id=uuid4(),
+        email="ceo@roboco.test",
+        hashed_password=_password_helper.hash("pw"),
+    )
+    token = await get_jwt_strategy().write_token(user)
+    monkeypatch.setattr(revocation, "is_jti_revoked", AsyncMock(return_value=False))
+
+    manager = MagicMock()
+    manager.parse_id.return_value = user.id
+    manager.get = AsyncMock(return_value=user)
+    result = await get_jwt_strategy().read_token(token, manager)
+    assert result is not None and str(result.id) == str(user.id)

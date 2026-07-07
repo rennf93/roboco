@@ -23,6 +23,7 @@ from fastapi_users.authentication import (
 )
 from fastapi_users.jwt import decode_jwt, generate_jwt
 
+from roboco.api.auth import revocation
 from roboco.config import settings
 from roboco.db.tables import UserTable
 
@@ -109,7 +110,13 @@ class _SlidingSessionStrategy(JWTStrategy[UserTable, UUID]):
         except (exceptions.UserNotExists, exceptions.InvalidID):
             return None
 
-        if pwd_fp != _password_fingerprint(user.hashed_password):
+        jti = data.get("jti")
+        # pwd_fp short-circuits: the Redis revocation check only runs when
+        # the password fingerprint already matches (the common path), so a
+        # rotated-password token never touches Redis.
+        if pwd_fp != _password_fingerprint(user.hashed_password) or (
+            isinstance(jti, str) and await revocation.is_jti_revoked(jti)
+        ):
             return None
         return user
 
