@@ -7,6 +7,7 @@ permission factories, and the choreographer + content-actions wiring.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -36,6 +37,9 @@ from roboco.api.deps import (
 )
 from roboco.models import AgentRole, Team
 from roboco.models.permissions import AgentContext
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 _HTTP_400 = 400
 _HTTP_401 = 401
@@ -301,7 +305,7 @@ async def test_require_panel_token_cloud_auth_valid_cookie_passes(
 ) -> None:
     monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", True)
 
-    async def _fake_db():
+    async def _fake_db() -> AsyncIterator[MagicMock]:
         yield MagicMock()
 
     with (
@@ -320,7 +324,7 @@ async def test_require_panel_token_cloud_auth_invalid_cookie_rejects(
 ) -> None:
     monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", True)
 
-    async def _fake_db():
+    async def _fake_db() -> AsyncIterator[MagicMock]:
         yield MagicMock()
 
     with (

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
@@ -186,6 +187,7 @@ async def test_merge_pr_locks_work_session_row_with_for_update() -> None:
 
     await svc.merge_pr(uuid4(), uuid4())
 
+    assert execute.await_args is not None
     stmt = execute.await_args.args[0]
     assert getattr(stmt, "_for_update_arg", None) is not None
 
@@ -290,7 +292,13 @@ async def _seed_active_session(
     )
     await db_session.flush()
     await db_session.commit()
-    return ws_id, worker.id, merger_a.id, merger_b.id, project.id
+    return (
+        ws_id,
+        cast("UUID", worker.id),
+        cast("UUID", merger_a.id),
+        cast("UUID", merger_b.id),
+        cast("UUID", project.id),
+    )
 
 
 @pytest.mark.asyncio
@@ -315,7 +323,7 @@ async def test_merge_pr_concurrent_calls_serialize_one_write(
     merger_a = merger_a_id
     merger_b = merger_b_id
 
-    async def _call(merger: UUID) -> tuple[object, UUID]:
+    async def _call(merger: UUID) -> tuple[WorkSessionTable | None, UUID]:
         async with factory() as sess:
             svc = get_work_session_service(sess)
             result = await svc.merge_pr(ws_id, merger)
@@ -350,7 +358,7 @@ async def test_merge_pr_concurrent_calls_serialize_one_write(
 
 @pytest.mark.asyncio
 async def test_create_translates_integrity_error_to_conflict(
-    db_session, monkeypatch
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Two agents racing a same-task active-session create: the 047 partial-
     unique index fires IntegrityError on the loser's flush. The service must
@@ -417,7 +425,7 @@ async def test_create_translates_integrity_error_to_conflict(
 
     svc = get_work_session_service(db_session)
 
-    async def _none(*_a, **_kw):
+    async def _none(*_a: Any, **_kw: Any) -> None:
         return None
 
     monkeypatch.setattr(svc, "get_active_for_task_and_agent", _none)
@@ -425,9 +433,9 @@ async def test_create_translates_integrity_error_to_conflict(
     with pytest.raises(ConflictError):
         await svc.create(
             WorkSessionCreate(
-                project_id=project.id,
+                project_id=cast("UUID", project.id),
                 task_id=tid,
-                agent_id=agent.id,
+                agent_id=cast("UUID", agent.id),
                 branch_name="feature/x",
                 base_branch="master",
                 target_branch="master",

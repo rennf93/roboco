@@ -1859,7 +1859,7 @@ async def _seed_minimal_task(db_session: AsyncSession, tid: UUID) -> UUID:
         )
     )
     await db_session.flush()
-    return project.id
+    return cast("UUID", project.id)
 
 
 @pytest.mark.asyncio

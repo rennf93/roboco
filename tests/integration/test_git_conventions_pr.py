@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import subprocess
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from roboco.db.tables import AgentTable, ProjectTable
@@ -13,6 +13,7 @@ from roboco.services.git import _ConventionsPr, get_git_service
 if TYPE_CHECKING:
     from pathlib import Path
 
+    import pytest
     from sqlalchemy.ext.asyncio import AsyncSession
 
 _SCAFFOLD_BRANCH = "chore/roboco-conventions-scaffold"
@@ -103,7 +104,7 @@ async def test_open_conventions_pr_returns_none_without_workspace(
 
 
 async def test_open_conventions_pr_force_pushes_scaffold_branch(
-    db_session: AsyncSession, tmp_path: Path, monkeypatch
+    db_session: AsyncSession, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # Second call: scaffold branch already on remote (non-fast-forward).
     # Must force-push (force=True) and return a real pr_number, not the
@@ -123,11 +124,13 @@ async def test_open_conventions_pr_force_pushes_scaffold_branch(
 
     pushed: list[bool] = []
 
-    async def _fake_push(_workspace, force=False, _branch=None):
+    async def _fake_push(
+        _workspace: Any, force: bool = False, _branch: str | None = None
+    ) -> tuple[str, int]:
         pushed.append(force)
         return (_SCAFFOLD_BRANCH, 1)
 
-    async def _fake_token(_slug):
+    async def _fake_token(_slug: str) -> str:
         return "tok"
 
     monkeypatch.setattr(git, "_token_for_project", _fake_token)
@@ -140,10 +143,10 @@ async def test_open_conventions_pr_force_pushes_scaffold_branch(
     class _Resp:
         is_success = True
 
-        def json(self):
+        def json(self) -> dict[str, object]:
             return {"number": _pr_number, "html_url": _pr_url}
 
-    async def _fake_post_pr(_owner, _repo, _token, _body):
+    async def _fake_post_pr(_owner: str, _repo: str, _token: str, _body: Any) -> _Resp:
         return _Resp()
 
     monkeypatch.setattr(git, "_post_pr", _fake_post_pr)

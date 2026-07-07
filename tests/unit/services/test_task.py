@@ -9,9 +9,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from roboco.config import settings
@@ -1635,7 +1635,7 @@ async def test_update_skips_none_to_protect_partial_callers() -> None:
 
 @pytest.mark.asyncio
 async def test_admin_set_status_refuses_terminal_to_non_terminal_without_force(
-    db_session,
+    db_session: AsyncSession,
 ) -> None:
     agent = AgentTable(
         id=uuid4(),
@@ -1690,7 +1690,7 @@ async def test_admin_set_status_refuses_terminal_to_non_terminal_without_force(
 
 @pytest.mark.asyncio
 async def test_admin_set_status_force_no_revision_bump(
-    db_session,
+    db_session: AsyncSession,
 ) -> None:
     agent = AgentTable(
         id=uuid4(),
@@ -1740,7 +1740,7 @@ async def test_admin_set_status_force_no_revision_bump(
     await db_session.flush()
     svc = get_task_service(db_session)
     await svc.admin_set_status(
-        tid, TaskStatus.NEEDS_REVISION, force=True, actor_id=agent.id
+        tid, TaskStatus.NEEDS_REVISION, force=True, actor_id=cast("UUID", agent.id)
     )
     row = (
         await db_session.execute(select(TaskTable).where(TaskTable.id == tid))

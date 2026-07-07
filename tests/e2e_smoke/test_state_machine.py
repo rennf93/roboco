@@ -25,6 +25,7 @@ from tests.e2e_smoke.arcs import (
 from tests.e2e_smoke.harness import ScriptedAgent, expect_error, expect_ok
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
     from tests.e2e_smoke.harness import E2EStack
 
 
@@ -181,7 +182,7 @@ def test_h5_unclaim_from_blocked_clears_snapshot(e2e_stack: E2EStack) -> None:
     pm = ScriptedAgent(stack, company.cell_pm_id, "be-pm", "cell_pm")
     expect_ok(pm.flow("unclaim", task_id=str(tid)), "pm unclaim from blocked")
 
-    async def _snap(session):
+    async def _snap(session: AsyncSession) -> Any:
         row = (
             await session.execute(select(TaskTable).where(TaskTable.id == tid))
         ).scalar_one()

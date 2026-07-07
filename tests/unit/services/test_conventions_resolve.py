@@ -91,13 +91,15 @@ async def test_resolve_workspace_force_refetches() -> None:
     ):
         root = await _svc().resolve_workspace(cast("ProjectTable", project))
 
-    assert root == "/fake-clone"
+    assert root is not None and str(root) == "/fake-clone"
     assert captured["slug"] == "p"
     assert captured["force"] is True
 
 
 @pytest.mark.asyncio
-async def test_resolve_does_not_mutate_orm(monkeypatch, tmp_path: Path) -> None:
+async def test_resolve_does_not_mutate_orm(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     # _resolve must return (root, sha_raw) and NOT touch project.workspace_path
     # or project.head_commit. The caller mutates on the event loop, not the
     # worker thread.
@@ -128,7 +130,7 @@ async def test_resolve_does_not_mutate_orm(monkeypatch, tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_resolve_raw_sha_none_for_non_git_path(
-    monkeypatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     # _head_sha_at returns None (non-git path) -> _resolve returns (root, None),
     # and the caller's guard leaves project.head_commit untouched.
@@ -143,11 +145,11 @@ async def test_resolve_raw_sha_none_for_non_git_path(
         svc._resolve, cast("ProjectTable", project), None
     )
     assert sha is None
-    # caller guard: sha is None -> do NOT touch head_commit
+    # caller guard: sha is None -> do NOT touch head_commit (the inner
+    # `if sha is not None` branch is deliberately omitted here — sha is None,
+    # so the guard's body is dead code; the persisted head_commit must survive).
     if root is not None:
         project.workspace_path = str(root)
-        if sha is not None:
-            project.head_commit = sha
     assert project.head_commit == "persisted-keep-me"  # guard preserved
     # and head (cache key) falls back:
     head = sha or svc._head_sha(cast("ProjectTable", project))

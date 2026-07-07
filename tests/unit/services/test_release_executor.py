@@ -311,7 +311,7 @@ async def test_wait_for_ci_polls_through_rerun(
     expected_polls = len(seq)
     calls = {"n": 0}
 
-    async def _fake_get_ci(_slug: str, **kwargs: object) -> dict[str, str]:
+    async def _fake_get_ci(_slug: str, **kwargs: object) -> dict[str, object]:
         i = min(calls["n"], len(seq) - 1)
         calls["n"] += 1
         return {
@@ -358,7 +358,7 @@ async def test_wait_for_ci_exhausts_window_on_persistent_failure(
     max_polls = 3
     calls = {"n": 0}
 
-    async def _fake_get_ci(_slug: str, **kwargs: object) -> dict[str, str]:
+    async def _fake_get_ci(_slug: str, **kwargs: object) -> dict[str, object]:
         calls["n"] += 1
         return {
             "head_sha": kwargs.get("head_sha", commit_sha),

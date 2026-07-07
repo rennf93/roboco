@@ -288,7 +288,7 @@ async def test_reindex_non_private_learning_indexed_and_shareable() -> None:
     """A non-private learning entry is indexed into JOURNALS AND recorded
     into LEARNINGS with shareable=True (the original happy path)."""
 
-    payload = {
+    payload: dict[str, object] = {
         "content": "shared lesson",
         "entry_type": "learning",
         "entry_id": str(uuid4()),
@@ -313,7 +313,7 @@ async def test_reindex_non_private_learning_indexed_and_shareable() -> None:
 async def test_reindex_private_general_not_indexed_not_recorded() -> None:
     """A private non-learning entry is neither indexed nor recorded."""
 
-    payload = {
+    payload: dict[str, object] = {
         "content": "private note",
         "entry_type": "general",
         "entry_id": str(uuid4()),

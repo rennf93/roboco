@@ -70,7 +70,7 @@ def test_cloud_auth_cookie_max_age_defaults_to_30_days() -> None:
     assert s.cloud_auth_cookie_max_age == 30 * 24 * 60 * 60
 
 
-def test_cloud_auth_rejects_panel_agent_token(monkeypatch):
+def test_cloud_auth_rejects_panel_agent_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ROBOCO_CLOUD_AUTH_ENABLED", "true")
     monkeypatch.setenv("ROBOCO_CLOUD_AUTH_SECRET", "x" * 32)
     monkeypatch.setenv("ROBOCO_PANEL_AGENT_TOKEN", "some-signed-token")
@@ -78,7 +78,9 @@ def test_cloud_auth_rejects_panel_agent_token(monkeypatch):
         Settings()
 
 
-def test_cloud_auth_ok_without_panel_agent_token(monkeypatch):
+def test_cloud_auth_ok_without_panel_agent_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("ROBOCO_CLOUD_AUTH_ENABLED", "true")
     monkeypatch.setenv("ROBOCO_CLOUD_AUTH_SECRET", "x" * 32)
     monkeypatch.delenv("ROBOCO_PANEL_AGENT_TOKEN", raising=False)

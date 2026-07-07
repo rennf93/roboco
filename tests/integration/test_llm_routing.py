@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -17,6 +17,7 @@ from roboco.utils.crypto import EncryptionError
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+    from uuid import UUID
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -255,12 +256,14 @@ async def test_apply_mode_grok_enables_grok_provider(llm_setup: dict) -> None:
         if p.type == ModelProvider.GROK
     )
     # Model the real seeded state: GROK disabled because no xAI key was set.
-    await provider_svc.update_provider(grok.id, ProviderUpdate(enabled=False))
+    await provider_svc.update_provider(
+        cast("UUID", grok.id), ProviderUpdate(enabled=False)
+    )
     await svc.session.flush()
 
     await svc.apply_mode(mode="grok")
 
-    refetched = await provider_svc.get_provider(grok.id)
+    refetched = await provider_svc.get_provider(cast("UUID", grok.id))
     assert refetched is not None
     assert refetched.enabled is True
 

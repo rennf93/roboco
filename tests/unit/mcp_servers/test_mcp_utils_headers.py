@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 
-def test_get_agent_headers_omits_unsigned_token(monkeypatch):
+if TYPE_CHECKING:
+    import pytest
+
+
+def test_get_agent_headers_omits_unsigned_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from roboco.mcp import utils as mcp_utils
 
     monkeypatch.setenv("ROBOCO_AGENT_TOKEN", "UNSIGNED")
@@ -12,7 +19,7 @@ def test_get_agent_headers_omits_unsigned_token(monkeypatch):
     assert h["X-Agent-ID"] == "be-dev-1"
 
 
-def test_get_agent_headers_sends_real_token(monkeypatch):
+def test_get_agent_headers_sends_real_token(monkeypatch: pytest.MonkeyPatch) -> None:
     from roboco.mcp import utils as mcp_utils
 
     monkeypatch.setenv("ROBOCO_AGENT_TOKEN", "signed-token-abc")

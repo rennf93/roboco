@@ -1,5 +1,9 @@
 """Schema-level invariants for /api/v1/flow/* request models."""
 
+from __future__ import annotations
+
+from typing import Any
+
 import pytest
 from pydantic import ValidationError
 from roboco.api.schemas.v1.flow import DelegateRequest
@@ -19,18 +23,18 @@ _BASE = {
 }
 
 
-def _payload(**overrides):
+def _payload(**overrides: Any) -> dict[str, Any]:
     return {**_BASE, **overrides}
 
 
-def test_delegate_request_rejects_critical_complexity():
+def test_delegate_request_rejects_critical_complexity() -> None:
     # "critical" is not a Complexity enum member (LOW|MEDIUM|HIGH); must 422
     # at the boundary, not pass-then-500 at flush.
     with pytest.raises(ValidationError):
         DelegateRequest.model_validate(_payload(estimated_complexity="critical"))
 
 
-def test_delegate_request_accepts_low_medium_high():
+def test_delegate_request_accepts_low_medium_high() -> None:
     for val in ("low", "medium", "high"):
         req = DelegateRequest.model_validate(_payload(estimated_complexity=val))
         assert req.estimated_complexity == Complexity(val)

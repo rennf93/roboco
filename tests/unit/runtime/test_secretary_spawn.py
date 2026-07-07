@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 from roboco.agents_config import (
@@ -15,6 +16,9 @@ from roboco.runtime.orchestrator import (
     AgentOrchestrator,
     _SecretaryRunSpec,
 )
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def _spec() -> _SecretaryRunSpec:
@@ -65,7 +69,9 @@ def test_resolve_secretary_host_paths_has_claude_and_prompt() -> None:
     assert SECRETARY_AGENT_ID in str(paths["prompt"])
 
 
-def test_secretary_token_signs_over_real_team_not_empty(monkeypatch) -> None:
+def test_secretary_token_signs_over_real_team_not_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The secretary token must verify against the (id, role, team) the
     secretary driver actually sends. secretary_driver._headers sends
     X-Agent-Team = get_agent_team(uuid) = the secretary's real team ("board"),
@@ -82,6 +88,6 @@ def test_secretary_token_signs_over_real_team_not_empty(monkeypatch) -> None:
     token = issue_agent_token(agent_uuid, "secretary", team)  # mirrors spawn line
     # secretary_driver._headers sends X-Agent-ID=uuid, role=secretary,
     # X-Agent-Team=get_agent_team(uuid).
-    assert verify_agent_token(
-        token, agent_uuid, "secretary", get_agent_team(agent_uuid)
-    )
+    agent_team = get_agent_team(agent_uuid)
+    assert agent_team is not None
+    assert verify_agent_token(token, agent_uuid, "secretary", agent_team)

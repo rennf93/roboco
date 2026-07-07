@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -8,7 +9,12 @@ from roboco.api import deps as d
 from roboco.api.deps import get_current_agent_slug
 
 
-async def _run(dep, headers, settings_on, monkeypatch):
+async def _run(
+    dep: Any,
+    headers: dict[str, str],
+    settings_on: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Any:
     monkeypatch.setattr(d.settings, "cloud_auth_enabled", settings_on)
     db = AsyncMock()
     response = AsyncMock()
@@ -31,7 +37,9 @@ async def _run(dep, headers, settings_on, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_cloud_auth_spoof_bare_agent_id_rejected(monkeypatch):
+async def test_cloud_auth_spoof_bare_agent_id_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # A bare X-Agent-ID with no token/cookie must not reach the gate body.
     monkeypatch.setattr(d.settings, "cloud_auth_enabled", True)
     db = AsyncMock()
@@ -55,7 +63,9 @@ async def test_cloud_auth_spoof_bare_agent_id_rejected(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_cloud_auth_routes_through_dual_path(monkeypatch):
+async def test_cloud_auth_routes_through_dual_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _, called = await _run(
         get_current_agent_slug, {"X-Agent-ID": "be-dev-1"}, True, monkeypatch
     )
@@ -63,7 +73,9 @@ async def test_cloud_auth_routes_through_dual_path(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_dev_mode_unchanged_slug_returns_header(monkeypatch):
+async def test_dev_mode_unchanged_slug_returns_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(d.settings, "cloud_auth_enabled", False)
     db = AsyncMock()
     response = AsyncMock()

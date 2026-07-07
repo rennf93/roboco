@@ -586,13 +586,13 @@ async def test_enrich_task_with_context_skips_project_when_not_requested() -> No
     assert enriched.project is None
 
 
-def test_substitute_request_has_no_suggested_role_or_team():
+def test_substitute_request_has_no_suggested_role_or_team() -> None:
     fields = SubstituteRequest.model_fields
     assert "suggested_role" not in fields
     assert "suggested_team" not in fields
 
 
-def test_substitute_request_keeps_reason_and_details():
+def test_substitute_request_keeps_reason_and_details() -> None:
     fields = SubstituteRequest.model_fields
     assert "reason" in fields
     assert "details" in fields

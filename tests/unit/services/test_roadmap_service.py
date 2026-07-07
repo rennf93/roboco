@@ -301,7 +301,7 @@ async def test_maybe_complete_cycle_emits_audit(db_session: AsyncSession) -> Non
     await svc.approve_item(_id(task), "item-0", created_by=CEO_UUID)
     assert task.status == TS.PENDING  # one item still proposed
     await svc.reject_item(_id(task), "item-1", "not now")
-    assert task.status == TS.COMPLETED  # both items terminal
+    assert cast("TS", task.status) == TS.COMPLETED  # both items terminal
 
     rows = (
         (

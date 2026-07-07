@@ -91,7 +91,11 @@ async def test_panel_read_routes_reject_no_credential_under_cloud_auth(
 ) -> None:
     monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", True)
     monkeypatch.delenv("ROBOCO_AGENT_AUTH_REQUIRED", raising=False)
-    r = await gated_client.get(path) if method == "GET" else gated_client.post(path)
+    r = (
+        await gated_client.get(path)
+        if method == "GET"
+        else await gated_client.post(path)
+    )
     assert r.status_code == _HTTP_401
 
 

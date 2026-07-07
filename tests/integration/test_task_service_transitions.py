@@ -3049,7 +3049,7 @@ async def _seed_pm_and_task(
         )
     )
     await db_session.flush()
-    return pm.id
+    return cast("UUID", pm.id)
 
 
 @pytest.mark.asyncio

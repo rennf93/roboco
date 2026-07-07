@@ -39,7 +39,7 @@ class _FakeWorkspace:
 
 def _make_engine(
     task_svc: Any, workspace: _FakeWorkspace | None = None
-) -> tuple[DepUpdateEngine, patch[Any, Any]]:
+) -> tuple[DepUpdateEngine, Any]:
     session = MagicMock()
     engine = DepUpdateEngine(session, workspace=workspace or _FakeWorkspace())
     patcher = patch(

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json as _json
 from base64 import urlsafe_b64decode
 from collections import Counter
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from roboco.agents_config import (
     A2A_ALLOWED_PAIRS,
@@ -343,7 +343,7 @@ def test_panel_token_does_not_grant_other_roles_or_identities(
 def _payload_of(token: str) -> dict[str, object]:
     pb = token.split(".", 1)[0]
     pad = "=" * (-len(pb) % 4)
-    return _json.loads(urlsafe_b64decode(pb + pad))
+    return cast("dict[str, object]", _json.loads(urlsafe_b64decode(pb + pad)))
 
 
 def test_issue_agent_token_with_ttl_uses_expiring_format(
