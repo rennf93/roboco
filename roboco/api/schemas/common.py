@@ -39,16 +39,6 @@ class ApiResponse[T](BaseModel):
     )
 
 
-class ListResponse[T](BaseModel):
-    """Standard list response with pagination metadata."""
-
-    items: list[T] = Field(default_factory=list, description="List of items")
-    total: int = Field(..., description="Total count of items")
-    has_more: bool = Field(default=False, description="Whether more items exist")
-    offset: int = Field(default=0, description="Current offset")
-    limit: int = Field(default=20, description="Items per page")
-
-
 # =============================================================================
 # HELPER FUNCTIONS
 # =============================================================================
