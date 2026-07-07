@@ -201,7 +201,7 @@ panel/ (Next.js 16, package roboco-panel v0.14.0)
 - `dep_update_enabled` — dependency-update bot
 - `release_manager_enabled` — gated release manager
 - `org_memory_enabled` — organizational memory loop
-- `sandbox_db_enabled` — sandboxed per-agent test DB/Redis
+- `sandbox_db_enabled` — sandboxed per-agent test DB/Redis/Mongo (engine registry)
 - `x_engine_enabled` — X (Twitter) engine (release-post + mention-reply drafts, all CEO-held)
 - `roadmap_engine_enabled` — board roadmap engine (weekly Product-Owner-authored cycle)
 - `routing_strict` — fail-closed model routing (refuse to silently downgrade to the legacy Anthropic path on a disabled provider)

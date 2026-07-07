@@ -65,10 +65,10 @@ from roboco.models.runtime import (
     AgentInstance,
     OrchestratorAgentConfig,
     OrchestratorAgentState,
-    SandboxInfo,
     SpawnGitContext,
     WaitingRecord,
 )
+from roboco.models.sandbox import SandboxInfo
 from roboco.runtime.sandbox import SandboxProvisioner
 from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.task import (
@@ -2842,46 +2842,18 @@ class AgentOrchestrator:
 
     @staticmethod
     def _append_sandbox_env(cmd: list[str], config: AgentConfig) -> None:
-        """Inject sandbox DB/Redis env, in place of the prod-creds gate env.
+        """Inject sandbox engine env, in place of the prod-creds gate env.
 
-        Called INSTEAD OF `_append_gate_env` whenever a sandbox was
-        provisioned for this spawn (`config.sandbox_info` set) — sandbox
-        replaces, never coexists with, the production gate-env injection.
-        Reuses the `ROBOCO_TEST_DB_*` names so a project's conftest already
-        following that convention needs no change; `ROBOCO_TEST_REDIS_*` is
-        new.
+        Called INSTEAD OF `_append_gate_env` whenever a sandbox was provisioned
+        for this spawn (`config.sandbox_info` set) — sandbox replaces, never
+        coexists with, the production gate-env injection. Emission is driven by
+        the engine registry via `SandboxInfo.emit_env`, so a new engine's
+        `ROBOCO_TEST_*` vars land here with no orchestrator change.
         """
         info = config.sandbox_info
         if info is None:
             return
-        if info.postgres is not None:
-            pg = info.postgres
-            cmd.extend(
-                [
-                    "-e",
-                    f"ROBOCO_TEST_DB_HOST={pg.host}",
-                    "-e",
-                    f"ROBOCO_TEST_DB_PORT={pg.port}",
-                    "-e",
-                    f"ROBOCO_TEST_DB_USER={pg.user}",
-                    "-e",
-                    f"ROBOCO_TEST_DB_PASSWORD={pg.password}",
-                    "-e",
-                    f"ROBOCO_TEST_DB_ADMIN_DB={pg.database}",
-                ]
-            )
-        if info.redis is not None:
-            rd = info.redis
-            cmd.extend(
-                [
-                    "-e",
-                    f"ROBOCO_TEST_REDIS_HOST={rd.host}",
-                    "-e",
-                    f"ROBOCO_TEST_REDIS_PORT={rd.port}",
-                    "-e",
-                    f"ROBOCO_TEST_REDIS_PASSWORD={rd.password}",
-                ]
-            )
+        cmd.extend(info.emit_env())
 
     @staticmethod
     def _default_spawn_prompt() -> str:

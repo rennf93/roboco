@@ -266,7 +266,7 @@ Panel-tunable flags defined in `services/settings.py:46` `FEATURE_FLAGS` (stored
 | `dep_update_enabled` | Dependency-update bot | `ROBOCO_DEP_UPDATE_ENABLED` |
 | `release_manager_enabled` | Gated release manager | `ROBOCO_RELEASE_MANAGER_ENABLED` |
 | `org_memory_enabled` | Organizational memory loop | `ROBOCO_ORG_MEMORY_ENABLED` |
-| `sandbox_db_enabled` | Sandboxed per-agent test DB/Redis | `ROBOCO_SANDBOX_DB_ENABLED` |
+| `sandbox_db_enabled` | Sandboxed per-agent test DB/Redis/Mongo (engine registry) | `ROBOCO_SANDBOX_DB_ENABLED` |
 | `x_engine_enabled` | X (Twitter) engine | `ROBOCO_X_ENGINE_ENABLED` |
 | `roadmap_engine_enabled` | Board roadmap engine | `ROBOCO_ROADMAP_ENGINE_ENABLED` |
 

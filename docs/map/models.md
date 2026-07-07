@@ -206,7 +206,7 @@ models/
 
 ## Config Flags
 
-None — pure models, no flags. (The `Project` model *carries* opt-in fields `ci_watch_enabled`, `dep_update_command`, `dep_update_paths`, `sandbox_services` (project.py:142, validated against `VALID_SANDBOX_SERVICES` — sandboxed dev DB/Redis, gated by `ROBOCO_SANDBOX_DB_ENABLED` elsewhere) that other layers gate on, and `llm_catalog` carries the "pure Ollama" defaults, but the models package itself reads no env / toggles nothing.)
+None — pure models, no flags. (The `Project` model *carries* opt-in fields `ci_watch_enabled`, `dep_update_command`, `dep_update_paths`, `sandbox_services` (project.py:142, validated against `VALID_SANDBOX_SERVICES` — sandboxed dev DB/Redis/Mongo, gated by `ROBOCO_SANDBOX_DB_ENABLED` elsewhere) that other layers gate on, and `llm_catalog` carries the "pure Ollama" defaults, but the models package itself reads no env / toggles nothing.) `VALID_SANDBOX_SERVICES` is now derived from the `SANDBOX_ENGINES` registry in `roboco/models/sandbox.py` (was a hardcoded `{"postgres","redis"}` set) — mongo is just another registry entry, no new migration (rides existing 057) and no new feature flag.
 
 ## Gotchas
 

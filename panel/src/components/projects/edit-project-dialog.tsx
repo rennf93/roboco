@@ -34,6 +34,12 @@ const cells: { value: Team; label: string }[] = [
   { value: Team.UX_UI, label: "UX/UI" },
 ];
 
+const SANDBOX_SERVICES = [
+  { id: "postgres", label: "PostgreSQL" },
+  { id: "redis", label: "Redis" },
+  { id: "mongo", label: "MongoDB" },
+] as const;
+
 interface EditProjectDialogProps {
   projectId: string;
   open: boolean;
@@ -86,11 +92,8 @@ function EditProjectForm({
     (project.dep_update_paths || []).join(", "),
   );
   const sandboxServices = project.sandbox_services || [];
-  const [sandboxPostgres, setSandboxPostgres] = useState(
-    sandboxServices.includes("postgres"),
-  );
-  const [sandboxRedis, setSandboxRedis] = useState(
-    sandboxServices.includes("redis"),
+  const [sandboxSet, setSandboxSet] = useState<Set<string>>(
+    new Set(sandboxServices),
   );
 
   // Token handling
@@ -131,10 +134,7 @@ function EditProjectForm({
             .map((p) => p.trim())
             .filter(Boolean)
         : undefined,
-      sandbox_services: [
-        ...(sandboxPostgres ? ["postgres"] : []),
-        ...(sandboxRedis ? ["redis"] : []),
-      ],
+      sandbox_services: [...sandboxSet],
     };
 
     // Handle token update
@@ -459,31 +459,30 @@ function EditProjectForm({
 
             <div className="grid gap-2">
               <Label>Sandbox Services</Label>
-              <div className="flex items-center justify-between">
-                <Label
-                  htmlFor="sandbox_postgres"
-                  className="text-sm font-normal"
-                >
-                  PostgreSQL
-                </Label>
-                <Switch
-                  id="sandbox_postgres"
-                  checked={sandboxPostgres}
-                  onCheckedChange={setSandboxPostgres}
-                />
-              </div>
-              <div className="flex items-center justify-between">
-                <Label htmlFor="sandbox_redis" className="text-sm font-normal">
-                  Redis
-                </Label>
-                <Switch
-                  id="sandbox_redis"
-                  checked={sandboxRedis}
-                  onCheckedChange={setSandboxRedis}
-                />
-              </div>
+              {SANDBOX_SERVICES.map((svc) => (
+                <div key={svc.id} className="flex items-center justify-between">
+                  <Label
+                    htmlFor={`sandbox_${svc.id}`}
+                    className="text-sm font-normal"
+                  >
+                    {svc.label}
+                  </Label>
+                  <Switch
+                    id={`sandbox_${svc.id}`}
+                    checked={sandboxSet.has(svc.id)}
+                    onCheckedChange={(checked) =>
+                      setSandboxSet((prev) => {
+                        const next = new Set(prev);
+                        if (checked) next.add(svc.id);
+                        else next.delete(svc.id);
+                        return next;
+                      })
+                    }
+                  />
+                </div>
+              ))}
               <p className="text-xs text-muted-foreground">
-                Provision a throwaway sandbox DB/Redis per agent spawn for
+                Provision a throwaway sandbox DB/Redis/Mongo per agent spawn for
                 this project instead of the production credentials.
               </p>
             </div>

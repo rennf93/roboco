@@ -8,6 +8,7 @@ with unique slugs so scenarios never collide on constraints.
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -158,6 +159,36 @@ def task_state(stack: E2EStack, task_id: Any) -> dict[str, Any]:
 
     state: dict[str, Any] = stack.run_db(_run)
     return state
+
+
+def wait_for_status(
+    stack: E2EStack,
+    task_id: Any,
+    expected: str,
+    *,
+    timeout: float = 10.0,
+    interval: float = 0.25,
+) -> dict[str, Any]:
+    """Poll ``task_state`` until ``status == expected`` or timeout.
+
+    The e2e stack commits on the uvicorn thread's event loop and reads via a
+    separate loop (``run_db`` -> ``asyncio.run`` with a fresh engine). A
+    terminal single point-read can race a still-draining completion hook on a
+    contended runner and observe a pre-terminal state; the bounded poll
+    absorbs that transient. A genuine state bug still surfaces: the timeout
+    branch asserts against the last-read state, so a real regression fails
+    loudly with the actual (non-terminal) state instead of a misleading
+    one-shot mismatch.
+    """
+    deadline = time.monotonic() + timeout
+    last: dict[str, Any] = {}
+    while True:
+        last = task_state(stack, task_id)
+        if last["status"] == expected:
+            return last
+        if time.monotonic() >= deadline:
+            assert last["status"] == expected, last
+        time.sleep(interval)
 
 
 def dispatcher_assign(stack: E2EStack, task_id: Any, agent_id: Any) -> None:

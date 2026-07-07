@@ -86,7 +86,7 @@ Env-gated subsystems. Most are default-off; `ROBOCO_OVERLOAD_BREAK_ENABLED`, `RO
 | `ROBOCO_PR_GATE_AUTO_SUBMIT_ENABLED` | `true` | PR-gate turn cut: when every child of an assembled parent is terminal, run the real `submit_up` / `submit_root` system-side as the owning PM (`_try_auto_submit`) instead of spawning the PM for that turn — the submit's substance (freshness rebase, integrity check, PR open) is deterministic gate code. A gate rejection falls back to the classic PM closure spawn; the PM keeps the judgment turns (merge, revision). Each auto-submit leaves a `task.auto_submitted` audit row. Off = every closure spawns the PM to submit. |
 | `ROBOCO_SPAWN_PREFLIGHT_ENABLED` | `false` | Refuse to spawn a non-human delivery role absent from `GATEWAY_ENABLED_ROLES` (no manifest → can never claim → would respawn on the same task forever); refuse + alert the overseer once instead. Inert in practice (all delivery roles are gateway-enabled). Armed on the NAS composes. |
 | `ROBOCO_NOTIFICATION_SPAWN_COOLDOWN_SECONDS` | `600` | Cross-tick damper for notification-triggered spawns (escalation/approval/audit/a2a — task-less, so the readiness gate and respawn breaker never see them): one spawn per (agent, notification) per window; the notification stays pending so the next window retries. `0` = legacy every-tick respawn. |
-| `ROBOCO_SANDBOX_DB_ENABLED` | `false` | Sandboxed per-agent-spawn test DB/Redis: throwaway `postgres:16-alpine` / `redis:8-alpine` sibling containers, per-project opt-in. See "Sandboxed Dev DB/Redis" below and `docs/rag/architecture/sandbox-db.md`. |
+| `ROBOCO_SANDBOX_DB_ENABLED` | `false` | Sandboxed per-agent-spawn test DB/Redis/Mongo: throwaway sibling containers provisioned from the engine registry in `roboco/models/sandbox.py` (postgres:16-alpine / redis:8-alpine / mongo:8-alpine), per-project opt-in. The valid-service set is `VALID_SANDBOX_SERVICES` (registry-derived). See "Sandboxed Dev DB/Redis/Mongo" below and `docs/rag/architecture/sandbox-db.md`. |
 | `ROBOCO_X_ENGINE_ENABLED` | `false` | The X (Twitter) engine: draft release/mention posts, ALL held for per-post CEO approval. See "X (Twitter) Engine" below and `docs/rag/architecture/x-engine.md`. |
 | `ROBOCO_ROADMAP_ENGINE_ENABLED` | `false` | The board roadmap engine: weekly Product-Owner-authored cycle, CEO approves each item individually into BACKLOG. See "Board Roadmap Engine" below. |
 
@@ -144,13 +144,13 @@ The fan-out generalizations of self-heal — they watch any opted-in project, no
 | `ROBOCO_IMAGE_PRUNE_ENABLED` | `true` | Background sweep prunes dangling (`<none>`) Docker images from agent-image rebuilds (only dangling; ~6h throttle). Always-on safety net, not a feature flag |
 | `ROBOCO_IMAGE_PRUNE_INTERVAL_SECONDS` | `21600` | Minimum seconds between dangling-image prune passes |
 
-## Sandboxed Dev DB/Redis
+## Sandboxed Dev DB/Redis/Mongo
 
-Per-agent-spawn throwaway Postgres/Redis, replacing (never coexisting with) the legacy prod-creds gate-env injection for an opted-in project. Default-off; see `docs/rag/architecture/sandbox-db.md`.
+Per-agent-spawn throwaway Postgres/Redis/Mongo, replacing (never coexisting with) the legacy prod-creds gate-env injection for an opted-in project. Default-off; see `docs/rag/architecture/sandbox-db.md`.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ROBOCO_SANDBOX_DB_ENABLED` | `false` | Master switch. Off = spawning behaves exactly as today (the legacy `_append_gate_env` prod-creds injection, itself gated by `ROBOCO_TOOLCHAIN_MATCH_ENABLED`). Only projects with their `sandbox_services` column set (migration `057`) participate even when on. |
+| `ROBOCO_SANDBOX_DB_ENABLED` | `false` | Master switch. Off = spawning behaves exactly as today (the legacy `_append_gate_env` prod-creds injection, itself gated by `ROBOCO_TOOLCHAIN_MATCH_ENABLED`). Only projects with their `sandbox_services` column set (migration `057`) participate even when on. The valid service set is `VALID_SANDBOX_SERVICES` in `roboco/models/sandbox.py` (registry-derived: postgres / redis / mongo); adding an engine is one class + one registry line, no orchestrator edit. Env injected per engine: `ROBOCO_TEST_DB_*`, `ROBOCO_TEST_REDIS_*`, `ROBOCO_TEST_MONGO_*` (incl. `ROBOCO_TEST_MONGO_AUTH_DB=admin`). |
 
 ## X (Twitter) Engine
 

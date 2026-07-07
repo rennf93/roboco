@@ -12,12 +12,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
-from roboco.models.runtime import (
-    OrchestratorAgentConfig,
-    PostgresSandbox,
-    RedisSandbox,
-    SandboxInfo,
-)
+from roboco.models.runtime import OrchestratorAgentConfig
+from roboco.models.sandbox import SandboxConnection, SandboxInfo
 from roboco.runtime.orchestrator import AgentOrchestrator
 
 
@@ -32,16 +28,18 @@ def _config(sandbox_info: SandboxInfo | None = None) -> OrchestratorAgentConfig:
 
 def test_append_sandbox_env_injects_postgres_and_redis() -> None:
     info = SandboxInfo(
-        postgres=PostgresSandbox(
-            host="roboco-sandbox-pg-dev-1",
-            port=5432,
-            user="sandbox",
-            password="pgpw",
-            database="sandbox",
-        ),
-        redis=RedisSandbox(
-            host="roboco-sandbox-redis-dev-1", port=6379, password="rdpw"
-        ),
+        services={
+            "postgres": SandboxConnection(
+                host="roboco-sandbox-pg-dev-1",
+                port=5432,
+                password="pgpw",
+                user="sandbox",
+                database="sandbox",
+            ),
+            "redis": SandboxConnection(
+                host="roboco-sandbox-redis-dev-1", port=6379, password="rdpw"
+            ),
+        }
     )
     cmd: list[str] = []
     AgentOrchestrator._append_sandbox_env(cmd, _config(info))
@@ -58,19 +56,44 @@ def test_append_sandbox_env_injects_postgres_and_redis() -> None:
 
 def test_append_sandbox_env_postgres_only_omits_redis_vars() -> None:
     info = SandboxInfo(
-        postgres=PostgresSandbox(
-            host="roboco-sandbox-pg-dev-1",
-            port=5432,
-            user="sandbox",
-            password="pgpw",
-            database="sandbox",
-        )
+        services={
+            "postgres": SandboxConnection(
+                host="roboco-sandbox-pg-dev-1",
+                port=5432,
+                password="pgpw",
+                user="sandbox",
+                database="sandbox",
+            )
+        }
     )
     cmd: list[str] = []
     AgentOrchestrator._append_sandbox_env(cmd, _config(info))
 
     assert "ROBOCO_TEST_DB_HOST=roboco-sandbox-pg-dev-1" in cmd
     assert not any(v.startswith("ROBOCO_TEST_REDIS_") for v in cmd)
+
+
+def test_append_sandbox_env_injects_mongo() -> None:
+    info = SandboxInfo(
+        services={
+            "mongo": SandboxConnection(
+                host="roboco-sandbox-mongo-dev-1",
+                port=27017,
+                password="mpw",
+                user="sandbox",
+                database="admin",
+            )
+        }
+    )
+    cmd: list[str] = []
+    AgentOrchestrator._append_sandbox_env(cmd, _config(info))
+
+    assert "ROBOCO_TEST_MONGO_HOST=roboco-sandbox-mongo-dev-1" in cmd
+    assert "ROBOCO_TEST_MONGO_PORT=27017" in cmd
+    assert "ROBOCO_TEST_MONGO_USER=sandbox" in cmd
+    assert "ROBOCO_TEST_MONGO_PASSWORD=mpw" in cmd
+    assert "ROBOCO_TEST_MONGO_AUTH_DB=admin" in cmd
+    assert not any(v.startswith("ROBOCO_TEST_DB_") for v in cmd)
 
 
 def test_append_sandbox_env_noop_without_sandbox_info() -> None:
@@ -120,9 +143,11 @@ async def test_spawn_container_uses_sandbox_env_when_sandbox_active(
     _stub_spawn_container_collaborators(monkeypatch, orch, calls)
 
     info = SandboxInfo(
-        postgres=PostgresSandbox(
-            host="h", port=5432, user="sandbox", password="pw", database="sandbox"
-        )
+        services={
+            "postgres": SandboxConnection(
+                host="h", port=5432, password="pw", user="sandbox", database="sandbox"
+            )
+        }
     )
     await orch._spawn_container(_config(info))
 
@@ -155,9 +180,11 @@ async def test_spawn_container_stale_clear_spares_fresh_sandbox(
     monkeypatch.setattr(orch, "_remove_container", remove)
 
     info = SandboxInfo(
-        postgres=PostgresSandbox(
-            host="h", port=5432, user="sandbox", password="pw", database="sandbox"
-        )
+        services={
+            "postgres": SandboxConnection(
+                host="h", port=5432, password="pw", user="sandbox", database="sandbox"
+            )
+        }
     )
     await orch._spawn_container(_config(info))
 
