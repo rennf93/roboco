@@ -160,7 +160,7 @@ function TasksPageContent() {
     [updateParams],
   );
 
-  // Fetch all tasks and filter client-side for multi-select
+  // Fetch tasks (server-filtered for single-select status/team) + client-side multi-select extras
   // Debounced server-side search: title + description + id prefix. The
   // old client-side title-only filter hid description/id matches the
   // server now returns, so it is gone.
