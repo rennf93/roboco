@@ -4850,7 +4850,11 @@ class Choreographer:
         which is a strict subset of `AGENT_UUIDS` — so any AGENT_UUIDS
         check here was unreachable.
         """
-        if parent.project_id is None and getattr(parent, "product_id", None) is None:
+        if (
+            parent.project_id is None
+            and getattr(parent, "product_id", None) is None
+            and not getattr(parent, "cell_projects", None)
+        ):
             return Envelope.invalid_state(
                 message="parent task has neither a project_id nor a product_id",
                 remediate=(
