@@ -24,6 +24,7 @@ from tests.e2e_smoke.harness import build_e2e_stack
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from sqlalchemy.ext.asyncio import AsyncSession
     from tests.e2e_smoke.harness import E2EStack
 
 
@@ -36,6 +37,60 @@ def pytest_collection_modifyitems(
     for item in items:
         if "tests/e2e_smoke" in str(item.path):
             item.add_marker(skip)
+
+
+@pytest.fixture(autouse=True)
+def _reset_lazy_db_holder() -> Iterator[None]:
+    """Drop the app's lazy ``_DbHolder`` engine/factory between e2e tests.
+
+    Async smoke tests that drive production code using the global lazy engine
+    (``get_db_context`` / ``get_session_factory``) rebind ``_DbHolder`` to
+    their own function-scoped event loop. If a test leaves the holder bound to
+    its (now-dead) loop, the next consumer on a different loop — the uvicorn
+    server thread handling the next test's API call, or the next test itself —
+    reuses a factory bound to a dead loop and asyncpg raises
+    ``RuntimeError: ... Future ... attached to a different loop``. Resetting
+    to ``None`` here makes every test start unbound so the first consumer
+    rebinds to its own loop. Disposal is intentionally not done here: an
+    engine bound to the uvicorn thread's loop cannot be awaited away from it.
+    """
+    yield
+    from roboco.db import base as db_base
+
+    db_base._DbHolder.engine = None
+    db_base._DbHolder.session_factory = None
+
+
+@pytest.fixture(autouse=True)
+def _isolate_per_test_tables(e2e_stack: E2EStack) -> Iterator[None]:
+    """Wipe the e2e DB between tests so per-test seeds never leak across tests.
+
+    ``seed_company`` is session-cached and the canonical dev/qa/pm/... agent
+    rows are shared across every test by deterministic slug. A task any test
+    leaves ``pending`` assigned to that shared dev leaks into the session DB,
+    and the next test's ``give_me_work`` returns the leaked task instead of its
+    just-seeded one (the state-machine cascade: 8 tests got stale task "A"
+    from a prior test). The e2e app has no startup seed data, so the only
+    persisted state is what each test seeds. Truncating every table (agents
+    included — ``agents.current_task_id`` FK-references ``tasks``, so the
+    cycle means CASCADE on a partial set would wipe agents anyway) and
+    invalidating ``_COMPANY_CACHE`` gives complete per-test isolation: each
+    test re-seeds fresh canonical agents with new UUIDs against a clean DB.
+    """
+    yield
+
+    from roboco.db.base import Base
+    from sqlalchemy import text
+    from tests.e2e_smoke.arcs import _COMPANY_CACHE
+
+    names = [t.name for t in Base.metadata.sorted_tables]
+    stmt = text(f"TRUNCATE TABLE {', '.join(names)} RESTART IDENTITY CASCADE")
+
+    async def _truncate(session: AsyncSession) -> None:
+        await session.execute(stmt)
+
+    e2e_stack.run_db(_truncate)
+    _COMPANY_CACHE.clear()
 
 
 @pytest.fixture(scope="session")

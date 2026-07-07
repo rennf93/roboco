@@ -58,6 +58,10 @@ def _land_child(
         f"child PR should target the cell branch: {child_pr['base']} / {child}"
     )
 
+    # The dispatcher's _dispatch_pm_review_work lane re-claims an
+    # awaiting_pm_review leaf for the owning cell PM before spawning it
+    # (_claim_task_for_agent); the complete guard requires assigned_to==PM.
+    dispatcher_assign(stack, h["child_id"], company.cell_pm_id)
     pm = ScriptedAgent(stack, company.cell_pm_id, "be-pm", "cell_pm")
     expect_ok(
         pm.flow(
