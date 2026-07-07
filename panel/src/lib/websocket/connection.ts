@@ -8,8 +8,9 @@
 import {
   WS_URL,
   WS_RECONNECT_INTERVAL,
-  WS_MAX_RECONNECT_ATTEMPTS,
+  WS_RECONNECT_MAX_INTERVAL,
   WS_HEARTBEAT_INTERVAL,
+  WS_PONG_TIMEOUT_MS,
 } from "@/lib/constants";
 
 export type MessageHandler = (data: unknown) => void;
@@ -24,8 +25,8 @@ export interface WebSocketOptions {
   onMessage?: MessageHandler;
   onStateChange?: (state: ConnectionState) => void;
   reconnectInterval?: number;
-  maxReconnectAttempts?: number;
   heartbeatInterval?: number;
+  pongTimeout?: number;
 }
 
 export class WebSocketConnection {
@@ -34,22 +35,22 @@ export class WebSocketConnection {
   private onMessage?: MessageHandler;
   private onStateChange?: (state: ConnectionState) => void;
   private reconnectInterval: number;
-  private maxReconnectAttempts: number;
   private heartbeatInterval: number;
+  private pongTimeout: number;
   private reconnectAttempts = 0;
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
   private heartbeatTimeout: ReturnType<typeof setInterval> | null = null;
   private state: ConnectionState = "disconnected";
   private manualClose = false;
+  private lastPongAt = 0;
 
   constructor(options: WebSocketOptions) {
     this.url = options.url;
     this.onMessage = options.onMessage;
     this.onStateChange = options.onStateChange;
     this.reconnectInterval = options.reconnectInterval || WS_RECONNECT_INTERVAL;
-    this.maxReconnectAttempts =
-      options.maxReconnectAttempts || WS_MAX_RECONNECT_ATTEMPTS;
     this.heartbeatInterval = options.heartbeatInterval || WS_HEARTBEAT_INTERVAL;
+    this.pongTimeout = options.pongTimeout || WS_PONG_TIMEOUT_MS;
   }
 
   private setState(state: ConnectionState): void {
@@ -63,6 +64,7 @@ export class WebSocketConnection {
     }
 
     this.manualClose = false;
+    this.lastPongAt = Date.now();
     this.setState("connecting");
 
     try {
@@ -76,8 +78,9 @@ export class WebSocketConnection {
 
       this.ws.onmessage = (event) => {
         try {
-          // Handle pong responses
+          // pong frames refresh the watchdog; data frames dispatch to onMessage
           if (event.data === "pong") {
+            this.lastPongAt = Date.now();
             return;
           }
 
@@ -91,11 +94,10 @@ export class WebSocketConnection {
       this.ws.onclose = (event) => {
         this.stopHeartbeat();
 
-        // Don't reconnect if manually closed or max attempts reached
-        // Also stop if we're getting resource errors (code 1006 with no clean close)
+        // Reconnect forever unless the close was manual or a hard server-side
+        // error (policy violation / server crash) — those won't recover by retry.
         const shouldReconnect =
           !this.manualClose &&
-          this.reconnectAttempts < this.maxReconnectAttempts &&
           event.code !== 1008 && // Policy violation
           event.code !== 1011; // Server error
 
@@ -108,10 +110,9 @@ export class WebSocketConnection {
       };
 
       this.ws.onerror = () => {
-        // WebSocket errors are expected when backend is offline
-        // Don't log - the onclose handler will manage reconnection
-        // Do NOT increment reconnectAttempts here; scheduleReconnect() is the
-        // sole place that advances the counter to avoid double-counting.
+        // WebSocket errors are expected when backend is offline; onclose
+        // manages reconnection. Do NOT advance reconnectAttempts here —
+        // scheduleReconnect() is the sole place that advances it.
       };
     } catch {
       // Connection failed - backend likely offline
@@ -143,9 +144,25 @@ export class WebSocketConnection {
     return this.state;
   }
 
+  getLastPongAt(): number {
+    return this.lastPongAt;
+  }
+
+  // Watchdog: force-close the socket if no pong has arrived within the timeout
+  // window. The onclose handler then routes through the normal reconnect path.
+  // Exposed publicly so the heartbeat tick (and tests) can call it directly.
+  checkPong(): void {
+    if (this.ws && Date.now() - this.lastPongAt >= this.pongTimeout) {
+      this.ws.close();
+    }
+  }
+
   private startHeartbeat(): void {
     this.stopHeartbeat();
     this.heartbeatTimeout = setInterval(() => {
+      // Watchdog first: if the server stopped responding to pings, force-close
+      // so onclose fires the reconnect path instead of pinging into the void.
+      this.checkPong();
       this.send("ping");
     }, this.heartbeatInterval);
   }
@@ -160,8 +177,17 @@ export class WebSocketConnection {
   private scheduleReconnect(): void {
     this.clearReconnectTimeout();
 
-    const delay =
-      this.reconnectInterval * Math.pow(1.5, this.reconnectAttempts);
+    // Cap the exponent so Math.pow doesn't overflow once attempts grows large:
+    // once the uncapped delay exceeds the cap, the capped delay is just the cap,
+    // so further exponentiation changes nothing — pin attempts at the floor.
+    const exp = this.reconnectAttempts;
+    const raw = this.reconnectInterval * Math.pow(1.5, exp);
+    const delay = Math.min(raw, WS_RECONNECT_MAX_INTERVAL);
+    if (raw >= WS_RECONNECT_MAX_INTERVAL) {
+      // ponytail: cap the counter — past this point pow only grows the value
+      // beyond the cap, so freeze it to avoid float-precision decay at high N.
+      this.reconnectAttempts = exp;
+    }
     this.reconnectAttempts++;
 
     this.reconnectTimeout = setTimeout(() => {

@@ -24,7 +24,8 @@ function mockConstants(wsUrl: string) {
     DEFAULT_PAGE_SIZE: 20,
     MAX_PAGE_SIZE: 100,
     WS_RECONNECT_INTERVAL: 5000,
-    WS_MAX_RECONNECT_ATTEMPTS: 3,
+    WS_RECONNECT_MAX_INTERVAL: 30000,
+    WS_PONG_TIMEOUT_MS: 60000,
     WS_HEARTBEAT_INTERVAL: 30000,
     STREAM_MAX_MESSAGES: 100,
     NOTIFICATION_MAX_DISPLAY: 10,
@@ -115,3 +116,196 @@ describe("getWebSocketUrl — SSR fallback", () => {
     expect(getWebSocketUrl()).toBe("/ws");
   });
 });
+
+// ---------------------------------------------------------------------------
+// WebSocketConnection — pong watchdog + long-tail reconnect (C4)
+//
+// jsdom doesn't ship a real WebSocket. Stub the constructor with a minimal
+// class that records handlers and lets the test drive open/close/message.
+// ---------------------------------------------------------------------------
+
+class MockWebSocket {
+  // WebSocket ready-state constants — `connection.ts` references WebSocket.OPEN
+  // for the early-return guard, so the stub must define them.
+  static CONNECTING = 0;
+  static OPEN = 1;
+  static CLOSING = 2;
+  static CLOSED = 3;
+  static instances: MockWebSocket[] = [];
+  static last(): MockWebSocket {
+    return MockWebSocket.instances[MockWebSocket.instances.length - 1];
+  }
+  url: string;
+  readyState = 0;
+  onopen: ((ev: Event) => void) | null = null;
+  onmessage: ((ev: MessageEvent) => void) | null = null;
+  onclose: ((ev: CloseEvent) => void) | null = null;
+  onerror: ((ev: Event) => void) | null = null;
+  closed = false;
+  constructor(url: string) {
+    this.url = url;
+    MockWebSocket.instances.push(this);
+  }
+  send() {}
+  close(code = 1006, reason = "") {
+    if (this.closed) return;
+    this.closed = true;
+    this.readyState = 3;
+    this.onclose?.(new CloseEvent("close", { code, reason, wasClean: false }));
+  }
+  fireOpen() {
+    this.readyState = 1;
+    this.onopen?.(new Event("open"));
+  }
+  fireMessage(data: string) {
+    this.onmessage?.({ data } as MessageEvent);
+  }
+}
+
+describe("WebSocketConnection — pong watchdog (C4)", () => {
+  beforeEach(() => {
+    MockWebSocket.instances = [];
+    vi.useFakeTimers();
+    vi.stubGlobal("WebSocket", MockWebSocket);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("tracks lastPongAt when a 'pong' frame arrives", async () => {
+    mockConstants("/ws");
+    const { WebSocketConnection } = await import("@/lib/websocket/connection");
+    const onStateChange = vi.fn();
+    const conn = new WebSocketConnection({
+      url: "ws://test/ws",
+      onStateChange,
+      heartbeatInterval: 30000,
+    });
+    conn.connect();
+    const ws = MockWebSocket.last();
+    ws.fireOpen();
+
+    const before = conn.getLastPongAt();
+    // A pong frame should refresh lastPongAt.
+    vi.advanceTimersByTime(1000);
+    ws.fireMessage("pong");
+    const after = conn.getLastPongAt();
+    expect(after).toBeGreaterThan(before);
+    // A data frame must NOT touch lastPongAt.
+    const dataBefore = conn.getLastPongAt();
+    ws.fireMessage(JSON.stringify({ type: "ping" }));
+    expect(conn.getLastPongAt()).toBe(dataBefore);
+  });
+
+  it("force-closes when no pong arrives within 2× heartbeat interval", async () => {
+    mockConstants("/ws");
+    const { WebSocketConnection } = await import("@/lib/websocket/connection");
+    const onStateChange = vi.fn();
+    const conn = new WebSocketConnection({
+      url: "ws://test/ws",
+      onStateChange,
+      heartbeatInterval: 30000,
+      // Use the default WS_PONG_TIMEOUT_MS (60000) — 2× heartbeat.
+    });
+    conn.connect();
+    const ws = MockWebSocket.last();
+    ws.fireOpen();
+
+    // No pong for 61s. The heartbeat tick checks the watchdog BEFORE sending
+    // ping; advancing past the 60s timeout (2× heartbeat) should force-close
+    // → onclose → the reconnect path fires (state → reconnecting). The tick at
+    // 30s passes (only 30s elapsed); the tick at 60s trips the watchdog.
+    vi.advanceTimersByTime(61000);
+    expect(ws.closed).toBe(true);
+    expect(onStateChange).toHaveBeenLastCalledWith("reconnecting");
+  });
+
+  it("does not force-close when pongs keep arriving", async () => {
+    mockConstants("/ws");
+    const { WebSocketConnection } = await import("@/lib/websocket/connection");
+    const conn = new WebSocketConnection({
+      url: "ws://test/ws",
+      onStateChange: vi.fn(),
+      heartbeatInterval: 30000,
+    });
+    conn.connect();
+    const ws = MockWebSocket.last();
+    ws.fireOpen();
+
+    // Each heartbeat tick: send ping, then a pong comes back well within the
+    // 60s watchdog window. Advance 3 ticks; socket must stay open.
+    for (let i = 0; i < 3; i++) {
+      vi.advanceTimersByTime(29000);
+      ws.fireMessage("pong");
+    }
+    expect(ws.closed).toBe(false);
+  });
+});
+
+describe("WebSocketConnection — long-tail reconnect (C4)", () => {
+  beforeEach(() => {
+    MockWebSocket.instances = [];
+    vi.useFakeTimers();
+    vi.stubGlobal("WebSocket", MockWebSocket);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps reconnecting past the old 3-attempt cap (no terminal 'disconnected')", async () => {
+    mockConstants("/ws");
+    const { WebSocketConnection } = await import("@/lib/websocket/connection");
+    const onStateChange = vi.fn();
+    const conn = new WebSocketConnection({
+      url: "ws://test/ws",
+      onStateChange,
+      reconnectInterval: 5000,
+    });
+    conn.connect();
+    // Drive 5 close→reconnect cycles — well past the old maxReconnectAttempts=3.
+    for (let i = 0; i < 5; i++) {
+      const ws = MockWebSocket.last();
+      actClose(ws, 1006);
+      // State must be 'reconnecting', never 'disconnected'.
+      expect(conn.getState()).toBe("reconnecting");
+      // Advance past the (capped) backoff so connect() runs and a fresh socket
+      // is constructed before the next close.
+      vi.advanceTimersByTime(35000);
+      const fresh = MockWebSocket.last();
+      fresh.fireOpen();
+    }
+    // A 6th reconnect is still scheduled — never gave up.
+    expect(conn.getState()).not.toBe("disconnected");
+  });
+
+  it("caps the backoff delay at WS_RECONNECT_MAX_INTERVAL", async () => {
+    mockConstants("/ws");
+    const { WebSocketConnection } = await import("@/lib/websocket/connection");
+    const conn = new WebSocketConnection({
+      url: "ws://test/ws",
+      onStateChange: vi.fn(),
+      reconnectInterval: 5000,
+    });
+    conn.connect();
+
+    // Burn through enough close→reconnect cycles that the uncapped delay would
+    // vastly exceed 30s. Use vi.getTimestampOfLastScheduledTimeout indirectly:
+    // advance 30s per cycle and assert a new socket is constructed each time
+    // (i.e. the delay never grew beyond the cap).
+    for (let i = 0; i < 8; i++) {
+      const ws = MockWebSocket.last();
+      actClose(ws, 1006);
+      // 30s is the cap: any longer delay would leave advanceTimersByTime short.
+      vi.advanceTimersByTime(30000);
+      expect(MockWebSocket.instances.length).toBeGreaterThanOrEqual(i + 2);
+      const fresh = MockWebSocket.last();
+      fresh.fireOpen();
+    }
+  });
+});
+
+function actClose(ws: MockWebSocket, code: number) {
+  ws.close(code, "");
+}
