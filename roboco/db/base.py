@@ -88,7 +88,12 @@ async def get_db() -> AsyncGenerator[AsyncSession]:
         try:
             yield session
             await session.commit()
-        except Exception:
+        except (Exception, asyncio.CancelledError):
+            # CancelledError is BaseException, so the bare `except Exception`
+            # did not catch it — a server-side asyncio.timeout cancelling a
+            # hung verb (FlowVerbTimeoutMiddleware) would otherwise leave the
+            # request transaction unrolled-back, holding its FOR UPDATE row
+            # lock. Roll back on cancellation too so the lock releases.
             await session.rollback()
             raise
 
@@ -107,7 +112,12 @@ async def get_db_context() -> AsyncGenerator[AsyncSession]:
         try:
             yield session
             await session.commit()
-        except Exception:
+        except (Exception, asyncio.CancelledError):
+            # CancelledError is BaseException, so the bare `except Exception`
+            # did not catch it — a server-side asyncio.timeout cancelling a
+            # hung verb (FlowVerbTimeoutMiddleware) would otherwise leave the
+            # request transaction unrolled-back, holding its FOR UPDATE row
+            # lock. Roll back on cancellation too so the lock releases.
             await session.rollback()
             raise
 
