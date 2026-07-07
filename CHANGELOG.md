@@ -35,6 +35,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **`_cherry_unmerged_entry` no longer hides a child's unmerged commits behind a "Reverts" commit (M39).** The marker grep matched any `[ID]` substring, so a `Reverts [ID]` commit satisfied the predicate and hid a child's unmerged commits from assembled-PR integrity. The grep is now anchored to `^\[{id[:8]}\] ` so only a real commit-prefix match counts.
 - **`update_pr_for_task` resolves the workspace agent from the actor, not `created_by` (L1).** `actor_agent_id` is now threaded through `update_pr_for_task` and `_resolve_workspace_agent_id` is narrowed to actor → assigned_to → None (created_by removed), so a PR update routes to the acting dev's workspace instead of the task creator's. Stale docstrings refreshed.
 - **`push(force=True)` uses `--force-with-lease` (L2).** A bare `--force` silently clobbered a concurrent remote advance. The push now uses `--force-with-lease`, so a concurrent push fails fast instead of being overwritten.
+- **`wait_for_ci` polls through the window on a non-success (H24).** A failed first attempt while a re-run was still in_progress blocked a real release. The poll now keeps going through the window; only `success` returns True and loop exhaustion returns False, so a re-run that flips the same commit green still publishes.
+- **Release mutex orphan-sweep on startup (H25).** A restart mid-execute orphaned the Redis mutex (TTL 3000s, no heartbeat); a CEO retry got `already_in_progress` for up to 50 min. `Orchestrator.start` now sweeps `roboco:release_proposal:*` keys whose owners aren't in the in-flight registry.
+- **TikTok rotated refresh-token survives a lock-loss rollback (M1).** `_refresh` now commits the rotated tokens in an independent session before returning; a lock-loss rollback of the caller's txn no longer discards them (TikTok already invalidated the old refresh_token → was a permanent credential lockout).
+- **X feature-spotlight re-arms past a stale exploration (M2).** An exploration left PENDING with no live HoM spawn no longer gates the engine silent; past `2*interval` + spawnless the stale one is cancelled and a fresh one originates.
+- **`reject()` refuses an already-COMPLETED held draft (M3).** Rejecting an already-posted X/video draft would set CANCELLED while the tweet/video is live — a lie. Both services now raise on COMPLETED.
+- **`list_completed_video_tasks` bounded (M4).** The render loop's scan is now `.order_by(created_at.desc()).limit(video_render_scan_limit)` (default 200) backed by `ix_tasks_source_status_created` (migration 066), instead of re-reading every completed video task ever each cycle.
+- **X `edited_body` write deferred into the single-flight lock (M5).** The CEO's edit no longer flushes before the COMPLETED check; it's applied to the re-read row inside the lock, so a concurrent approve that already posted can't have the edit land on the just-posted task.
+- **X `_mark_seen` after the meaningful + project checks (M6).** A low-engagement mention is no longer permanently marked seen; one that later goes viral is still draftable.
+- **X mentions persist `since_id` (M7).** The engine persists the highest fetched mention id in Redis and passes it on the next fetch, so a burst >50 between ticks isn't silently dropped.
+- **Release gate scoped to the read-clone HEAD (M8).** `_production_assess` passes `head_sha=<read-clone HEAD>` so a stale older-commit CI run can't read "green" while HEAD's CI is in_progress; a missing HEAD falls to unknown (no proposal).
+- **`_run_git` 30s timeout (M9).** A hung git child in the release-readiness sweep now bubbles a clear error instead of hanging the thread silently.
+- **dep_update dedupe by `(git_url, dep_update_command)` (M10).** A monorepo with two distinct commands gets one open task per command, not one for the repo blocking the second ecosystem's drift.
+- **Engine-loop liveness watchdog (M11).** Each engine loop records a heartbeat; `_check_health` alerts when last-success stalls past `2*interval`, so a silently-died cycle task is diagnosable.
+- **Video render loop commits per-task (M21).** A raise mid-cycle no longer rolls back prior renders or re-originates a second held video_post draft on the next pass.
+- **`_detect_stuck_tasks` skips held-CEO-source tasks (M22).** A held release/x/video draft sitting PENDING is no longer auto-blocked, wedging the held-artifact flow.
+- **`video_renderer_client._save` temp + atomic rename (L6).** A re-render can no longer clobber the MP4 the panel is streaming mid-read.
+- **`_commits_since` split maxsplit 2 (L9).** A `\x1f` embedded in a commit subject/body no longer garbles the CHANGELOG line.
+- **`self_heal` fingerprint documented as by-design per-signal (L11).** The per-signal (not per-run) fingerprint is the dedup's intent; a documenting comment records the acceptance so a future reader doesn't "fix" it into a bug.
+- **Release heartbeat shares one redis client (L34).** The ~40 `redis.from_url` pools per release (one per heartbeat tick) collapse to one client per approve.
+- **dep_update folds redundant per-project queries (L35).** `run_cycle` fetches open tasks once; `_eligible` checks membership in-memory.
+- **CI-watch telemetry sweep parallelized (L36).** `MultiProjectCITelemetrySource.fetch` gathers per-project samples so one slow GitHub 429 doesn't stall the sweep.
 
 ### Security
 
