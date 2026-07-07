@@ -5202,6 +5202,7 @@ class AgentOrchestrator:
                     last_status=record.get("last_status"),
                     last_check=record["last_check"],
                     tracing_resets=int(record.get("tracing_resets", 0)),
+                    revisit_resets=int(record.get("revisit_resets", 0)),
                     notified=bool(record.get("notified", False)),
                     updated_at=now,
                 )
@@ -5215,6 +5216,7 @@ class AgentOrchestrator:
                         "last_status": stmt.excluded.last_status,
                         "last_check": stmt.excluded.last_check,
                         "tracing_resets": stmt.excluded.tracing_resets,
+                        "revisit_resets": stmt.excluded.revisit_resets,
                         "notified": stmt.excluded.notified,
                         "updated_at": stmt.excluded.updated_at,
                     },
@@ -6512,6 +6514,7 @@ class AgentOrchestrator:
                 "last_status": norm,
                 "last_check": restore_now,
                 "tracing_resets": r.tracing_resets,
+                "revisit_resets": r.revisit_resets,
                 "notified": r.notified,
             }
         return restored, stale
