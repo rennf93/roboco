@@ -87,9 +87,87 @@ describe("XCredentialsForm", () => {
       }),
     );
     await waitFor(() =>
-      expect(
-        (screen.getByLabelText("API key") as HTMLInputElement).value,
-      ).toBe(""),
+      expect((screen.getByLabelText("API key") as HTMLInputElement).value).toBe(
+        "",
+      ),
     );
+  });
+
+  // M43: when credentials are already stored, leaving all 4 fields blank and
+  // clicking Save is a destructive clear — it must open an AlertDialog and
+  // only fire setCredentials on confirm. A normal all-4-filled save fires
+  // immediately with no dialog.
+  it("a clear (all 4 blank + has_credentials) opens a confirm dialog and defers the mutation until confirmed", async () => {
+    getCredentialsStatus.mockResolvedValueOnce({ has_credentials: true });
+    render(withQueryClient(<XCredentialsForm />));
+    await screen.findByText("Credentials are set");
+
+    // All 4 blank + has_credentials => Save is enabled (canSave true).
+    const saveButton = screen.getByRole("button", { name: "Save" });
+    expect(saveButton).not.toBeDisabled();
+
+    fireEvent.click(saveButton);
+
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toBeInTheDocument();
+
+    // Mutation is NOT fired until the operator confirms.
+    expect(setCredentials).not.toHaveBeenCalled();
+
+    // Confirm → mutation fires with the all-empty (clear) payload.
+    fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+    await waitFor(() =>
+      expect(setCredentials).toHaveBeenCalledWith({
+        api_key: "",
+        api_secret: "",
+        access_token: "",
+        access_token_secret: "",
+      }),
+    );
+  });
+
+  it("a normal all-4-filled save fires immediately without a confirm dialog", async () => {
+    render(withQueryClient(<XCredentialsForm />));
+    await screen.findByText("No credentials configured");
+
+    fireEvent.change(screen.getByLabelText("API key"), {
+      target: { value: "ak" },
+    });
+    fireEvent.change(screen.getByLabelText("API key secret"), {
+      target: { value: "as" },
+    });
+    fireEvent.change(screen.getByLabelText("Access token"), {
+      target: { value: "at" },
+    });
+    fireEvent.change(screen.getByLabelText("Access token secret"), {
+      target: { value: "ats" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(setCredentials).toHaveBeenCalledWith({
+        api_key: "ak",
+        api_secret: "as",
+        access_token: "at",
+        access_token_secret: "ats",
+      }),
+    );
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
+  it("a clear confirm dialog cancel does NOT fire the mutation", async () => {
+    getCredentialsStatus.mockResolvedValueOnce({ has_credentials: true });
+    render(withQueryClient(<XCredentialsForm />));
+    await screen.findByText("Credentials are set");
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument(),
+    );
+    expect(setCredentials).not.toHaveBeenCalled();
   });
 });

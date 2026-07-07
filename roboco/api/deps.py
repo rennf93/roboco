@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import contextlib
 import os
+import time
 from typing import TYPE_CHECKING, Annotated, Any
 from uuid import UUID
 
+import jwt
 import structlog
 from fastapi import Cookie, Depends, Header, HTTPException, Response, status
 from sqlalchemy import select
@@ -428,15 +430,44 @@ async def _header_trust_agent_context(
     )
 
 
-async def _slide_session_cookie(response: Response, user: UserTable) -> None:
-    """Re-mint + re-set the session cookie — the sliding 30-day window.
+async def _slide_session_cookie(
+    response: Response, user: UserTable, session_cookie: str | None
+) -> None:
+    """Re-mint + re-set the session cookie only when it's near expiry.
 
-    Called on every request that authenticated via a valid session cookie, so
-    an in-use session's expiry keeps rolling forward; only genuine inactivity
-    past cloud_auth_cookie_max_age logs the CEO out.
+    Re-minting on every request made a stolen cookie's exp roll forward with
+    the legitimate user — so a stolen cookie was valid as long as the user was
+    active. Now the cookie is touched only inside the remint threshold; outside
+    it the exp stays fixed, bounding a stolen cookie to its issued lifetime.
     """
+    if session_cookie and not _should_remint(session_cookie):
+        return
     token = await get_jwt_strategy().write_token(user)
     cookie_transport._set_login_cookie(response, token)
+
+
+def _should_remint(token: str) -> bool:
+    """True when the cookie's exp is within the remint threshold of now.
+
+    Decodes without signature verification (the cookie already authenticated
+    via read_token); on any decode failure returns True (safe default — re-mint
+    rather than silently serve a cookie we can't reason about).
+    """
+    try:
+        data = jwt.decode(
+            token,
+            options={
+                "verify_signature": False,
+                "verify_exp": False,
+                "verify_aud": False,
+            },
+        )
+        exp = data.get("exp")
+        if isinstance(exp, (int, float)):
+            return (exp - time.time()) < settings.cloud_auth_remint_threshold_seconds
+    except Exception:
+        return True
+    return True
 
 
 async def _cloud_auth_agent_context(
@@ -492,7 +523,7 @@ async def _cloud_auth_agent_context(
                 "Cloud auth is enabled — a valid session or agent token is required."
             ),
         )
-    await _slide_session_cookie(response, user)
+    await _slide_session_cookie(response, user, session_cookie)
     return AgentContext(
         agent_id=UUID(CEO_AGENT_ID),
         role=AgentRole.CEO,

@@ -49,6 +49,38 @@ export interface A2ASystemMessage {
 // Generic WebSocket Hook
 // =============================================================================
 
+// C4: ref-counted shared connection per URL. Two consumers of /ws/system (the
+// A2A live view + the rate-limit banner) used to each open their own socket;
+// now they share one. The shared conn fans out messages + state to a Set of
+// subscribers. Module-level so separate trees share the same registry.
+interface SharedConn {
+  conn: WebSocketConnection;
+  subscribers: Set<{
+    onMessage: (data: unknown) => void;
+    onStateChange: (state: ConnectionState) => void;
+  }>;
+}
+const _sharedSockets = new Map<string, SharedConn>();
+
+// Test-only: clear the module-level registry between tests so a prior test's
+// un-unmounted socket doesn't leak into the next. No-op in production.
+export function _resetSharedSocketsForTest() {
+  for (const entry of _sharedSockets.values()) entry.conn.disconnect();
+  _sharedSockets.clear();
+}
+
+function _dispatchMessage(url: string, data: unknown) {
+  const entry = _sharedSockets.get(url);
+  if (!entry) return;
+  for (const sub of entry.subscribers) sub.onMessage(data);
+}
+
+function _dispatchState(url: string, state: ConnectionState) {
+  const entry = _sharedSockets.get(url);
+  if (!entry) return;
+  for (const sub of entry.subscribers) sub.onStateChange(state);
+}
+
 export function useWebSocket<T>(
   endpoint: string,
   queryParams?: Record<string, string>,
@@ -58,6 +90,7 @@ export function useWebSocket<T>(
   const [lastMessage, setLastMessage] = useState<T | null>(null);
   const [messages, setMessages] = useState<T[]>([]);
   const connectionRef = useRef<WebSocketConnection | null>(null);
+  const urlRef = useRef<string | null>(null);
 
   // Memoize queryParams string to prevent unnecessary reconnects
   const queryString = queryParams
@@ -74,10 +107,9 @@ export function useWebSocket<T>(
     const baseUrl = getWebSocketUrl();
     const url = baseUrl + endpoint + (queryString ? "?" + queryString : "");
 
-    // Create connection
-    const connection = new WebSocketConnection({
-      url,
-      onMessage: (data) => {
+    // Subscriber for this mount — its callbacks write THIS hook's React state.
+    const subscriber = {
+      onMessage: (data: unknown) => {
         const message = data as T;
         setLastMessage(message);
         setMessages((prev) => [
@@ -86,18 +118,47 @@ export function useWebSocket<T>(
         ]);
       },
       onStateChange: setState,
-    });
+    };
 
-    connectionRef.current = connection;
-    connection.connect();
+    let entry = _sharedSockets.get(url);
+    if (entry) {
+      // Reuse: attach to the existing conn's fan-out. Replay current state so
+      // the new subscriber's UI doesn't sit on "disconnected" until the next
+      // state change. Route through the subscriber callback (not setState
+      // directly) — same path the conn's onStateChange uses, so the new
+      // subscriber mirrors the existing subscribers' current view.
+      entry.subscribers.add(subscriber);
+      subscriber.onStateChange(entry.conn.getState());
+    } else {
+      // First subscriber for this URL — open the shared conn with fan-out
+      // dispatchers that iterate the subscriber set.
+      const conn = new WebSocketConnection({
+        url,
+        onMessage: (data) => _dispatchMessage(url, data),
+        onStateChange: (s) => _dispatchState(url, s),
+      });
+      entry = { conn, subscribers: new Set([subscriber]) };
+      _sharedSockets.set(url, entry);
+      conn.connect();
+    }
+    connectionRef.current = entry.conn;
+    urlRef.current = url;
 
-    // Cleanup on unmount or when dependencies change. Disconnect AND clear the
-    // snapshot — otherwise a dep change (navigating to another stream) leaves
-    // the prior subscription's messages/lastMessage/state visible until a fresh
-    // frame arrives, surfacing another stream's stale buffer as live (#79).
+    // Cleanup on unmount or when dependencies change. Decrement the refcount;
+    // only disconnect + drop the registry entry when the last subscriber
+    // leaves. Always clear THIS subscriber's local snapshot (#79) so a dep
+    // change can't surface another stream's stale buffer as live.
     return () => {
-      connection.disconnect();
+      const current = _sharedSockets.get(url);
+      if (current) {
+        current.subscribers.delete(subscriber);
+        if (current.subscribers.size === 0) {
+          current.conn.disconnect();
+          _sharedSockets.delete(url);
+        }
+      }
       connectionRef.current = null;
+      urlRef.current = null;
       setMessages([]);
       setLastMessage(null);
       setState("disconnected");
@@ -105,8 +166,14 @@ export function useWebSocket<T>(
   }, [enabled, endpoint, queryString]); // Stable dependencies
 
   const disconnect = useCallback(() => {
+    // ponytail: manual verb tears down the shared conn for ALL subscribers of
+    // this URL and evicts the dead entry so a later mount reopens a fresh conn
+    // instead of reusing a manualClose=true stub that never reconnects.
+    const url = urlRef.current;
     connectionRef.current?.disconnect();
+    if (url) _sharedSockets.delete(url);
     connectionRef.current = null;
+    urlRef.current = null;
     setState("disconnected");
   }, []);
 

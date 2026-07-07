@@ -19,6 +19,7 @@ import pytest_asyncio
 from roboco.db.tables import AgentTable, ProjectTable
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import (
+    BlockerResolverType,
     Complexity,
     SubstituteReason,
     TaskNature,
@@ -290,7 +291,7 @@ async def test_soft_block_task_for_agent_unauthorized_when_not_assignee(
         blocker_type="external",
         reason="api creds",
         what_needed="aws key",
-        resolver_type_raw="agent",
+        resolver_type=BlockerResolverType.AGENT,
     )
     monkeypatch.setattr(
         "roboco.services.notification_delivery.get_notification_delivery_service",
@@ -301,10 +302,10 @@ async def test_soft_block_task_for_agent_unauthorized_when_not_assignee(
 
 
 @pytest.mark.asyncio
-async def test_soft_block_task_for_agent_invalid_resolver_falls_back(
+async def test_soft_block_task_for_agent_preserves_human_resolver(
     task_setup: dict, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Bad resolver_type_raw → AGENT default, soft_block still succeeds."""
+    """HUMAN resolver_type is forwarded unchanged (no silent AGENT downgrade)."""
     svc = task_setup["svc"]
     task = await svc.create(_req(task_setup))
     task.assigned_to = task_setup["agent_id"]
@@ -324,10 +325,11 @@ async def test_soft_block_task_for_agent_invalid_resolver_falls_back(
         blocker_type="external",
         reason="x",
         what_needed="y",
-        resolver_type_raw="garbage",
+        resolver_type=BlockerResolverType.HUMAN,
     )
     out = await svc.soft_block_task_for_agent(task.id, agent_ctx, req)
     assert out.status == TaskStatus.BLOCKED
+    assert out.blocker_resolver_type == BlockerResolverType.HUMAN
     fake_delivery.notify_pm_of_block.assert_awaited_once()
 
 
@@ -365,7 +367,7 @@ async def test_soft_block_task_for_agent_pm_blocks_other_task(
         blocker_type="external",
         reason="r",
         what_needed="w",
-        resolver_type_raw="human",
+        resolver_type=BlockerResolverType.HUMAN,
     )
     out = await svc.soft_block_task_for_agent(task.id, agent_ctx, req)
     assert out.status == TaskStatus.BLOCKED
@@ -389,7 +391,7 @@ async def test_soft_block_task_for_agent_validation_when_not_in_progress(
         blocker_type="external",
         reason="r",
         what_needed="w",
-        resolver_type_raw="agent",
+        resolver_type=BlockerResolverType.AGENT,
     )
     with pytest.raises(ValidationError):
         await svc.soft_block_task_for_agent(task.id, agent_ctx, req)

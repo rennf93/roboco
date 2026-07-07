@@ -529,7 +529,17 @@ class WorkSessionService(BaseService):
         Returns:
             The updated session or None if not found
         """
-        work_session = await self.get(session_id)
+        # Lock the row FOR UPDATE before the status check so two concurrent
+        # merge_pr calls (retried CEO double-click racing PM auto-complete)
+        # serialize — only one writes merged_by / pr_merged_at. `of=...` scopes
+        # the lock to WorkSessionTable because project/agent are lazy="joined",
+        # else Postgres rejects FOR UPDATE on the nullable join side.
+        lock_result = await self.session.execute(
+            select(WorkSessionTable)
+            .where(WorkSessionTable.id == session_id)
+            .with_for_update(of=WorkSessionTable)
+        )
+        work_session = lock_result.scalar_one_or_none()
         if not work_session:
             return None
 

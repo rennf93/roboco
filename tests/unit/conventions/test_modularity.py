@@ -117,6 +117,59 @@ def test_thin_routes_flags_stream_and_stream_scalars() -> None:
     assert "thin_routes" in rules
 
 
+def test_thin_routes_allows_set_cache_add() -> None:
+    # `seen_tags.add(tag)` and `cache.add(k, v)` are NOT DB calls — must not trip.
+    rules = _py(
+        "from fastapi import APIRouter\n"
+        "router = APIRouter()\n"
+        "@router.get('/x')\n"
+        "def x():\n"
+        "    seen_tags.add('t')\n"
+        "    cache.add('k', 'v')\n"
+        "    return []\n"
+    )
+    assert "thin_routes" not in rules
+
+
+def test_thin_routes_still_flags_db_add() -> None:
+    # `db.add(obj)` IS a DB call — must still trip.
+    rules = _py(
+        "from fastapi import APIRouter\n"
+        "router = APIRouter()\n"
+        "@router.get('/x')\n"
+        "def x(db):\n"
+        "    db.add(obj)\n"
+        "    return []\n"
+    )
+    assert "thin_routes" in rules
+
+
+def test_thin_routes_still_flags_session_add_all_and_merge() -> None:
+    # `session.add_all(...)` / `session.merge(...)` on a session handle still trip.
+    rules = _py(
+        "from fastapi import APIRouter\n"
+        "router = APIRouter()\n"
+        "@router.get('/x')\n"
+        "def x(session):\n"
+        "    session.add_all([obj])\n"
+        "    session.merge(other)\n"
+        "    return []\n"
+    )
+    assert "thin_routes" in rules
+
+
+def test_thin_routes_still_flags_execute_unambiguous() -> None:
+    # The unambiguous methods still trip on attribute match alone (regression guard).
+    rules = _py(
+        "from fastapi import APIRouter\n"
+        "router = APIRouter()\n"
+        "@router.get('/x')\n"
+        "def x(db):\n"
+        "    return db.execute('select 1')\n"
+    )
+    assert "thin_routes" in rules
+
+
 # --- Thin components: data fetching belongs in a hook ----------------------- #
 
 

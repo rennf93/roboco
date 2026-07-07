@@ -14,6 +14,7 @@ original incident #11 the guard exists for).
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -79,6 +80,56 @@ async def test_genuinely_missing_child_stays_flagged() -> None:
     )
     entry = await svc._cherry_unmerged_entry(Path("/tmp"), "parent", child)
     assert entry == {"task_id": str(child.id)[:8], "title": "t", "unmerged": 1}
+
+
+@pytest.mark.asyncio
+async def test_revert_commit_referencing_child_marker_does_not_relief() -> None:
+    """A 'Reverts [CHILDID8] ...' commit references the child but isn't the
+    child's squash commit — the marker grep must anchor to the commit prefix
+    so a bare reference doesn't hide the child's real unmerged commits.
+
+    The log stub applies ``git log --grep <pat>`` as a real regex search per
+    line, so the anchored pattern is exercised behaviorally (an anchored
+    ``^...`` excludes the revert; a bare ``[id]`` would match it)."""
+    child = _child()
+    cid = str(child.id)[:8]
+    log_lines = [
+        f"4771bd71 [{cid}] real child squash commit (#190)\n",
+        f"abc12345 Reverts [{cid}] sibling revert (#200)\n",
+    ]
+    svc = GitService.__new__(GitService)
+
+    async def _run_git(_ws: Path, args: list[str], **_kw: Any) -> SimpleNamespace:
+        if args[0] == "rev-parse":
+            return SimpleNamespace(returncode=0, stdout="abc\n")
+        if args[0] == "cherry":
+            return SimpleNamespace(returncode=0, stdout="+ aaa\n")
+        if args[0] == "log":
+            pat = args[args.index("--grep") + 1]
+            # git log --grep matches the commit message, not the oneline SHA.
+            hits = [
+                ln
+                for ln in log_lines
+                if re.search(pat, ln.split(" ", 1)[1] if " " in ln else ln)
+            ]
+            return SimpleNamespace(returncode=0, stdout="".join(hits))
+        return SimpleNamespace(returncode=0, stdout="")
+
+    svc_any: Any = svc
+    svc_any._run_git = _run_git
+
+    # Revert-only: anchored grep excludes it → child stays flagged.
+    log_lines = [f"abc12345 Reverts [{cid}] sibling revert (#200)\n"]
+    entry = await svc._cherry_unmerged_entry(Path("/tmp"), "parent", child)
+    assert entry == {"task_id": cid, "title": "t", "unmerged": 1}
+
+    # Real marker present: anchored grep matches → squash-merge relief fires.
+    log_lines = [
+        f"4771bd71 [{cid}] real child squash commit (#190)\n",
+        f"abc12345 Reverts [{cid}] sibling revert (#200)\n",
+    ]
+    entry = await svc._cherry_unmerged_entry(Path("/tmp"), "parent", child)
+    assert entry is None
 
 
 @pytest.mark.asyncio

@@ -152,6 +152,10 @@ select = [
 # the LLM and bring back invented values like nature='standard'.
 "roboco/mcp/**/*.py" = ["PLC0415", "PLR0913"]
 "roboco/services/*.py" = ["PLC0415"]
+# confirm_live_batch carries the MegaTask confirm contract (title, drafts,
+# agent_id, project_ids, route, session_id) — same >5-kwarg rationale as the
+# gateway verb surfaces below.
+"roboco/services/prompter.py" = ["PLR0913"]
 # Gateway methods are typed verb surfaces — agent-facing kwargs reflect the
 # verb contract (task title, description, acceptance criteria, assignee, etc.). Bundling
 # into a dataclass hides the field-by-field schema the LLM needs at the
