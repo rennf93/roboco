@@ -424,6 +424,16 @@ class Settings(BaseSettings):
             "the cloud-auth login endpoint returns 429."
         ),
     )
+    agent_token_ttl_seconds: int = Field(
+        default=604800,
+        ge=60,
+        description=(
+            "Lifetime in seconds of an agent auth token minted at spawn "
+            "(default 7 days). Each spawn mints a fresh token with this TTL "
+            "so a stolen token is bounded; the static panel token is "
+            "unaffected. Refresh happens on every respawn."
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate_cloud_auth(self) -> "Settings":

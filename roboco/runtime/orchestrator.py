@@ -2779,7 +2779,12 @@ class AgentOrchestrator:
         # or the middleware rejects with "signature mismatch". AGENT_UUIDS
         # maps slug→UUID; fall back to the slug for custom agents not seeded.
         _agent_uuid = AGENT_UUIDS.get(config.agent_id, config.agent_id)
-        _token = issue_agent_token(_agent_uuid, _role, _team)
+        _token = issue_agent_token(
+            _agent_uuid,
+            _role,
+            _team,
+            ttl_seconds=settings.agent_token_ttl_seconds,
+        )
         cmd.extend(["-e", f"ROBOCO_AGENT_TOKEN={_token}"])
 
     @staticmethod

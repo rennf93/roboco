@@ -18,7 +18,11 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
-from roboco.agents_config import issue_agent_token
+from roboco.agents_config import (
+    AGENT_UUIDS,
+    issue_agent_token,
+    verify_agent_token,
+)
 from roboco.runtime.orchestrator import AgentOrchestrator
 
 
@@ -160,3 +164,17 @@ async def test_heal_kills_slug_env_container_with_slug_signed_token(
 
     assert n == 1
     assert removed == ["roboco-agent-be-dev-1"]
+
+
+def test_heal_accepts_expiring_format_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The heal verifier must accept the new {payload}.{sig} expiring token.
+
+    Task 1 made verify_agent_token format-agnostic; this pins it at the heal
+    call site so a post-deploy respawn with a ttl token isn't killed.
+    """
+    monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", "heal-secret")
+    uuid = AGENT_UUIDS.get("be-dev-1", "be-dev-1")
+    tok = issue_agent_token(uuid, "developer", "backend", ttl_seconds=3600)
+    assert verify_agent_token(tok, uuid, "developer", "backend") is True
