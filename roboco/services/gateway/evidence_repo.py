@@ -365,12 +365,19 @@ class EvidenceRepo:
 
     async def similar_memory(
         self, *, query: str, top_k: int, min_score: float
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, Any]:
         """Top-K institutional memory (distilled lessons + approved playbooks) for
         ``query``, above the relevance floor. Best-effort: any RAG failure (or a
-        local embed hiccup) returns [] so the briefing path never breaks. Only
-        results scoring >= ``min_score`` are kept — below the floor nothing is
-        injected (identical to today's briefing, no bloat)."""
+        local embed hiccup) returns ``status="error"`` so the briefing path never
+        breaks. Only results scoring >= ``min_score`` are kept — below the floor
+        nothing is injected (identical to today's briefing, no bloat).
+
+        Returns ``{"items": [...], "status": ...}`` where status is one of
+        ``ok`` (at least one result met the floor), ``below_floor`` (searched,
+        nothing met the floor), ``empty`` (search yielded nothing), ``error``
+        (search raised). Lets the briefing tell "searched, nothing" from "search
+        broke" — ponytail: empty conflates "index empty" with "no match"; split
+        when an agent ever needs to distinguish."""
         from roboco.models.optimal import IndexType, QueryContext
         from roboco.services.optimal import get_optimal_service
 
@@ -384,7 +391,10 @@ class EvidenceRepo:
                 top_k=top_k,
             )
         except Exception:
-            return []
+            return {"items": [], "status": "error"}
+
+        if not results:
+            return {"items": [], "status": "empty"}
 
         items: list[dict[str, Any]] = []
         for result in results:
@@ -403,4 +413,5 @@ class EvidenceRepo:
             )
             if len(items) >= top_k:
                 break
-        return items
+        status = "ok" if items else "below_floor"
+        return {"items": items, "status": status}

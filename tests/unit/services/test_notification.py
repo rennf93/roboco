@@ -59,6 +59,9 @@ class _FakeDb:
         else:
             result.scalar_one_or_none.return_value = None
         result.scalars.return_value.all.return_value = []
+        # _duplicate_unacked_exists runs `db.execute(...).all()` and iterates;
+        # an empty list ⇒ no exact-set-equal candidate ⇒ not suppressed.
+        result.all.return_value = []
         return result
 
     async def scalar(self, *_args: Any, **_kwargs: Any) -> Any:

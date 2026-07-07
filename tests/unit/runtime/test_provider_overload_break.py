@@ -403,3 +403,44 @@ async def test_stopped_container_parks_on_session_limit(
     )
     spawn.assert_not_awaited()  # crash-retry short-circuited
     overload.assert_not_awaited()  # session-limit checked before the overload path
+
+
+# ---------------------------------------------------------------------------
+# Ollama Cloud (glm-5.2:cloud) weekly limit — surfaces as a 429 in docker logs
+# ---------------------------------------------------------------------------
+
+_OLLAMA_RATE_LIMIT_LOG = (
+    '{"error":"rate limit exceeded","message":"ollama.com weekly limit reached"}'
+)
+
+
+@pytest.mark.asyncio
+async def test_detects_ollama_cloud_rate_limit_marker(
+    orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "overload_break_enabled", True)
+    monkeypatch.setattr(
+        orch, "_tail_container_logs", AsyncMock(return_value=_OLLAMA_RATE_LIMIT_LOG)
+    )
+    assert (
+        await orch._provider_rate_limit_park_target(
+            "be-dev-1", _instance("ollama_cloud")
+        )
+        == "ollama_cloud"
+    )
+
+
+@pytest.mark.asyncio
+async def test_clean_ollama_output_is_not_a_rate_limit(
+    orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "overload_break_enabled", True)
+    monkeypatch.setattr(
+        orch, "_tail_container_logs", AsyncMock(return_value=_CLEAN_LOG)
+    )
+    assert (
+        await orch._provider_rate_limit_park_target(
+            "be-dev-1", _instance("ollama_cloud")
+        )
+        is None
+    )

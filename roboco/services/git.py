@@ -885,7 +885,7 @@ class GitService(BaseService):
                 await work_session_service.add_commit(
                     require_uuid(task.work_session_id), commit_hash
                 )
-            await self.session.commit()
+            await self.session.flush()
         except Exception as e:
             self.log.warning(
                 "Commit linking failed; commit present on branch but "
@@ -1415,7 +1415,9 @@ class GitService(BaseService):
 
         args = ["push", "-u", "origin", branch]
         if force:
-            args.insert(1, "--force")
+            # --force-with-lease fails fast on a concurrent remote advance
+            # instead of silently clobbering someone else's commits.
+            args.insert(1, "--force-with-lease")
 
         try:
             await self._run_git(
@@ -2549,6 +2551,7 @@ class GitService(BaseService):
         title: str | None = None,
         body: str | None = None,
         reviewers: list[str] | None = None,
+        actor_agent_id: UUID | None = None,
     ) -> dict[str, Any]:
         """Update an open PR's title/body and/or request reviewers.
 
@@ -2556,6 +2559,11 @@ class GitService(BaseService):
         through `_patch_pr_title_body` (when title or body is set) and
         `_post_pr_reviewers` (when reviewers is set). Either or both run;
         the verb layer guarantees at least one is provided.
+
+        ``actor_agent_id`` is the agent who actually performed the action
+        (e.g. a PM editing a dev's PR); it is threaded through to
+        workspace resolution so a creator who never cloned the project
+        is never selected as the workspace owner.
 
         Returns a dict with `pr_number`, `pr_url`, and a `updated_fields`
         list naming which of title/body/reviewers actually went out.
@@ -2574,7 +2582,7 @@ class GitService(BaseService):
         if project is None:
             raise NotFoundError("Project for task", str(task.id))
 
-        workspace_agent_id = self._resolve_workspace_agent_id(task, None)
+        workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
         workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
         owner, repo = self._parse_github_remote(workspace)
         git_token = await self._get_project_token_or_raise(project.slug)
@@ -2999,21 +3007,23 @@ class GitService(BaseService):
             # mirroring the agent-facing _merge_with_retry. Without this a
             # CEO retry raised GitError on the very master-merge path only the
             # CEO owns, surfacing a spurious failure for an action that had
-            # already succeeded.
-            if await self._pr_is_merged(owner, repo, pr_number, git_token):
-                self.log.info(
-                    "PR already merged on GitHub; treating as idempotent success",
-                    owner=owner,
-                    repo=repo,
-                    pr=pr_number,
-                    status_code=resp.status_code,
-                )
-            else:
+            # already succeeded. None (HTTPError — indeterminate) is treated
+            # as "assume merged" so a network blip can't surface a spurious
+            # failure on the CEO-only master-merge path.
+            merged = await self._pr_is_merged(owner, repo, pr_number, git_token)
+            if merged is False:
                 raise GitError(
                     f"GitHub API refused PR merge ({resp.status_code}):"
                     f" {resp.text[:200]}",
                     {"owner": owner, "repo": repo, "pr": pr_number},
                 )
+            self.log.info(
+                "PR already merged on GitHub; treating as idempotent success",
+                owner=owner,
+                repo=repo,
+                pr=pr_number,
+                status_code=resp.status_code,
+            )
 
         await self._delete_pr_branch_best_effort(owner, repo, pr_number, git_token)
 
@@ -3302,17 +3312,20 @@ class GitService(BaseService):
     ) -> UUID | None:
         """Workspace-agent resolution priority.
 
-        actor_agent_id → task.assigned_to → task.created_by → None.
+        actor_agent_id → task.assigned_to → None. The creator is NOT
+        consulted: a PM who created the task but never cloned the
+        project's workspace would 404 on get_workspace(PM-id), so
+        falling back to created_by manufactures a broken lookup.
+        Callers without a real actor get None (project.workspace_path).
         Centralised so push_branch/create_pr/commit/diff/pr_target/pr_merge
         share one chain — and individual methods stay below the
         cyclomatic-complexity gate (xenon B).
         """
-        candidate = actor_agent_id or (
-            UUID(str(task.assigned_to)) if task.assigned_to is not None else None
-        )
-        if candidate is None and task.created_by:
-            candidate = UUID(str(task.created_by))
-        return candidate
+        if actor_agent_id is not None:
+            return actor_agent_id
+        if task.assigned_to is not None:
+            return UUID(str(task.assigned_to))
+        return None
 
     async def _workspace_for_branch(
         self,
@@ -3323,10 +3336,10 @@ class GitService(BaseService):
         """Get a workspace where this branch can be operated on.
 
         Resolves the workspace via ``_resolve_workspace_agent_id`` (the
-        actor → assignee → creator fallback chain). Without it, post-
-        handoff calls (e.g. pr_target on a task whose assigned_to was
-        cleared by submit_qa) raise ValidationError when
-        project.workspace_path is unset.
+        actor → assignee → None fallback, with project.workspace_path as
+        the final fallback). Without it, post-handoff calls (e.g.
+        pr_target on a task whose assigned_to was cleared by submit_qa)
+        raise ValidationError when project.workspace_path is unset.
         """
         task = await self._task_for_branch(branch_name)
         if task is None:
@@ -3647,31 +3660,39 @@ class GitService(BaseService):
             # cycle, a sibling, or the CEO already landed it) is idempotent
             # success — NOT a conflict to rebase/escalate. Treating it as one is
             # the cell_pm_complete block<->unblock respawn loop, so disambiguate
-            # before raising.
-            if await self._pr_is_merged(
+            # before raising. None (HTTPError — indeterminate) is treated as
+            # "assume merged" so a network blip can't respawn the PM against an
+            # already-merged PR; only a clean False is a real conflict.
+            merged = await self._pr_is_merged(
                 ctx.owner, ctx.repo, ctx.pr_number, ctx.git_token
-            ):
-                return resp
-            # A real merge refusal (typically 405 "not mergeable") means the
-            # branch conflicts with the base — a sibling landed overlapping work
-            # first. Raise the specific subclass so the completion path can
-            # rebase / close-superseded / escalate instead of respawn-looping.
-            raise MergeConflictError(
-                f"GitHub API refused PR merge ({resp.status_code}): {resp.text[:200]}",
-                {"owner": ctx.owner, "repo": ctx.repo, "pr": ctx.pr_number},
             )
+            if merged is False:
+                # A real merge refusal (typically 405 "not mergeable") means the
+                # branch conflicts with the base — a sibling landed overlapping
+                # work first. Raise the specific subclass so the completion path
+                # can rebase / close-superseded / escalate instead of
+                # respawn-looping.
+                raise MergeConflictError(
+                    f"GitHub API refused PR merge ({resp.status_code}):"
+                    f" {resp.text[:200]}",
+                    {"owner": ctx.owner, "repo": ctx.repo, "pr": ctx.pr_number},
+                )
+            return resp
         return resp
 
     async def _pr_is_merged(
         self, owner: str, repo: str, pr_number: int, git_token: str
-    ) -> bool:
+    ) -> bool | None:
         """True if PR ``pr_number`` is already merged on GitHub.
 
         Disambiguates an already-merged PR from a genuine conflict (both surface
         as a 405 on the merge PUT): an already-merged PR is idempotent success,
-        not something to rebase/escalate. Best-effort — returns False on any
-        error so an indeterminate state falls through to the existing conflict
-        handling rather than masking a real failure.
+        not something to rebase/escalate. Returns ``None`` on an
+        ``httpx.HTTPError`` so an indeterminate lookup is NOT mistaken for a
+        clean "not merged" — callers treat ``None`` as "assume merged" and
+        fall through to the already-merged cleanup path instead of raising a
+        conflict and respawning the PM against an already-merged PR. A
+        non-success response is still False (GitHub answered, just not merged).
         """
         try:
             async with httpx.AsyncClient(timeout=_default_git_timeout()) as client:
@@ -3684,7 +3705,7 @@ class GitService(BaseService):
                     },
                 )
         except httpx.HTTPError:
-            return False
+            return None
         if not resp.is_success:
             return False
         return bool(resp.json().get("merged"))
@@ -3693,10 +3714,12 @@ class GitService(BaseService):
         """True if the task's PR is already merged on GitHub.
 
         Idempotency check for ``cell_pm_complete`` re-issues: a re-issue after
-        a None-complete would otherwise 405 on the already-merged PR. Best-
-        effort False on any HTTP/lookup failure — the caller treats False as
-        'merge needed' and proceeds to ``pr_merge`` (which surfaces the real
-        error). Mirrors ``_pr_is_merged``'s fail-safe posture.
+        a None-complete would otherwise 405 on the already-merged PR. An
+        indeterminate ``_pr_is_merged`` (``None`` on ``httpx.HTTPError``) is
+        treated as "assume merged" → ``True`` so the choreographer skips the
+        merge call instead of 405-ing into a respawn loop on an already-merged
+        PR. A clean False (GitHub answered, not merged) returns False — the
+        caller proceeds to ``pr_merge``, which surfaces the real error.
         """
         from sqlalchemy import select
 
@@ -3715,7 +3738,8 @@ class GitService(BaseService):
         workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
         git_token = await self._get_project_token_or_raise(project.slug)
         owner, repo = self._parse_github_remote(workspace)
-        return await self._pr_is_merged(owner, repo, task.pr_number, git_token)
+        merged = await self._pr_is_merged(owner, repo, task.pr_number, git_token)
+        return True if merged is None else bool(merged)
 
     async def pr_merge(
         self,
@@ -3863,7 +3887,19 @@ class GitService(BaseService):
         ``head_branch`` (with ``--force-with-lease``). The caller must ensure
         ``base_branch`` is not a protected/default branch — agents never
         rebase-merge into master.
+
+        Safety gate (mirrors :meth:`pull`): refuses on a dirty worktree so the
+        ``git reset --hard`` below can't discard uncommitted agent edits.
         """
+        status_result = await self._run_git(
+            workspace, ["status", "--porcelain"], check=False
+        )
+        if status_result.stdout.strip():
+            raise ValidationError(
+                "DIRTY_WORKSPACE: Cannot rebase with uncommitted changes. "
+                "Stage and commit (or stash) your changes before rebasing."
+            )
+
         await self._run_git(workspace, ["fetch", "origin"], token=git_token)
         await self._run_git(workspace, ["checkout", head_branch])
         await self._run_git(workspace, ["reset", "--hard", f"origin/{head_branch}"])
@@ -4072,7 +4108,7 @@ class GitService(BaseService):
                 "log",
                 f"origin/{parent_branch}",
                 "--grep",
-                rf"\[{str(child.id)[:8]}\]",
+                rf"^\[{str(child.id)[:8]}\] ",
                 "--oneline",
                 "-1",
             ],
@@ -4230,9 +4266,10 @@ class GitService(BaseService):
     ) -> str:
         """Return the current target (base) branch of an open PR.
 
-        Workspace resolution mirrors pr_merge: actor → assigned_to →
-        created_by. Lets the Main PM call pr_target after
-        ``submit_qa`` has cleared ``assigned_to`` without ValidationError.
+        Workspace resolution mirrors pr_merge: actor → assigned_to → None
+        (project.workspace_path as the final fallback). Lets the Main PM
+        call pr_target after ``submit_qa`` has cleared ``assigned_to``
+        without ValidationError.
 
         ``pr_number`` alone is ambiguous across projects (GitHub numbers PRs
         per-repo, but ``tasks.pr_number`` stores the bare integer with no repo
@@ -4772,7 +4809,7 @@ class GitService(BaseService):
         if not token:
             return unopened
         try:
-            await self.push(workspace)
+            await self.push(workspace, force=True)
             owner, repo = self._parse_github_remote(workspace)
             resp = await self._post_pr(
                 owner,

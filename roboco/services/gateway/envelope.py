@@ -157,8 +157,22 @@ class Envelope:
         )
 
     @classmethod
-    def not_found(cls, *, message: str) -> Envelope:
-        return cls(error="not_found", message=message, context_briefing={})
+    def not_found(
+        cls,
+        *,
+        message: str,
+        remediate: str = (
+            "Re-fetch the task via give_me_work / resume and re-issue "
+            "the verb against fresh state."
+        ),
+        context_briefing: dict[str, Any] | None = None,
+    ) -> Envelope:
+        return cls(
+            error="not_found",
+            message=message,
+            remediate=remediate,
+            context_briefing=context_briefing or {},
+        )
 
     @classmethod
     def circuit_open(

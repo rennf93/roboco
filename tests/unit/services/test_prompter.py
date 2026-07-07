@@ -11,12 +11,15 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
+from unittest.mock import patch
 from uuid import UUID, uuid4
 
 import pytest
+from sqlalchemy import select
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
 from roboco.db.tables import (
     AgentTable,
     ProductTable,
@@ -556,13 +559,15 @@ async def test_confirm_live_batch_builds_umbrella_and_sequenced_subtasks(
             "intends_to_touch": ["panel/src/widget.tsx"],
         },
     ]
-    result = await service.confirm_live_batch(
-        "Three things",
-        drafts,
-        ceo_id,
-        project_ids=[project1, project2],
-        route="main_pm",
-    )
+    with patch("roboco.services.prompter.redis.from_url", return_value=_FakeRedis()):
+        result = await service.confirm_live_batch(
+            "Three things",
+            drafts,
+            ceo_id,
+            project_ids=[project1, project2],
+            route="main_pm",
+            session_id="sess-builds",
+        )
 
     # A (migration) and C (independent) run in wave 0; B chains after A.
     assert result["waves"] == [[0, 2], [1]]
@@ -624,9 +629,15 @@ async def test_confirm_live_batch_board_route_holds_subtasks_in_backlog(
             "project_id": str(project2),
         },
     ]
-    result = await service.confirm_live_batch(
-        "Two repos", drafts, ceo_id, project_ids=[project1, project2], route="board"
-    )
+    with patch("roboco.services.prompter.redis.from_url", return_value=_FakeRedis()):
+        result = await service.confirm_live_batch(
+            "Two repos",
+            drafts,
+            ceo_id,
+            project_ids=[project1, project2],
+            route="board",
+            session_id="sess-board",
+        )
 
     umbrella = await db_session.get(TaskTable, UUID(result["umbrella_task_id"]))
     assert umbrella.team == Team.BOARD
@@ -643,7 +654,7 @@ async def test_confirm_live_batch_rejects_empty(db_session: Any) -> None:
     service = get_prompter_service(db=db_session)
     with pytest.raises(ValidationError):
         await service.confirm_live_batch(
-            "Empty", [], ceo_id, project_ids=[uuid4(), uuid4()]
+            "Empty", [], ceo_id, project_ids=[uuid4(), uuid4()], session_id="sess-empty"
         )
 
 
@@ -661,7 +672,12 @@ async def test_confirm_live_batch_rejects_draft_outside_scope(db_session: Any) -
     ]
     with pytest.raises(ValidationError, match="outside this MegaTask"):
         await service.confirm_live_batch(
-            "Scoped", drafts, ceo_id, project_ids=[project1, project2], route="main_pm"
+            "Scoped",
+            drafts,
+            ceo_id,
+            project_ids=[project1, project2],
+            route="main_pm",
+            session_id="sess-scope",
         )
 
 
@@ -682,6 +698,219 @@ async def test_confirm_live_batch_rejects_single_project(db_session: Any) -> Non
             ceo_id,
             project_ids=[project1, project2],
             route="main_pm",
+            session_id="sess-single",
+        )
+
+
+# -----------------------------------------------------------------------------
+# M13: confirm_live_batch idempotency guard (Redis SETNX + result sidecar)
+# -----------------------------------------------------------------------------
+
+
+class _FakeRedis:
+    """In-memory store backing set(nx=True, ex=...) + get + aclose for the
+    MegaTask confirm idempotency guard + result sidecar."""
+
+    def __init__(self) -> None:
+        self._store: dict[str, str] = {}
+        self.set_calls: list[tuple[str, str, bool, int]] = []
+
+    async def set(
+        self, name: str, value: str, *, nx: bool = False, ex: int = 0
+    ) -> bool:
+        self.set_calls.append((name, value, nx, ex))
+        if nx and name in self._store:
+            return False
+        self._store[name] = value
+        return True
+
+    async def get(self, name: str) -> str | None:
+        return self._store.get(name)
+
+    async def aclose(self) -> None:
+        return None
+
+
+def _make_batch_drafts(project1: UUID, project2: UUID) -> list[dict[str, Any]]:
+    """Minimal valid MegaTask batch: two drafts on two scoped projects."""
+    return [
+        {
+            "title": "A",
+            "acceptance_criteria": ["a"],
+            "team": "backend",
+            "project_id": str(project1),
+            "intends_to_touch": ["roboco/services/a.py"],
+        },
+        {
+            "title": "B",
+            "acceptance_criteria": ["b"],
+            "team": "frontend",
+            "project_id": str(project2),
+            "intends_to_touch": ["panel/src/b.tsx"],
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_confirm_live_batch_idempotent_on_retry(db_session: Any) -> None:
+    """A retry with the same session_id returns the first call's result and
+    does NOT mint a second umbrella + root-subtasks."""
+    project1, ceo_id = await _seed_project_and_ceo(db_session)
+    project2 = await _seed_second_project(db_session, ceo_id)
+    service = get_prompter_service(db=db_session)
+    drafts = _make_batch_drafts(project1, project2)
+    fake = _FakeRedis()
+    with patch("roboco.services.prompter.redis.from_url", return_value=fake):
+        r1 = await service.confirm_live_batch(
+            "Batch",
+            drafts,
+            ceo_id,
+            project_ids=[project1, project2],
+            route="main_pm",
+            session_id="sess-retry",
+        )
+        r2 = await service.confirm_live_batch(
+            "Batch",
+            drafts,
+            ceo_id,
+            project_ids=[project1, project2],
+            route="main_pm",
+            session_id="sess-retry",
+        )
+    assert r2["umbrella_task_id"] == r1["umbrella_task_id"]
+    assert r2["root_subtask_ids"] == r1["root_subtask_ids"]
+    # Exactly one umbrella + one set of root-subtasks exist for the session.
+    umbrellas = (
+        (
+            await db_session.execute(
+                select(TaskTable).where(
+                    TaskTable.parent_task_id.is_(None),
+                    TaskTable.batch_id.is_not(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(umbrellas) == 1
+    assert str(umbrellas[0].id) == r1["umbrella_task_id"]
+
+
+@pytest.mark.asyncio
+async def test_confirm_live_batch_in_progress_raises_when_sidecar_absent(
+    db_session: Any,
+) -> None:
+    """Guard held but no result sidecar (first call still mid-build) → raise
+    'already in progress'; no second build attempted."""
+    project1, ceo_id = await _seed_project_and_ceo(db_session)
+    project2 = await _seed_second_project(db_session, ceo_id)
+    service = get_prompter_service(db=db_session)
+    drafts = _make_batch_drafts(project1, project2)
+    fake = _FakeRedis()
+    fake._store["roboco:megatask_confirm:sess-inflight"] = "1"  # guard held, no sidecar
+    with (
+        patch("roboco.services.prompter.redis.from_url", return_value=fake),
+        pytest.raises(ServiceError, match="already in progress"),
+    ):
+        await service.confirm_live_batch(
+            "Batch",
+            drafts,
+            ceo_id,
+            project_ids=[project1, project2],
+            route="main_pm",
+            session_id="sess-inflight",
+        )
+
+
+@pytest.mark.asyncio
+async def test_confirm_live_batch_redis_unreachable_fails_closed(
+    db_session: Any,
+) -> None:
+    """Redis unreachable → ServiceError('idempotency guard unavailable'); no
+    build attempted (fail-closed, never fail-open)."""
+
+    class _BoomRedis:
+        async def set(self, *_a: Any, **_k: Any) -> bool:
+            raise OSError("redis down")
+
+        async def get(self, _name: str) -> str | None:
+            raise OSError("redis down")
+
+        async def aclose(self) -> None:
+            return None
+
+    def _boom_from_url(_url: str) -> _BoomRedis:
+        return _BoomRedis()
+
+    project1, ceo_id = await _seed_project_and_ceo(db_session)
+    project2 = await _seed_second_project(db_session, ceo_id)
+    service = get_prompter_service(db=db_session)
+    drafts = _make_batch_drafts(project1, project2)
+    with (
+        patch("roboco.services.prompter.redis.from_url", side_effect=_boom_from_url),
+        pytest.raises(ServiceError, match="idempotency guard unavailable"),
+    ):
+        await service.confirm_live_batch(
+            "Batch",
+            drafts,
+            ceo_id,
+            project_ids=[project1, project2],
+            route="main_pm",
+            session_id="sess-boom",
+        )
+
+
+# -----------------------------------------------------------------------------
+# M14: strip assigned_to from each sub-draft (no board-owned root-subtask deadlock)
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_confirm_live_batch_strips_assigned_to_from_drafts(
+    db_session: Any,
+) -> None:
+    """An LLM-authored draft carrying a hallucinated/injected board-role
+    ``assigned_to`` must NOT create a board-owned CODE root-subtask — a board
+    role has no dev delivery verbs, so it would deadlock the umbrella. The
+    root-subtasks are coordination roots; assignment is the PM-activation
+    flow's call, not the draft's."""
+    project1, ceo_id = await _seed_project_and_ceo(db_session)
+    project2 = await _seed_second_project(db_session, ceo_id)
+    service = get_prompter_service(db=db_session)
+    drafts = _make_batch_drafts(project1, project2)
+    # Inject a board-role assignee on every draft (a hallucinated PO uuid).
+    po_uuid = UUID(AGENT_UUIDS["product-owner"])
+    for d in drafts:
+        d["assigned_to"] = str(po_uuid)
+    fake = _FakeRedis()
+    with patch("roboco.services.prompter.redis.from_url", return_value=fake):
+        result = await service.confirm_live_batch(
+            "Batch",
+            drafts,
+            ceo_id,
+            project_ids=[project1, project2],
+            route="main_pm",
+            session_id="sess-m14",
+        )
+    # The caller's drafts are untouched (the strip is on the copy).
+    for d in drafts:
+        assert d["assigned_to"] == str(po_uuid)
+
+    roots = (
+        (
+            await db_session.execute(
+                select(TaskTable).where(
+                    TaskTable.id.in_([UUID(r) for r in result["root_subtask_ids"]])
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert roots, "expected root-subtasks to be created"
+    for r in roots:
+        assert r.assigned_to is None, (
+            f"root-subtask {r.id} wrongly assigned to {r.assigned_to}"
         )
 
 

@@ -9,6 +9,7 @@ from fastapi import APIRouter, status
 from roboco.api.schemas.health import HealthResponse, ReadinessResponse
 from roboco.config import settings
 from roboco.services.health import check_database, check_redis
+from roboco.services.rag_index_failures import count_failures
 
 router = APIRouter()
 
@@ -26,6 +27,7 @@ async def health_check() -> HealthResponse:
         status="ok",
         version=settings.app_version,
         environment=settings.environment,
+        failed_index_count=await count_failures(),
     )
 
 

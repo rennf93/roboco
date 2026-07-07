@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock
-from uuid import uuid4
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import UUID, uuid4
 
 import pytest
 from roboco.models.base import JournalEntryType
-from roboco.services.journal import JournalService
+from roboco.models.optimal import IndexJournalEntryParams
+from roboco.services.journal import JournalService, drain_rag_index_tasks
 
 
 def _service_with_count(count: int) -> JournalService:
@@ -197,3 +199,179 @@ async def test_latest_decision_at_filters_by_agent_id() -> None:
     svc = _service_with_scalar(None)
     out = await svc.latest_decision_at(uuid4(), uuid4())
     assert out is None
+
+
+# ---------------------------------------------------------------------------
+# delete_entry — C3: must de-index the entry from the RAG after the row
+# commit so deleted/private journal content stops bleeding into claim-time
+# briefings. Best-effort: a de-index failure never errors the delete.
+# ---------------------------------------------------------------------------
+
+
+def _entry(journal_id: UUID, entry_id: UUID) -> Any:
+    entry = MagicMock()
+    entry.id = entry_id
+    entry.journal_id = journal_id
+    entry.type = JournalEntryType.GENERAL
+    return entry
+
+
+def _journal(journal_id: UUID) -> Any:
+    journal = MagicMock()
+    journal.id = journal_id
+    journal.total_entries = 1
+    journal.entries_by_type = {JournalEntryType.GENERAL.value: 1}
+    return journal
+
+
+def _session_for_delete(entry: Any, journal: Any) -> Any:
+    """Session whose two queries return the entry then its journal, and
+    whose delete/commit are AsyncMocks."""
+    session = MagicMock()
+    result_entry = MagicMock()
+    result_entry.scalar_one_or_none.return_value = entry
+    result_journal = MagicMock()
+    result_journal.scalar_one_or_none.return_value = journal
+    session.execute = AsyncMock(side_effect=[result_entry, result_journal])
+    session.delete = AsyncMock()
+    session.commit = AsyncMock()
+    return session
+
+
+@pytest.mark.asyncio
+async def test_delete_entry_deindexes_after_commit() -> None:
+    """C3: delete_entry commits the row delete, then calls
+    unindex_journal_entry with the entry id so the RAG chunks + tracking
+    row are removed. The OptimalService singleton is patched so no real
+    pgvector round-trip happens."""
+    journal_id = uuid4()
+    entry_id = uuid4()
+    entry = _entry(journal_id, entry_id)
+    journal = _journal(journal_id)
+    session = _session_for_delete(entry, journal)
+    svc = JournalService(session)
+
+    optimal = MagicMock()
+    optimal.unindex_journal_entry = AsyncMock(return_value=None)
+    with (
+        patch(
+            "roboco.services.optimal.get_optimal_service",
+            AsyncMock(return_value=optimal),
+        ),
+    ):
+        out = await svc.delete_entry(entry_id)
+
+    assert out is True
+    session.commit.assert_awaited_once()
+    optimal.unindex_journal_entry.assert_awaited_once_with(entry_id)
+
+
+# ---------------------------------------------------------------------------
+# _schedule_rag_index — dead-letter on embedder failure
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_schedule_rag_index_dead_letters_on_failure() -> None:
+    """An embedder failure (e.g. Ollama 429) is persisted to the rag_index_failures
+    dead-letter instead of dropped. The fire-and-forget posture is preserved:
+    _schedule_rag_index returns without awaiting the index, and the caller's
+    commit is never blocked."""
+    session = MagicMock()
+    session.commit = AsyncMock()
+    svc = JournalService(session)
+
+    optimal = MagicMock()
+    optimal.index_journal_entry = AsyncMock(side_effect=RuntimeError("ollama 429"))
+    optimal.record_learning = AsyncMock(return_value=None)
+
+    params = IndexJournalEntryParams(
+        content="lesson learned",
+        entry_type=JournalEntryType.GENERAL.value,
+        entry_id=uuid4(),
+        agent_id=uuid4(),
+        task_id=uuid4(),
+        tags=["t"],
+    )
+
+    with (
+        patch(
+            "roboco.services.optimal.get_optimal_service",
+            AsyncMock(return_value=optimal),
+        ),
+        patch(
+            "roboco.services.rag_index_failures.persist_failure",
+            new=AsyncMock(),
+        ) as mock_persist,
+    ):
+        # Fire-and-forget: returns synchronously, does not await the index.
+        svc._schedule_rag_index(params, is_private=False)
+        await drain_rag_index_tasks()
+
+    # The failure was dead-lettered, not just logged.
+    mock_persist.assert_awaited_once()
+    call_args = mock_persist.await_args
+    assert call_args is not None
+    assert call_args.args[0] == "journal_entry"
+    payload = call_args.args[1]
+    assert payload["entry_id"] == str(params.entry_id)
+    assert payload["is_private"] is False
+    # The caller's commit was never touched by the index path.
+    session.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_schedule_rag_index_no_dead_letter_on_success() -> None:
+    """A successful index write does not persist a dead-letter row."""
+    session = MagicMock()
+    svc = JournalService(session)
+
+    optimal = MagicMock()
+    optimal.index_journal_entry = AsyncMock(return_value=None)
+    optimal.record_learning = AsyncMock(return_value=None)
+
+    params = IndexJournalEntryParams(
+        content="ok",
+        entry_type=JournalEntryType.GENERAL.value,
+        entry_id=uuid4(),
+    )
+
+    with (
+        patch(
+            "roboco.services.optimal.get_optimal_service",
+            AsyncMock(return_value=optimal),
+        ),
+        patch(
+            "roboco.services.rag_index_failures.persist_failure",
+            new=AsyncMock(),
+        ) as mock_persist,
+    ):
+        svc._schedule_rag_index(params, is_private=False)
+        await drain_rag_index_tasks()
+
+    mock_persist.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_delete_entry_swallows_deindex_failure() -> None:
+    """A de-index failure must not error the delete — the row is already
+    deleted, so the caller's contract (returns True) holds."""
+    journal_id = uuid4()
+    entry_id = uuid4()
+    entry = _entry(journal_id, entry_id)
+    journal = _journal(journal_id)
+    session = _session_for_delete(entry, journal)
+    svc = JournalService(session)
+
+    optimal = MagicMock()
+    optimal.unindex_journal_entry = AsyncMock(side_effect=RuntimeError("rag blew up"))
+    with (
+        patch(
+            "roboco.services.optimal.get_optimal_service",
+            AsyncMock(return_value=optimal),
+        ),
+    ):
+        out = await svc.delete_entry(entry_id)
+
+    assert out is True
+    session.commit.assert_awaited_once()

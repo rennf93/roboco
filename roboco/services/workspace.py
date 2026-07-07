@@ -256,35 +256,6 @@ def _ensure_lock_for(project_slug: str, agent_slug: str) -> asyncio.Lock:
     return lock
 
 
-def _inject_token_into_url(git_url: str, token: str | None) -> str:
-    """
-    Inject GitHub PAT into HTTPS git URL for authentication.
-
-    Args:
-        git_url: Original git URL (SSH or HTTPS)
-        token: GitHub PAT (if None, returns original URL)
-
-    Returns:
-        URL with embedded token for HTTPS, or original URL for SSH
-
-    Example:
-        https://github.com/org/repo.git -> https://TOKEN@github.com/org/repo.git
-    """
-    if not token:
-        return git_url
-
-    # Only inject for HTTPS URLs
-    if not git_url.startswith("https://"):
-        return git_url
-
-    # Check if token already present
-    if "@" in git_url.split("//")[1].split("/", maxsplit=1)[0]:
-        return git_url
-
-    # Inject token: https://github.com -> https://TOKEN@github.com
-    return re.sub(r"^https://", f"https://{token}@", git_url)
-
-
 class WorkspaceError(Exception):
     """Raised when workspace operations fail."""
 
@@ -1130,7 +1101,9 @@ class WorkspaceService:
                 error=str(exc),
             )
 
-    async def ensure_read_clone(self, project_slug: str) -> Path:
+    async def ensure_read_clone(
+        self, project_slug: str, *, force: bool = False
+    ) -> Path:
         """Ensure a project-level read clone pinned to the default branch's HEAD.
 
         The architectural-conventions standard is read from the committed
@@ -1141,6 +1114,9 @@ class WorkspaceService:
         ``origin/<default_branch>``, which makes destructive refresh safe. This
         is what lets the standard work for a project created before the standard
         existed: no manually-configured ``workspace_path`` is required.
+
+        ``force`` bypasses the 30s refresh TTL (conventions reads must reflect
+        the current default-branch HEAD, not a stale one).
         """
         from roboco.services.project import get_project_service
 
@@ -1157,7 +1133,7 @@ class WorkspaceService:
             if self._is_workspace_healthy(workspace):
                 now = _monotonic()
                 last = _read_clone_synced.get(str(workspace), -math.inf)
-                if (now - last) >= _READ_CLONE_FETCH_TTL_SECONDS:
+                if force or (now - last) >= _READ_CLONE_FETCH_TTL_SECONDS:
                     token = await self._read_clone_token(project_service, project_slug)
                     await asyncio.to_thread(self._prune_broken_refs, workspace)
                     await asyncio.to_thread(
@@ -1216,10 +1192,19 @@ class WorkspaceService:
         a PRIVATE repo — the refresh silently fails and the clone stays frozen at
         clone-time, never seeing commits merged afterwards. The read clone runs
         orchestrator-side and is never mounted into an agent container, so the
-        token is injected transiently into the fetch argv (mirroring the clone)
-        to keep a private repo current.
+        token is injected transiently via a per-call ``-c http.extraheader``
+        (mirroring ``_clone_repo``) — never URL-embedded into argv.
         """
-        auth_url = _inject_token_into_url(git_url, git_token)
+        fetch_prefix: list[str] = []
+        using_token = bool(git_token) and git_url.startswith("https://")
+        if using_token:
+            import base64
+
+            basic = base64.b64encode(f"x-access-token:{git_token}".encode()).decode()
+            fetch_prefix = [
+                "-c",
+                f"http.extraheader=Authorization: Basic {basic}",
+            ]
 
         def _git(*args: str) -> subprocess.CompletedProcess[str]:
             return subprocess.run(
@@ -1233,7 +1218,7 @@ class WorkspaceService:
         # Fetch tags: the release manager reads this same clone and derives
         # "commits since last release" from the newest tag — a tagless clone
         # makes git describe fail and it walks the entire history.
-        fetched = _git("fetch", "--tags", auth_url, default_branch)
+        fetched = _git(*fetch_prefix, "fetch", "--tags", git_url, default_branch)
         if fetched.returncode != 0:
             logger.warning(
                 "conventions read-clone fetch failed",
@@ -1268,16 +1253,29 @@ class WorkspaceService:
         # Create parent directories
         workspace.parent.mkdir(parents=True, exist_ok=True)
 
-        # Inject project-specific token for HTTPS URLs
-        auth_url = _inject_token_into_url(git_url, git_token)
+        # Inject project-specific token for HTTPS URLs. The token rides a
+        # per-call ``-c http.extraheader=Authorization: Basic …`` config
+        # (mirrors the fetch paths at :642 / :1889) so the PAT never lands
+        # in the clone argv — ``/proc/<pid>/cmdline`` would otherwise expose
+        # a URL-embedded token to any process on the host.
+        clone_prefix: list[str] = []
+        using_token = bool(git_token) and git_url.startswith("https://")
+        if using_token:
+            import base64
+
+            basic = base64.b64encode(f"x-access-token:{git_token}".encode()).decode()
+            clone_prefix = [
+                "-c",
+                f"http.extraheader=Authorization: Basic {basic}",
+            ]
 
         # Log without exposing token
         logger.info(
             "Cloning repository",
             workspace=str(workspace),
-            git_url=git_url,  # Log original URL, not auth URL
+            git_url=git_url,  # Log original URL, never the tokenized form
             branch=default_branch,
-            using_token=bool(git_token and auth_url != git_url),
+            using_token=using_token,
         )
 
         def _do_clone() -> subprocess.CompletedProcess[str]:
@@ -1293,11 +1291,12 @@ class WorkspaceService:
             return subprocess.run(
                 [
                     "git",
+                    *clone_prefix,
                     "clone",
                     "--branch",
                     default_branch,
                     "--no-tags",
-                    auth_url,
+                    git_url,
                     str(workspace),
                 ],
                 capture_output=True,
@@ -1307,19 +1306,15 @@ class WorkspaceService:
             )
 
         def _configure_git() -> None:
-            """Configure git author info + scrub embedded PAT from remote URL.
+            """Configure git author info for the clone.
 
-            The clone URL carries the PAT for authentication (`https://TOKEN@
-            github.com/...`), which `git clone` then writes into
-            `.git/config`. Leaving it there lets anyone with read access to
-            the workspace — including the agent inside its container — read
-            the token and exfiltrate or use it directly against GitHub,
-            bypassing the orchestrator's git service.
-
-            We keep push/fetch working by letting the orchestrator inject
-            the token just-in-time at the subprocess level (`-c
-            http.extraheader='Authorization: bearer TOKEN'`) when it needs
-            to hit origin; see GitService.
+            The clone URL is bare (no embedded PAT) — the token rode a
+            per-call ``-c http.extraheader`` config that git never writes
+            to ``.git/config``, so there is nothing to scrub. The
+            ``_assert_no_pat_leak`` sweep below is the belt-and-suspenders
+            check that the token never reached disk. Push/fetch against
+            origin re-inject the token just-in-time via the same
+            ``http.extraheader`` mechanism in GitService / the fetch paths.
             """
             name = agent.name if agent else "RoboCo Agent"
             slug = agent.slug if agent else "agent"
@@ -1348,15 +1343,6 @@ class WorkspaceService:
                 check=True,
                 capture_output=True,
             )
-
-            # Scrub embedded credentials from the remote URL.
-            if git_token and auth_url != git_url:
-                subprocess.run(
-                    ["git", "remote", "set-url", "origin", git_url],
-                    cwd=str(workspace),
-                    check=True,
-                    capture_output=True,
-                )
 
         def _assert_no_pat_leak() -> None:
             """Fail-fast if a PAT ended up anywhere under .git/ on disk.

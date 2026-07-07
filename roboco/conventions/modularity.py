@@ -55,6 +55,11 @@ _DB_METHODS = frozenset(
         "query",
     }
 )
+# `add`/`add_all`/`merge` are ambiguous (set.add, cache.add, etc.) — only a DB
+# hit when the receiver is a session handle. The other _DB_METHODS are unambiguous.
+_AMBIGUOUS_DB_METHODS = frozenset({"add", "add_all", "merge"})
+_SESSION_HANDLES = frozenset({"db", "session", "conn", "s"})
+
 _DB_CONSTRUCTS = frozenset({"select", "insert", "update", "delete"})
 
 # Data-fetching that belongs in a hook / query layer, not in a component body.
@@ -228,8 +233,20 @@ def _body_hits_db(func: Node) -> bool:
         if fn is None:
             continue
         if fn.type == "attribute":
-            if _text(fn.child_by_field_name("attribute")) in _DB_METHODS:
-                return True
+            method = _text(fn.child_by_field_name("attribute"))
+            if method in _DB_METHODS:
+                if method in _AMBIGUOUS_DB_METHODS:
+                    obj = fn.child_by_field_name("object")
+                    obj_name = (
+                        _text(obj)
+                        if obj is not None and obj.type == "identifier"
+                        else ""
+                    )
+                    if obj_name in _SESSION_HANDLES:
+                        return True
+                    # non-session receiver (seen_tags.add, cache.add) — not DB
+                else:
+                    return True
         elif fn.type == "identifier" and _text(fn) in _DB_CONSTRUCTS:
             return True
     return False

@@ -191,3 +191,21 @@ def test_main_prefers_run_log_session_id(
     monkeypatch.setenv("ROBOCO_AGENT_MODEL", "grok-build")
     assert gu.main() == 0
     assert json.loads(out.read_text())["total_tokens"] == 777  # noqa: PLR2004
+
+
+def test_main_warns_when_run_log_yields_no_session_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # RUN_LOG points at a malformed file; the env fallback id points at no
+    # store, so usage is 0 — but the parse miss must be warned, not silent.
+    bad_log = tmp_path / "bad.json"
+    bad_log.write_text("not json", encoding="utf-8")
+    monkeypatch.setattr(gu, "USAGE_OUT_PATH", tmp_path / "usage.json")
+    monkeypatch.setenv("GROK_HOME", str(tmp_path / ".grok"))
+    monkeypatch.setenv("ROBOCO_GROK_RUN_CWD", "/ws/be-dev-1")
+    monkeypatch.setenv("ROBOCO_GROK_RUN_LOG", str(bad_log))
+    monkeypatch.setenv("ROBOCO_AGENT_SESSION_ID", "fallback-sid")
+    monkeypatch.setenv("ROBOCO_AGENT_MODEL", "grok-build")
+    with caplog.at_level("WARNING", logger="roboco.llm.providers.grok_cli_usage"):
+        assert gu.main() == 0
+    assert any("run log" in r.message.lower() for r in caplog.records)

@@ -15,6 +15,16 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
@@ -81,6 +91,11 @@ export function FeatureFlagsCard() {
   const queryClient = useQueryClient();
   const [xCredsOpen, setXCredsOpen] = useState(false);
   const [tiktokCredsOpen, setTiktokCredsOpen] = useState(false);
+  // Off-transition awaiting operator confirm. Null = no dialog open.
+  const [confirmFlag, setConfirmFlag] = useState<FeatureFlag | null>(null);
+  // Every in-flight toggle key — added on mutate, removed on settle. Tracks
+  // concurrent toggles so each row locks independently of the others.
+  const [pendingKeys, setPendingKeys] = useState<Set<string>>(new Set());
 
   const { data, isLoading } = useQuery({
     queryKey: ["feature-flags"],
@@ -90,6 +105,13 @@ export function FeatureFlagsCard() {
   const toggleMutation = useMutation({
     mutationFn: ({ key, enabled }: { key: string; enabled: boolean }) =>
       settingsApi.setFeatureFlag(key, enabled),
+    onMutate: ({ key }) => {
+      setPendingKeys((s) => {
+        const n = new Set(s);
+        n.add(key);
+        return n;
+      });
+    },
     onSuccess: (_data, { enabled }) => {
       queryClient.invalidateQueries({ queryKey: ["feature-flags"] });
       toast.success(
@@ -100,6 +122,13 @@ export function FeatureFlagsCard() {
       toast.error(
         `Failed to update: ${error instanceof Error ? error.message : "Unknown error"}`,
       );
+    },
+    onSettled: (_data, _err, { key }) => {
+      setPendingKeys((s) => {
+        const n = new Set(s);
+        n.delete(key);
+        return n;
+      });
     },
   });
 
@@ -151,13 +180,17 @@ export function FeatureFlagsCard() {
                   <Switch
                     id={`flag-${flag.key}`}
                     checked={flag.enabled}
-                    disabled={
-                      toggleMutation.isPending &&
-                      toggleMutation.variables?.key === flag.key
-                    }
-                    onCheckedChange={(checked) =>
-                      toggleMutation.mutate({ key: flag.key, enabled: checked })
-                    }
+                    disabled={pendingKeys.has(flag.key)}
+                    onCheckedChange={(checked) => {
+                      // Off-transitions are destructive (a running subsystem
+                      // stops on the next restart) — confirm before firing.
+                      // On-transitions are low-risk and fire immediately.
+                      if (checked) {
+                        toggleMutation.mutate({ key: flag.key, enabled: true });
+                      } else {
+                        setConfirmFlag(flag);
+                      }
+                    }}
                   />
                 </div>
                 {isXEngine && (
@@ -215,6 +248,36 @@ export function FeatureFlagsCard() {
           })}
         </div>
       </CardContent>
+      <AlertDialog
+        open={confirmFlag !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirmFlag(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Disable feature?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {confirmFlag
+                ? `${confirmFlag.label} will turn off on the next backend restart. This may interrupt in-flight work depending on it.`
+                : ""}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                const flag = confirmFlag;
+                if (!flag) return;
+                setConfirmFlag(null);
+                toggleMutation.mutate({ key: flag.key, enabled: false });
+              }}
+            >
+              Disable
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Card>
   );
 }

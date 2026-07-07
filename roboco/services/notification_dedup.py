@@ -46,9 +46,15 @@ def _key(
     from_agent: UUID | str,
     recipient: UUID | str,
     related_task_id: UUID | str | None,
+    subject: str,
 ) -> str:
     task_part = str(related_task_id) if related_task_id is not None else "none"
-    return f"roboco:notif_dedup:{ntype.value}:{from_agent}:{recipient}:{task_part}"
+    # subject is the purpose discriminator: "Task unblocked" and "Task ready
+    # for review" are both TASK_ASSIGNMENT but carry distinct intent, so both
+    # must survive the 60s window. subject is stable per sender+state (callers
+    # use fixed templates), so a true re-fire still dedups.
+    prefix = f"roboco:notif_dedup:{ntype.value}:{from_agent}:{recipient}"
+    return f"{prefix}:{task_part}:{subject}"
 
 
 async def all_recipients_recently_notified(
@@ -57,6 +63,7 @@ async def all_recipients_recently_notified(
     from_agent: UUID | str | None,
     recipients: Sequence[UUID | str],
     related_task_id: UUID | str | None,
+    subject: str,
 ) -> bool:
     """True iff every recipient already holds the dedup key (a re-fire).
 
@@ -76,7 +83,7 @@ async def all_recipients_recently_notified(
             any_fresh = False
             for recipient in recipients:
                 acquired = await conn.set(
-                    _key(ntype, from_agent, recipient, related_task_id),
+                    _key(ntype, from_agent, recipient, related_task_id, subject),
                     "1",
                     nx=True,
                     ex=_DEDUP_TTL_SECONDS,
@@ -89,3 +96,25 @@ async def all_recipients_recently_notified(
     except Exception as exc:
         logger.warning("notification dedup probe failed (redis): %s", exc)
         return False
+
+
+async def clear_dedup_key(
+    *,
+    ntype: NotificationType,
+    from_agent: UUID | str,
+    recipient: UUID | str,
+    related_task_id: UUID | str | None,
+    subject: str,
+) -> None:
+    """DEL the per-recipient dedup key after an ack so a post-ack re-send
+    is not suppressed by a stale 60s window. Best-effort (fail-open)."""
+    try:
+        conn = redis.from_url(settings.redis_url)
+        try:
+            await conn.delete(
+                _key(ntype, from_agent, recipient, related_task_id, subject)
+            )
+        finally:
+            await conn.aclose()
+    except Exception as exc:
+        logger.warning("notification dedup clear failed (redis): %s", exc)

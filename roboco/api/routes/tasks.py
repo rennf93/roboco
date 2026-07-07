@@ -1457,7 +1457,7 @@ async def soft_block_task(
                 blocker_type=data.blocker_type,
                 reason=data.reason,
                 what_needed=data.what_needed,
-                resolver_type_raw=data.resolver_type,
+                resolver_type=data.resolver_type,
             ),
         )
     except ServiceError as e:

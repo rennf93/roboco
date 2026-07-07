@@ -13,6 +13,7 @@ class HealthResponse(BaseModel):
     status: str
     version: str
     environment: str
+    failed_index_count: int = 0
 
 
 class ReadinessResponse(BaseModel):

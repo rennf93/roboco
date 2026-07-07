@@ -16,7 +16,8 @@ import asyncio
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
+from uuid import UUID
 
 import structlog
 
@@ -42,6 +43,7 @@ from roboco.services.optimal_brain.indexes import (
     ReviewsIndexPlugin,
     StandardsIndexPlugin,
 )
+from roboco.services.optimal_brain.indexes.base import IngestResult
 from roboco.services.optimal_brain.indexes.learnings import (
     RecordLearningParams as LearningParams,
 )
@@ -49,9 +51,6 @@ from roboco.services.optimal_brain.indexes.playbooks import IndexPlaybookParams
 from roboco.services.optimal_brain.indexes.reviews import (
     RecordReviewParams as ReviewParams,
 )
-
-if TYPE_CHECKING:
-    from roboco.services.optimal_brain.indexes.base import IngestResult
 
 logger = structlog.get_logger()
 
@@ -807,8 +806,14 @@ class OptimalService:
             },
         )
 
-    async def index_playbook(self, params: IndexPlaybookParams) -> None:
-        """Index an approved playbook into the PLAYBOOKS index (best-effort)."""
+    async def index_playbook(self, params: IndexPlaybookParams) -> IngestResult:
+        """Index an approved playbook into the PLAYBOOKS index (best-effort).
+
+        Returns the ``IngestResult`` so the caller can stamp a durable
+        ``indexed_ok`` flag only on a successful embed — never on a swallowed
+        failure (the pre-M23 gap that left approved playbooks absent from the
+        corpus after a mid-approval Ollama outage).
+        """
         plugin = self._get_plugin(IndexType.PLAYBOOKS)
         if isinstance(plugin, PlaybooksIndexPlugin):
             result = await plugin.index_playbook(params)
@@ -823,7 +828,7 @@ class OptimalService:
                 playbook_id=params.playbook_id,
                 error=result.error,
             )
-            return
+            return result
         await self._track_indexed_document(
             IndexType.PLAYBOOKS,
             source=f"roboco://playbooks/{params.playbook_id}",
@@ -836,6 +841,7 @@ class OptimalService:
                 "tags": params.tags,
             },
         )
+        return result
 
     async def unindex_playbook(self, playbook_id: str) -> None:
         """De-index a playbook from the PLAYBOOKS index (best-effort).
@@ -876,6 +882,43 @@ class OptimalService:
             logger.warning(
                 "Playbook de-index (tracking row) failed; continuing",
                 playbook_id=playbook_id,
+                error=str(exc),
+            )
+
+    async def unindex_journal_entry(self, entry_id: UUID) -> None:
+        """De-index a journal entry from the JOURNALS index (best-effort).
+
+        The mirror of :meth:`index_journal_entry`: removes the entry's embedded
+        chunks from the vector store AND drops its tracking row, so a deleted
+        (or private) entry stops surfacing in RAG answers and agent briefings.
+        Idempotent — a never-indexed entry is a clean no-op. Failures are
+        logged and swallowed so a delete never errors on the index side.
+        """
+        from roboco.db import get_db_context
+        from roboco.services.repositories import IndexedDocumentRepository
+
+        source = f"roboco://journals/{entry_id}"
+        try:
+            plugin = self._get_plugin(IndexType.JOURNALS)
+            # JournalsIndexPlugin has no specialized delete; use the shared
+            # store delete-by-source (same as unindex_playbook's else-branch).
+            await plugin._require_store.delete_by_source(source)
+        except Exception as exc:
+            logger.warning(
+                "Journal de-index (vector store) failed; continuing",
+                entry_id=str(entry_id),
+                error=str(exc),
+            )
+            return
+
+        try:
+            async with get_db_context() as db:
+                repo = IndexedDocumentRepository(db)
+                await repo.delete_by_source(IndexType.JOURNALS.value, source)
+        except Exception as exc:
+            logger.warning(
+                "Journal de-index (tracking row) failed; continuing",
+                entry_id=str(entry_id),
                 error=str(exc),
             )
 

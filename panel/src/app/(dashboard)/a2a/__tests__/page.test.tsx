@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, act } from "@testing-library/react";
 import type {
   AdminConversationSummary,
   AdminPairSummary,
@@ -82,7 +82,9 @@ function buildConversation(
   };
 }
 
-function buildPair(overrides: Partial<AdminPairSummary> = {}): AdminPairSummary {
+function buildPair(
+  overrides: Partial<AdminPairSummary> = {},
+): AdminPairSummary {
   return {
     agent_a: "be-dev-1",
     role_a: "developer",
@@ -255,5 +257,49 @@ describe("A2APage", () => {
 
     fireEvent.click(screen.getByTitle("Switchboard: org-chart pair cards"));
     expect(screen.getByText("Switchboard")).toBeInTheDocument();
+  });
+
+  // M44: on /ws/system reconnect (isConnected false → true) the A2A list is
+  // stale (events missed during the disconnect); invalidate the a2a query
+  // family so react-query refetches.
+  it("invalidates a2a queries on a false → true reconnect transition", () => {
+    useA2ALiveStream.mockReturnValue({
+      lastMessage: null,
+      a2aMessages: [],
+      isConnected: false,
+    });
+    const { rerender } = render(<A2APage />);
+    // No invalidation while offline.
+    expect(invalidateQueries).not.toHaveBeenCalledWith({
+      queryKey: a2aLiveKeys.all,
+    });
+
+    invalidateQueries.mockReset();
+    useA2ALiveStream.mockReturnValue({
+      lastMessage: null,
+      a2aMessages: [],
+      isConnected: true,
+    });
+    act(() => {
+      rerender(<A2APage />);
+    });
+    expect(invalidateQueries).toHaveBeenCalledWith({
+      queryKey: a2aLiveKeys.all,
+    });
+  });
+
+  it("does not invalidate a2a queries on initial mount when already connected", () => {
+    // prevConnected starts unknown; a mount with isConnected=true must NOT
+    // fire a reconnect invalidation (only a real false → true transition does).
+    invalidateQueries.mockReset();
+    useA2ALiveStream.mockReturnValue({
+      lastMessage: null,
+      a2aMessages: [],
+      isConnected: true,
+    });
+    render(<A2APage />);
+    expect(invalidateQueries).not.toHaveBeenCalledWith({
+      queryKey: a2aLiveKeys.all,
+    });
   });
 });

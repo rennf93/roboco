@@ -53,12 +53,14 @@ async def test_similar_memory_applies_floor_and_shapes(
         "roboco.services.optimal.get_optimal_service",
         AsyncMock(return_value=optimal),
     )
-    items = await EvidenceRepo(MagicMock()).similar_memory(
+    out = await EvidenceRepo(MagicMock()).similar_memory(
         query="q", top_k=3, min_score=_FLOOR
     )
-    assert len(items) == 1  # the 0.4 result is below the floor, excluded
-    assert items[0]["kind"] == "playbook"
-    assert items[0]["score"] == _HIGH
+    # the 0.4 result is below the floor, excluded; one met the floor → ok
+    assert out["status"] == "ok"
+    assert len(out["items"]) == 1
+    assert out["items"][0]["kind"] == "playbook"
+    assert out["items"][0]["score"] == _HIGH
 
 
 @pytest.mark.asyncio
@@ -71,21 +73,54 @@ async def test_similar_memory_caps_at_top_k(
         "roboco.services.optimal.get_optimal_service",
         AsyncMock(return_value=optimal),
     )
-    items = await EvidenceRepo(MagicMock()).similar_memory(
+    out = await EvidenceRepo(MagicMock()).similar_memory(
         query="q", top_k=2, min_score=_FLOOR
     )
-    assert len(items) == 2  # noqa: PLR2004 - top_k cap
+    assert out["status"] == "ok"
+    assert len(out["items"]) == 2  # noqa: PLR2004 - top_k cap
 
 
 @pytest.mark.asyncio
-async def test_similar_memory_empty_on_rag_error(
+async def test_similar_memory_error_status_on_rag_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
         "roboco.services.optimal.get_optimal_service",
         AsyncMock(side_effect=RuntimeError("rag down")),
     )
-    items = await EvidenceRepo(MagicMock()).similar_memory(
+    out = await EvidenceRepo(MagicMock()).similar_memory(
         query="q", top_k=3, min_score=_FLOOR
     )
-    assert items == []
+    assert out == {"items": [], "status": "error"}
+
+
+@pytest.mark.asyncio
+async def test_similar_memory_empty_status_when_search_yields_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    optimal = MagicMock()
+    optimal.search = AsyncMock(return_value=[])
+    monkeypatch.setattr(
+        "roboco.services.optimal.get_optimal_service",
+        AsyncMock(return_value=optimal),
+    )
+    out = await EvidenceRepo(MagicMock()).similar_memory(
+        query="q", top_k=3, min_score=_FLOOR
+    )
+    assert out == {"items": [], "status": "empty"}
+
+
+@pytest.mark.asyncio
+async def test_similar_memory_below_floor_status_when_all_under_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    optimal = MagicMock()
+    optimal.search = AsyncMock(return_value=[_result(_LOW), _result(_LOW)])
+    monkeypatch.setattr(
+        "roboco.services.optimal.get_optimal_service",
+        AsyncMock(return_value=optimal),
+    )
+    out = await EvidenceRepo(MagicMock()).similar_memory(
+        query="q", top_k=3, min_score=_FLOOR
+    )
+    assert out == {"items": [], "status": "below_floor"}
