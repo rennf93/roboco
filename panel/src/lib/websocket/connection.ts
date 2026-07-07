@@ -180,14 +180,9 @@ export class WebSocketConnection {
     // Cap the exponent so Math.pow doesn't overflow once attempts grows large:
     // once the uncapped delay exceeds the cap, the capped delay is just the cap,
     // so further exponentiation changes nothing — pin attempts at the floor.
-    const exp = this.reconnectAttempts;
-    const raw = this.reconnectInterval * Math.pow(1.5, exp);
+    const raw = this.reconnectInterval * Math.pow(1.5, this.reconnectAttempts);
+    // ponytail: delay capped at WS_RECONNECT_MAX_INTERVAL; counter grows but delay is bounded.
     const delay = Math.min(raw, WS_RECONNECT_MAX_INTERVAL);
-    if (raw >= WS_RECONNECT_MAX_INTERVAL) {
-      // ponytail: cap the counter — past this point pow only grows the value
-      // beyond the cap, so freeze it to avoid float-precision decay at high N.
-      this.reconnectAttempts = exp;
-    }
     this.reconnectAttempts++;
 
     this.reconnectTimeout = setTimeout(() => {

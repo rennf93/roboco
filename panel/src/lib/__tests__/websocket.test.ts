@@ -264,17 +264,24 @@ describe("WebSocketConnection — long-tail reconnect (C4)", () => {
       reconnectInterval: 5000,
     });
     conn.connect();
-    // Drive 5 close→reconnect cycles — well past the old maxReconnectAttempts=3.
+    // Drive 5 close→reconnect cycles WITHOUT ever firing onopen. The old code
+    // reset reconnectAttempts to 0 inside onopen, so tests that fired open
+    // between closes never accumulated attempts and passed under the pre-fix
+    // `attempts < maxReconnectAttempts` gate. Here attempts accumulates, so
+    // past attempt 3 the old gate would have flipped shouldReconnect false →
+    // terminal 'disconnected' and no new socket. The fixed code has no cap.
     for (let i = 0; i < 5; i++) {
+      const before = MockWebSocket.instances.length;
       const ws = MockWebSocket.last();
       actClose(ws, 1006);
-      // State must be 'reconnecting', never 'disconnected'.
+      // State must be 'reconnecting', never the terminal 'disconnected'.
       expect(conn.getState()).toBe("reconnecting");
-      // Advance past the (capped) backoff so connect() runs and a fresh socket
-      // is constructed before the next close.
-      vi.advanceTimersByTime(35000);
-      const fresh = MockWebSocket.last();
-      fresh.fireOpen();
+      // Advance past the backoff so connect() runs and a fresh socket is
+      // constructed. Delay grows each cycle but stays ≤ 30s (cap tested below);
+      // 30s covers cycles 0-4 (5000*1.5^4 = 25312 < 30000).
+      vi.advanceTimersByTime(30000);
+      expect(MockWebSocket.instances.length).toBe(before + 1);
+      // Intentionally do NOT fire open — attempts must keep accumulating.
     }
     // A 6th reconnect is still scheduled — never gave up.
     expect(conn.getState()).not.toBe("disconnected");
@@ -290,19 +297,25 @@ describe("WebSocketConnection — long-tail reconnect (C4)", () => {
     });
     conn.connect();
 
-    // Burn through enough close→reconnect cycles that the uncapped delay would
-    // vastly exceed 30s. Use vi.getTimestampOfLastScheduledTimeout indirectly:
-    // advance 30s per cycle and assert a new socket is constructed each time
-    // (i.e. the delay never grew beyond the cap).
-    for (let i = 0; i < 8; i++) {
+    // Close→reconnect without ever firing onopen so reconnectAttempts climbs
+    // past the point where the uncapped delay 5000*1.5^N vastly exceeds 30s.
+    // After 7 cycles attempts=7 → uncapped delay ≈ 85422ms ≫ 30000ms cap.
+    for (let i = 0; i < 7; i++) {
       const ws = MockWebSocket.last();
       actClose(ws, 1006);
-      // 30s is the cap: any longer delay would leave advanceTimersByTime short.
+      // Delay is capped at 30s, so advancing 30s always fires the reconnect.
       vi.advanceTimersByTime(30000);
-      expect(MockWebSocket.instances.length).toBeGreaterThanOrEqual(i + 2);
-      const fresh = MockWebSocket.last();
-      fresh.fireOpen();
+      expect(MockWebSocket.instances.length).toBe(i + 2);
     }
+    // Now at attempt 7: uncapped delay would be ~85s. Under the old uncapped
+    // code, advancing 30s would leave the timer unexpired → no new socket.
+    // Under the capped code, delay = min(85422, 30000) = 30000 → reconnect
+    // fires within 30s and a new socket is constructed.
+    const before = MockWebSocket.instances.length;
+    const ws = MockWebSocket.last();
+    actClose(ws, 1006);
+    vi.advanceTimersByTime(30000);
+    expect(MockWebSocket.instances.length).toBe(before + 1);
   });
 });
 

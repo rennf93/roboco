@@ -90,6 +90,7 @@ export function useWebSocket<T>(
   const [lastMessage, setLastMessage] = useState<T | null>(null);
   const [messages, setMessages] = useState<T[]>([]);
   const connectionRef = useRef<WebSocketConnection | null>(null);
+  const urlRef = useRef<string | null>(null);
 
   // Memoize queryParams string to prevent unnecessary reconnects
   const queryString = queryParams
@@ -141,6 +142,7 @@ export function useWebSocket<T>(
       conn.connect();
     }
     connectionRef.current = entry.conn;
+    urlRef.current = url;
 
     // Cleanup on unmount or when dependencies change. Decrement the refcount;
     // only disconnect + drop the registry entry when the last subscriber
@@ -156,6 +158,7 @@ export function useWebSocket<T>(
         }
       }
       connectionRef.current = null;
+      urlRef.current = null;
       setMessages([]);
       setLastMessage(null);
       setState("disconnected");
@@ -163,12 +166,14 @@ export function useWebSocket<T>(
   }, [enabled, endpoint, queryString]); // Stable dependencies
 
   const disconnect = useCallback(() => {
-    // ponytail: forced teardown of the shared conn. Rare (no current caller
-    // exercises it — unmount goes through the effect-cleanup refcount path).
-    // Tears down the socket for ALL subscribers of this URL; that's the
-    // correct semantic for a manual "kill this stream" verb.
+    // ponytail: manual verb tears down the shared conn for ALL subscribers of
+    // this URL and evicts the dead entry so a later mount reopens a fresh conn
+    // instead of reusing a manualClose=true stub that never reconnects.
+    const url = urlRef.current;
     connectionRef.current?.disconnect();
+    if (url) _sharedSockets.delete(url);
     connectionRef.current = null;
+    urlRef.current = null;
     setState("disconnected");
   }, []);
 
