@@ -404,16 +404,16 @@ class _CompletionSnapshot:
 class SoftBlockInput:
     """Primitive blocker fields from the API layer.
 
-    Route-layer DTO that bundles the raw string inputs so the service
-    method signature stays under PLR0913 without leaking the API's
-    Pydantic schema into the service. `resolver_type_raw` is coerced to
-    BlockerResolverType inside the service.
+    Route-layer DTO that bundles the blocker inputs so the service method
+    signature stays under PLR0913 without leaking the API's Pydantic schema
+    into the service. `resolver_type` arrives already typed as
+    BlockerResolverType — the schema 422s any bad value at the boundary.
     """
 
     blocker_type: str
     reason: str
     what_needed: str
-    resolver_type_raw: str
+    resolver_type: BlockerResolverType
 
 
 @dataclass
@@ -1377,25 +1377,32 @@ class TaskService(BaseService):
         return list(result.scalars().all())
 
     async def list_open_dep_update_tasks(
-        self, git_url: str | None = None
+        self,
+        git_url: str | None = None,
+        *,
+        dep_update_command: str | None = None,
     ) -> list[TaskTable]:
         """Non-terminal dep_update tasks — the dedupe + open-cap basis.
 
-        Optionally scoped to one repo by ``git_url`` so a monorepo (several
-        cell-projects, one git_url) gets at most one open dependency-update task,
-        not one per cell-project. While an open task exists for a repo the bot
-        must not originate a second; the rolling open-task cap counts these.
-        The git_url scope is matched on the normalized repo key (case / ``.git``
-        / trailing ``/``), mirroring the orchestrator's poll-set collapse (#1267).
+        Optionally scoped to one repo by ``git_url`` and/or one
+        ``dep_update_command``. A monorepo with two distinct commands (different
+        ecosystems / lockfiles) gets one open task per command, not one for the
+        whole repo blocking the second. The git_url scope is matched on the
+        normalized repo key (case / ``.git`` / trailing ``/``), mirroring the
+        orchestrator's poll-set collapse (#1267).
         """
         stmt = select(TaskTable).where(
             TaskTable.source == DEP_UPDATE_SOURCE,
             TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
         )
-        if git_url is not None:
-            stmt = stmt.join(
-                ProjectTable, TaskTable.project_id == ProjectTable.id
-            ).where(_repo_key_expr(ProjectTable.git_url) == repo_key(git_url))
+        if git_url is not None or dep_update_command is not None:
+            stmt = stmt.join(ProjectTable, TaskTable.project_id == ProjectTable.id)
+            if git_url is not None:
+                stmt = stmt.where(
+                    _repo_key_expr(ProjectTable.git_url) == repo_key(git_url)
+                )
+            if dep_update_command is not None:
+                stmt = stmt.where(ProjectTable.dep_update_command == dep_update_command)
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
@@ -1447,12 +1454,20 @@ class TaskService(BaseService):
         Source=VIDEO_SOURCE only (a held video_post draft is never itself
         rendered). composition_id/render_status live in the JSON marker, not
         a column, so the caller filters those in Python after this query.
+        Bounded to the most recent ``video_render_scan_limit`` rows so the
+        scan doesn't re-read the growing completed-history set every pass;
+        backed by ``ix_tasks_source_status_created``.
         """
+        from roboco.config import settings
+
         result = await self.session.execute(
-            select(TaskTable).where(
+            select(TaskTable)
+            .where(
                 TaskTable.source == VIDEO_SOURCE,
                 TaskTable.status == TaskStatus.COMPLETED,
             )
+            .order_by(TaskTable.created_at.desc())
+            .limit(settings.video_render_scan_limit)
         )
         return list(result.scalars().all())
 
@@ -2291,11 +2306,43 @@ class TaskService(BaseService):
             if isinstance(task.status, TaskStatus)
             else str(task.status)
         )
+        # M20: refuse terminal -> non-terminal unless force=True. A COMPLETED/
+        # CANCELLED task resurrected to a live state re-enters dispatch and
+        # skews metrics (revision_count bumps on a forced needs_revision are
+        # admin recovery, not rework). The force flag is the explicit,
+        # audited bypass the route already requires for terminal hatch states.
+        terminal = {TaskStatus.COMPLETED, TaskStatus.CANCELLED}
+        from_is_terminal = TaskStatus(from_status) in terminal
+        to_is_terminal = new_status in terminal
+        if from_is_terminal and not to_is_terminal and not force:
+            raise TaskLifecycleError(
+                from_status,
+                new_status.value,
+                message=(
+                    f"admin_set_status refuses {from_status} -> "
+                    f"{new_status.value}: a terminal task cannot be resurrected "
+                    "without force=True (audited explicit bypass)."
+                ),
+                task_id=cast("Any", task.id),
+            )
+
         restored = await self._admin_out_of_blocked(
             task, from_status, new_status, actor_id=actor_id, actor_role=actor_role
         )
         if restored is not None:
             return restored
+        # M19 follow-on: a non-blocked admin override into a review/queue
+        # state must clear any stale active_claimant_id, else the next
+        # legitimate claim (qa_claim/doc_claim) is rejected by the
+        # competing-claimant guard. _admin_out_of_blocked already handles
+        # the blocked->review path via _clear_claim_and_block_snapshot;
+        # this covers IN_PROGRESS->AWAITING_QA and similar direct admin
+        # jumps that bypass the gateway wrappers.
+        if (
+            new_status in _REVIEW_QUEUE_STATES
+            and from_status != TaskStatus.BLOCKED.value
+        ):
+            task.active_claimant_id = cast("Any", None)
         task.status = new_status
         await self.session.flush()
         self._emit_status_transition_audit(
@@ -2305,6 +2352,13 @@ class TaskService(BaseService):
             agent_role=actor_role,
             audit_agent_id=actor_id,
         )
+        # M20: under a forced terminal -> needs_revision admin override, undo
+        # the revision_count bump _emit_status_transition_audit just applied.
+        # Admin recovery from a terminal state is not a rework cycle. Mirrors
+        # _apply_pre_block_restore's undo.
+        if force and from_is_terminal and new_status == TaskStatus.NEEDS_REVISION:
+            task.revision_count = max((task.revision_count or 1) - 1, 0)
+            await self.session.flush()
         if force:
             # #13: a distinct audit row marks the override as an explicit,
             # acknowledged bypass past the lifecycle gate — distinguishable
@@ -3067,10 +3121,7 @@ class TaskService(BaseService):
         self, task: TaskTable, agent_id: UUID | None
     ) -> None:
         """Extract and record learnings from a completed task (fire-and-forget)."""
-        from roboco.services.learning import (
-            RecordLearningParams,
-            get_learning_service,
-        )
+        from roboco.services.learning import get_learning_service
 
         # Extract data before session detaches
         task_id = task.id
@@ -3100,17 +3151,21 @@ class TaskService(BaseService):
             learnings = await self._completion_learnings_for(
                 snapshot, acceptance_criteria
             )
+            scope_str = scope.value if hasattr(scope, "value") else str(scope)
             for content, ltype in learnings:
-                await learning_svc.record_learning(
-                    RecordLearningParams(
-                        agent_id=to_python_uuid(assigned_to) or agent_id or UUID(int=0),
-                        agent_role="developer",
-                        content=content,
-                        learning_type=ltype,
-                        scope=scope,
-                        task_id=to_python_uuid(task_id),
-                        tags=["auto-extracted", task_team or "general"],
-                    )
+                await self._record_one_completion_learning(
+                    learning_svc,
+                    content,
+                    ltype,
+                    {
+                        "scope_str": scope_str,
+                        "agent_id": to_python_uuid(assigned_to)
+                        or agent_id
+                        or UUID(int=0),
+                        "task_id": to_python_uuid(task_id),
+                        "task_team": task_team,
+                        "log_task_id": task_id,
+                    },
                 )
             if learnings:
                 self.log.info(
@@ -3123,6 +3178,54 @@ class TaskService(BaseService):
                 "Failed to extract learnings",
                 task_id=str(task_id),
                 error=str(e),
+            )
+
+    async def _record_one_completion_learning(
+        self,
+        learning_svc: Any,
+        content: str,
+        ltype: Any,
+        ctx: dict[str, Any],
+    ) -> None:
+        """Record one completion learning, dead-lettering an embedder failure."""
+        from roboco.services.learning import RecordLearningParams
+
+        tags = ["auto-extracted", ctx["task_team"] or "general"]
+        agent_id = ctx["agent_id"]
+        task_id = ctx["task_id"]
+        try:
+            await learning_svc.record_learning(
+                RecordLearningParams(
+                    agent_id=agent_id,
+                    agent_role="developer",
+                    content=content,
+                    learning_type=ltype,
+                    scope=ctx["scope_str"],
+                    task_id=task_id,
+                    tags=tags,
+                )
+            )
+        except Exception as e:
+            self.log.warning(
+                "Failed to record completion learning (dead-lettered)",
+                task_id=str(ctx["log_task_id"]),
+                error=str(e),
+            )
+            from roboco.services.rag_index_failures import persist_failure
+
+            ltype_str = ltype.value if hasattr(ltype, "value") else str(ltype)
+            await persist_failure(
+                "completion_learning",
+                {
+                    "content": content,
+                    "agent_id": str(agent_id),
+                    "agent_role": "developer",
+                    "learning_type": ltype_str,
+                    "scope": ctx["scope_str"],
+                    "task_id": str(task_id) if task_id else None,
+                    "tags": list(tags),
+                },
+                e,
             )
 
     def _determine_learning_scope(self, team: str | None) -> Any:
@@ -3907,6 +4010,16 @@ class TaskService(BaseService):
                 task.work_session_id, reason="agent-unclaim-from-blocked"
             )
             task.work_session_id = cast("Any", None)
+        # H5: clear the pre-block snapshot + blocker metadata. A blocked task
+        # unclaimed back to the pool must not carry a stale snapshot — a later
+        # re-claim + re-block + unblock_with_restore(restore=True) would
+        # restore from this stale snapshot (wrong owner/status). The snapshot
+        # is only meaningful while the block it captured is still active.
+        task.pre_block_state = None
+        task.pre_block_assignee = cast("Any", None)
+        task.pre_block_metadata = cast("Any", None)
+        task.blocker_resolver_type = None
+        task.blocker_raised_by = cast("Any", None)
         task.status = TaskStatus.PENDING
         task.assigned_to = cast("Any", None)
         task.claimed_by = cast("Any", None)
@@ -4322,6 +4435,10 @@ class TaskService(BaseService):
         # The original developer is preserved in quick_context
         task.assigned_to = None
         task.claimed_by = None
+        # The dev's active claim ends at submit-for-QA — clear it so the
+        # QA claim's competing-claimant guard doesn't see the dev as a
+        # rival claimant and reject the legitimate review claim.
+        task.active_claimant_id = cast("Any", None)
         task.self_verified = True
         self._validate_and_set_status(
             task,
@@ -4355,13 +4472,11 @@ class TaskService(BaseService):
         if not task:
             return None
 
-        # Accept tasks QA is actively working on (claimed or in_progress)
-        # as well as awaiting_qa (for direct pass without starting)
-        valid_statuses = {
-            TaskStatus.AWAITING_QA,
-            TaskStatus.CLAIMED,
-            TaskStatus.IN_PROGRESS,
-        }
+        # L29: the gateway `claim_review` keeps the task at AWAITING_QA so the
+        # QA agent works the review from there; a direct service call from
+        # CLAIMED/IN_PROGRESS is no longer accepted — the audit journey would
+        # skip the task.awaiting_qa row and break QA dwell metrics.
+        valid_statuses = {TaskStatus.AWAITING_QA}
         if task.status not in valid_statuses:
             return None
 
@@ -4379,6 +4494,12 @@ class TaskService(BaseService):
         # Clear assignment so documenter can claim the task
         task.assigned_to = None
         task.claimed_by = None
+        # M19 follow-on: clear the QA's active claim so the documenter's
+        # doc_claim isn't rejected by the competing-claimant guard. The
+        # gateway wrapper qa_pass also clears this, but the direct REST
+        # route POST /pass-qa calls pass_qa directly — fix once at the
+        # shared transition so every caller is covered.
+        task.active_claimant_id = cast("Any", None)
         task.qa_verified = True
         # Reset docs so the documenter writes fresh docs for this cycle.
         # DO NOT reset pr_created — the PR exists pre-QA under the current
@@ -4435,18 +4556,21 @@ class TaskService(BaseService):
         if not task:
             return None
 
-        # Accept tasks QA is actively working on
-        valid_statuses = {
-            TaskStatus.AWAITING_QA,
-            TaskStatus.CLAIMED,
-            TaskStatus.IN_PROGRESS,
-        }
+        # L29: fail_qa accepts AWAITING_QA only — mirrors pass_qa. The gateway
+        # `fail_review` verb already enforces source_statuses={AWAITING_QA};
+        # this closes the direct-service leak.
+        valid_statuses = {TaskStatus.AWAITING_QA}
         if task.status not in valid_statuses:
             return None
 
         if not (task.notes_structured or {}).get("qa"):
             task.qa_notes = notes
         task.qa_verified = False
+        # M19 follow-on: clear the QA's active claim. fail_qa reassigns to
+        # the original dev (who re-claims via the claim verb), but a stale
+        # QA id left on needs_revision is inconsistent and the direct REST
+        # route POST /fail-qa bypasses the qa_fail wrapper that cleared it.
+        task.active_claimant_id = cast("Any", None)
         # Use validated transition - QA role required per ROLE_RESTRICTED_TRANSITIONS
         self._validate_and_set_status(task, TaskStatus.NEEDS_REVISION, agent_role)
 
@@ -4580,7 +4704,12 @@ class TaskService(BaseService):
         Returns:
             The updated task or None if not allowed
         """
-        task = await self.get(task_id)
+        lock_result = await self.session.execute(
+            select(TaskTable)
+            .where(TaskTable.id == task_id)
+            .with_for_update(of=TaskTable)
+        )
+        task = lock_result.scalar_one_or_none()
         if not task:
             return None
 
@@ -4763,6 +4892,7 @@ class TaskService(BaseService):
         task_id: UUID,
         pr_number: int,
         pr_url: str,
+        audit_agent_id: UUID | str | None = None,
     ) -> TaskTable | None:
         """
         Mark that developer has created a PR for the task.
@@ -4783,7 +4913,12 @@ class TaskService(BaseService):
         Returns:
             The updated task or None if not allowed
         """
-        task = await self.get(task_id)
+        lock_result = await self.session.execute(
+            select(TaskTable)
+            .where(TaskTable.id == task_id)
+            .with_for_update(of=TaskTable)
+        )
+        task = lock_result.scalar_one_or_none()
         if not task:
             return None
 
@@ -4826,9 +4961,18 @@ class TaskService(BaseService):
         )
 
         if ready_for_pm:
-            # Both conditions met - transition to PM review using proper validation
+            # Capture the developer's UUID BEFORE clearing claimed_by so the
+            # awaiting_pm_review audit row is attributed to the dev who opened
+            # the PR, not NULL. Capture-before-mutate per Audit I30, mirroring
+            # submit_for_qa. The dev's claimed_by may already be None (cleared
+            # by submit_for_qa's handoff), so the explicit audit_agent_id from
+            # the caller wins.
+            captured_dev_id = audit_agent_id or to_python_uuid(task.claimed_by)
             self._validate_and_set_status(
-                task, TaskStatus.AWAITING_PM_REVIEW, "developer"
+                task,
+                TaskStatus.AWAITING_PM_REVIEW,
+                "developer",
+                audit_agent_id=captured_dev_id,
             )
             # Clear assignment so PM can claim the task for review
             task.assigned_to = None
@@ -4991,6 +5135,32 @@ class TaskService(BaseService):
             return None
 
         all_descendants = await self.get_all_descendants(task_id)
+        # H3: a PM on an assembled cell/root task with terminal subtasks must go
+        # through submit_up (the PR-review gate), not complete() directly from
+        # IN_PROGRESS. Only a leaf (no descendants) or a branchless coordination
+        # root (no PR of its own — umbrella/product/cell-map root) may complete
+        # from IN_PROGRESS. The gateway `complete` verb already enforces
+        # source_statuses={AWAITING_PM_REVIEW}; this closes the service-layer
+        # bypass reachable via direct TaskService.complete() / cell_pm_complete.
+        if (
+            task.status == TaskStatus.IN_PROGRESS
+            and all_descendants
+            and not is_branchless_coordination(
+                project_id=task.project_id,
+                product_id=task.product_id,
+                batch_id=task.batch_id,
+                parent_task_id=task.parent_task_id,
+                has_cell_projects=bool(task.cell_projects),
+            )
+        ):
+            self.log.warning(
+                "Cannot complete from IN_PROGRESS - assembled task must go "
+                "through submit_up (PR-review gate)",
+                task_id=str(task_id),
+                descendant_count=len(all_descendants),
+            )
+            return None
+
         incomplete = [
             st
             for st in all_descendants
@@ -6647,15 +6817,53 @@ class TaskService(BaseService):
         `_unblock_dependents` once the dependency reaches a terminal state.
         Used for cross-cell sequencing — the frontend cell waits on the UX/UI
         design before it dispatches.
+
+        Rejects a self-reference and any edge that would close a cycle (the
+        reverse path already reaches the dependent) — a cycle deadlocks both
+        tasks (`_unblock_dependents` never fires).
         """
         if depends_on_id == task_id:
-            return
+            raise ConflictError(
+                f"task {task_id} cannot depend on itself",
+                resource_type="task_dependency",
+            )
         task = await self.get(task_id)
         if task is None:
             return
-        if depends_on_id not in task.dependency_ids:
-            task.dependency_ids = [*task.dependency_ids, depends_on_id]
-            await self.session.flush()
+        if depends_on_id in task.dependency_ids:
+            return  # idempotent re-add
+        if await self._would_create_cycle(task_id, depends_on_id):
+            raise ConflictError(
+                f"adding {depends_on_id} as a dependency of {task_id} would "
+                "close a dependency cycle",
+                resource_type="task_dependency",
+            )
+        task.dependency_ids = [*task.dependency_ids, depends_on_id]
+        await self.session.flush()
+
+    async def _would_create_cycle(self, task_id: UUID, depends_on_id: UUID) -> bool:
+        """True if ``depends_on_id`` already (transitively) depends on ``task_id``.
+
+        Adding ``task_id -> depends_on_id`` when ``depends_on_id -> ... -> task_id``
+        already exists would close a loop. BFS over ``dependency_ids`` edges.
+        # ponytail: O(V+E) per add_dependency; fine for current task-graph
+        # sizes. If a single parent ever carries thousands of siblings, move
+        # to an incremental dominator check.
+        """
+        seen: set[UUID] = set()
+        frontier: list[UUID] = [depends_on_id]
+        while frontier:
+            current = frontier.pop()
+            if current == task_id:
+                return True
+            if current in seen:
+                continue
+            seen.add(current)
+            row = await self.get(current)
+            if row is None:
+                continue
+            frontier.extend(row.dependency_ids or [])
+        return False
 
     async def wire_sibling_collision_dag(self, parent_task_id: UUID) -> None:
         """Wire the dev-task collision DAG (multi-level sequencing edge kind 3).
@@ -7168,17 +7376,11 @@ class TaskService(BaseService):
                 action="soft_block", reason="Not authorized to block this task"
             )
 
-        # Coerce the raw string to the domain enum — fall back on AGENT
-        # (agent-self-resolvable is the safest default).
-        try:
-            resolver = BlockerResolverType(request.resolver_type_raw)
-        except ValueError:
-            resolver = BlockerResolverType.AGENT
         info = SoftBlockInfo(
             reason=request.reason,
             blocker_type=request.blocker_type,
             what_needed=request.what_needed,
-            resolver_type=resolver,
+            resolver_type=request.resolver_type,
         )
 
         blocked = await self.soft_block(task_id, info, agent.role)
@@ -8409,17 +8611,46 @@ class TaskService(BaseService):
         agent_id: UUID,
         task_id: UUID,
         expected_status: TaskStatus,
+        enforce_competing_claimant: bool = True,
     ) -> TaskTable | None:
         """Claim-without-transition for QA / Documenter review states.
 
         Status stays at expected_status (it's a review state, not an
         active dev state). Sets assigned_to + claimed_by + claimed_at so
         the gateway can route subsequent verbs to the right agent.
+
+        The row is locked ``FOR UPDATE`` so concurrent claim attempts
+        serialize at the DB level, mirroring ``claim`` and ``pr_gate_claim``:
+        a second claimant sees the first's committed ``active_claimant_id``
+        and returns None instead of overwriting it (last-write-wins would
+        otherwise actor-mismatch the first claimant's later pass_review /
+        fail_review / i_documented).
+
+        ``enforce_competing_claimant`` defaults True (QA/doc path). The
+        ``pr_gate_claim`` path passes False — it carries its own
+        role-scoped guard that only blocks a competing PR_REVIEWER claim;
+        a PM owning the root (non-reviewer claim) is intentionally
+        overridable by the first reviewer.
         """
-        task = await self.get(task_id)
+        lock_result = await self.session.execute(
+            select(TaskTable)
+            .where(TaskTable.id == task_id)
+            .with_for_update(of=TaskTable)
+        )
+        task = lock_result.scalar_one_or_none()
         if task is None:
             return None
         if task.status != expected_status:
+            return None
+        existing = to_python_uuid(task.active_claimant_id)
+        if enforce_competing_claimant and existing is not None and existing != agent_id:
+            self.log.warning(
+                "qa_or_doc_claim rejected - task already claimed by another agent",
+                task_id=str(task_id),
+                expected_status=expected_status.value,
+                existing_claimant=str(existing),
+                requesting_agent=str(agent_id),
+            )
             return None
         now = datetime.now(UTC)
         task.assigned_to = cast("Any", agent_id)
@@ -8461,19 +8692,17 @@ class TaskService(BaseService):
         documenter can claim cleanly.
         """
         task = await self.get(task_id)
-        if task is not None:
-            if (
-                task.claimed_by is not None
-                and to_python_uuid(task.claimed_by) != qa_agent_id
-            ):
-                self.log.warning(
-                    "qa_pass actor mismatch",
-                    task_id=str(task_id),
-                    qa_agent_id=str(qa_agent_id),
-                    claimed_by=str(task.claimed_by),
-                )
-            task.active_claimant_id = cast("Any", None)
-            await self.session.flush()
+        if (
+            task is not None
+            and task.claimed_by is not None
+            and to_python_uuid(task.claimed_by) != qa_agent_id
+        ):
+            self.log.warning(
+                "qa_pass actor mismatch",
+                task_id=str(task_id),
+                qa_agent_id=str(qa_agent_id),
+                claimed_by=str(task.claimed_by),
+            )
         return await self.pass_qa(task_id, notes=notes, agent_role="qa")
 
     async def qa_fail(
@@ -8505,10 +8734,6 @@ class TaskService(BaseService):
         if issues:
             issue_block = "[QA ISSUES]\n" + "\n".join(f"- {i}" for i in issues)
             task.dev_notes = _append_capped(task.dev_notes, issue_block)
-        # Clear active_claimant_id — fail_qa transitions back to
-        # needs_revision and reassigns to the original developer.
-        task.active_claimant_id = cast("Any", None)
-        await self.session.flush()
         return await self.fail_qa(task_id, notes=notes, agent_role="qa")
 
     async def _revision_pm_for_task(self, task: TaskTable) -> AgentTable | None:
@@ -8576,7 +8801,10 @@ class TaskService(BaseService):
                 )
                 return None
         return await self._qa_or_doc_claim(
-            reviewer_agent_id, task_id, TaskStatus.AWAITING_PR_REVIEW
+            reviewer_agent_id,
+            task_id,
+            TaskStatus.AWAITING_PR_REVIEW,
+            enforce_competing_claimant=False,
         )
 
     async def submit_for_review(

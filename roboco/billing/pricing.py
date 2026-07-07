@@ -25,6 +25,7 @@ against missing pricing data.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 
 import structlog
 
@@ -50,10 +51,6 @@ _PRICING: list[tuple[str, float, float, float, float]] = [
     # (fragment, input/1M, output/1M, cache_read/1M, cache_write/1M)
     # Opus 4 family
     ("claude-opus-4", 5.00, 25.00, 0.50, 6.25),
-    # Sonnet 5 — promotional pricing: 33% off Sonnet 4.6 (pay 67%) through
-    # 2026-08-31. Revert to 3.00 / 15.00 / 0.30 / 0.75 when the promo ends.
-    # Dedicated fragment so it beats the bare "sonnet" alias below.
-    ("claude-sonnet-5", 2.01, 10.05, 0.201, 0.5025),
     # Sonnet 4 / 3.7 / 3.5 family
     ("claude-sonnet-4", 3.00, 15.00, 0.30, 0.75),
     ("claude-3-7-sonnet", 3.00, 15.00, 0.30, 0.75),
@@ -73,6 +70,19 @@ _PRICING: list[tuple[str, float, float, float, float]] = [
     ("haiku", 1.00, 5.00, 0.10, 1.25),
 ]
 
+# Sonnet 5 — promotional pricing through 2026-08-31 (33% off Sonnet 4.6).
+# Date-gated so the revert to list is automatic, not a manual edit forgotten
+# past the deadline. ``_lookup_prices`` consults this instead of the table.
+_SONNET5_PROMO = (2.01, 10.05, 0.201, 0.5025)
+_SONNET5_LIST = (3.00, 15.00, 0.30, 0.75)
+_SONNET5_PROMO_END = date(2026, 8, 31)
+
+
+def _sonnet5_prices() -> tuple[float, float, float, float]:
+    """Promo rates on/ before the end date, list rates after."""
+    return _SONNET5_PROMO if date.today() <= _SONNET5_PROMO_END else _SONNET5_LIST
+
+
 _MILLION = 1_000_000.0
 
 
@@ -85,8 +95,12 @@ def _lookup_prices(lower: str) -> tuple[float, float, float, float] | None:
     """Return the (input, output, cache_read, cache_write) rates for a model.
 
     Matches ``lower`` (a lowercased model name) against the pricing table by
-    substring, longest fragment wins. Returns None when no fragment matches.
+    substring, longest fragment wins. ``claude-sonnet-5`` is date-gated
+    (promo through 2026-08-31, list after). Returns None when no fragment
+    matches.
     """
+    if "claude-sonnet-5" in lower:
+        return _sonnet5_prices()
     best_fragment_len = 0
     best_prices: tuple[float, float, float, float] | None = None
     for fragment, inp_price, out_price, cr_price, cw_price in _PRICING:

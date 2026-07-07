@@ -154,7 +154,10 @@ class VideoRenderer:
         out_dir = Path(settings.video_output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / f"{render_key}-{orientation}.mp4"
-        path.write_bytes(mp4_bytes)
+        tmp = path.with_suffix(".mp4.tmp")
+        tmp.write_bytes(mp4_bytes)
+        # atomic rename — a re-render can't clobber a streaming MP4 mid-read
+        tmp.replace(path)
         if minio_client.get_client() is not None:
             # MinIO is a durable COPY, not the render's source of truth — local
             # disk is. The serve route falls back to FileResponse on S3Error, so

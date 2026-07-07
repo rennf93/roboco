@@ -10,19 +10,22 @@ the seeded user is upserted idempotently.
 
 from __future__ import annotations
 
+import time as _time
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
+import jwt as _jwt
 import pytest
 from fastapi import HTTPException, Response
 from fastapi_users.password import PasswordHelper
 from roboco.agents_config import CEO_AGENT_ID, issue_agent_token
 from roboco.api import websocket as ws_module
+from roboco.api.auth import revocation
 from roboco.api.auth.backend import SESSION_COOKIE_NAME, get_jwt_strategy
 from roboco.api.auth.routes import auth_status
 from roboco.api.auth.seed import ensure_seed_user
-from roboco.api.deps import get_agent_context
+from roboco.api.deps import _slide_session_cookie, get_agent_context
 from roboco.config import settings
 from roboco.db.tables import UserTable
 from roboco.models import AgentRole
@@ -133,6 +136,9 @@ async def test_on_mode_valid_session_yields_ceo_context_and_slides_cookie(
     db_session: AsyncSession,
 ) -> None:
     monkeypatch.setattr(settings, "cloud_auth_enabled", True)
+    # Fresh cookie is inside the remint window so the sliding mechanism
+    # issues a Set-Cookie (M36: re-mint only near expiry, not every request).
+    monkeypatch.setattr(settings, "cloud_auth_remint_threshold_seconds", 2592001)
     user = UserTable(
         email="ceo@example.com",
         hashed_password=_password_helper.hash("hunter2"),
@@ -463,3 +469,110 @@ async def test_ws_on_mode_no_token_no_cookie_rejected(
     monkeypatch.setattr(ws_module, "get_db", _stub_get_db)
     ws = _mock_ws()
     assert await ws_module._require_panel_token(ws) is False
+
+
+# ---------------------------------------------------------------------------
+# M36 — JWT jti claim + sliding cookie re-mints only near expiry.
+# ---------------------------------------------------------------------------
+
+_MIN_JTI_LEN = 16  # uuid4().hex is 32 chars; floor guards against truncation
+
+
+def _make_user() -> UserTable:
+    return UserTable(
+        email="ceo@roboco.test",
+        hashed_password=_password_helper.hash("x"),
+        is_active=True,
+        is_superuser=True,
+        is_verified=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_write_token_carries_jti(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "cloud_auth_enabled", True)
+    user = _make_user()
+    token = await get_jwt_strategy().write_token(user)
+    data = _jwt.decode(
+        token, _SECRET, algorithms=["HS256"], audience="fastapi-users:auth"
+    )
+    assert isinstance(data.get("jti"), str) and len(data["jti"]) >= _MIN_JTI_LEN
+
+
+@pytest.mark.asyncio
+async def test_slide_does_not_remint_when_far_from_expiry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cookie with plenty of life left is NOT re-minted — so a stolen
+    cookie's exp stays fixed instead of rolling with the legit user."""
+    monkeypatch.setattr(settings, "cloud_auth_enabled", True)
+    monkeypatch.setattr(settings, "cloud_auth_cookie_max_age", 2592000)
+    monkeypatch.setattr(settings, "cloud_auth_remint_threshold_seconds", 86400)
+
+    user = _make_user()
+    fresh = await get_jwt_strategy().write_token(user)
+    response = Response()
+    await _slide_session_cookie(response, user, fresh)
+    assert "set-cookie" not in {k.lower() for k in response.headers}
+
+
+@pytest.mark.asyncio
+async def test_slide_remints_when_near_expiry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "cloud_auth_enabled", True)
+    monkeypatch.setattr(settings, "cloud_auth_cookie_max_age", 2592000)
+    monkeypatch.setattr(settings, "cloud_auth_remint_threshold_seconds", 86400)
+
+    user = _make_user()
+    near = await get_jwt_strategy().write_token(user)
+    data = _jwt.decode(
+        near, _SECRET, algorithms=["HS256"], audience="fastapi-users:auth"
+    )
+    data["exp"] = int(_time.time()) + 3600
+    near_expired = _jwt.encode(data, _SECRET, algorithm="HS256")
+    response = Response()
+    await _slide_session_cookie(response, user, near_expired)
+    assert "set-cookie" in {k.lower() for k in response.headers}
+
+
+# ---------------------------------------------------------------------------
+# M36b — Redis jti revocation: read_token rejects a revoked jti.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_read_token_rejects_revoked_jti(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "cloud_auth_enabled", True)
+    user = UserTable(
+        id=uuid4(),
+        email="ceo@roboco.test",
+        hashed_password=_password_helper.hash("pw"),
+    )
+    token = await get_jwt_strategy().write_token(user)
+    monkeypatch.setattr(revocation, "is_jti_revoked", AsyncMock(return_value=True))
+
+    manager = MagicMock()
+    manager.parse_id.return_value = user.id
+    manager.get = AsyncMock(return_value=user)
+    assert await get_jwt_strategy().read_token(token, manager) is None
+
+
+@pytest.mark.asyncio
+async def test_read_token_accepts_unrevoked_jti(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "cloud_auth_enabled", True)
+    user = UserTable(
+        id=uuid4(),
+        email="ceo@roboco.test",
+        hashed_password=_password_helper.hash("pw"),
+    )
+    token = await get_jwt_strategy().write_token(user)
+    monkeypatch.setattr(revocation, "is_jti_revoked", AsyncMock(return_value=False))
+
+    manager = MagicMock()
+    manager.parse_id.return_value = user.id
+    manager.get = AsyncMock(return_value=user)
+    result = await get_jwt_strategy().read_token(token, manager)
+    assert result is not None and str(result.id) == str(user.id)

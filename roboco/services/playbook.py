@@ -10,6 +10,7 @@ valid values here.
 from __future__ import annotations
 
 import re
+from contextlib import suppress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar
 
@@ -95,19 +96,39 @@ class PlaybookService(BaseService):
         inline (before the status commit) would durably land an approved playbook
         in the corpus even if the status transaction rolled back — a divergence
         agents then surfaced in briefings.
+
+        Retry: an APPROVED playbook whose ``indexed_ok`` is still False (the
+        post-commit index write failed or never ran — e.g. an Ollama restart
+        mid-approval-burst) is re-approvable. The status/provenance are NOT
+        re-stamped on retry; the caller just re-runs ``index_approved``.
         """
         playbook = await self._get_or_raise(playbook_id)
-        if playbook.status != PlaybookStatus.DRAFT.value:
+        is_draft = playbook.status == PlaybookStatus.DRAFT.value
+        is_approved_unindexed = (
+            playbook.status == PlaybookStatus.APPROVED.value and not playbook.indexed_ok
+        )
+        if not (is_draft or is_approved_unindexed):
+            already_indexed = playbook.status == PlaybookStatus.APPROVED.value
             raise ConflictError(
-                f"Playbook {playbook_id} is {playbook.status}, not draft — "
-                "only a draft can be approved",
+                f"Playbook {playbook_id} is {playbook.status}"
+                f"{' (already indexed)' if already_indexed else ''}"
+                " — only a draft (or an approved-but-unindexed playbook"
+                " on retry) can be approved",
                 resource_type="playbook",
             )
-        playbook.status = PlaybookStatus.APPROVED.value
-        playbook.approved_by = approver_id
-        playbook.approved_at = datetime.now(UTC)
+        if is_draft:
+            playbook.status = PlaybookStatus.APPROVED.value
+            playbook.approved_by = approver_id
+            playbook.approved_at = datetime.now(UTC)
+            playbook.indexed_ok = False
+            playbook.indexed_at = None
+        # Retry path: no status/provenance mutation — the caller re-indexes.
         await self.session.flush()
-        self.log.info("Playbook approved", playbook_id=str(playbook_id))
+        self.log.info(
+            "Playbook approved",
+            playbook_id=str(playbook_id),
+            retry=not is_draft,
+        )
         return playbook
 
     async def archive(self, playbook_id: UUID, approver_id: UUID) -> PlaybookTable:
@@ -142,6 +163,12 @@ class PlaybookService(BaseService):
         change FIRST, then runs this so the index never leads the status
         transaction. Gated on ``org_memory_enabled`` so the feature is fully inert
         when off; a failure (e.g. the embedder is down) never blocks the approval.
+
+        Stamps ``indexed_ok=True`` + ``indexed_at`` ONLY on a successful embed
+        (mirroring ``index_journal_entry``'s ``if not result.success: return``
+        guard) — a swallowed failure leaves the row APPROVED-but-unindexed for
+        the startup reconcile to retry. The flush rides the caller's still-open
+        transaction; the route/verb commits it after this returns.
         """
         if not settings.org_memory_enabled:
             return
@@ -152,7 +179,7 @@ class PlaybookService(BaseService):
             )
 
             optimal = await get_optimal_service()
-            await optimal.index_playbook(
+            result = await optimal.index_playbook(
                 IndexPlaybookParams(
                     playbook_id=str(playbook.id),
                     title=playbook.title,
@@ -169,6 +196,65 @@ class PlaybookService(BaseService):
                 playbook_id=str(playbook.id),
                 error=str(exc),
             )
+            return
+        if result is not None and result.success:
+            playbook.indexed_ok = True
+            playbook.indexed_at = datetime.now(UTC)
+            try:
+                await self.session.flush()
+            except Exception as exc:
+                self.log.warning(
+                    "Playbook indexed_ok stamp flush failed (best-effort)",
+                    playbook_id=str(playbook.id),
+                    error=str(exc),
+                )
+
+    async def reconcile_unindexed_approved(self) -> int:
+        """Re-index APPROVED playbooks left ``indexed_ok=False`` by a failed
+        post-commit embed (e.g. an Ollama restart mid-approval-burst).
+
+        Best-effort: a per-playbook failure is logged and rolled back; the
+        loop continues so one bad row never blocks the rest. Gated on
+        ``org_memory_enabled`` (inert when the loop is off). Returns the count
+        of playbooks successfully re-indexed.
+        """
+        if not settings.org_memory_enabled:
+            return 0
+        stmt = select(PlaybookTable).where(
+            PlaybookTable.status == PlaybookStatus.APPROVED.value,
+            PlaybookTable.indexed_ok.is_(False),
+        )
+        result = await self.session.execute(stmt)
+        playbooks = list(result.scalars().all())
+        if not playbooks:
+            return 0
+        self.log.info(
+            "Playbook reconcile: re-indexing unindexed approved",
+            count=len(playbooks),
+        )
+        count = 0
+        for pb in playbooks:
+            try:
+                await self.index_approved(pb)
+                # index_approved swallows embedder exceptions (best-effort),
+                # so the durable signal of success is the indexed_ok flag it
+                # stamps only on a successful embed. A row still False after
+                # the call is a failure — rollback and let the next startup
+                # retry it.
+                if pb.indexed_ok:
+                    await self.session.commit()
+                    count += 1
+                else:
+                    await self.session.rollback()
+            except Exception as exc:
+                self.log.warning(
+                    "Playbook reconcile: re-index failed (best-effort)",
+                    playbook_id=str(pb.id),
+                    error=str(exc),
+                )
+                with suppress(Exception):
+                    await self.session.rollback()
+        return count
 
     async def reject(
         self, playbook_id: UUID, approver_id: UUID, reason: str

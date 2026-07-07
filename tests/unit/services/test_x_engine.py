@@ -8,15 +8,30 @@ posts — asserted against a real Postgres DB.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock
+from uuid import UUID, uuid4
 
 import pytest
 from roboco.config import settings as cfg
-from roboco.db.tables import AgentTable, ProjectTable, XSeenFeatureTable
+from roboco.db.tables import (
+    AgentSpawnSessionTable,
+    AgentTable,
+    ProjectTable,
+    TaskTable,
+    XSeenFeatureTable,
+    XSeenMentionTable,
+)
 from roboco.foundation import identity as _foundation
 from roboco.foundation.policy.content import markers
-from roboco.models.base import AgentRole, AgentStatus, Team
+from roboco.models.base import (
+    AgentRole,
+    AgentStatus,
+    TaskNature,
+    TaskType,
+    Team,
+)
 from roboco.models.base import TaskStatus as TS
 from roboco.services import x_engine as x_engine_module
 from roboco.services.company_goals import get_company_goals_service
@@ -449,6 +464,140 @@ async def test_engine_never_calls_post_tweet(
     assert client.posted == []
 
 
+@pytest.mark.asyncio
+async def test_low_engagement_mention_not_marked_seen(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mention below the engagement floor is filtered out and NOT permanently
+    marked seen — a later viral re-fetch can still draft it."""
+    await _seed(db_session)
+    _enable(monkeypatch, x_mentions_min_engagement=5)
+    _mock_local_model(monkeypatch, "reply")
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    project = await engine._roboco_project()
+    await engine._process_mentions(
+        [_mention("low1", engagement=1)], project=project, open_count=0
+    )
+    assert await db_session.get(XSeenMentionTable, "low1") is None
+
+
+@pytest.mark.asyncio
+async def test_meaningful_mention_marked_seen_before_originate(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A meaningful mention is marked seen only when it actually gets drafted."""
+    await _seed(db_session)
+    _enable(monkeypatch)
+    _mock_local_model(monkeypatch, "reply")
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    project = await engine._roboco_project()
+    await engine._process_mentions(
+        [_mention("ok1", engagement=1)], project=project, open_count=0
+    )
+    assert await db_session.get(XSeenMentionTable, "ok1") is not None
+
+
+class _FakeRedis:
+    """Minimal fake backing ``get`` / ``set`` / ``aclose`` for the cursor."""
+
+    def __init__(self, initial: dict[str, bytes] | None = None) -> None:
+        self._store: dict[str, bytes] = dict(initial or {})
+
+    async def get(self, name: str) -> bytes | None:
+        return self._store.get(name)
+
+    async def set(self, name: str, value: str) -> bool:
+        self._store[name] = value.encode() if isinstance(value, str) else value
+        return True
+
+    async def aclose(self) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_run_cycle_passes_since_id_cursor_and_persists_new_max(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The persisted since_id cursor is passed to fetch_mentions and the highest
+    fetched id is written back, so a burst >50 between ticks isn't dropped."""
+    await _seed(db_session)
+    _enable(monkeypatch)
+    _mock_local_model(monkeypatch, "reply")
+
+    captured: dict[str, object] = {}
+
+    class _RecordingClient(_FakeClient):
+        async def fetch_mentions(
+            self, since_id: str | None, max_results: int
+        ) -> list[XMention]:
+            _ = max_results
+            captured["since_id"] = since_id
+            return [_mention("500"), _mention("750"), _mention("300")]
+
+    fake = _FakeRedis({"roboco:x_mentions:since_id": b"999"})
+    monkeypatch.setattr(x_engine_module.redis, "from_url", lambda _url: fake)
+    engine = x_engine_module.XEngine(db_session, client=_RecordingClient())
+    await engine.run_cycle()
+
+    assert captured["since_id"] == "999"
+    assert fake._store["roboco:x_mentions:since_id"] == b"750"
+
+
+@pytest.mark.asyncio
+async def test_run_cycle_starts_from_none_when_no_cursor(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """First-ever cycle (no persisted cursor) fetches with since_id=None."""
+    await _seed(db_session)
+    _enable(monkeypatch)
+    _mock_local_model(monkeypatch, "reply")
+
+    captured: dict[str, object] = {}
+
+    class _RecordingClient(_FakeClient):
+        async def fetch_mentions(
+            self, since_id: str | None, max_results: int
+        ) -> list[XMention]:
+            _ = max_results
+            captured["since_id"] = since_id
+            return [_mention("100")]
+
+    fake = _FakeRedis()
+    monkeypatch.setattr(x_engine_module.redis, "from_url", lambda _url: fake)
+    engine = x_engine_module.XEngine(db_session, client=_RecordingClient())
+    await engine.run_cycle()
+
+    assert captured["since_id"] is None
+    assert fake._store["roboco:x_mentions:since_id"] == b"100"
+
+
+@pytest.mark.asyncio
+async def test_run_cycle_redis_failure_is_best_effort(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Redis outage fetching/setting the cursor must not crash the cycle."""
+
+    class _BoomRedis:
+        async def get(self, _name: str) -> bytes | None:
+            raise ConnectionError("redis down")
+
+        async def set(self, _name: str, _value: str) -> bool:
+            raise ConnectionError("redis down")
+
+        async def aclose(self) -> None:
+            return None
+
+    await _seed(db_session)
+    _enable(monkeypatch)
+    _mock_local_model(monkeypatch, "reply")
+    monkeypatch.setattr(x_engine_module.redis, "from_url", lambda _url: _BoomRedis())
+    engine = x_engine_module.XEngine(
+        db_session, client=_FakeClient(mentions=[_mention("m1")])
+    )
+    result = await engine.run_cycle()  # must not raise
+    assert len(result) == ONE
+
+
 # --------------------------------------------------------------------------- #
 # Feature-spotlight exploration (Head of Marketing)
 # --------------------------------------------------------------------------- #
@@ -512,6 +661,96 @@ async def test_feature_spotlight_dedupe_one_open_cycle(
     assert cycle.team == Team.BOARD
     assert cycle.source == X_FEATURE_EXPLORATION_SOURCE
     assert "spotlight" in cycle.title.lower()
+
+
+async def _seed_stale_exploration(
+    session: AsyncSession, *, age: timedelta, project_id: UUID
+) -> TaskTable:
+    """Insert a back-dated PENDING feature-exploration task (no live spawn)."""
+    stale = TaskTable(
+        id=uuid4(),
+        title="X feature-spotlight exploration",
+        description="stale seed",
+        acceptance_criteria=["x"],
+        status=TS.PENDING,
+        task_type=TaskType.ADMINISTRATIVE,
+        nature=TaskNature.NON_TECHNICAL,
+        project_id=project_id,
+        created_by=SYSTEM_UUID,
+        assigned_to=HOM_UUID,
+        team=Team.BOARD,
+        source=X_FEATURE_EXPLORATION_SOURCE,
+        confirmed_by_human=False,
+        created_at=datetime.now(UTC) - age,
+    )
+    session.add(stale)
+    await session.flush()
+    return stale
+
+
+@pytest.mark.asyncio
+async def test_feature_spotlight_re_arms_when_exploration_stale_and_spawnless(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale (age > 2x interval) exploration with no live HoM spawn is
+    CANCELLED and a fresh exploration is originated — the engine re-arms
+    instead of going silent forever."""
+    await _seed(db_session)
+    _enable(
+        monkeypatch,
+        x_feature_spotlight_enabled=True,
+        x_feature_spotlight_interval_seconds=3600,
+    )
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    project = await engine._roboco_project()
+    assert project is not None and project.id is not None
+    stale = await _seed_stale_exploration(
+        db_session, age=timedelta(seconds=3 * 3600), project_id=cast("UUID", project.id)
+    )
+    task = await engine.open_feature_spotlight_exploration()
+    assert task is not None  # re-armed
+    await db_session.refresh(stale)
+    assert stale.status == TS.CANCELLED  # stale one cancelled
+    open_cycles = await get_task_service(db_session).list_open_feature_explorations()
+    assert len(open_cycles) == ONE
+    assert open_cycles[0].id == task.id  # fresh one is the only open cycle
+
+
+@pytest.mark.asyncio
+async def test_feature_spotlight_re_arm_blocked_when_live_hom_spawn(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale exploration WITH a live HoM spawn is NOT cancelled — the
+    respawn breaker tripped but HoM is still working it, so re-arm blocks."""
+    await _seed(db_session)
+    _enable(
+        monkeypatch,
+        x_feature_spotlight_enabled=True,
+        x_feature_spotlight_interval_seconds=3600,
+    )
+    engine = x_engine_module.XEngine(db_session, client=_FakeClient())
+    project = await engine._roboco_project()
+    assert project is not None and project.id is not None
+    stale = await _seed_stale_exploration(
+        db_session, age=timedelta(seconds=3 * 3600), project_id=cast("UUID", project.id)
+    )
+    db_session.add(
+        AgentSpawnSessionTable(
+            id=uuid4(),
+            agent_slug="head-marketing",
+            team="board",
+            role="head_marketing",
+            model="claude",
+            task_id=str(stale.id),
+            started_at=datetime.now(UTC),
+            ended_at=None,
+        )
+    )
+    await db_session.flush()
+    task = await engine.open_feature_spotlight_exploration()
+    assert task is None  # re-arm blocked
+    await db_session.refresh(stale)
+    assert stale.status == TS.PENDING  # not cancelled
 
 
 @pytest.mark.asyncio

@@ -100,3 +100,44 @@ def test_rule_level_override_from_standard() -> None:
     )
     findings = check_hygiene("a.py", b"x = 1  # c\n", "python", std)
     assert _rules(findings, "no_inline_comments")[0].level == "block"
+
+
+def test_noqa_natural_prose_not_flagged() -> None:
+    # A sanctioned TC001 code followed by lowercase prose. The prose must
+    # terminate the capture so TC001 is parsed alone and allowed (not a
+    # no_lint_suppressions finding).
+    findings = check_hygiene(
+        "a.py",
+        b"from uuid import UUID  # noqa: TC001 because pydantic needs this\n",
+        "python",
+        _STD,
+    )
+    assert _rules(findings, "no_lint_suppressions") == []
+
+
+def test_noqa_canonical_still_parsed_after_tightening() -> None:
+    # Regression guard: the canonical single-code form still parses + is allowed.
+    findings = check_hygiene(
+        "a.py", b"from uuid import UUID  # noqa: TC001\n", "python", _STD
+    )
+    assert _rules(findings, "no_lint_suppressions") == []
+
+
+def test_noqa_multiple_codes_with_prose_still_allowed() -> None:
+    # Multiple sanctioned codes followed by prose — the capture stops at the
+    # first lowercase word, both codes parsed, allowed.
+    findings = check_hygiene(
+        "a.py",
+        b"from uuid import UUID  # noqa: TC001, TC002 because runtime\n",
+        "python",
+        _STD,
+    )
+    assert _rules(findings, "no_lint_suppressions") == []
+
+
+def test_noqa_nonallowed_uppercase_code_still_flagged() -> None:
+    # Regression guard: a non-allowed uppercase code is still captured + flagged.
+    findings = check_hygiene(
+        "a.py", b"import os  # noqa: F401 unused\n", "python", _STD
+    )
+    assert _rules(findings, "no_lint_suppressions")

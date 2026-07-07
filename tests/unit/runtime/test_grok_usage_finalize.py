@@ -13,6 +13,7 @@ import json
 import tempfile
 from typing import TYPE_CHECKING
 
+import httpx
 import pytest
 from roboco.models.runtime import AgentInstance
 from roboco.runtime import orchestrator as orch_mod
@@ -77,6 +78,21 @@ async def test_resolve_final_usage_routes_grok_to_usage_json(
 
     # No SDK fetch / transcript read for GROK — usage comes from usage.json.
     assert await orch._resolve_final_token_usage("be-dev-1") == (0, 12, 0, 0)
+
+
+@pytest.mark.asyncio
+async def test_resolve_active_tokens_routes_grok_to_usage_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    orch = AgentOrchestrator.__new__(AgentOrchestrator)
+    monkeypatch.setattr(
+        orch, "_grok_usage_json", lambda _aid: {"total_tokens": 12, "cost_usd": 0.01}
+    )
+    cfg = type("C", (), {"provider_type": "grok"})()
+    orch._instances = {"be-dev-1": AgentInstance(agent_id="be-dev-1", config=cfg)}
+    # The client is unused for GROK; pass a bare AsyncClient (never awaited).
+    async with httpx.AsyncClient() as client:
+        assert await orch._resolve_active_tokens(client, "be-dev-1") == (0, 12, 0, 0)
 
 
 def test_grok_usage_dir_branches_compose_vs_local(

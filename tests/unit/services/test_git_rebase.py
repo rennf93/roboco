@@ -89,21 +89,23 @@ async def test_success_path_returns_rebased_and_does_not_call_abort(
     never invokes ``git rebase --abort``.
 
     Call sequence for the success path (rebase OK, 2 unique commits):
-      [0] fetch origin
-      [1] checkout HEAD branch
-      [2] reset --hard origin/HEAD
-      [3] rebase origin/BASE          ← exits 0
-      [4] rev-list --count            ← returns "2"
-      [5] push --force-with-lease     ← pushes the rebased branch
+      [0] status --porcelain          ← clean (the H8 dirty-tree gate)
+      [1] fetch origin
+      [2] checkout HEAD branch
+      [3] reset --hard origin/HEAD
+      [4] rebase origin/BASE          ← exits 0
+      [5] rev-list --count            ← returns "2"
+      [6] push --force-with-lease     ← pushes the rebased branch
     """
     run = AsyncMock(
         side_effect=[
-            _result(),  # [0] fetch
-            _result(),  # [1] checkout
-            _result(),  # [2] reset
-            _result(),  # [3] rebase ← success
-            _result(stdout="2\n"),  # [4] rev-list
-            _result(),  # [5] push
+            _result(stdout=""),  # [0] status --porcelain → clean
+            _result(),  # [1] fetch
+            _result(),  # [2] checkout
+            _result(),  # [3] reset
+            _result(),  # [4] rebase ← success
+            _result(stdout="2\n"),  # [5] rev-list
+            _result(),  # [6] push
         ]
     )
     monkeypatch.setattr(GitService, "_run_git", run)
@@ -141,21 +143,23 @@ async def test_conflict_path_calls_diff_then_abort_and_returns_conflict_files(
     * returns ``{"status": "conflicts", "files": [<conflicted files>]}``.
 
     Call sequence:
-      [0] fetch origin
-      [1] checkout HEAD branch
-      [2] reset --hard origin/HEAD
-      [3] rebase origin/BASE          ← exits 1 (conflict)
-      [4] diff --name-only            ← lists conflicted files
-      [5] rebase --abort              ← exits 0
+      [0] status --porcelain          ← clean (the H8 dirty-tree gate)
+      [1] fetch origin
+      [2] checkout HEAD branch
+      [3] reset --hard origin/HEAD
+      [4] rebase origin/BASE          ← exits 1 (conflict)
+      [5] diff --name-only            ← lists conflicted files
+      [6] rebase --abort              ← exits 0
     """
     run = AsyncMock(
         side_effect=[
-            _result(),  # [0] fetch
-            _result(),  # [1] checkout
-            _result(),  # [2] reset
-            _result(returncode=1),  # [3] rebase ← conflict
-            _result(stdout="src/a.py\nsrc/b.py\n"),  # [4] diff
-            _result(),  # [5] rebase --abort
+            _result(stdout=""),  # [0] status --porcelain → clean
+            _result(),  # [1] fetch
+            _result(),  # [2] checkout
+            _result(),  # [3] reset
+            _result(returncode=1),  # [4] rebase ← conflict
+            _result(stdout="src/a.py\nsrc/b.py\n"),  # [5] diff
+            _result(),  # [6] rebase --abort
         ]
     )
     monkeypatch.setattr(GitService, "_run_git", run)
@@ -205,21 +209,23 @@ async def test_resilience_when_both_rebase_and_abort_fail_returns_conflict_no_ex
     either command produces a result object (not a raised exception).
 
     Call sequence:
-      [0] fetch origin
-      [1] checkout HEAD branch
-      [2] reset --hard origin/HEAD
-      [3] rebase origin/BASE          ← exits 1 (conflict)
-      [4] diff --name-only            ← lists conflicted files
-      [5] rebase --abort              ← exits 1 (abort also fails)
+      [0] status --porcelain          ← clean (the H8 dirty-tree gate)
+      [1] fetch origin
+      [2] checkout HEAD branch
+      [3] reset --hard origin/HEAD
+      [4] rebase origin/BASE          ← exits 1 (conflict)
+      [5] diff --name-only            ← lists conflicted files
+      [6] rebase --abort              ← exits 1 (abort also fails)
     """
     run = AsyncMock(
         side_effect=[
-            _result(),  # [0] fetch
-            _result(),  # [1] checkout
-            _result(),  # [2] reset
-            _result(returncode=1),  # [3] rebase ← conflict
-            _result(stdout="src/conflict.py\n"),  # [4] diff
-            _result(returncode=1),  # [5] rebase --abort ← also fails
+            _result(stdout=""),  # [0] status --porcelain → clean
+            _result(),  # [1] fetch
+            _result(),  # [2] checkout
+            _result(),  # [3] reset
+            _result(returncode=1),  # [4] rebase ← conflict
+            _result(stdout="src/conflict.py\n"),  # [5] diff
+            _result(returncode=1),  # [6] rebase --abort ← also fails
         ]
     )
     monkeypatch.setattr(GitService, "_run_git", run)

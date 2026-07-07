@@ -13,8 +13,16 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import select
 
+from roboco.api.schemas.docs import DocRefResponse
 from roboco.db.tables import ProjectTable, TaskTable, WorkSessionTable
-from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
+from roboco.models.base import (
+    BlockerResolverType,
+    Complexity,
+    TaskNature,
+    TaskStatus,
+    TaskType,
+    Team,
+)
 from roboco.models.product import ProductCellMapping
 from roboco.utils.converters import require_uuid, to_python_uuid, to_python_uuid_list
 
@@ -338,6 +346,7 @@ class TaskResponse(BaseModel):
 
     # Artifacts
     commits: list[CommitRefResponse] = []
+    documents: list[DocRefResponse] = []
 
     # Documentation
     dev_notes: str | None
@@ -531,8 +540,8 @@ class SoftBlockRequest(BaseModel):
     # Default is "agent" for back-compat with existing clients. When "human",
     # the dispatcher will NOT respawn agents on this task and only a HITL
     # unblock will move it forward.
-    resolver_type: str = Field(
-        default="agent",
+    resolver_type: BlockerResolverType = Field(
+        default=BlockerResolverType.AGENT,
         description=(
             "Who resolves: 'agent' (another agent can fix it — dispatcher "
             "keeps working) or 'human' (HITL/CEO only — dispatcher stops)"
@@ -579,12 +588,6 @@ class SubstituteRequest(BaseModel):
         ),
     )
     details: str = Field(..., description="Human-readable explanation")
-    suggested_role: str | None = Field(
-        None, description="Hint for reassignment (developer, qa, pm, documenter)"
-    )
-    suggested_team: str | None = Field(
-        None, description="Hint for reassignment (backend, frontend, ux_ui)"
-    )
 
 
 class TaskCountResponse(BaseModel):
@@ -726,6 +729,26 @@ def convert_commits(commits_data: list | None) -> list[CommitRefResponse]:
     ]
 
 
+def convert_documents(documents_data: list | None) -> list[DocRefResponse]:
+    """Convert documents JSON list to DocRefResponse list."""
+    if not documents_data:
+        return []
+    return [
+        DocRefResponse(
+            path=doc.get("path", ""),
+            title=doc.get("title", ""),
+            doc_type=doc.get("doc_type", ""),
+            version=doc.get("version"),
+            created_by=doc.get("created_by"),
+            created_at=doc.get("created_at"),
+            updated_by=doc.get("updated_by"),
+            updated_at=doc.get("updated_at"),
+            commit_status=doc.get("commit_status"),
+        )
+        for doc in documents_data
+    ]
+
+
 def convert_cell_projects(task: "TaskTable") -> list[ProductCellMapping]:
     """The task's ad-hoc per-cell project map, or ``[]``.
 
@@ -790,6 +813,7 @@ def task_to_response(task: "TaskTable") -> TaskResponse:
         checkpoints=convert_checkpoints(task.checkpoints),
         progress_updates=convert_progress_updates(task.progress_updates),
         commits=convert_commits(task.commits),
+        documents=convert_documents(task.documents),
         dev_notes=task.dev_notes,
         qa_notes=task.qa_notes,
         auditor_notes=task.auditor_notes,

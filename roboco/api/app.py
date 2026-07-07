@@ -66,6 +66,8 @@ from roboco.security import apply_guard, guarded_lifespan
 from roboco.services.extraction import ExtractionPipeline, ExtractionService
 from roboco.services.learning import get_learning_service
 from roboco.services.optimal import close_optimal_service, get_optimal_service
+from roboco.services.playbook import PlaybookService
+from roboco.services.rag_index_failures import reclaim_due
 from roboco.services.settings import apply_persisted_feature_flags
 from roboco.services.transcription import TranscriptionService
 
@@ -79,6 +81,54 @@ class _AppServices:
 
     transcription: TranscriptionService | None = None
     extraction: ExtractionPipeline | None = None
+
+
+async def _reconcile_unindexed_playbooks(app: FastAPI) -> None:
+    """Re-index APPROVED playbooks left ``indexed_ok=False`` by a failed
+    post-commit embed (e.g. an Ollama restart mid-approval-burst). Best-effort:
+    a failure here never blocks startup — rows stay unindexed and the next
+    startup retries them. Skipped when RAG is disabled (no optimal) or the
+    org-memory loop is off (the index is inert).
+    """
+    if app.state.optimal is None or not settings.org_memory_enabled:
+        return
+    try:
+        async with get_session_factory()() as session:
+            svc = PlaybookService(session)
+            reconciled = await svc.reconcile_unindexed_approved()
+        if reconciled:
+            logger.info(
+                "Playbook reconcile: re-indexed unindexed approved",
+                count=reconciled,
+            )
+    except Exception as e:
+        logger.warning("Playbook reconcile failed; continuing", error=str(e))
+
+
+async def _reclaim_rag_index_failures(app: FastAPI) -> None:
+    """Reclaim dead-lettered RAG index writes (embedder 429 after retries, etc.).
+
+    Best-effort: a failure here never blocks startup — due rows stay in the
+    dead-letter and the next startup retries them. Skipped when RAG is
+    disabled (no optimal).
+    """
+    if app.state.optimal is None:
+        return
+    try:
+        reclaimed = await reclaim_due(app.state.optimal)
+        if reclaimed:
+            logger.info(
+                "RAG index dead-letter reclaim: re-indexed rows",
+                count=reclaimed,
+            )
+    except Exception as e:
+        logger.warning("RAG index dead-letter reclaim failed; continuing", error=str(e))
+
+
+async def _reconcile_rag_indexes(app: FastAPI) -> None:
+    """Run both RAG index reconcile passes (playbooks + dead-letter reclaim)."""
+    await _reconcile_unindexed_playbooks(app)
+    await _reclaim_rag_index_failures(app)
 
 
 @asynccontextmanager
@@ -163,6 +213,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             logger.info("LearningPropagationService initialized")
         except Exception as e:
             logger.warning("LearningPropagationService init failed", error=str(e))
+
+    # Reconcile RAG index state: re-index APPROVED playbooks left unindexed by
+    # a failed post-commit embed, and reclaim dead-lettered fire-and-forget
+    # index writes (embedder 429 after retries). Best-effort: a failure here
+    # never blocks startup — the rows stay and the next startup retries them.
+    await _reconcile_rag_indexes(app)
 
     logger.info("All services initialized, API ready")
 

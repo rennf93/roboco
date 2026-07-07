@@ -97,13 +97,15 @@ export function isScorecardMemberId(agentId: string): boolean {
   return agentId === "ceo" || UUID_RE.test(agentId);
 }
 
+const SCORECARD_REFETCH_INTERVAL = 300_000;
+
 /** Per-member rollup scorecard (+ live in-flight overlay). */
 export function useMemberScorecard(agentId: string, days = 30) {
   return useQuery<MemberScorecard>({
     queryKey: observabilityKeys.memberScorecard(agentId, days),
     queryFn: () => observabilityApi.getMemberScorecard(agentId, days),
     enabled: isScorecardMemberId(agentId),
-    refetchInterval: 60_000,
+    refetchInterval: SCORECARD_REFETCH_INTERVAL,
   });
 }
 
@@ -112,7 +114,7 @@ export function useOrgScorecard(days = 30, team?: string) {
   return useQuery<OrgScorecard>({
     queryKey: observabilityKeys.orgScorecard(days, team),
     queryFn: () => observabilityApi.getOrgScorecard(days, team),
-    refetchInterval: 60_000,
+    refetchInterval: SCORECARD_REFETCH_INTERVAL,
   });
 }
 

@@ -358,6 +358,18 @@ class JournalService(BaseService):
                     entry_id=str(params.entry_id),
                     error=str(e),
                 )
+                # Persist to the dead-letter so a janitor can re-index later;
+                # never blocks the caller's commit (own session, best-effort).
+                from roboco.services.rag_index_failures import (
+                    _serialize_journal_payload,
+                    persist_failure,
+                )
+
+                await persist_failure(
+                    "journal_entry",
+                    _serialize_journal_payload(params, is_private=is_private),
+                    e,
+                )
 
         try:
             task = asyncio.create_task(_index())
@@ -514,6 +526,21 @@ class JournalService(BaseService):
 
         await self.session.delete(entry_row)
         await self.session.commit()
+
+        # De-index the entry from the RAG so deleted/private content stops
+        # bleeding into claim-time briefings. Best-effort — a delete never
+        # errors on the index side (the row is already gone).
+        try:
+            from roboco.services.optimal import get_optimal_service
+
+            optimal = await get_optimal_service()
+            await optimal.unindex_journal_entry(entry_id)
+        except Exception as exc:
+            self.log.warning(
+                "Journal de-index failed; entry row still deleted",
+                entry_id=str(entry_id),
+                error=str(exc),
+            )
 
         self.log.info("Deleted journal entry", entry_id=str(entry_id))
         return True

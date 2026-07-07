@@ -363,12 +363,18 @@ _GIT_FIELD_SEP = "\x1f"
 
 
 def _run_git(root: Path, args: list[str]) -> str:
-    result = subprocess.run(
-        ["git", "-C", str(root), *args],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), *args],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        # A hung git child must not hang the release-readiness thread silently
+        # — bubble a clear error so the loop logs and moves on.
+        raise RuntimeError(f"git {' '.join(args)} timed out after 30s") from exc
     return result.stdout
 
 
@@ -392,7 +398,9 @@ def _commits_since(root: Path, tag: str | None) -> list[CommitInfo]:
         record = raw_record.strip()
         if not record:
             continue
-        sha, subject, body = [*record.split(_GIT_FIELD_SEP), "", "", ""][:3]
+        # maxsplit=2: a \x1f embedded in the body stays in the body field
+        # instead of garbling the field mapping.
+        sha, subject, body = [*record.split(_GIT_FIELD_SEP, 2), "", "", ""][:3]
         pr_match = _PR_REF_RE.search(subject)
         commits.append(
             CommitInfo(

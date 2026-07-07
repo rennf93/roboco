@@ -46,15 +46,19 @@ def _params() -> CreateNotificationParams:
 @pytest.mark.asyncio
 async def test_create_notification_suppresses_same_purpose_duplicate() -> None:
     """An existing same-purpose unacked notification suppresses a new insert."""
+    recip = uuid4()
+    existing_row = (uuid4(), [recip])  # (id, to_agents) — same recipient set
+    result = MagicMock()
+    result.all.return_value = [existing_row]
     db = MagicMock()
-    db.scalar = AsyncMock(return_value=uuid4())  # a same-purpose duplicate exists
+    db.execute = AsyncMock(return_value=result)
     db.add = MagicMock()
     db.flush = AsyncMock()
     db.commit = AsyncMock()
 
     svc = NotificationService()
     cc: Any = svc
-    cc._resolve_recipients = AsyncMock(return_value=[uuid4()])
+    cc._resolve_recipients = AsyncMock(return_value=[recip])
     with (
         patch(
             "roboco.services.notification.get_db_context",
@@ -70,7 +74,47 @@ async def test_create_notification_suppresses_same_purpose_duplicate() -> None:
     # Dedup hit → no row created, nothing committed/delivered.
     db.add.assert_not_called()
     db.commit.assert_not_called()
-    db.scalar.assert_awaited_once()
+    db.execute.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_create_notification_unequal_recipient_set_not_suppressed() -> None:
+    """H12(a): an unacked prior to a STRICT SUBSET of the new recipients does
+    NOT suppress — the new recipients (here main-pm) must still learn. Pre-fix
+    the overlap predicate dropped the entire second notification for everyone."""
+    recip_a = uuid4()  # be-pm — overlap with the prior
+    recip_b = uuid4()  # main-pm — fresh, only in the new notification
+    existing_row = (uuid4(), [recip_a])  # prior unacked to {be-pm} alone
+    result = MagicMock()
+    result.all.return_value = [existing_row]
+    db = MagicMock()
+    db.execute = AsyncMock(return_value=result)
+    db.add = MagicMock(side_effect=lambda obj: setattr(obj, "id", uuid4()))
+    db.flush = AsyncMock()
+    db.commit = AsyncMock()
+
+    svc = NotificationService()
+    cc: Any = svc
+    cc._resolve_recipients = AsyncMock(return_value=[recip_a, recip_b])
+    with (
+        patch(
+            "roboco.services.notification.get_db_context",
+            return_value=_FakeDBCtx(db),
+        ),
+        patch(
+            "roboco.services.notification._resolve_agent_uuid",
+            AsyncMock(return_value=uuid4()),
+        ),
+        patch(
+            "roboco.services.notification_delivery.get_notification_delivery_service",
+            lambda _db: MagicMock(deliver=AsyncMock(return_value=None)),
+        ),
+    ):
+        await svc._create_notification(_params())
+
+    # Unequal sets ⇒ not suppressed: a row was created + committed.
+    db.add.assert_called_once()
+    db.commit.assert_awaited_once()
 
 
 @pytest.mark.asyncio

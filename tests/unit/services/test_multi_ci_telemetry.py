@@ -8,6 +8,8 @@ default) is passed through to the reused lookup.
 
 from __future__ import annotations
 
+import asyncio
+import time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -87,3 +89,25 @@ async def test_per_project_workflow_passthrough(
     }
     assert workflows["custom"] == "release.yml"
     assert workflows["default"] == "ci.yml"
+
+
+@pytest.mark.asyncio
+async def test_fetch_gathers_concurrently_not_sequentially() -> None:
+    # Sequential would be ~a_delay + b_delay; gathered is ~max(a, b).
+    a_delay, b_delay = 0.15, 0.20
+    projects: list[object] = [_project("a"), _project("b")]
+
+    async def slow_sample(
+        _self: Any, _git: Any, slug: str, _workflow: str | None
+    ) -> Any:
+        delay = a_delay if slug == "a" else b_delay
+        await asyncio.sleep(delay)
+        return None
+
+    with patch.object(MultiProjectCITelemetrySource, "_sample_for", slow_sample):
+        start = time.monotonic()
+        await MultiProjectCITelemetrySource(MagicMock()).fetch(projects)
+        elapsed = time.monotonic() - start
+
+    # Sequential ≈ 0.35s; gathered ≈ 0.20s. 0.30s splits the two cleanly.
+    assert elapsed < a_delay + b_delay - 0.05

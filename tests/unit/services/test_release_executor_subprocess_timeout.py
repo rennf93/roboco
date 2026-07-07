@@ -96,7 +96,8 @@ def _ops() -> _GitReleaseOps:
     ops._slug = "roboco"
     ops._default_branch = "master"
     ops._root = Path("/tmp/roboco-release-f078")
-    ops._auth_url = "https://x@github.com/o/roboco"
+    ops._git_url = "https://github.com/o/roboco"
+    ops._git_prefix = []
     ops._ci_workflow = None
     return ops
 

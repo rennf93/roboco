@@ -204,14 +204,16 @@ class LearningPropagationService:
 
     async def _create_notifications(self, learning: Learning) -> None:
         """Create notifications for agents who should see this learning."""
-        from sqlalchemy import select
+        from sqlalchemy import insert, select
 
         from roboco.db.base import get_db_context
-        from roboco.db.tables import AgentTable
+        from roboco.db.tables import AgentTable, NotificationTable
+        from roboco.foundation.policy.communications import ACK_REQUIRED_BY_TYPE
         from roboco.models import NotificationPriority, NotificationType
         from roboco.models.base import AgentRole
-        from roboco.models.notification import CreateNotificationParams
-        from roboco.services.notification import NotificationService
+        from roboco.services.notification_delivery import (
+            get_notification_delivery_service,
+        )
 
         try:
             async with get_db_context() as db:
@@ -245,48 +247,63 @@ class LearningPropagationService:
                     )
                     return
 
-                # Create notifications using the notification service pattern
-                notification_svc = NotificationService()
-
-                # Get a short summary of the learning
                 max_summary_len = 200
                 summary = (
                     learning.content[:max_summary_len] + "..."
                     if len(learning.content) > max_summary_len
                     else learning.content
                 )
+                subject = f"New Learning: {learning.learning_type.value}"
+                reason = (
+                    f"New {learning.learning_type.value} from {learning.agent_role}"
+                )
 
+                from datetime import UTC, datetime
+                from uuid import uuid4
+
+                # In-memory queue (read by get_pending_notifications).
                 for agent in agents:
-                    # Create in-memory notification for our queue
-                    from datetime import UTC, datetime
-                    from uuid import uuid4
-
-                    reason = (
-                        f"New {learning.learning_type.value} from {learning.agent_role}"
-                    )
-                    # Convert SQLAlchemy UUID to Python UUID
-                    agent_uuid = UUID(str(agent.id))
-                    notification = LearningNotification(
-                        notification_id=f"lrn-notif-{uuid4().hex[:8]}",
-                        learning_id=learning.learning_id,
-                        target_agent_id=agent_uuid,
-                        learning_summary=summary,
-                        reason=reason,
-                        created_at=datetime.now(UTC).isoformat(),
-                    )
-                    self._notification_queue.append(notification)
-
-                    # Also create a formal notification in the database
-                    await notification_svc._create_notification(
-                        CreateNotificationParams(
-                            notification_type=NotificationType.KNOWLEDGE_SHARE,
-                            priority=NotificationPriority.NORMAL,
-                            from_agent=str(learning.agent_id),
-                            to_agents=[agent.slug],
-                            subject=f"New Learning: {learning.learning_type.value}",
-                            body=summary,
+                    self._notification_queue.append(
+                        LearningNotification(
+                            notification_id=f"lrn-notif-{uuid4().hex[:8]}",
+                            learning_id=learning.learning_id,
+                            target_agent_id=UUID(str(agent.id)),
+                            learning_summary=summary,
+                            reason=reason,
+                            created_at=datetime.now(UTC).isoformat(),
                         )
                     )
+
+                # One bulk INSERT for all NotificationTable rows — replaces the
+                # N sequential `NotificationService._create_notification` calls
+                # each opening their own session/transaction (pool pressure).
+                # Defaults (id, timestamp, acked_by, ...) are Python-side
+                # callables SQLAlchemy applies per-row; we set id explicitly so
+                # delivery can address each row by UUID without re-fetching.
+                notification_ids = [uuid4() for _ in agents]
+                rows = [
+                    {
+                        "id": nid,
+                        "type": NotificationType.KNOWLEDGE_SHARE,
+                        "priority": NotificationPriority.NORMAL,
+                        "from_agent": learning.agent_id,
+                        "to_agents": [agent.id],
+                        "subject": subject,
+                        "body": summary,
+                        "requires_ack": ACK_REQUIRED_BY_TYPE[
+                            NotificationType.KNOWLEDGE_SHARE
+                        ],
+                    }
+                    for nid, agent in zip(notification_ids, agents, strict=True)
+                ]
+                await db.execute(insert(NotificationTable), rows)
+
+                # Real-time push: bus publish is deferred to the commit below.
+                delivery_service = get_notification_delivery_service(db)
+                for nid in notification_ids:
+                    await delivery_service.deliver(nid)
+
+                await db.commit()
 
                 logger.info(
                     "Created learning notifications",

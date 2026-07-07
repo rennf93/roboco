@@ -10,12 +10,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
+import httpx
 import pytest
 from roboco.config import settings
-from roboco.exceptions import GitCommandError, GitError
-from roboco.services.base import NotFoundError, UnauthorizedError
+from roboco.exceptions import GitCommandError, GitError, MergeConflictError
+from roboco.services.base import NotFoundError, UnauthorizedError, ValidationError
 from roboco.services.git import GitService
 
 if TYPE_CHECKING:
@@ -273,6 +274,56 @@ async def test_push_fails_loud_when_branch_absent_local_and_origin() -> None:
 
     with pytest.raises(GitCommandError, match="unclaim the task and"):
         await svc.push(Path("/tmp/ws"), branch="feature/backend/GONE")
+
+
+@pytest.mark.asyncio
+async def test_push_force_uses_force_with_lease_not_bare_force() -> None:
+    """push(force=True) must use --force-with-lease, not bare --force.
+
+    Bare --force silently overwrites a concurrent remote advance; --force-with-lease
+    fails fast instead of clobbering someone else's commits.
+    """
+    svc = _service()
+    _bind(svc, "_token_for_workspace", AsyncMock(return_value=None))
+    calls: list[list[str]] = []
+
+    async def _run_git(_ws: object, args: list[str], **_kw: object) -> MagicMock:
+        calls.append(args)
+        res = MagicMock()
+        res.returncode = 0
+        res.stdout = "0" if args[:2] == ["rev-list", "--count"] else ""
+        return res
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+
+    await svc.push(Path("/tmp/ws"), force=True, branch="feature/backend/TASK")
+
+    push_args = next(a for a in calls if a and a[0] == "push")
+    assert "--force-with-lease" in push_args
+    assert "--force" not in push_args
+
+
+@pytest.mark.asyncio
+async def test_push_no_force_has_neither_flag() -> None:
+    """push(force=False) carries neither --force nor --force-with-lease."""
+    svc = _service()
+    _bind(svc, "_token_for_workspace", AsyncMock(return_value=None))
+    calls: list[list[str]] = []
+
+    async def _run_git(_ws: object, args: list[str], **_kw: object) -> MagicMock:
+        calls.append(args)
+        res = MagicMock()
+        res.returncode = 0
+        res.stdout = "0" if args[:2] == ["rev-list", "--count"] else ""
+        return res
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+
+    await svc.push(Path("/tmp/ws"), force=False, branch="feature/backend/TASK")
+
+    push_args = next(a for a in calls if a and a[0] == "push")
+    assert "--force-with-lease" not in push_args
+    assert "--force" not in push_args
 
 
 @pytest.mark.asyncio
@@ -833,3 +884,329 @@ async def test_sync_target_branch_best_effort_returns_sha_on_success() -> None:
         Path("/tmp/ws"), "feature/backend/parent", "token"
     )
     assert result == "merged-tip-sha"
+
+
+# ---------------------------------------------------------------------------
+# rebase_onto_base — clean-tree gate (mirrors pull)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rebase_onto_base_refuses_dirty_worktree() -> None:
+    """Dirty worktree → ValidationError(DIRTY_WORKSPACE); tree untouched."""
+    svc = _service()
+    calls: list[list[str]] = []
+
+    async def _run_git(_ws: object, args: list[str], **_kw: object) -> MagicMock:
+        calls.append(args)
+        res = MagicMock()
+        res.returncode = 0
+        res.stdout = " M dirty.py\n" if args[:2] == ["status", "--porcelain"] else ""
+        return res
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+
+    with pytest.raises(ValidationError, match="DIRTY_WORKSPACE"):
+        await svc.rebase_onto_base(
+            Path("/tmp/ws"),
+            head_branch="feature/backend/h",
+            base_branch="master",
+            git_token="t",
+        )
+
+    # Only the status probe ran — no fetch/checkout/reset/rebase touched the tree.
+    assert calls == [["status", "--porcelain"]]
+
+
+@pytest.mark.asyncio
+async def test_rebase_onto_base_proceeds_on_clean_tree() -> None:
+    """Clean worktree → rebase runs; superseded when head has no unique commits."""
+    svc = _service()
+    calls: list[list[str]] = []
+
+    async def _run_git(_ws: object, args: list[str], **_kw: object) -> MagicMock:
+        calls.append(args)
+        res = MagicMock()
+        res.returncode = 0
+        if args[:2] == ["status", "--porcelain"]:
+            res.stdout = ""
+        elif args[:2] == ["rev-list", "--count"]:
+            res.stdout = "0"
+        else:
+            res.stdout = ""
+        return res
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+
+    result = await svc.rebase_onto_base(
+        Path("/tmp/ws"),
+        head_branch="feature/backend/h",
+        base_branch="master",
+        git_token="t",
+    )
+
+    assert result == {"status": "superseded"}
+    # Gate ran first, then the normal fetch/checkout/reset/rebase sequence.
+    assert calls[0] == ["status", "--porcelain"]
+    assert ["fetch", "origin"] in calls
+    assert ["rebase", "origin/master"] in calls
+
+
+# ---------------------------------------------------------------------------
+# _link_commit_to_task — flush; the runner commits (no out-of-band commit)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_link_commit_to_task_does_not_commit_session() -> None:
+    """_link_commit_to_task must flush but not commit out-of-band.
+
+    The verb runner owns the transaction boundary; an out-of-band commit
+    here would release the runner's savepoint and drag in pending
+    orchestrator state.
+    """
+    session = _make_session()
+    svc = GitService(session)
+
+    fake_task_service = MagicMock()
+    fake_task = MagicMock(work_session_id=uuid4())
+    fake_task_service.get = AsyncMock(return_value=fake_task)
+    fake_task_service.add_commit = AsyncMock()
+
+    fake_ws_service = MagicMock()
+    fake_ws_service.add_commit = AsyncMock()
+
+    with (
+        patch("roboco.services.git.get_task_service", return_value=fake_task_service),
+        patch(
+            "roboco.services.git.get_work_session_service",
+            return_value=fake_ws_service,
+        ),
+    ):
+        await svc._link_commit_to_task(uuid4(), "deadbeef", "msg", uuid4())
+
+    session.flush.assert_awaited()
+    session.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_link_commit_to_task_swallows_errors_without_commit() -> None:
+    """Even on failure the session is not committed by the link path."""
+    session = _make_session()
+    svc = GitService(session)
+
+    fake_task_service = MagicMock()
+    fake_task_service.get = AsyncMock(side_effect=RuntimeError("boom"))
+
+    with patch("roboco.services.git.get_task_service", return_value=fake_task_service):
+        await svc._link_commit_to_task(uuid4(), "deadbeef", "msg", uuid4())
+
+    session.commit.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# M38: _pr_is_merged returns None on httpx.HTTPError (indeterminate, not
+# False). Callers treat None as "assume merged" and fall through to the
+# already-merged cleanup path instead of raising MergeConflictError / GitError
+# and respawning the PM against an already-merged PR.
+# ---------------------------------------------------------------------------
+
+
+def _httpx_raising_client() -> MagicMock:
+    """An AsyncClient whose GET raises httpx.HTTPError (network indeterminate)."""
+    fake_client = MagicMock()
+    fake_client.__aenter__ = AsyncMock(return_value=fake_client)
+    fake_client.__aexit__ = AsyncMock(return_value=False)
+    fake_client.get = AsyncMock(side_effect=httpx.HTTPError("network indeterminate"))
+    return fake_client
+
+
+@pytest.mark.asyncio
+async def test_pr_is_merged_returns_none_on_httpx_error() -> None:
+    """On httpx.HTTPError the lookup is indeterminate -> None, not False."""
+    svc = _service()
+    with patch(
+        "roboco.services.git.httpx.AsyncClient",
+        return_value=_httpx_raising_client(),
+    ):
+        out = await svc._pr_is_merged("acme", "repo", 11, "tok")
+    assert out is None
+
+
+@pytest.mark.asyncio
+async def test_merge_with_retry_none_does_not_raise_merge_conflict() -> None:
+    """Agent merge path: indeterminate (None) falls through, not conflict."""
+    svc = _service()
+    _bind(svc, "_first_allowed_merge_method", AsyncMock(return_value=None))
+    # 405 -> disambiguation path -> _pr_is_merged returns None -> fall through.
+    resp_405 = MagicMock(is_success=False, status_code=405, text="not allowed")
+    _bind(svc, "_call_merge_api", AsyncMock(return_value=resp_405))
+    _bind(svc, "_pr_is_merged", AsyncMock(return_value=None))
+
+    ctx = GitService._MergeContext(
+        owner="acme",
+        repo="repo",
+        pr_number=11,
+        git_token="tok",
+        workspace=Path("/tmp/ws"),
+        target="feature/main_pm/root1",
+    )
+    # None must NOT raise MergeConflictError; it returns the failed resp
+    # (idempotent-success fall-through, same as the already-merged True path).
+    out = await svc._merge_with_retry(ctx)
+    assert out is resp_405
+
+
+@pytest.mark.asyncio
+async def test_merge_with_retry_false_raises_merge_conflict() -> None:
+    """A real False (PR not merged) still raises MergeConflictError."""
+    svc = _service()
+    _bind(svc, "_first_allowed_merge_method", AsyncMock(return_value=None))
+    resp_405 = MagicMock(is_success=False, status_code=405, text="not mergeable")
+    _bind(svc, "_call_merge_api", AsyncMock(return_value=resp_405))
+    _bind(svc, "_pr_is_merged", AsyncMock(return_value=False))
+
+    ctx = GitService._MergeContext(
+        owner="acme",
+        repo="repo",
+        pr_number=11,
+        git_token="tok",
+        workspace=Path("/tmp/ws"),
+        target="feature/main_pm/root1",
+    )
+    with pytest.raises(MergeConflictError):
+        await svc._merge_with_retry(ctx)
+
+
+@pytest.mark.asyncio
+async def test_merge_pull_request_none_does_not_raise_git_error() -> None:
+    """CEO merge path: indeterminate (None) falls through to cleanup, not GitError."""
+    svc = _service()
+    _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
+    _bind(svc, "_parse_github_remote", MagicMock(return_value=("acme", "repo")))
+    _bind(svc, "_first_allowed_merge_method", AsyncMock(return_value=None))
+    _bind(svc, "_delete_pr_branch_best_effort", AsyncMock())
+    _bind(svc, "_sync_target_branch", AsyncMock(return_value="abc123sha"))
+    _bind(svc, "_project_default_branch", AsyncMock(return_value="master"))
+    resp_405 = MagicMock(is_success=False, status_code=405, text="not allowed")
+    _bind(svc, "_call_merge_api", AsyncMock(return_value=resp_405))
+    _bind(svc, "_pr_is_merged", AsyncMock(return_value=None))
+
+    out = await svc.merge_pull_request(Path("/tmp/ws"), 11, "squash", "roboco")
+    assert out == ("master", "abc123sha")
+
+
+@pytest.mark.asyncio
+async def test_is_pr_merged_for_task_none_treated_as_merged() -> None:
+    """is_pr_merged_for_task coerces None -> True so choreographer skips pr_merge."""
+    project_id = uuid4()
+    fake_task = MagicMock(project_id=project_id, pr_number=11, parent_task_id=None)
+    fake_project = MagicMock(slug="roboco")
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = fake_task
+
+    svc = _service(execute_returns=result)
+    _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
+    _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
+    _bind(svc, "_parse_github_remote", MagicMock(return_value=("acme", "repo")))
+    _bind(svc, "_project_for_task", AsyncMock(return_value=fake_project))
+    _bind(svc, "_resolve_workspace_agent_id", MagicMock(return_value=None))
+    _bind(svc, "_pr_is_merged", AsyncMock(return_value=None))
+
+    with _patch_project_service(fake_project):
+        out = await svc.is_pr_merged_for_task(fake_task.id)
+    assert out is True
+
+
+# ---------------------------------------------------------------------------
+# L1: actor_agent_id threading + narrowed created_by fallback
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_workspace_agent_id_no_created_by_fallback_when_actor_none() -> None:
+    """_resolve_workspace_agent_id(None) must NOT fall back to created_by.
+
+    A PM who created the task but never cloned the project's workspace
+    would 404 on get_workspace(PM-id). With the actor unset we prefer
+    None (project.workspace_path) over a creator who has no clone.
+    """
+    pm_id = uuid4()
+    task = MagicMock(assigned_to=None, created_by=pm_id)
+    assert GitService._resolve_workspace_agent_id(task, None) is None
+
+
+def test_resolve_workspace_agent_id_actor_precedes_assigned_and_creator() -> None:
+    """The threaded actor wins over assigned_to and created_by."""
+    actor = uuid4()
+    assignee = uuid4()
+    creator = uuid4()
+    task = MagicMock(assigned_to=assignee, created_by=creator)
+    assert GitService._resolve_workspace_agent_id(task, actor) == actor
+
+
+def test_resolve_workspace_agent_id_assigned_to_used_when_actor_none() -> None:
+    """assigned_to is still the fallback when the actor is unset."""
+    assignee = uuid4()
+    creator = uuid4()
+    task = MagicMock(assigned_to=assignee, created_by=creator)
+    assert GitService._resolve_workspace_agent_id(task, None) == assignee
+
+
+@pytest.mark.asyncio
+async def test_update_pr_for_task_threads_actor_agent_id() -> None:
+    """update_pr_for_task forwards actor_agent_id to workspace resolution.
+
+    A PM (not the assignee) editing the PR must resolve to the PM's own
+    workspace, not fall back to assigned_to/created_by. The actor is the
+    agent who actually performed the action — the verb layer passes it.
+    """
+    pm_id = uuid4()
+    task = MagicMock(
+        id=uuid4(),
+        project_id=uuid4(),
+        pr_number=7,
+        pr_url="https://github.com/acme/repo/pull/7",
+        assigned_to=uuid4(),
+        created_by=uuid4(),
+    )
+
+    svc = _service()
+    captured: dict[str, object] = {}
+
+    async def _capture_workspace(_slug: str, agent_id: UUID | None = None) -> Path:
+        captured["agent_id"] = agent_id
+        return Path("/tmp/ws")
+
+    _bind(svc, "get_workspace", AsyncMock(side_effect=_capture_workspace))
+    _bind(svc, "_parse_github_remote", MagicMock(return_value=("acme", "repo")))
+    _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
+
+    fake_task_service = MagicMock()
+    fake_task_service.get = AsyncMock(return_value=task)
+    fake_project = MagicMock(slug="roboco")
+
+    patch_resp = MagicMock()
+    patch_resp.status_code = 200
+    patch_resp.is_success = True
+    patch_resp.json.return_value = {"number": 7, "html_url": task.pr_url}
+    patch_resp.text = ""
+    fake_client = MagicMock()
+    fake_client.__aenter__ = AsyncMock(return_value=fake_client)
+    fake_client.__aexit__ = AsyncMock(return_value=False)
+    fake_client.patch = AsyncMock(return_value=patch_resp)
+    fake_client.post = AsyncMock()
+
+    with (
+        patch("roboco.services.git.get_task_service", return_value=fake_task_service),
+        _patch_project_service(fake_project),
+        patch("roboco.services.git.httpx.AsyncClient", return_value=fake_client),
+    ):
+        await svc.update_pr_for_task(
+            UUID(str(task.id)),
+            title="t",
+            body=None,
+            reviewers=None,
+            actor_agent_id=pm_id,
+        )
+
+    assert captured["agent_id"] == pm_id
