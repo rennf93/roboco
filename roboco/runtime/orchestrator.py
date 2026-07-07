@@ -12493,6 +12493,10 @@ Never `commit`, never write code, never run `git`. PMs coordinate.
         tasks = await self._fetch_tasks(client, "pending")
 
         for task in tasks:
+            # never auto-block a CEO-held artifact (release_manager / x_post /
+            # video_post / ...); it sits PENDING by design until the CEO acts
+            if _is_held_ceo_source(task):
+                continue
             age = self._get_task_age(task)
             if age is None or age < timedelta(minutes=STUCK_THRESHOLD_MINUTES):
                 continue
