@@ -225,6 +225,53 @@ async def test_save_puts_to_minio_when_configured(
     assert data == b"fake-mp4-bytes"
 
 
+def test_save_writes_temp_then_atomic_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """_save writes a {path}.mp4.tmp sibling first, then atomically renames onto
+    the final path — a re-render can't clobber the MP4 the panel streams mid-read."""
+    out_dir = tmp_path / "out"
+    monkeypatch.setattr(cfg, "video_output_dir", str(out_dir))
+    minio_client._reset_client()
+    monkeypatch.setattr(minio_client, "get_client", lambda: None)
+
+    write_targets: list[Path] = []
+    replace_calls: list[tuple[Path, Path]] = []
+    real_write = Path.write_bytes
+    real_replace = Path.replace
+
+    def spy_write(self: Path, data: bytes) -> int:
+        write_targets.append(self)
+        return real_write(self, data)
+
+    def spy_replace(self: Path, target: Path) -> Path:
+        replace_calls.append((self, target))
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "write_bytes", spy_write)
+    monkeypatch.setattr(Path, "replace", spy_replace)
+
+    try:
+        path = VideoRenderer._save(
+            b"fake-mp4-bytes", render_key="task-atomic", orientation="vertical"
+        )
+    finally:
+        minio_client._reset_client()
+
+    final = Path(path)
+    assert final.name == "task-atomic-vertical.mp4"
+    assert write_targets, "write_bytes was never called"
+    # Wrote to a .tmp sibling first, not the final path directly.
+    assert str(write_targets[0]).endswith(".mp4.tmp")
+    assert write_targets[0] != final
+    # Then atomically renamed onto the final path.
+    assert replace_calls, "Path.replace was never called"
+    assert replace_calls[0][1] == final
+    # Temp is gone; final has the bytes.
+    assert not write_targets[0].exists()
+    assert final.read_bytes() == b"fake-mp4-bytes"
+
+
 @pytest.mark.asyncio
 async def test_save_swallows_minio_put_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
