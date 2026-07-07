@@ -286,9 +286,17 @@ export function useAgents() {
   // A stable signature so the derived roster refetches when the live set
   // changes (react-query keys on this, not on the closure).
   const rosterKey = definitions?.map((d) => d.id).join(",") ?? "static";
+  // H18: derive an epoch from the live status snapshot so a 10s status poll
+  // invalidates the cached roster immediately — without this the roster holds
+  // stale status for up to staleTime (5min) even though the status snapshot
+  // already moved. Derived from the status snapshot, not the roster itself.
+  const statusEpoch =
+    orchestratorStatus?.agents
+      ?.map((a) => `${a.agent_id}:${a.state}`)
+      .join(",") ?? "none";
 
   return useQuery({
-    queryKey: [...agentKeys.all, "roster", rosterKey],
+    queryKey: [...agentKeys.all, "roster", rosterKey, statusEpoch],
     queryFn: async (): Promise<Agent[]> => {
       // Build a map of agent statuses from the orchestrator status array
       const statusMap = new Map<string, string>();
