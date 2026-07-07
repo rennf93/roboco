@@ -3,7 +3,11 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { videoApi } from "@/lib/api";
-import type { VideoCut, VideoPost, VideoPostExecuteResult } from "@/lib/api/video";
+import type {
+  VideoCut,
+  VideoPost,
+  VideoPostExecuteResult,
+} from "@/lib/api/video";
 import {
   Card,
   CardAction,
@@ -46,9 +50,9 @@ function describeExecuteResult(result: VideoPostExecuteResult): string {
   if (result.status === "posted") return "Posted to all platforms.";
   if (result.status === "posted_partial")
     return `Posted to some platforms — ${result.detail}`;
-  if (result.status === "post_failed") return `Posting failed: ${result.detail}`;
-  if (result.status === "already_posted")
-    return "Already posted — no-op.";
+  if (result.status === "post_failed")
+    return `Posting failed: ${result.detail}`;
+  if (result.status === "already_posted") return "Already posted — no-op.";
   if (result.status === "already_in_progress")
     return "A post is already in progress for this draft.";
   if (result.status === "no_platforms")
@@ -81,9 +85,16 @@ function VideoPostRow({
 }) {
   const [cut, setCut] = useState<VideoCut>("vertical");
   const [editX, setEditX] = useState(post.platforms.includes("x"));
-  const [editTiktok, setEditTiktok] = useState(post.platforms.includes("tiktok"));
-  const [xCaption, setXCaption] = useState(post.x_caption ?? "");
-  const [tiktokCaption, setTiktokCaption] = useState(post.tiktok_caption ?? "");
+  const [editTiktok, setEditTiktok] = useState(
+    post.platforms.includes("tiktok"),
+  );
+  // `edited*` holds the CEO's in-progress textarea input; null means "show
+  // the server value". Deriving the displayed caption per render avoids
+  // copying the refetched prop into local state once (mirrors XPostRow).
+  const [editedX, setEditedX] = useState<string | null>(null);
+  const [editedTiktok, setEditedTiktok] = useState<string | null>(null);
+  const xCaption = editedX ?? post.x_caption ?? "";
+  const tiktokCaption = editedTiktok ?? post.tiktok_caption ?? "";
   const [videoSrc, setVideoSrc] = useState<string | null>(null);
   const meta = sourceMeta();
 
@@ -173,7 +184,7 @@ function VideoPostRow({
             </div>
             <Textarea
               value={xCaption}
-              onChange={(e) => setXCaption(e.target.value)}
+              onChange={(e) => setEditedX(e.target.value)}
               disabled={!editX}
               rows={2}
               className={xOverLimit ? "border-destructive" : undefined}
@@ -194,13 +205,16 @@ function VideoPostRow({
                 checked={editTiktok}
                 onCheckedChange={(c) => setEditTiktok(c === true)}
               />
-              <Label htmlFor={`${post.task_id}-tiktok-edit`} className="text-sm">
+              <Label
+                htmlFor={`${post.task_id}-tiktok-edit`}
+                className="text-sm"
+              >
                 Edit TikTok caption
               </Label>
             </div>
             <Textarea
               value={tiktokCaption}
-              onChange={(e) => setTiktokCaption(e.target.value)}
+              onChange={(e) => setEditedTiktok(e.target.value)}
               disabled={!editTiktok}
               rows={2}
               className={tiktokOverLimit ? "border-destructive" : undefined}
@@ -271,7 +285,9 @@ function RequestVideoDialog({
       }
     },
     onError: (e) =>
-      toast.error(`Request failed: ${e instanceof Error ? e.message : "error"}`),
+      toast.error(
+        `Request failed: ${e instanceof Error ? e.message : "error"}`,
+      ),
   });
 
   const togglePlatform = (platform: string) => {
@@ -283,7 +299,9 @@ function RequestVideoDialog({
   };
 
   const canSubmit =
-    occasion.trim().length > 0 && brief.trim().length > 0 && platforms.length > 0;
+    occasion.trim().length > 0 &&
+    brief.trim().length > 0 &&
+    platforms.length > 0;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -291,9 +309,9 @@ function RequestVideoDialog({
         <DialogHeader>
           <DialogTitle>Request a video</DialogTitle>
           <DialogDescription>
-            Opens a video-authoring task for a UX/UI dev — it rides the
-            normal delivery flow and the rendered clip lands back in this
-            queue once rendering finishes.
+            Opens a video-authoring task for a UX/UI dev — it rides the normal
+            delivery flow and the rendered clip lands back in this queue once
+            rendering finishes.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4">
@@ -390,7 +408,9 @@ export function VideoPostQueue({ className }: { className?: string }) {
       }
     },
     onError: (e) =>
-      toast.error(`Approve failed: ${e instanceof Error ? e.message : "error"}`),
+      toast.error(
+        `Approve failed: ${e instanceof Error ? e.message : "error"}`,
+      ),
     onSettled: () => setApprovingId(null),
   });
 
@@ -456,8 +476,8 @@ export function VideoPostQueue({ className }: { className?: string }) {
           <CardContent>
             <p className="text-sm text-muted-foreground">
               No drafts yet. Set your keys in Settings → X (Twitter) / TikTok
-              Credentials and enable the video engine — or request one on
-              demand above.
+              Credentials and enable the video engine — or request one on demand
+              above.
             </p>
           </CardContent>
         </Card>
@@ -477,8 +497,8 @@ export function VideoPostQueue({ className }: { className?: string }) {
           </CardTitle>
           <CardAction>{requestButton}</CardAction>
           <CardDescription>
-            Rendered clips — preview both cuts, edit captions, approve (posts
-            to the target platforms), or reject. Nothing posts on its own.
+            Rendered clips — preview both cuts, edit captions, approve (posts to
+            the target platforms), or reject. Nothing posts on its own.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
