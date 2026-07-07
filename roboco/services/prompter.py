@@ -779,8 +779,14 @@ class PrompterService:
         #    sequence = its wave index and the umbrella as parent.
         task_of: dict[int, UUID] = {}
         for idx, draft in enumerate(drafts):
+            # Root-subtasks are coordination roots: assignment is the
+            # PM-activation flow's call, not a draft-carried field. Strip a
+            # hallucinated/injected assigned_to so a board-role uuid can't
+            # deadlock the umbrella (board roles have no dev delivery verbs).
+            sub_draft = dict(draft)
+            sub_draft.pop("assigned_to", None)
             sub = await self.create_task_from_draft(
-                dict(draft),
+                sub_draft,
                 agent_id,
                 status=subtask_status,
                 placement=BatchPlacement(

@@ -860,6 +860,60 @@ async def test_confirm_live_batch_redis_unreachable_fails_closed(
         )
 
 
+# -----------------------------------------------------------------------------
+# M14: strip assigned_to from each sub-draft (no board-owned root-subtask deadlock)
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_confirm_live_batch_strips_assigned_to_from_drafts(
+    db_session: Any,
+) -> None:
+    """An LLM-authored draft carrying a hallucinated/injected board-role
+    ``assigned_to`` must NOT create a board-owned CODE root-subtask — a board
+    role has no dev delivery verbs, so it would deadlock the umbrella. The
+    root-subtasks are coordination roots; assignment is the PM-activation
+    flow's call, not the draft's."""
+    project1, ceo_id = await _seed_project_and_ceo(db_session)
+    project2 = await _seed_second_project(db_session, ceo_id)
+    service = get_prompter_service(db=db_session)
+    drafts = _make_batch_drafts(project1, project2)
+    # Inject a board-role assignee on every draft (a hallucinated PO uuid).
+    po_uuid = UUID(AGENT_UUIDS["product-owner"])
+    for d in drafts:
+        d["assigned_to"] = str(po_uuid)
+    fake = _FakeRedis()
+    with patch("roboco.services.prompter.redis.from_url", return_value=fake):
+        result = await service.confirm_live_batch(
+            "Batch",
+            drafts,
+            ceo_id,
+            project_ids=[project1, project2],
+            route="main_pm",
+            session_id="sess-m14",
+        )
+    # The caller's drafts are untouched (the strip is on the copy).
+    for d in drafts:
+        assert d["assigned_to"] == str(po_uuid)
+
+    roots = (
+        (
+            await db_session.execute(
+                select(TaskTable).where(
+                    TaskTable.id.in_([UUID(r) for r in result["root_subtask_ids"]])
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert roots, "expected root-subtasks to be created"
+    for r in roots:
+        assert r.assigned_to is None, (
+            f"root-subtask {r.id} wrongly assigned to {r.assigned_to}"
+        )
+
+
 def test_preview_batch_computes_waves_without_creating() -> None:
     """preview_batch is pure: it returns the same waves confirm would wire, with
     no DB session and no task creation."""
