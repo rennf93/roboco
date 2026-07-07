@@ -5753,8 +5753,8 @@ class AgentOrchestrator:
             and instance.config.provider_type == ModelProvider.GROK.value
         )
         if is_grok:
-            tokens = self._grok_usage_tokens(agent_id)
-            return tokens if any(tokens) else None
+            grok_tokens = self._grok_usage_tokens(agent_id)
+            return grok_tokens if any(grok_tokens) else None
         tokens = await self._fetch_agent_tokens(client, agent_id)
         if tokens is not None:
             return tokens
