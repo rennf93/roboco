@@ -22,6 +22,8 @@ from roboco.runtime.orchestrator import AgentOrchestrator
 # intent reads at the call site).
 _CI_WATCH_INTERVAL = 0.01
 _VIDEO_RENDER_INTERVAL = 0.05
+_X_MENTIONS_INTERVAL = 0.04
+_ROADMAP_INTERVAL = 0.06
 
 
 def _orch() -> Any:
@@ -158,3 +160,50 @@ async def test_video_render_loop_records_heartbeat(
     assert "video_render" in orch._loop_heartbeats
     _, interval = orch._loop_heartbeats["video_render"]
     assert interval == _VIDEO_RENDER_INTERVAL
+
+
+@pytest.mark.asyncio
+async def test_x_mentions_loop_records_heartbeat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The mentions-poll loop records under its canonical name + interval —
+    guards against copy-paste name drift on the heartbeat calls."""
+    orch = _orch()
+    monkeypatch.setattr(settings, "x_engine_enabled", True)
+    monkeypatch.setattr(settings, "x_replies_enabled", True)
+    monkeypatch.setattr(settings, "x_mentions_interval_seconds", 0.04)
+
+    async def _stop_after_cycle() -> None:
+        orch._running = False
+
+    orch._run_x_mentions_cycle = AsyncMock(side_effect=_stop_after_cycle)
+
+    with patch("asyncio.sleep", new=AsyncMock()):
+        await orch._x_mentions_poll_loop()
+
+    assert "x_mentions" in orch._loop_heartbeats
+    _, interval = orch._loop_heartbeats["x_mentions"]
+    assert interval == _X_MENTIONS_INTERVAL
+
+
+@pytest.mark.asyncio
+async def test_roadmap_engine_loop_records_heartbeat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The roadmap-engine loop records under its canonical name + interval —
+    guards against copy-paste name drift on the heartbeat calls."""
+    orch = _orch()
+    monkeypatch.setattr(settings, "roadmap_engine_enabled", True)
+    monkeypatch.setattr(settings, "roadmap_interval_seconds", 0.06)
+
+    async def _stop_after_cycle() -> None:
+        orch._running = False
+
+    orch._run_roadmap_engine_cycle = AsyncMock(side_effect=_stop_after_cycle)
+
+    with patch("asyncio.sleep", new=AsyncMock()):
+        await orch._roadmap_engine_loop()
+
+    assert "roadmap_engine" in orch._loop_heartbeats
+    _, interval = orch._loop_heartbeats["roadmap_engine"]
+    assert interval == _ROADMAP_INTERVAL

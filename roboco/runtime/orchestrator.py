@@ -7620,10 +7620,12 @@ Start by:
         if not (settings.x_engine_enabled and settings.x_replies_enabled):
             return
         interval = settings.x_mentions_interval_seconds
+        self._record_loop_heartbeat("x_mentions", interval)
         while self._running:
             try:
                 await asyncio.sleep(interval)
                 await self._run_x_mentions_cycle()
+                self._record_loop_heartbeat("x_mentions", interval)
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -7651,10 +7653,12 @@ Start by:
         if not settings.roadmap_engine_enabled:
             return
         interval = settings.roadmap_interval_seconds
+        self._record_loop_heartbeat("roadmap_engine", interval)
         while self._running:
             try:
                 await asyncio.sleep(interval)
                 await self._run_roadmap_engine_cycle()
+                self._record_loop_heartbeat("roadmap_engine", interval)
             except asyncio.CancelledError:
                 break
             except Exception:
