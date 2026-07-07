@@ -411,9 +411,19 @@ class Settings(BaseSettings):
         ge=60,
         description=(
             "Session cookie lifetime in seconds (default 30 days). Sliding: "
-            "every authenticated request re-mints + re-sets the cookie, so an "
-            "active session never expires — only genuine inactivity past this "
-            "window logs out."
+            "the cookie is re-minted only near expiry (see "
+            "``cloud_auth_remint_threshold_seconds``), so an active session "
+            "never expires — only genuine inactivity past this window logs out."
+        ),
+    )
+    cloud_auth_remint_threshold_seconds: int = Field(
+        default=86400,
+        ge=60,
+        description=(
+            "Re-mint the sliding session cookie only when its exp is within "
+            "this many seconds of now (default 24h). Outside the window the "
+            "cookie is left untouched so a stolen cookie's expiry is fixed "
+            "rather than rolling forward with the legitimate user."
         ),
     )
     login_max_attempts: int = Field(
@@ -422,6 +432,16 @@ class Settings(BaseSettings):
         description=(
             "Max login attempts per IP within the 60s rolling window before "
             "the cloud-auth login endpoint returns 429."
+        ),
+    )
+    agent_token_ttl_seconds: int = Field(
+        default=604800,
+        ge=60,
+        description=(
+            "Lifetime in seconds of an agent auth token minted at spawn "
+            "(default 7 days). Each spawn mints a fresh token with this TTL "
+            "so a stolen token is bounded; the static panel token is "
+            "unaffected. Refresh happens on every respawn."
         ),
     )
 

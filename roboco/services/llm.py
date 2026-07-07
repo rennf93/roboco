@@ -485,13 +485,21 @@ class ModelRoutingService(BaseService):
     async def _apply_grok(self, default_model: str | None) -> None:
         """Wipe assignments, set the GLOBAL default to a Grok (xAI) model.
 
-        ``grok-build-0.1`` is in the catalog under the GROK provider, so the
-        upsert resolves to the seeded Grok provider row. Routing to Grok needs
-        the xAI key set (which enables the provider); without it, agents fall
-        back to the Anthropic path at spawn — same contract as Ollama.
+        The GrokCliProvider authenticates via the SuperGrok subscription
+        (``~/.grok/auth.json``), not the xAI API key — so the GROK provider row
+        must be enabled here for resolve_for_agent() to route to it, mirroring
+        self_hosted enabling LOCAL. Without it the seeded GROK row stays
+        disabled (no key set) and agents fall back to Anthropic at spawn even
+        in grok mode.
         """
         await self.session.execute(sa_delete(ModelAssignmentTable))
         await self.session.flush()
+        grok = await self._get_seeded_provider(ModelProvider.GROK)
+        provider_svc = ProviderService(self.session)
+        await provider_svc.update_provider(
+            require_uuid(grok.id),
+            ProviderUpdate(enabled=True),
+        )
         model_name = default_model or "grok-build-0.1"
         await self.upsert_assignment(
             scope=AssignmentScope.GLOBAL,

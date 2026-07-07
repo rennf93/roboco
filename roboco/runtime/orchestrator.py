@@ -57,6 +57,7 @@ from roboco.foundation.policy.agent_loop import DEFAULT_BUDGET as _AGENT_LOOP_BU
 from roboco.foundation.policy.batch import is_branchless_coordination
 from roboco.foundation.policy.content import markers as _markers
 from roboco.models import AgentRole, Team
+from roboco.models.base import ModelProvider
 from roboco.models.runtime import (
     MODEL_MAP,
     ROLE_EFFORT_MAP,
@@ -243,6 +244,20 @@ _ANTHROPIC_RATE_LIMIT_MARKERS: tuple[str, ...] = (
     "hit your session limit",
     "five_hour",
 )
+# ollama.com HTTP 429 body (the weekly glm-5.2:cloud limit surfaces here).
+# Specific to the API error formatter so an agent writing about limits can't
+# false-match and park the whole ollama fleet.
+_OLLAMA_RATE_LIMIT_MARKERS: tuple[str, ...] = ("rate limit exceeded",)
+
+# ponytail: marker map drives the detector — adding a provider later is a
+# table row, not a new branch. Grok is deliberately absent (exit-75 detector).
+_RATE_LIMIT_MARKERS_BY_PROVIDER: dict[str, tuple[str, ...]] = {
+    ModelProvider.ANTHROPIC.value: _ANTHROPIC_RATE_LIMIT_MARKERS,
+    ModelProvider.OLLAMA_CLOUD.value: _OLLAMA_RATE_LIMIT_MARKERS,
+}
+_OVERLOAD_MARKERS_BY_PROVIDER: dict[str, tuple[str, ...]] = {
+    ModelProvider.ANTHROPIC.value: _ANTHROPIC_OVERLOAD_MARKERS,
+}
 
 # The intake (prompter) agent: a single seeded, board-adjacent interviewer.
 # Unlike delivery agents it is never dispatched and runs ONE persistent
@@ -993,6 +1008,11 @@ class AgentOrchestrator:
         # dispatcher/reaper loops launch below.
         await self._heal_stale_agent_tokens()
         await self._readopt_running_agents()
+
+        # Close agent_spawn_sessions rows left open by a prior orchestrator
+        # crash so usage/cost rollups (which filter ended_at IS NOT NULL) count
+        # their tokens. Running agents stay open for their live finalize.
+        await self._reconcile_orphan_spawn_sessions()
 
         # Orphan sandbox sweep: a sandbox whose owning agent container didn't
         # survive the restart (or a prior crash mid-teardown) is removed here
@@ -2759,7 +2779,12 @@ class AgentOrchestrator:
         # or the middleware rejects with "signature mismatch". AGENT_UUIDS
         # maps slug→UUID; fall back to the slug for custom agents not seeded.
         _agent_uuid = AGENT_UUIDS.get(config.agent_id, config.agent_id)
-        _token = issue_agent_token(_agent_uuid, _role, _team)
+        _token = issue_agent_token(
+            _agent_uuid,
+            _role,
+            _team,
+            ttl_seconds=settings.agent_token_ttl_seconds,
+        )
         cmd.extend(["-e", f"ROBOCO_AGENT_TOKEN={_token}"])
 
     @staticmethod
@@ -5180,6 +5205,7 @@ class AgentOrchestrator:
                     last_status=record.get("last_status"),
                     last_check=record["last_check"],
                     tracing_resets=int(record.get("tracing_resets", 0)),
+                    revisit_resets=int(record.get("revisit_resets", 0)),
                     notified=bool(record.get("notified", False)),
                     updated_at=now,
                 )
@@ -5193,6 +5219,7 @@ class AgentOrchestrator:
                         "last_status": stmt.excluded.last_status,
                         "last_check": stmt.excluded.last_check,
                         "tracing_resets": stmt.excluded.tracing_resets,
+                        "revisit_resets": stmt.excluded.revisit_resets,
                         "notified": stmt.excluded.notified,
                         "updated_at": stmt.excluded.updated_at,
                     },
@@ -5720,8 +5747,19 @@ class AgentOrchestrator:
         Tries the agent SDK's ``/usage/status`` first; on a zero/miss falls
         back to the durable transcript (the SDK can report zero mid-run, the
         same race the finalize path handles). Returns ``None`` when neither
-        source has any usage yet.
+        source has any usage yet. GROK has no SDK server or Claude transcript,
+        so it routes to its ``usage.json`` — the same early return the finalize
+        path uses, so live USAGE_SNAPSHOT reflects grok agents mid-run too.
         """
+        instance = self._instances.get(agent_id)
+        is_grok = (
+            instance is not None
+            and instance.config is not None
+            and instance.config.provider_type == ModelProvider.GROK.value
+        )
+        if is_grok:
+            grok_tokens = self._grok_usage_tokens(agent_id)
+            return grok_tokens if any(grok_tokens) else None
         tokens = await self._fetch_agent_tokens(client, agent_id)
         if tokens is not None:
             return tokens
@@ -5846,7 +5884,10 @@ class AgentOrchestrator:
                     if not persisted:
                         continue
 
-                    tokens_input, tokens_output = tokens[0], tokens[1]
+                    tokens_input = tokens[0]
+                    tokens_output = tokens[1]
+                    tokens_cache_read = tokens[2]
+                    tokens_cache_write = tokens[3]
                     model = instance.config.model if instance.config else "unknown"
 
                     # Accumulate per-agent data for the aggregate snapshot.
@@ -5857,12 +5898,16 @@ class AgentOrchestrator:
                             model=model,
                             tokens_input=tokens_input,
                             tokens_output=tokens_output,
+                            tokens_cache_read=tokens_cache_read,
+                            tokens_cache_write=tokens_cache_write,
                         )
                         _usage_by_agent.append(
                             {
                                 "agent_id": agent_id,
                                 "input_tokens": tokens_input,
                                 "output_tokens": tokens_output,
+                                "cache_read_tokens": tokens_cache_read,
+                                "cache_write_tokens": tokens_cache_write,
                                 "model": model,
                                 "cost_estimate": agent_cost,
                             }
@@ -6472,6 +6517,7 @@ class AgentOrchestrator:
                 "last_status": norm,
                 "last_check": restore_now,
                 "tracing_resets": r.tracing_resets,
+                "revisit_resets": r.revisit_resets,
                 "notified": r.notified,
             }
         return restored, stale
@@ -8345,18 +8391,19 @@ Start by:
     ) -> str | None:
         """Provider to park if this dead run hit a persistent overload, else None.
 
-        Only the Anthropic path is matched: grok has its own exit-75 detector,
-        and other providers surface overloads differently. Returns None when
-        the feature is disabled, the agent isn't Anthropic, or the output holds
-        no overload marker. Gated so a misfire can be turned off without a
-        redeploy of the detection logic.
+        Data-driven by ``_OVERLOAD_MARKERS_BY_PROVIDER``: only providers with
+        specific overload markers are candidates, so grok (its own exit-75
+        detector) and unhandled providers stay on crash-retry. Returns the
+        matched provider value, or None when the feature is disabled, the
+        provider has no overload markers, or the output holds no marker.
         """
         if not settings.overload_break_enabled:
             return None
-        from roboco.models.base import ModelProvider
-
         provider_type = instance.config.provider_type if instance.config else None
-        if provider_type not in (None, ModelProvider.ANTHROPIC.value):
+        markers = (
+            _OVERLOAD_MARKERS_BY_PROVIDER.get(provider_type) if provider_type else None
+        )
+        if markers is None:
             return None
         tail = await self._tail_container_logs(f"roboco-agent-{agent_id}")
         # The SDK server writes model-API errors to /tmp/sdk-server.log, not
@@ -8365,8 +8412,8 @@ Start by:
         # crash-respawns straight back into it.
         transcript_tail = self._transcript_tail_text(agent_id)
         lowered = (tail + "\n" + transcript_tail).lower()
-        if any(marker in lowered for marker in _ANTHROPIC_OVERLOAD_MARKERS):
-            return ModelProvider.ANTHROPIC.value
+        if any(marker in lowered for marker in markers):
+            return provider_type
         return None
 
     async def _provider_rate_limit_park_target(
@@ -8374,18 +8421,22 @@ Start by:
     ) -> str | None:
         """Provider to park if this dead run hit a session/usage limit, else None.
 
-        Mirrors ``_provider_overload_park_target`` but matches the Claude session
-        ("5-hour") limit, which surfaces as a 429 the SDK does not retry — the
-        container exits with a 0-token rejection rather than an overload. Without
-        this it would crash-respawn straight back into the limit. Gated by the
-        same flag so a misfire is toggle-able without a redeploy.
+        Mirrors ``_provider_overload_park_target`` but matches the Claude
+        session ("5-hour") limit AND the ollama.com weekly limit
+        (``glm-5.2:cloud``), both of which surface as a 429 the SDK does not
+        retry. Data-driven by ``_RATE_LIMIT_MARKERS_BY_PROVIDER``; returns the
+        matched provider value or None. Gated so a misfire can be turned off
+        without a redeploy.
         """
         if not settings.overload_break_enabled:
             return None
-        from roboco.models.base import ModelProvider
-
         provider_type = instance.config.provider_type if instance.config else None
-        if provider_type not in (None, ModelProvider.ANTHROPIC.value):
+        markers = (
+            _RATE_LIMIT_MARKERS_BY_PROVIDER.get(provider_type)
+            if provider_type
+            else None
+        )
+        if markers is None:
             return None
         tail = await self._tail_container_logs(f"roboco-agent-{agent_id}")
         # The SDK server writes to /tmp/sdk-server.log, not stdout, so the
@@ -8393,8 +8444,8 @@ Start by:
         # Claude transcript on the host as well.
         transcript_tail = self._transcript_tail_text(agent_id)
         lowered = (tail + "\n" + transcript_tail).lower()
-        if any(marker in lowered for marker in _ANTHROPIC_RATE_LIMIT_MARKERS):
-            return ModelProvider.ANTHROPIC.value
+        if any(marker in lowered for marker in markers):
+            return provider_type
         return None
 
     async def _park_provider_unavailable(
@@ -9699,6 +9750,56 @@ Start now: evidence(task_id="{task_id}")
                 await db.commit()
         except Exception as exc:
             logger.error("startup reconcile failed; continuing", error=str(exc))
+
+    async def _reconcile_orphan_spawn_sessions(self) -> int:
+        """Close agent_spawn_sessions rows left open by a prior crash.
+
+        usage.get_summary / get_time_series filter ``ended_at IS NOT NULL``,
+        so an open row whose container is gone is permanently excluded from
+        usage/cost rollups. Close each open session whose agent slug is NOT
+        in ``self._instances`` (the re-adopted running set) with
+        ``ended_at=now`` and ``exit_reason='abandoned'``. Running agents
+        stay open for their live finalize. Best-effort; never blocks startup.
+        """
+        try:
+            from sqlalchemy import select, update
+
+            from roboco.db.base import get_session_factory
+            from roboco.db.tables import AgentSpawnSessionTable
+        except ImportError:
+            return 0
+        try:
+            running = set(self._instances.keys())
+            session_factory = get_session_factory()
+            async with session_factory() as db:
+                rows = (
+                    (
+                        await db.execute(
+                            select(AgentSpawnSessionTable).where(
+                                AgentSpawnSessionTable.ended_at.is_(None)
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                orphans = [r for r in rows if r.agent_slug not in running]
+                if not orphans:
+                    return 0
+                now = datetime.now(UTC)
+                await db.execute(
+                    update(AgentSpawnSessionTable)
+                    .where(AgentSpawnSessionTable.id.in_([r.id for r in orphans]))
+                    .values(ended_at=now, exit_reason="abandoned")
+                )
+                await db.commit()
+            return len(orphans)
+        except Exception as exc:
+            logger.warning(
+                "Failed to reconcile orphan spawn sessions",
+                error=str(exc),
+            )
+            return 0
 
     async def _reconcile_with_service(self, svc: "TaskService") -> None:
         """Inner reconcile loop, parameterised by the TaskService to use.

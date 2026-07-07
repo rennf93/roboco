@@ -1529,6 +1529,7 @@ class RespawnTrackerTable(Base):
         DateTime(timezone=True), nullable=False
     )
     tracing_resets: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    revisit_resets: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     notified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
