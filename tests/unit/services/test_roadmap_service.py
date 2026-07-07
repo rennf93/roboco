@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 import pytest
-from roboco.db.tables import AgentTable, ProjectTable, TaskTable
+from roboco.db.tables import AgentTable, AuditLogTable, ProjectTable, TaskTable
 from roboco.foundation import identity as _foundation
 from roboco.foundation.policy.content import markers
 from roboco.models.base import (
@@ -295,8 +295,6 @@ async def test_list_open_cycles_excludes_completed(db_session: AsyncSession) -> 
 @pytest.mark.asyncio
 async def test_maybe_complete_cycle_emits_audit(db_session: AsyncSession) -> None:
     # All items terminal -> task completed + a task.completed audit row.
-    from roboco.db.tables import AuditLogTable
-
     await _seed_project(db_session, "backend-svc")
     task = await _seed_cycle(db_session, project_slug="backend-svc")
     svc = _svc(db_session)

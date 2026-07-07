@@ -1,10 +1,9 @@
-"""SoftBlockRequest types resolver_type at the boundary — typos 422, not silent AGENT."""
+"""SoftBlockRequest.resolver_type typed — typos 422, not silent AGENT."""
 
 from __future__ import annotations
 
 import pytest
 from pydantic import ValidationError
-
 from roboco.api.schemas.tasks import SoftBlockRequest
 from roboco.models.base import BlockerResolverType
 
