@@ -41,6 +41,7 @@ from tests.e2e_smoke.arcs import (
     seed_task,
     set_branch_name,
     task_state,
+    wait_for_status,
     wire_dependency,
 )
 from tests.e2e_smoke.harness import ScriptedAgent, expect_error, expect_ok
@@ -429,8 +430,7 @@ def test_megatask_umbrella_sequenced_close(e2e_stack: E2EStack) -> None:
         ),
         "main_pm complete umbrella",
     )
-    escalated = task_state(stack, umbrella_id)
-    assert escalated["status"] == "awaiting_ceo_approval", escalated
+    escalated = wait_for_status(stack, umbrella_id, "awaiting_ceo_approval")
     assert escalated["pr_number"] is None, escalated
 
     resp = httpx.post(
@@ -442,8 +442,7 @@ def test_megatask_umbrella_sequenced_close(e2e_stack: E2EStack) -> None:
     assert resp.status_code == HTTPStatus.OK, (
         f"ceo-approve: {resp.status_code} {resp.text[:1500]}"
     )
-    final = task_state(stack, umbrella_id)
-    assert final["status"] == "completed", final
+    final = wait_for_status(stack, umbrella_id, "completed")
     assert final["pr_number"] is None, final
     assert origin_file(stack, "master", "rs1.txt")
     assert origin_file(stack, "master", "rs2.txt")
