@@ -43,9 +43,21 @@ export const useRateLimitStore = create<RateLimitState>((set) => ({
     }),
 
   syncFromApi: (response: RateLimitApiResponse) =>
-    set(() => {
-      const next = new Map<string, RateLimitEntry>();
+    set((state) => {
+      // Merge by freshest hitAt: an out-of-order (older) API snapshot must
+      // not regress a fresher WS-derived entry. Entries omitted from the
+      // snapshot are retained (a stale/empty poll doesn't wipe live state).
+      const next = new Map(state.limits);
       for (const entry of response.entries) {
+        const existing = next.get(entry.provider);
+        if (
+          existing &&
+          existing.hitAt &&
+          entry.hitAt &&
+          existing.hitAt >= entry.hitAt
+        ) {
+          continue;
+        }
         next.set(entry.provider, entry);
       }
       return { limits: next };
