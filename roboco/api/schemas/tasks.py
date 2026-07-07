@@ -14,7 +14,14 @@ from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import select
 
 from roboco.db.tables import ProjectTable, TaskTable, WorkSessionTable
-from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
+from roboco.models.base import (
+    BlockerResolverType,
+    Complexity,
+    TaskNature,
+    TaskStatus,
+    TaskType,
+    Team,
+)
 from roboco.models.product import ProductCellMapping
 from roboco.utils.converters import require_uuid, to_python_uuid, to_python_uuid_list
 
@@ -531,8 +538,8 @@ class SoftBlockRequest(BaseModel):
     # Default is "agent" for back-compat with existing clients. When "human",
     # the dispatcher will NOT respawn agents on this task and only a HITL
     # unblock will move it forward.
-    resolver_type: str = Field(
-        default="agent",
+    resolver_type: BlockerResolverType = Field(
+        default=BlockerResolverType.AGENT,
         description=(
             "Who resolves: 'agent' (another agent can fix it — dispatcher "
             "keeps working) or 'human' (HITL/CEO only — dispatcher stops)"

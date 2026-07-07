@@ -404,16 +404,16 @@ class _CompletionSnapshot:
 class SoftBlockInput:
     """Primitive blocker fields from the API layer.
 
-    Route-layer DTO that bundles the raw string inputs so the service
-    method signature stays under PLR0913 without leaking the API's
-    Pydantic schema into the service. `resolver_type_raw` is coerced to
-    BlockerResolverType inside the service.
+    Route-layer DTO that bundles the blocker inputs so the service method
+    signature stays under PLR0913 without leaking the API's Pydantic schema
+    into the service. `resolver_type` arrives already typed as
+    BlockerResolverType — the schema 422s any bad value at the boundary.
     """
 
     blocker_type: str
     reason: str
     what_needed: str
-    resolver_type_raw: str
+    resolver_type: BlockerResolverType
 
 
 @dataclass
@@ -7376,17 +7376,11 @@ class TaskService(BaseService):
                 action="soft_block", reason="Not authorized to block this task"
             )
 
-        # Coerce the raw string to the domain enum — fall back on AGENT
-        # (agent-self-resolvable is the safest default).
-        try:
-            resolver = BlockerResolverType(request.resolver_type_raw)
-        except ValueError:
-            resolver = BlockerResolverType.AGENT
         info = SoftBlockInfo(
             reason=request.reason,
             blocker_type=request.blocker_type,
             what_needed=request.what_needed,
-            resolver_type=resolver,
+            resolver_type=request.resolver_type,
         )
 
         blocked = await self.soft_block(task_id, info, agent.role)
