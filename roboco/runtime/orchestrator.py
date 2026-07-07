@@ -5858,7 +5858,10 @@ class AgentOrchestrator:
                     if not persisted:
                         continue
 
-                    tokens_input, tokens_output = tokens[0], tokens[1]
+                    tokens_input = tokens[0]
+                    tokens_output = tokens[1]
+                    tokens_cache_read = tokens[2]
+                    tokens_cache_write = tokens[3]
                     model = instance.config.model if instance.config else "unknown"
 
                     # Accumulate per-agent data for the aggregate snapshot.
@@ -5869,12 +5872,16 @@ class AgentOrchestrator:
                             model=model,
                             tokens_input=tokens_input,
                             tokens_output=tokens_output,
+                            tokens_cache_read=tokens_cache_read,
+                            tokens_cache_write=tokens_cache_write,
                         )
                         _usage_by_agent.append(
                             {
                                 "agent_id": agent_id,
                                 "input_tokens": tokens_input,
                                 "output_tokens": tokens_output,
+                                "cache_read_tokens": tokens_cache_read,
+                                "cache_write_tokens": tokens_cache_write,
                                 "model": model,
                                 "cost_estimate": agent_cost,
                             }
