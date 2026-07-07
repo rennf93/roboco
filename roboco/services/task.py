@@ -1124,25 +1124,30 @@ class TaskService(BaseService):
         return task
 
     async def _attach_baseline_constraints(self, task: TaskTable) -> None:
-        """Append the project's block-rule constraints to the task description.
+        """Write the project's block-rule constraints to ``task.constraints``.
 
         Server-derived backstop (flag-gated): every project task carries the
         hard conventions even if nothing upstream added them — the layer the
-        design calls "can't be skipped". Idempotent and non-suppressible: it
-        appends only baseline constraints not already present (dedup by exact
-        string), so a second pass adds nothing AND an agent-authored
-        ``## Constraints`` section can never suppress the mandatory baseline.
-        Best-effort: a failure never blocks task creation.
+        design calls "can't be skipped". Idempotent: appends only baseline
+        constraints not already present in the column (dedup by exact string),
+        so a second pass adds nothing AND an agent-authored ``## Constraints``
+        section in the description can never suppress the mandatory baseline
+        (the column is the source of truth for the panel; the description is
+        the human-authored instruction only — 2026-07-07 task-quality fix).
+        The conventions ALSO reach the agent at spawn via the ambient block
+        (``ConventionsService.render_ambient_block``), so this column is for
+        panel visibility, not agent correctness. Best-effort: a failure never
+        blocks task creation.
         """
         baseline = await self._project_baseline_constraints(task)
         if not baseline:
             return
-        existing = task.description or ""
+        existing = task.constraints or ""
         missing = [item for item in baseline if item not in existing]
         if not missing:
             return
         section = "## Constraints\n" + "\n".join(f"- {item}" for item in missing)
-        task.description = f"{existing}\n\n{section}" if existing else section
+        task.constraints = f"{existing}\n\n{section}" if existing else section
         await self.session.flush()
 
     async def _project_baseline_constraints(self, task: TaskTable) -> list[str]:

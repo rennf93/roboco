@@ -68,9 +68,12 @@ async def test_baseline_attached_when_flag_on(
     monkeypatch.setattr(settings, "conventions_enabled", True)
     agent, project = await _seed(db_session)
     task = await TaskService(db_session).create(_req(agent, project, "Do the work"))
-    assert task.description is not None
-    assert "## Constraints" in task.description
-    assert "no lint suppressions" in task.description
+    # The conventions block lives in `constraints`, not `description` (the
+    # 2026-07-07 fix: description is the human-authored instruction only).
+    assert task.description == "Do the work"
+    assert task.constraints is not None
+    assert "## Constraints" in task.constraints
+    assert "no lint suppressions" in task.constraints
 
 
 async def test_flag_off_attaches_nothing(
@@ -80,20 +83,24 @@ async def test_flag_off_attaches_nothing(
     agent, project = await _seed(db_session)
     task = await TaskService(db_session).create(_req(agent, project, "Do the work"))
     assert task.description == "Do the work"
+    assert task.constraints is None
 
 
 async def test_baseline_not_suppressed_by_agent_constraints_section(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # An agent-authored ## Constraints section must NOT suppress the mandatory
-    # server baseline — both are present.
+    # An agent-authored ## Constraints section in the description must NOT
+    # suppress the mandatory server baseline — the description keeps the
+    # agent's block and `constraints` carries the server baseline (separate
+    # field, so neither suppresses the other).
     monkeypatch.setattr(settings, "conventions_enabled", True)
     agent, project = await _seed(db_session)
     seeded = "Do the work\n\n## Constraints\n- a task-specific note"
     task = await TaskService(db_session).create(_req(agent, project, seeded))
     assert task.description is not None
     assert "a task-specific note" in task.description
-    assert "no lint suppressions" in task.description
+    assert task.constraints is not None
+    assert "no lint suppressions" in task.constraints
 
 
 async def test_baseline_attach_is_idempotent(
@@ -103,8 +110,8 @@ async def test_baseline_attach_is_idempotent(
     agent, project = await _seed(db_session)
     svc = TaskService(db_session)
     task = await svc.create(_req(agent, project, "Do the work"))
-    before = task.description
+    before = task.constraints
     await svc._attach_baseline_constraints(task)
-    assert task.description == before
-    assert task.description is not None
-    assert task.description.count("no lint suppressions") == 1
+    assert task.constraints == before
+    assert task.constraints is not None
+    assert task.constraints.count("no lint suppressions") == 1

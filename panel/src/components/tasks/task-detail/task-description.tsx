@@ -78,6 +78,7 @@ export function TaskDescription({ task }: TaskDescriptionProps) {
   };
 
   return (
+    <>
     <Card>
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
@@ -177,5 +178,22 @@ export function TaskDescription({ task }: TaskDescriptionProps) {
         )}
       </CardContent>
     </Card>
+    {task.constraints ? (
+      <Card className="border-dashed">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base text-muted-foreground">
+            Constraints
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-xs text-muted-foreground mb-3">
+            Architectural standard derived from the project conventions —
+            read-only. Applies to every task in this project.
+          </p>
+          <Markdown>{task.constraints}</Markdown>
+        </CardContent>
+      </Card>
+    ) : null}
+    </>
   );
 }

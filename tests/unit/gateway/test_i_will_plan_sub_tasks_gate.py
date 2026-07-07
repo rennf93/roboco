@@ -32,6 +32,8 @@ _GOOD_SUBTASK_DESC = (
     "README H1 leaving the rest untouched, commits with the task-id prefix, "
     "and opens the leaf PR for QA."
 )
+_LONG_SUBTASK_DESC = "x" * 700  # exceeds _PM_SUBTASK_DESC_MAX_LEN (600)
+_OVERLONG_TITLE = "t" * 250  # exceeds _PM_SUBTASK_TITLE_MAX_LEN (200)
 
 
 # ---------------------------------------------------------------------------
@@ -429,3 +431,199 @@ async def test_pm_reentry_in_progress_short_circuits_before_gate() -> None:
         "The gate is firing before _handle_pm_reentry — ordering bug not fixed."
     )
     assert body.get("status") == "in_progress", body
+
+
+# ---------------------------------------------------------------------------
+# Test 7: over-decomposition cap — >7 sub_tasks rejected (2026-07-07 defect)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pm_with_too_many_subtasks_gets_incomplete_input() -> None:
+    """A plan with >7 sub_tasks is over-decomposition — rejected with a hint
+    to split into sibling coordination tasks instead of one giant plan."""
+    pm_id = uuid4()
+    task_id = uuid4()
+    task_svc = _pm_task_svc(task_id, role="cell_pm")
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_will_plan(
+        pm_id,
+        task_id,
+        plan="decompose work",
+        rich_plan={
+            "approach": _GOOD_APPROACH,
+            "sub_tasks": [
+                {"title": f"Slice {i}", "description": _GOOD_SUBTASK_DESC}
+                for i in range(8)  # 8 > _PM_SUBTASKS_MAX (7)
+            ],
+        },
+    )
+    body = env.as_dict()
+    assert body["error"] == "incomplete_input", body
+    assert "sub_tasks" in (body.get("missing") or []), body
+    assert "at most 7" in str(body.get("field_hints", {})), body
+
+
+@pytest.mark.asyncio
+async def test_pm_with_seven_subtasks_passes_cap() -> None:
+    """Exactly 7 sub_tasks is the cap — must not be rejected by the cap."""
+    pm_id = uuid4()
+    task_id = uuid4()
+    task_svc = _pm_task_svc(task_id, role="cell_pm")
+    claimed = MagicMock(
+        id=task_id,
+        status="claimed",
+        plan=None,
+        assigned_to=pm_id,
+        task_type="planning",
+    )
+    started = MagicMock(
+        id=task_id,
+        status="in_progress",
+        plan={"text": "x"},
+        assigned_to=pm_id,
+        task_type="planning",
+    )
+    task_svc.claim.return_value = claimed
+    task_svc.set_plan.return_value = claimed
+    task_svc.start.return_value = started
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_will_plan(
+        pm_id,
+        task_id,
+        plan="decompose work",
+        rich_plan={
+            "approach": _GOOD_APPROACH,
+            "sub_tasks": [
+                {"title": f"Slice {i}", "description": _GOOD_SUBTASK_DESC}
+                for i in range(7)  # exactly the cap
+            ],
+        },
+    )
+    body = env.as_dict()
+    assert body.get("error") != "incomplete_input", body
+
+
+# ---------------------------------------------------------------------------
+# Test 8: per-sub_task ceilings — over-long title / description rejected
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pm_with_overlong_subtask_title_gets_incomplete_input() -> None:
+    """A sub_task title >200 chars is rejected — titles are single-line labels."""
+    pm_id = uuid4()
+    task_id = uuid4()
+    task_svc = _pm_task_svc(task_id, role="cell_pm")
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_will_plan(
+        pm_id,
+        task_id,
+        plan="decompose work",
+        rich_plan={
+            "approach": _GOOD_APPROACH,
+            "sub_tasks": [
+                {"title": _OVERLONG_TITLE, "description": _GOOD_SUBTASK_DESC}
+            ],
+        },
+    )
+    body = env.as_dict()
+    assert body["error"] == "incomplete_input", body
+    assert "sub_tasks" in (body.get("missing") or []), body
+    assert "title is too long" in str(body.get("field_hints", {})), body
+
+
+@pytest.mark.asyncio
+async def test_pm_with_overlong_subtask_description_gets_incomplete_input() -> None:
+    """A sub_task description >600 chars is rejected — over-long sub-task
+    prose is the bloat defect (descriptions dominated by one giant step)."""
+    pm_id = uuid4()
+    task_id = uuid4()
+    task_svc = _pm_task_svc(task_id, role="cell_pm")
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_will_plan(
+        pm_id,
+        task_id,
+        plan="decompose work",
+        rich_plan={
+            "approach": _GOOD_APPROACH,
+            "sub_tasks": [
+                {"title": "Backend slice", "description": _LONG_SUBTASK_DESC}
+            ],
+        },
+    )
+    body = env.as_dict()
+    assert body["error"] == "incomplete_input", body
+    assert "sub_tasks" in (body.get("missing") or []), body
+    assert "description is too long" in str(body.get("field_hints", {})), body
+
+
+# ---------------------------------------------------------------------------
+# Test 9: a code-typed parent WITH sub_tasks is NOT rejected — PMs legitimately
+# plan code-typed parents into dev subtasks (the 2026-05-08 rule). The gate
+# must not ban sub_tasks on code tasks.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pm_can_plan_code_typed_parent_with_subtasks() -> None:
+    """A code-typed task planned by a PM with sub_tasks is legitimate
+    decomposition (test_cell_pm_can_plan_code_typed_parent_via_i_will_plan
+    establishes the 2026-05-08 rule). The cap/ceilings gate must NOT reject
+    merely because task_type is 'code'."""
+    pm_id = uuid4()
+    task_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.get.return_value = MagicMock(
+        id=task_id,
+        status="pending",
+        plan=None,
+        assigned_to=None,
+        task_type="code",
+        parent_task_id=None,
+        sequence=0,
+        team="backend",
+        commits=[],
+        pr_number=None,
+        branch_name=None,
+        quick_context=None,
+    )
+    task_svc.agent_for.return_value = MagicMock(
+        id=pm_id, role="cell_pm", team="backend", slug=None
+    )
+    task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.list_paused_for_agent.return_value = []
+    task_svc.get_subtasks.return_value = []
+    task_svc.session = MagicMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_will_plan(
+        pm_id,
+        task_id,
+        plan="decompose the code parent",
+        rich_plan={
+            "approach": _GOOD_APPROACH,
+            "sub_tasks": [
+                {"title": "API slice", "description": _GOOD_SUBTASK_DESC},
+                {"title": "Test slice", "description": _GOOD_SUBTASK_DESC},
+            ],
+        },
+    )
+    body = env.as_dict()
+    # The gate must not reject merely for task_type='code' with sub_tasks.
+    assert body.get("error") != "incomplete_input", body
