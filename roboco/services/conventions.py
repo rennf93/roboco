@@ -92,7 +92,12 @@ class ConventionsService(BaseService):
         # walk the filesystem + parse yaml — all sync I/O. Offload to a thread
         # so the shared API event loop stays responsive during conventions reads
         # (reachable from GET /api/projects/{id}/conventions and the spawn path).
-        root, head = await asyncio.to_thread(self._resolve, project, workspace)
+        root, sha = await asyncio.to_thread(self._resolve, project, workspace)
+        if root is not None:
+            project.workspace_path = str(root)
+            if sha is not None:
+                project.head_commit = sha
+        head = sha or self._head_sha(project)
         cached = await self._cache_get(pid, head)
         # A cached ``degraded`` row is not trusted: a degraded file may have
         # been repaired in place at the same (stale) head key, and serving the
@@ -194,7 +199,11 @@ class ConventionsService(BaseService):
         if last_good is not None:
             mapping = last_good
         else:
-            root, _ = await asyncio.to_thread(self._resolve, project, workspace)
+            root, _sha = await asyncio.to_thread(self._resolve, project, workspace)
+            if root is not None:
+                project.workspace_path = str(root)
+                if _sha is not None:
+                    project.head_commit = _sha
             mapping = await asyncio.to_thread(self._derive, root)
         return await self._publish(
             project, render_yaml(mapping), restore=True, workspace=workspace
@@ -224,7 +233,12 @@ class ConventionsService(BaseService):
         resolvable workspace at all.
         """
         pid = self._pid(project)
-        root, head = await asyncio.to_thread(self._resolve, project, workspace)
+        root, sha = await asyncio.to_thread(self._resolve, project, workspace)
+        if root is not None:
+            project.workspace_path = str(root)
+            if sha is not None:
+                project.head_commit = sha
+        head = sha or self._head_sha(project)
         if root is None:
             status = "unknown"
         else:
@@ -314,7 +328,7 @@ class ConventionsService(BaseService):
 
         try:
             return await get_workspace_service(self.session).ensure_read_clone(
-                project.slug
+                project.slug, force=True
             )
         except Exception as exc:
             self.log.warning(
@@ -326,15 +340,15 @@ class ConventionsService(BaseService):
 
     def _resolve(
         self, project: ProjectTable, workspace: Path | None
-    ) -> tuple[Path | None, str]:
-        """Resolve the repo root to read the standard from, plus its HEAD sha.
+    ) -> tuple[Path | None, str | None]:
+        """Resolve the repo root to read the standard from, plus its raw HEAD sha.
 
-        Uses an explicit ``workspace`` (the read clone the caller resolved via
-        :meth:`resolve_workspace`) when given, else the legacy persisted
-        ``workspace_path``. When a clone is resolved, its path + real HEAD are
-        persisted back onto the project — the backfill — so the next read (and
-        the cache key) reflect the committed standard, even for a project
-        created before the standard existed.
+        Returns ``(root, sha_raw)`` with no side effects: the caller mutates
+        ``project.workspace_path`` / ``project.head_commit`` on the event loop
+        (mutating ORM state off the event loop is unsafe under SQLAlchemy 2
+        async). ``sha_raw`` is the real rev-parse, or None for a non-git legacy
+        path — the caller computes the ``sha or self._head_sha(project)``
+        fallback for cache key / health head_sha.
         """
         root: Path | None = None
         if workspace is not None and Path(workspace).exists():
@@ -342,14 +356,9 @@ class ConventionsService(BaseService):
         else:
             root = self._workspace_root(project)
         if root is None:
-            return None, self._head_sha(project)
+            return None, None
         sha = self._head_sha_at(root)
-        project.workspace_path = str(root)
-        if sha is not None:
-            # Only a real rev-parse (an actual git clone) updates the cache key;
-            # a non-git legacy path keeps the persisted head_commit / "HEAD".
-            project.head_commit = sha
-        return root, sha or self._head_sha(project)
+        return root, sha
 
     @staticmethod
     def _head_sha_at(root: Path) -> str | None:

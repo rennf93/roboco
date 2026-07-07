@@ -87,6 +87,70 @@ describe("VideoPostQueue", () => {
     expect(screen.getByDisplayValue("New RoboCo drop!")).toBeInTheDocument();
   });
 
+  // H15: the 30s refetchInterval produces a new `post` prop, but useState
+  // initializes once — so a server-side re-draft between the CEO opening the
+  // card and approving would be silently overwritten by the stale initial
+  // caption. The displayed value must track the server until the CEO edits.
+  it("tracks the server caption until the CEO edits, then holds the edit (mirrors x-post-queue)", async () => {
+    const basePost = {
+      task_id: "v-1",
+      source: "video_post",
+      title: "Video: release v0.19.0",
+      status: "pending",
+      occasion: "release",
+      script: "RoboCo v0.19.0 just shipped!",
+      platforms: ["x", "tiktok"],
+    };
+    listPosts.mockResolvedValueOnce([
+      { ...basePost, x_caption: "old", tiktok_caption: "old-tik" },
+    ] as VideoPost[]);
+
+    const client = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+    render(
+      <QueryClientProvider client={client}>
+        <VideoPostQueue />
+      </QueryClientProvider>,
+    );
+    const xTextarea = await screen.findByDisplayValue("old");
+    expect(xTextarea).toBeInTheDocument();
+
+    // Simulate a 30s refetch producing a re-drafted server caption.
+    listPosts.mockResolvedValueOnce([
+      { ...basePost, x_caption: "new server text", tiktok_caption: "new-tik" },
+    ] as VideoPost[]);
+    await client.invalidateQueries({ queryKey: ["video", "posts"] });
+    await waitFor(() =>
+      expect(screen.getByDisplayValue("new server text")).toBeInTheDocument(),
+    );
+
+    // CEO types an edit — the derived value should now follow the user.
+    fireEvent.change(screen.getByDisplayValue("new server text"), {
+      target: { value: "my edit" },
+    });
+    expect(screen.getByDisplayValue("my edit")).toBeInTheDocument();
+
+    // Another refetch with a newer server caption — the user's edit holds.
+    listPosts.mockResolvedValueOnce([
+      {
+        ...basePost,
+        x_caption: "even newer server text",
+        tiktok_caption: "newer-tik",
+      },
+    ] as VideoPost[]);
+    await client.invalidateQueries({ queryKey: ["video", "posts"] });
+    await waitFor(() =>
+      expect(screen.getByDisplayValue("my edit")).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByDisplayValue("even newer server text"),
+    ).not.toBeInTheDocument();
+  });
+
   it("fetches the preview clip as a blob via axios and drives <video> off an object URL", async () => {
     render(withQueryClient(<VideoPostQueue />));
     await screen.findByText("release");
@@ -122,9 +186,7 @@ describe("VideoPostQueue", () => {
     fireEvent.change(textarea, { target: { value: "x".repeat(281) } });
 
     expect(screen.getByText("281/280")).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: /Approve/ }),
-    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Approve/ })).toBeDisabled();
   });
 
   it("only sends captions for platforms left toggled on", async () => {

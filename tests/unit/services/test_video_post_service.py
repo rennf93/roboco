@@ -33,6 +33,7 @@ from roboco.models.base import TaskType as TT
 from roboco.services.heartbeat_mutex import HeartbeatMutex
 from roboco.services.task import VIDEO_POST_SOURCE, TaskService
 from roboco.services.video_post_service import (
+    TaskAlreadyCompletedError,
     TikTokPoster,
     TikTokUploadResult,
     VideoCaptionTooLongError,
@@ -660,6 +661,23 @@ async def test_approve_concurrent_caption_edit_does_not_erase_a_committed_posted
         assert final_draft["x_caption"] == "Edited X caption"  # edit still applied
     finally:
         await _dispose(fresh, fresh_engine)
+
+
+@pytest.mark.asyncio
+async def test_reject_completed_raises(db_session: AsyncSession) -> None:
+    """An already-posted (COMPLETED) video draft is live on X/TikTok;
+    rejecting it would lie "cancelled (never posted)" while the clip is public."""
+    task = await _seed_video_post(db_session)
+    draft = dict(markers.get_video_draft(task) or {})
+    draft["x_posted_id"] = "x-vid"
+    draft["tiktok_posted_id"] = "tt-pub"
+    markers.set_video_draft(task, draft)
+    task.status = TS.COMPLETED
+    await db_session.flush()
+    with pytest.raises(TaskAlreadyCompletedError):
+        await _svc(
+            db_session, x_poster=_StubXPoster(), tiktok_poster=_StubTikTokPoster()
+        ).reject(_id(task), "nope")
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,13 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -105,6 +112,18 @@ function A2APageContent() {
       });
     }
   }, [lastMessage, queryClient, selectedId]);
+
+  // On /ws/system reconnect (false → true) the A2A list is stale — events
+  // missed during the disconnect. Invalidate the a2a query family so
+  // react-query refetches. Initial mount with isConnected=true does NOT
+  // fire (prevConnected starts unknown, not false).
+  const prevConnected = useRef<boolean | null>(null);
+  useEffect(() => {
+    if (prevConnected.current === false && isConnected) {
+      queryClient.invalidateQueries({ queryKey: a2aLiveKeys.all });
+    }
+    prevConnected.current = isConnected;
+  }, [isConnected, queryClient]);
 
   const pairs = useMemo(() => pairsData?.items ?? [], [pairsData]);
   // Activity = A2A only: derived purely from a2a.message frames, never from

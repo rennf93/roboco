@@ -75,6 +75,22 @@ class ReleaseProposalService(BaseService):
 
     service_name = "release_proposal"
 
+    def __init__(self, session: AsyncSession) -> None:
+        super().__init__(session)
+        # One shared redis client per approve, closed once in approve()'s finally
+        # (replaces a from_url pool per heartbeat tick — ~40 pools per release).
+        self._redis: redis.Redis | None = None
+
+    async def _redis_conn(self) -> redis.Redis:
+        if self._redis is None:
+            self._redis = redis.from_url(settings.redis_url)
+        return self._redis
+
+    async def _close_redis(self) -> None:
+        if self._redis is not None:
+            await self._redis.aclose()
+            self._redis = None
+
     async def open_proposal(self) -> TaskTable | None:
         """The single held release proposal awaiting the CEO, or None."""
         proposals = await get_task_service(self.session).list_open_release_proposals()
@@ -190,6 +206,7 @@ class ReleaseProposalService(BaseService):
             await self._finalize_release_lock(
                 heartbeat_task, execute_task, lock_key, lock_token
             )
+            await self._close_redis()
 
     async def _draft_x_post(self, report: ReleaseReadinessReport) -> None:
         """Hand the just-published release to the X engine for a held
@@ -247,15 +264,12 @@ class ReleaseProposalService(BaseService):
         """
         token = uuid4().hex
         try:
-            conn = redis.from_url(settings.redis_url)
-            try:
-                acquired = await conn.set(
-                    lock_key, token, nx=True, ex=_RELEASE_LOCK_TTL_SECONDS
-                )
-                # redis-py returns True on SET NX success, None on conflict.
-                return token if acquired else None
-            finally:
-                await conn.aclose()
+            conn = await self._redis_conn()
+            acquired = await conn.set(
+                lock_key, token, nx=True, ex=_RELEASE_LOCK_TTL_SECONDS
+            )
+            # redis-py returns True on SET NX success, None on conflict.
+            return token if acquired else None
         except Exception as exc:
             logger.warning("release lock acquire failed (redis): %s", exc)
             raise ReleaseLockUnavailable(str(exc)) from exc
@@ -263,28 +277,22 @@ class ReleaseProposalService(BaseService):
     async def _release_release_lock(self, lock_key: str, token: str) -> None:
         """Compare-and-del the release mutex (only if we still own it)."""
         try:
-            conn = redis.from_url(settings.redis_url)
-            try:
-                await conn.eval(_RELEASE_LOCK_RELEASE_SCRIPT, 1, lock_key, token)
-            finally:
-                await conn.aclose()
+            conn = await self._redis_conn()
+            await conn.eval(_RELEASE_LOCK_RELEASE_SCRIPT, 1, lock_key, token)
         except Exception as exc:
             logger.warning("release lock release failed (redis): %s", exc)
 
     async def _heartbeat_release_lock(self, lock_key: str, token: str) -> bool:
         """Compare-and-expire the release mutex. True if we still own it."""
-        conn = redis.from_url(settings.redis_url)
-        try:
-            res = await conn.eval(
-                _RELEASE_LOCK_HEARTBEAT_SCRIPT,
-                1,
-                lock_key,
-                token,
-                _RELEASE_LOCK_TTL_SECONDS,
-            )
-            return bool(res)
-        finally:
-            await conn.aclose()
+        conn = await self._redis_conn()
+        res = await conn.eval(
+            _RELEASE_LOCK_HEARTBEAT_SCRIPT,
+            1,
+            lock_key,
+            token,
+            _RELEASE_LOCK_TTL_SECONDS,
+        )
+        return bool(res)
 
     async def _heartbeat_loop(
         self,
@@ -345,6 +353,39 @@ def get_release_proposal_service(session: AsyncSession) -> ReleaseProposalServic
 # it self-cleans via a done-callback and the Redis mutex still prevents a
 # double-execute on a second click.
 _INFLIGHT_APPROVES: dict[UUID, asyncio.Task[None]] = {}
+
+
+async def sweep_orphan_release_locks() -> None:
+    """Delete release-proposal mutex keys whose owners aren't in flight.
+
+    A restart mid-execute kills ``_run_approve_background`` but the Redis mutex
+    (TTL 3000s) persists with no heartbeat, so a CEO retry gets
+    ``already_in_progress`` for up to 50 min. Called from ``Orchestrator.start``
+    before the release-manager loop launches — after a restart the in-flight
+    registry is empty, so every surviving key is an orphan. Best-effort: a Redis
+    failure logs a warning and does not raise (a down Redis at startup must not
+    crash the orchestrator).
+    """
+    from uuid import UUID
+
+    try:
+        conn = redis.from_url(settings.redis_url)
+        try:
+            keys = await conn.keys(f"{_RELEASE_LOCK_PREFIX}*")
+            for key in keys or []:
+                task_id = (
+                    key.decode() if isinstance(key, bytes) else str(key)
+                ).removeprefix(_RELEASE_LOCK_PREFIX)
+                try:
+                    uid = UUID(task_id)
+                except ValueError:
+                    continue
+                if uid not in _INFLIGHT_APPROVES:
+                    await conn.delete(key)
+        finally:
+            await conn.aclose()
+    except Exception as exc:
+        logger.warning("release lock orphan sweep failed (redis): %s", exc)
 
 
 async def _run_approve_background(

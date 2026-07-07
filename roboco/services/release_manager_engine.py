@@ -212,6 +212,7 @@ class ReleaseManagerEngine(BaseService):
         injected into the snapshot (None → unknown gate → no proposal).
         """
         from roboco.services.git import get_git_service
+        from roboco.services.release_readiness import _run_git
         from roboco.services.workspace import get_workspace_service
 
         slug = _roboco_slug()
@@ -223,10 +224,25 @@ class ReleaseManagerEngine(BaseService):
         except Exception as exc:
             self.log.warning("release-manager: read clone failed", error=str(exc))
             return None
+        # Resolve the read-clone HEAD so the CI gate is scoped to THIS commit;
+        # without head_sha the latest COMPLETED run (on an older commit) reads
+        # "green" while HEAD's CI is still in_progress. If HEAD can't be
+        # resolved, conclusion=None → unknown gate → no proposal.
+        try:
+            head_sha = (
+                await asyncio.to_thread(_run_git, Path(root), ["rev-parse", "HEAD"])
+            ).strip() or None
+        except Exception as exc:
+            self.log.warning(
+                "release-manager: read-clone HEAD resolve failed", error=str(exc)
+            )
+            head_sha = None
         ci = await get_git_service(self.session).get_latest_ci_conclusion(
-            slug, workflow=(settings.self_heal_ci_workflow or None)
+            slug,
+            workflow=(settings.self_heal_ci_workflow or None),
+            head_sha=head_sha,
         )
-        conclusion = (ci or {}).get("conclusion")
+        conclusion = None if head_sha is None else (ci or {}).get("conclusion")
         today = datetime.now(UTC).strftime("%Y-%m-%d")
         # gather_snapshot runs multiple sync `subprocess.run` git calls + a
         # filesystem walk; offload so the shared API event loop isn't blocked

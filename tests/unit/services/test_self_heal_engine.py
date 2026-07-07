@@ -13,7 +13,7 @@ import pytest
 import redis.asyncio as redis_asyncio
 from roboco.config import settings as cfg
 from roboco.services.notification import NotificationService
-from roboco.services.self_heal_engine import SelfHealEngine
+from roboco.services.self_heal_engine import SelfHealEngine, _fingerprint
 from roboco.services.telemetry import TelemetrySample
 
 
@@ -105,6 +105,17 @@ async def test_fingerprint_is_stable() -> None:
     a = (await _engine([_sample(1.0)]).assess())[0].fingerprint
     b = (await _engine([_sample(1.0)]).assess())[0].fingerprint
     assert a == b
+
+
+def test_fingerprint_docstring_records_by_design_rationale() -> None:
+    """The dedup invariant is one open fix task per signal, NOT per run — the
+    docstring records this so a future reader doesn't 'fix' it into a per-run
+    hash and reintroduce the dedupe-collision spam (a persistent red signal
+    would re-open a fix task every cycle)."""
+    assert _fingerprint.__doc__ is not None
+    doc = _fingerprint.__doc__.lower()
+    assert "by-design" in doc
+    assert "per-signal" in doc
 
 
 # ---------------------------------------------------------------------------

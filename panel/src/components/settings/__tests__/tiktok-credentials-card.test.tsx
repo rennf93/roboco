@@ -92,4 +92,79 @@ describe("TikTokCredentialsForm", () => {
       ).toBe(""),
     );
   });
+
+  // M43: when credentials are already stored, leaving all 4 fields blank and
+  // clicking Save is a destructive clear — it must open an AlertDialog and
+  // only fire setCredentials on confirm. A normal all-4-filled save fires
+  // immediately with no dialog.
+  it("a clear (all 4 blank + has_credentials) opens a confirm dialog and defers the mutation until confirmed", async () => {
+    getCredentialsStatus.mockResolvedValueOnce({ has_credentials: true });
+    render(withQueryClient(<TikTokCredentialsForm />));
+    await screen.findByText("Credentials are set");
+
+    const saveButton = screen.getByRole("button", { name: "Save" });
+    expect(saveButton).not.toBeDisabled();
+
+    fireEvent.click(saveButton);
+
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toBeInTheDocument();
+
+    expect(setCredentials).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+    await waitFor(() =>
+      expect(setCredentials).toHaveBeenCalledWith({
+        client_key: "",
+        client_secret: "",
+        access_token: "",
+        refresh_token: "",
+      }),
+    );
+  });
+
+  it("a normal all-4-filled save fires immediately without a confirm dialog", async () => {
+    render(withQueryClient(<TikTokCredentialsForm />));
+    await screen.findByText("No credentials configured");
+
+    fireEvent.change(screen.getByLabelText("Client key"), {
+      target: { value: "ck" },
+    });
+    fireEvent.change(screen.getByLabelText("Client secret"), {
+      target: { value: "cs" },
+    });
+    fireEvent.change(screen.getByLabelText("Access token"), {
+      target: { value: "at" },
+    });
+    fireEvent.change(screen.getByLabelText("Refresh token"), {
+      target: { value: "rt" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(setCredentials).toHaveBeenCalledWith({
+        client_key: "ck",
+        client_secret: "cs",
+        access_token: "at",
+        refresh_token: "rt",
+      }),
+    );
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
+  it("a clear confirm dialog cancel does NOT fire the mutation", async () => {
+    getCredentialsStatus.mockResolvedValueOnce({ has_credentials: true });
+    render(withQueryClient(<TikTokCredentialsForm />));
+    await screen.findByText("Credentials are set");
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument(),
+    );
+    expect(setCredentials).not.toHaveBeenCalled();
+  });
 });

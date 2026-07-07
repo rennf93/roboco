@@ -6,6 +6,16 @@ import { videoApi } from "@/lib/api";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Key, KeyRound, Save } from "lucide-react";
 import { toast } from "sonner";
 
@@ -63,6 +73,9 @@ export function TikTokCredentialsForm() {
   // A genuine save is either "set all 4" or, when something is already
   // stored, "clear all 4". All-empty with nothing stored is a true no-op.
   const canSave = allFilled || (noneFilled && !!status?.has_credentials);
+  // Clearing stored secrets is destructive and irreversible — confirm it.
+  const isClearing = noneFilled && !!status?.has_credentials;
+  const [confirmClear, setConfirmClear] = useState(false);
 
   return (
     <div className="space-y-4">
@@ -114,12 +127,42 @@ export function TikTokCredentialsForm() {
       </p>
 
       <Button
-        onClick={() => saveMutation.mutate()}
+        onClick={() =>
+          isClearing ? setConfirmClear(true) : saveMutation.mutate()
+        }
         disabled={saveMutation.isPending || !canSave}
       >
         <Save className="mr-2 h-4 w-4" />
         {saveMutation.isPending ? "Saving..." : "Save"}
       </Button>
+
+      <AlertDialog
+        open={confirmClear}
+        onOpenChange={(open) => {
+          if (!open) setConfirmClear(false);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Clear TikTok credentials?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will clear all stored TikTok credentials. This cannot be
+              undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                setConfirmClear(false);
+                saveMutation.mutate();
+              }}
+            >
+              Clear
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

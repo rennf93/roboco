@@ -166,8 +166,10 @@ describe("useRateLimitStore — liftRateLimit", () => {
 // ---------------------------------------------------------------------------
 
 describe("useRateLimitStore — syncFromApi", () => {
-  it("replaces the entire limits map with response entries", () => {
-    // Pre-populate with one entry
+  // M44: syncFromApi merges by freshest hitAt instead of wholesale-replacing,
+  // so an out-of-order (older) API snapshot can't regress a fresher WS hit.
+  it("merges API entries into the map, keeping existing entries not in the response", () => {
+    // Pre-populate with a WS hit on a provider the API snapshot omits.
     useRateLimitStore.getState().hitRateLimit(makeHitEvent("old-provider", 60));
 
     const response: RateLimitApiResponse = {
@@ -176,12 +178,12 @@ describe("useRateLimitStore — syncFromApi", () => {
     useRateLimitStore.getState().syncFromApi(response);
 
     const limits = useRateLimitStore.getState().limits;
-    // Old entry is gone
-    expect(limits.has("old-provider")).toBe(false);
-    // New entries are present
+    // Pre-existing entry not in the response is retained (merge, not replace).
+    expect(limits.has("old-provider")).toBe(true);
+    // New API entries are present.
     expect(limits.has("anthropic")).toBe(true);
     expect(limits.has("openai")).toBe(true);
-    expect(limits.size).toBe(2);
+    expect(limits.size).toBe(3);
   });
 
   it("correctly keys entries by provider name", () => {
@@ -191,9 +193,55 @@ describe("useRateLimitStore — syncFromApi", () => {
     expect(stored).toEqual(entry);
   });
 
-  it("clears all limits when given an empty entries array", () => {
+  it("keeps existing limits when the API returns an empty entries array", () => {
+    // An empty snapshot is a no-op merge, not a clear — a stale/empty poll
+    // must not wipe a fresher WS-derived map.
     useRateLimitStore.getState().hitRateLimit(makeHitEvent("anthropic", 60));
     useRateLimitStore.getState().syncFromApi({ entries: [] });
-    expect(useRateLimitStore.getState().limits.size).toBe(0);
+    expect(useRateLimitStore.getState().limits.size).toBe(1);
+    expect(useRateLimitStore.getState().limits.has("anthropic")).toBe(true);
+  });
+
+  it("keeps the fresher hitAt when an out-of-order (older) API snapshot arrives", () => {
+    // A recent WS HIT stamps anthropic at T2.
+    const T2 = "2026-06-20T12:05:00.000Z";
+    useRateLimitStore
+      .getState()
+      .hitRateLimit(makeHitEvent("anthropic", 60, ["be-dev-1"]));
+    // Manually advance hitAt to T2 to simulate a fresher WS event.
+    const fresher = useRateLimitStore.getState().limits.get("anthropic")!;
+    useRateLimitStore.setState({
+      limits: new Map([["anthropic", { ...fresher, hitAt: T2 }]]),
+    });
+
+    // An API snapshot arrives carrying an older T1 for anthropic.
+    const T1 = "2026-06-20T12:00:00.000Z";
+    useRateLimitStore
+      .getState()
+      .syncFromApi({ entries: [makeApiEntry("anthropic", T1)] });
+
+    const stored = useRateLimitStore.getState().limits.get("anthropic");
+    expect(stored?.hitAt).toBe(T2);
+
+    // A brand-new provider in the same snapshot is still added.
+    useRateLimitStore.getState().syncFromApi({
+      entries: [makeApiEntry("anthropic", T1), makeApiEntry("openai", T1)],
+    });
+    expect(useRateLimitStore.getState().limits.has("openai")).toBe(true);
+    expect(useRateLimitStore.getState().limits.get("anthropic")?.hitAt).toBe(
+      T2,
+    );
+  });
+
+  it("overwrites a stale local entry when the API snapshot is fresher", () => {
+    const T2 = "2026-06-20T12:05:00.000Z";
+    // Local entry at TIMESTAMP, API arrives with T2 — API wins.
+    useRateLimitStore.getState().hitRateLimit(makeHitEvent("anthropic", 60));
+    useRateLimitStore
+      .getState()
+      .syncFromApi({ entries: [makeApiEntry("anthropic", T2)] });
+    expect(useRateLimitStore.getState().limits.get("anthropic")?.hitAt).toBe(
+      T2,
+    );
   });
 });

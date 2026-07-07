@@ -404,16 +404,16 @@ class _CompletionSnapshot:
 class SoftBlockInput:
     """Primitive blocker fields from the API layer.
 
-    Route-layer DTO that bundles the raw string inputs so the service
-    method signature stays under PLR0913 without leaking the API's
-    Pydantic schema into the service. `resolver_type_raw` is coerced to
-    BlockerResolverType inside the service.
+    Route-layer DTO that bundles the blocker inputs so the service method
+    signature stays under PLR0913 without leaking the API's Pydantic schema
+    into the service. `resolver_type` arrives already typed as
+    BlockerResolverType — the schema 422s any bad value at the boundary.
     """
 
     blocker_type: str
     reason: str
     what_needed: str
-    resolver_type_raw: str
+    resolver_type: BlockerResolverType
 
 
 @dataclass
@@ -1377,25 +1377,32 @@ class TaskService(BaseService):
         return list(result.scalars().all())
 
     async def list_open_dep_update_tasks(
-        self, git_url: str | None = None
+        self,
+        git_url: str | None = None,
+        *,
+        dep_update_command: str | None = None,
     ) -> list[TaskTable]:
         """Non-terminal dep_update tasks — the dedupe + open-cap basis.
 
-        Optionally scoped to one repo by ``git_url`` so a monorepo (several
-        cell-projects, one git_url) gets at most one open dependency-update task,
-        not one per cell-project. While an open task exists for a repo the bot
-        must not originate a second; the rolling open-task cap counts these.
-        The git_url scope is matched on the normalized repo key (case / ``.git``
-        / trailing ``/``), mirroring the orchestrator's poll-set collapse (#1267).
+        Optionally scoped to one repo by ``git_url`` and/or one
+        ``dep_update_command``. A monorepo with two distinct commands (different
+        ecosystems / lockfiles) gets one open task per command, not one for the
+        whole repo blocking the second. The git_url scope is matched on the
+        normalized repo key (case / ``.git`` / trailing ``/``), mirroring the
+        orchestrator's poll-set collapse (#1267).
         """
         stmt = select(TaskTable).where(
             TaskTable.source == DEP_UPDATE_SOURCE,
             TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
         )
-        if git_url is not None:
-            stmt = stmt.join(
-                ProjectTable, TaskTable.project_id == ProjectTable.id
-            ).where(_repo_key_expr(ProjectTable.git_url) == repo_key(git_url))
+        if git_url is not None or dep_update_command is not None:
+            stmt = stmt.join(ProjectTable, TaskTable.project_id == ProjectTable.id)
+            if git_url is not None:
+                stmt = stmt.where(
+                    _repo_key_expr(ProjectTable.git_url) == repo_key(git_url)
+                )
+            if dep_update_command is not None:
+                stmt = stmt.where(ProjectTable.dep_update_command == dep_update_command)
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
@@ -1447,12 +1454,20 @@ class TaskService(BaseService):
         Source=VIDEO_SOURCE only (a held video_post draft is never itself
         rendered). composition_id/render_status live in the JSON marker, not
         a column, so the caller filters those in Python after this query.
+        Bounded to the most recent ``video_render_scan_limit`` rows so the
+        scan doesn't re-read the growing completed-history set every pass;
+        backed by ``ix_tasks_source_status_created``.
         """
+        from roboco.config import settings
+
         result = await self.session.execute(
-            select(TaskTable).where(
+            select(TaskTable)
+            .where(
                 TaskTable.source == VIDEO_SOURCE,
                 TaskTable.status == TaskStatus.COMPLETED,
             )
+            .order_by(TaskTable.created_at.desc())
+            .limit(settings.video_render_scan_limit)
         )
         return list(result.scalars().all())
 
@@ -7361,17 +7376,11 @@ class TaskService(BaseService):
                 action="soft_block", reason="Not authorized to block this task"
             )
 
-        # Coerce the raw string to the domain enum — fall back on AGENT
-        # (agent-self-resolvable is the safest default).
-        try:
-            resolver = BlockerResolverType(request.resolver_type_raw)
-        except ValueError:
-            resolver = BlockerResolverType.AGENT
         info = SoftBlockInfo(
             reason=request.reason,
             blocker_type=request.blocker_type,
             what_needed=request.what_needed,
-            resolver_type=resolver,
+            resolver_type=request.resolver_type,
         )
 
         blocked = await self.soft_block(task_id, info, agent.role)
