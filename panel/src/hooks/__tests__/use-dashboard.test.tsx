@@ -3,13 +3,8 @@ import { renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { type ReactNode } from "react";
 
-// M40: useMetrics ran a Promise.all that called dashboardApi.getAgentStatus()
-// every 60s while useAgentStatus polled the SAME endpoint every 10s — two
-// queries, same key path, redundant fetches. Pre-fix useMetrics issues its
-// own getAgentStatus() call so the spy fires twice when both hooks mount.
-// Post-fix useMetrics reads queryClient.getQueryData(dashboardKeys.agentStatus())
-// and only falls back to fetchQuery (which dedupes against the in-flight
-// useAgentStatus query) on a cold cache — net one call.
+// M40: useMetrics reads the useAgentStatus poll cache and only falls back to
+// fetchQuery on a cold cache — net one getAgentStatus call when both mount.
 
 const { getAgentStatus, getVelocityMetrics, getBlockerMetrics } = vi.hoisted(
   () => ({

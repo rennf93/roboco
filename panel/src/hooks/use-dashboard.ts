@@ -63,9 +63,7 @@ export function useMetrics() {
   return useQuery({
     queryKey: dashboardKeys.metrics(),
     queryFn: async (): Promise<MetricsSummary> => {
-      // M40: agent counts come from the useAgentStatus 10s poll cache, not a
-      // third fetch here; fetchQuery dedupes against the in-flight poll on a
-      // cold cache.
+      // agent counts come from the useAgentStatus 10s poll cache; fetchQuery dedupes on a cold cache.
       const [velocity, blockers, agentStatus] = await Promise.all([
         dashboardApi.getVelocityMetrics(),
         dashboardApi.getBlockerMetrics(),
