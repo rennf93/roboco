@@ -15,6 +15,7 @@ from roboco.runtime.sandbox import SandboxProvisioner, SandboxProvisionError
 _NETWORK = "roboco_default"
 _PG_PORT = 5432
 _REDIS_PORT = 6379
+_MONGO_PORT = 27017
 
 
 class _FakeRunner:
@@ -71,10 +72,12 @@ class _FakeRunner:
 
 @pytest.fixture(autouse=True)
 def _fast_readiness_deadlines(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Shrink the polling deadlines so the timeout path is fast in tests."""
-    monkeypatch.setattr(sandbox_module, "_PG_READY_DEADLINE_SECONDS", 0.05)
-    monkeypatch.setattr(sandbox_module, "_REDIS_READY_DEADLINE_SECONDS", 0.05)
+    """Shrink the polling cadence + every engine's deadline so the timeout path
+    is fast in tests. Deadlines live on the engine instances now (not module
+    constants), so monkeypatch them on the registry."""
     monkeypatch.setattr(sandbox_module, "_READY_POLL_INTERVAL_SECONDS", 0.01)
+    for engine in sandbox_module.SANDBOX_ENGINES.values():
+        monkeypatch.setattr(engine, "ready_deadline", 0.05)
 
 
 @pytest.mark.asyncio
@@ -84,16 +87,16 @@ async def test_provision_both_services_happy_path() -> None:
 
     info = await provisioner.provision("dev-1", ["postgres", "redis"])
 
-    assert info.postgres is not None
-    assert info.postgres.host == "roboco-sandbox-pg-dev-1"
-    assert info.postgres.port == _PG_PORT
-    assert info.postgres.user == "sandbox"
-    assert info.postgres.database == "sandbox"
-    assert info.redis is not None
-    assert info.redis.host == "roboco-sandbox-redis-dev-1"
-    assert info.redis.port == _REDIS_PORT
+    pg = info.services["postgres"]
+    assert pg.host == "roboco-sandbox-pg-dev-1"
+    assert pg.port == _PG_PORT
+    assert pg.user == "sandbox"
+    assert pg.database == "sandbox"
+    rd = info.services["redis"]
+    assert rd.host == "roboco-sandbox-redis-dev-1"
+    assert rd.port == _REDIS_PORT
     # Passwords are per-sandbox random tokens, not equal to each other.
-    assert info.postgres.password != info.redis.password
+    assert pg.password != rd.password
 
 
 @pytest.mark.asyncio
@@ -110,6 +113,27 @@ async def test_provision_labels_are_correct() -> None:
     labels = [run_call[i + 1] for i in label_indices]
     assert sandbox_module.SANDBOX_LABEL in labels
     assert "roboco.sandbox.owner=roboco-agent-dev-2" in labels
+
+
+@pytest.mark.asyncio
+async def test_provision_mongo_engine() -> None:
+    runner = _FakeRunner(run_rc=0, exec_rc=0)
+    provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
+
+    info = await provisioner.provision("dev-mongo", ["mongo"])
+
+    mongo = info.services["mongo"]
+    assert mongo.host == "roboco-sandbox-mongo-dev-mongo"
+    assert mongo.port == _MONGO_PORT
+    assert mongo.user == "sandbox"
+    assert mongo.database == "admin"
+    run_call = next(c for c in runner.calls if c[0] == "run")
+    assert "mongo:8-alpine" in run_call
+    # MONGO_INITDB_ROOT_PASSWORD env is baked into the run.
+    assert any(a.startswith("MONGO_INITDB_ROOT_PASSWORD=") for a in run_call)
+    # /data/db tmpfs mount for the engine.
+    assert "--tmpfs" in run_call
+    assert run_call[run_call.index("--tmpfs") + 1] == "/data/db"
 
 
 @pytest.mark.asyncio

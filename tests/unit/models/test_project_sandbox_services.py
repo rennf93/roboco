@@ -1,9 +1,9 @@
 """Project.sandbox_services / ProjectUpdate.sandbox_services validation.
 
-Only "postgres" and "redis" are recognized sandbox services (mirrors the
-provisioner's VALID_SANDBOX_SERVICES) — an unknown value must be rejected with
-a clear message rather than silently accepted and later failing at provision
-time inside a container spawn.
+Recognized services are whatever the engine registry exposes
+(``VALID_SANDBOX_SERVICES`` in ``roboco.models.sandbox`` — postgres, redis,
+mongo) — an unknown value must be rejected with a clear message rather than
+silently accepted and later failing at provision time inside a container spawn.
 """
 
 from __future__ import annotations
@@ -30,6 +30,11 @@ def _project(sandbox_services: list[str] | None = None) -> Project:
 def test_project_accepts_valid_sandbox_services() -> None:
     project = _project(sandbox_services=["postgres", "redis"])
     assert project.sandbox_services == ["postgres", "redis"]
+
+
+def test_project_accepts_mongo() -> None:
+    project = _project(sandbox_services=["mongo"])
+    assert project.sandbox_services == ["mongo"]
 
 
 def test_project_normalizes_sandbox_services_order_and_dupes() -> None:

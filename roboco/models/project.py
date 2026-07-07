@@ -13,6 +13,7 @@ from uuid import UUID, uuid4
 from pydantic import Field, field_validator
 
 from roboco.models.base import RobocoBase, Team, TimestampMixin
+from roboco.models.sandbox import SANDBOX_ENGINES, VALID_SANDBOX_SERVICES
 
 
 class BranchReason(StrEnum):
@@ -26,9 +27,9 @@ class BranchReason(StrEnum):
 
 
 # Sandboxed per-agent-spawn DB/Redis opt-in — the services a project may
-# request. Single source of truth for both the pydantic validators below and
-# the orchestrator-side provisioner (roboco/runtime/sandbox.py).
-VALID_SANDBOX_SERVICES: frozenset[str] = frozenset({"postgres", "redis"})
+# request. The valid set is derived from the engine registry
+# (roboco/models/sandbox.py), the single source of truth shared with the
+# orchestrator-side provisioner (roboco/runtime/sandbox.py).
 
 
 def _normalize_sandbox_services(value: list[str] | None) -> list[str] | None:
@@ -41,7 +42,7 @@ def _normalize_sandbox_services(value: list[str] | None) -> list[str] | None:
             f"unknown sandbox service(s) {unknown}; valid: "
             f"{sorted(VALID_SANDBOX_SERVICES)}"
         )
-    return [s for s in ("postgres", "redis") if s in value]
+    return [s for s in SANDBOX_ENGINES if s in value]
 
 
 class Project(TimestampMixin):

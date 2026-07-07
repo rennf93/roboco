@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
+from roboco.models.sandbox import SandboxInfo
+
 
 class OrchestratorAgentState(StrEnum):
     """Agent lifecycle states in the orchestrator."""
@@ -36,34 +38,6 @@ class SpawnGitContext:
     # coordination roots leave it None so the spawn cwd falls back to the
     # clone root.
     task_short_id: str | None = None
-
-
-@dataclass(frozen=True)
-class PostgresSandbox:
-    """Connection info for a per-spawn throwaway Postgres sandbox container."""
-
-    host: str
-    port: int
-    user: str
-    password: str
-    database: str
-
-
-@dataclass(frozen=True)
-class RedisSandbox:
-    """Connection info for a per-spawn throwaway Redis sandbox container."""
-
-    host: str
-    port: int
-    password: str
-
-
-@dataclass(frozen=True)
-class SandboxInfo:
-    """Sandbox container(s) provisioned for one agent spawn (services opted-in)."""
-
-    postgres: PostgresSandbox | None = None
-    redis: RedisSandbox | None = None
 
 
 @dataclass

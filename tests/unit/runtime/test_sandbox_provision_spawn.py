@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from roboco.config import settings
-from roboco.models.runtime import PostgresSandbox, SandboxInfo
+from roboco.models.sandbox import SandboxConnection, SandboxInfo
 from roboco.runtime.orchestrator import AgentOrchestrator, AgentReadinessError
 
 
@@ -100,9 +100,11 @@ async def test_opted_in_project_provisions_sandbox(
     project_service = MagicMock()
     project_service.get_by_slug = AsyncMock(return_value=project)
     info = SandboxInfo(
-        postgres=PostgresSandbox(
-            host="h", port=5432, user="sandbox", password="pw", database="sandbox"
-        )
+        services={
+            "postgres": SandboxConnection(
+                host="h", port=5432, password="pw", user="sandbox", database="sandbox"
+            )
+        }
     )
     sandbox.provision.return_value = info
 
