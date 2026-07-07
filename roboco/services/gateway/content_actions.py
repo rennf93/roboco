@@ -2059,6 +2059,7 @@ class ContentActions:
                 title=title,
                 body=body,
                 reviewers=reviewers,
+                actor_agent_id=agent_id,
             )
         except GitError as exc:
             return Envelope.invalid_state(

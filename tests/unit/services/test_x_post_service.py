@@ -27,7 +27,9 @@ from roboco.models.base import TaskType as TT
 from roboco.services.task import X_FEATURE_SOURCE, X_POST_SOURCE, X_REPLY_SOURCE
 from roboco.services.x_client import XClient, XMention, XPostResult
 from roboco.services.x_post_service import (
+    TaskAlreadyCompletedError,
     XPostBodyTooLongError,
+    XPostExecuteResult,
     XPostService,
     get_x_post_service,
 )
@@ -348,3 +350,47 @@ async def test_list_open_posts_includes_feature_spotlight_source(
     open_posts = await _svc(db_session).list_open_posts()
     ids = {t.id for t in open_posts}
     assert task.id in ids
+
+
+@pytest.mark.asyncio
+async def test_reject_completed_raises(db_session: AsyncSession) -> None:
+    """An already-posted (COMPLETED) draft is live on X; rejecting it would
+    lie "cancelled (never posted)" while the tweet is public."""
+    task = await _seed_draft(db_session)
+    markers.set_x_posted_tweet_id(task, "999")
+    task.status = TS.COMPLETED
+    await db_session.flush()
+    with pytest.raises(TaskAlreadyCompletedError):
+        await _svc(db_session).reject(_id(task), "nope")
+
+
+@pytest.mark.asyncio
+async def test_approve_does_not_flush_edited_body_before_lock(
+    db_session: AsyncSession,
+) -> None:
+    """The CEO's edit must land on the re-read locked row INSIDE the critical
+    section, after the COMPLETED check — never on the pre-lock row. A concurrent
+    approve that already posted (locked row COMPLETED) must not have this edit
+    overwrite the just-posted task's stored body."""
+    task = await _seed_draft(db_session, body="Original")
+    original_body = markers.get_x_draft_body(task)
+
+    async def _already_posted_locked(
+        _self: XPostService, _task_id: UUID, _task: TaskTable, _trimmed: str | None
+    ) -> XPostExecuteResult:
+        return XPostExecuteResult(
+            status="already_posted",
+            tweet_id="111",
+            detail="this draft was already posted",
+        )
+
+    with (
+        patch.object(XPostService, "_acquire_lock", AsyncMock(return_value="tok")),
+        patch.object(XPostService, "_release_lock", AsyncMock(return_value=None)),
+        patch.object(XPostService, "_approve_locked", _already_posted_locked),
+    ):
+        result = await _svc(db_session).approve(_id(task), "new body")
+    assert result is not None
+    assert result.status == "already_posted"
+    await db_session.refresh(task)
+    assert markers.get_x_draft_body(task) == original_body

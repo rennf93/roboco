@@ -336,3 +336,58 @@ async def test_delegate_past_max_depth_returns_invalid_state_not_500() -> None:
     # The remediation must reach the agent — the whole point of the fix.
     assert "sibling" in body["remediate"]
     task_svc.create_subtask.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_delegate_static_guards_allows_cell_map_root() -> None:
+    # A cross-cell MegaTask root-subtask carries a cell_projects map with
+    # project_id=None, product_id=None — a valid branchless-coordination
+    # shape (batch.is_branchless_coordination). The first project/product
+    # guard must NOT reject it.
+    pm_id = uuid4()
+    parent_id = uuid4()
+    parent = MagicMock(
+        id=parent_id,
+        project_id=None,
+        product_id=None,
+        cell_projects=[{"team": "backend", "project_id": uuid4()}],
+        status="in_progress",
+        assigned_to=pm_id,
+        team="backend",
+        quick_context="Cross-cell fan-out planned.",
+    )
+    deps = _make_deps()
+    c = Choreographer(deps)
+
+    result = await c._delegate_static_guards(
+        pm_id, parent_id, parent, _delegate_inputs()
+    )
+    # The project/product guard must not fire for a cell-map root.
+    assert result is None or "neither a project_id nor a product_id" not in (
+        getattr(result, "message", "") or ""
+    )
+
+
+@pytest.mark.asyncio
+async def test_delegate_static_guards_rejects_bare_no_project_no_product() -> None:
+    # No project_id, no product_id, no cell_projects — still rejected.
+    pm_id = uuid4()
+    parent_id = uuid4()
+    parent = MagicMock(
+        id=parent_id,
+        project_id=None,
+        product_id=None,
+        cell_projects=None,
+        status="in_progress",
+        assigned_to=pm_id,
+        team="backend",
+        quick_context="x",
+    )
+    deps = _make_deps()
+    c = Choreographer(deps)
+
+    result = await c._delegate_static_guards(
+        pm_id, parent_id, parent, _delegate_inputs()
+    )
+    assert result is not None
+    assert "neither a project_id nor a product_id" in (result.message or "")

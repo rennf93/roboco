@@ -16,9 +16,11 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID, uuid4
 
+import redis.asyncio as redis
 import structlog
 from sqlalchemy import select
 
+from roboco.config import settings
 from roboco.db.tables import AgentTable, TaskTable
 from roboco.foundation.identity import CELL_TEAMS
 from roboco.foundation.policy.batch import (
@@ -79,6 +81,13 @@ _ALLOWED_DRAFT_SOURCES = frozenset({"prompter", "roadmap"})
 # multi-cell shape (a root-subtask with a cell->project map, no single project).
 # Below it, a 1-cell map collapses to the single-project shape.
 _MULTI_CELL_MIN = 2
+
+# MegaTask confirm-batch idempotency: a Redis SETNX guard keyed by the live
+# session_id prevents a network-timeout retry from minting a second umbrella +
+# root-subtasks; a result sidecar lets the retry return the first call's result.
+_MEGATASK_CONFIRM_KEY_PREFIX = "roboco:megatask_confirm:"
+_MEGATASK_CONFIRM_RESULT_PREFIX = "roboco:megatask_confirm:result:"
+_MEGATASK_CONFIRM_KEY_TTL_SECONDS = 3600  # 1h — covers any late retry window
 
 
 @dataclass
@@ -625,6 +634,72 @@ class PrompterService:
                 field="drafts",
             )
 
+    async def _acquire_confirm_guard(self, session_id: str) -> dict[str, Any] | None:
+        """SETNX guard + result sidecar for confirm_live_batch idempotency.
+
+        Returns a prior result dict if this session was already confirmed (a
+        retry returns the first call's result), None if the guard was acquired
+        (caller must build). Raises ``ServiceError`` on redis-unreachable or
+        when the guard is held but no sidecar exists (first call mid-build).
+        """
+        guard_key = f"{_MEGATASK_CONFIRM_KEY_PREFIX}{session_id}"
+        result_key = f"{_MEGATASK_CONFIRM_RESULT_PREFIX}{session_id}"
+        try:
+            conn = redis.from_url(settings.redis_url)
+            try:
+                acquired = await conn.set(
+                    guard_key, "1", nx=True, ex=_MEGATASK_CONFIRM_KEY_TTL_SECONDS
+                )
+            finally:
+                await conn.aclose()
+        except Exception as exc:
+            raise ServiceError(
+                f"MegaTask confirm idempotency guard unavailable (redis): {exc}"
+            ) from exc
+        if not acquired:
+            try:
+                conn = redis.from_url(settings.redis_url)
+                try:
+                    raw = await conn.get(result_key)
+                finally:
+                    await conn.aclose()
+            except Exception as exc:
+                raise ServiceError(
+                    f"MegaTask confirm result re-read unavailable (redis): {exc}"
+                ) from exc
+            if raw:
+                prior: dict[str, Any] = json.loads(raw)
+                return prior
+            raise ServiceError(
+                f"MegaTask confirm already in progress for session "
+                f"{session_id}; retry shortly"
+            )
+        return None
+
+    async def _persist_confirm_result(
+        self, session_id: str, result: dict[str, Any]
+    ) -> None:
+        """Write the result sidecar so a retry returns the first call's result.
+
+        Non-fatal: the guard already prevents the double build; a failed write
+        only degrades retry UX (a retry then raises 'in progress').
+        """
+        result_key = f"{_MEGATASK_CONFIRM_RESULT_PREFIX}{session_id}"
+        try:
+            conn = redis.from_url(settings.redis_url)
+            try:
+                await conn.set(
+                    result_key,
+                    json.dumps(result),
+                    ex=_MEGATASK_CONFIRM_KEY_TTL_SECONDS,
+                )
+            finally:
+                await conn.aclose()
+        except Exception as exc:
+            self.log.warning(
+                "MegaTask confirm result-sidecar write failed (redis): %s", exc
+            )
+
     async def confirm_live_batch(
         self,
         title: str,
@@ -633,6 +708,7 @@ class PrompterService:
         *,
         project_ids: list[UUID],
         route: Literal["board", "main_pm"] = "board",
+        session_id: str,
     ) -> dict[str, Any]:
         """Confirm a MegaTask: create the umbrella + N sequenced root-subtasks.
 
@@ -661,6 +737,14 @@ class PrompterService:
                 message="A MegaTask needs at least one task draft.", field="drafts"
             )
         self._validate_batch_scope(drafts, project_ids)
+
+        # Idempotency guard: a network-timeout retry with the same session_id
+        # must not mint a second umbrella + root-subtasks. Returns a prior
+        # result if this session was already confirmed (retry), None if the
+        # guard was acquired (caller builds). Fail-closed on redis-unreachable.
+        prior = await self._acquire_confirm_guard(session_id)
+        if prior is not None:
+            return prior
 
         batch_id = uuid4()
         # 1. Sequence the drafts into conflict-free waves (same plan the panel
@@ -695,8 +779,14 @@ class PrompterService:
         #    sequence = its wave index and the umbrella as parent.
         task_of: dict[int, UUID] = {}
         for idx, draft in enumerate(drafts):
+            # Root-subtasks are coordination roots: assignment is the
+            # PM-activation flow's call, not a draft-carried field. Strip a
+            # hallucinated/injected assigned_to so a board-role uuid can't
+            # deadlock the umbrella (board roles have no dev delivery verbs).
+            sub_draft = dict(draft)
+            sub_draft.pop("assigned_to", None)
             sub = await self.create_task_from_draft(
-                dict(draft),
+                sub_draft,
                 agent_id,
                 status=subtask_status,
                 placement=BatchPlacement(
@@ -722,12 +812,14 @@ class PrompterService:
             waves=len(plan.waves),
             route=route,
         )
-        return {
+        result = {
             "umbrella_task_id": str(umbrella_id),
             "root_subtask_ids": [str(task_of[i]) for i in range(len(drafts))],
             "waves": plan.waves,
             "warnings": plan.warnings,
         }
+        await self._persist_confirm_result(session_id, result)
+        return result
 
     async def update_live_draft(
         self,

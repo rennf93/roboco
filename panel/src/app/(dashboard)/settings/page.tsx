@@ -2,7 +2,9 @@
 
 import { useState } from "react";
 import { useTheme } from "next-themes";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useUIStore } from "@/store";
+import { settingsApi } from "@/lib/api";
 import {
   Card,
   CardContent,
@@ -28,19 +30,79 @@ import { API_URL, WS_URL } from "@/lib/constants";
 import { TranscriptRetentionCard } from "@/components/settings/transcript-retention-card";
 import { FeatureFlagsCard } from "@/components/settings/feature-flags-card";
 
+// Settings keys persisted server-side (string values: "true"/"false" or a number).
+const KEYS = {
+  notifications: "notifications_enabled",
+  sound: "sound_enabled",
+  autoRefresh: "auto_refresh",
+  refreshInterval: "refresh_interval",
+} as const;
+
 export default function SettingsPage() {
   const { theme, setTheme } = useTheme();
   const { sidebarCollapsed, setSidebarCollapsed } = useUIStore();
+  const queryClient = useQueryClient();
 
-  // Local state for settings (would be persisted in a real app)
-  const [notificationsEnabled, setNotificationsEnabled] = useState(true);
-  const [soundEnabled, setSoundEnabled] = useState(true);
-  const [autoRefresh, setAutoRefresh] = useState(true);
-  const [refreshInterval, setRefreshInterval] = useState("30");
+  const { data: settings } = useQuery({
+    queryKey: ["settings"],
+    queryFn: settingsApi.getAll,
+  });
 
-  const handleSave = () => {
-    toast.success("Settings saved successfully");
-  };
+  // `edits` holds the user's in-progress changes; an unset field means "show
+  // the server value" (or the hardcoded default before the query loads).
+  // Deriving the displayed value avoids syncing query state into local state
+  // via an effect (react-hooks/set-state-in-effect).
+  const [edits, setEdits] = useState<{
+    notifications?: boolean;
+    sound?: boolean;
+    autoRefresh?: boolean;
+    refreshInterval?: string;
+  }>({});
+
+  const notificationsEnabled =
+    edits.notifications ??
+    (settings?.[KEYS.notifications] === undefined
+      ? true
+      : settings[KEYS.notifications] === "true");
+  const soundEnabled =
+    edits.sound ??
+    (settings?.[KEYS.sound] === undefined
+      ? true
+      : settings[KEYS.sound] === "true");
+  const autoRefresh =
+    edits.autoRefresh ??
+    (settings?.[KEYS.autoRefresh] === undefined
+      ? true
+      : settings[KEYS.autoRefresh] === "true");
+  const refreshInterval =
+    edits.refreshInterval ??
+    (settings?.[KEYS.refreshInterval] === undefined
+      ? "30"
+      : settings[KEYS.refreshInterval]);
+
+  const saveMutation = useMutation({
+    mutationFn: async () => {
+      await settingsApi.update(
+        KEYS.notifications,
+        String(notificationsEnabled),
+      );
+      await settingsApi.update(KEYS.sound, String(soundEnabled));
+      await settingsApi.update(KEYS.autoRefresh, String(autoRefresh));
+      await settingsApi.update(KEYS.refreshInterval, refreshInterval);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["settings"] });
+      setEdits({}); // re-sync to the freshly-saved server values
+      toast.success("Settings saved successfully");
+    },
+    onError: (error) => {
+      toast.error(
+        `Failed to save: ${error instanceof Error ? error.message : "Unknown error"}`,
+      );
+    },
+  });
+
+  const handleSave = () => saveMutation.mutate();
 
   return (
     <div className="space-y-6">
@@ -148,7 +210,12 @@ export default function SettingsPage() {
                   Automatically refresh data periodically
                 </p>
               </div>
-              <Switch checked={autoRefresh} onCheckedChange={setAutoRefresh} />
+              <Switch
+                checked={autoRefresh}
+                onCheckedChange={(v) =>
+                  setEdits((e) => ({ ...e, autoRefresh: v }))
+                }
+              />
             </div>
             <Separator />
             <div className="flex items-center justify-between">
@@ -160,7 +227,9 @@ export default function SettingsPage() {
               </div>
               <Select
                 value={refreshInterval}
-                onValueChange={setRefreshInterval}
+                onValueChange={(v) =>
+                  setEdits((e) => ({ ...e, refreshInterval: v }))
+                }
                 disabled={!autoRefresh}
               >
                 <SelectTrigger className="w-auto min-w-20">
@@ -199,7 +268,9 @@ export default function SettingsPage() {
               </div>
               <Switch
                 checked={notificationsEnabled}
-                onCheckedChange={setNotificationsEnabled}
+                onCheckedChange={(v) =>
+                  setEdits((e) => ({ ...e, notifications: v }))
+                }
               />
             </div>
             <Separator />
@@ -212,7 +283,7 @@ export default function SettingsPage() {
               </div>
               <Switch
                 checked={soundEnabled}
-                onCheckedChange={setSoundEnabled}
+                onCheckedChange={(v) => setEdits((e) => ({ ...e, sound: v }))}
                 disabled={!notificationsEnabled}
               />
             </div>
@@ -245,7 +316,6 @@ export default function SettingsPage() {
             </p>
           </CardContent>
         </Card>
-
       </div>
 
       {/* Feature Flags — master switches for optional subsystems (full width;
@@ -255,9 +325,9 @@ export default function SettingsPage() {
 
       {/* Save Button */}
       <div className="flex justify-end">
-        <Button onClick={handleSave}>
+        <Button onClick={handleSave} disabled={saveMutation.isPending}>
           <Save className="h-4 w-4 mr-2" />
-          Save Settings
+          {saveMutation.isPending ? "Saving..." : "Save Settings"}
         </Button>
       </div>
     </div>

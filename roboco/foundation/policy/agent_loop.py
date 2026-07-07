@@ -49,6 +49,17 @@ class BudgetPolicy:
     # (8 spawns) without ever tripping the gate. A status never seen before
     # on this (agent, task) still always fully resets.
     pm_respawn_max_revisit_resets: int = 2
+    # A tripped breaker skips spawns until the task's status changes — which
+    # can't happen while the spawn is blocked, so a DB-durable counter
+    # (migration 051) wedges forever: a deploy that fixes the underlying loop
+    # (auth/prompt/schema) can't clear it without manual surgery. Once tripped
+    # the breaker freezes last_check at the trip tick and, after this cooldown,
+    # lets ONE spawn through. A still-wedged task re-trips after the threshold
+    # (bounded re-burn); a fixed one advances and the status-change path fully
+    # resets. Restore re-stamps last_check to now, so a freshly restored row
+    # still trips immediately (durability preserved) — only a row tripped for
+    # longer than the cooldown self-heals.
+    pm_respawn_trip_cooldown_seconds: int = 300
     verb_retry_max_per_minute: int = 3  # default cap for verbs not in VERB_RETRY_LIMITS
 
 

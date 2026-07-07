@@ -93,7 +93,8 @@ def _wire_secretary_spawn_mocks(
         "roboco.foundation.identity.AGENTS",
         {
             SECRETARY_AGENT_ID: SimpleNamespace(
-                uuid=UUID("00000000-0000-0000-0000-000000000001")
+                uuid=UUID("00000000-0000-0000-0000-000000000001"),
+                team=SimpleNamespace(value="board"),
             )
         },
     )

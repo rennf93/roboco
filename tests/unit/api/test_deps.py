@@ -12,6 +12,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
+from roboco.api import deps as _deps
 from roboco.api.deps import (
     _auth_required,
     _check_agent_auth_token,
@@ -108,7 +109,7 @@ def test_get_orchestrator_raises_503_when_unset() -> None:
 @pytest.mark.asyncio
 async def test_get_current_agent_id_raises_when_header_missing() -> None:
     with pytest.raises(HTTPException) as exc:
-        await get_current_agent_id(MagicMock(), x_agent_id=None)
+        await get_current_agent_id(MagicMock(), MagicMock(), x_agent_id=None)
     assert exc.value.status_code == _HTTP_401
 
 
@@ -119,20 +120,22 @@ async def test_get_current_agent_id_returns_uuid() -> None:
         "roboco.api.deps.resolve_agent_uuid",
         new=AsyncMock(return_value=expected),
     ):
-        out = await get_current_agent_id(MagicMock(), x_agent_id="be-dev-1")
+        out = await get_current_agent_id(
+            MagicMock(), MagicMock(), x_agent_id="be-dev-1"
+        )
     assert out == expected
 
 
 @pytest.mark.asyncio
 async def test_get_current_agent_slug_raises_when_header_missing() -> None:
     with pytest.raises(HTTPException) as exc:
-        await get_current_agent_slug(x_agent_id=None)
+        await get_current_agent_slug(MagicMock(), MagicMock(), x_agent_id=None)
     assert exc.value.status_code == _HTTP_401
 
 
 @pytest.mark.asyncio
 async def test_get_current_agent_slug_returns_header() -> None:
-    out = await get_current_agent_slug(x_agent_id="be-dev-1")
+    out = await get_current_agent_slug(MagicMock(), MagicMock(), x_agent_id="be-dev-1")
     assert out == "be-dev-1"
 
 
@@ -213,6 +216,147 @@ def test_check_agent_auth_token_invalid_token_raises() -> None:
 def test_check_agent_auth_token_valid_passes() -> None:
     with patch("roboco.api.deps.verify_agent_token", return_value=True):
         _check_agent_auth_token("a", "developer", "backend", x_agent_token="good")
+
+
+def test_check_agent_auth_token_missing_under_cloud_auth_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cloud_auth on + agent_auth_required off: token still mandatory."""
+    monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", True)
+    monkeypatch.delenv("ROBOCO_AGENT_AUTH_REQUIRED", raising=False)
+    with pytest.raises(HTTPException) as exc:
+        _check_agent_auth_token("a", "developer", "backend", x_agent_token=None)
+    assert exc.value.status_code == _HTTP_401
+
+
+def test_check_agent_auth_token_valid_under_cloud_auth_passes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", True)
+    with patch("roboco.api.deps.verify_agent_token", return_value=True):
+        _check_agent_auth_token("a", "developer", "backend", x_agent_token="good")
+
+
+def test_check_agent_auth_token_dev_mode_no_token_passes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cloud_auth off + agent_auth_required off: dev unchanged."""
+    monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", False)
+    monkeypatch.delenv("ROBOCO_AGENT_AUTH_REQUIRED", raising=False)
+    _check_agent_auth_token("a", "developer", "backend", x_agent_token=None)
+
+
+def test_check_agent_auth_token_agent_auth_required_no_token_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cloud_auth off + agent_auth_required on: existing behavior unchanged."""
+    monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", False)
+    monkeypatch.setenv("ROBOCO_AGENT_AUTH_REQUIRED", "true")
+    with pytest.raises(HTTPException) as exc:
+        _check_agent_auth_token("a", "developer", "backend", x_agent_token=None)
+    assert exc.value.status_code == _HTTP_401
+
+
+# ---------------------------------------------------------------------------
+# require_panel_token — cloud_auth dual path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_require_panel_token_cloud_auth_no_token_no_cookie_rejects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", True)
+    monkeypatch.delenv("ROBOCO_AGENT_AUTH_REQUIRED", raising=False)
+    with pytest.raises(HTTPException) as exc:
+        await _deps.require_panel_token(x_agent_token=None, session_cookie=None)
+    assert exc.value.status_code == _HTTP_401
+
+
+@pytest.mark.asyncio
+async def test_require_panel_token_cloud_auth_valid_token_passes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", True)
+    with patch("roboco.api.deps.verify_agent_token", return_value=True):
+        await _deps.require_panel_token(x_agent_token="good", session_cookie=None)
+
+
+@pytest.mark.asyncio
+async def test_require_panel_token_cloud_auth_forged_token_rejects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", True)
+    with (
+        patch("roboco.api.deps.verify_agent_token", return_value=False),
+        pytest.raises(HTTPException) as exc,
+    ):
+        await _deps.require_panel_token(x_agent_token="bad", session_cookie=None)
+    assert exc.value.status_code == _HTTP_401
+
+
+@pytest.mark.asyncio
+async def test_require_panel_token_cloud_auth_valid_cookie_passes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", True)
+
+    async def _fake_db():
+        yield MagicMock()
+
+    with (
+        patch("roboco.api.deps.get_db", new=_fake_db),
+        patch(
+            "roboco.api.deps.resolve_session_user",
+            new=AsyncMock(return_value=MagicMock()),
+        ),
+    ):
+        await _deps.require_panel_token(x_agent_token=None, session_cookie="good")
+
+
+@pytest.mark.asyncio
+async def test_require_panel_token_cloud_auth_invalid_cookie_rejects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", True)
+
+    async def _fake_db():
+        yield MagicMock()
+
+    with (
+        patch("roboco.api.deps.get_db", new=_fake_db),
+        patch(
+            "roboco.api.deps.resolve_session_user",
+            new=AsyncMock(return_value=None),
+        ),
+        pytest.raises(HTTPException) as exc,
+    ):
+        await _deps.require_panel_token(x_agent_token=None, session_cookie="bogus")
+    assert exc.value.status_code == _HTTP_401
+
+
+@pytest.mark.asyncio
+async def test_require_panel_token_dev_mode_no_token_passes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cloud_auth off + agent_auth_required off: dev unchanged."""
+    monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", False)
+    monkeypatch.delenv("ROBOCO_AGENT_AUTH_REQUIRED", raising=False)
+    await _deps.require_panel_token(x_agent_token=None, session_cookie=None)
+
+
+@pytest.mark.asyncio
+async def test_require_panel_token_dev_mode_forged_token_rejects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cloud_auth off + agent_auth_required off: forged token still rejected."""
+    monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", False)
+    with (
+        patch("roboco.api.deps.verify_agent_token", return_value=False),
+        pytest.raises(HTTPException) as exc,
+    ):
+        await _deps.require_panel_token(x_agent_token="bad", session_cookie=None)
+    assert exc.value.status_code == _HTTP_401
 
 
 # ---------------------------------------------------------------------------

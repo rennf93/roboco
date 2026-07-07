@@ -12,7 +12,10 @@ Covers:
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
+from roboco.billing import pricing as p
 from roboco.billing.pricing import (
     CostResult,
     _is_anthropic_model,
@@ -497,3 +500,42 @@ class TestCostResult:
         result = calculate_cost_result("", tokens_input=_M, tokens_output=0)
         assert result.cost_usd == 0.0
         assert result.unpriced is False
+
+
+# ---------------------------------------------------------------------------
+# Sonnet-5 promo date gate — promo on/ before 2026-08-31, list rate after.
+# ---------------------------------------------------------------------------
+
+
+def test_sonnet5_promo_active_on_or_before_2026_08_31(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _D:
+        @staticmethod
+        def today() -> date:
+            return date(2026, 8, 31)
+
+    monkeypatch.setattr(p, "date", _D)
+    assert p._lookup_prices("claude-sonnet-5") == (
+        _SONNET5_INPUT,
+        _SONNET5_OUTPUT,
+        _SONNET5_CACHE_READ,
+        _SONNET5_CACHE_WRITE,
+    )
+
+
+def test_sonnet5_reverts_to_list_rate_after_2026_08_31(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _D:
+        @staticmethod
+        def today() -> date:
+            return date(2026, 9, 1)
+
+    monkeypatch.setattr(p, "date", _D)
+    assert p._lookup_prices("claude-sonnet-5") == (
+        _SONNET_INPUT,
+        _SONNET_OUTPUT,
+        _SONNET_CACHE_READ,
+        _SONNET_CACHE_WRITE,
+    )

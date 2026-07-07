@@ -35,6 +35,14 @@ const hoisted = vi.hoisted(() => {
       this.didDisconnect = true;
       this.onStateChange?.("disconnected");
     }
+    // C4: the registry replays current state to a new subscriber via getState.
+    getState() {
+      return "connected";
+    }
+    getLastPongAt() {
+      return Date.now();
+    }
+    checkPong() {}
   }
   return { instances, MockConnection };
 });
@@ -49,7 +57,7 @@ vi.mock("@/lib/constants", () => ({
   STREAM_MAX_MESSAGES: 100,
 }));
 
-import { useWebSocket } from "../use-websocket";
+import { useWebSocket, _resetSharedSocketsForTest } from "../use-websocket";
 
 interface Frame {
   type: "agent.stream";
@@ -77,9 +85,11 @@ describe("useWebSocket — clears snapshot on cleanup (#79)", () => {
   beforeEach(() => {
     hoisted.instances.length = 0;
     resultRef.current = null;
+    _resetSharedSocketsForTest();
   });
   afterEach(() => {
     vi.clearAllMocks();
+    _resetSharedSocketsForTest();
   });
 
   it("clears messages/lastMessage/state when the endpoint changes (no stale leak)", () => {
@@ -116,5 +126,48 @@ describe("useWebSocket — clears snapshot on cleanup (#79)", () => {
     const conn = hoisted.instances[0];
     unmount();
     expect(conn.didDisconnect).toBe(true);
+  });
+});
+
+// C4: two consumers of the same /ws/system URL (the A2A live view +
+// rate-limit banner) used to each open their own socket. The hook now
+// ref-counts a shared connection per URL.
+describe("useWebSocket — shared socket per URL (C4)", () => {
+  beforeEach(() => {
+    hoisted.instances.length = 0;
+    resultRef.current = null;
+    _resetSharedSocketsForTest();
+  });
+  afterEach(() => {
+    vi.clearAllMocks();
+    _resetSharedSocketsForTest();
+  });
+
+  it("mounts ONE WebSocketConnection for two same-URL subscribers", () => {
+    // Two separate trees — the module-level registry is shared across both.
+    render(<Harness endpoint="/system" />);
+    render(<Harness endpoint="/system" />);
+    expect(hoisted.instances).toHaveLength(1);
+  });
+
+  it("keeps the shared socket alive while one subscriber unmounts", () => {
+    const treeA = render(<Harness endpoint="/system" />);
+    const treeB = render(<Harness endpoint="/system" />);
+    expect(hoisted.instances).toHaveLength(1);
+    const conn = hoisted.instances[0];
+
+    // Unmount one subscriber — refcount drops to 1, socket stays alive.
+    treeA.unmount();
+    expect(conn.didDisconnect).toBe(false);
+
+    // Unmount the last subscriber — refcount 0, socket tears down.
+    treeB.unmount();
+    expect(conn.didDisconnect).toBe(true);
+  });
+
+  it("still opens separate sockets for different URLs", () => {
+    render(<Harness endpoint="/agents/a" />);
+    render(<Harness endpoint="/agents/b" />);
+    expect(hoisted.instances).toHaveLength(2);
   });
 });

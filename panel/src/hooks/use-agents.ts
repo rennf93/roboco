@@ -286,9 +286,15 @@ export function useAgents() {
   // A stable signature so the derived roster refetches when the live set
   // changes (react-query keys on this, not on the closure).
   const rosterKey = definitions?.map((d) => d.id).join(",") ?? "static";
+  // Re-derive the roster when the live status snapshot changes — keying on the
+  // roster itself would be circular (never changes).
+  const statusEpoch =
+    orchestratorStatus?.agents
+      ?.map((a) => `${a.agent_id}:${a.state}`)
+      .join(",") ?? "none";
 
   return useQuery({
-    queryKey: [...agentKeys.all, "roster", rosterKey],
+    queryKey: [...agentKeys.all, "roster", rosterKey, statusEpoch],
     queryFn: async (): Promise<Agent[]> => {
       // Build a map of agent statuses from the orchestrator status array
       const statusMap = new Map<string, string>();

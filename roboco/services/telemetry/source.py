@@ -15,6 +15,7 @@ has no target or the signal is unavailable.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
@@ -150,7 +151,7 @@ class MultiProjectCITelemetrySource:
     async def fetch(self, projects: Sequence[object]) -> list[TelemetrySample]:
         git = GitService(self.session)
         default_workflow = settings.ci_watch_default_workflow.strip()
-        samples: list[TelemetrySample] = []
+        coros = []
         for project in projects:
             slug = str(getattr(project, "slug", "") or "").strip()
             if not slug:
@@ -158,10 +159,10 @@ class MultiProjectCITelemetrySource:
             workflow = (
                 str(getattr(project, "ci_watch_workflow", None) or default_workflow)
             ).strip() or None
-            sample = await self._sample_for(git, slug, workflow)
-            if sample is not None:
-                samples.append(sample)
-        return samples
+            coros.append(self._sample_for(git, slug, workflow))
+        # Gather so one slow GitHub 429 doesn't stall the whole sweep.
+        results = await asyncio.gather(*coros) if coros else []
+        return [s for s in results if s is not None]
 
     async def _sample_for(
         self, git: GitService, slug: str, workflow: str | None

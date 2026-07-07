@@ -6,6 +6,7 @@ from uuid import UUID
 from pydantic import BaseModel, BeforeValidator, Field, field_validator
 
 from roboco.foundation.policy.content.validators import coerce_str_list
+from roboco.models.base import Complexity
 
 # A ``list[str]`` field that tolerates the Claude SDK's XML-ish tool-input
 # parsing: an LLM emitting a bullet list as ``<item>…</item>`` elements arrives
@@ -280,7 +281,7 @@ class DelegateRequest(BaseModel):
     # ("medium"). Force callers to declare intent.
     task_type: str = Field(..., min_length=1)
     nature: str = Field(..., min_length=1)
-    estimated_complexity: str = Field(..., min_length=1)
+    estimated_complexity: Complexity
     # acceptance_criteria is required and non-empty; downstream policy
     # also denylist-checks each item against placeholder phrases.
     acceptance_criteria: StrList = Field(..., min_length=1)
@@ -307,28 +308,6 @@ class DelegateRequest(BaseModel):
     # Pre-gateway parity: cross-field validators that catch the most common
     # LLM-vs-schema confusions. Pre-gateway lived in
     # roboco/mcp/schemas/__init__.py::TaskCreateInput at 0c3d15a.
-    @field_validator("estimated_complexity", mode="before")
-    @classmethod
-    def _complexity_must_be_string(cls, v: object) -> object:
-        """Reject ints — agents sometimes send 1/2/3 thinking it's priority."""
-        if isinstance(v, int) and not isinstance(v, bool):
-            raise ValueError(
-                f"estimated_complexity must be a string "
-                f"(low|medium|high|critical), got int {v!r}. "
-                f"Priority is not a delegate parameter — drop it."
-            )
-        if isinstance(v, str) and v.lower() not in {
-            "low",
-            "medium",
-            "high",
-            "critical",
-        }:
-            raise ValueError(
-                f"estimated_complexity must be one of: low, medium, high, "
-                f"critical. Got {v!r}."
-            )
-        return v
-
     @field_validator("nature", mode="before")
     @classmethod
     def _nature_must_be_known(cls, v: object) -> object:

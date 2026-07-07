@@ -52,6 +52,10 @@ class XPostBodyTooLongError(ValueError):
     """The CEO's edited body exceeds the 280-char tweet limit."""
 
 
+class TaskAlreadyCompletedError(Exception):
+    """The task is already COMPLETED (posted publicly) and can't be rejected."""
+
+
 @dataclass(frozen=True)
 class XPostExecuteResult:
     """The outcome of an approve call.
@@ -87,6 +91,7 @@ class XPostService(BaseService):
         if task is None or task.source not in X_SOURCES:
             return None
 
+        trimmed: str | None = None
         if edited_body is not None:
             trimmed = edited_body.strip()
             if len(trimmed) > MAX_TWEET_CHARS:
@@ -94,9 +99,8 @@ class XPostService(BaseService):
                     f"edited body is {len(trimmed)} chars, over the "
                     f"{MAX_TWEET_CHARS}-char tweet limit"
                 )
-            if trimmed:
-                markers.set_x_draft_body(task, trimmed)
-                await self.session.flush()
+            if not trimmed:
+                trimmed = None
 
         if task.status == TaskStatus.COMPLETED:
             return XPostExecuteResult(
@@ -122,19 +126,22 @@ class XPostService(BaseService):
                 detail="A post is already in progress for this draft.",
             )
         try:
-            return await self._approve_locked(task_id, task)
+            return await self._approve_locked(task_id, task, trimmed)
         finally:
             await self._release_lock(lock_key, token)
 
     async def _approve_locked(
-        self, task_id: UUID, task: TaskTable
+        self, task_id: UUID, task: TaskTable, trimmed_body: str | None
     ) -> XPostExecuteResult | None:
         """The critical section under the held post lock.
 
         Re-reads the committed state (expire forces a fresh SELECT): a
         concurrent approve that won the lock first may have posted + committed
         COMPLETED after the pre-lock read, so acting on the stale in-memory
-        row would double-post.
+        row would double-post. The CEO's edited body is applied to the
+        re-read locked row AFTER the COMPLETED check — a concurrent approve
+        that already posted can't have this edit land on the just-posted task
+        (stored body ≠ posted tweet).
         """
         self.session.expire(task)
         locked = await get_task_service(self.session).get(task_id)
@@ -146,6 +153,9 @@ class XPostService(BaseService):
                 tweet_id=markers.get_x_posted_tweet_id(locked),
                 detail="this draft was already posted",
             )
+        if trimmed_body:
+            markers.set_x_draft_body(locked, trimmed_body)
+            await self.session.flush()
         return await self._post(locked)
 
     async def _post(self, task: TaskTable) -> XPostExecuteResult:
@@ -182,6 +192,10 @@ class XPostService(BaseService):
         task = await get_task_service(self.session).get(task_id)
         if task is None or task.source not in X_SOURCES:
             return None
+        if task.status == TaskStatus.COMPLETED:
+            raise TaskAlreadyCompletedError(
+                f"X draft {task_id} already posted (COMPLETED); cannot be rejected"
+            )
         markers.set_x_reject_reason(task, reason)
         task.status = TaskStatus.CANCELLED
         await self.session.flush()

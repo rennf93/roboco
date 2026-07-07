@@ -874,11 +874,14 @@ class Choreographer:
             company_goals=company_goals,
         )
         briefing = build_context_briefing(inputs)
-        memory = heavy.get("institutional_memory", [])
-        if memory:
+        memory_block = heavy.get("institutional_memory")
+        if memory_block is not None:
             # "What the company already knows about work like this" — distilled
             # lessons + approved playbooks, pushed so the agent never has to ask.
-            briefing = {**briefing, "institutional_memory": memory}
+            # The block always carries ``institutional_memory_status`` so an agent
+            # can tell "searched, nothing" (below_floor / empty) from "search broke"
+            # (error) from "subsystem off" (disabled); lessons is empty unless ok.
+            briefing = {**briefing, "institutional_memory": memory_block}
         if include_ac_coverage and task_id is not None:
             coverage = await self.task.parent_ac_coverage(task_id)
             if coverage:
@@ -946,15 +949,22 @@ class Choreographer:
 
     async def _institutional_memory(
         self, agent_id: UUID, task: Any | None
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, Any]:
         """Org-memory keystone: top-K relevant past lessons/playbooks for this
         claim, role-shaped and relevance-floored. Empty unless
         ``org_memory_enabled`` and a task is in hand (nothing to query on
-        otherwise). Best-effort — never breaks the briefing."""
+        otherwise). Best-effort — never breaks the briefing.
+
+        Returns ``{"status": ..., "lessons": [...]}`` where status is one of
+        ``disabled`` (subsystem off / no task — ponytail: both mean no search ran),
+        ``error`` (search raised), ``empty`` (search yielded nothing),
+        ``below_floor`` (searched, nothing met the floor), ``ok`` (lessons
+        injected). Lessons is empty unless status is ``ok`` — the status is
+        additive, the injection behavior is unchanged."""
         from roboco.config import settings as _settings
 
         if not _settings.org_memory_enabled or task is None:
-            return []
+            return {"status": "disabled", "lessons": []}
         agent = await self.task.agent_for(agent_id)
         role = str(agent.role) if agent is not None else ""
         title = str(getattr(task, "title", "") or "")
@@ -966,12 +976,15 @@ class Choreographer:
         else:
             task_type = str(raw_type)
         query = shape_memory_query(role, title, task_type)
-        memory: list[dict[str, Any]] = await self._deps.evidence_repo.similar_memory(
+        result = await self._deps.evidence_repo.similar_memory(
             query=query,
             top_k=_settings.org_memory_top_k,
             min_score=_settings.org_memory_min_score,
         )
-        return memory
+        return {
+            "status": str(result.get("status", "error")),
+            "lessons": list(result.get("items", [])),
+        }
 
     # PM coordinator roles plan + delegate many roots in parallel; the actual
     # work then runs in the delegated children/cells, not in the PM's own hands.
@@ -4837,7 +4850,11 @@ class Choreographer:
         which is a strict subset of `AGENT_UUIDS` — so any AGENT_UUIDS
         check here was unreachable.
         """
-        if parent.project_id is None and getattr(parent, "product_id", None) is None:
+        if (
+            parent.project_id is None
+            and getattr(parent, "product_id", None) is None
+            and not getattr(parent, "cell_projects", None)
+        ):
             return Envelope.invalid_state(
                 message="parent task has neither a project_id nor a product_id",
                 remediate=(
@@ -6125,7 +6142,15 @@ class Choreographer:
     async def cell_pm_complete(
         self, pm_agent_id: UUID, task_id: UUID, notes: str
     ) -> Envelope:
-        """Cell PM completes a task — auto-merges leaf PR into parent branch."""
+        """Cell PM completes a task — auto-merges leaf PR into parent branch.
+
+        Idempotent: if the PR is already merged to the target on GitHub,
+        skip the merge call and proceed straight to the transition. This
+        closes the H7 respawn loop where a re-issue after a None-complete
+        re-called pr_merge on an already-merged PR (405) and the remediate
+        hint told the agent to "re-issue pr_merge" which could never
+        succeed.
+        """
         t = await self.task.get(task_id)
         if t is None:
             return await self._emit_rejection(
@@ -6148,22 +6173,32 @@ class Choreographer:
         # change); for a cell task it is the root branch (feature/main_pm/…),
         # which parent_branch_for would have mis-derived as feature/<cellteam>/…
         target = await resolve_parent_branch(t, self.task)
-        try:
-            merge_result = await self.git.pr_merge(
-                t.pr_number,
-                target=target,
-                project_id=cast("UUID", t.project_id),
-                actor_agent_id=pm_agent_id,
-            )
-        except MergeConflictError as exc:
-            # A sibling landed overlapping work first, so this PR can't merge.
-            # Resolve it (rebase / close-superseded / escalate) instead of
-            # letting the failure re-block the task and respawn the PM forever.
-            return await self._resolve_merge_conflict_on_complete(
-                pm_agent_id, task_id, t, target, notes, exc
-            )
+        # H7: idempotent pre-check. If the PR is already merged to the
+        # target on GitHub, skip the GitHub merge call — a re-issue after
+        # a None-complete would otherwise 405 on the already-merged PR and
+        # respawn the PM forever against a remediate hint that can't succeed.
+        merge_commit: str | None = None
+        if t.pr_number:
+            already_merged = await self.git.is_pr_merged_for_task(task_id)
+            if not already_merged:
+                try:
+                    merge_result = await self.git.pr_merge(
+                        t.pr_number,
+                        target=target,
+                        project_id=cast("UUID", t.project_id),
+                        actor_agent_id=pm_agent_id,
+                    )
+                    merge_commit = merge_result.get("merge_commit_sha")
+                except MergeConflictError as exc:
+                    # A sibling landed overlapping work first, so this PR can't
+                    # merge. Resolve it (rebase / close-superseded / escalate)
+                    # instead of letting the failure re-block the task and
+                    # respawn the PM forever.
+                    return await self._resolve_merge_conflict_on_complete(
+                        pm_agent_id, task_id, t, target, notes, exc
+                    )
         return await self._finalize_cell_complete(
-            pm_agent_id, task_id, t, notes, merge_result.get("merge_commit_sha")
+            pm_agent_id, task_id, t, notes, merge_commit
         )
 
     async def _finalize_cell_complete(
@@ -6209,14 +6244,32 @@ class Choreographer:
         # parent task: if the parent's subtasks are all terminal, hand the
         # parent off to the cell_pm for that team so it gets respawned for
         # the next stage (cell-PM PR merge or main-PM hand-off).
+        warning: str | None = None
         if leaf_parent_id is not None:
-            await self._maybe_advance_parent_to_pm_review(leaf_parent_id, leaf_team)
-        return Envelope.ok(
+            try:
+                await self._maybe_advance_parent_to_pm_review(leaf_parent_id, leaf_team)
+            except Exception as exc:
+                logger.warning(
+                    "cell_pm_complete side-effect failed - leaf completed, "
+                    "parent advance did not fire",
+                    task_id=str(task_id),
+                    parent_task_id=str(leaf_parent_id),
+                    error=str(exc),
+                )
+                warning = (
+                    f"Leaf completed but advancing the parent to PM review "
+                    f"failed ({exc}). The parent will be re-advanced on the "
+                    f"next dispatch tick."
+                )
+        env = Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
             next=spec_module._INTENT_VERBS["complete"].next_hint(t),
             context_briefing=await self._briefing_for(pm_agent_id, task_id),
         ).with_introspection(task=t, role="cell_pm")
+        if warning:
+            env.warning = warning
+        return env
 
     async def _resolve_merge_conflict_on_complete(
         self,

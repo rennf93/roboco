@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import contextlib
 import os
+import time
 from typing import TYPE_CHECKING, Annotated, Any
 from uuid import UUID
 
+import jwt
 import structlog
 from fastapi import Cookie, Depends, Header, HTTPException, Response, status
 from sqlalchemy import select
@@ -133,31 +135,33 @@ OrchestratorDep = Annotated[AgentOrchestrator, Depends(get_orchestrator)]
 
 async def get_current_agent_id(
     db: DbSession,
+    response: Response,
     x_agent_id: Annotated[str | None, Header()] = None,
+    x_agent_role: Annotated[str | None, Header()] = None,
+    x_agent_team: Annotated[str | None, Header()] = None,
+    x_agent_token: Annotated[str | None, Header()] = None,
+    roboco_session: Annotated[str | None, Cookie(alias=SESSION_COOKIE_NAME)] = None,
 ) -> UUID:
-    """
-    Get the current agent ID from request headers.
-
-    Accepts either a UUID string or agent slug (e.g., "be-dev-1").
-    In production, this would validate a JWT token and extract the agent ID.
-    For now, we use a simple header-based approach for development.
-
-    Args:
-        x_agent_id: Agent ID (UUID or slug) from X-Agent-ID header
-        db: Database session for slug resolution
-
-    Returns:
-        UUID of the current agent
-
-    Raises:
-        HTTPException: If agent ID is missing or invalid/not found
-    """
+    """Resolve the caller's agent id. Dev (header-trust) keeps the historical
+    slug/UUID resolution unchanged; under cloud auth the request must present a
+    valid agent HMAC token or a CEO session cookie — a bare X-Agent-ID is a
+    spoof and is rejected (see _cloud_auth_agent_context)."""
+    if settings.cloud_auth_enabled:
+        ctx = await _cloud_auth_agent_context(
+            db,
+            response,
+            x_agent_id,
+            x_agent_role,
+            x_agent_team,
+            x_agent_token,
+            roboco_session,
+        )
+        return ctx.agent_id
     if not x_agent_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing X-Agent-ID header",
         )
-
     return await resolve_agent_id(x_agent_id, db)
 
 
@@ -166,23 +170,29 @@ CurrentAgentId = Annotated[UUID, Depends(get_current_agent_id)]
 
 
 async def get_current_agent_slug(
+    db: DbSession,
+    response: Response,
     x_agent_id: Annotated[str | None, Header()] = None,
+    x_agent_role: Annotated[str | None, Header()] = None,
+    x_agent_team: Annotated[str | None, Header()] = None,
+    x_agent_token: Annotated[str | None, Header()] = None,
+    roboco_session: Annotated[str | None, Cookie(alias=SESSION_COOKIE_NAME)] = None,
 ) -> str:
-    """
-    Get the current agent slug from request headers.
-
-    Unlike get_current_agent_id, this returns the slug directly without
-    resolving to UUID. Useful for A2A where we work with agent slugs.
-
-    Args:
-        x_agent_id: Agent slug from X-Agent-ID header
-
-    Returns:
-        Agent slug string
-
-    Raises:
-        HTTPException: If agent ID header is missing
-    """
+    """Return the caller's agent slug. Dev: the header verbatim. Cloud auth:
+    the slug from the dual-path gate (a verified agent token resolves the real
+    slug; a CEO cookie resolves to 'ceo')."""
+    if settings.cloud_auth_enabled:
+        ctx = await _cloud_auth_agent_context(
+            db,
+            response,
+            x_agent_id,
+            x_agent_role,
+            x_agent_team,
+            x_agent_token,
+            roboco_session,
+        )
+        assert ctx.slug is not None  # cloud-auth ctx always carries a slug
+        return ctx.slug
     if not x_agent_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -237,7 +247,9 @@ def _check_agent_auth_token(
     # (so the panel / curl-for-debugging keep working), but any token
     # that IS presented is still verified — you can't bypass by
     # supplying an invalid token.
-    if _auth_required() and not x_agent_token:
+    # cloud_auth is the public-exposure signal; agent_auth_required is the
+    # fleet's own HMAC enforcement — either armed means a token is mandatory.
+    if (_auth_required() or settings.cloud_auth_enabled) and not x_agent_token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing X-Agent-Token header (auth required)",
@@ -270,10 +282,11 @@ def _check_agent_auth_token(
         )
 
 
-def require_panel_token(
+async def require_panel_token(
     x_agent_token: Annotated[str | None, Header(alias="X-Agent-Token")] = None,
+    session_cookie: Annotated[str | None, Cookie(alias=SESSION_COOKIE_NAME)] = None,
 ) -> None:
-    """Panel (CEO) HMAC gate for the live-chat bridges.
+    """Panel (CEO) HMAC gate for the live-chat bridges (dual-path).
 
     The HTTP analog of the WS ``_require_panel_token``: the panel is the only
     caller of the live intake/secretary chat, nginx injects the CEO-signed
@@ -283,17 +296,43 @@ def require_panel_token(
     (``ROBOCO_AGENT_AUTH_REQUIRED`` unset) a missing token is allowed; a
     presented-but-forged token is still rejected, matching
     ``_check_agent_auth_token`` and the WS gate.
+
+    When ``settings.cloud_auth_enabled``, a valid CEO session cookie is also
+    accepted (the panel is cookie-only under cloud auth). Off => unchanged.
     """
-    if _auth_required() and not x_agent_token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing X-Agent-Token header (auth required)",
-        )
-    if x_agent_token and not verify_agent_token(x_agent_token, CEO_AGENT_ID, "ceo", ""):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid X-Agent-Token — signature mismatch.",
-        )
+    if not settings.cloud_auth_enabled:
+        if _auth_required() and not x_agent_token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Missing X-Agent-Token header (auth required)",
+            )
+        if x_agent_token and not verify_agent_token(
+            x_agent_token, CEO_AGENT_ID, "ceo", ""
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid X-Agent-Token — signature mismatch.",
+            )
+        return
+    # cloud_auth on: CEO HMAC token OR CEO session cookie.
+    if x_agent_token:
+        if not verify_agent_token(x_agent_token, CEO_AGENT_ID, "ceo", ""):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid X-Agent-Token — signature mismatch.",
+            )
+        return
+    async for db in get_db():
+        user = await resolve_session_user(session_cookie, db)
+        if user is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=(
+                    "Cloud auth is enabled — a valid session "
+                    "or agent token is required."
+                ),
+            )
+        return
 
 
 async def _resolve_agent_identity(
@@ -391,15 +430,44 @@ async def _header_trust_agent_context(
     )
 
 
-async def _slide_session_cookie(response: Response, user: UserTable) -> None:
-    """Re-mint + re-set the session cookie — the sliding 30-day window.
+async def _slide_session_cookie(
+    response: Response, user: UserTable, session_cookie: str | None
+) -> None:
+    """Re-mint + re-set the session cookie only when it's near expiry.
 
-    Called on every request that authenticated via a valid session cookie, so
-    an in-use session's expiry keeps rolling forward; only genuine inactivity
-    past cloud_auth_cookie_max_age logs the CEO out.
+    Re-minting on every request made a stolen cookie's exp roll forward with
+    the legitimate user — so a stolen cookie was valid as long as the user was
+    active. Now the cookie is touched only inside the remint threshold; outside
+    it the exp stays fixed, bounding a stolen cookie to its issued lifetime.
     """
+    if session_cookie and not _should_remint(session_cookie):
+        return
     token = await get_jwt_strategy().write_token(user)
     cookie_transport._set_login_cookie(response, token)
+
+
+def _should_remint(token: str) -> bool:
+    """True when the cookie's exp is within the remint threshold of now.
+
+    Decodes without signature verification (the cookie already authenticated
+    via read_token); on any decode failure returns True (safe default — re-mint
+    rather than silently serve a cookie we can't reason about).
+    """
+    try:
+        data = jwt.decode(
+            token,
+            options={
+                "verify_signature": False,
+                "verify_exp": False,
+                "verify_aud": False,
+            },
+        )
+        exp = data.get("exp")
+        if isinstance(exp, (int, float)):
+            return (exp - time.time()) < settings.cloud_auth_remint_threshold_seconds
+    except Exception:
+        return True
+    return True
 
 
 async def _cloud_auth_agent_context(
@@ -455,7 +523,7 @@ async def _cloud_auth_agent_context(
                 "Cloud auth is enabled — a valid session or agent token is required."
             ),
         )
-    await _slide_session_cookie(response, user)
+    await _slide_session_cookie(response, user, session_cookie)
     return AgentContext(
         agent_id=UUID(CEO_AGENT_ID),
         role=AgentRole.CEO,

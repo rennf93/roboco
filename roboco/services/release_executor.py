@@ -231,7 +231,11 @@ class _ReleaseContext:
     slug: str
     default_branch: str
     root: Path
-    auth_url: str
+    git_url: str
+    # Per-call ``-c http.extraheader=Authorization: Basic …`` prefix so the PAT
+    # never lands in the clone/push argv (``/proc/<pid>/cmdline`` would expose
+    # a URL-embedded token). Empty for SSH / tokenless repos.
+    git_prefix: list[str]
     ci_workflow: str | None
 
 
@@ -243,7 +247,8 @@ class _GitReleaseOps:
         self._slug = ctx.slug
         self._default_branch = ctx.default_branch
         self._root = ctx.root
-        self._auth_url = ctx.auth_url
+        self._git_url = ctx.git_url
+        self._git_prefix = ctx.git_prefix
         self._ci_workflow = ctx.ci_workflow
 
     async def _git(self, *args: str) -> tuple[int, str]:
@@ -258,7 +263,9 @@ class _GitReleaseOps:
         return await _await_proc(proc, _GIT_OP_TIMEOUT_SECONDS)
 
     async def is_already_published(self, version: str) -> bool:
-        rc, out = await self._git("ls-remote", "--tags", "origin", f"v{version}")
+        rc, out = await self._git(
+            *self._git_prefix, "ls-remote", "--tags", "origin", f"v{version}"
+        )
         return rc == 0 and bool(out.strip())
 
     async def release_commit_sha(self, version: str) -> str | None:
@@ -349,7 +356,7 @@ class _GitReleaseOps:
         _, out = await self._git("rev-parse", "HEAD")
         sha = out.strip()
         push_rc, push_out = await self._git(
-            "push", self._auth_url, f"HEAD:{self._default_branch}"
+            *self._git_prefix, "push", self._git_url, f"HEAD:{self._default_branch}"
         )
         if push_rc != 0:
             logger.error("release push failed", error=push_out.strip()[:300])
@@ -368,9 +375,10 @@ class _GitReleaseOps:
                 conclusion = (ci.get("conclusion") or "").lower()
                 if conclusion == "success":
                     return True
-                if conclusion:
-                    logger.warning("release CI not green", conclusion=conclusion)
-                    return False
+                # A non-success on the same sha may be a failed first attempt
+                # while a re-run is still in_progress (GitHub's
+                # status=completed filter excludes it). Keep polling through
+                # the window; only loop exhaustion returns False.
             await asyncio.sleep(_CI_POLL_INTERVAL_SECONDS)
         logger.warning("release CI poll timed out", sha=commit_sha)
         return False
@@ -442,7 +450,6 @@ async def get_release_executor(session: AsyncSession) -> ReleaseExecutor:
     """Build a ReleaseExecutor with a production ops over a fresh writable clone."""
     from roboco.config import settings
     from roboco.services.project import get_project_service
-    from roboco.services.workspace import _inject_token_into_url
 
     slug = (settings.self_heal_project_slug or "roboco-api").strip()
     project_svc = get_project_service(session)
@@ -452,19 +459,31 @@ async def get_release_executor(session: AsyncSession) -> ReleaseExecutor:
     token = await project_svc.get_decrypted_token_by_slug(slug)
     git_url = str(project.git_url)
     default_branch = str(project.default_branch or "master")
-    auth_url = _inject_token_into_url(git_url, token)
-    root = await _prepare_release_clone(slug, auth_url, default_branch)
+    # PAT rides a per-call ``-c http.extraheader=Authorization: Basic …`` config
+    # (mirrors workspace.py :642 / :1285) so it never lands in the clone/push
+    # argv — ``/proc/<pid>/cmdline`` would otherwise expose a URL-embedded token.
+    git_prefix: list[str] = []
+    using_token = bool(token) and git_url.startswith("https://")
+    if using_token:
+        import base64
+
+        basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+        git_prefix = ["-c", f"http.extraheader=Authorization: Basic {basic}"]
+    root = await _prepare_release_clone(slug, git_url, git_prefix, default_branch)
     ctx = _ReleaseContext(
         slug=slug,
         default_branch=default_branch,
         root=root,
-        auth_url=auth_url,
+        git_url=git_url,
+        git_prefix=git_prefix,
         ci_workflow=_resolve_release_ci_workflow(),
     )
     return ReleaseExecutor(_GitReleaseOps(session, ctx))
 
 
-async def _prepare_release_clone(slug: str, auth_url: str, default_branch: str) -> Path:
+async def _prepare_release_clone(
+    slug: str, git_url: str, git_prefix: list[str], default_branch: str
+) -> Path:
     """Fresh, writable, token-authenticated clone for the release commit + push."""
     from roboco.config import settings
 
@@ -473,7 +492,7 @@ async def _prepare_release_clone(slug: str, auth_url: str, default_branch: str) 
         await _run(["rm", "-rf", str(root)])
     root.parent.mkdir(parents=True, exist_ok=True)
     rc, out = await _run(
-        ["git", "clone", "--branch", default_branch, auth_url, str(root)]
+        ["git", *git_prefix, "clone", "--branch", default_branch, git_url, str(root)]
     )
     if rc != 0:
         raise RuntimeError(f"release clone failed: {out.strip()[:200]}")

@@ -10,6 +10,7 @@ from typing import Any, ClassVar, cast
 from uuid import UUID
 
 from sqlalchemy import and_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.db.tables import ProjectTable, TaskTable, WorkSessionTable
@@ -119,7 +120,18 @@ class WorkSessionService(BaseService):
         )
 
         self.session.add(work_session)
-        await self.session.flush()
+        try:
+            await self.session.flush()
+        except IntegrityError as exc:
+            # The 047 partial-unique index (uq_work_sessions_one_active_per_task)
+            # fires when a concurrent same-task active-session create races past
+            # the unlocked get_active_for_task_and_agent check. Re-raise as a
+            # clean ConflictError so the choreographer's try/except lands an
+            # invalid_state envelope instead of a 500.
+            raise ConflictError(
+                f"active work session already exists for task {data.task_id}",
+                resource_type="work_session",
+            ) from exc
 
         self.log.info(
             "Work session created",
@@ -517,7 +529,17 @@ class WorkSessionService(BaseService):
         Returns:
             The updated session or None if not found
         """
-        work_session = await self.get(session_id)
+        # Lock the row FOR UPDATE before the status check so two concurrent
+        # merge_pr calls (retried CEO double-click racing PM auto-complete)
+        # serialize — only one writes merged_by / pr_merged_at. `of=...` scopes
+        # the lock to WorkSessionTable because project/agent are lazy="joined",
+        # else Postgres rejects FOR UPDATE on the nullable join side.
+        lock_result = await self.session.execute(
+            select(WorkSessionTable)
+            .where(WorkSessionTable.id == session_id)
+            .with_for_update(of=WorkSessionTable)
+        )
+        work_session = lock_result.scalar_one_or_none()
         if not work_session:
             return None
 
