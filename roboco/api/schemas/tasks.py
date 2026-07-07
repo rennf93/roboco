@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import select
 
+from roboco.api.schemas.docs import DocRefResponse
 from roboco.db.tables import ProjectTable, TaskTable, WorkSessionTable
 from roboco.models.base import (
     BlockerResolverType,
@@ -345,6 +346,7 @@ class TaskResponse(BaseModel):
 
     # Artifacts
     commits: list[CommitRefResponse] = []
+    documents: list[DocRefResponse] = []
 
     # Documentation
     dev_notes: str | None
@@ -733,6 +735,26 @@ def convert_commits(commits_data: list | None) -> list[CommitRefResponse]:
     ]
 
 
+def convert_documents(documents_data: list | None) -> list[DocRefResponse]:
+    """Convert documents JSON list to DocRefResponse list."""
+    if not documents_data:
+        return []
+    return [
+        DocRefResponse(
+            path=doc.get("path", ""),
+            title=doc.get("title", ""),
+            doc_type=doc.get("doc_type", ""),
+            version=doc.get("version"),
+            created_by=doc.get("created_by"),
+            created_at=doc.get("created_at"),
+            updated_by=doc.get("updated_by"),
+            updated_at=doc.get("updated_at"),
+            commit_status=doc.get("commit_status"),
+        )
+        for doc in documents_data
+    ]
+
+
 def convert_cell_projects(task: "TaskTable") -> list[ProductCellMapping]:
     """The task's ad-hoc per-cell project map, or ``[]``.
 
@@ -797,6 +819,7 @@ def task_to_response(task: "TaskTable") -> TaskResponse:
         checkpoints=convert_checkpoints(task.checkpoints),
         progress_updates=convert_progress_updates(task.progress_updates),
         commits=convert_commits(task.commits),
+        documents=convert_documents(task.documents),
         dev_notes=task.dev_notes,
         qa_notes=task.qa_notes,
         auditor_notes=task.auditor_notes,
