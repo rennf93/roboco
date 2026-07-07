@@ -244,6 +244,22 @@ _ANTHROPIC_RATE_LIMIT_MARKERS: tuple[str, ...] = (
     "hit your session limit",
     "five_hour",
 )
+# ollama.com HTTP 429 body (the weekly glm-5.2:cloud limit surfaces here).
+# Specific to the API error formatter so an agent writing about limits can't
+# false-match and park the whole ollama fleet.
+_OLLAMA_RATE_LIMIT_MARKERS: tuple[str, ...] = (
+    "rate limit exceeded",
+)
+
+# ponytail: marker map drives the detector — adding a provider later is a
+# table row, not a new branch. Grok is deliberately absent (exit-75 detector).
+_RATE_LIMIT_MARKERS_BY_PROVIDER: dict[str, tuple[str, ...]] = {
+    ModelProvider.ANTHROPIC.value: _ANTHROPIC_RATE_LIMIT_MARKERS,
+    ModelProvider.OLLAMA_CLOUD.value: _OLLAMA_RATE_LIMIT_MARKERS,
+}
+_OVERLOAD_MARKERS_BY_PROVIDER: dict[str, tuple[str, ...]] = {
+    ModelProvider.ANTHROPIC.value: _ANTHROPIC_OVERLOAD_MARKERS,
+}
 
 # The intake (prompter) agent: a single seeded, board-adjacent interviewer.
 # Unlike delivery agents it is never dispatched and runs ONE persistent
@@ -8364,18 +8380,21 @@ Start by:
     ) -> str | None:
         """Provider to park if this dead run hit a persistent overload, else None.
 
-        Only the Anthropic path is matched: grok has its own exit-75 detector,
-        and other providers surface overloads differently. Returns None when
-        the feature is disabled, the agent isn't Anthropic, or the output holds
-        no overload marker. Gated so a misfire can be turned off without a
-        redeploy of the detection logic.
+        Data-driven by ``_OVERLOAD_MARKERS_BY_PROVIDER``: only providers with
+        specific overload markers are candidates, so grok (its own exit-75
+        detector) and unhandled providers stay on crash-retry. Returns the
+        matched provider value, or None when the feature is disabled, the
+        provider has no overload markers, or the output holds no marker.
         """
         if not settings.overload_break_enabled:
             return None
-        from roboco.models.base import ModelProvider
-
         provider_type = instance.config.provider_type if instance.config else None
-        if provider_type not in (None, ModelProvider.ANTHROPIC.value):
+        markers = (
+            _OVERLOAD_MARKERS_BY_PROVIDER.get(provider_type)
+            if provider_type
+            else None
+        )
+        if markers is None:
             return None
         tail = await self._tail_container_logs(f"roboco-agent-{agent_id}")
         # The SDK server writes model-API errors to /tmp/sdk-server.log, not
@@ -8384,8 +8403,8 @@ Start by:
         # crash-respawns straight back into it.
         transcript_tail = self._transcript_tail_text(agent_id)
         lowered = (tail + "\n" + transcript_tail).lower()
-        if any(marker in lowered for marker in _ANTHROPIC_OVERLOAD_MARKERS):
-            return ModelProvider.ANTHROPIC.value
+        if any(marker in lowered for marker in markers):
+            return provider_type
         return None
 
     async def _provider_rate_limit_park_target(
@@ -8393,18 +8412,22 @@ Start by:
     ) -> str | None:
         """Provider to park if this dead run hit a session/usage limit, else None.
 
-        Mirrors ``_provider_overload_park_target`` but matches the Claude session
-        ("5-hour") limit, which surfaces as a 429 the SDK does not retry — the
-        container exits with a 0-token rejection rather than an overload. Without
-        this it would crash-respawn straight back into the limit. Gated by the
-        same flag so a misfire is toggle-able without a redeploy.
+        Mirrors ``_provider_overload_park_target`` but matches the Claude
+        session ("5-hour") limit AND the ollama.com weekly limit
+        (``glm-5.2:cloud``), both of which surface as a 429 the SDK does not
+        retry. Data-driven by ``_RATE_LIMIT_MARKERS_BY_PROVIDER``; returns the
+        matched provider value or None. Gated so a misfire can be turned off
+        without a redeploy.
         """
         if not settings.overload_break_enabled:
             return None
-        from roboco.models.base import ModelProvider
-
         provider_type = instance.config.provider_type if instance.config else None
-        if provider_type not in (None, ModelProvider.ANTHROPIC.value):
+        markers = (
+            _RATE_LIMIT_MARKERS_BY_PROVIDER.get(provider_type)
+            if provider_type
+            else None
+        )
+        if markers is None:
             return None
         tail = await self._tail_container_logs(f"roboco-agent-{agent_id}")
         # The SDK server writes to /tmp/sdk-server.log, not stdout, so the
@@ -8412,8 +8435,8 @@ Start by:
         # Claude transcript on the host as well.
         transcript_tail = self._transcript_tail_text(agent_id)
         lowered = (tail + "\n" + transcript_tail).lower()
-        if any(marker in lowered for marker in _ANTHROPIC_RATE_LIMIT_MARKERS):
-            return ModelProvider.ANTHROPIC.value
+        if any(marker in lowered for marker in markers):
+            return provider_type
         return None
 
     async def _park_provider_unavailable(
