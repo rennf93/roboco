@@ -34,7 +34,7 @@ M11 (engine-loop liveness watchdog) is NOT exercised here — a non-flaky
 liveness-alert harness needs a controllable clock + a long-running loop
 tick, which the in-process e2e stack (no background loops started) can't
 model without flakiness. M11 is unit-covered by
-``tests/unit/runtime/test_loop_liveness_watchdog.py``.
+``tests/unit/runtime/test_orchestrator_liveness.py``.
 
 Deviations from a true end-to-end exercise (noted): H24's CI-conclusion
 source is stubbed (the e2e harness has no real GitHub CI); H25 uses the

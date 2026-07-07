@@ -129,13 +129,25 @@ async def test_failed_cycle_does_not_record_post_success_heartbeat(
 
     orch._run_ci_watch_cycle = AsyncMock(side_effect=_raise_then_stop)
 
+    heartbeat_calls: list[tuple[str, float]] = []
+    original = orch._record_loop_heartbeat
+
+    def _spy(name: str, interval: float) -> None:
+        heartbeat_calls.append((name, interval))
+        original(name, interval)
+
+    orch._record_loop_heartbeat = _spy
+
     with patch("asyncio.sleep", new=AsyncMock()):
         await orch._ci_watch_loop()
 
     assert "ci_watch" in orch._loop_heartbeats
-    # Only the start heartbeat was recorded; the post-success call was skipped
-    # because the cycle raised before reaching it.
-    _last_success, interval = orch._loop_heartbeats["ci_watch"]
+    # Only the start heartbeat was recorded — the post-success call was skipped
+    # because the cycle raised before reaching it. A second call would mean the
+    # heartbeat refreshed despite the failure, defeating the staleness alert.
+    assert len(heartbeat_calls) == 1
+    assert heartbeat_calls[0] == ("ci_watch", _CI_WATCH_INTERVAL)
+    _, interval = orch._loop_heartbeats["ci_watch"]
     assert interval == _CI_WATCH_INTERVAL
 
 
