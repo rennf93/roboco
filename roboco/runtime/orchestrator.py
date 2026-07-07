@@ -7724,7 +7724,13 @@ Start by:
 
     async def _run_video_render_cycle(self) -> None:
         """One render pass: render every completed authoring task carrying an
-        unrendered composition. Testable w/o the sleep."""
+        unrendered composition. Testable w/o the sleep.
+
+        commit per-task so a raise mid-cycle no longer rolls back prior
+        renders (and the next cycle no longer re-renders + re-originates a
+        second held video_post draft). The committed ``render_status=
+        "rendered"`` is the idempotency key the next scan skips.
+        """
         from roboco.db import get_db_context
         from roboco.services.task import get_task_service
 
@@ -7732,7 +7738,7 @@ Start by:
             tasks = await get_task_service(db).list_completed_video_tasks()
             for task in tasks:
                 await self._render_video_task(db, task)
-            await db.commit()
+                await db.commit()
 
     async def _render_video_task(self, db: Any, task: Any) -> None:
         """Render one completed authoring task's composition, or skip/retry/fail.
