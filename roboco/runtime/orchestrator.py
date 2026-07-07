@@ -247,9 +247,7 @@ _ANTHROPIC_RATE_LIMIT_MARKERS: tuple[str, ...] = (
 # ollama.com HTTP 429 body (the weekly glm-5.2:cloud limit surfaces here).
 # Specific to the API error formatter so an agent writing about limits can't
 # false-match and park the whole ollama fleet.
-_OLLAMA_RATE_LIMIT_MARKERS: tuple[str, ...] = (
-    "rate limit exceeded",
-)
+_OLLAMA_RATE_LIMIT_MARKERS: tuple[str, ...] = ("rate limit exceeded",)
 
 # ponytail: marker map drives the detector — adding a provider later is a
 # table row, not a new branch. Grok is deliberately absent (exit-75 detector).
@@ -8398,9 +8396,7 @@ Start by:
             return None
         provider_type = instance.config.provider_type if instance.config else None
         markers = (
-            _OVERLOAD_MARKERS_BY_PROVIDER.get(provider_type)
-            if provider_type
-            else None
+            _OVERLOAD_MARKERS_BY_PROVIDER.get(provider_type) if provider_type else None
         )
         if markers is None:
             return None

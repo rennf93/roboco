@@ -37,21 +37,32 @@ async def test_sweep_passes_cache_tokens_to_calculate_cost(
     orch, _inst = _active_orch()
     captured: dict[str, Any] = {}
 
-    def fake_calc(model: str, tokens_input: int, tokens_output: int,
-                  tokens_cache_read: int = 0, tokens_cache_write: int = 0) -> float:
-        captured.update(model=model, tokens_input=tokens_input,
-                        tokens_output=tokens_output,
-                        tokens_cache_read=tokens_cache_read,
-                        tokens_cache_write=tokens_cache_write)
+    def fake_calc(
+        model: str,
+        tokens_input: int,
+        tokens_output: int,
+        tokens_cache_read: int = 0,
+        tokens_cache_write: int = 0,
+    ) -> float:
+        captured.update(
+            model=model,
+            tokens_input=tokens_input,
+            tokens_output=tokens_output,
+            tokens_cache_read=tokens_cache_read,
+            tokens_cache_write=tokens_cache_write,
+        )
         return 0.804  # 4M * 0.201/1M cache-read spend
 
     monkeypatch.setattr(pricing, "calculate_cost", fake_calc)
     monkeypatch.setattr(
-        orch, "_resolve_active_tokens",
+        orch,
+        "_resolve_active_tokens",
         AsyncMock(return_value=(TOKENS_INPUT, 0, TOKENS_CACHE_READ, 0)),
     )
     monkeypatch.setattr(
-        orch, "_persist_token_snapshot", AsyncMock(return_value=True),
+        orch,
+        "_persist_token_snapshot",
+        AsyncMock(return_value=True),
     )
     # Stub the session factory import path the sweep uses.
     fake_session = AsyncMock()
@@ -67,5 +78,3 @@ async def test_sweep_passes_cache_tokens_to_calculate_cost(
     assert captured["tokens_cache_read"] == TOKENS_CACHE_READ
     assert captured["tokens_cache_write"] == 0
     assert captured["tokens_input"] == TOKENS_INPUT
-
-
