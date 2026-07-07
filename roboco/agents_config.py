@@ -124,12 +124,13 @@ def _verify_expiring_token(
     exp = payload.get("exp")
     if not isinstance(exp, (int, float)):
         return False
-    when = now if now is not None else time.time()
+    # Short-circuit like the original: time.time() is read only when the
+    # (id, role, team) fields already match, never on every call.
     return (
         payload.get("id"),
         payload.get("role"),
         payload.get("team"),
-    ) == expected and exp > when
+    ) == expected and exp > (now if now is not None else time.time())
 
 
 def verify_agent_token(
