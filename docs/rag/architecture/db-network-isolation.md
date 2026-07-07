@@ -2,7 +2,7 @@
 
 ## What It Is
 
-A compose-topology hardening: two user-defined Docker bridges instead of one. `roboco_default` carries the agent mesh (panel, nginx, ollama, every spawned agent container, and their sandbox DB/Redis sidecars — see `docs/rag/architecture/sandbox-db.md`). `roboco_data` carries **only** postgres + redis. The orchestrator is the sole multi-homed service (both networks) — every agent container structurally cannot resolve or TCP-reach `roboco-postgres:5432` / `roboco-redis:6379` at all. This matters because redis has no auth in this deployment: network membership *is* the containment, not a password.
+A compose-topology hardening: two user-defined Docker bridges instead of one. `roboco_default` carries the agent mesh (panel, nginx, ollama, every spawned agent container, and their sandbox sidecars — postgres / redis / mongo via the engine registry in `roboco/models/sandbox.py`; see `docs/rag/architecture/sandbox-db.md`). `roboco_data` carries **only** postgres + redis. The orchestrator is the sole multi-homed service (both networks) — every agent container structurally cannot resolve or TCP-reach `roboco-postgres:5432` / `roboco-redis:6379` at all. This matters because redis has no auth in this deployment: network membership *is* the containment, not a password.
 
 ## Enable/Disable
 
@@ -12,7 +12,7 @@ A compose-topology hardening: two user-defined Docker bridges instead of one. `r
 
 ## What flipping it changes
 
-`ROBOCO_DB_NETWORK_ISOLATED=true` suppresses the legacy `_append_gate_env` prod-creds injection (`roboco/runtime/orchestrator.py`) — the one that would otherwise hand an agent `ROBOCO_TEST_DB_HOST=roboco-postgres` credentials for a host it cannot reach. A connect timeout is worse than no credentials at all (the test suite's DB-reachability check skips cleanly on a fast refusal, but hangs on a dead-end timeout), so the flag makes that injection a no-op rather than let it happen and fail slow. Projects that need a real DB for their gate opt into the sandboxed dev DB/Redis instead (`docs/rag/architecture/sandbox-db.md`) — sandbox replaces, never coexists with, the prod-creds path.
+`ROBOCO_DB_NETWORK_ISOLATED=true` suppresses the legacy `_append_gate_env` prod-creds injection (`roboco/runtime/orchestrator.py`) — the one that would otherwise hand an agent `ROBOCO_TEST_DB_HOST=roboco-postgres` credentials for a host it cannot reach. A connect timeout is worse than no credentials at all (the test suite's DB-reachability check skips cleanly on a fast refusal, but hangs on a dead-end timeout), so the flag makes that injection a no-op rather than let it happen and fail slow. Projects that need a real DB for their gate opt into the sandboxed dev DB/Redis/Mongo instead (`docs/rag/architecture/sandbox-db.md`) — sandbox replaces, never coexists with, the prod-creds path.
 
 ## What is unaffected
 
