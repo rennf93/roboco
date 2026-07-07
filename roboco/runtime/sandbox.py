@@ -33,6 +33,11 @@ _DOCKER_RUN_TIMEOUT_SECONDS = 20.0
 _DOCKER_EXEC_TIMEOUT_SECONDS = 10.0
 _DOCKER_TEARDOWN_TIMEOUT_SECONDS = 15.0
 _DOCKER_PS_TIMEOUT_SECONDS = 10.0
+# `docker run` pulls inline when the image is absent, under the run deadline
+# above; a NAS cold pull runs minutes, so the run is killed, the pull is
+# cancelled, and every retry re-pulls from scratch — a persistent loop. Pulling
+# explicitly with a generous deadline breaks it at the source.
+_DOCKER_PULL_TIMEOUT_SECONDS = 300.0
 
 # Readiness poll deadlines — pg's first-boot init (initdb + start) is slower
 # than redis's near-instant start.
@@ -109,6 +114,19 @@ class SandboxProvisioner:
     def _run(self) -> DockerRunner:
         return self.runner or _default_docker_run
 
+    async def _ensure_image(self, image: str) -> None:
+        """Pull `image` if absent so `docker run` never blocks on a cold pull."""
+        run = self._run()
+        rc, _, _ = await run(["image", "inspect", image], _DOCKER_EXEC_TIMEOUT_SECONDS)
+        if rc == 0:
+            return
+        rc, _, stderr = await run(["pull", image], _DOCKER_PULL_TIMEOUT_SECONDS)
+        if rc != 0:
+            raise SandboxProvisionError(
+                f"sandbox image pull failed for {image}: "
+                f"{stderr.decode(errors='replace')}"
+            )
+
     async def provision(self, agent_id: str, services: list[str]) -> SandboxInfo:
         """Provision the requested services; on any failure, tear down + raise."""
         unknown = sorted(set(services) - VALID_SANDBOX_SERVICES)
@@ -138,6 +156,7 @@ class SandboxProvisioner:
         name = _pg_name(agent_id)
         password = secrets.token_hex(16)
         run = self._run()
+        await self._ensure_image("postgres:16-alpine")
         rc, _, stderr = await run(
             [
                 "run",
@@ -186,6 +205,7 @@ class SandboxProvisioner:
         name = _redis_name(agent_id)
         password = secrets.token_hex(16)
         run = self._run()
+        await self._ensure_image("redis:8-alpine")
         rc, _, stderr = await run(
             [
                 "run",

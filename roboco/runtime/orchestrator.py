@@ -2248,15 +2248,18 @@ class AgentOrchestrator:
         try:
             return await self._sandbox.provision(agent_id, services)
         except Exception as e:
+            # str(TimeoutError()) == "" — include the type so a bare timeout
+            # (a cold image pull exceeding the run deadline) self-diagnoses.
+            err = f"{type(e).__name__}: {e}"
             logger.error(
                 "sandbox provisioning failed; refusing spawn",
                 agent_id=agent_id,
                 task_id=task_id,
                 services=services,
-                error=str(e),
+                error=err,
             )
             raise AgentReadinessError(
-                f"sandbox provisioning failed for {agent_id} (task={task_id}): {e}"
+                f"sandbox provisioning failed for {agent_id} (task={task_id}): {err}"
             ) from e
 
     async def _launch_spawn(

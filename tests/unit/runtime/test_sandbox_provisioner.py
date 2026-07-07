@@ -35,6 +35,10 @@ class _FakeRunner:
         self.teardown_rc = teardown_rc
         self.ps_output = ps_output
         self.ps_live_output = ps_live_output
+        # Image state — defaults assume the image is already present (the happy
+        # path skips the pull). Tests exercising the pull path override these.
+        self.image_present: bool = True
+        self.pull_rc: int = 0
         self._ps_call_count = 0
 
     async def __call__(
@@ -48,12 +52,20 @@ class _FakeRunner:
             return self.exec_rc, b"", b""
         if verb in ("stop", "kill", "rm"):
             return self.teardown_rc, b"", b""
+        if verb == "image":
+            # `image inspect <img>` — rc 0 means present (skip pull).
+            if args[1] != "inspect":
+                raise AssertionError(f"unexpected image subverb: {args[1]}")
+            return (0 if self.image_present else 1), b"", b""
+        if verb == "pull":
+            return self.pull_rc, b"", b"" if self.pull_rc == 0 else b"pull failed\n"
         if verb == "ps":
             self._ps_call_count += 1
             # First ps call = the sandbox-labeled listing; second = live agents.
-            if self._ps_call_count == 1:
-                return 0, self.ps_output, b""
-            return 0, self.ps_live_output, b""
+            listing = (
+                self.ps_output if self._ps_call_count == 1 else self.ps_live_output
+            )
+            return 0, listing, b""
         raise AssertionError(f"unexpected docker verb: {verb}")
 
 
@@ -222,3 +234,41 @@ async def test_janitor_reaps_after_grace_expiry() -> None:
     rm_calls = [c for c in runner.calls if c[0] == "rm"]
     assert any("roboco-sandbox-pg-old" in c for c in rm_calls)
     assert provisioner._provisioned_at == {}
+
+
+@pytest.mark.asyncio
+async def test_provision_skips_pull_when_image_present() -> None:
+    runner = _FakeRunner(run_rc=0, exec_rc=0)
+    provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
+
+    await provisioner.provision("dev-7", ["postgres"])
+
+    assert any(c[0] == "image" and c[1] == "inspect" for c in runner.calls)
+    assert not any(c[0] == "pull" for c in runner.calls)
+
+
+@pytest.mark.asyncio
+async def test_provision_pulls_when_image_absent() -> None:
+    runner = _FakeRunner(run_rc=0, exec_rc=0)
+    runner.image_present = False
+    provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
+
+    await provisioner.provision("dev-8", ["postgres"])
+
+    inspect = [c for c in runner.calls if c[0] == "image" and c[1] == "inspect"]
+    pulls = [c for c in runner.calls if c[0] == "pull"]
+    assert inspect and pulls
+    assert pulls[0][-1] == "postgres:16-alpine"
+
+
+@pytest.mark.asyncio
+async def test_provision_pull_failure_raises() -> None:
+    runner = _FakeRunner(run_rc=0, exec_rc=0)
+    runner.image_present = False
+    runner.pull_rc = 1
+    provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
+
+    with pytest.raises(SandboxProvisionError, match="image pull failed"):
+        await provisioner.provision("dev-9", ["postgres"])
+    # `docker run` never reached — pull failed first.
+    assert not any(c[0] == "run" for c in runner.calls)
