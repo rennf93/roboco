@@ -8,7 +8,6 @@ from roboco.api.schemas.common import (
     ApiResponse,
     ErrorCode,
     ErrorDetail,
-    ListResponse,
     error_response,
     list_response,
     success_response,
@@ -132,7 +131,6 @@ __all__ = [
     "ListEntriesParams",
     # Notifications
     "ListNotificationsParams",
-    "ListResponse",
     "ListTasksQuery",
     "NotificationListResponse",
     "NotificationResponse",

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import tempfile
 from pathlib import Path
@@ -34,6 +35,8 @@ from typing import Any
 from urllib.parse import quote
 
 from roboco.billing.pricing import calculate_cost
+
+logger = logging.getLogger(__name__)
 
 # Where the entrypoint writes the captured usage for the orchestrator to read.
 # Defaults under the system temp dir (not a hardcoded /tmp literal).
@@ -187,9 +190,17 @@ def main() -> int:
     # grok's real session id: from the run's JSON log if the entrypoint passed
     # one (`-s` does not pin the id), else the orchestrator-supplied fallback.
     run_log = os.environ.get("ROBOCO_GROK_RUN_LOG", "")
-    session_id = (run_log and session_id_from_run_log(Path(run_log))) or os.environ.get(
-        "ROBOCO_AGENT_SESSION_ID", ""
-    )
+    parsed_sid = session_id_from_run_log(Path(run_log)) if run_log else None
+    if run_log and not parsed_sid:
+        # Silent zero-attribution would otherwise hide a mount/path failure as a
+        # genuine zero-cost run — keep the swallow, just make it loud.
+        logger.warning(
+            "ROBOCO_GROK_RUN_LOG set but no session id parsed from run log; "
+            "falling back to ROBOCO_AGENT_SESSION_ID (usage may read 0): "
+            "run_log=%s",
+            run_log,
+        )
+    session_id = parsed_sid or os.environ.get("ROBOCO_AGENT_SESSION_ID", "")
 
     capture_session_usage(
         cwd=cwd, session_id=session_id, model=model, out_path=USAGE_OUT_PATH

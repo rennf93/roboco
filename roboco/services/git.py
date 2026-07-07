@@ -4809,7 +4809,7 @@ class GitService(BaseService):
         if not token:
             return unopened
         try:
-            await self.push(workspace)
+            await self.push(workspace, force=True)
             owner, repo = self._parse_github_remote(workspace)
             resp = await self._post_pr(
                 owner,
