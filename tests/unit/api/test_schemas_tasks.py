@@ -18,6 +18,7 @@ from uuid import UUID, uuid4
 import pytest
 from roboco.api.schemas.docs import DocRefResponse
 from roboco.api.schemas.tasks import (
+    SubstituteRequest,
     TaskUpdate,
     _parse_uuid_list,
     convert_checkpoints,
@@ -583,3 +584,15 @@ async def test_enrich_task_with_context_skips_project_when_not_requested() -> No
     enriched = await enrich_task_with_context(resp, db, include_project=False)
     assert enriched.work_session is not None
     assert enriched.project is None
+
+
+def test_substitute_request_has_no_suggested_role_or_team():
+    fields = SubstituteRequest.model_fields
+    assert "suggested_role" not in fields
+    assert "suggested_team" not in fields
+
+
+def test_substitute_request_keeps_reason_and_details():
+    fields = SubstituteRequest.model_fields
+    assert "reason" in fields
+    assert "details" in fields

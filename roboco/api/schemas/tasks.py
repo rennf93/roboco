@@ -588,12 +588,6 @@ class SubstituteRequest(BaseModel):
         ),
     )
     details: str = Field(..., description="Human-readable explanation")
-    suggested_role: str | None = Field(
-        None, description="Hint for reassignment (developer, qa, pm, documenter)"
-    )
-    suggested_team: str | None = Field(
-        None, description="Hint for reassignment (backend, frontend, ux_ui)"
-    )
 
 
 class TaskCountResponse(BaseModel):
