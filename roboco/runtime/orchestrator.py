@@ -1011,6 +1011,11 @@ class AgentOrchestrator:
         await self._heal_stale_agent_tokens()
         await self._readopt_running_agents()
 
+        # Close agent_spawn_sessions rows left open by a prior orchestrator
+        # crash so usage/cost rollups (which filter ended_at IS NOT NULL) count
+        # their tokens. Running agents stay open for their live finalize.
+        await self._reconcile_orphan_spawn_sessions()
+
         # Orphan sandbox sweep: a sandbox whose owning agent container didn't
         # survive the restart (or a prior crash mid-teardown) is removed here
         # rather than lingering until its next reaper-tick sweep.
@@ -9741,6 +9746,56 @@ Start now: evidence(task_id="{task_id}")
                 await db.commit()
         except Exception as exc:
             logger.error("startup reconcile failed; continuing", error=str(exc))
+
+    async def _reconcile_orphan_spawn_sessions(self) -> int:
+        """Close agent_spawn_sessions rows left open by a prior crash.
+
+        usage.get_summary / get_time_series filter ``ended_at IS NOT NULL``,
+        so an open row whose container is gone is permanently excluded from
+        usage/cost rollups. Close each open session whose agent slug is NOT
+        in ``self._instances`` (the re-adopted running set) with
+        ``ended_at=now`` and ``exit_reason='abandoned'``. Running agents
+        stay open for their live finalize. Best-effort; never blocks startup.
+        """
+        try:
+            from sqlalchemy import select, update
+
+            from roboco.db.base import get_session_factory
+            from roboco.db.tables import AgentSpawnSessionTable
+        except ImportError:
+            return 0
+        try:
+            running = set(self._instances.keys())
+            session_factory = get_session_factory()
+            async with session_factory() as db:
+                rows = (
+                    (
+                        await db.execute(
+                            select(AgentSpawnSessionTable).where(
+                                AgentSpawnSessionTable.ended_at.is_(None)
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                orphans = [r for r in rows if r.agent_slug not in running]
+                if not orphans:
+                    return 0
+                now = datetime.now(UTC)
+                await db.execute(
+                    update(AgentSpawnSessionTable)
+                    .where(AgentSpawnSessionTable.id.in_([r.id for r in orphans]))
+                    .values(ended_at=now, exit_reason="abandoned")
+                )
+                await db.commit()
+            return len(orphans)
+        except Exception as exc:
+            logger.warning(
+                "Failed to reconcile orphan spawn sessions",
+                error=str(exc),
+            )
+            return 0
 
     async def _reconcile_with_service(self, svc: "TaskService") -> None:
         """Inner reconcile loop, parameterised by the TaskService to use.
