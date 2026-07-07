@@ -25,9 +25,12 @@ different purposes. MCP is coarse-grained (tool-level), API is fine-grained
 (action + team context).
 """
 
+import base64
 import hashlib
 import hmac
+import json
 import os
+import time
 from dataclasses import dataclass
 from typing import Final
 
@@ -59,33 +62,86 @@ def _signing_payload(agent_id: str, role: str, team: str) -> bytes:
     return ":".join(parts).encode("utf-8")
 
 
-def issue_agent_token(agent_id: str, role: str, team: str = "") -> str:
+def _b64url_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _b64url_decode(s: str) -> bytes:
+    pad = "=" * (-len(s) % 4)
+    return base64.urlsafe_b64decode(s + pad)
+
+
+def issue_agent_token(
+    agent_id: str,
+    role: str,
+    team: str = "",
+    *,
+    ttl_seconds: float | None = None,
+    now: float | None = None,
+) -> str:
     """Mint an auth token the orchestrator injects into an agent's env.
 
-    The token is a hex HMAC-SHA256 of `agent_id:role:team` signed with
-    ROBOCO_AGENT_AUTH_SECRET. It binds the agent's identity to the role
-    and team headers — if the agent later lies about its role, the
-    server-side HMAC won't match.
+    Static form (``ttl_seconds`` None): a hex HMAC-SHA256 of
+    ``agent_id:role:team`` — backward-compatible, used by the panel's static
+    ``ROBOCO_PANEL_AGENT_TOKEN``. Expiring form (``ttl_seconds`` set):
+    ``{base64url(payload)}.{hmac}`` carrying ``id/role/team/iat/exp``, signed
+    over the base64url payload so a stolen token is bounded by ``exp`` and
+    refreshed at each spawn. Returns ``UNSIGNED`` when the secret is unset.
     """
     secret = _auth_secret()
     if not secret:
-        # Unset secret ⇒ tokens are meaningless; return a sentinel the
-        # verifier will reject. Caller should detect and log this.
         return "UNSIGNED"
-    return hmac.new(
-        secret, _signing_payload(agent_id, role, team), hashlib.sha256
-    ).hexdigest()
+    aid = (agent_id or "").strip().lower()
+    r = (role or "").strip().lower()
+    t = (team or "").strip().lower()
+    if ttl_seconds is None:
+        return hmac.new(secret, f"{aid}:{r}:{t}".encode(), hashlib.sha256).hexdigest()
+    ts = now if now is not None else time.time()
+    payload = json.dumps(
+        {"id": aid, "role": r, "team": t, "iat": ts, "exp": ts + ttl_seconds},
+        separators=(",", ":"),
+    ).encode("utf-8")
+    pb = _b64url_encode(payload)
+    sig = hmac.new(secret, pb.encode("ascii"), hashlib.sha256).hexdigest()
+    return f"{pb}.{sig}"
 
 
-def verify_agent_token(token: str, agent_id: str, role: str, team: str = "") -> bool:
-    """Return True iff `token` is a valid HMAC for (agent_id, role, team).
+def verify_agent_token(
+    token: str,
+    agent_id: str,
+    role: str,
+    team: str = "",
+    *,
+    now: float | None = None,
+) -> bool:
+    """Return True iff ``token`` is a valid HMAC for (agent_id, role, team).
 
-    Fails closed when the secret is unset or the token is the UNSIGNED
-    sentinel.
+    Accepts both the static hex form and the expiring ``{payload}.{sig}`` form
+    (detected by a ``.`` separator); the expiring form additionally requires
+    ``exp > now``. Fails closed when the secret is unset or the token is the
+    UNSIGNED sentinel.
     """
     secret = _auth_secret()
     if not secret or not token or token == "UNSIGNED":
         return False
+    if "." in token:
+        pb, _, sig = token.rpartition(".")
+        expected_sig = hmac.new(secret, pb.encode("ascii"), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(expected_sig, sig):
+            return False
+        try:
+            payload = json.loads(_b64url_decode(pb))
+        except (ValueError, KeyError):
+            return False
+        exp = payload.get("exp")
+        if not isinstance(exp, (int, float)):
+            return False
+        return (
+            payload.get("id") == (agent_id or "").strip().lower()
+            and payload.get("role") == (role or "").strip().lower()
+            and payload.get("team") == (team or "").strip().lower()
+            and exp > (now if now is not None else time.time())
+        )
     expected = hmac.new(
         secret, _signing_payload(agent_id, role, team), hashlib.sha256
     ).hexdigest()

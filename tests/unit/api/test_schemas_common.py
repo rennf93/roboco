@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+from roboco.api.schemas import common as _common
 from roboco.api.schemas.common import (
     ApiResponse,
     ErrorCode,
     ErrorDetail,
-    ListResponse,
     error_response,
     list_response,
     success_response,
@@ -105,8 +105,5 @@ def test_api_response_model() -> None:
     assert r.data == {"k": "v"}
 
 
-def test_list_response_model() -> None:
-    r = ListResponse[int](items=[1, 2], total=2)
-    _TWO = 2
-    assert r.total == _TWO
-    assert r.has_more is False
+def test_listresponse_removed() -> None:
+    assert not hasattr(_common, "ListResponse")

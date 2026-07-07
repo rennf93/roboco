@@ -23,6 +23,7 @@ from roboco.db.tables import (
 from roboco.exceptions import TaskLifecycleError
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import (
+    BlockerResolverType,
     Complexity,
     SubstituteReason,
     TaskNature,
@@ -860,7 +861,7 @@ async def test_soft_block_task_for_agent_full_flow(
         blocker_type="external",
         reason="r",
         what_needed="w",
-        resolver_type_raw="agent",
+        resolver_type=BlockerResolverType.AGENT,
     )
     out = await svc.soft_block_task_for_agent(task.id, agent_ctx, req)
     assert out is not None

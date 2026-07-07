@@ -12,6 +12,7 @@ from roboco.models.base import AssignmentScope, ModelProvider
 from roboco.models.llm_catalog import MODEL_CATALOG
 from roboco.services.base import NotFoundError
 from roboco.services.llm import ModelRoutingService, get_model_routing_service
+from roboco.services.provider import ProviderService, ProviderUpdate
 from roboco.utils.crypto import EncryptionError
 
 if TYPE_CHECKING:
@@ -239,6 +240,29 @@ async def test_apply_mode_grok_sets_global(llm_setup: dict) -> None:
     assert len(assignments) == 1
     assert assignments[0].scope == AssignmentScope.GLOBAL
     assert assignments[0].provider.type == ModelProvider.GROK
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_grok_enables_grok_provider(llm_setup: dict) -> None:
+    """apply_mode('grok') enables the GROK provider row so resolve_for_agent
+    routes to the GrokCliProvider (SuperGrok auth, independent of the xAI key).
+    Mirrors self_hosted enabling LOCAL."""
+    svc = llm_setup["svc"]
+    provider_svc = ProviderService(svc.session)
+    grok = next(
+        p
+        for p in await provider_svc.list_providers(include_disabled=True)
+        if p.type == ModelProvider.GROK
+    )
+    # Model the real seeded state: GROK disabled because no xAI key was set.
+    await provider_svc.update_provider(grok.id, ProviderUpdate(enabled=False))
+    await svc.session.flush()
+
+    await svc.apply_mode(mode="grok")
+
+    refetched = await provider_svc.get_provider(grok.id)
+    assert refetched is not None
+    assert refetched.enabled is True
 
 
 @pytest.mark.asyncio

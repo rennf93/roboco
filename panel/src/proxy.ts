@@ -50,6 +50,7 @@ export async function proxy(request: NextRequest) {
   if (!(await isCloudAuthEnabled())) {
     return NextResponse.next();
   }
+  // UX redirect only — shields dashboard chrome from flashing before login. The API (/api/*) enforces auth independently; a stale cookie shows chrome then 401s on the first API call.
   if (!request.cookies.has(SESSION_COOKIE_NAME)) {
     return NextResponse.redirect(new URL("/login", request.url));
   }

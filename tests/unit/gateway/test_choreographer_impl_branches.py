@@ -635,6 +635,7 @@ async def test_delegate_parent_no_project_rejected() -> None:
         team="backend",
         project_id=None,
         product_id=None,
+        cell_projects=[],
         title="p",
         # delegate obligates the PM's quick_context; supply it so the
         # no-project guard is the load-bearing rejection.

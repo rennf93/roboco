@@ -38,7 +38,7 @@ _SUPPRESSIONS: dict[str, tuple[str, ...]] = {
 # finding. Keeps the rule's teeth on genuine error-silencing without footgunning
 # the framework-mandated annotations every pydantic project needs.
 _ALLOWED_SUPPRESSION_CODES = frozenset({"TC001", "TC002", "TC003", "prop-decorator"})
-_NOQA_CODES = re.compile(r"noqa(?::\s*(?P<codes>[A-Za-z0-9, ]+))?")
+_NOQA_CODES = re.compile(r"noqa(?::\s*(?P<codes>[A-Z0-9, ]+))?")
 _TYPE_IGNORE_CODES = re.compile(r"type:\s*ignore(?:\[(?P<codes>[^\]]*)\])?")
 _SUPPRESSION_CODE_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
     "python": (_NOQA_CODES, _TYPE_IGNORE_CODES),

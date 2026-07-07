@@ -27,6 +27,7 @@ _SEEDED_COUNT = 3  # a persisted strike count, one below the trip threshold
 _STRIKE_COUNT = 2
 _MIN_PERSISTS = 2
 _TRIP_COUNT = 4  # count > _PM_RESPAWN_MAX_UNPRODUCTIVE (3) fires the gate
+_REVISIT_RESETS_PERSISTED = 2  # a persisted revisit-reset count
 
 
 def _new_orchestrator() -> AgentOrchestrator:
@@ -46,6 +47,7 @@ def _row(task_id: Any, **over: Any) -> SimpleNamespace:
         "last_check": datetime(2026, 6, 26, tzinfo=UTC),
         "tracing_resets": 0,
         "notified": False,
+        "revisit_resets": 0,
     }
     base.update(over)
     return SimpleNamespace(**base)
@@ -99,6 +101,16 @@ def test_partition_drops_terminal_and_missing_rows() -> None:
         ("be-pm", cancelled),
         ("be-pm", gone),
     }
+
+
+def test_partition_restores_revisit_resets() -> None:
+    tid = uuid4()
+    rows = [_row(tid, revisit_resets=_REVISIT_RESETS_PERSISTED)]
+    restored, stale = AgentOrchestrator._partition_respawn_rows(
+        rows, {tid: "in_progress"}
+    )
+    assert stale == []
+    assert restored[("be-pm", str(tid))]["revisit_resets"] == _REVISIT_RESETS_PERSISTED
 
 
 def test_partition_restamps_last_check_to_now_to_avoid_stale_tracing_gap() -> None:
