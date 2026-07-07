@@ -115,7 +115,7 @@ real tools live in their agent_sdk drivers, not role_config.
 | `escalate_up` | `escalate_up(task_id: UUID, reason: str)` |
 | `give_me_work` | `give_me_work()` |
 | `i_am_idle` | `i_am_idle()` |
-| `i_will_plan` | `i_will_plan(task_id: UUID, plan: str, approach: str, sub_tasks: list[str | str] = PydanticUndefined, technical_considerations: list[str] = PydanticUndefined, risks: list[str | str] = PydanticUndefined, open_questions: list[str | str | bool] = PydanticUndefined)` |
+| `i_will_plan` | `i_will_plan(task_id: UUID, plan: str, approach: str, sub_tasks: list[SubTaskCreate] = PydanticUndefined, technical_considerations: list[str] = PydanticUndefined, risks: list[RiskCreate] = PydanticUndefined, open_questions: list[OpenQuestionCreate] = PydanticUndefined)` |
 | `reassign` | `reassign(task_id: UUID, new_assignee: str)` |
 | `request_changes` | `request_changes(task_id: UUID, issues: list[str])` |
 | `resume` | `resume(task_id: UUID)` |
@@ -152,7 +152,7 @@ real tools live in their agent_sdk drivers, not role_config.
 | `escalate_up` | `escalate_up(task_id: UUID, reason: str)` |
 | `give_me_work` | `give_me_work()` |
 | `i_am_idle` | `i_am_idle()` |
-| `i_will_plan` | `i_will_plan(task_id: UUID, plan: str, approach: str, sub_tasks: list[str | str] = PydanticUndefined, technical_considerations: list[str] = PydanticUndefined, risks: list[str | str] = PydanticUndefined, open_questions: list[str | str | bool] = PydanticUndefined)` |
+| `i_will_plan` | `i_will_plan(task_id: UUID, plan: str, approach: str, sub_tasks: list[SubTaskCreate] = PydanticUndefined, technical_considerations: list[str] = PydanticUndefined, risks: list[RiskCreate] = PydanticUndefined, open_questions: list[OpenQuestionCreate] = PydanticUndefined)` |
 | `request_changes` | `request_changes(task_id: UUID, issues: list[str])` |
 | `resume` | `resume(task_id: UUID)` |
 | `submit_root` | `submit_root(task_id: UUID, notes: str)` |
