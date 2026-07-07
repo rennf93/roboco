@@ -56,6 +56,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Release heartbeat shares one redis client (L34).** The ~40 `redis.from_url` pools per release (one per heartbeat tick) collapse to one client per approve.
 - **dep_update folds redundant per-project queries (L35).** `run_cycle` fetches open tasks once; `_eligible` checks membership in-memory.
 - **CI-watch telemetry sweep parallelized (L36).** `MultiProjectCITelemetrySource.fetch` gathers per-project samples so one slow GitHub 429 doesn't stall the sweep.
+- **Panel `/ws/system` WebSocket no longer goes stale silently (C4).** The socket is now shared across consumers (one per URL, ref-counted) so the A2A stream and rate-limit banner no longer double-subscribe; reconnect uses exponential backoff capped at 30s with no max-attempts freeze, and a pong-timeout watchdog force-closes a half-open connection within 60s — the "had to reload the page" symptom.
+- **Video-post-queue caption tracks the in-flight edit (H15).** Captions now derive per render as `edited ?? serverValue`, so the CEO's unsaved edit isn't clobbered by a background refetch pulling the older server draft back in.
+- **Settings page Save persists (H16).** The Save button is wired to `settingsApi` (persist + read back); each control tracks `edits ?? server ?? default` after the transcript-retention-card pattern, so a changed value survives a page reload instead of being silently dropped.
+- **Tasks page filters server-side for status/team (H17).** Single-select status and team now ride `useTasks` with `limit: 500` and reach `/tasks/summary` for server-side filtering; multi-select + task_type/project/product stay client-side. Stops the 2MB unbounded fetch.
+- **`useAgents` roster re-derives on live-status change (H18).** A `statusEpoch` derived from the orchestrator-status snapshot joins the `useAgents` queryKey, so the 10s poll invalidates the cached roster the moment a live status flip lands instead of serving a stale list.
+- **`useMetrics` reads agent counts from the existing status cache (M40).** Agent counts now come from the `useAgentStatus` 10s poll cache (`getQueryData` + `fetchQuery` cold fallback) instead of issuing a redundant 60s `getAgentStatus` fetch — one fewer network call per metrics render.
+- **Scorecard `refetchInterval` 60s → 5min (M41).** `SCORECARD_REFETCH_INTERVAL` extracted; scorecard data changes slowly, so the panel stops re-fetching it every minute.
+- **Feature-flag off-transitions confirm (M42).** Turning a flag off now confirms via AlertDialog; pending state tracks all in-flight toggles in a `Set`, so each row locks independently and a slow toggle can't leave the row in an ambiguous state.
+- **X/TikTok credentials clear-behind confirms (M43).** Emptying all fields when credentials exist now confirms via AlertDialog before the destructive clear, so an accidental wipe of live OAuth secrets is caught first.
+- **Rate-limit `syncFromApi` merges by freshest `hitAt` (M44).** An out-of-order older snapshot no longer regresses the displayed hit; the A2A page invalidates its list on `/ws/system` reconnect (`false → true`), so a reconnect doesn't show a stale message list.
 
 ### Security
 
