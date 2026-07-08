@@ -42,11 +42,14 @@ _TIMEOUT = 30
 # shared _TIMEOUT above is tuned for fast content-tool calls (note/dm/
 # evidence) and would give up first — client must outlast the server op.
 _COMMIT_TIMEOUT = 190
-# request_sandbox provisions inline; a not-yet-cached engine image pays a cold
-# pull (up to 300s, SandboxProvisioner._DOCKER_PULL_TIMEOUT_SECONDS) plus its
-# readiness probe (up to 60s). Sized for two engines cold — a call needing all
-# three uncached in one shot is vanishingly rare and would just retry.
-_SANDBOX_TIMEOUT = 720
+# request_sandbox provisions inline; ensure_sandbox now always provisions the
+# project's FULL opted-in set on first call (kills the superset/teardown
+# race — see ensure_sandbox's docstring), so an all-three-cold first request
+# is the norm, not the rare case. Worst case: 3 x 300s cold pulls
+# (SandboxProvisioner._DOCKER_PULL_TIMEOUT_SECONDS) + readiness (~135s) ~=
+# 1035s — images are pre-pulled at startup in practice, so cold pulls here
+# are the exception, but the timeout must cover the worst case anyway.
+_SANDBOX_TIMEOUT = 1080
 # Tight timeout for SDK loopback — local sidecar; gateway path must not stall.
 _SDK_TIMEOUT = 2.0
 # FastAPI's default missing-route status. Every /api/v1/do/* route returns
@@ -707,9 +710,10 @@ def request_sandbox(services: list[str] | None = None) -> dict[str, Any]:
     into is rejected with the allowed set named. Creds come back in
     ``evidence``, one entry per service: ``{host, port, user, password,
     database, env: {ROBOCO_TEST_*: value}}`` — export the ``env`` values
-    verbatim for gate tooling that reads them. Calling this again for the
-    same services is a cheap no-op (same creds); a project that never opted
-    into sandbox services will reject this.
+    verbatim for gate tooling that reads them. The whole opted-in set is
+    provisioned on first call, so calling this again for any subset or
+    superset of it is a cheap no-op (same creds, no re-provisioning); a
+    project that never opted into sandbox services will reject this.
     """
     return _post(
         "/api/v1/do/request_sandbox",

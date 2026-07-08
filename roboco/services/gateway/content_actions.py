@@ -1895,8 +1895,12 @@ class ContentActions:
         project-bound task (`_sandbox_active_task`); project not opted into
         any sandbox service, or a requested service outside its opted set
         (`_sandbox_scope`, names the allowed set); orchestrator handle
-        unavailable (retryable). Creds come back in the evidence payload,
-        never as injected env — see
+        unavailable (retryable). `ensure_sandbox` always provisions the
+        project's whole opted-in set regardless of ``services`` (so a later
+        call can never trigger a mid-session teardown of a live container);
+        the evidence payload here is filtered back down to what THIS call
+        asked for. Creds come back in the evidence payload, never as
+        injected env — see
         ``docs/internal/specs/2026-07-08-sandbox-on-demand.md`` §4.
         """
         if not settings.sandbox_db_enabled:
@@ -1918,6 +1922,7 @@ class ContentActions:
         requested, rejection = self._sandbox_scope(project, services)
         if rejection is not None:
             return rejection
+        opted = frozenset(project.sandbox_services or []) if project else frozenset()
         if self.orchestrator is None:
             return Envelope.invalid_state(
                 message="orchestrator handle unavailable — cannot provision a sandbox",
@@ -1931,7 +1936,9 @@ class ContentActions:
 
         agent_slug = _resolve_to_slug(str(agent_id))
         try:
-            info = await self.orchestrator.ensure_sandbox(agent_slug, sorted(requested))
+            info = await self.orchestrator.ensure_sandbox(
+                agent_slug, sorted(requested), sorted(opted)
+            )
         except SandboxProvisionError as e:
             return Envelope.invalid_state(
                 message=f"sandbox provisioning failed: {e}",
@@ -1939,11 +1946,18 @@ class ContentActions:
                 context_briefing={},
             )
         await self._touch_heartbeat(t.id)
+        # ensure_sandbox provisions the project's whole opted-in set (see its
+        # docstring); the evidence payload stays scoped to what THIS call
+        # asked for.
+        payload = info.as_payload()
+        filtered = {
+            name: payload[name] for name in sorted(requested) if name in payload
+        }
         return Envelope.ok(
             status=str(t.status),
             task_id=str(t.id),
             next="use the returned creds for this session; call again anytime",
-            evidence=info.as_payload(),
+            evidence=filtered,
             context_briefing={},
         )
 

@@ -213,6 +213,53 @@ async def test_omitted_services_requests_full_opted_set(
     assert sorted(called_services) == ["postgres", "redis"]
 
 
+@pytest.mark.asyncio
+async def test_ensure_sandbox_called_with_full_opted_set_not_just_requested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DEFECT 1 fix: the verb always passes the project's whole opted-in set
+    (not just this call's ``services`` subset) as ensure_sandbox's ``opted``
+    argument, so a superset request later in the session can never trigger a
+    fresh provision() that tears down the agent's live sandbox."""
+    monkeypatch.setattr(settings, "sandbox_db_enabled", True)
+    _stub_project(monkeypatch, services=["postgres", "redis"])
+    orch = AsyncMock()
+    orch.ensure_sandbox.return_value = _sandbox_info()
+    actions, _task_svc = _make_actions(task_obj=_task(), orchestrator=orch)
+
+    await actions.request_sandbox(agent_id=uuid4(), services=["postgres"])
+
+    called_requested = orch.ensure_sandbox.call_args.args[1]
+    called_opted = orch.ensure_sandbox.call_args.args[2]
+    assert called_requested == ["postgres"]
+    assert sorted(called_opted) == ["postgres", "redis"]
+
+
+@pytest.mark.asyncio
+async def test_response_payload_filtered_to_requested_services(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`ensure_sandbox` provisions the full opted set under the hood; the
+    verb's response only surfaces what THIS call actually asked for."""
+    monkeypatch.setattr(settings, "sandbox_db_enabled", True)
+    _stub_project(monkeypatch, services=["postgres", "redis"])
+    orch = AsyncMock()
+    orch.ensure_sandbox.return_value = SandboxInfo(
+        services={
+            "postgres": SandboxConnection(
+                host="h", port=5432, password="pw", user="sandbox", database="sandbox"
+            ),
+            "redis": SandboxConnection(host="h", port=6379, password="rw"),
+        }
+    )
+    actions, _task_svc = _make_actions(task_obj=_task(), orchestrator=orch)
+
+    env = await actions.request_sandbox(agent_id=uuid4(), services=["postgres"])
+
+    assert env.error is None
+    assert set(env.evidence) == {"postgres"}
+
+
 # ---------------------------------------------------------------------------
 # Cross-agent isolation
 # ---------------------------------------------------------------------------

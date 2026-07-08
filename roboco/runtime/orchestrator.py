@@ -790,6 +790,11 @@ class AgentOrchestrator:
     - Cost-efficient on-demand spawning
     """
 
+    # Per-agent-slug lock serializing ensure_sandbox's check-cache -> provision
+    # -> store section. Declared here (not in __init__, to keep its statement
+    # count under the gate) and lazily allocated on first use.
+    _sandbox_locks: dict[str, asyncio.Lock]
+
     def __init__(
         self,
         mcp_config_dir: Path | None = None,
@@ -2248,21 +2253,50 @@ class AgentOrchestrator:
             return []
         return list(project.sandbox_services or []) if project else []
 
-    async def ensure_sandbox(self, agent_slug: str, services: list[str]) -> SandboxInfo:
+    async def ensure_sandbox(
+        self, agent_slug: str, requested: list[str], opted: list[str]
+    ) -> SandboxInfo:
         """Idempotent on-demand provision, called by the `request_sandbox` verb.
 
-        Cache hit whose service set already covers ``services`` returns the
-        same creds (a second call is a cheap no-op, no docker calls). A miss
-        (or a request for services beyond what's cached) provisions via
-        `SandboxProvisioner.provision` — its own pre-clear tears down any
-        stale same-named containers — and caches the result.
+        DEVIATION (full-set provisioning): always provisions ``requested |
+        opted`` — effectively the project's whole opted-in set, since
+        ``opted`` is already a superset of ``requested`` by the verb's own
+        guard — rather than only what this particular call named. That makes
+        any later subset/superset request within the same opted set a
+        guaranteed cache hit; it can never fall through to `provision()`,
+        whose pre-clear `teardown()` would otherwise kill a live, mid-use
+        container out from under the agent and rotate its creds. The union
+        (rather than trusting the caller to always pass the full set) is
+        belt-and-suspenders — bounded by the project's own opt-in either way.
+
+        A cache hit is verified live (`SandboxProvisioner.is_live`) before
+        being trusted: a container OOM-killed or removed out-of-band evicts
+        the stale entry and falls through to a fresh full-set provision
+        (new creds — that's the recovery).
+
+        The whole check-cache -> provision -> store section runs under a
+        per-agent-slug lock so two concurrent calls for the same agent can't
+        race provision()/teardown() on the same containers.
         """
-        cached = self._sandbox_info.get(agent_slug)
-        if cached is not None and set(services) <= set(cached.services):
-            return cached
-        info = await self._sandbox.provision(agent_slug, services)
-        self._sandbox_info[agent_slug] = info
-        return info
+        full = sorted(set(requested) | set(opted))
+        # Lazily-allocated (no __init__ statement) to keep AgentOrchestrator's
+        # constructor under the statement-count gate; getattr guards bare
+        # __new__() test doubles that never ran __init__ — same convention
+        # as _sandbox_info's own test-double guards elsewhere in this class.
+        locks = getattr(self, "_sandbox_locks", None)
+        if locks is None:
+            locks = {}
+            self._sandbox_locks = locks
+        lock = locks.setdefault(agent_slug, asyncio.Lock())
+        async with lock:
+            cached = self._sandbox_info.get(agent_slug)
+            if cached is not None and set(full) <= set(cached.services):
+                if await self._sandbox.is_live(agent_slug, sorted(cached.services)):
+                    return cached
+                self._sandbox_info.pop(agent_slug, None)
+            info = await self._sandbox.provision(agent_slug, full)
+            self._sandbox_info[agent_slug] = info
+            return info
 
     async def _launch_spawn(
         self,

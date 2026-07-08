@@ -12,6 +12,7 @@ infrastructure; `ensure_sandbox` is the only path that calls
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -29,6 +30,9 @@ def _make_orchestrator() -> tuple[AgentOrchestrator, MagicMock]:
     orch._sandbox_info = {}
     sandbox = MagicMock()
     sandbox.provision = AsyncMock()
+    # Live by default so cache-hit tests that don't care about liveness pass
+    # through; tests exercising DEFECT 3 (dead-container eviction) override.
+    sandbox.is_live = AsyncMock(return_value=True)
     orch._sandbox = sandbox
     return orch, sandbox
 
@@ -152,7 +156,7 @@ async def test_ensure_sandbox_miss_provisions_and_caches() -> None:
     info = _info({"postgres": SandboxConnection(host="h", port=5432, password="pw")})
     sandbox.provision.return_value = info
 
-    result = await orch.ensure_sandbox("dev-1", ["postgres"])
+    result = await orch.ensure_sandbox("dev-1", ["postgres"], ["postgres"])
 
     assert result is info
     sandbox.provision.assert_awaited_once_with("dev-1", ["postgres"])
@@ -165,34 +169,37 @@ async def test_ensure_sandbox_cache_hit_skips_second_provision() -> None:
     info = _info({"postgres": SandboxConnection(host="h", port=5432, password="pw")})
     sandbox.provision.return_value = info
 
-    first = await orch.ensure_sandbox("dev-1", ["postgres"])
-    second = await orch.ensure_sandbox("dev-1", ["postgres"])
+    first = await orch.ensure_sandbox("dev-1", ["postgres"], ["postgres"])
+    second = await orch.ensure_sandbox("dev-1", ["postgres"], ["postgres"])
 
     assert first is second is info
     sandbox.provision.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_ensure_sandbox_superset_request_reprovisions() -> None:
+async def test_ensure_sandbox_first_subset_request_provisions_full_opted_set() -> None:
+    """DEFECT 1 fix: a first request for a subset of the project's opted-in
+    set provisions the FULL opted set — not just what this call named — so a
+    later call for the rest of that set is a guaranteed cache hit and never
+    falls through to a fresh provision() (whose pre-clear teardown() would
+    otherwise kill the live container the agent is already using)."""
     orch, sandbox = _make_orchestrator()
-    first_info = _info(
-        {"postgres": SandboxConnection(host="h", port=5432, password="pw")}
-    )
-    second_info = _info(
+    info = _info(
         {
-            "postgres": SandboxConnection(host="h", port=5432, password="pw2"),
+            "postgres": SandboxConnection(host="h", port=5432, password="pw"),
             "redis": SandboxConnection(host="h", port=6379, password="rw"),
         }
     )
-    sandbox.provision.side_effect = [first_info, second_info]
+    sandbox.provision.return_value = info
 
-    await orch.ensure_sandbox("dev-1", ["postgres"])
-    result = await orch.ensure_sandbox("dev-1", ["postgres", "redis"])
+    first = await orch.ensure_sandbox("dev-1", ["postgres"], ["postgres", "redis"])
+    second = await orch.ensure_sandbox(
+        "dev-1", ["postgres", "redis"], ["postgres", "redis"]
+    )
 
-    expected_provision_calls = 2
-    assert result is second_info
-    assert sandbox.provision.await_count == expected_provision_calls
-    assert orch._sandbox_info["dev-1"] is second_info
+    assert first is second is info
+    sandbox.provision.assert_awaited_once_with("dev-1", ["postgres", "redis"])
+    assert orch._sandbox_info["dev-1"] is info
 
 
 @pytest.mark.asyncio
@@ -203,10 +210,63 @@ async def test_ensure_sandbox_cache_is_per_agent_slug() -> None:
     info_b = _info({"postgres": SandboxConnection(host="b", port=5432, password="pb")})
     sandbox.provision.side_effect = [info_a, info_b]
 
-    result_a = await orch.ensure_sandbox("dev-1", ["postgres"])
-    result_b = await orch.ensure_sandbox("dev-2", ["postgres"])
+    result_a = await orch.ensure_sandbox("dev-1", ["postgres"], ["postgres"])
+    result_b = await orch.ensure_sandbox("dev-2", ["postgres"], ["postgres"])
 
     assert result_a is info_a
     assert result_b is info_b
     assert orch._sandbox_info["dev-1"] is info_a
     assert orch._sandbox_info["dev-2"] is info_b
+
+
+@pytest.mark.asyncio
+async def test_ensure_sandbox_concurrent_calls_serialize_on_agent_lock() -> None:
+    """DEFECT 2 fix: two concurrent ensure_sandbox calls for the same agent
+    (e.g. a client timeout + retry) must serialize behind the per-agent lock
+    so only one provision() ever runs — never a race between provision() and
+    a concurrent teardown()."""
+    orch, sandbox = _make_orchestrator()
+    info = _info({"postgres": SandboxConnection(host="h", port=5432, password="pw")})
+    calls = 0
+
+    async def _slow_provision(_agent_id: str, _services: list[str]) -> SandboxInfo:
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.05)
+        return info
+
+    sandbox.provision.side_effect = _slow_provision
+
+    results = await asyncio.gather(
+        orch.ensure_sandbox("dev-1", ["postgres"], ["postgres"]),
+        orch.ensure_sandbox("dev-1", ["postgres"], ["postgres"]),
+    )
+
+    assert results[0] is results[1] is info
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_ensure_sandbox_cache_hit_with_dead_container_reprovisions() -> None:
+    """DEFECT 3 fix: a cache hit whose container is no longer live (OOM-killed,
+    manually removed) is evicted and re-provisioned with fresh creds, rather
+    than handing back creds for a container that no longer exists."""
+    orch, sandbox = _make_orchestrator()
+    stale_info = _info(
+        {"postgres": SandboxConnection(host="h", port=5432, password="pw-old")}
+    )
+    fresh_info = _info(
+        {"postgres": SandboxConnection(host="h", port=5432, password="pw-new")}
+    )
+    sandbox.provision.side_effect = [stale_info, fresh_info]
+    sandbox.is_live.return_value = False
+
+    first = await orch.ensure_sandbox("dev-1", ["postgres"], ["postgres"])
+    second = await orch.ensure_sandbox("dev-1", ["postgres"], ["postgres"])
+
+    expected_provision_calls = 2
+    assert first is stale_info
+    assert second is fresh_info
+    assert sandbox.provision.await_count == expected_provision_calls
+    assert orch._sandbox_info["dev-1"] is fresh_info
+    sandbox.is_live.assert_awaited_once_with("dev-1", ["postgres"])
