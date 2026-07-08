@@ -29,6 +29,7 @@ class FieldRule(StrEnum):
     MIN_LENGTH = "min_length"
     NON_EMPTY_LIST = "non_empty_list"
     EXPLICITLY_DECLARED = "explicitly_declared"
+    MAX_LENGTH_LIST = "max_length_list"
 
 
 @dataclass(frozen=True)
@@ -100,8 +101,11 @@ _HINT_ACCEPTANCE_CRITERIA = (
     "non-empty list[str]; each item describes a verifiable outcome (e.g. "
     "'returns 401 when token absent'). Do NOT use placeholder strings like "
     "'completed and reviewed by assignee' — that's a known evasion phrase the "
-    "gateway rejects."
+    "gateway rejects. Keep each item <= 200 chars and the list <= 7 items — a "
+    "300-char AC or a 12-item list is a restated description, not a criterion."
 )
+_AC_MAX_ITEMS = 7
+_AC_MAX_ITEM_CHARS = 200
 _HINT_TASK_TYPE = (
     "one of: code | documentation | research | planning | design | administrative"
 )
@@ -127,6 +131,12 @@ TASK_AT_CREATE: CompletenessSpec = CompletenessSpec(
         FieldRequirement(
             "acceptance_criteria",
             FieldRule.NON_EMPTY_LIST,
+            hint=_HINT_ACCEPTANCE_CRITERIA,
+        ),
+        FieldRequirement(
+            "acceptance_criteria",
+            FieldRule.MAX_LENGTH_LIST,
+            _AC_MAX_ITEMS,
             hint=_HINT_ACCEPTANCE_CRITERIA,
         ),
         FieldRequirement(
@@ -196,6 +206,14 @@ def _check_non_empty_list(value: Any) -> tuple[bool, str | None]:
     return True, None
 
 
+def _check_max_length_list(value: Any, maximum: int) -> tuple[bool, str | None]:
+    if not isinstance(value, list):
+        return False, f"must be a list of length <= {maximum}"
+    if len(value) > maximum:
+        return False, f"must have at most {maximum} items (got {len(value)})"
+    return True, None
+
+
 def _check_field(req: FieldRequirement, value: Any) -> tuple[bool, str | None]:
     """Return (passed, problem_description). problem_description is None on pass."""
     if req.rule is FieldRule.EXPLICITLY_DECLARED:
@@ -204,6 +222,8 @@ def _check_field(req: FieldRequirement, value: Any) -> tuple[bool, str | None]:
         return _check_non_empty_string(value)
     if req.rule is FieldRule.MIN_LENGTH:
         return _check_min_length(value, req.value or 0)
+    if req.rule is FieldRule.MAX_LENGTH_LIST:
+        return _check_max_length_list(value, req.value or 0)
     return _check_non_empty_list(value)
 
 
@@ -215,6 +235,38 @@ def _matches_denylist_ac(items: Any) -> bool:
         isinstance(item, str) and item.strip().lower() in DENYLIST_AC_PHRASES
         for item in items
     )
+
+
+def _overlong_ac_item(items: Any) -> tuple[int, str] | None:
+    """First (index, raw) AC item exceeding the per-item char cap, else None."""
+    if not isinstance(items, list):
+        return None
+    for i, item in enumerate(items):
+        if isinstance(item, str) and len(item.strip()) > _AC_MAX_ITEM_CHARS:
+            return i, item
+    return None
+
+
+def _post_rule_reject(field: str, value: Any) -> str | None:
+    """Content-gate a field that already passed its structural rule.
+
+    Returns a hint prefix when the value is rejected, or None to pass. The
+    caller appends `req.hint`, so this returns only the rejection reason.
+    """
+    if field == "acceptance_criteria":
+        if _matches_denylist_ac(value):
+            return "rejected: placeholder phrase from the legacy silent fallback. "
+        over = _overlong_ac_item(value)
+        if over is not None:
+            idx, item = over
+            return (
+                f"rejected: criterion #{idx + 1} is {len(item.strip())} chars "
+                f"(max {_AC_MAX_ITEM_CHARS}) — a criterion that long is a "
+                "restated description, not a verifiable outcome. Split it. "
+            )
+    if field == "description" and _matches_denylist_description(value):
+        return "rejected: placeholder/empty phrase. "
+    return None
 
 
 def _matches_denylist_description(text: Any) -> bool:
@@ -252,19 +304,11 @@ def check(spec: CompletenessSpec, task: Any) -> CompletenessResult:
             field_hints[req.field] = req.hint
             continue
 
-        # Denylist checks (post-rule).
-        if req.field == "acceptance_criteria" and _matches_denylist_ac(value):
-            missing.append("acceptance_criteria")
-            field_hints["acceptance_criteria"] = (
-                "rejected: placeholder phrase from the legacy silent fallback. "
-                + req.hint
-            )
-            continue
-        if req.field == "description" and _matches_denylist_description(value):
-            missing.append("description")
-            field_hints["description"] = (
-                "rejected: placeholder/empty phrase. " + req.hint
-            )
+        # Post-rule content checks (denylists / per-item caps).
+        hint = _post_rule_reject(req.field, value)
+        if hint is not None:
+            missing.append(req.field)
+            field_hints[req.field] = hint + req.hint
             continue
 
     return CompletenessResult(
