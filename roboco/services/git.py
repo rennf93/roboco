@@ -216,6 +216,74 @@ def _remove_stale_git_locks(workspace: Path) -> None:
         return
 
 
+# Verbs that never write anything — `_run_git`'s post-op ownership repair is
+# pure waste after these (live NAS: a "rev-parse --verify" cost 5165ms of
+# chown for a command that touches nothing). Read-only forms of `branch` /
+# `symbolic-ref` are handled separately below since they share a verb name
+# with a mutating form.
+_READ_ONLY_GIT_VERBS = frozenset(
+    {
+        "status",
+        "log",
+        "diff",
+        "rev-parse",
+        "rev-list",
+        "ls-remote",
+        "merge-base",
+        "show",
+        "cherry",
+    }
+)
+
+# Verbs that write only inside `.git/` (refs, objects, index) — never the
+# working tree. Ownership repair can be scoped to `.git/` alone instead of a
+# full-workspace walk.
+_GIT_SCOPED_VERBS = frozenset({"add", "commit", "fetch", "push"})
+
+
+def _branch_or_symbolic_ref_scope(verb: str, rest: list[str]) -> str:
+    """Query vs SET form of `branch` / `symbolic-ref` (same verb, different
+    scope): query reads only, SET writes a ref under `.git/`.
+
+    Query: `branch --show-current` (0 positional) or `symbolic-ref [-q]
+    <name>` (1 positional — naming which ref to read). SET (`branch <name>
+    <start>`, `symbolic-ref <name> <ref>`) always carries 2+ positional args.
+    """
+    positional = [a for a in rest if not a.startswith("-")]
+    is_query = (verb == "branch" and not positional) or (
+        verb == "symbolic-ref" and len(positional) <= 1
+    )
+    return "none" if is_query else "git"
+
+
+def _git_ownership_scope(args: list[str]) -> str:
+    """Classify a git invocation's post-op ownership-repair scope.
+
+    Root cause of the chown cost: the orchestrator's git subprocess runs as
+    root, so a MUTATING op leaves root-owned files under `.git/` (and, for
+    checkout/reset/rebase/pull, the working tree) that the agent container
+    (uid 1000) can't write. A read-only op never writes anything, so
+    repairing ownership after one is pure waste — on the NAS this cost
+    5-10s PER git call, and a single `i_am_done` chains ~a dozen ops.
+
+    Returns "none" (skip repair — zero syscalls), "git" (repair `.git/`
+    only, worktree-aware via `_resolve_clone_root`), or "full" (repair the
+    whole workspace — unchanged behavior, and the safe default for
+    checkout/reset/rebase/pull or any verb this classifier doesn't
+    recognize, so an unclassified op is never under-repaired).
+    """
+    if not args:
+        return "full"
+    verb = args[0]
+    if verb in _READ_ONLY_GIT_VERBS:
+        return "none"
+    if verb in ("branch", "symbolic-ref"):
+        return _branch_or_symbolic_ref_scope(verb, args[1:])
+    if verb in _GIT_SCOPED_VERBS:
+        return "git"
+    return "full"
+
+
 # `_get_gh_env` and the gh-CLI code paths were removed in favor of direct
 # GitHub REST API calls — no CLI dependency, and the PAT no longer touches
 # subprocess argv / environ.
@@ -330,14 +398,15 @@ class GitService(BaseService):
         ``settings.git_commit_timeout_seconds``.
 
         After every orchestrator-side git op, hand ownership back to the
-        agent user. Git commands here run as root and create root-owned
-        files under .git/ (refs, logs/refs, packed-refs, index, objects).
-        If we don't re-chown, the agent container (uid 1000) can't append
-        to those files on its next commit and fails with
-        "unable to append to .git/logs/refs/heads/...".
+        agent user — SCOPED to what this op could actually have written
+        (see `_git_ownership_scope`). Git commands here run as root and
+        create root-owned files under .git/ (refs, logs/refs, packed-refs,
+        index, objects). If we don't re-chown, the agent container (uid
+        1000) can't append to those files on its next commit and fails
+        with "unable to append to .git/logs/refs/heads/...". A read-only
+        op (status, log, diff, ...) never writes, so it skips the repair
+        entirely.
         """
-        from roboco.services.workspace import _ensure_agent_owned
-
         effective_timeout = timeout if timeout is not None else _default_git_timeout()
 
         prefix: list[str] = []
@@ -381,13 +450,7 @@ class GitService(BaseService):
                 " ".join(args), e.stderr or e.stdout or "Unknown error"
             ) from e
         git_ms = (time.monotonic() - t0) * 1000.0
-
-        # Hand .git (and tracked files) back to the agent: this root-run op
-        # created root-owned files under .git/. Runs in the dedicated git pool
-        # so it doesn't compete with the event loop's default executor.
-        t1 = time.monotonic()
-        await loop.run_in_executor(_GIT_EXECUTOR, _ensure_agent_owned, workspace)
-        chown_ms = (time.monotonic() - t1) * 1000.0
+        chown_ms = await self._reown_after_git_op(loop, workspace, args)
 
         # Surface slow git/chown ops (instrumentation): a single line that
         # pinpoints where an op's time went — the subprocess (e.g. a push to
@@ -402,6 +465,28 @@ class GitService(BaseService):
                 workspace=str(workspace),
             )
         return result
+
+    @staticmethod
+    async def _reown_after_git_op(
+        loop: asyncio.AbstractEventLoop, workspace: Path, args: list[str]
+    ) -> float:
+        """Run the scope-appropriate post-op ownership repair; return its ms cost.
+
+        Extracted out of `_run_git` so the classify-then-dispatch logic stays
+        out of that method's cyclomatic budget. Runs in the dedicated git
+        executor so it doesn't compete with the event loop's default pool.
+        A "none"-scope op costs zero syscalls and returns 0.0 so the slow-op
+        instrumentation still sees the true (near-zero) cost.
+        """
+        from roboco.services.workspace import _ensure_agent_owned, _ensure_git_dir_owned
+
+        scope = _git_ownership_scope(args)
+        if scope == "none":
+            return 0.0
+        repair = _ensure_git_dir_owned if scope == "git" else _ensure_agent_owned
+        t1 = time.monotonic()
+        await loop.run_in_executor(_GIT_EXECUTOR, repair, workspace)
+        return (time.monotonic() - t1) * 1000.0
 
     async def _token_for_project(self, project_slug: str) -> str | None:
         """Decrypted project token for orchestrator-side remote git ops.
