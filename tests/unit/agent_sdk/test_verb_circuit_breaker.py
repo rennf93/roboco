@@ -20,7 +20,11 @@ from unittest.mock import patch
 import pytest
 import roboco.agent_sdk.server as srv
 from fastapi.testclient import TestClient
-from roboco.foundation.policy.agent_loop import VERB_RETRY_LIMITS, retry_limit_for
+from roboco.foundation.policy.agent_loop import (
+    VERB_RETRY_LIMITS,
+    absolute_retry_limit_for,
+    retry_limit_for,
+)
 from roboco.services.gateway.envelope import Envelope
 
 if TYPE_CHECKING:
@@ -428,3 +432,168 @@ def test_qa_handoff_retry_keys_match_mcp_verb_names() -> None:
     assert "fail" in VERB_RETRY_LIMITS
     assert retry_limit_for("pass") == VERB_RETRY_LIMITS["pass"]
     assert retry_limit_for("fail") == VERB_RETRY_LIMITS["fail"]
+
+
+# ---------------------------------------------------------------------------
+# ABSOLUTE (session-scoped, never-pruned) breaker — the slow-drip fix
+#
+# Production, 2026-07-08: an agent's i_am_done was rejected once every 3-4
+# minutes for 30+ minutes. Each rejection arrived alone in an empty 60s
+# window, so `_check_verb_circuit` never saw more than 1 attempt at a time
+# and never tripped. `_verb_absolute_attempts` counts cumulatively across
+# the whole container session (never pruned) so pacing can't defeat it.
+# ---------------------------------------------------------------------------
+
+_I_AM_DONE_ABSOLUTE_CAP = 9  # VERB_RETRY_LIMITS["i_am_done"] * multiplier(3)
+
+
+def test_i_am_done_absolute_cap_matches_foundation() -> None:
+    """Pin the effective absolute cap so a foundation change is caught here too."""
+    assert absolute_retry_limit_for("i_am_done") == _I_AM_DONE_ABSOLUTE_CAP
+
+
+def test_absolute_tracker_keys_per_verb_task_pair() -> None:
+    """Different tasks accumulate independent absolute counts."""
+    a_count = 5
+    b_count = 2
+    for _ in range(a_count):
+        srv._record_verb_attempt_absolute("i_am_done", "task-A")
+    for _ in range(b_count):
+        srv._record_verb_attempt_absolute("i_am_done", "task-B")
+
+    assert srv._verb_absolute_attempt_count("i_am_done", "task-A") == a_count
+    assert srv._verb_absolute_attempt_count("i_am_done", "task-B") == b_count
+
+
+def test_absolute_tracker_keys_per_verb_independent_of_task() -> None:
+    """Different verbs on the same task don't share the cumulative counter."""
+    done_count = 4
+    submit_count = 1
+    for _ in range(done_count):
+        srv._record_verb_attempt_absolute("i_am_done", "task-A")
+    for _ in range(submit_count):
+        srv._record_verb_attempt_absolute("submit_up", "task-A")
+
+    assert srv._verb_absolute_attempt_count("i_am_done", "task-A") == done_count
+    assert srv._verb_absolute_attempt_count("submit_up", "task-A") == submit_count
+
+
+def test_absolute_counter_never_prunes_with_time() -> None:
+    """Unlike the windowed deque, a huge time jump does not reset the count."""
+    base = 1000.0
+    expected = 2
+    with patch("roboco.agent_sdk.server.time.monotonic") as mock_time:
+        mock_time.return_value = base
+        srv._record_verb_attempt_absolute("i_am_done", "task-A")
+        mock_time.return_value = base + 10_000.0  # far past any sliding window
+        srv._record_verb_attempt_absolute("i_am_done", "task-A")
+    assert srv._verb_absolute_attempt_count("i_am_done", "task-A") == expected
+
+
+def test_slow_drip_never_trips_window_but_trips_absolute_cap() -> None:
+    """Rejections spaced > 60s apart never trip `_check_verb_circuit`, but
+    the absolute cap still trips once the cumulative count reaches it —
+    the exact production scenario this breaker was added to close.
+    """
+    cap = absolute_retry_limit_for("i_am_done")
+    assert cap is not None
+    base = 1000.0
+    with patch("roboco.agent_sdk.server.time.monotonic") as mock_time:
+        for i in range(cap):
+            mock_time.return_value = base + i * 200.0  # always > 60s apart
+            srv._record_verb_attempt("i_am_done", "task-A")
+            srv._record_verb_attempt_absolute("i_am_done", "task-A")
+            # The sliding window is always empty when this attempt lands.
+            assert srv._check_verb_circuit("i_am_done", "task-A") is None
+
+        result = srv._check_verb_absolute_circuit("i_am_done", "task-A")
+    assert result is not None
+    assert result["error"] == "circuit_open"
+    assert "absolute cap" in result["message"]
+    assert "i_am_blocked" in result["remediate"]
+
+
+def test_absolute_check_returns_none_below_cap() -> None:
+    """One rejection short of the cap, the absolute breaker stays closed."""
+    cap = absolute_retry_limit_for("i_am_done")
+    assert cap is not None
+    for _ in range(cap - 1):
+        srv._record_verb_attempt_absolute("i_am_done", "task-A")
+    assert srv._check_verb_absolute_circuit("i_am_done", "task-A") is None
+
+
+def test_absolute_check_returns_none_for_unlimited_retry_verbs() -> None:
+    """give_me_work stays exempt from the absolute cap too."""
+    assert absolute_retry_limit_for("give_me_work") is None
+    for _ in range(50):
+        srv._record_verb_attempt_absolute("give_me_work", None)
+    assert srv._check_verb_absolute_circuit("give_me_work", None) is None
+
+
+def test_combined_check_still_trips_fast_storm_via_window() -> None:
+    """Windowed behavior is unchanged: 3 fast rejections (the existing
+    i_am_done cap) still trip via the combined check, well below the
+    absolute cap of 9 — and the message reads as a windowed trip, not a
+    session one.
+    """
+    limit = retry_limit_for("i_am_done")
+    assert limit is not None
+    for _ in range(limit):
+        srv._record_verb_attempt("i_am_done", "task-A")
+        srv._record_verb_attempt_absolute("i_am_done", "task-A")
+
+    result = srv._check_any_verb_circuit("i_am_done", "task-A")
+    assert result is not None
+    assert result["error"] == "circuit_open"
+    assert "this session" not in result["message"]
+    assert "in last" in result["message"]
+
+
+def test_verb_attempted_endpoint_trips_absolute_cap_on_slow_drip() -> None:
+    """End-to-end repro through the real /verb/attempted endpoint: rejections
+    paced far past 60s apart never open the windowed breaker but do open the
+    absolute one once the cumulative count reaches the cap.
+    """
+    client = TestClient(srv.app)
+    cap = absolute_retry_limit_for("i_am_done")
+    assert cap is not None
+    last_body: dict[str, object] | None = None
+    with patch("roboco.agent_sdk.server.time.monotonic") as mock_time:
+        for i in range(cap):
+            mock_time.return_value = 1000.0 + i * 200.0
+            resp = client.post(
+                "/verb/attempted",
+                json={
+                    "verb": "i_am_done",
+                    "task_id": "task-A",
+                    "rejection_kind": "tracing_gap",
+                },
+            )
+            assert resp.status_code == _OK
+            last_body = resp.json()
+            if i < cap - 1:
+                assert last_body["open"] is False
+
+    assert last_body is not None
+    assert last_body["open"] is True
+    env = last_body["circuit_envelope"]
+    assert isinstance(env, dict)
+    assert env["error"] == "circuit_open"
+    assert "absolute cap" in env["message"]
+
+
+def test_state_reset_clears_verb_absolute_attempts() -> None:
+    """_state.reset() (a fresh container spawn) wipes the absolute tracker too."""
+    expected = 3
+    for _ in range(expected):
+        srv._record_verb_attempt_absolute("i_am_done", "task-A")
+    assert srv._verb_absolute_attempt_count("i_am_done", "task-A") == expected
+
+    srv._state.reset()
+    assert srv._verb_absolute_attempt_count("i_am_done", "task-A") == 0
+
+
+def test_verb_absolute_attempts_default_is_zero() -> None:
+    """defaultdict yields 0 for unseen keys — sanity check."""
+    fresh = srv._SessionState()
+    assert fresh.verb_absolute_attempts[("never_seen", None)] == 0
