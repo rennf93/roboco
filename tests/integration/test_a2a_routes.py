@@ -1237,6 +1237,8 @@ async def test_admin_reply_no_task_id_400(a2a_route_client: dict) -> None:
 
 @pytest.mark.asyncio
 async def test_admin_reply_success(a2a_route_client: dict) -> None:
+    """The route posts into the VIEWED conversation via interject_as_ceo —
+    not a re-homed CEO<->target DM (the prior, rejected behavior)."""
     app = a2a_route_client["app"]
     dev = a2a_route_client["dev"]
     client = a2a_route_client["client"]
@@ -1249,7 +1251,7 @@ async def test_admin_reply_success(a2a_route_client: dict) -> None:
         id=uuid4(),
         conversation_id=conv_id,
         from_agent="ceo",
-        content="chiming in",
+        content="@be-dev-1: chiming in",
         message_kind="message",
         response_to_id=None,
         requires_response=False,
@@ -1260,7 +1262,7 @@ async def test_admin_reply_success(a2a_route_client: dict) -> None:
     with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
         instance = AsyncMock()
         instance.get_conversation_admin = AsyncMock(return_value=conv)
-        instance.send = AsyncMock(return_value=sent_msg)
+        instance.interject_as_ceo = AsyncMock(return_value=sent_msg)
         mock_service_cls.return_value = instance
         response = await client.post(
             f"/api/a2a/chat/admin/conversations/{conv_id}/reply",
@@ -1268,44 +1270,13 @@ async def test_admin_reply_success(a2a_route_client: dict) -> None:
             headers=_HDR,
         )
     assert response.status_code == HTTPStatus.CREATED
-    instance.send.assert_awaited_once()
-    call_kwargs = instance.send.await_args.kwargs
+    instance.interject_as_ceo.assert_awaited_once()
+    call_kwargs = instance.interject_as_ceo.await_args.kwargs
+    assert call_kwargs["conversation_id"] == conv_id
     assert call_kwargs["to_agent"] == "be-dev-1"
-    assert call_kwargs["task_id"] == task_id
-    assert call_kwargs["body"] == "chiming in"
+    assert call_kwargs["content"] == "chiming in"
     body = response.json()
-    assert body["content"] == "chiming in"
-
-
-@pytest.mark.asyncio
-async def test_admin_reply_access_denied_maps_to_403(a2a_route_client: dict) -> None:
-    """Defensive: if send() ever rejects a CEO-authored A2A, surface 403
-    rather than crash — mirrors create_conversation's handling."""
-    app = a2a_route_client["app"]
-    dev = a2a_route_client["dev"]
-    client = a2a_route_client["client"]
-    _set_ceo_context(app, dev)
-
-    conv_id = uuid4()
-    task_id = uuid4()
-    conv = _admin_conv_obj(conv_id=conv_id, task_id=task_id)
-    with patch("roboco.api.routes.a2a.A2AService") as mock_service_cls:
-        instance = AsyncMock()
-        instance.get_conversation_admin = AsyncMock(return_value=conv)
-        instance.send = AsyncMock(
-            side_effect=A2AAccessDeniedError(
-                from_agent="ceo",
-                to_agent="be-dev-1",
-                reason="denied",
-            )
-        )
-        mock_service_cls.return_value = instance
-        response = await client.post(
-            f"/api/a2a/chat/admin/conversations/{conv_id}/reply",
-            json={"to_agent": "be-dev-1", "content": "hi"},
-            headers=_HDR,
-        )
-    assert response.status_code == HTTPStatus.FORBIDDEN
+    assert body["content"] == "@be-dev-1: chiming in"
 
 
 # ---------------------------------------------------------------------------

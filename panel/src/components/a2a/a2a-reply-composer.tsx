@@ -15,7 +15,7 @@ import { toast } from "sonner";
 import { getAgentDisplayName } from "@/lib/agent-utils";
 import { getErrorMessage } from "@/lib/api/client";
 import { useReplyAsCeo } from "@/hooks/use-a2a-live";
-import { pickDefaultRecipient } from "./a2a-utils";
+import { pickDefaultRecipient, recipientOptions } from "./a2a-utils";
 
 interface A2AReplyComposerProps {
   conversationId: string;
@@ -38,8 +38,14 @@ export function A2AReplyComposer({
   const [chosenRecipient, setChosenRecipient] = useState<string | null>(null);
   const reply = useReplyAsCeo();
 
+  // Excludes "ceo" from the options: in the CEO's own conversation with an
+  // agent, one of {agentA, agentB} is "ceo" itself, and it must never be a
+  // selectable/default reply target.
+  const options = recipientOptions(agentA, agentB);
   const recipient =
-    chosenRecipient ?? pickDefaultRecipient(agentA, agentB, lastSender);
+    options.length === 1
+      ? options[0]
+      : (chosenRecipient ?? pickDefaultRecipient(agentA, agentB, lastSender));
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -86,7 +92,7 @@ export function A2AReplyComposer({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {[agentA, agentB].map((slug) => (
+              {options.map((slug) => (
                 <SelectItem key={slug} value={slug}>
                   {getAgentDisplayName(slug)}
                 </SelectItem>
@@ -104,9 +110,8 @@ export function A2AReplyComposer({
         </div>
       </div>
       <p className="text-xs text-muted-foreground mt-2">
-        Sends a direct A2A message from you to the selected participant. It
-        lands in your own conversation with that agent, not inside this
-        transcript.
+        Posts into this conversation — visible to both participants, addressed
+        to whoever you pick above.
       </p>
     </form>
   );
