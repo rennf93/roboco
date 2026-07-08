@@ -10,7 +10,12 @@ Documentation for the Frontend Cell team.
 ## Contents
 
 - `/components/` - Component documentation
+- `/hooks/` - Hook documentation
 - `/qa/` - QA-related docs
+
+## Available docs
+
+- [`hooks.md`](./hooks.md) — `usePageRefresh` and `PageRefreshProvider` usage and API reference
 
 ## Contributing
 
