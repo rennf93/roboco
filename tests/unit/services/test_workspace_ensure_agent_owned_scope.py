@@ -91,3 +91,35 @@ def test_noop_when_workspace_absent(tmp_path: Path, _record_touched: list[str]) 
     missing = tmp_path / "never_cloned"
     _ensure_agent_owned(missing)
     assert _record_touched == []
+
+
+def test_chown_failure_falls_back_to_chmod_and_warns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rootless/userns hosts reject chown. `_own_and_grant_rw` must still run
+    the chmod fallback (belt-and-suspenders for ACL-inheriting NAS volumes)
+    and `_ensure_agent_owned` must warn rather than swallow the failure
+    silently. Unchanged by the scoped-repair split — this exercises the real
+    (non-git-scoped) chown/chmod primitives via `_chown_entry`, forced to
+    fail regardless of the test process's actual uid/gid."""
+    (tmp_path / "file.py").write_text("x = 1\n")
+
+    chmod_calls: list[str] = []
+    monkeypatch.setattr(workspace_module, "_chown_entry", lambda _entry: False)
+    monkeypatch.setattr(
+        workspace_module, "_make_owner_and_group_rw", chmod_calls.append
+    )
+    warning_calls: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        workspace_module.logger,
+        "warning",
+        lambda msg, **kw: warning_calls.append((msg, kw)),
+    )
+
+    _ensure_agent_owned(tmp_path)
+
+    # chmod fallback still ran for every entry despite the chown failure.
+    assert str(tmp_path / "file.py") in chmod_calls
+    # The failure is surfaced, not swallowed.
+    assert warning_calls
+    assert warning_calls[0][1]["failures"]
