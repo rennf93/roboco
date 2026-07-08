@@ -1,12 +1,10 @@
 "use client";
 
-import { use, useEffect, useState } from "react";
+import { use, useState } from "react";
 import axios from "axios";
-import { useTask, useTaskLifecycle, useUpdateTask } from "@/hooks/use-tasks";
-import { useProject } from "@/hooks/use-projects";
+import { useTaskDetail, useTaskLifecycle, useUpdateTask } from "@/hooks";
 import { useCreateBranch, useCreatePR, useMergePR } from "@/hooks/use-git";
 import { Team, TaskStatus } from "@/types";
-import { usePageRefresh } from "@/hooks";
 import {
   TaskHeader,
   TaskMetadata,
@@ -37,18 +35,7 @@ interface TaskDetailPageProps {
 export default function TaskDetailPage({ params }: TaskDetailPageProps) {
   const { taskId } = use(params);
   const router = useRouter();
-  const { data: task, isLoading, error, refetch } = useTask(taskId);
-  const { data: project } = useProject(task?.project_id ?? "");
-
-  const { register, unregister } = usePageRefresh();
-
-  useEffect(() => {
-    const cb = () => {
-      void refetch();
-    };
-    register(cb);
-    return () => unregister(cb);
-  }, [register, unregister, refetch]);
+  const { task, project, isLoading, error, refetch } = useTaskDetail(taskId);
 
   const lifecycle = useTaskLifecycle();
   const updateTask = useUpdateTask();
