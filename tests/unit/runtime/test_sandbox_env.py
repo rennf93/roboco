@@ -115,4 +115,8 @@ async def test_spawn_container_stale_clear_runs_with_teardown_sandbox_false(
 
     await orch._spawn_container(_config(["postgres"]))
 
-    remove.assert_awaited_once_with("roboco-agent-dev-1", teardown_sandbox=False)
+    remove.assert_awaited_once_with(
+        "roboco-agent-dev-1",
+        teardown_sandbox=False,
+        stop_reason="pre_spawn_stale_clear",
+    )

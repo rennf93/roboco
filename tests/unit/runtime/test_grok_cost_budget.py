@@ -52,7 +52,9 @@ async def test_cost_over_cap_kills_and_evicts(monkeypatch: pytest.MonkeyPatch) -
 
     await orch._enforce_grok_cost_budget()
 
-    remove_mock.assert_awaited_once_with("roboco-agent-be-dev-1")
+    remove_mock.assert_awaited_once_with(
+        "roboco-agent-be-dev-1", stop_reason="grok_cost_cap"
+    )
     assert "be-dev-1" not in orch._instances
 
 
@@ -140,7 +142,9 @@ async def test_interactive_kill_closes_the_relay(
 
     await orch._enforce_grok_cost_budget()
 
-    remove_mock.assert_awaited_once_with(f"roboco-agent-{INTAKE_AGENT_ID}")
+    remove_mock.assert_awaited_once_with(
+        f"roboco-agent-{INTAKE_AGENT_ID}", stop_reason="grok_cost_cap"
+    )
     assert INTAKE_AGENT_ID not in orch._instances
     assert len(registry.calls) == 1
     assert registry.calls[0][0] == INTAKE_AGENT_ID

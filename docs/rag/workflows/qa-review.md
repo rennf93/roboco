@@ -17,9 +17,10 @@ give_me_work()
 #    guard at pass/fail time)
 claim_review(task_id="<task>")
 
-# 3. Inspect the diff
-roboco_git_diff(project_slug="roboco")
-roboco_git_log(project_slug="roboco", branch="<dev's branch>")
+# 3. Inspect the diff (project_slug is optional — omit it and your
+#    own project is used)
+roboco_git_diff()
+roboco_git_log(branch="<dev's branch>")
 
 # 4. Run the relevant suite
 # Backend: uv run pytest && uv run ruff check . && uv run mypy roboco/
