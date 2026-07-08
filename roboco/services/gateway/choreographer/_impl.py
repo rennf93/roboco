@@ -654,6 +654,10 @@ class Choreographer:
             "missing": env.missing or [],
             "attempt_id": str(_uuid4()),
         }
+        if env.remediate:
+            # Conventions-gate rejections carry the file:line violation
+            # listing ONLY here — without it the audit row is unactionable.
+            details["remediate"] = env.remediate
         cid = structlog.contextvars.get_contextvars().get("correlation_id")
         if cid is not None:
             details["correlation_id"] = cid

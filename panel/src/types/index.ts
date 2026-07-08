@@ -420,6 +420,9 @@ export interface AgentStatusResponse {
   error_count: number;
   started_at: string | null;
   waiting_for: string | null;
+  // Only set on the spawn response: true when the spawn was a no-op because
+  // the agent was already active (see SpawnAgentResponse on the backend).
+  already_running?: boolean;
 }
 
 // OrchestratorStatusResponse from backend

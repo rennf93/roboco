@@ -559,12 +559,15 @@ class ContentActions:
             return reject
         canonical_prefix = f"[{str(t.id)[:8]}]"
         final_message = f"{canonical_prefix} {subject}"
-        commit_result = await self.git.commit(
-            branch_name=t.branch_name,
-            message=final_message,
-            task_id=t.id,
-            files=files,
-        )
+        try:
+            commit_result = await self.git.commit(
+                branch_name=t.branch_name,
+                message=final_message,
+                task_id=t.id,
+                files=files,
+            )
+        except GitError as exc:
+            return self._commit_git_error_envelope(exc, files=files)
         sha = commit_result.get("sha", "")
         await self.task.add_progress(
             t.id, agent_id, f"committed {sha[:8]}: {final_message}"
@@ -574,6 +577,32 @@ class ContentActions:
             status=str(t.status),
             task_id=str(t.id),
             next="continue committing, or open_pr when ready",
+            context_briefing={},
+        )
+
+    @staticmethod
+    def _commit_git_error_envelope(
+        exc: GitError, *, files: list[str] | None
+    ) -> Envelope:
+        """Map a failed `git commit` onto an actionable invalid_state envelope.
+
+        A "no changes added to commit" / "nothing to commit" failure means
+        the passed `files` matched no modified paths; anything else is a
+        generic git failure the agent should inspect and retry.
+        """
+        text = str(exc)
+        if files and (
+            "no changes added to commit" in text or "nothing to commit" in text
+        ):
+            remediate = (
+                f"the files list {files!r} matched no modified paths; omit "
+                "files to stage all changes, or pass the exact modified paths"
+            )
+        else:
+            remediate = "inspect the git error above and retry"
+        return Envelope.invalid_state(
+            message=text,
+            remediate=remediate,
             context_briefing={},
         )
 

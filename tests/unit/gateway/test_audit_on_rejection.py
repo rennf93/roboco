@@ -26,6 +26,7 @@ from uuid import uuid4
 
 import pytest
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
+from roboco.services.gateway.envelope import Envelope
 
 
 def _make_deps(**overrides: Any) -> ChoreographerDeps:
@@ -176,3 +177,63 @@ async def test_audit_log_event_failure_does_not_propagate() -> None:
 
     assert env.error == "not_found"
     audit_svc.log_event.assert_awaited()
+
+
+# ---------------------------------------------------------------------------
+# remediate must ride along into the audit row — it's the only place a
+# conventions-gate rejection's file:line violation listing lives.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rejection_remediate_lands_in_audit_details() -> None:
+    """A rejection's `remediate` hint is copied into the audit row's details.
+
+    Without this, an operator reading `gateway.rejected` audit rows for a
+    conventions-gate rejection sees only the summary message — the
+    actionable detail lives solely in `remediate`.
+    """
+    aid = uuid4()
+    tid = uuid4()
+    code_task = MagicMock(
+        id=tid,
+        status="pending",
+        assigned_to=aid,
+        task_type="code",
+        priority=1,
+        parent_task_id=None,
+        sequence=0,
+        team="backend",
+    )
+    task_svc = AsyncMock()
+    task_svc.get.return_value = code_task
+    task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
+    task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.list_paused_for_agent.return_value = []
+    task_svc.get_subtasks.return_value = []
+    audit_svc = AsyncMock()
+    deps = _make_deps(task=task_svc, audit=audit_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_will_work_on(aid, tid, plan="x")
+
+    assert env.error == "not_authorized"
+    assert env.remediate
+    args = audit_svc.log_event.await_args
+    assert args.kwargs["details"]["remediate"] == env.remediate
+
+
+@pytest.mark.asyncio
+async def test_rejection_without_remediate_omits_audit_key() -> None:
+    """A rejection with no remediate must not add a null key to the row."""
+    aid = uuid4()
+    tid = uuid4()
+    audit_svc = AsyncMock()
+    deps = _make_deps(audit=audit_svc)
+    c = Choreographer(deps)
+    env = Envelope(error="not_found", message="bare rejection, no remediate")
+
+    await c._emit_rejection(env, agent_id=aid, task_id=tid, verb="test_verb")
+
+    args = audit_svc.log_event.await_args
+    assert "remediate" not in args.kwargs["details"]

@@ -3143,6 +3143,11 @@ class AgentOrchestrator:
         # every gateway call 422s on header parse. Resolve via AGENT_UUIDS map;
         # if the slug isn't in the map (custom agents), fall back to the slug
         # and let the API surface the unknown-agent error.
+        # Also used as the CLI arg for the three ApiClient-based servers
+        # (optimal/docs/search) below — their spawn token (issue_agent_token)
+        # is signed over the UUID, so ApiClient's X-Agent-ID must match or
+        # verify_agent_token 401s with "signature mismatch" even though
+        # get_agent_role/get_agent_team resolve either form fine.
         agent_uuid = AGENT_UUIDS.get(agent_id, agent_id)
 
         mcp_env: dict[str, str] = {
@@ -3211,7 +3216,7 @@ class AgentOrchestrator:
                     "python",
                     "-m",
                     "roboco.mcp.optimal_server",
-                    agent_id,
+                    agent_uuid,
                 ],
                 "env": mcp_env,
             },
@@ -3236,7 +3241,7 @@ class AgentOrchestrator:
                     "python",
                     "-m",
                     "roboco.mcp.docs_server",
-                    agent_id,
+                    agent_uuid,
                 ],
                 "env": mcp_env,
             }
@@ -3259,7 +3264,7 @@ class AgentOrchestrator:
                     "python",
                     "-m",
                     "roboco.mcp.search_server",
-                    agent_id,
+                    agent_uuid,
                 ],
                 "env": mcp_env,
             }

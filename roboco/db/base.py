@@ -6,10 +6,12 @@ import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Annotated
 
 import structlog
 from alembic import command
 from alembic.config import Config
+from fastapi import Depends, Request
 from sqlalchemy import MetaData, text
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
@@ -82,20 +84,80 @@ async def get_db() -> AsyncGenerator[AsyncSession]:
         @router.get("/items")
         async def get_items(db: AsyncSession = Depends(get_db)):
             ...
+
+    Also called directly (no ``Depends``, outside HTTP request scope) by
+    ``websocket.py`` and a couple of read-only helpers — keep this signature
+    free of any required/HTTP-only parameter. For a request-scoped route that
+    wants its commit to land BEFORE the response reaches the client, depend
+    on ``get_db_committed`` instead (``roboco.api.deps.DbSession`` — the one
+    place every route already goes through — already does).
     """
     session_factory = get_session_factory()
     async with session_factory() as session:
         try:
             yield session
             await session.commit()
-        except (Exception, asyncio.CancelledError):
-            # CancelledError is BaseException, so the bare `except Exception`
-            # did not catch it — a server-side asyncio.timeout cancelling a
-            # hung verb (FlowVerbTimeoutMiddleware) would otherwise leave the
-            # request transaction unrolled-back, holding its FOR UPDATE row
-            # lock. Roll back on cancellation too so the lock releases.
+        except asyncio.CancelledError:
+            await _discard_on_cancel(session)
+            raise
+        except Exception:
             await session.rollback()
             raise
+
+
+async def _discard_on_cancel(session: AsyncSession) -> None:
+    """Discard (never reuse) a session cancelled mid-flight.
+
+    A server-side ``asyncio.timeout`` (``FlowVerbTimeoutMiddleware``) can fire
+    while the session is mid ``await`` on a real DBAPI round-trip — not just
+    while idle holding a ``FOR UPDATE`` lock, but also mid-``commit()``
+    (``DbCommitMiddleware`` runs its own commit in the ASGI send path, still
+    inside the same cancellable scope). Cancelling a greenlet-bridged asyncpg
+    operation mid-flight leaves the connection's wire-protocol state
+    undefined; SQLAlchemy's own docs (``Session.invalidate``) prescribe
+    exactly this: on a Timeout/cancellation, invalidate rather than rollback,
+    since rollback() itself would issue another command over a connection
+    that may already be desynced, and a desynced connection returned to the
+    pool is what later corrupted a *different* request's checkout (the
+    uvloop/asyncpg segfault class this fixes). A plain hang (asyncio.sleep,
+    no DBAPI call in flight when cancelled) is also safe to invalidate — just
+    slightly more heavy-handed than the rollback it used to get.
+    """
+    try:
+        await session.invalidate()
+    except Exception as e:
+        # The connection is already being discarded; a failure tearing it
+        # down further (SQLAlchemy's own pool logs the underlying cause) must
+        # not mask the CancelledError the caller is propagating.
+        logger.debug("Session invalidate-on-cancel raised", error=str(e))
+
+
+async def get_db_committed(
+    request: Request, db: Annotated[AsyncSession, Depends(get_db)]
+) -> AsyncGenerator[AsyncSession]:
+    """FastAPI-only wrapper around ``get_db``: stashes the live session on
+    ``request.state.db_session`` so ``DbCommitMiddleware``
+    (``roboco/api/middleware.py``) can commit it BEFORE the response reaches
+    the client.
+
+    FastAPI resolves ``Depends(get_db)`` on the request-scoped exit stack, and
+    its routing sends the response to the client BEFORE that stack unwinds —
+    so ``get_db``'s post-yield ``commit()`` used to land after a 200 already
+    went out.
+
+    This is a separate function rather than a ``request`` parameter added to
+    ``get_db`` itself: FastAPI only special-cases a dependency parameter
+    typed exactly ``Request`` (``lenient_issubclass`` in
+    ``fastapi/dependencies/utils.py``) — a ``Request | None`` union is NOT
+    special-cased and instead gets validated as a Pydantic response field,
+    which crashes route registration outright (``Request`` isn't a valid
+    Pydantic field type). ``get_db`` is also called directly with no request
+    in scope, so its signature has to stay request-free; this wrapper is the
+    request-scoped variant, resolved once per request (FastAPI dependency
+    caching) so ``db`` here is the exact same session ``get_db`` yields.
+    """
+    request.state.db_session = db
+    yield db
 
 
 @asynccontextmanager
@@ -112,12 +174,10 @@ async def get_db_context() -> AsyncGenerator[AsyncSession]:
         try:
             yield session
             await session.commit()
-        except (Exception, asyncio.CancelledError):
-            # CancelledError is BaseException, so the bare `except Exception`
-            # did not catch it — a server-side asyncio.timeout cancelling a
-            # hung verb (FlowVerbTimeoutMiddleware) would otherwise leave the
-            # request transaction unrolled-back, holding its FOR UPDATE row
-            # lock. Roll back on cancellation too so the lock releases.
+        except asyncio.CancelledError:
+            await _discard_on_cancel(session)
+            raise
+        except Exception:
             await session.rollback()
             raise
 

@@ -6,6 +6,7 @@ API endpoints for managing the Agent Orchestrator.
 
 from datetime import datetime
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, status
 from guard_core.handlers.behavior_handler import BehaviorRule
@@ -25,10 +26,16 @@ from roboco.api.schemas.orchestrator import (
     OrchestratorStatusResponse,
     ResolveWaitRequest,
     SpawnAgentRequest,
+    SpawnAgentResponse,
     WaitingAgentResponse,
 )
 from roboco.config import settings
+from roboco.db.base import get_db_context
+from roboco.db.tables import TaskTable
+from roboco.runtime import AgentState
+from roboco.runtime.orchestrator import AgentReadinessError
 from roboco.security import guard_deco, prompt_injection_validator
+from roboco.services.task import get_task_service
 
 _RUNAWAY_RULES = [
     BehaviorRule(rule_type="frequency", threshold=120, window=60, action="log")
@@ -213,9 +220,55 @@ async def get_waiting_agents() -> list[WaitingAgentResponse]:
     ]
 
 
+def _build_manual_spawn_prompt(task: TaskTable, ceo_note: str | None) -> str:
+    """Build the initial prompt for a CEO-triggered manual (panel) spawn.
+
+    Mirrors the tone of dispatcher-built prompts (e.g. ``_build_pr_review_prompt``
+    in the orchestrator): point the agent at the task by id/title/status and
+    trust the gateway envelope's ``next`` / ``remediate`` to guide the actual
+    claim verb, rather than enumerating per-role verbs here.
+    """
+    lines = [
+        "You were manually spawned by the CEO to work a specific task.",
+        "",
+        f"TASK ID: {task.id}",
+        f"TITLE: {task.title}",
+        f"STATUS: {task.status.value}",
+        "",
+        "Claim it with the claim verb appropriate to your role and this "
+        "task's current state, then proceed. Trust the gateway envelope's "
+        "`next` / `remediate` fields to guide you rather than guessing.",
+    ]
+    if ceo_note:
+        lines += ["", "== CEO NOTE ==", ceo_note]
+    return "\n".join(lines)
+
+
+async def _resolve_manual_spawn_prompt(
+    task_id: str | None, ceo_message: str | None
+) -> str | None:
+    """Best-effort task-aware prompt for a manual panel spawn.
+
+    Falls back to ``ceo_message`` unchanged (current behavior) on any lookup
+    failure — bad ``task_id``, DB hiccup, task not found. Enrichment must
+    never block a spawn the CEO already asked for; ``spawn_agent``'s own
+    readiness gate is the real gatekeeper for an invalid/not-ready task.
+    """
+    if not task_id:
+        return ceo_message
+    try:
+        async with get_db_context() as db:
+            task = await get_task_service(db).get(UUID(task_id))
+    except Exception:
+        return ceo_message
+    if task is None:
+        return ceo_message
+    return _build_manual_spawn_prompt(task, ceo_message)
+
+
 @router.post(
     "/agents/{agent_id}/spawn",
-    response_model=AgentStatusResponse,
+    response_model=SpawnAgentResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Spawn agent",
     description="Spawn a Claude Code instance for an agent.",
@@ -230,19 +283,42 @@ async def get_waiting_agents() -> list[WaitingAgentResponse]:
 async def spawn_agent(
     agent_id: str,
     data: SpawnAgentRequest | None = None,
-) -> AgentStatusResponse:
+) -> SpawnAgentResponse:
     """Spawn an agent."""
     agent_id = _validated_agent_id(agent_id)
     orchestrator = get_orchestrator()
+    task_id = data.task_id if data else None
+    ceo_message = data.initial_prompt if data else None
+    prompt = await _resolve_manual_spawn_prompt(task_id, ceo_message)
+
+    # Pre-check for already-running signaling (see return below). Snapshot the
+    # instance identity BEFORE calling spawn_agent, which silently reuses a
+    # running instance rather than erroring — dispatchers rely on that no-op
+    # contract, so it stays untouched here.
+    pre_existing = orchestrator.get_instance(agent_id)
+    pre_active = pre_existing is not None and pre_existing.state not in (
+        AgentState.OFFLINE,
+        AgentState.WAITING_LONG,
+    )
+    pre_existing_id = getattr(pre_existing, "id", None)
 
     try:
         instance = await orchestrator.spawn_agent(
             agent_id=agent_id,
-            initial_prompt=data.initial_prompt if data else None,
-            task_id=data.task_id if data else None,
+            initial_prompt=prompt,
+            task_id=task_id,
             model=data.model if data else None,
             spawned_by="api.orchestrator.spawn",
         )
+    except AgentReadinessError as e:
+        # Expected, well-formed refusal (role/state mismatch, unmet
+        # dependency, missing readiness criteria) — not a server crash.
+        # 409 keeps it out of 5xx alerting and lets the panel surface the
+        # real reason instead of a generic "server error".
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        ) from e
     except FileNotFoundError as e:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -254,13 +330,32 @@ async def spawn_agent(
             detail=f"Failed to spawn agent: {e}",
         ) from e
 
-    return AgentStatusResponse(
+    # already_running: the pre-existing instance was active AND spawn_agent
+    # handed back that exact same instance (identity, not state, since a
+    # freshly-launched instance can share the same STARTING state as a
+    # short-circuited one). AgentInstance.id is a fresh uuid4 per constructed
+    # object, so equality here means no new instance was built.
+    # ponytail: identity-compare across a pre/post HTTP-handler snapshot, not
+    # inside the orchestrator's own spawn lock — a genuinely simultaneous
+    # double-fire that races both pre-checks before either inserts its
+    # instance can still slip through undetected here. The client-side
+    # dedupe guard (SpawnAgentDialog) is the actual fix for that race;
+    # upgrade this to an orchestrator-native signal if that ever proves
+    # insufficient.
+    already_running = (
+        pre_active
+        and pre_existing_id is not None
+        and getattr(instance, "id", None) == pre_existing_id
+    )
+
+    return SpawnAgentResponse(
         agent_id=instance.agent_id,
         state=instance.state.value,
         task_id=instance.current_task_id,
         error_count=instance.error_count,
         started_at=instance.started_at,
         waiting_for=None,
+        already_running=already_running,
     )
 
 

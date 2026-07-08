@@ -12,6 +12,13 @@ no per-verb retry cap — dogfooding showed i_am_done retried 5+ times in 2
 minutes within the global budget. With the runtime tracker in place,
 exceeding VERB_RETRY_LIMITS[verb] attempts in 60s returns
 Envelope.circuit_open.
+
+VERB_ABSOLUTE_RETRY_MULTIPLIER is NEW. A 2026-07-08 production loop showed
+the 60s sliding window never trips on a slow drip — one rejected i_am_done
+every 3-4 minutes empties the window between attempts, so the agent ground
+for 30+ minutes without the breaker ever seeing more than 1 attempt at a
+time. absolute_retry_limit_for() adds a session-scoped, never-pruned
+cumulative cap alongside the window so pacing can't defeat the breaker.
 """
 
 from __future__ import annotations
@@ -123,3 +130,22 @@ def retry_limit_for(verb: str) -> int | None:
     if verb in UNLIMITED_RETRY_VERBS:
         return None
     return VERB_RETRY_LIMITS.get(verb, DEFAULT_BUDGET.verb_retry_max_per_minute)
+
+
+# Multiplier applied to retry_limit_for(verb) for the session-scoped
+# ABSOLUTE cap (see module docstring). i_am_done's windowed cap is 3, so its
+# absolute cap is 9 total rejections in one container session, regardless
+# of how the attempts are spaced.
+VERB_ABSOLUTE_RETRY_MULTIPLIER: int = 3
+
+
+def absolute_retry_limit_for(verb: str) -> int | None:
+    """Session-scoped cumulative cap: retry_limit_for(verb) * the multiplier.
+
+    None for verbs retry_limit_for treats as unlimited — a verb exempt from
+    the windowed breaker is exempt from the absolute one too.
+    """
+    limit = retry_limit_for(verb)
+    if limit is None:
+        return None
+    return limit * VERB_ABSOLUTE_RETRY_MULTIPLIER

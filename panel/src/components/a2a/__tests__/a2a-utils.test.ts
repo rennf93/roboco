@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { lastSenderOf, pickDefaultRecipient } from "../a2a-utils";
+import {
+  lastSenderOf,
+  pickDefaultRecipient,
+  recipientOptions,
+} from "../a2a-utils";
 
 describe("lastSenderOf", () => {
   it("returns null for an empty transcript", () => {
@@ -29,5 +33,22 @@ describe("pickDefaultRecipient", () => {
     expect(pickDefaultRecipient("be-dev-1", "be-qa", "fe-dev-1")).toBe(
       "be-dev-1",
     );
+  });
+});
+
+describe("recipientOptions", () => {
+  it("returns both participants when neither is the CEO", () => {
+    expect(recipientOptions("be-dev-1", "be-qa")).toEqual([
+      "be-dev-1",
+      "be-qa",
+    ]);
+  });
+
+  it("excludes the CEO when it's agent_a", () => {
+    expect(recipientOptions("ceo", "be-dev-1")).toEqual(["be-dev-1"]);
+  });
+
+  it("excludes the CEO when it's agent_b", () => {
+    expect(recipientOptions("be-dev-1", "ceo")).toEqual(["be-dev-1"]);
   });
 });

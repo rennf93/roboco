@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import Request
 from roboco.db.base import (
     _db_has_alembic_version,
     _db_has_tables,
@@ -19,6 +20,7 @@ from roboco.db.base import (
     close_db,
     drop_db,
     get_db,
+    get_db_committed,
     get_db_context,
     get_engine,
     get_session_factory,
@@ -106,6 +108,23 @@ async def test_get_db_yields_session_and_commits_on_success() -> None:
 
     fake_session.commit.assert_awaited_once()
     fake_session.rollback.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_db_committed_stashes_session_on_request_state() -> None:
+    """DbCommitMiddleware (api/middleware.py) reads request.state.db_session
+    to commit it before the response reaches the client — get_db_committed
+    (the roboco.api.deps.DbSession target) must stash the session there
+    before yielding it back unchanged."""
+    fake_session = MagicMock()
+    request = Request({"type": "http"})
+
+    gen = get_db_committed(request, fake_session)
+    yielded = await gen.__anext__()
+    assert yielded is fake_session
+    assert request.state.db_session is fake_session
+    with pytest.raises(StopAsyncIteration):
+        await gen.__anext__()
 
 
 @pytest.mark.asyncio

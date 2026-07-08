@@ -183,6 +183,7 @@ class Envelope:
         window_seconds: int,
         remediate: str,
         context_briefing: dict[str, Any] | None = None,
+        message: str | None = None,
     ) -> Envelope:
         """Per-verb retry circuit-breaker tripped — too many attempts in a window.
 
@@ -190,10 +191,14 @@ class Envelope:
         a structured "stop hammering this verb" signal with a remediate hint
         pointing to i_am_blocked() / i_am_idle() as graceful exits. Wired by
         the agent_sdk runtime tracker — the gateway itself does not raise this.
+
+        `message` overrides the default windowed wording — used by the
+        session-scoped absolute breaker, whose trip isn't "in last Ns".
         """
         return cls(
             error="circuit_open",
-            message=(
+            message=message
+            or (
                 f"verb {verb!r} rejected {attempts} times in last "
                 f"{window_seconds}s — circuit breaker open"
             ),

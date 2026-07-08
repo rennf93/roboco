@@ -27,7 +27,7 @@ from roboco.api.auth.backend import (
 from roboco.api.auth.session import resolve_session_user
 from roboco.api.schemas.optimal import PaginationParams
 from roboco.config import settings
-from roboco.db.base import get_db
+from roboco.db.base import get_db, get_db_committed
 from roboco.db.tables import AgentTable, UserTable
 from roboco.foundation.identity import BOARD_ROLES, DEV_ROLES, PM_ROLES, Role
 from roboco.models import AgentRole, Team
@@ -53,8 +53,10 @@ logger = structlog.get_logger()
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
 
-# Type alias for database session dependency
-DbSession = Annotated[AsyncSession, Depends(get_db)]
+# Type alias for database session dependency. get_db_committed stashes the
+# session on request.state so DbCommitMiddleware can commit it before the
+# response reaches the client (see roboco/db/base.py, roboco/api/middleware.py).
+DbSession = Annotated[AsyncSession, Depends(get_db_committed)]
 
 
 async def resolve_agent_id(agent_id_str: str, db: AsyncSession) -> UUID:
