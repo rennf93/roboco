@@ -505,9 +505,11 @@ class FlowVerbTimeoutMiddleware:
     ``kimi-k2.7-code:cloud`` agent on task 79d686f0). This wraps each
     ``/api/v1/flow/*`` request in ``asyncio.timeout``; on expiry the inner
     app is cancelled (CancelledError propagates through ``get_db``, which now
-    rolls back, releasing the lock) and a clean retryable 504 envelope is
-    returned. Pure ASGI (not BaseHTTPMiddleware) so cancellation propagates
-    into the route coroutine without the spawned-task gap.
+    invalidates the session — releasing the lock and discarding a connection
+    that may be mid-protocol rather than reusing it via a rollback, see
+    ``get_db``) and a clean retryable 504 envelope is returned. Pure ASGI (not
+    BaseHTTPMiddleware) so cancellation propagates into the route coroutine
+    without the spawned-task gap.
 
     Reads (``evidence``) and journal writes (``note``) don't touch the task
     row, so they are unaffected; only task-row writes route through ``claim``.
@@ -545,8 +547,9 @@ class FlowVerbTimeoutMiddleware:
             async with asyncio.timeout(timeout):
                 await self.app(scope, receive, send_wrapper)
         except TimeoutError:
-            # The inner app was cancelled mid-verb; get_db has already rolled
-            # back (releasing the FOR UPDATE lock) by the time we get here.
+            # The inner app was cancelled mid-verb; get_db has already
+            # invalidated the session (releasing the FOR UPDATE lock and
+            # discarding the connection) by the time we get here.
             if started:
                 # The route had already begun a response before the timeout
                 # fired — the client owns whatever was sent; we cannot start
@@ -614,12 +617,24 @@ class DbCommitMiddleware:
 
     Added INSIDE (closer to the routes than) ``FlowVerbTimeoutMiddleware`` —
     see ``setup_middleware`` — so a hanging commit on a flow-verb request
-    stays bounded by Flow's ``asyncio.timeout``, and Flow's own synthesized
-    504 (sent via its own upstream ``send``, never re-entering ``self.app``)
-    never reaches this middleware. A request cancelled by that timeout never
-    produces ``http.response.start`` either, so this middleware is inert on
-    that path — ``get_db``'s own rollback (the #326 CancelledError path) is
-    unaffected.
+    stays bounded by Flow's ``asyncio.timeout``. That timeout is scoped to
+    the WHOLE ``self.app(...)`` call including this middleware, so its
+    deadline can fire while ``await session.commit()`` below is itself
+    in flight (not just while a route handler hangs before responding) —
+    ``started`` in the outer middleware is still ``False`` at that point
+    (its own wrapped ``send`` hasn't been called yet), so it sends its 504
+    normally once this ``await`` raises ``CancelledError``. That
+    ``CancelledError`` is a ``BaseException`` the ``except Exception`` below
+    does not catch, so it propagates up through FastAPI's dependency
+    ``AsyncExitStack`` (still open here — ``response(scope, receive, send)``
+    is called from inside it, see ``get_db_committed``'s docstring) straight
+    into ``get_db``'s own ``except asyncio.CancelledError``, which invalidates
+    the session rather than rolling it back: a rollback would issue another
+    command over a connection whose wire-protocol state this cancellation may
+    have already left mid-flight, corrupting it further (SQLAlchemy's own
+    docs prescribe ``invalidate()``, not ``rollback()``, for this exact
+    external-cancellation case). Skipping that step is what let a later,
+    unrelated request's pool checkout crash on the poisoned connection.
     """
 
     def __init__(self, app: ASGIApp) -> None:

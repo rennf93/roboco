@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from http import HTTPStatus
-from typing import Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, cast
 
 # UUID annotates a Pydantic model field below, so it must stay a runtime import
 # (Pydantic resolves the annotation when building the model) despite `from
@@ -22,6 +22,7 @@ from roboco.api.middleware import (
     setup_middleware,
 )
 from roboco.config import settings
+from roboco.db.base import _discard_on_cancel
 from roboco.exceptions import (
     AuthenticationError,
     InvalidStateError,
@@ -43,6 +44,9 @@ from roboco.services.base import (
     ValidationError as ServiceValidationError,
 )
 from structlog.testing import capture_logs
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 # ---------------------------------------------------------------------------
 # get_status_code
@@ -624,3 +628,94 @@ def test_db_commit_middleware_passes_through_session_less_request() -> None:
     response = client.get("/plain")
     assert response.status_code == HTTPStatus.OK
     assert response.json() == {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# FlowVerbTimeoutMiddleware x DbCommitMiddleware — cancellation landing
+# mid-commit (2026-07-08 CI segfault: FlowVerbTimeoutMiddleware's
+# asyncio.timeout is scoped to the whole request, so it can fire while
+# DbCommitMiddleware's own `await session.commit()` is in flight, not just
+# while a route handler hangs before responding).
+# ---------------------------------------------------------------------------
+
+
+class _CancelableCommitSession:
+    """get_db-style fake session whose ``commit()`` blocks forever on an
+    Event — it only ever exits via cancellation, reproducing the exact race
+    where FlowVerbTimeoutMiddleware's timeout fires mid-``commit()``."""
+
+    def __init__(self, order: list[str]) -> None:
+        self._order = order
+        self._txn = True
+        self._never_set = asyncio.Event()
+
+    def in_transaction(self) -> bool:
+        return self._txn
+
+    async def commit(self) -> None:
+        self._order.append("commit_start")
+        await self._never_set.wait()
+        self._order.append("commit_end")  # unreachable: proves no commit-after-cancel
+
+    async def rollback(self) -> None:
+        self._order.append("rollback")
+        self._txn = False
+
+    async def invalidate(self) -> None:
+        self._order.append("invalidate")
+        self._txn = False
+
+
+async def _fake_get_db_cancel_safe(request: Request) -> Any:
+    """get_db-style dependency wired to the real ``_discard_on_cancel``
+    helper (``roboco.db.base``) so this test exercises the actual fix, not a
+    re-implementation of it."""
+    order: list[str] = request.app.state.db_commit_order
+    session = _CancelableCommitSession(order)
+    request.state.db_session = session
+    try:
+        yield session
+        await session.commit()
+    except asyncio.CancelledError:
+        # The double only duck-types AsyncSession's commit/rollback/invalidate
+        # surface — cast for the real helper's signature.
+        await _discard_on_cancel(cast("AsyncSession", session))
+        raise
+    except Exception:
+        await session.rollback()
+        raise
+
+
+def _make_cancel_during_commit_app(order: list[str]) -> FastAPI:
+    app = FastAPI()
+    app.state.db_commit_order = order
+
+    @app.post("/api/v1/flow/developer/give_me_work")
+    async def _write(_db: Annotated[Any, Depends(_fake_get_db_cancel_safe)]) -> Any:
+        order.append("route_body")
+        return {"status": "ok"}
+
+    setup_middleware(app)
+    return app
+
+
+def test_cancellation_mid_commit_invalidates_not_rollback(monkeypatch: Any) -> None:
+    """A flow-verb request that blows its server-side timeout WHILE
+    DbCommitMiddleware's commit is in flight must: propagate CancelledError
+    cleanly to a 504 (not hang, not a raw 500), discard the session via
+    ``invalidate()`` — NOT ``rollback()`` (SQLAlchemy's own docs: rolling
+    back a cancelled/timed-out operation risks issuing another command over
+    a connection whose wire-protocol state is now undefined, which is what
+    let a later request's pool checkout crash on the poisoned connection) —
+    and never resume/complete the cancelled commit.
+    """
+    monkeypatch.setattr(settings, "flow_verb_timeout_seconds", 0.05)
+    order: list[str] = []
+    app = _make_cancel_during_commit_app(order)
+
+    client = TestClient(app)
+    response = client.post("/api/v1/flow/developer/give_me_work")
+
+    assert response.status_code == HTTPStatus.GATEWAY_TIMEOUT
+    assert response.json()["error"] == "gateway_timeout"
+    assert order == ["route_body", "commit_start", "invalidate"], order

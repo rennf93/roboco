@@ -97,14 +97,39 @@ async def get_db() -> AsyncGenerator[AsyncSession]:
         try:
             yield session
             await session.commit()
-        except (Exception, asyncio.CancelledError):
-            # CancelledError is BaseException, so the bare `except Exception`
-            # did not catch it — a server-side asyncio.timeout cancelling a
-            # hung verb (FlowVerbTimeoutMiddleware) would otherwise leave the
-            # request transaction unrolled-back, holding its FOR UPDATE row
-            # lock. Roll back on cancellation too so the lock releases.
+        except asyncio.CancelledError:
+            await _discard_on_cancel(session)
+            raise
+        except Exception:
             await session.rollback()
             raise
+
+
+async def _discard_on_cancel(session: AsyncSession) -> None:
+    """Discard (never reuse) a session cancelled mid-flight.
+
+    A server-side ``asyncio.timeout`` (``FlowVerbTimeoutMiddleware``) can fire
+    while the session is mid ``await`` on a real DBAPI round-trip — not just
+    while idle holding a ``FOR UPDATE`` lock, but also mid-``commit()``
+    (``DbCommitMiddleware`` runs its own commit in the ASGI send path, still
+    inside the same cancellable scope). Cancelling a greenlet-bridged asyncpg
+    operation mid-flight leaves the connection's wire-protocol state
+    undefined; SQLAlchemy's own docs (``Session.invalidate``) prescribe
+    exactly this: on a Timeout/cancellation, invalidate rather than rollback,
+    since rollback() itself would issue another command over a connection
+    that may already be desynced, and a desynced connection returned to the
+    pool is what later corrupted a *different* request's checkout (the
+    uvloop/asyncpg segfault class this fixes). A plain hang (asyncio.sleep,
+    no DBAPI call in flight when cancelled) is also safe to invalidate — just
+    slightly more heavy-handed than the rollback it used to get.
+    """
+    try:
+        await session.invalidate()
+    except Exception as e:
+        # The connection is already being discarded; a failure tearing it
+        # down further (SQLAlchemy's own pool logs the underlying cause) must
+        # not mask the CancelledError the caller is propagating.
+        logger.debug("Session invalidate-on-cancel raised", error=str(e))
 
 
 async def get_db_committed(
@@ -149,12 +174,10 @@ async def get_db_context() -> AsyncGenerator[AsyncSession]:
         try:
             yield session
             await session.commit()
-        except (Exception, asyncio.CancelledError):
-            # CancelledError is BaseException, so the bare `except Exception`
-            # did not catch it — a server-side asyncio.timeout cancelling a
-            # hung verb (FlowVerbTimeoutMiddleware) would otherwise leave the
-            # request transaction unrolled-back, holding its FOR UPDATE row
-            # lock. Roll back on cancellation too so the lock releases.
+        except asyncio.CancelledError:
+            await _discard_on_cancel(session)
+            raise
+        except Exception:
             await session.rollback()
             raise
 
