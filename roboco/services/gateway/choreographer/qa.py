@@ -582,6 +582,7 @@ class QAMixin(_Base):
             )
 
         warning = await self._pass_review_documenter_handoff(qa_agent_id, task_id, t)
+        await self._teardown_sandbox_best_effort(qa_agent_id)
         env = Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
@@ -714,6 +715,7 @@ class QAMixin(_Base):
                 task_id=task_id,
                 body=f"QA needs changes. Issues:\n{notes}",
             )
+        await self._teardown_sandbox_best_effort(qa_agent_id)
         return Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),

@@ -31,6 +31,7 @@ from roboco.api.schemas.v1.do import (
     PRUpdateRequest,
     ReadMessagesRequest,
     RejectPlaybookRequest,
+    RequestSandboxRequest,
 )
 from roboco.security import (
     guard_deco,
@@ -254,6 +255,17 @@ async def do_evidence(
     actions: _ContentActionsDep,
 ) -> dict:
     env = await actions.evidence(agent_id=x_agent_id, task_id=body.task_id)
+    return envelope_to_response(env, request)
+
+
+@router.post("/request_sandbox")
+async def do_request_sandbox(
+    request: Request,
+    body: RequestSandboxRequest,
+    x_agent_id: _AgentIdHeader,
+    actions: _ContentActionsDep,
+) -> dict:
+    env = await actions.request_sandbox(agent_id=x_agent_id, services=body.services)
     return envelope_to_response(env, request)
 
 

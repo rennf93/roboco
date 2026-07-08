@@ -744,6 +744,10 @@ async def get_content_actions(
     db_session: DbSession,
 ) -> ContentActions:
     """Build a ContentActions with all service dependencies wired up."""
+    # Orchestrator handle for request_sandbox's ensure_sandbox call — same
+    # None-safe injection as get_choreographer (the orchestrator may not be
+    # initialised yet, e.g. during startup).
+    orch: AgentOrchestrator | None = _ServiceHolder.orchestrator
     return ContentActions(
         ContentActionsDeps(
             task=TaskService(db_session),
@@ -754,6 +758,7 @@ async def get_content_actions(
             notifications=NotificationService(),
             notification_delivery=NotificationDeliveryService(db_session),
             evidence_repo=EvidenceRepo(db_session),
+            orchestrator=orch,
         )
     )
 

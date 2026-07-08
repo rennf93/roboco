@@ -56,6 +56,9 @@ _DEV_DO = (
     # assigned a video-authoring task. The real gate is propose_video's
     # runtime _caller_team check.
     "propose_video",
+    # On-demand sandbox DB/Redis/Mongo — carried unconditionally (declarative
+    # manifest), gated for real by request_sandbox's project opt-in check.
+    "request_sandbox",
     *_NOTIFY_RECEIVER,
 )
 
@@ -65,6 +68,7 @@ _QA_DO = (
     "dm",
     "evidence",
     "draft_playbook",
+    "request_sandbox",
     *_NOTIFY_RECEIVER,
 )
 

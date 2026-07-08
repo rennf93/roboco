@@ -206,6 +206,31 @@ class SandboxProvisioner:
             await asyncio.sleep(_READY_POLL_INTERVAL_SECONDS)
         return False
 
+    async def is_live(self, agent_id: str, services: list[str]) -> bool:
+        """True iff every named service's sandbox container is running.
+
+        On-demand liveness check for a cache hit (not the janitor's mass
+        sweep): a container OOM-killed or manually removed while the agent
+        lives fails this, so the caller can evict the stale cache entry and
+        re-provision instead of handing back creds for a dead container.
+        """
+        run = self._run()
+        for service in services:
+            engine = SANDBOX_ENGINES.get(service)
+            if engine is None:
+                return False
+            name = engine.container_name(agent_id)
+            try:
+                rc, stdout, _ = await run(
+                    ["inspect", "--format={{.State.Running}}", name],
+                    _DOCKER_EXEC_TIMEOUT_SECONDS,
+                )
+            except Exception:
+                return False
+            if rc != 0 or stdout.decode().strip() != "true":
+                return False
+        return True
+
     async def teardown(self, agent_id: str) -> None:
         """Idempotent: stop+kill+rm every engine's sandbox container. Never raises."""
         for engine in SANDBOX_ENGINES.values():
