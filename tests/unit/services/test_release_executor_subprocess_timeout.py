@@ -1,5 +1,5 @@
-"""``_GitReleaseOps`` subprocesses (git, ``make quality``, ``gh release create``,
-the release-clone ``git clone``) are wrapped in ``asyncio.wait_for`` with a
+"""``_GitReleaseOps`` subprocesses (git, ``make quality``, the release-clone
+``git clone``) are wrapped in ``asyncio.wait_for`` with a
 kill-on-timeout fail-close so a hung child cannot block the release loop.
 
 These tests hang the subprocess (a never-resolving ``communicate``) and patch
@@ -11,8 +11,11 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
+import httpx
 import pytest
+from roboco.services.project import ProjectService
 from roboco.services.release_executor import (
     _CLONE_TIMEOUT_SECONDS,
     _GIT_OP_TIMEOUT_SECONDS,
@@ -23,12 +26,15 @@ from roboco.services.release_executor import (
     _run,
 )
 
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
+
 # Floors encoding the logical-regression guard: a deadline below these would
 # silently abort a legitimate slow release. Named (not magic) for ruff PLR2004.
 _MIN_GATE_TIMEOUT = 1800  # full make quality suite — ruff/mypy/pytest
 _MIN_GIT_OP_TIMEOUT = 300  # network push / ls-remote
 _MIN_CLONE_TIMEOUT = 600  # full clone on a slow link
-_MIN_PUBLISH_TIMEOUT = 120  # gh release create
+_MIN_PUBLISH_TIMEOUT = 120  # GitHub release POST (httpx client timeout)
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +105,9 @@ def _ops() -> _GitReleaseOps:
     ops._git_url = "https://github.com/o/roboco"
     ops._git_prefix = []
     ops._ci_workflow = None
+    # publish_release resolves the token via a (monkeypatched) ProjectService;
+    # the session itself is never touched in these tests.
+    ops._session = cast("AsyncSession", None)
     return ops
 
 
@@ -199,24 +208,110 @@ async def test_run_gate_times_out_returns_false(
     assert proc.killed
 
 
+class _FakeResponse:
+    def __init__(
+        self, status_code: int, body: dict[str, str] | None = None, text: str = ""
+    ) -> None:
+        self.status_code = status_code
+        self._body = body or {}
+        self.text = text
+
+    def json(self) -> dict[str, str]:
+        return self._body
+
+
+class _FakeAsyncClient:
+    """Stands in for ``httpx.AsyncClient`` — canned response or raised error."""
+
+    response: _FakeResponse | None = None
+    raises: Exception | None = None
+    last_url: str = ""
+    last_json: dict[str, str] | None = None
+
+    def __init__(self, *args: object, **kwargs: object) -> None: ...
+
+    async def __aenter__(self) -> _FakeAsyncClient:
+        return self
+
+    async def __aexit__(self, *args: object) -> bool:
+        return False
+
+    async def post(self, url: str, **kwargs: object) -> _FakeResponse:
+        type(self).last_url = url
+        json_payload = kwargs.get("json")
+        assert json_payload is None or isinstance(json_payload, dict)
+        type(self).last_json = json_payload
+        err = type(self).raises
+        if err is not None:
+            raise err
+        resp = type(self).response
+        assert resp is not None
+        return resp
+
+
+def _patch_publish_deps(
+    monkeypatch: pytest.MonkeyPatch, token: str | None = "tok"
+) -> None:
+    async def _token(_self: ProjectService, _slug: str) -> str | None:
+        return token
+
+    monkeypatch.setattr(ProjectService, "get_decrypted_token_by_slug", _token)
+    monkeypatch.setattr("httpx.AsyncClient", _FakeAsyncClient)
+    _FakeAsyncClient.response = None
+    _FakeAsyncClient.raises = None
+
+
 @pytest.mark.asyncio
-async def test_publish_release_times_out_raises(
+async def test_publish_release_posts_rest_and_returns_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A hung ``gh release create`` raises RuntimeError (fail-closed — never
-    reports a bogus published URL) and kills the child."""
-    monkeypatch.setattr(
-        "roboco.services.release_executor._PUBLISH_TIMEOUT_SECONDS", 0.05
-    )
-    proc = _HangingProc()
-    monkeypatch.setattr(
-        "roboco.services.release_executor.asyncio.create_subprocess_exec",
-        _exec_returning(proc),
+    """The publish is a GitHub REST POST (no ``gh`` binary in the orchestrator
+    image) hitting /repos/{owner}/{repo}/releases with the tag payload."""
+    _patch_publish_deps(monkeypatch)
+    _FakeAsyncClient.response = _FakeResponse(
+        201, body={"html_url": "https://github.com/o/roboco/releases/tag/v1.0.0"}
     )
     ops = _ops()
-    with pytest.raises(RuntimeError, match="timed out"):
-        await asyncio.wait_for(ops.publish_release("1.0.0", "notes"), timeout=2.0)
-    assert proc.killed
+    url = await ops.publish_release("1.0.0", "notes")
+    assert url.endswith("/releases/tag/v1.0.0")
+    assert _FakeAsyncClient.last_url.endswith("/repos/o/roboco/releases")
+    assert _FakeAsyncClient.last_json is not None
+    assert _FakeAsyncClient.last_json["tag_name"] == "v1.0.0"
+    assert _FakeAsyncClient.last_json["target_commitish"] == "master"
+
+
+@pytest.mark.asyncio
+async def test_publish_release_non_201_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_publish_deps(monkeypatch)
+    _FakeAsyncClient.response = _FakeResponse(422, text="already_exists")
+    ops = _ops()
+    with pytest.raises(RuntimeError, match="HTTP 422"):
+        await ops.publish_release("1.0.0", "notes")
+
+
+@pytest.mark.asyncio
+async def test_publish_release_network_error_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A transport error (incl. the httpx client-timeout on a hung POST) fails
+    closed as RuntimeError — never a bogus published URL."""
+    _patch_publish_deps(monkeypatch)
+    _FakeAsyncClient.raises = httpx.ReadTimeout("hung POST")
+    ops = _ops()
+    with pytest.raises(RuntimeError, match="release publish failed"):
+        await ops.publish_release("1.0.0", "notes")
+
+
+@pytest.mark.asyncio
+async def test_publish_release_no_token_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_publish_deps(monkeypatch, token=None)
+    ops = _ops()
+    with pytest.raises(RuntimeError, match="no git token"):
+        await ops.publish_release("1.0.0", "notes")
 
 
 @pytest.mark.asyncio

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **Release manager publish no longer depends on a `gh` binary that was never installed.** `ReleaseExecutor.publish_release` shelled out to `gh release create`, but no image ships the gh CLI — with `ROBOCO_RELEASE_MANAGER_ENABLED` armed, every publish would have died on a missing binary after the release commit was already pushed (verified against the live 0.19.0 orchestrator container). The publish is now a GitHub REST `POST /repos/{owner}/{repo}/releases` authenticated with the project's decrypted token — the same auth + httpx pattern as PR creation — with the same fail-closed semantics (non-201 → structured `publish_failed`, CEO retries; the 300s deadline is now the HTTP client timeout).
+
 ## [0.19.0] - 2026-07-08
 
 ### Added
