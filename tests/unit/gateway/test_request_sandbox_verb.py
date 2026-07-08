@@ -185,6 +185,7 @@ async def test_success_returns_creds_in_evidence_with_env_subdict(
 
     expected_port = 5432
     assert env.error is None
+    assert env.evidence is not None
     payload = env.evidence["postgres"]
     assert payload["host"] == "roboco-sandbox-pg-dev-1"
     assert payload["port"] == expected_port
@@ -257,6 +258,7 @@ async def test_response_payload_filtered_to_requested_services(
     env = await actions.request_sandbox(agent_id=uuid4(), services=["postgres"])
 
     assert env.error is None
+    assert env.evidence is not None
     assert set(env.evidence) == {"postgres"}
 
 
