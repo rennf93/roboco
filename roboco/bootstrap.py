@@ -38,6 +38,12 @@ async def _run_api_server() -> None:
         port=settings.port,
         log_level="info",
         reload=False,  # Don't reload in production/container
+        # Cosmetic here — server.serve() (below) never reads Config.loop, it
+        # only matters to Server.run()/uvicorn.run(). The real switch is
+        # cli.py's asyncio.run(loop_factory=resolve_uvicorn_loop_factory(...)),
+        # which picks the loop this whole process (including this server)
+        # already runs on. Kept in sync so the two never silently disagree.
+        loop=settings.uvicorn_loop,
     )
     server = uvicorn.Server(config)
     await server.serve()
