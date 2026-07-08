@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, Suspense } from "react";
+import { useCallback, Suspense, useEffect } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { useProjects } from "@/hooks/use-projects";
 import {
@@ -12,7 +12,6 @@ import {
 } from "@/hooks/use-git";
 import { BranchType } from "@/types/git";
 import { Card, CardContent } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Select,
@@ -27,9 +26,10 @@ import { GitBranchPanel } from "./git-branch-panel";
 import { GitLogPanel } from "./git-log-panel";
 import { GitDiffViewer } from "./git-diff-viewer";
 import { GitActionsPanel } from "./git-actions-panel";
-import { GitBranch, RefreshCw, FolderGit2 } from "lucide-react";
+import { GitBranch, FolderGit2 } from "lucide-react";
 import { toast } from "sonner";
 import { getErrorMessage } from "@/lib/api/client";
+import { usePageRefresh } from "@/hooks";
 
 function GitBrowserContent() {
   const router = useRouter();
@@ -76,6 +76,36 @@ function GitBrowserContent() {
     !!projectSlug,
   );
 
+  const { register, unregister, refresh } = usePageRefresh();
+
+  useEffect(() => {
+    const callbacks = [
+      () => {
+        void refetchProjects();
+      },
+      () => {
+        void refetchStatus();
+      },
+      () => {
+        void refetchLog();
+      },
+      () => {
+        void refetchBranches();
+      },
+    ];
+    callbacks.forEach((cb) => register(cb));
+    return () => {
+      callbacks.forEach((cb) => unregister(cb));
+    };
+  }, [
+    register,
+    unregister,
+    refetchProjects,
+    refetchStatus,
+    refetchLog,
+    refetchBranches,
+  ]);
+
   // Git operations
   const {
     commit,
@@ -112,12 +142,6 @@ function GitBrowserContent() {
     },
     [updateParams],
   );
-
-  const handleRefresh = () => {
-    refetchStatus();
-    refetchLog();
-    refetchBranches();
-  };
 
   // Operation handlers
   // Note: agent_id is "ceo" because this panel is used by the CEO
@@ -277,7 +301,7 @@ function GitBrowserContent() {
       <OfflineState
         title="Cannot Connect to Git Service"
         description="Start the RoboCo orchestrator to access git operations."
-        onRetry={() => refetchProjects()}
+        onRetry={() => void refresh()}
       />
     );
   }
@@ -313,12 +337,6 @@ function GitBrowserContent() {
               )}
             </SelectContent>
           </Select>
-          {projectSlug && (
-            <Button variant="outline" onClick={handleRefresh}>
-              <RefreshCw className="h-4 w-4 mr-2" />
-              Refresh
-            </Button>
-          )}
         </div>
       </div>
 

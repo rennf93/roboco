@@ -1,4 +1,3 @@
-export { JournalBrowser } from "./journal-browser";
 export { JournalView } from "./journal-view";
 export { AgentList } from "./agent-list";
 export { AgentItem } from "./agent-item";
